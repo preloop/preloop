@@ -3,9 +3,11 @@
 from tests.credential_fixtures import ai_model_with_secret
 
 import json
+import io
 import os
 import shutil
 import subprocess
+import tarfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from pathlib import Path
@@ -54,6 +56,18 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_user,
 )
+
+
+@pytest.fixture
+def evidence_archive() -> bytes:
+    """Build a valid evidence archive for the persistence boundary."""
+    output = io.BytesIO()
+    content = b"Example execution evidence\n"
+    with tarfile.open(fileobj=output, mode="w:gz") as archive:
+        member = tarfile.TarInfo("evidence.txt")
+        member.size = len(content)
+        archive.addfile(member, io.BytesIO(content))
+    return output.getvalue()
 
 
 @pytest.fixture(autouse=True)
@@ -1417,6 +1431,7 @@ class TestFlowExecutionOrchestrator:
         mock_nats_client,
         event_data,
         mock_agent_executor,
+        evidence_archive: bytes,
     ):
         """The evidence pack captured before cleanup lands in the DB.
 
@@ -1425,15 +1440,22 @@ class TestFlowExecutionOrchestrator:
         """
         from preloop.models.models.flow_execution import FlowExecution
 
-        archive = b"\x1f\x8b" + b"fake-evidence-tar-gz"
+        archive = evidence_archive
         mock_agent_executor.get_result_artifact = AsyncMock(
             return_value={"status": "success"}
         )
         mock_agent_executor.get_evidence_archive = AsyncMock(return_value=archive)
 
-        with patch(
-            "preloop.services.flow_orchestrator.create_executor_for_execution",
-            return_value=mock_agent_executor,
+        # Exercise inline legacy persistence when artifact-store ingestion is
+        # unavailable; normal ingestion stores the pack outside the row.
+        with (
+            patch(
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
+                return_value=mock_agent_executor,
+            ),
+            patch.object(
+                FlowExecutionOrchestrator, "_ingest_legacy_evidence", return_value=None
+            ),
         ):
             orchestrator = FlowExecutionOrchestrator(
                 db=db_session,
@@ -1452,7 +1474,13 @@ class TestFlowExecutionOrchestrator:
                 .filter(FlowExecution.id == orchestrator.execution_log.id)
                 .one()
             )
-            assert bytes(persisted.evidence_archive) == archive
+            persisted_archive = bytes(persisted.evidence_archive)
+            with tarfile.open(
+                fileobj=io.BytesIO(persisted_archive), mode="r:gz"
+            ) as pack:
+                member = pack.extractfile("evidence.txt")
+                assert member is not None
+                assert member.read() == b"Example execution evidence\n"
 
     @pytest.mark.asyncio
     async def test_dossier_evidence_matches_captured_pack_before_persist(
@@ -1462,6 +1490,7 @@ class TestFlowExecutionOrchestrator:
         mock_nats_client,
         event_data,
         mock_agent_executor,
+        evidence_archive: bytes,
     ):
         """dossier_manifest.evidence must not lag the captured evidence pack.
 
@@ -1475,15 +1504,22 @@ class TestFlowExecutionOrchestrator:
 
         from preloop.models.models.flow_execution import FlowExecution
 
-        archive = b"\x1f\x8b" + b"fake-evidence-tar-gz"
+        archive = evidence_archive
         mock_agent_executor.get_result_artifact = AsyncMock(
             return_value={"status": "success"}
         )
         mock_agent_executor.get_evidence_archive = AsyncMock(return_value=archive)
 
-        with patch(
-            "preloop.services.flow_orchestrator.create_executor_for_execution",
-            return_value=mock_agent_executor,
+        # Exercise inline legacy persistence when artifact-store ingestion is
+        # unavailable; normal ingestion stores the pack outside the row.
+        with (
+            patch(
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
+                return_value=mock_agent_executor,
+            ),
+            patch.object(
+                FlowExecutionOrchestrator, "_ingest_legacy_evidence", return_value=None
+            ),
         ):
             orchestrator = FlowExecutionOrchestrator(
                 db=db_session,
@@ -1500,11 +1536,17 @@ class TestFlowExecutionOrchestrator:
                 .filter(FlowExecution.id == orchestrator.execution_log.id)
                 .one()
             )
-            assert bytes(persisted.evidence_archive) == archive
+            persisted_archive = bytes(persisted.evidence_archive)
+            with tarfile.open(
+                fileobj=io.BytesIO(persisted_archive), mode="r:gz"
+            ) as pack:
+                member = pack.extractfile("evidence.txt")
+                assert member is not None
+                assert member.read() == b"Example execution evidence\n"
             evidence = persisted.result["dossier_manifest"]["evidence"]
             assert evidence["status"] == "available"
             assert evidence["transport"] == "legacy"
-            assert evidence["sha256"] == hashlib.sha256(archive).hexdigest()
+            assert evidence["sha256"] == hashlib.sha256(persisted_archive).hexdigest()
             assert persisted.evidence_receipt["status"] == "available"
 
     @pytest.mark.asyncio
@@ -2419,7 +2461,7 @@ class TestWorkspaceSeedValidation:
             nats_client=mock_nats_client,
         )
         orchestrator._get_flow_details()
-        orchestrator.execution_log = type("ExecutionLogStub", (), {"id": uuid4()})()
+        orchestrator._create_execution_log()
         return orchestrator
 
     @pytest.mark.asyncio

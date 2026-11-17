@@ -641,6 +641,9 @@ UUID derived from account, principal, target, reason code, sanitized explanation
 and UTC minute. Concurrent
 API workers increment the same persisted counter without an in-memory limiter.
 The audit API exposes the open row immediately and indexes exact reason filters.
+If audit persistence fails, the permission decision and its HTTP response or
+WebSocket close remain unchanged; the audit failure is logged without request
+content.
 
 The sealer holds the same account lock and excludes both denial action types
 until their minute has closed, even with a zero configured sealing lag. A writer
@@ -654,4 +657,6 @@ approval lifecycle events retain their semantics.
 The operator session-end endpoint uses the same conditional `ended_at IS NULL`
 transition as native hooks. The transition, lifecycle audit and outbound webhook
 intent commit together. Only the winner emits live account events. This does not
-remove or rewrite historical audit records.
+remove or rewrite historical audit records. Every end request retries idempotent
+runner-stop and managed-agent binding cleanup, including after a native hook
+ended the session or an earlier cleanup attempt failed.

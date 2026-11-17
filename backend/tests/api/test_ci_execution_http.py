@@ -579,3 +579,35 @@ def test_revoked_trigger_key_retains_audit_principal(
     assert row.details["reason_code"] == "ci_key_inactive"
     assert row.details["principal_id"] == str(principal.id)
     assert row.details["count"] == 3
+
+
+@pytest.mark.parametrize("boundary", ["route", "credential", "endpoint"])
+def test_audit_failure_preserves_ci_http_denial(
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    """Both middleware and endpoint refusals keep their complete HTTP response."""
+    from unittest.mock import Mock
+    from preloop.services import denial_audit
+
+    _, key, token = provision(db_session, ci_resources)
+    url = f"/api/v1/flows/{ci_resources[2].id}/trigger"
+    payload = {"diff": "invalid request"}
+    expected = 422
+    if boundary == "route":
+        url, expected = "/protected", 403
+    elif boundary == "credential":
+        key.is_active = False
+        db_session.commit()
+        expected = 401
+    write = Mock(side_effect=RuntimeError("Synthetic audit unavailable"))
+    monkeypatch.setattr(denial_audit, "write_denial", write)
+    response = client.post(
+        url, headers={"Authorization": f"Bearer {token}"}, json=payload
+    )
+    write.assert_called_once()
+    assert response.status_code == expected
+    assert response.json()["detail"]

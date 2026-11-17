@@ -101,6 +101,86 @@ def test_failed_end_transaction_can_be_retried(
     assert session.ended_at is None
 
 
+def _cleanup_session(db: Session, user: models.User) -> models.RuntimeSession:
+    """Create a synthetic session with a binding that requires end cleanup."""
+    from uuid import uuid4
+
+    session = models.RuntimeSession(
+        account_id=user.account_id,
+        session_source_type="claude_code",
+        session_source_id=str(uuid4()),
+        runtime_principal_type="managed_agent",
+        runtime_principal_id=str(uuid4()),
+        started_at=datetime.now(UTC),
+    )
+    db.add(session)
+    db.flush()
+    return session
+
+
+def test_native_end_is_followed_by_idempotent_operator_cleanup(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An earlier hook transition does not prevent runner and binding cleanup."""
+    session = _cleanup_session(db_session, test_user)
+    crud.crud_runtime_session.mark_ended_by_hook(
+        db_session,
+        account_id=str(test_user.account_id),
+        runtime_session_id=str(session.id),
+        ended_at=datetime.now(UTC),
+    )
+    stop, clear, events = Mock(), Mock(return_value=None), Mock()
+    monkeypatch.setattr(account, "_stop_runner_session_on_end", stop)
+    monkeypatch.setattr(
+        account.crud_managed_agent, "clear_runtime_session_binding", clear
+    )
+    monkeypatch.setattr(account, "emit_account_event", events)
+    response = client.patch(
+        f"/api/v1/runtime-sessions/{session.id}", json={"action": "end"}
+    )
+    assert response.status_code == 200
+    stop.assert_called_once()
+    clear.assert_called_once()
+    events.assert_not_called()
+
+
+@pytest.mark.parametrize("failed_cleanup", ["runner", "binding"])
+def test_end_retry_heals_post_commit_cleanup_failure(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_cleanup: str,
+) -> None:
+    """Retry repairs cleanup after a committed end without repeating the audit."""
+    session = _cleanup_session(db_session, test_user)
+    stop, clear = Mock(), Mock(return_value=None)
+    failed = stop if failed_cleanup == "runner" else clear
+    failed.side_effect = [RuntimeError("Synthetic cleanup failure"), None]
+    monkeypatch.setattr(account, "_stop_runner_session_on_end", stop)
+    monkeypatch.setattr(
+        account.crud_managed_agent, "clear_runtime_session_binding", clear
+    )
+    url = f"/api/v1/runtime-sessions/{session.id}"
+    with pytest.raises(RuntimeError, match="Synthetic cleanup failure"):
+        client.patch(url, json={"action": "end"})
+    db_session.refresh(session)
+    assert session.ended_at is not None
+    assert client.patch(url, json={"action": "end"}).status_code == 200
+    assert stop.call_count == 2
+    assert clear.call_count == (1 if failed_cleanup == "runner" else 2)
+    rows = db_session.scalars(
+        select(models.AuditLog).where(
+            models.AuditLog.account_id == test_user.account_id,
+            models.AuditLog.action == "runtime_session_ended",
+        )
+    ).all()
+    assert len(rows) == 1
+
+
 @pytest.fixture
 def committed_identity(
     db_engine: Engine, monkeypatch: pytest.MonkeyPatch

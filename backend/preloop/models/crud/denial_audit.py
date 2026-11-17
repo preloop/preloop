@@ -14,9 +14,14 @@ from preloop.models.crud import audit_chain
 DENIAL_ACTIONS = ("restricted_ci_denied", "agent_permission_denied")
 
 
+def _current_minute_expression() -> Any:
+    """Use the same database wall-clock boundary for writers and sealers."""
+    return func.date_trunc("minute", func.timezone("UTC", func.clock_timestamp()))
+
+
 def closed_denial_windows() -> Any:
     """Exclude the current UTC minute, including from forced zero-lag sealing."""
-    minute = func.date_trunc("minute", func.timezone("UTC", func.clock_timestamp()))
+    minute = _current_minute_expression()
     return or_(
         models.AuditLog.action.not_in(DENIAL_ACTIONS),
         models.AuditLog.timestamp < minute,
@@ -27,11 +32,7 @@ def _current_minute(db: Session) -> datetime:
     """Read wall time after obtaining the account lock, never transaction time."""
     return cast(
         datetime,
-        db.execute(
-            select(
-                func.date_trunc("minute", func.timezone("UTC", func.clock_timestamp()))
-            )
-        ).scalar_one(),
+        db.execute(select(_current_minute_expression())).scalar_one(),
     )
 
 

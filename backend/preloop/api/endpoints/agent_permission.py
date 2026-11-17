@@ -870,9 +870,7 @@ async def agent_permission_check(
     except HTTPException as exc:
         if exc.status_code in {401, 403}:
             code = reason_for_detail(exc.detail, "permission_auth_denied")
-            await run_db_off_loop(
-                lambda: _audit_permission_denial(token, payload.tool_name, code)
-            )
+            await _audit_permission_denial_safely(token, payload.tool_name, code)
         raise
     if result.decision == "deny":
         fallback = (
@@ -889,15 +887,27 @@ async def agent_permission_check(
             if result.request_id or result.timed_out or result.parked
             else reason_for_detail(result.reason, fallback)
         )
-        await run_db_off_loop(
-            lambda: _audit_permission_denial(
-                token,
-                payload.tool_name,
-                code,
-                rule_message=result.reason if code == "permission_denied" else None,
-            )
+        await _audit_permission_denial_safely(
+            token,
+            payload.tool_name,
+            code,
+            rule_message=result.reason if code == "permission_denied" else None,
         )
     return result
+
+
+async def _audit_permission_denial_safely(
+    token: str, tool_name: str, reason_code: str, rule_message: str | None = None
+) -> None:
+    """Keep an audit outage from replacing the original permission decision."""
+    try:
+        await run_db_off_loop(
+            lambda: _audit_permission_denial(
+                token, tool_name, reason_code, rule_message=rule_message
+            )
+        )
+    except Exception as exc:
+        logger.warning("Permission denial audit unavailable: %s", type(exc).__name__)
 
 
 async def _agent_permission_check(

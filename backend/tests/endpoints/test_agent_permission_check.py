@@ -771,3 +771,39 @@ def test_permission_rule_explanation_is_audited_without_the_credential(
     assert row.details["reason_code"] == "permission_denied"
     assert row.details["message"].startswith("Workspace writes are blocked:")
     assert token not in str(row.details)
+
+
+@pytest.mark.parametrize("status_code", [200, 401, 403])
+def test_audit_failure_preserves_permission_denial(
+    client: TestClient, status_code: int
+) -> None:
+    """An unavailable audit writer cannot change the native permission result."""
+    from fastapi import HTTPException
+    from preloop.api.endpoints import agent_permission
+
+    token = _issue_opencode_runtime_token(client)
+    denied = AsyncMock(
+        return_value=agent_permission.AgentPermissionCheckResponse(
+            decision="deny", reason="Tool blocked in Preloop"
+        )
+    )
+    if status_code != 200:
+        denied.side_effect = HTTPException(status_code, "Original refusal")
+    with (
+        patch.object(agent_permission, "_agent_permission_check", denied),
+        patch(
+            "preloop.services.denial_audit.write_denial",
+            side_effect=RuntimeError("Synthetic audit unavailable"),
+        ) as write,
+    ):
+        response = client.post(
+            PERMISSION_CHECK_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"tool_name": "Bash"},
+        )
+    write.assert_called_once()
+    assert response.status_code == status_code
+    if status_code == 200:
+        assert response.json()["decision"] == "deny"
+    else:
+        assert response.json() == {"detail": "Original refusal"}

@@ -653,4 +653,14 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     failure_category = script.get_revision("20261220_execution_failure")
     assert failure_category.down_revision == joined_evidence.revision
-    assert script.get_heads() == [failure_category.revision]
+    denial_index = script.get_revision("20261220_denial_reason_idx")
+    credentials = script.get_revision("20261220_exec_credentials")
+    assert denial_index.down_revision == joined_evidence.revision
+    assert credentials.down_revision == joined_evidence.revision
+    records = script.get_revision("20261221_records_merge")
+    assert set(records.down_revision) == {
+        failure_category.revision,
+        denial_index.revision,
+        credentials.revision,
+    }
+    assert script.get_heads() == [records.revision]

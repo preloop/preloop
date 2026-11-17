@@ -517,6 +517,24 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         result = await db.execute(self._attribution_statement(ids, account_ids))
         return {execution.id: (execution, flow) for execution, flow in result.all()}
 
+    def get_end_time(
+        self, db: Session, *, execution_id: Any, account_id: Any
+    ) -> Optional[datetime]:
+        """Read an owned execution's end time for bounded final output delivery."""
+        try:
+            parsed = uuid.UUID(str(execution_id))
+        except (ValueError, AttributeError, TypeError):
+            return None
+        row = (
+            db.query(models.FlowExecution.end_time)
+            .join(models.Flow)
+            .filter(
+                models.FlowExecution.id == parsed, models.Flow.account_id == account_id
+            )
+            .first()
+        )
+        return row[0] if row else None
+
     def get_status(
         self, db: Session, *, execution_id: Any, account_id: Any
     ) -> Optional[str]:
@@ -697,6 +715,20 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             update_data = dict(obj_in)
         else:
             update_data = obj_in.model_dump(exclude_unset=True)
+        from preloop.models.crud.execution_credentials import for_execution
+
+        masker = for_execution(db, db_obj.id)
+        for field in (
+            "result",
+            "error_message",
+            "model_output_summary",
+            "mcp_usage_logs",
+            "actions_taken_summary",
+            "execution_logs",
+            "cli_session",
+        ):
+            if field in update_data:
+                update_data[field] = masker.mask(update_data[field])
         if "result" in update_data:
             # Result writers may hold an old ORM snapshot while the runner
             # advances publication. Lock/read the current protected state and
@@ -936,7 +968,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         travel through the FlowExecutionUpdate schema (which is serialized to
         NATS for UI updates).
         """
-        db_obj.evidence_archive = archive  # type: ignore[assignment]
+        from preloop.models.crud.execution_credentials import for_execution
+
+        db_obj.evidence_archive = for_execution(db, db_obj.id).mask_archive(archive)
         db.flush()
         return db_obj
 
@@ -1035,7 +1069,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         archive is binary and must never travel through the
         FlowExecutionUpdate schema that is serialized to NATS.
         """
-        db_obj.workspace_snapshot = archive  # type: ignore[assignment]
+        from preloop.models.crud.execution_credentials import for_execution
+
+        db_obj.workspace_snapshot = (
+            for_execution(db, db_obj.id).mask_archive(archive)
+            if archive is not None
+            else None
+        )
         db.flush()
         return db_obj
 
@@ -1207,7 +1247,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             and existing.get("session_id") == cli_session.get("session_id")
         ):
             cli_session = {**existing, **cli_session}
-        db_obj.cli_session = cli_session  # type: ignore[assignment]
+        from preloop.models.crud.execution_credentials import for_execution
+
+        db_obj.cli_session = for_execution(db, db_obj.id).mask(cli_session)
         db.flush()
         return db_obj
 
@@ -3100,6 +3142,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         # NATS messages nest actual content under "payload" (e.g. payload.line
         # for agent_log_line).  Derive message from the best available field
         # and persist the full payload as metadata so nothing is lost.
+        from preloop.models.crud.execution_credentials import for_execution
+
+        log_data = for_execution(db, execution_id).mask(log_data)
         payload = log_data.get("payload") or {}
         message = (
             log_data.get("message") or payload.get("line") or payload.get("message")

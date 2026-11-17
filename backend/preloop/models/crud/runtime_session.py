@@ -1882,6 +1882,11 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         )
         if db_obj is None:
             return None
+        from preloop.models.crud.execution_credentials import for_session
+
+        masker = for_session(db, db_obj.id)
+        title = masker.mask(title)
+        summary = masker.mask(summary)
         if title is not None:
             db_obj.title = title
         if summary is not None and (

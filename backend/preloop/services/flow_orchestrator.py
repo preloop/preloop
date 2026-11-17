@@ -1895,6 +1895,9 @@ class FlowExecutionOrchestrator:
             logger.warning("Execution log not created yet, skipping update publish.")
             return
 
+        from preloop.models.crud.execution_credentials import for_execution
+
+        payload = for_execution(self.db, self.execution_log.id).mask(payload)
         try:
             if message_type in {"execution_started", "status_update"}:
                 payload = {
@@ -3889,6 +3892,13 @@ class FlowExecutionOrchestrator:
         )
         return eligible > 0
 
+    def _register_execution_credentials(self, data: Any) -> None:
+        """Commit masking fingerprints before credentials reach a runtime."""
+        from preloop.models.crud.execution_credentials import register
+        from preloop.utils.execution_credentials import credential_values
+
+        register(self.db, self.execution_log.id, credential_values(data))
+
     async def _prepare_execution_context(
         self, *, resolved_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -4274,6 +4284,10 @@ class FlowExecutionOrchestrator:
         from preloop.services.checkpoint_runtime import evidence_transport_env
 
         execution_context["evidence_env"] = evidence_transport_env(execution_context)
+        self._register_execution_credentials(execution_context)
+        execution_context["_register_credentials"] = (
+            self._register_execution_credentials
+        )
         return execution_context
 
     async def _stream_logs_to_nats(self, agent_executor, session_reference: str):
@@ -4337,6 +4351,9 @@ class FlowExecutionOrchestrator:
         publish_raw: bool = True,
     ) -> None:
         """Interpret one runtime line independently of raw-log transport ownership."""
+        from preloop.models.crud.execution_credentials import for_execution
+
+        log_line = for_execution(self.db, self.execution_log.id).mask(log_line)
         # Store the log line for later summary
         self.execution_logger.log_agent_output(log_line)
 

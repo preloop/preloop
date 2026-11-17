@@ -219,6 +219,16 @@ def _audit_denial(inspection: CiTokenInspection, reason_code: str, target: str) 
         sessions.close()
 
 
+async def _audit_denial_safely(
+    inspection: CiTokenInspection, reason_code: str, target: str
+) -> None:
+    """Always deliver the original refusal even when audit persistence fails."""
+    try:
+        await run_db_off_loop(lambda: _audit_denial(inspection, reason_code, target))
+    except Exception as exc:
+        logger.warning("Restricted CI denial audit unavailable: %s", type(exc).__name__)
+
+
 def _denial_target(scope: Scope) -> str:
     """Keep a requested flow UUID, never an arbitrary URL or query string."""
     from uuid import UUID
@@ -316,9 +326,7 @@ class RestrictedCiAuthMiddleware:
             return
         target = _denial_target(scope)
         if scope["type"] == "websocket":
-            await run_db_off_loop(
-                lambda: _audit_denial(inspection, "ci_route_denied", target)
-            )
+            await _audit_denial_safely(inspection, "ci_route_denied", target)
             await send({"type": "websocket.close", "code": 1008})
             return
         if not canonical or action is None or context is None or not permitted:
@@ -334,7 +342,7 @@ class RestrictedCiAuthMiddleware:
                 if action not in context.actions
                 else "ci_authorization_denied"
             )
-            await run_db_off_loop(lambda: _audit_denial(inspection, reason, target))
+            await _audit_denial_safely(inspection, reason, target)
             # No raw path/query, tokens, or result contents in decision records.
             logger.info(
                 "Restricted CI request denied",
@@ -400,9 +408,7 @@ class RestrictedCiAuthMiddleware:
                     except (ValueError, AttributeError):
                         detail = None
                     reason = reason_for_detail(detail, fallback)
-                    await run_db_off_loop(
-                        lambda: _audit_denial(inspection, reason, target)
-                    )
+                    await _audit_denial_safely(inspection, reason, target)
             await send(message)
 
         await self.app(scope, receive, audit_send)

@@ -394,6 +394,10 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
             "Host publication and read-only review require the flow to clone "
             "its repository"
         )
+    from preloop.models.crud.execution_credentials import register
+    from preloop.utils.execution_credentials import credential_values
+
+    register(db, execution.id, credential_values(hydrated))
     return hydrated
 
 

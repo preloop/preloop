@@ -4094,48 +4094,43 @@ async def update_account_runtime_session(
             status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
         )
 
-    if not ended_now:
-        summary_row = crud_runtime_session.get_account_session_summary(
-            db, account_id=str(account.id), runtime_session_id=runtime_session_id
+    if ended_now:
+        # A note addressed only to this session can no longer arrive (#1551).
+        from preloop.services.operator_notes import undeliver_session_notes
+
+        undeliver_session_notes(
+            db,
+            account_id=str(account.id),
+            runtime_session_id=updated.id,
+            reason="session ended (operator)",
+            commit=False,
         )
-        return RuntimeSessionExplorerService._summary_row_to_schema(summary_row)
+        # Persist the transition, audit row and webhook intent together. A retry
+        # observes ended_at only after all three have committed.
+        crud_audit_log.log_action(
+            db,
+            account_id=account.id,
+            user_id=current_user.id,
+            action="runtime_session_ended",
+            resource_type="runtime_session",
+            resource_id=str(updated.id),
+            status="ended",
+            details={
+                "runtime_session_id": str(updated.id),
+                "event": "ended",
+                "reason": "operator",
+                "session_source_type": updated.session_source_type,
+            },
+            commit=False,
+        )
+        crud_api_key.deactivate_runtime_keys_for_session(
+            db,
+            account_id=str(account.id),
+            runtime_session_id=runtime_session_id,
+            commit=False,
+        )
 
-    # A note addressed only to this session can no longer arrive (#1551).
-    from preloop.services.operator_notes import undeliver_session_notes
-
-    undeliver_session_notes(
-        db,
-        account_id=str(account.id),
-        runtime_session_id=updated.id,
-        reason="session ended (operator)",
-        commit=False,
-    )
-    # Persist the transition, audit row and webhook intent together. A retry
-    # observes ended_at only after all three have committed.
-    crud_audit_log.log_action(
-        db,
-        account_id=account.id,
-        user_id=current_user.id,
-        action="runtime_session_ended",
-        resource_type="runtime_session",
-        resource_id=str(updated.id),
-        status="ended",
-        details={
-            "runtime_session_id": str(updated.id),
-            "event": "ended",
-            "reason": "operator",
-            "session_source_type": updated.session_source_type,
-        },
-        commit=False,
-    )
-    crud_api_key.deactivate_runtime_keys_for_session(
-        db,
-        account_id=str(account.id),
-        runtime_session_id=runtime_session_id,
-        commit=False,
-    )
-
-    emit_session_ended(db, updated, reason="operator")
+        emit_session_ended(db, updated, reason="operator")
     db.commit()
 
     _stop_runner_session_on_end(
@@ -4169,50 +4164,51 @@ async def update_account_runtime_session(
         )
     summary = RuntimeSessionExplorerService._summary_row_to_schema(summary_row)
 
-    emit_account_event(
-        build_account_event(
-            account_id=str(account.id),
-            topic=ACCOUNT_TOPIC_RUNTIME_SESSIONS,
-            event_type="runtime_session_ended",
-            payload=summary.model_dump(mode="json"),
-            runtime_session_id=summary.id,
-            flow_id=summary.flow_id,
-            execution_id=summary.flow_execution_id,
-        )
-    )
-    emit_account_event(
-        build_account_event(
-            account_id=str(account.id),
-            topic=ACCOUNT_TOPIC_AUDIT,
-            event_type="audit_event",
-            payload={
-                "action": "runtime_session_ended",
-                "runtime_session_id": summary.id,
-                "session_source_type": summary.session_source_type,
-                "session_source_id": summary.session_source_id,
-                "session_reference": summary.session_reference,
-                "runtime_principal_type": summary.runtime_principal_type,
-                "runtime_principal_id": summary.runtime_principal_id,
-                "runtime_principal_name": summary.runtime_principal_name,
-                "reason": update.reason,
-            },
-            runtime_session_id=summary.id,
-            flow_id=summary.flow_id,
-            execution_id=summary.flow_execution_id,
-        )
-    )
-    if managed_agent_summary is not None:
+    if ended_now:
         emit_account_event(
             build_account_event(
                 account_id=str(account.id),
-                topic=ACCOUNT_TOPIC_MANAGED_AGENTS,
-                event_type="managed_agent_updated",
-                payload=managed_agent_summary,
+                topic=ACCOUNT_TOPIC_RUNTIME_SESSIONS,
+                event_type="runtime_session_ended",
+                payload=summary.model_dump(mode="json"),
                 runtime_session_id=summary.id,
                 flow_id=summary.flow_id,
                 execution_id=summary.flow_execution_id,
             )
         )
+        emit_account_event(
+            build_account_event(
+                account_id=str(account.id),
+                topic=ACCOUNT_TOPIC_AUDIT,
+                event_type="audit_event",
+                payload={
+                    "action": "runtime_session_ended",
+                    "runtime_session_id": summary.id,
+                    "session_source_type": summary.session_source_type,
+                    "session_source_id": summary.session_source_id,
+                    "session_reference": summary.session_reference,
+                    "runtime_principal_type": summary.runtime_principal_type,
+                    "runtime_principal_id": summary.runtime_principal_id,
+                    "runtime_principal_name": summary.runtime_principal_name,
+                    "reason": update.reason,
+                },
+                runtime_session_id=summary.id,
+                flow_id=summary.flow_id,
+                execution_id=summary.flow_execution_id,
+            )
+        )
+        if managed_agent_summary is not None:
+            emit_account_event(
+                build_account_event(
+                    account_id=str(account.id),
+                    topic=ACCOUNT_TOPIC_MANAGED_AGENTS,
+                    event_type="managed_agent_updated",
+                    payload=managed_agent_summary,
+                    runtime_session_id=summary.id,
+                    flow_id=summary.flow_id,
+                    execution_id=summary.flow_execution_id,
+                )
+            )
 
     return summary
 

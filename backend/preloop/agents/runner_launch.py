@@ -241,6 +241,9 @@ async def build_runner_launch(context: dict[str, Any]) -> dict[str, Any]:
     # script aborts with PRELOOP_LAUNCH_PAYLOAD_MISSING.
     env.update(prompt_transport_env(context["prompt"]))
     agent._apply_git_credential_env(env, context)
+    from preloop.agents.credential_bootstrap import bootstrap_source
+
+    env["PRELOOP_OUTPUT_BOOTSTRAP"] = bootstrap_source()
     check_launch_payload(command=None, args=None, env=env, what="private runner launch")
     check_runner_launch(script, env)
     return {"version": LAUNCH_VERSION, "script": script, "env": env}

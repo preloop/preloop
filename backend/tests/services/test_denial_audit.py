@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, literal, select
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -44,10 +44,10 @@ def test_parallel_denials_count_once_and_cannot_seal_open_minute(
 ) -> None:
     """Independent workers share one durable counter, including a fresh head."""
     principal = uuid4()
-    minute = datetime.now(UTC).replace(
-        tzinfo=None, second=0, microsecond=0
-    ) + timedelta(minutes=1)
-    monkeypatch.setattr(denial_audit, "_current_minute", lambda db: minute)
+    minute = datetime.now(UTC).replace(tzinfo=None, second=0, microsecond=0)
+    monkeypatch.setattr(
+        denial_audit, "_current_minute_expression", lambda: literal(minute)
+    )
 
     def refuse(_: int) -> None:
         with Session(db_engine) as db:
@@ -68,6 +68,19 @@ def test_parallel_denials_count_once_and_cannot_seal_open_minute(
             == 0
         )
         assert rows[0].chain_seq is None
+        monkeypatch.setattr(
+            denial_audit,
+            "_current_minute_expression",
+            lambda: literal(minute + timedelta(minutes=1)),
+        )
+        assert (
+            audit_chain.seal_account(
+                db, account_id=denial_account, lag=timedelta(0)
+            ).sealed
+            == 1
+        )
+        db.refresh(rows[0])
+        assert rows[0].chain_seq is not None
 
 
 def test_closed_count_is_hashed_and_next_minute_never_rewrites_it(
