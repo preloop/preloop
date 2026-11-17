@@ -56,6 +56,10 @@ it*, not about severity:
     The agent exited 0 but never confirmed completion on either channel. The
     work may well have succeeded; this is Preloop's contract failing, not the
     provider's.
+``context_truncated_suspected``
+    The request exceeds the registered context window, or provider-reported
+    input is substantially smaller than the sent prompt and tool schemas.
+    Raise the model server's context window or use a model with a larger one.
 ``agent_no_progress``
     The agent ran and reported failure, and the container's post-execution git
     block found nothing to push: no commit, and (for a live run stopped by the
@@ -175,6 +179,7 @@ FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED = "default_limit_reached"
 #: The gateway stopped a run whose model calls kept failing identically (#1336).
 FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE = "repeated_upstream_failure"
 FAILURE_CATEGORY_MODEL_CONFIG = "model_config"
+FAILURE_CATEGORY_CONTEXT_TRUNCATED = "context_truncated_suspected"
 FAILURE_CATEGORY_NO_CONFIRMATION = "no_confirmation"
 FAILURE_CATEGORY_AGENT_NO_PROGRESS = "agent_no_progress"
 # The run succeeded but the pull request it was configured to open does not
@@ -240,6 +245,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
     FAILURE_CATEGORY_MODEL_QUOTA,
     FAILURE_CATEGORY_MODEL_CONFIG,
+    FAILURE_CATEGORY_CONTEXT_TRUNCATED,
     FAILURE_CATEGORY_NO_CONFIRMATION,
     FAILURE_CATEGORY_AGENT_NO_PROGRESS,
     FAILURE_CATEGORY_PUBLICATION_MISSING,
@@ -657,6 +663,13 @@ _STRUCTURAL_MESSAGE_RULES = (
     (_ADAPTER_MODEL_CONFIG_RE, FAILURE_CATEGORY_MODEL_CONFIG),
     (_ADAPTER_RUNNER_ERROR_RE, FAILURE_CATEGORY_RUNNER_ERROR),
     (_ORCHESTRATOR_ERROR_RE, FAILURE_CATEGORY_ORCHESTRATOR_ERROR),
+    (
+        re.compile(
+            r"appears to have truncated the prompt|exceeds the model server's registered context window",
+            re.IGNORECASE,
+        ),
+        FAILURE_CATEGORY_CONTEXT_TRUNCATED,
+    ),
     (_PROVIDER_SCHEMA_RE, FAILURE_CATEGORY_MODEL_CONFIG),
     (_MODEL_KEY_REJECTION_RE, FAILURE_CATEGORY_MODEL_AUTH),
     (_GATEWAY_BYPASSED_RE, FAILURE_CATEGORY_GATEWAY_BYPASSED),

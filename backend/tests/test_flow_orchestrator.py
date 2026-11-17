@@ -5894,8 +5894,9 @@ class TestReviewPublicationGate:
 
 
 @pytest.mark.parametrize("result", [{"verdict": "error"}, {"status": "error"}])
+@pytest.mark.parametrize("status", ["SUCCEEDED", "FAILED"])
 def test_private_runner_completion_persists_result_failure(
-    db_session: Session, test_flow: Flow, result: dict
+    db_session: Session, test_flow: Flow, result: dict, status: str
 ) -> None:
     """Private completion cannot bypass the result failure contract."""
     from preloop.models import crud, schemas
@@ -5910,12 +5911,82 @@ def test_private_runner_completion_persists_result_failure(
     execution = crud.crud_flow_execution.apply_runner_completion(
         db_session,
         db_obj=execution,
-        status="SUCCEEDED",
+        status=status,
         result=result,
     )
     db_session.refresh(execution)
     assert execution.status == "FAILED"
     assert execution.failure_category == "agent_reported_failure"
+    assert execution.result == result
+
+
+def test_queued_runner_stop_names_cancellation(
+    db_session: Session, test_flow: Flow
+) -> None:
+    """Stopping an unleased queued run records the cancellation category."""
+    from preloop.models import crud, schemas
+
+    execution = crud.crud_flow_execution.create(
+        db_session,
+        schemas.FlowExecutionCreate(flow_id=test_flow.id, status="RUNNING"),
+    )
+    crud.crud_flow_execution.update(
+        db_session,
+        db_obj=execution,
+        obj_in={
+            "agent_session_reference": f"runner:queued:example-pool:{execution.id}"
+        },
+    )
+    crud.crud_flow_execution.request_runner_stop(db_session, execution_id=execution.id)
+    db_session.refresh(execution)
+    assert execution.status == "STOPPED"
+    assert execution.failure_category == "cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result,expected_status",
+    [
+        ({"status": "error"}, "FAILED"),
+        ({"verdict": "error"}, "FAILED"),
+        ({"verdict": "fail"}, "SUCCEEDED"),
+        ({"verdict": "request_changes"}, "SUCCEEDED"),
+    ],
+)
+async def test_recovery_monitor_applies_captured_result_contract(
+    db_session: Session, test_flow: Flow, result: dict, expected_status: str
+) -> None:
+    """A recovered container success must still honor its captured result."""
+    from datetime import datetime, timedelta, timezone
+
+    from preloop.models import crud, schemas
+    from preloop.services.execution_monitor import ExecutionMonitor
+
+    execution = crud.crud_flow_execution.create(
+        db_session,
+        schemas.FlowExecutionCreate(flow_id=test_flow.id, status="RUNNING"),
+    )
+    crud.crud_flow_execution.update(
+        db_session,
+        db_obj=execution,
+        obj_in={
+            "start_time": datetime.now(timezone.utc) - timedelta(minutes=10),
+            "agent_session_reference": "example-container",
+            "result": result,
+        },
+    )
+    executor = AsyncMock()
+    executor.get_status.return_value = AgentStatus.SUCCEEDED
+    with patch("preloop.agents.create_executor_for_execution", return_value=executor):
+        await ExecutionMonitor(stale_threshold_minutes=5)._check_execution(
+            db_session, execution
+        )
+    db_session.flush()
+    db_session.refresh(execution)
+    assert execution.status == expected_status
+    assert execution.failure_category == (
+        "agent_reported_failure" if expected_status == "FAILED" else None
+    )
     assert execution.result == result
 
 

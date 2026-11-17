@@ -34,6 +34,7 @@ describe('failure-category', () => {
       'model_quota',
       'model_config',
       'no_confirmation',
+      'context_truncated_suspected',
       'agent_no_progress',
       'publication_missing',
       'result_schema_invalid',

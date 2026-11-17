@@ -98,6 +98,40 @@ are from `openai/codex` tag `rust-v0.153.4`, under Apache-2.0.
 See the official [Codex model catalog specification](https://learn.chatgpt.com/docs/model-catalogs)
 and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
+## Local and self-hosted model servers
+
+The context window is a **server-side setting** on many local servers. A
+model's advertised maximum is not necessarily the window its server actually
+accepts. Configure the serving process (for example its context-length or
+`num_ctx` setting), then register that limit in the model's
+`model_parameters.context_window`. Changing the Preloop setting alone does not
+resize the server's window. For unknown custom models, the execution's model
+metadata warning names the missing limit and where to set it.
+
+Preloop refuses a flow request before calling the model when its estimated
+outbound input exceeds the registered window, after context optimization and tool
+stripping. It also records
+`context_truncated_suspected` when provider-reported input is far smaller than
+the request estimate, or stays exactly constant while the conversation grows.
+The usage row and execution retain both counts; the run fails with a message
+to raise the server's context window or select a model with a larger one.
+This is evidence of suspected input loss, not proof of the server's settings.
+
+The text estimate includes instructions, history and tool schemas, at about
+four characters per token, excluding embedded media and opaque encrypted
+reasoning. A single request needs
+an estimate of at least 8,192 tokens, a deficit of at least 8,192 tokens, and
+a reported count below 40% of the estimate. The repeated-count signal needs
+at least 128 estimated tokens of growth and a reported count below 75% of the
+estimate. Cached input counts toward reported input; missing usage and
+estimated usage never trigger these signals.
+
+A terminal Responses event finishes accounting even if the server leaves its
+HTTP stream open. Received usage remains visible in the execution's model
+list. Streams that stop without a terminal event retain partial usage and
+their error. The existing 600-second gateway read timeout and the configurable
+Codex stream idle timeout remain unchanged.
+
 ## A response reaches its output limit
 
 For streaming Chat Completions providers routed through the Responses gateway,

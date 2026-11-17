@@ -7641,6 +7641,15 @@ class FlowExecutionOrchestrator:
 
         Returns ``(final_status, error_message, result_artifact)``.
         """
+        if self.execution_log is not None:
+            failure = crud_flow_execution.current_failure(
+                self.db, execution_id=self.execution_log.id
+            )
+            if (
+                failure
+                and failure.get("failure_category") == "context_truncated_suspected"
+            ):
+                return "FAILED", failure["error_message"], result_artifact
         # Layer 3: post-exit full-log refetch + sentinel rescan.
         refetched_lines = await self._refetch_exited_session_logs(
             agent_executor, session_reference
@@ -7731,15 +7740,33 @@ class FlowExecutionOrchestrator:
         # say explicitly that the run failed ONLY for missing confirmation,
         # and name both channels — operators must be able to tell this
         # class apart from real failures at a glance.
+        model_turns = 0
+        for line in refetched_lines:
+            try:
+                event = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(event, dict) and event.get("type") == "turn.completed":
+                model_turns += 1
+        if self.execution_log is not None:
+            from preloop.models.crud import crud_api_usage
+
+            usage = crud_api_usage.get_gateway_usage_for_execution(
+                self.db, str(self.execution_log.id)
+            )
+            requests = usage.get("api_requests")
+            if isinstance(requests, int):
+                model_turns = max(model_turns, requests)
+        tool_calls = self.tool_calls_count
         error_message = result.error_message or (
+            f"Observed {model_turns} model turns, {tool_calls} tool calls. "
             "Agent exited with code 0 but did not confirm "
             "success on either channel: the "
             f"{FLOW_SUCCESS_SENTINEL} sentinel was not printed "
             "and no result.json with a recognized completion "
             'status (top-level {"status": "success"} or an '
             "audit verdict such as pass, pass_with_findings, "
-            "or fail) was written. The work may have completed "
-            "without confirmation, or the agent died mid-task."
+            "or fail) was written."
         )
         if self._inplace_nudge_seen and not result.error_message:
             # Name the reminder round: an operator reading this should not
@@ -7748,7 +7775,7 @@ class FlowExecutionOrchestrator:
                 " The agent was reminded once in its own container and still "
                 "did not confirm."
             )
-        if not result.error_message:
+        if not result.error_message and tool_calls > 0:
             error_message += self._native_result_hint()
         return "FAILED", error_message, result_artifact
 
@@ -9261,6 +9288,7 @@ class FlowExecutionOrchestrator:
         from preloop.services.flow_failure_category import (
             FAILURE_CATEGORY_BUDGET_EXCEEDED,
             FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+            FAILURE_CATEGORY_CONTEXT_TRUNCATED,
             FAILURE_CATEGORY_MODEL_AUTH,
             FAILURE_CATEGORY_MODEL_CONFIG,
             FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
@@ -9286,6 +9314,7 @@ class FlowExecutionOrchestrator:
             in (
                 FAILURE_CATEGORY_BUDGET_EXCEEDED,
                 FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+                FAILURE_CATEGORY_CONTEXT_TRUNCATED,
                 FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
             )
             or recorded_provider_rejection
@@ -9520,6 +9549,16 @@ class FlowExecutionOrchestrator:
                     kwargs.pop("error_message", None)
                 kwargs.pop("failure_category", None)
                 return "STOPPED"
+            if stored == "FAILED":
+                failure = crud_flow_execution.current_failure(
+                    self.db, execution_id=execution_id
+                )
+                if (
+                    failure
+                    and failure.get("failure_category") == "context_truncated_suspected"
+                ):
+                    kwargs.update(failure)
+                    return "FAILED"
         return status
 
     async def _release_runtime_after_lost_launch(

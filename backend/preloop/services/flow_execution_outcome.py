@@ -38,21 +38,28 @@ def normalize_execution_outcome(
     result = values.get("result", getattr(existing, "result", None))
     signal = result_failure_signal(result)
     if status == "SUCCEEDED" and signal is not None:
-        field, value = signal
         status = values["status"] = "FAILED"
-        values["error_message"] = AGENT_REPORTED_FAILURE.format(
-            field=field, value=value
-        )
-        values["failure_category"] = "agent_reported_failure"
     if not isinstance(status, str):
         return
+    error_message = values.get("error_message") or getattr(
+        existing, "error_message", None
+    )
     category = derive_failure_category(
         status=status,
-        error_message=values.get("error_message")
-        or getattr(existing, "error_message", None),
+        error_message=error_message,
         explicit_category=values.get("failure_category")
         or getattr(existing, "failure_category", None),
         fallback_category=fallback,
     )
+    if (
+        signal is not None
+        and status in {"FAILED", "ERROR", "ABORTED"}
+        and category in {None, "unknown", "execution_error", "agent_reported_failure"}
+    ):
+        field, value = signal
+        values["error_message"] = error_message or AGENT_REPORTED_FAILURE.format(
+            field=field, value=value
+        )
+        category = "agent_reported_failure"
     if category is not None:
         values["failure_category"] = category

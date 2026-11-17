@@ -50,3 +50,34 @@ def test_completed_review_verdict_is_not_execution_failure(verdict: str) -> None
     normalize_execution_outcome(values)
     assert values["status"] == "SUCCEEDED"
     assert "failure_category" not in values
+
+
+@pytest.mark.parametrize("status", ["FAILED", "ERROR", "ABORTED"])
+@pytest.mark.parametrize("category", [None, "unknown", "execution_error"])
+def test_failed_result_names_the_cause(status: str, category: str | None) -> None:
+    """An already failed completion retains the result's explicit diagnosis."""
+    values = {
+        "status": status,
+        "result": {"verdict": "error"},
+        "failure_category": category,
+    }
+    normalize_execution_outcome(values)
+    assert values["status"] == status
+    assert values["failure_category"] == "agent_reported_failure"
+    assert "explicit failure" in values["error_message"]
+
+
+@pytest.mark.parametrize("status", ["FAILED", "SUCCEEDED"])
+def test_result_error_preserves_specific_failure(status: str) -> None:
+    """A retained model diagnosis takes precedence over a later error result."""
+    existing = SimpleNamespace(
+        status="FAILED",
+        failure_category="context_truncated_suspected",
+        error_message="The model server appears to have truncated the prompt",
+        result=None,
+    )
+    values = {"status": status, "result": {"status": "error"}}
+    normalize_execution_outcome(values, existing)
+    assert values["status"] == "FAILED"
+    assert values["failure_category"] == "context_truncated_suspected"
+    assert values.get("error_message", existing.error_message) == existing.error_message

@@ -1211,6 +1211,50 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.flush()
         return db_obj
 
+    def record_context_truncation(
+        self,
+        db: Session,
+        *,
+        execution_id: uuid.UUID | str,
+        signal: dict[str, Any],
+        message: str,
+        category: str,
+    ) -> None:
+        """Keep prompt-loss evidence and fail the run under its row lock.
+
+        A late usage record can correct a no-confirmation diagnosis or a
+        claimed success. Unrelated terminal outcomes retain their diagnosis.
+        """
+        execution = (
+            db.query(models.FlowExecution)
+            .filter(models.FlowExecution.id == execution_id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+        if execution is None:
+            return
+        receipt = dict(execution.startup_receipt or {})
+        receipt[category] = signal
+        changes: dict[str, Any] = {"startup_receipt": receipt}
+        replace_outcome = execution.status in self.LIVE_LAUNCH_STATUSES | {
+            "PENDING",
+            "SUCCEEDED",
+        } or (
+            execution.status == "FAILED"
+            and execution.failure_category
+            in {None, "unknown", "no_confirmation", category}
+        )
+        if replace_outcome:
+            changes.update(
+                status="FAILED",
+                failure_category=category,
+                error_message=message,
+                end_time=execution.end_time or datetime.now(timezone.utc),
+            )
+        self.update(db, db_obj=execution, obj_in=changes)
+        db.commit()
+
     def record_startup_receipt(
         self, db: Session, *, execution_id: uuid.UUID, receipt: dict[str, Any]
     ) -> None:
@@ -2314,6 +2358,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         values: Dict[Any, Any] = {
             models.FlowExecution.status: "STOPPED",
+            models.FlowExecution.failure_category: "cancelled",
             models.FlowExecution.end_time: moment,
             models.FlowExecution.error_message: error_message,
             models.FlowExecution.stop_requested_at: func.coalesce(
@@ -3609,6 +3654,28 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         return bool(count)
 
+    def current_failure(
+        self, db: Session, *, execution_id: Any
+    ) -> dict[str, Any] | None:
+        """Read the stored failure without reusing a stale ORM snapshot."""
+        row = (
+            db.query(
+                models.FlowExecution.failure_category,
+                models.FlowExecution.error_message,
+            )
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status == "FAILED",
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        return {
+            "failure_category": row.failure_category,
+            "error_message": row.error_message,
+        }
+
     def current_status(
         self, db: Session, *, execution_id: Any, lock: bool = False
     ) -> Optional[str]:
@@ -4246,6 +4313,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             execution.agent_session_reference or ""
         ).startswith("runner:queued:"):
             execution.status = "STOPPED"
+            execution.failure_category = "cancelled"
             stopped_at = datetime.now(timezone.utc)
             execution.end_time = stopped_at
             self.confirm_stop(db, execution_id=execution_id, commit=False)

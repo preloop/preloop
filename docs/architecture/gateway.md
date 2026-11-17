@@ -105,6 +105,16 @@ spend reservations nor provider-effect/retry deduplication.
 
 ### Budget enforcement across editions
 
+Flow requests are also checked against registered model context windows before
+inference. Accounting compares cache-inclusive provider input with a text
+estimate of the outbound prompt and tool schemas. A substantial deficit or an
+unchanged token count on a growing conversation records
+`context_truncated_suspected` on the usage row and execution. The gateway's
+failure survives later agent completion messages. Native Responses accounting
+ends at the terminal event, without waiting for the upstream HTTP body to close.
+See [model context limits](../guide/model-context-limits.md) for thresholds and
+self-hosted server configuration.
+
 Basic BYOK spending policies run in the core gateway, including dedicated gateway
 processes. Enterprise extends the same enforcer for commercial controls and
 notifications; generic policies are evaluated once. A budget that cannot be

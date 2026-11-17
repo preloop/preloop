@@ -274,7 +274,7 @@ class FlowExecutionBase(BaseModel):
             "(a default per-execution ceiling the flow did not set), "
             "repeated_upstream_failure (the gateway stopped a run whose "
             "model calls kept failing identically), model_config, "
-            "no_confirmation, agent_no_progress, publication_missing, "
+            "context_truncated_suspected, no_confirmation, agent_no_progress, publication_missing, "
             "result_schema_invalid (result.json does not match the flow "
             "result schema), review_binding_mismatch (a read-only review "
             "result names another revision than the admitted one), "

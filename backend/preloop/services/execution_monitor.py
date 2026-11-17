@@ -303,8 +303,11 @@ class ExecutionMonitor:
                     logger.info(
                         f"Execution {execution.id} container succeeded, updating status"
                     )
-                    execution.status = "SUCCEEDED"
-                    execution.end_time = now
+                    crud_flow_execution.update(
+                        db,
+                        db_obj=execution,
+                        obj_in={"status": "SUCCEEDED", "end_time": now},
+                    )
 
                 elif status == AgentStatus.STOPPED:
                     # Only update if not already in a terminal state

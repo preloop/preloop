@@ -124,6 +124,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The agent exited cleanly but never signalled that it had finished, so Preloop cannot say the work is done.',
   },
+  context_truncated_suspected: {
+    label: 'context truncation suspected',
+    tooltip:
+      "The request exceeds the registered model window, or reported input suggests the model server discarded prompt context. Raise the server's context window or choose a model with a larger one.",
+  },
   agent_no_progress: {
     label: 'agent no progress',
     tooltip:

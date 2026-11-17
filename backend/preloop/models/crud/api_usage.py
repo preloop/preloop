@@ -1143,6 +1143,44 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             "first_api_usage_id": str(rows[0].id) if rows else None,
         }
 
+    def get_previous_gateway_input(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        ai_model_id: str,
+        runtime_session_id: str | None,
+        execution_id: str | None,
+    ) -> Optional[Dict[str, Any]]:
+        """Read the last input observation within the same model conversation.
+
+        Never compare accounts, models, concurrent subagent sessions, or an
+        estimated fallback against provider-reported tokens.
+        """
+        if not runtime_session_id and not execution_id:
+            return None
+        query = db.query(
+            ApiUsage.prompt_tokens, ApiUsage.meta_data, ApiUsage.usage_source
+        ).filter(
+            ApiUsage.account_id == account_id,
+            ApiUsage.ai_model_id == ai_model_id,
+            ApiUsage.action_type == "model_gateway",
+        )
+        if runtime_session_id:
+            query = query.filter(ApiUsage.runtime_session_id == runtime_session_id)
+        else:
+            query = query.filter(ApiUsage.flow_execution_id == execution_id)
+        row = query.order_by(ApiUsage.timestamp.desc(), ApiUsage.id.desc()).first()
+        if row is None:
+            return None
+        metadata = row.meta_data or {}
+        if metadata.get("usage_estimated") or row.usage_source == "estimated":
+            return None
+        return {
+            "estimated_input_tokens": metadata.get("input_token_estimate"),
+            "reported_input_tokens": row.prompt_tokens,
+        }
+
     def get_recent_gateway_outcomes(
         self,
         db: Session,
