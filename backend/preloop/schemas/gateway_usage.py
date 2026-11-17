@@ -307,6 +307,7 @@ class GatewayUsageSearchResultItem(BaseModel):
     timestamp: datetime
     status_code: int
     outcome: str
+    error_class: Optional[str] = None
     endpoint: str
     method: str
     provider_name: Optional[str] = None

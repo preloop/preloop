@@ -4,10 +4,19 @@ Preloop is an open-source, responsible AI automation platform. It can proxy tool
 
 ARCHITECTURE.md is the map. Read one chapter under `docs/architecture/` for the subsystem you are changing. Do not load every chapter for context.
 
+Execution credential fingerprints are shared by output persistence and the model
+gateway. Container and runner capture mask the same issued values before delivery;
+see [agent isolation](docs/security/agent-isolation.md) for credential visibility
+and lifetime limits.
+
 Policy variable references are resolved by the CLI from the operator's local
 environment before upload. API validation, application, and version restore
 preserve submitted values; the shared policy applier does no environment
 substitution. See [Policy-as-code](docs/guide/concepts/policy-as-code.md).
+
+Refused CI triggers and agent permission checks use durable minute counters;
+closed counters join the existing audit hash chain. Session-end lifecycle writes
+are idempotent. See [refusal counters and chain sealing](docs/architecture/security.md#refusal-counters-and-chain-sealing).
 
 ## High-Level Architecture
 
@@ -61,7 +70,7 @@ graph LR
 |---|---|
 | [Overview](docs/architecture/overview.md) | High-level layout, key components, and the REST search path. Start here for how the API, console, sync, and gateway fit together. |
 | [Frontend](docs/architecture/frontend.md) | Console structure (Lit, Vite, TypeScript, Shoelace). Tracker detail, tools page, and cost views. |
-| [Model gateway](docs/architecture/gateway.md) | OpenAI-, Anthropic- and Gemini-compatible ingress (`/openai/v1`, `/anthropic/v1`, `/gemini/v1beta`), accounting, budgets, and runtime session identity. |
+| [Model gateway](docs/architecture/gateway.md) | OpenAI-, Anthropic- and Gemini-compatible ingress (`/openai/v1`, `/anthropic/v1`, `/gemini/v1beta`), accounting, budgets, terminal provider refusals, and runtime session identity. |
 | [Governance](docs/architecture/governance.md) | Subject-scoped allowed models, tool access rules, and tool output filters. |
 | [Account access rules](docs/architecture/account-access-rules.md) | Closed policy syntax, audited CRUD/snapshots, committed H4 invalidation, and H3 resource sharing integration. Includes the portable exact-resource selector and resource requirement contract. Core owns atomic storage, reference validation and generation invalidation; Enterprise owns preview authorization and enforcement of independent local gates. |
 | [Approvals](docs/architecture/approvals.md) | Tool configuration, human-in-the-loop approval workflows, [external consent hand-off](docs/guide/webhooks.md#external-approval-hand-off), `ask_user`, and native-tool permission-check. |
@@ -76,7 +85,7 @@ graph LR
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, account-scoped pub/sub, execution snapshots and durable sequence cursors, and bounded flow lifecycle startup. |
 | [Security](docs/architecture/security.md) | Auth and tenancy, optional account sign-in strength hooks and enrollment-only sessions, generation-based session revocation and live WebSocket teardown across replicas, account-scoped member sign-out, separate machine credentials, restricted CI identities, owned review execution admission, principal-bound callbacks, redaction, secret custody, audit integrity and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
-| [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, bound review context and command inspection, authoritative terminal events, durable review completion evidence, evidence packs, prompt `truncate(N)`, and the chunked agent launch-payload environment. |
+| [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, bound review context and command inspection, authoritative terminal events, durable review completion evidence, named failure outcomes, evidence packs, prompt `truncate(N)`, and the chunked agent launch-payload environment. |
 | [Callback receipts](docs/architecture/callback-receipts.md) | `complete_once` receipts for signed provider callbacks, without storing request content. |
 | [Review and status posted by Preloop](docs/architecture/platform-posted-review.md) | The control plane posts a validated read-only review and a commit status with a one-repository lease; threat model and tests. |
 | [Shared review flows for restricted CI](docs/architecture/shared-ci-review-flows.md) | One read-only review flow serving several projects with one project per CI identity: the allowlist, how an execution's project is resolved, the threat model with its tests, and what is not included. |
@@ -125,3 +134,8 @@ and desktop views separately count persisted rows over a rolling hour. See the
 [rules and audit behavior](docs/operations/rate-limiting.md), and the supported
 [Helm extraEnv configuration](helm/preloop/README.md#request-rate-limiting), which
 keeps backend defaults authoritative across deployment methods.
+
+OpenRouter model configurations can enforce provider routing preferences. Gateway
+usage records include a content-free summary of effective upstream controls and
+the OpenRouter serving host when reported; see the
+[provider guide](docs/guide/providers/openrouter.md).

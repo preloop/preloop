@@ -337,3 +337,12 @@ test("terminal end retries confirmed ACK first and avoids a false undeliverable 
     ["notes/ack", "session-end"],
   );
 });
+
+
+test("repeated and concurrent terminal callbacks post one successful end", async () => {
+  const f = fixture();
+  await Promise.all(Array.from({ length: 10 }, () =>
+    f.notes.ended({ sessionId: f.ctx.sessionId, reason: "deleted" })));
+  await f.notes.ended({ sessionId: f.ctx.sessionId, reason: "deleted" });
+  assert.equal(f.calls.filter(call => call.route === "session-end").length, 1);
+});

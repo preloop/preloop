@@ -2893,6 +2893,57 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/account/gateway-usage/export:
+    get:
+      tags:
+      - Account
+      summary: Export Account Gateway Usage
+      description: Download usage and effective upstream controls as a content-free
+        CSV.
+      operationId: export_account_gateway_usage_api_v1_account_gateway_usage_export_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            text/csv:
+              schema:
+                type: string
+        '413':
+          description: Choose a shorter date range; export exceeds 10,000 rows
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/gateway-usage/search:
     get:
       tags:
@@ -10151,6 +10202,18 @@ paths:
           description: Exact external grant reference
           title: Grant Reference
         description: Exact external grant reference
+      - name: reason_code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 100
+          - type: 'null'
+          description: Exact refusal reason code
+          title: Reason Code
+        description: Exact refusal reason code
       - name: error_code
         in: query
         required: false
@@ -10348,6 +10411,18 @@ paths:
           description: Exact external grant reference
           title: Grant Reference
         description: Exact external grant reference
+      - name: reason_code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 100
+          - type: 'null'
+          description: Exact refusal reason code
+          title: Reason Code
+        description: Exact refusal reason code
       - name: error_code
         in: query
         required: false
@@ -26943,7 +27018,9 @@ components:
             type: object
           - type: 'null'
           title: Model Parameters
-          description: Optional, for model-specific parameters like temperature, max_tokens
+          description: Model-specific parameters such as temperature and max_tokens.
+            For OpenRouter, provider is a validated routing preferences object; saved
+            preferences override client routing and unknown fields are rejected.
         meta_data:
           anyOf:
           - additionalProperties: true
@@ -40336,20 +40413,23 @@ components:
             provider_billing, model_quota (legacy, superseded by provider_billing),
             budget_exceeded, default_limit_reached (a default per-execution ceiling
             the flow did not set), repeated_upstream_failure (the gateway stopped
-            a run whose model calls kept failing identically), model_config, no_confirmation,
-            agent_no_progress, publication_missing, result_schema_invalid (result.json
-            does not match the flow result schema), review_binding_mismatch (a read-only
-            review result names another revision than the admitted one), review_degenerate
-            (a review has no usable narrative), review_not_inspected (no command read
-            the bound change), setup_failed, repository_access (git refused the repository
-            credential), verification_failed, verification_blocked, tool_error, agent_error,
-            model_stream_idle (timed out while the model stream was silent), approval_denied,
-            approval_timeout, approval_unavailable (an approval-required rule could
-            not pause the run), hook_binding_invalid (the native hook credential was
-            refused before launch), resume_failed (a parked run could not be continued),
-            gateway_bypassed (a private-runner host CLI made no request through the
-            Preloop gateway), timeout, cancelled, unknown. Null for successful or
-            still-running executions, and for executions that predate this field.'
+            a run whose model calls kept failing identically), model_config, context_truncated_suspected,
+            no_confirmation, agent_no_progress, publication_missing, result_schema_invalid
+            (result.json does not match the flow result schema), review_binding_mismatch
+            (a read-only review result names another revision than the admitted one),
+            review_degenerate (a review has no usable narrative), review_not_inspected
+            (no command read the bound change), setup_failed, repository_access (git
+            refused the repository credential), verification_failed, verification_blocked,
+            tool_error, agent_error, model_stream_idle (timed out while the model
+            stream was silent), approval_denied, approval_timeout, approval_unavailable
+            (an approval-required rule could not pause the run), hook_binding_invalid
+            (the native hook credential was refused before launch), resume_failed
+            (a parked run could not be continued), gateway_bypassed (a private-runner
+            host CLI made no request through the Preloop gateway), timeout, cancelled,
+            flow_config, agent_reported_failure, agent_tool_loop, orchestrator_error,
+            execution_error, model_policy, runner_unavailable, ci_authorization; unknown
+            is a legacy value. Null for successful or still-running executions, and
+            for executions that predate this field.'
         result_schema_validation:
           anyOf:
           - additionalProperties: true
@@ -42455,6 +42535,11 @@ components:
         outcome:
           type: string
           title: Outcome
+        error_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Class
         endpoint:
           type: string
           title: Endpoint
@@ -50652,6 +50737,17 @@ components:
         request_count:
           type: integer
           title: Request Count
+        upstream_parameters:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Upstream Parameters
+        upstream_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Upstream Provider
       type: object
       required:
       - model

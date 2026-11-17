@@ -227,7 +227,45 @@ def test_effective_controls_match_the_local_upstream_wire(
         effort = body.get("reasoning_effort") or body.get("reasoning", {}).get("effort")
         assert actual.get("reasoning_effort") == effort
         assert effort == ("medium" if mode == "native" else None)
-        assert set(actual) <= {"model", "max_tokens", "reasoning_effort"}
+        assert actual["output_format"] == {"type": "none"}
+        assert actual["schema_in_instructions"] is False
+        assert actual["tool_count"] == len(body.get("tools", []))
+        assert set(actual) <= {
+            "model",
+            "max_tokens",
+            "reasoning_effort",
+            "reasoning",
+            "output_format",
+            "schema_in_instructions",
+            "tool_count",
+        }
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_restricted_timing_projection_keeps_safe_effective_controls() -> None:
+    """Already authorized execution diagnostics include format and routing evidence."""
+    from types import SimpleNamespace
+
+    execution = SimpleNamespace(status="SUCCEEDED", result={}, execution_context={})
+    timing = timings_projection(
+        execution,
+        [
+            {
+                "provider_name": "openrouter",
+                "upstream_provider": "Host A",
+                "upstream_parameters": {
+                    "model": "example/model",
+                    "tool_count": 2,
+                    "output_format": {"type": "json_schema", "strict": True},
+                    "schema_in_instructions": False,
+                    "provider": {"only": ["host-a"]},
+                },
+            }
+        ],
+    )
+    effective = timing["effective_requests"][0]
+    assert effective["upstream_parameters"]["output_format"]["strict"] is True
+    assert effective["upstream_parameters"]["provider"] == {"only": ["host-a"]}
+    assert effective["upstream_provider"] == "Host A"

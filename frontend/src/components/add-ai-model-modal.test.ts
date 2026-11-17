@@ -2337,3 +2337,59 @@ describe('model discovery ownership and feedback', () => {
     expect(localStorage.getItem('accessToken')).to.equal('synthetic-access');
   });
 });
+
+describe('OpenRouter provider routing', () => {
+  it('shows and saves routing controls while preserving advanced settings', async () => {
+    const element = await fixture<AddAIModelModal>(
+      html`<add-ai-model-modal></add-ai-model-modal>`
+    );
+    element.model = {
+      id: 'model-1',
+      name: 'Example model',
+      provider_name: 'openrouter',
+      model_identifier: 'example/model',
+      api_endpoint: 'https://openrouter.ai/api/v1',
+      model_kind: 'llm',
+      model_parameters: {
+        temperature: 0.2,
+        provider: {
+          only: ['host-a'],
+          ignore: ['host-b'],
+          zdr: true,
+          data_collection: 'deny',
+          allow_fallbacks: false,
+          sort: 'latency',
+        },
+      },
+    } as AIModel;
+    element.open = true;
+    await element.updateComplete;
+    await element.updateComplete;
+    const root = element.shadowRoot!;
+    expect(root.textContent).to.contain('Provider routing');
+    const only = root.querySelector('[data-routing="only"]') as any;
+    expect(only.value).to.equal('host-a');
+    only.value = 'host-c, host-d';
+    only.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+    const params = (element as any)._buildModelParametersForSubmit();
+    expect(params.temperature).to.equal(0.2);
+    expect(params.provider).to.deep.equal({
+      only: ['host-c', 'host-d'],
+      ignore: ['host-b'],
+      zdr: true,
+      data_collection: 'deny',
+      allow_fallbacks: false,
+      sort: 'latency',
+    });
+    (element as any)._currentModel = {
+      ...(element as any)._currentModel,
+      provider_name: 'openai',
+      api_endpoint: 'https://api.openai.com/v1',
+    };
+    await element.updateComplete;
+    expect(root.querySelector('[data-routing="only"]')).not.to.exist;
+    expect((element as any)._buildModelParametersForSubmit()).to.deep.equal({
+      temperature: 0.2,
+    });
+  });
+});

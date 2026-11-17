@@ -1,6 +1,7 @@
 """Default-deny ASGI boundary for restricted machine credentials."""
 
 import hashlib
+import json
 import logging
 import os
 import time
@@ -13,7 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 from starlette.routing import compile_path
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from preloop.api.auth.ci_policy import (
     matched_machine_handler,
@@ -194,6 +195,61 @@ def _inspect(
         sessions.close()
 
 
+def _audit_denial(inspection: CiTokenInspection, reason_code: str, target: str) -> None:
+    """Commit independently of refused work using stored tenant attribution."""
+    from preloop.services.denial_audit import write_denial
+
+    if inspection.account_id is None or not (
+        inspection.principal_id or inspection.key_id
+    ):
+        return
+    sessions = get_auth_db_session()
+    db = next(sessions)
+    try:
+        write_denial(
+            db,
+            account_id=inspection.account_id,
+            principal_id=inspection.principal_id or inspection.key_id,
+            principal_type="ci_principal" if inspection.principal_id else "api_key",
+            action="restricted_ci_denied",
+            target=target,
+            reason_code=reason_code,
+        )
+    finally:
+        sessions.close()
+
+
+async def _audit_denial_safely(
+    inspection: CiTokenInspection, reason_code: str, target: str
+) -> None:
+    """Always deliver the original refusal even when audit persistence fails."""
+    try:
+        await run_db_off_loop(lambda: _audit_denial(inspection, reason_code, target))
+    except Exception as exc:
+        logger.warning("Restricted CI denial audit unavailable: %s", type(exc).__name__)
+
+
+def _denial_target(scope: Scope) -> str:
+    """Keep a requested flow UUID, never an arbitrary URL or query string."""
+    from uuid import UUID
+
+    parts = scope.get("path", "").strip("/").split("/")
+    if (
+        len(parts) == 5
+        and parts[:3] == ["api", "v1", "flows"]
+        and parts[4] == "trigger"
+    ):
+        try:
+            return str(UUID(parts[3]))
+        except ValueError:
+            return "flow_trigger"
+    return (
+        "permission_check"
+        if scope.get("path") == "/api/v1/agents/permission-check"
+        else "restricted_operation"
+    )
+
+
 class RestrictedCiAuthMiddleware:
     """Reject unclassified operations and custom transports before handler work.
 
@@ -268,11 +324,25 @@ class RestrictedCiAuthMiddleware:
             PASS_THROUGH_CACHE.put(cache_key, inspection)
             await self.app(scope, receive, send)
             return
+        target = _denial_target(scope)
         if scope["type"] == "websocket":
+            await _audit_denial_safely(inspection, "ci_route_denied", target)
             await send({"type": "websocket.close", "code": 1008})
             return
         if not canonical or action is None or context is None or not permitted:
             status = 401 if context is None else 403
+            reason = (
+                "ci_transport_denied"
+                if not canonical
+                else (inspection.denial_reason or "ci_credential_invalid")
+                if context is None
+                else "ci_route_denied"
+                if action is None
+                else "ci_action_denied"
+                if action not in context.actions
+                else "ci_authorization_denied"
+            )
+            await _audit_denial_safely(inspection, reason, target)
             # No raw path/query, tokens, or result contents in decision records.
             logger.info(
                 "Restricted CI request denied",
@@ -307,4 +377,38 @@ class RestrictedCiAuthMiddleware:
                 "ci_flow_id": str(context.flow_id),
             },
         )
-        await self.app(scope, receive, send)
+        if action != CiAction.TRIGGER:
+            await self.app(scope, receive, send)
+            return
+
+        response_status = 200
+        response_body = bytearray()
+
+        async def audit_send(message: Message) -> None:
+            """Observe every admission refusal, including dependency/schema failures."""
+            nonlocal response_status
+            if message["type"] == "http.response.start":
+                response_status = message["status"]
+            elif message["type"] == "http.response.body" and response_status >= 400:
+                # Error responses are small JSON; never buffer unbounded output.
+                response_body.extend(
+                    message.get("body", b"")[: 16384 - len(response_body)]
+                )
+                if not message.get("more_body", False):
+                    from preloop.services.denial_audit import reason_for_detail
+
+                    fallback = {
+                        401: "ci_credential_invalid",
+                        403: "ci_authorization_denied",
+                        409: "ci_admission_conflict",
+                        422: "ci_request_invalid",
+                    }.get(response_status, "ci_verification_unavailable")
+                    try:
+                        detail = json.loads(response_body).get("detail")
+                    except (ValueError, AttributeError):
+                        detail = None
+                    reason = reason_for_detail(detail, fallback)
+                    await _audit_denial_safely(inspection, reason, target)
+            await send(message)
+
+        await self.app(scope, receive, audit_send)

@@ -517,6 +517,7 @@ async def apply_native_access_rules(
             if key != "_preloop_origin"
         },
         account_id,
+        record_denials=False,
         tool_configuration_id=config.id if config is not None else None,
         tool_source="mcp" if mcp_identity else AGENT_TOOL_SOURCE,
         server_label=mcp_identity[0] if mcp_identity else None,

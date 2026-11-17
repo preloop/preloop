@@ -155,6 +155,14 @@ def catalog_materialization_shell(
             "cli_context_window": entry["context_window"],
             "context_source": source,
             "provider_context_known": known_context,
+            "warning": None
+            if known_context
+            else (
+                "No context window is registered for this custom model. "
+                "Set the actual server limit in model_parameters.context_window "
+                "(docs/guide/model-context-limits.md); the CLI fallback is not "
+                "the server's capacity."
+            ),
             "instruction_and_tool_profile": "codex_cli_fallback",
             "upstream_output_allowance": "gateway_when_enabled_otherwise_provider_defaults",
         },

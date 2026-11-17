@@ -74,6 +74,7 @@ class CiTokenInspection:
     key_id: Optional[UUID] = None
     project_id: Optional[UUID] = None
     flow_id: Optional[UUID] = None
+    denial_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -753,6 +754,15 @@ class CRUDCiPrincipal:
                         key_id=key.id,
                         project_id=principal.project_id if principal else None,
                         flow_id=principal.flow_id if principal else None,
+                        denial_reason=(
+                            "ci_key_inactive"
+                            if not key.is_active
+                            else "ci_key_expired"
+                            if key.is_expired
+                            else "ci_principal_inactive"
+                            if principal and not principal.is_active
+                            else "ci_credential_invalid"
+                        ),
                     )
                 context = self._context_for_key(db, key=key)
         return replace(inspection, context=context if len(tokens) == 1 else None)

@@ -35,7 +35,8 @@ def orchestrator():
     orch.flow.trigger_project_ids = None
     orch.flow.agent_type = "opencode"
     orch.execution_log = MagicMock(ci_principal_id=None)
-    orch.execution_log.id = "test-execution-id"
+    orch.execution_log.id = uuid4()
+    orch.db.execute.return_value.scalar_one.return_value = []
     orch.ai_model = MagicMock()
     return orch
 

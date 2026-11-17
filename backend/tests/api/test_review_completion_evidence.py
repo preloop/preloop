@@ -241,6 +241,13 @@ def test_gateway_projection_scopes_requests_and_withheld_digest(
             "reasoning_effort": "low",
             "max_output_tokens": 8192,
             "request_count": 1,
+            "upstream_parameters": {
+                "model": "example/model",
+                "max_tokens": 8192,
+                "reasoning_effort": "low",
+                "reasoning": {"effort": "low"},
+            },
+            "upstream_provider": None,
         }
     ]
 

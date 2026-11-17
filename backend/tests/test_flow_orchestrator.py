@@ -3,9 +3,11 @@
 from tests.credential_fixtures import ai_model_with_secret
 
 import json
+import io
 import os
 import shutil
 import subprocess
+import tarfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from pathlib import Path
@@ -54,6 +56,18 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_user,
 )
+
+
+@pytest.fixture
+def evidence_archive() -> bytes:
+    """Build a valid evidence archive for the persistence boundary."""
+    output = io.BytesIO()
+    content = b"Example execution evidence\n"
+    with tarfile.open(fileobj=output, mode="w:gz") as archive:
+        member = tarfile.TarInfo("evidence.txt")
+        member.size = len(content)
+        archive.addfile(member, io.BytesIO(content))
+    return output.getvalue()
 
 
 @pytest.fixture(autouse=True)
@@ -1417,6 +1431,7 @@ class TestFlowExecutionOrchestrator:
         mock_nats_client,
         event_data,
         mock_agent_executor,
+        evidence_archive: bytes,
     ):
         """The evidence pack captured before cleanup lands in the DB.
 
@@ -1425,15 +1440,22 @@ class TestFlowExecutionOrchestrator:
         """
         from preloop.models.models.flow_execution import FlowExecution
 
-        archive = b"\x1f\x8b" + b"fake-evidence-tar-gz"
+        archive = evidence_archive
         mock_agent_executor.get_result_artifact = AsyncMock(
             return_value={"status": "success"}
         )
         mock_agent_executor.get_evidence_archive = AsyncMock(return_value=archive)
 
-        with patch(
-            "preloop.services.flow_orchestrator.create_executor_for_execution",
-            return_value=mock_agent_executor,
+        # Exercise inline legacy persistence when artifact-store ingestion is
+        # unavailable; normal ingestion stores the pack outside the row.
+        with (
+            patch(
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
+                return_value=mock_agent_executor,
+            ),
+            patch.object(
+                FlowExecutionOrchestrator, "_ingest_legacy_evidence", return_value=None
+            ),
         ):
             orchestrator = FlowExecutionOrchestrator(
                 db=db_session,
@@ -1452,7 +1474,13 @@ class TestFlowExecutionOrchestrator:
                 .filter(FlowExecution.id == orchestrator.execution_log.id)
                 .one()
             )
-            assert bytes(persisted.evidence_archive) == archive
+            persisted_archive = bytes(persisted.evidence_archive)
+            with tarfile.open(
+                fileobj=io.BytesIO(persisted_archive), mode="r:gz"
+            ) as pack:
+                member = pack.extractfile("evidence.txt")
+                assert member is not None
+                assert member.read() == b"Example execution evidence\n"
 
     @pytest.mark.asyncio
     async def test_dossier_evidence_matches_captured_pack_before_persist(
@@ -1462,6 +1490,7 @@ class TestFlowExecutionOrchestrator:
         mock_nats_client,
         event_data,
         mock_agent_executor,
+        evidence_archive: bytes,
     ):
         """dossier_manifest.evidence must not lag the captured evidence pack.
 
@@ -1475,15 +1504,22 @@ class TestFlowExecutionOrchestrator:
 
         from preloop.models.models.flow_execution import FlowExecution
 
-        archive = b"\x1f\x8b" + b"fake-evidence-tar-gz"
+        archive = evidence_archive
         mock_agent_executor.get_result_artifact = AsyncMock(
             return_value={"status": "success"}
         )
         mock_agent_executor.get_evidence_archive = AsyncMock(return_value=archive)
 
-        with patch(
-            "preloop.services.flow_orchestrator.create_executor_for_execution",
-            return_value=mock_agent_executor,
+        # Exercise inline legacy persistence when artifact-store ingestion is
+        # unavailable; normal ingestion stores the pack outside the row.
+        with (
+            patch(
+                "preloop.services.flow_orchestrator.create_executor_for_execution",
+                return_value=mock_agent_executor,
+            ),
+            patch.object(
+                FlowExecutionOrchestrator, "_ingest_legacy_evidence", return_value=None
+            ),
         ):
             orchestrator = FlowExecutionOrchestrator(
                 db=db_session,
@@ -1500,11 +1536,17 @@ class TestFlowExecutionOrchestrator:
                 .filter(FlowExecution.id == orchestrator.execution_log.id)
                 .one()
             )
-            assert bytes(persisted.evidence_archive) == archive
+            persisted_archive = bytes(persisted.evidence_archive)
+            with tarfile.open(
+                fileobj=io.BytesIO(persisted_archive), mode="r:gz"
+            ) as pack:
+                member = pack.extractfile("evidence.txt")
+                assert member is not None
+                assert member.read() == b"Example execution evidence\n"
             evidence = persisted.result["dossier_manifest"]["evidence"]
             assert evidence["status"] == "available"
             assert evidence["transport"] == "legacy"
-            assert evidence["sha256"] == hashlib.sha256(archive).hexdigest()
+            assert evidence["sha256"] == hashlib.sha256(persisted_archive).hexdigest()
             assert persisted.evidence_receipt["status"] == "available"
 
     @pytest.mark.asyncio
@@ -2419,7 +2461,7 @@ class TestWorkspaceSeedValidation:
             nats_client=mock_nats_client,
         )
         orchestrator._get_flow_details()
-        orchestrator.execution_log = type("ExecutionLogStub", (), {"id": uuid4()})()
+        orchestrator._create_execution_log()
         return orchestrator
 
     @pytest.mark.asyncio
@@ -2632,6 +2674,44 @@ class TestSuccessConfirmationChannels:
 
         assert orchestrator.execution_log.status == "SUCCEEDED"
         assert orchestrator.execution_log.result == artifact
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("validate", [False, True])
+    @pytest.mark.parametrize("native", [False, True])
+    @pytest.mark.parametrize("sentinel", [False, True])
+    async def test_error_verdict_cannot_be_saved_as_success(
+        self,
+        db_session: Session,
+        test_flow: Flow,
+        mock_nats_client,
+        event_data,
+        validate: bool,
+        native: bool,
+        sentinel: bool,
+    ) -> None:
+        """Schema validity and success markers cannot soften a result error."""
+        test_flow.result_schema = {"type": "object"}
+        test_flow.validate_result = validate
+        test_flow.agent_config = {"native_result": native}
+        artifact = {"status": "success", "verdict": "error", "success": False}
+        executor = _confirmation_executor(artifact=artifact)
+        orchestrator = await self._run(
+            db_session,
+            test_flow,
+            mock_nats_client,
+            event_data,
+            executor,
+            sentinel_seen=sentinel,
+        )
+        assert orchestrator.execution_log.status == "FAILED"
+        if native and not validate:
+            assert orchestrator.execution_log.failure_category == "flow_config"
+            executor.start.assert_not_called()
+        else:
+            assert (
+                orchestrator.execution_log.failure_category == "agent_reported_failure"
+            )
+            assert orchestrator.execution_log.result == artifact
 
     @pytest.mark.asyncio
     async def test_result_artifact_failure_wins_over_sentinel(
@@ -3053,18 +3133,17 @@ class TestResultArtifactVerdictConfirmation:
     def test_neither_status_nor_verdict_is_no_confirmation(self):
         assert _result_artifact_confirmation({"schema": "x", "checks": []}) is None
 
-    def test_recognized_status_wins_over_verdict(self):
+    def test_failure_in_either_field_wins(self):
         # status stays authoritative: an explicit failure status is not
         # softened by a passing verdict...
         assert (
             _result_artifact_confirmation({"status": "error", "verdict": "pass"})
             == "failure"
         )
-        # ...and a recognized success status is not overridden by an
-        # error verdict.
+        # An error verdict also overrides a contradictory success status.
         assert (
             _result_artifact_confirmation({"status": "success", "verdict": "error"})
-            == "success"
+            == "failure"
         )
 
     def test_unrecognized_status_falls_back_to_verdict(self):
@@ -5854,3 +5933,235 @@ class TestReviewPublicationGate:
             orch.execution_log.result["review_publication"]["status"]
             == "already_reviewed"
         )
+
+
+@pytest.mark.parametrize("result", [{"verdict": "error"}, {"status": "error"}])
+@pytest.mark.parametrize("status", ["SUCCEEDED", "FAILED"])
+def test_private_runner_completion_persists_result_failure(
+    db_session: Session, test_flow: Flow, result: dict, status: str
+) -> None:
+    """Private completion cannot bypass the result failure contract."""
+    from preloop.models import crud, schemas
+
+    execution = crud.crud_flow_execution.create(
+        db_session,
+        schemas.FlowExecutionCreate(
+            flow_id=test_flow.id,
+            status="RUNNING",
+        ),
+    )
+    execution = crud.crud_flow_execution.apply_runner_completion(
+        db_session,
+        db_obj=execution,
+        status=status,
+        result=result,
+    )
+    db_session.refresh(execution)
+    assert execution.status == "FAILED"
+    assert execution.failure_category == "agent_reported_failure"
+    assert execution.result == result
+
+
+def test_queued_runner_stop_names_cancellation(
+    db_session: Session, test_flow: Flow
+) -> None:
+    """Stopping an unleased queued run records the cancellation category."""
+    from preloop.models import crud, schemas
+
+    execution = crud.crud_flow_execution.create(
+        db_session,
+        schemas.FlowExecutionCreate(flow_id=test_flow.id, status="RUNNING"),
+    )
+    crud.crud_flow_execution.update(
+        db_session,
+        db_obj=execution,
+        obj_in={
+            "agent_session_reference": f"runner:queued:example-pool:{execution.id}"
+        },
+    )
+    crud.crud_flow_execution.request_runner_stop(db_session, execution_id=execution.id)
+    db_session.refresh(execution)
+    assert execution.status == "STOPPED"
+    assert execution.failure_category == "cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result,expected_status",
+    [
+        ({"status": "error"}, "FAILED"),
+        ({"verdict": "error"}, "FAILED"),
+        ({"verdict": "fail"}, "SUCCEEDED"),
+        ({"verdict": "request_changes"}, "SUCCEEDED"),
+    ],
+)
+async def test_recovery_monitor_applies_captured_result_contract(
+    db_session: Session, test_flow: Flow, result: dict, expected_status: str
+) -> None:
+    """A recovered container success must still honor its captured result."""
+    from datetime import datetime, timedelta, timezone
+
+    from preloop.models import crud, schemas
+    from preloop.services.execution_monitor import ExecutionMonitor
+
+    execution = crud.crud_flow_execution.create(
+        db_session,
+        schemas.FlowExecutionCreate(flow_id=test_flow.id, status="RUNNING"),
+    )
+    crud.crud_flow_execution.update(
+        db_session,
+        db_obj=execution,
+        obj_in={
+            "start_time": datetime.now(timezone.utc) - timedelta(minutes=10),
+            "agent_session_reference": "example-container",
+            "result": result,
+        },
+    )
+    executor = AsyncMock()
+    executor.get_status.return_value = AgentStatus.SUCCEEDED
+    with patch("preloop.agents.create_executor_for_execution", return_value=executor):
+        await ExecutionMonitor(stale_threshold_minutes=5)._check_execution(
+            db_session, execution
+        )
+    db_session.flush()
+    db_session.refresh(execution)
+    assert execution.status == expected_status
+    assert execution.failure_category == (
+        "agent_reported_failure" if expected_status == "FAILED" else None
+    )
+    assert execution.result == result
+
+
+@pytest.mark.parametrize("stopped", [False, True])
+def test_queue_expiry_is_a_failure_and_preserves_user_stop(
+    db_session: Session,
+    test_flow: Flow,
+    stopped: bool,
+) -> None:
+    """Unleased expiry names the pool; a real user stop keeps precedence."""
+    from preloop.models import crud, schemas
+
+    execution = crud.crud_flow_execution.create(
+        db_session,
+        schemas.FlowExecutionCreate(
+            flow_id=test_flow.id,
+            status="STOPPED" if stopped else "RUNNING",
+        ),
+    )
+    crud.crud_flow_execution.update(
+        db_session,
+        db_obj=execution,
+        obj_in={
+            "agent_session_reference": f"runner:queued:review-pool:{execution.id}",
+        },
+    )
+    changed = crud.crud_flow_execution.fail_unleased_runner_execution(
+        db_session,
+        execution_id=execution.id,
+        pool="review-pool",
+        wait_seconds=180,
+    )
+    assert changed is not stopped
+    db_session.refresh(execution)
+    if stopped:
+        assert execution.status == "STOPPED"
+        assert execution.failure_category == "cancelled"
+    else:
+        assert execution.status == "FAILED"
+        assert execution.failure_category == "runner_unavailable"
+        assert "review-pool" in execution.error_message
+        assert "180 seconds" in execution.error_message
+        assert "timeout_seconds" not in execution.error_message
+        crud.crud_flow_execution.request_runner_stop(
+            db_session, execution_id=execution.id
+        )
+        db_session.refresh(execution)
+        assert execution.status == "FAILED"
+
+
+def test_queue_expiry_cannot_take_a_runner_assignment(
+    db_session: Session,
+    test_flow: Flow,
+) -> None:
+    """An assignment created before the deadline keeps its running outcome."""
+    from preloop.models import crud, schemas
+
+    execution = crud.crud_flow_execution.create(
+        db_session,
+        schemas.FlowExecutionCreate(
+            flow_id=test_flow.id,
+            status="RUNNING",
+        ),
+    )
+    crud.crud_flow_execution.update(
+        db_session,
+        db_obj=execution,
+        obj_in={
+            "agent_session_reference": f"runner:queued:review-pool:{execution.id}",
+        },
+    )
+    runner = crud.crud_flow_runner.create(
+        db_session,
+        obj_in={
+            "account_id": test_flow.account_id,
+            "name": "Example runner",
+            "token_hash": "0" * 64,
+        },
+    )
+    crud.crud_flow_runner.create_assignment(
+        db_session,
+        runner_id=runner.id,
+        execution_id=execution.id,
+    )
+    assert not crud.crud_flow_execution.fail_unleased_runner_execution(
+        db_session,
+        execution_id=execution.id,
+        pool="review-pool",
+        wait_seconds=180,
+    )
+    db_session.refresh(execution)
+    assert execution.status == "RUNNING"
+    assert execution.failure_category is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_queue_deadline_does_not_cancel_unleased_run(
+    mock_nats_client: AsyncMock,
+    event_data: dict,
+) -> None:
+    """The flow's shorter timeout uses the queue cause, without stopping a job."""
+    from datetime import datetime, timezone
+    from preloop.agents.remote_runner import RemoteRunnerExecutor
+
+    executor = RemoteRunnerExecutor(
+        "codex",
+        {},
+        db=MagicMock(),
+        pool="review-pool",
+        account_id=uuid4(),
+    )
+    executor.fail_if_unleased = MagicMock(return_value=True)
+    executor.stop = AsyncMock()
+    orchestrator = FlowExecutionOrchestrator(
+        MagicMock(), uuid4(), event_data, mock_nats_client
+    )
+    orchestrator.flow = SimpleNamespace(timeout_seconds=180)
+    orchestrator.execution_log = SimpleNamespace(id=uuid4())
+    orchestrator._listen_for_commands = AsyncMock()
+    orchestrator._stream_logs_to_nats = AsyncMock()
+    orchestrator._execution_deadline = MagicMock(
+        return_value=SimpleNamespace(
+            deadline=datetime.now(timezone.utc),
+            elapsed_seconds=lambda: 180,
+            expired=lambda: True,
+        )
+    )
+    result = await orchestrator._monitor_agent_execution(
+        "runner:queued:review-pool:example", executor
+    )
+    assert result["status"] == "FAILED"
+    assert result["failure_category"] == "runner_unavailable"
+    assert "review-pool" in result["error_message"]
+    assert "180 seconds" in result["error_message"]
+    assert "timeout_seconds" not in result["error_message"]
+    executor.stop.assert_not_called()

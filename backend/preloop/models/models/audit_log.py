@@ -79,6 +79,12 @@ class AuditLog(Base):
             postgresql_where=text("(details -> 'grant' ->> 'consent_ref') IS NOT NULL"),
         ),
         Index(
+            "ix_audit_log_account_reason_code",
+            "account_id",
+            text("(details ->> 'reason_code')"),
+            postgresql_where=text("(details ->> 'reason_code') IS NOT NULL"),
+        ),
+        Index(
             "ix_audit_log_account_error_code",
             "account_id",
             text("(details ->> 'error_code')"),

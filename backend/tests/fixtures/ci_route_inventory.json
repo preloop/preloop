@@ -50,6 +50,7 @@
   "GET /api/v1/account/details": "deny",
   "GET /api/v1/account/flow-artifacts/usage": "deny",
   "GET /api/v1/account/gateway-identity-providers": "deny",
+  "GET /api/v1/account/gateway-usage/export": "deny",
   "GET /api/v1/account/gateway-usage/rate-limits": "deny",
   "GET /api/v1/account/gateway-usage/search": "deny",
   "GET /api/v1/account/gateway-usage/summary": "deny",

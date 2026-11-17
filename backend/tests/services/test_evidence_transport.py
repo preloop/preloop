@@ -598,7 +598,7 @@ def test_pack_evidence_rejects_result_cap_without_reading(
     workspace.mkdir()
     result = workspace / "result.json"
     fd = os.open(result, os.O_CREAT | os.O_WRONLY, 0o600)
-    os.ftruncate(fd, 256 * 1024 + 1)
+    os.ftruncate(fd, cc.RESULT_JSON_MAX_BYTES + 1)
     os.close(fd)
 
     def boom(*args: object, **kwargs: object) -> bytes:

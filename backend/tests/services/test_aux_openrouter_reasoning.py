@@ -172,3 +172,16 @@ class TestOpenRouterSdkExtras:
         extras = get_aux_openai_sdk_extra_kwargs(model)
 
         assert "extra_body" not in extras
+
+
+def test_saved_provider_policy_wins_on_auxiliary_requests() -> None:
+    configured = _make_model(
+        model_parameters={"provider": {"only": ["host-a"], "zdr": True}}
+    )
+    result = build_aux_kwargs(
+        configured, {}, call_site_kwargs={"extra_body": {"provider": {"zdr": False}}}
+    )
+    assert "provider" not in result
+    assert result["extra_body"]["provider"] == configured.model_parameters["provider"]
+    result = get_aux_openai_sdk_extra_kwargs(configured)
+    assert result["extra_body"]["provider"] == configured.model_parameters["provider"]

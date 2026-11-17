@@ -340,7 +340,10 @@ def _record_local_run_failure(
             return False
         message = f"Local flow dispatch failed: {type(exc).__name__}: {exc}"
         category = derive_failure_category(
-            status="FAILED", error_message=message, exception=exc
+            status="FAILED",
+            error_message=message,
+            exception=exc,
+            fallback_category=FAILURE_CATEGORY_RUNNER_ERROR,
         )
         if category in (None, FAILURE_CATEGORY_UNKNOWN):
             # The run never reached an agent: the in-process dispatcher lost

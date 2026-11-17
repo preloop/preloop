@@ -1143,6 +1143,44 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             "first_api_usage_id": str(rows[0].id) if rows else None,
         }
 
+    def get_previous_gateway_input(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        ai_model_id: str,
+        runtime_session_id: str | None,
+        execution_id: str | None,
+    ) -> Optional[Dict[str, Any]]:
+        """Read the last input observation within the same model conversation.
+
+        Never compare accounts, models, concurrent subagent sessions, or an
+        estimated fallback against provider-reported tokens.
+        """
+        if not runtime_session_id and not execution_id:
+            return None
+        query = db.query(
+            ApiUsage.prompt_tokens, ApiUsage.meta_data, ApiUsage.usage_source
+        ).filter(
+            ApiUsage.account_id == account_id,
+            ApiUsage.ai_model_id == ai_model_id,
+            ApiUsage.action_type == "model_gateway",
+        )
+        if runtime_session_id:
+            query = query.filter(ApiUsage.runtime_session_id == runtime_session_id)
+        else:
+            query = query.filter(ApiUsage.flow_execution_id == execution_id)
+        row = query.order_by(ApiUsage.timestamp.desc(), ApiUsage.id.desc()).first()
+        if row is None:
+            return None
+        metadata = row.meta_data or {}
+        if metadata.get("usage_estimated") or row.usage_source == "estimated":
+            return None
+        return {
+            "estimated_input_tokens": metadata.get("input_token_estimate"),
+            "reported_input_tokens": row.prompt_tokens,
+        }
+
     def get_recent_gateway_outcomes(
         self,
         db: Session,
@@ -3283,6 +3321,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 usage.is_retry,
                 usage.error_class,
                 usage.meta_data["upstream_parameters"].label("upstream_parameters"),
+                usage.meta_data["upstream_provider"].astext.label("upstream_provider"),
                 usage.meta_data["upstream_retries"].label("upstream_retries"),
                 usage.meta_data["first_response_at"].label("first_response_at"),
             )
@@ -3637,6 +3676,44 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .limit(limit)
             .all()
         )
+
+    def export_gateway_rows(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: datetime,
+        end: datetime,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Read bounded usage facts without loading content-bearing metadata."""
+        row = self.model
+        rows = (
+            db.query(
+                row.id,
+                row.timestamp,
+                row.model_alias,
+                row.provider_name,
+                row.upstream_request_id,
+                row.status_code,
+                row.prompt_tokens,
+                row.completion_tokens,
+                row.total_tokens,
+                row.estimated_cost,
+                row.meta_data["upstream_provider"].astext.label("upstream_provider"),
+                row.meta_data["upstream_parameters"].label("upstream_parameters"),
+            )
+            .filter(
+                row.account_id == account_id,
+                row.action_type == "model_gateway",
+                row.timestamp >= start,
+                row.timestamp < end,
+            )
+            .order_by(row.timestamp.desc(), row.id.desc())
+            .limit(limit)
+            .all()
+        )
+        return [dict(item._mapping) for item in rows]
 
     def list_gateway_rows_in_window(
         self,

@@ -233,7 +233,7 @@ if [ ! -z "$MCP_CONFIG_JSON" ]; then
     echo "========================================="
     echo "Setting up MCP configuration..."
     echo "========================================="
-    echo "$MCP_CONFIG_JSON" | tee /workspace/.aider/mcp_settings.json
+    (umask 077 && printf '%s\\n' "$MCP_CONFIG_JSON" > /workspace/.aider/mcp_settings.json)
     chmod 644 /workspace/.aider/mcp_settings.json
     echo "========================================="
     echo "MCP config written to /workspace/.aider/mcp_settings.json"

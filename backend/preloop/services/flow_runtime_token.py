@@ -213,6 +213,10 @@ def create_flow_runtime_token(
             validate_read_only_flow,
         )
 
+        if (getattr(flow, "agent_config", None) or {}).get("codex_tools") == "lean":
+            # Server-owned execution snapshot, not a client MCP parameter.
+            context_data["codex_tools"] = "lean"
+
         if read_only_review(getattr(flow, "git_clone_config", None)):
             validate_read_only_flow(flow)
             context_data["read_only_review"] = True

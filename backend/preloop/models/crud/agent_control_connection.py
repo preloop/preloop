@@ -92,6 +92,14 @@ def authorize(
     if key is None or not key.is_active or key.is_expired:
         return None
     context = key.context_data if isinstance(key.context_data, dict) else {}
+    if execution_id := context.get("flow_execution_id"):
+        from preloop.models.crud import crud_flow_execution
+
+        execution_status = crud_flow_execution.get_status(
+            db, execution_id=execution_id, account_id=connection.account_id
+        )
+        if execution_status in crud_flow_execution.TERMINAL_EXECUTION_STATUSES:
+            return None
     if str(context.get("managed_agent_id")) != connection.managed_agent_id:
         return None
     if context.get("credential_kind") == "managed_agent_durable":

@@ -395,8 +395,10 @@ async def test_a_queued_continuation_says_which_offline_runner_it_waits_for(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("transition_won", [True, False])
 async def test_the_queue_deadline_blocks_for_an_operator_and_keeps_the_host(
     monkeypatch: pytest.MonkeyPatch,
+    transition_won: bool,
 ) -> None:
     from preloop.agents.base import AgentStatus
     from preloop.agents.remote_runner import RemoteRunnerExecutor
@@ -436,6 +438,11 @@ async def test_the_queue_deadline_blocks_for_an_operator_and_keeps_the_host(
         raise AssertionError("a timed out continuation must not move hosts")
 
     monkeypatch.setattr("preloop.agents.remote_runner.lease_job", _must_not_lease)
+    fail_unleased = Mock(return_value=transition_won)
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.fail_unleased_runner_execution",
+        fail_unleased,
+    )
 
     executor = RemoteRunnerExecutor(
         "codex",
@@ -447,11 +454,15 @@ async def test_the_queue_deadline_blocks_for_an_operator_and_keeps_the_host(
     )
     status = await executor.get_status(execution.agent_session_reference)
 
-    assert status is AgentStatus.FAILED
-    assert execution.status == "FAILED"
-    assert "build-box-2" in execution.error_message
-    assert "does not upload private workspaces" in execution.error_message
-    assert str(prior) in execution.error_message
+    assert status is (AgentStatus.FAILED if transition_won else AgentStatus.STARTING)
+    fail_unleased.assert_called_once()
+    failure = fail_unleased.call_args.kwargs
+    assert failure["execution_id"] == execution_id
+    assert failure["pool"] == "local"
+    assert failure["wait_seconds"] >= 960
+    assert "build-box-2" in failure["detail"]
+    assert "does not upload private workspaces" in failure["detail"]
+    assert str(prior) in failure["detail"]
 
 
 def test_a_doubly_wrapped_config_still_pins_the_continuation() -> None:

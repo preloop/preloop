@@ -828,6 +828,7 @@ class ModelGatewayUsageService:
             timestamp=item["timestamp"],
             status_code=item["status_code"],
             outcome=item["outcome"],
+            error_class=item.get("error_class"),
             endpoint=item["endpoint"],
             method=item["method"],
             provider_name=item["provider_name"],

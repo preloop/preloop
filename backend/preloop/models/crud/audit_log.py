@@ -391,6 +391,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         consent_ref: Optional[str] = None,
         include_last_known_consent: bool = False,
         error_code: Optional[str] = None,
+        reason_code: Optional[str] = None,
         grant_reference: Optional[str] = None,
     ) -> List[AuditLog]:
         """Get audit logs for an account with optional filters.
@@ -407,6 +408,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             start_date: Filter by start date
             consent_ref: Exact delegated grant consent reference
             include_last_known_consent: Also match historical consent evidence
+            reason_code: Exact refusal reason classification
             error_code: Exact upstream error classification
             end_date: Filter by end date
 
@@ -430,6 +432,10 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
                     "grant_reference"
                 )
                 == grant_reference
+            )
+        if reason_code is not None:
+            query = query.filter(
+                AuditLog.details.op("->>")("reason_code") == reason_code
             )
         if error_code is not None:
             query = query.filter(AuditLog.details.op("->>")("error_code") == error_code)
@@ -664,6 +670,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         consent_ref: Optional[str] = None,
         include_last_known_consent: bool = False,
         error_code: Optional[str] = None,
+        reason_code: Optional[str] = None,
         grant_reference: Optional[str] = None,
         min_cost: Optional[float] = None,
         max_cost: Optional[float] = None,
@@ -692,6 +699,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             start_date: Filter by start date
             consent_ref: Exact delegated grant consent reference
             include_last_known_consent: Also match historical consent evidence
+            reason_code: Exact refusal reason classification
             error_code: Exact upstream error classification
             end_date: Filter by end date
             count_limit: Stop counting the total past this many groups. The
@@ -741,6 +749,10 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
                     == grant_reference,
                     matching_decision,
                 )
+            )
+        if reason_code is not None:
+            scope_filters.append(
+                AuditLog.details.op("->>")("reason_code") == reason_code
             )
         if error_code is not None:
             scope_filters.append(AuditLog.details.op("->>")("error_code") == error_code)
@@ -1155,6 +1167,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         consent_ref: Optional[str] = None,
         include_last_known_consent: bool = False,
         error_code: Optional[str] = None,
+        reason_code: Optional[str] = None,
         grant_reference: Optional[str] = None,
     ) -> int:
         """Count audit logs for an account with optional filters.
@@ -1169,6 +1182,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             start_date: Filter by start date
             consent_ref: Exact delegated grant consent reference
             include_last_known_consent: Also match historical consent evidence
+            reason_code: Exact refusal reason classification
             error_code: Exact upstream error classification
             end_date: Filter by end date
 
@@ -1194,6 +1208,10 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
                     "grant_reference"
                 )
                 == grant_reference
+            )
+        if reason_code is not None:
+            query = query.filter(
+                AuditLog.details.op("->>")("reason_code") == reason_code
             )
         if error_code is not None:
             query = query.filter(AuditLog.details.op("->>")("error_code") == error_code)

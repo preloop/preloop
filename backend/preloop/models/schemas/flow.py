@@ -1901,6 +1901,9 @@ class FlowBase(BaseModel):
         """Validate optional agent_config keys before persistence."""
         if not isinstance(v, dict):
             return v
+        from preloop.services.codex_tool_profiles import validate_codex_tools_config
+
+        validate_codex_tools_config(v)
         routing = v.get("model_routing")
         if routing is not None:
             ModelRoutingConfig.model_validate(routing)

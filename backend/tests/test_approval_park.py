@@ -472,6 +472,11 @@ class _FakeDB:
     def query(self, *entities):
         return _FakeQuery(self)
 
+    def execute(self, statement: Any) -> SimpleNamespace:
+        """Supply the narrow credential inventory read used during completion."""
+        assert "flow_execution.credential_fingerprints" in str(statement)
+        return SimpleNamespace(scalar_one_or_none=lambda: [])
+
     def commit(self):
         self.commits += 1
 

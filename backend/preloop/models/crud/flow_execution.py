@@ -35,6 +35,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.future import select
 
 from preloop.models import models
+from preloop.services.flow_execution_outcome import normalize_execution_outcome
 
 from preloop.models.models.flow_execution import (
     AGENT_CONTROL_BINDING_KEY,
@@ -115,7 +116,9 @@ async def create_flow_execution(
     Create a new flow execution.
     This is typically called by the Flow Trigger Service.
     """
-    db_flow_execution = FlowExecution(**flow_execution_in.model_dump())
+    values = flow_execution_in.model_dump()
+    normalize_execution_outcome(values)
+    db_flow_execution = FlowExecution(**values)
     db.add(db_flow_execution)
     await db.commit()
     await db.refresh(db_flow_execution)
@@ -130,6 +133,7 @@ async def update_flow_execution(
     This is typically called by the Flow Execution Orchestrator to update status, logs, etc.
     """
     update_data = flow_execution_in.model_dump(exclude_unset=True)
+    normalize_execution_outcome(update_data, flow_execution)
     for field, value in update_data.items():
         setattr(flow_execution, field, value)
 
@@ -513,6 +517,24 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         result = await db.execute(self._attribution_statement(ids, account_ids))
         return {execution.id: (execution, flow) for execution, flow in result.all()}
 
+    def get_end_time(
+        self, db: Session, *, execution_id: Any, account_id: Any
+    ) -> Optional[datetime]:
+        """Read an owned execution's end time for bounded final output delivery."""
+        try:
+            parsed = uuid.UUID(str(execution_id))
+        except (ValueError, AttributeError, TypeError):
+            return None
+        row = (
+            db.query(models.FlowExecution.end_time)
+            .join(models.Flow)
+            .filter(
+                models.FlowExecution.id == parsed, models.Flow.account_id == account_id
+            )
+            .first()
+        )
+        return row[0] if row else None
+
     def get_status(
         self, db: Session, *, execution_id: Any, account_id: Any
     ) -> Optional[str]:
@@ -656,7 +678,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
     def create(self, db: Session, obj_in: FlowExecutionCreate) -> FlowExecution:
         """Create a new flow execution (synchronous)."""
-        db_obj = FlowExecution(**obj_in.model_dump())
+        values = obj_in.model_dump()
+        normalize_execution_outcome(values)
+        db_obj = FlowExecution(**values)
         db.add(db_obj)
         db.flush()  # Use flush instead of commit to stay in transaction
         return db_obj
@@ -691,6 +715,20 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             update_data = dict(obj_in)
         else:
             update_data = obj_in.model_dump(exclude_unset=True)
+        from preloop.models.crud.execution_credentials import for_execution
+
+        masker = for_execution(db, db_obj.id)
+        for field in (
+            "result",
+            "error_message",
+            "model_output_summary",
+            "mcp_usage_logs",
+            "actions_taken_summary",
+            "execution_logs",
+            "cli_session",
+        ):
+            if field in update_data:
+                update_data[field] = masker.mask(update_data[field])
         if "result" in update_data:
             # Result writers may hold an old ORM snapshot while the runner
             # advances publication. Lock/read the current protected state and
@@ -754,6 +792,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                         incoming = dict(incoming) if isinstance(incoming, dict) else {}
                         incoming[key] = existing[key]
             update_data["result"] = incoming
+
+        normalize_execution_outcome(update_data, db_obj)
 
         # Debug logging for metrics updates
         if "tool_calls_count" in update_data or "total_tokens" in update_data:
@@ -928,7 +968,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         travel through the FlowExecutionUpdate schema (which is serialized to
         NATS for UI updates).
         """
-        db_obj.evidence_archive = archive  # type: ignore[assignment]
+        from preloop.models.crud.execution_credentials import for_execution
+
+        db_obj.evidence_archive = for_execution(db, db_obj.id).mask_archive(archive)
         db.flush()
         return db_obj
 
@@ -1012,7 +1054,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         self.close_parked_parent_for_resume(
             db,
             resume_execution_id=updated.id,
-            status=status,
+            status=updated.status,
             end_time=getattr(updated, "end_time", None) or payload["end_time"],
             commit=False,
         )
@@ -1027,7 +1069,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         archive is binary and must never travel through the
         FlowExecutionUpdate schema that is serialized to NATS.
         """
-        db_obj.workspace_snapshot = archive  # type: ignore[assignment]
+        from preloop.models.crud.execution_credentials import for_execution
+
+        db_obj.workspace_snapshot = (
+            for_execution(db, db_obj.id).mask_archive(archive)
+            if archive is not None
+            else None
+        )
         db.flush()
         return db_obj
 
@@ -1199,9 +1247,55 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             and existing.get("session_id") == cli_session.get("session_id")
         ):
             cli_session = {**existing, **cli_session}
-        db_obj.cli_session = cli_session  # type: ignore[assignment]
+        from preloop.models.crud.execution_credentials import for_execution
+
+        db_obj.cli_session = for_execution(db, db_obj.id).mask(cli_session)
         db.flush()
         return db_obj
+
+    def record_context_truncation(
+        self,
+        db: Session,
+        *,
+        execution_id: uuid.UUID | str,
+        signal: dict[str, Any],
+        message: str,
+        category: str,
+    ) -> None:
+        """Keep prompt-loss evidence and fail the run under its row lock.
+
+        A late usage record can correct a no-confirmation diagnosis or a
+        claimed success. Unrelated terminal outcomes retain their diagnosis.
+        """
+        execution = (
+            db.query(models.FlowExecution)
+            .filter(models.FlowExecution.id == execution_id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+        if execution is None:
+            return
+        receipt = dict(execution.startup_receipt or {})
+        receipt[category] = signal
+        changes: dict[str, Any] = {"startup_receipt": receipt}
+        replace_outcome = execution.status in self.LIVE_LAUNCH_STATUSES | {
+            "PENDING",
+            "SUCCEEDED",
+        } or (
+            execution.status == "FAILED"
+            and execution.failure_category
+            in {None, "unknown", "no_confirmation", category}
+        )
+        if replace_outcome:
+            changes.update(
+                status="FAILED",
+                failure_category=category,
+                error_message=message,
+                end_time=execution.end_time or datetime.now(timezone.utc),
+            )
+        self.update(db, db_obj=execution, obj_in=changes)
+        db.commit()
 
     def record_startup_receipt(
         self, db: Session, *, execution_id: uuid.UUID, receipt: dict[str, Any]
@@ -2306,6 +2400,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         values: Dict[Any, Any] = {
             models.FlowExecution.status: "STOPPED",
+            models.FlowExecution.failure_category: "cancelled",
             models.FlowExecution.end_time: moment,
             models.FlowExecution.error_message: error_message,
             models.FlowExecution.stop_requested_at: func.coalesce(
@@ -3047,6 +3142,9 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         # NATS messages nest actual content under "payload" (e.g. payload.line
         # for agent_log_line).  Derive message from the best available field
         # and persist the full payload as metadata so nothing is lost.
+        from preloop.models.crud.execution_credentials import for_execution
+
+        log_data = for_execution(db, execution_id).mask(log_data)
         payload = log_data.get("payload") or {}
         message = (
             log_data.get("message") or payload.get("line") or payload.get("message")
@@ -3601,6 +3699,28 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         return bool(count)
 
+    def current_failure(
+        self, db: Session, *, execution_id: Any
+    ) -> dict[str, Any] | None:
+        """Read the stored failure without reusing a stale ORM snapshot."""
+        row = (
+            db.query(
+                models.FlowExecution.failure_category,
+                models.FlowExecution.error_message,
+            )
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status == "FAILED",
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        return {
+            "failure_category": row.failure_category,
+            "error_message": row.error_message,
+        }
+
     def current_status(
         self, db: Session, *, execution_id: Any, lock: bool = False
     ) -> Optional[str]:
@@ -4145,6 +4265,68 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if commit:
             db.commit()
 
+    def fail_unleased_runner_execution(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        pool: str,
+        wait_seconds: int,
+        detail: str | None = None,
+    ) -> bool:
+        """Fail an expired queue wait without manufacturing a user cancellation.
+
+        The account lock is the same lock used by runner admission and stop.
+        An assignment or a user's stop that wins first keeps its own outcome.
+        """
+        from .account_halt import crud_account_halt
+        from preloop.services.flow_failure_messages import RUNNER_UNAVAILABLE
+
+        account_id = (
+            db.query(models.Flow.account_id)
+            .join(models.FlowExecution, models.FlowExecution.flow_id == models.Flow.id)
+            .filter(models.FlowExecution.id == execution_id)
+            .scalar()
+        )
+        if account_id is None:
+            return False
+        crud_account_halt.lock_account(db, account_id=account_id)
+        execution = self.get(db, id=execution_id, refresh=True)
+        assignment = (
+            db.query(models.FlowRunnerAssignment)
+            .filter(models.FlowRunnerAssignment.execution_id == execution_id)
+            .with_for_update()
+            .first()
+        )
+        if (
+            execution is None
+            or assignment is not None
+            or execution.runner_id is not None
+            or execution.stop_requested_at is not None
+            or execution.status in self.TERMINAL_EXECUTION_STATUSES
+            or not str(execution.agent_session_reference or "").startswith(
+                "runner:queued:"
+            )
+        ):
+            db.commit()
+            return False
+        self.update(
+            db,
+            db_obj=execution,
+            obj_in={
+                "status": "FAILED",
+                "failure_category": "runner_unavailable",
+                "routing_reason": "queue_timeout",
+                "error_message": RUNNER_UNAVAILABLE.format(
+                    pool=pool, wait_seconds=wait_seconds
+                )
+                + (f" {detail}" if detail else ""),
+                "end_time": datetime.now(timezone.utc),
+            },
+        )
+        db.commit()
+        return True
+
     def request_runner_stop(self, db: Session, *, execution_id: Any) -> None:
         """Signal only this execution's runner, or confirm cancellation before lease."""
         from .account_halt import crud_account_halt
@@ -4172,8 +4354,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         if assignment is not None:
             assignment.halt_requested = True
-        elif str(execution.agent_session_reference or "").startswith("runner:queued:"):
+        elif execution.status not in self.TERMINAL_EXECUTION_STATUSES and str(
+            execution.agent_session_reference or ""
+        ).startswith("runner:queued:"):
             execution.status = "STOPPED"
+            execution.failure_category = "cancelled"
             stopped_at = datetime.now(timezone.utc)
             execution.end_time = stopped_at
             self.confirm_stop(db, execution_id=execution_id, commit=False)

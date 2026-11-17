@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -120,6 +121,7 @@ from preloop.services.agent_session_headers import (
     runtime_principal_type,
 )
 from preloop.services import alibaba_pricing
+from preloop.services import context_truncation
 from preloop.services import kill_switch as kill_switch_service
 from preloop.services.context_optimization import (
     ContextOptimizationStats,
@@ -181,6 +183,7 @@ from preloop.services.upstream_errors import (
     ERROR_CLASS_NETWORK,
     ERROR_CLASS_STREAM_ABANDONED,
     ERROR_CLASS_UPSTREAM_DISCONNECT,
+    ERROR_CLASS_UPSTREAM_POLICY_REFUSAL,
     ERROR_CLASS_UPSTREAM_OVERLOADED,
     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
     classify_recorded_error,
@@ -228,6 +231,8 @@ from preloop.services.litellm_routing import (
     strip_claude_context_window_suffix,
     to_litellm_model,
 )
+from preloop.schemas.openrouter import validate_provider_preferences
+from preloop.services.upstream_request_summary import summarize_upstream_request
 from preloop.services.openai_responses_passthrough import (
     RESPONSES_API_ABSENT_STATUS_CODES,
     build_passthrough_body,
@@ -899,6 +904,42 @@ class LiteLLMModelGatewayBackend:
         apply_preloop_client_headers(kwargs)
         kwargs["num_retries"] = 0
         kwargs["max_retries"] = 0
+        observer = kwargs.pop("logger_fn", None)
+        if observer is not None:
+            from litellm.integrations.custom_logger import CustomLogger
+            from litellm.utils import Rules, function_setup
+
+            class WireObserver(CustomLogger):
+                """Observe only this invocation's synchronous wire events."""
+
+                def log_pre_api_call(
+                    self, model: Any, messages: Any, kwargs: Dict[str, Any]
+                ) -> None:
+                    """Project controls before transport."""
+                    observer(kwargs)
+
+                def log_post_api_call(
+                    self,
+                    kwargs: Dict[str, Any],
+                    response_obj: Any,
+                    start_time: Any,
+                    end_time: Any,
+                ) -> None:
+                    """Capture reported identity before response conversion."""
+                    observer(kwargs)
+
+            # The pinned embedding adapter loses its named logger_fn when it
+            # initializes logging. Initialize the normal request logger once
+            # and attach a per-request input observer, never a global callback.
+            kwargs.setdefault("litellm_call_id", str(uuid.uuid4()))
+            logging_obj, kwargs = function_setup(
+                "embedding", Rules(), datetime.now(), is_async_call=False, **kwargs
+            )
+            logging_obj.dynamic_input_callbacks = [
+                *(logging_obj.dynamic_input_callbacks or []),
+                WireObserver(),
+            ]
+            kwargs["litellm_logging_obj"] = logging_obj
         return litellm.embedding(**kwargs)
 
 
@@ -1207,10 +1248,29 @@ def gateway_database_scope(operation: Callable[..., Any]) -> Callable[..., Any]:
     @wraps(operation)
     def scoped(self: OpenAIGatewayService, *args: Any, **kwargs: Any) -> Any:
         self._live_request_id = None
+        masker = None
         try:
+            from preloop.models.crud.execution_credentials import for_execution
+
+            key = getattr(self.auth_context, "api_key", None)
+            context = getattr(key, "context_data", None)
+            execution_id = (
+                context.get("flow_execution_id") if isinstance(context, dict) else None
+            )
+            if execution_id:
+                masker = for_execution(self.db, execution_id)
+                self._execution_credential_masker = masker
+                args = masker.mask(args)
+                kwargs = masker.mask(kwargs)
             result = operation(self, *args, **kwargs)
             self.release_db_for_wait()
             return result
+        except ModelGatewayAPIError as exc:
+            if masker is not None:
+                for name, value in vars(exc).items():
+                    setattr(exc, name, masker.mask(value))
+                exc.args = masker.mask(exc.args)
+            raise
         finally:
             self._close_owned_db()
 
@@ -1328,6 +1388,9 @@ class OpenAIGatewayService:
         # choke points; reset there per request to avoid stale carryover.
         self._last_upstream_credential_type: Optional[str] = None
         self._last_upstream_parameters: Dict[str, Any] = {}
+        self._last_upstream_provider: Optional[str] = None
+        self._last_upstream_generation_id: Optional[str] = None
+        self._upstream_is_openrouter = False
         # Rate-limit headers observed on the LAST upstream response (success
         # or failure) for this request, parsed into a snapshot at the point
         # where the raw response/exception is still in hand and consumed
@@ -1458,8 +1521,13 @@ class OpenAIGatewayService:
         """
         self._last_upstream_retry_count = 0
         self._last_upstream_parameters = {}
+        self._last_upstream_provider = None
+        self._last_upstream_generation_id = None
+        self._upstream_is_openrouter = False
         self._last_alibaba_cache_mode = None
         self._codex_transport_meta = None
+        self._context_input_estimate: Optional[int] = None
+        self._context_preflight_signal: Optional[Dict[str, Any]] = None
         self.last_usage_id = None
         # A fresh identity for every request, including one that never reaches
         # usage recording. Re-arming here (rather than minting at first use)
@@ -5515,7 +5583,11 @@ class OpenAIGatewayService:
         upstream_payload["model"] = ai_model.model_identifier
         if stream:
             upstream_payload["stream"] = True
+        self._upstream_is_openrouter = False
         self._record_effective_request_parameters(upstream_payload)
+        self._check_context_window(
+            ai_model, upstream_payload, gateway_provider="openai"
+        )
         return upstream_payload
 
     # Default ``instructions`` used when a chat-completions request targets a
@@ -6323,7 +6395,7 @@ class OpenAIGatewayService:
                     maybe_usage = resp.get("usage")
                     if isinstance(maybe_usage, dict):
                         usage = maybe_usage
-                continue
+                break
 
             if event_type in {"response.failed", "response.error", "error"}:
                 resp = event.get("response") or event
@@ -7307,6 +7379,10 @@ class OpenAIGatewayService:
             ai_model, payload.get("model")
         )
         body["stream"] = bool(stream)
+        self._context_input_estimate = context_truncation.estimate_request_input(body)
+        self._check_context_window(ai_model, body, gateway_provider="anthropic")
+        self._upstream_is_openrouter = False
+        self._record_effective_request_parameters(body)
 
         base_url = (
             str(ai_model.api_endpoint).rstrip("/")
@@ -7936,7 +8012,14 @@ class OpenAIGatewayService:
         # reject them, so send them as labelled user context instead (#1113).
         governed_payload = rewrite_crosschat_responses_input(governed_payload)
         body = build_passthrough_body(ai_model, governed_payload, stream=stream)
+        self._upstream_is_openrouter = _is_openrouter_upstream(ai_model)
+        body.pop("provider", None)
+        if self._upstream_is_openrouter:
+            routing = self._openrouter_routing(ai_model, payload, provider="openai")
+            if routing is not None:
+                body["provider"] = routing
         self._record_effective_request_parameters(body)
+        self._check_context_window(ai_model, body, gateway_provider="openai")
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -7972,6 +8055,7 @@ class OpenAIGatewayService:
             or "OpenAI Responses upstream error"
         )
         error_type: Optional[str] = None
+        parsed: Any = None
         try:
             parsed = json.loads(body_text)
             error = parsed.get("error") if isinstance(parsed, dict) else None
@@ -7988,6 +8072,7 @@ class OpenAIGatewayService:
                 self.status_code = status_code
                 self.message = message
                 self.error_type = error_type
+                self.body = parsed
                 self.response = httpx.Response(status_code, headers=headers)
                 super().__init__(message)
 
@@ -8242,11 +8327,10 @@ class OpenAIGatewayService:
                             state["usage"] = self._merge_usage_dicts(
                                 state["usage"], response_obj["usage"]
                             )
-                        if isinstance(response_obj.get("output_text"), str):
-                            state["snapshot_text"] = response_obj["output_text"]
+                        if snapshot := canonical_response_text(response_obj):
+                            state["snapshot_text"] = snapshot
                         state["status"] = response_obj.get("status") or state["status"]
-                    if event_type == "response.completed":
-                        state["saw_terminal"] = True
+                    state["saw_terminal"] = True
                     continue
                 if event_type == "response.created":
                     response_obj = event.get("response")
@@ -8284,13 +8368,20 @@ class OpenAIGatewayService:
                     # Relay whole SSE frames: concatenating them reproduces the
                     # upstream bytes, and the policy wrapper needs complete
                     # ``data:`` events to assemble the response text.
-                    while "\n\n" in buffer:
-                        frame, buffer = buffer.split("\n\n", 1)
-                        frame = f"{frame}\n\n"
+                    while separator := re.search(r"\r?\n\r?\n", buffer):
+                        frame, buffer = (
+                            buffer[: separator.end()],
+                            buffer[separator.end() :],
+                        )
                         _consume_frame(frame, state)
                         if state["saw_terminal"]:
                             terminal_sent = True
                         yield frame
+                        if terminal_sent:
+                            break
+                    if terminal_sent:
+                        buffer = ""
+                        break
                 if buffer:
                     _consume_frame(buffer, state)
                     if state["saw_terminal"]:
@@ -8345,12 +8436,13 @@ class OpenAIGatewayService:
                         ai_model=ai_model,
                         requested_model=requested_model,
                         response_payload=None,
-                        upstream_response=None,
+                        upstream_response={"usage": state["usage"]},
                         endpoint_kind="responses_stream",
                         budget_result=budget_result,
                         error_detail=gateway_error.message,
                         error_class=gateway_error.error_class,
                         request_payload=payload,
+                        accumulated_output_text=_accumulated_text(),
                     )
                     recorded = True
                 logger.warning(
@@ -8720,7 +8812,11 @@ class OpenAIGatewayService:
                 kwargs["messages"] = deepcopy(messages)
             if thinking_options:
                 kwargs["extra_body"] = thinking_options
-        if _is_openrouter_upstream(ai_model):
+        self._upstream_is_openrouter = _is_openrouter_upstream(ai_model)
+        if self._upstream_is_openrouter:
+            routing = self._openrouter_routing(ai_model, payload, provider=provider)
+            if routing is not None:
+                kwargs.setdefault("extra_body", {})["provider"] = routing
             # OpenRouter's chat API accepts reasoning.effort. Send its native
             # body field so LiteLLM does not drop it for models missing from
             # its capability catalog. Responses-only summary is not portable.
@@ -8766,6 +8862,7 @@ class OpenAIGatewayService:
         # forwards client flags the provider rejects. Drop those instead of
         # failing the whole request.
         kwargs["drop_params"] = True
+        schema_in_instructions = False
         response_format = kwargs.get("response_format")
         if response_format is not None:
             # drop_params stays True: it is request-global in LiteLLM, and
@@ -8797,6 +8894,7 @@ class OpenAIGatewayService:
                 # Translate rather than refuse: JSON mode plus the schema in
                 # the instructions. The flow result validation still enforces
                 # the schema on whatever the model returns.
+                schema_in_instructions = True
                 kwargs["response_format"] = {"type": "json_object"}
                 json_schema = response_format.get("json_schema")
                 kwargs["messages"] = _json_schema_as_json_mode(
@@ -8808,52 +8906,127 @@ class OpenAIGatewayService:
         # OpenRouter also gets HTTP-Referer / X-Title.
         apply_preloop_client_headers(kwargs, ai_model)
 
-        # Persist only effective, non-secret controls, never the full kwargs
-        # (which contain credentials and private messages). Keep this after
-        # alias/default resolution so diagnostics describe what was sent.
-        self._last_upstream_parameters["model"] = kwargs["model"]
-        limit = kwargs.get("max_tokens")
-        if isinstance(limit, int) and not isinstance(limit, bool):
-            self._last_upstream_parameters["max_tokens"] = limit
-        extra_body = kwargs.get("extra_body") or {}
-        reasoning = extra_body.get("reasoning")
-        effort = reasoning.get("effort") if isinstance(reasoning, dict) else None
-        if effort is None:
-            effort = extra_body.get("reasoning_effort")
-        if effort is None:
-            effort = kwargs.get("reasoning_effort")
-        if isinstance(effort, str) and effort in {
-            "none",
-            "minimal",
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-        }:
-            self._last_upstream_parameters["reasoning_effort"] = effort
+        # LiteLLM's prefix selects an adapter; it is not part of the wire model.
+        try:
+            wire_model, _, _, _ = litellm.get_llm_provider(
+                model=kwargs["model"], api_base=kwargs.get("api_base")
+            )
+        except litellm.BadRequestError:
+            # Custom backends may accept models outside LiteLLM's registry.
+            # Diagnostics must not reject a request before backend dispatch.
+            wire_model = kwargs["model"]
+        self._record_effective_request_parameters(
+            {**kwargs, "model": wire_model},
+            schema_in_instructions=schema_in_instructions,
+        )
         return kwargs
 
-    def _record_effective_request_parameters(self, body: Dict[str, Any]) -> None:
-        """Keep only controls from the resolved outbound Responses body."""
-        parameters: Dict[str, Any] = {}
-        if isinstance(body.get("model"), str):
-            parameters["model"] = body["model"]
-        limit = body.get("max_output_tokens")
-        if type(limit) is int:
-            parameters["max_tokens"] = limit
-        reasoning = body.get("reasoning")
-        if isinstance(reasoning, dict) and reasoning.get("effort") in {
-            "none",
-            "minimal",
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-        }:
-            parameters["reasoning_effort"] = reasoning["effort"]
-        self._last_upstream_parameters = parameters
+    @staticmethod
+    def _openrouter_routing(
+        ai_model: GatewayModel, payload: Dict[str, Any], *, provider: GatewayProvider
+    ) -> Optional[Dict[str, Any]]:
+        """Use the saved policy as a whole so clients cannot weaken restrictions."""
+        parameters = getattr(ai_model, "model_parameters", None)
+        parameters = parameters if isinstance(parameters, dict) else {}
+        extra = payload.get("extra_body")
+        extra = extra if isinstance(extra, dict) else {}
+        value = parameters.get(
+            "provider", payload.get("provider", extra.get("provider"))
+        )
+        if value is None and "provider" not in parameters:
+            return None
+        try:
+            return validate_provider_preferences(value)
+        except ValueError as exc:
+            raise ModelGatewayAPIError(
+                provider=provider, status_code=400, message=str(exc)
+            ) from None
+
+    def _record_effective_request_parameters(
+        self, body: Dict[str, Any], *, schema_in_instructions: bool = False
+    ) -> None:
+        """Keep an allowlisted summary of the resolved outbound body."""
+        self._context_input_estimate = context_truncation.estimate_request_input(body)
+        self._last_upstream_parameters = summarize_upstream_request(
+            body,
+            schema_in_instructions=schema_in_instructions,
+            openrouter=self._upstream_is_openrouter,
+        )
+
+    def _observe_litellm_call(self, details: Dict[str, Any]) -> None:
+        """Observe the adapter's wire body without storing or logging content."""
+        if details.get("log_event_type") == "pre_api_call":
+            self._last_upstream_provider = None
+            self._last_upstream_generation_id = None
+            args = details.get("additional_args") or {}
+            body = args.get("complete_input_dict")
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except (ValueError, TypeError):
+                    return
+            if isinstance(body, dict) and body:
+                body = {"model": details.get("model"), **body}
+                self._record_effective_request_parameters(
+                    body,
+                    schema_in_instructions=self._last_upstream_parameters.get(
+                        "schema_in_instructions", False
+                    ),
+                )
+        elif self._upstream_is_openrouter:
+            response = details.get("original_response")
+            if isinstance(response, str):
+                try:
+                    response = json.loads(response)
+                except (ValueError, TypeError):
+                    return
+            if isinstance(response, dict):
+                self._capture_upstream_identity(response)
+
+    def _capture_upstream_identity(self, response: Any) -> None:
+        """Remember reported serving identity; never infer it from routing policy."""
+        hidden = getattr(response, "_hidden_params", None)
+        hidden = hidden if isinstance(hidden, dict) else {}
+        data = response if isinstance(response, dict) else {}
+        serving = data.get("provider") or hidden.get("upstream_provider")
+        if isinstance(serving, str) and serving.strip():
+            self._last_upstream_provider = serving[:200]
+        generation = data.get("id")
+        if isinstance(generation, str) and generation.startswith("gen-"):
+            self._last_upstream_generation_id = generation[:255]
+
+    def _observe_openrouter_stream(self, stream: Any) -> None:
+        """Capture SSE identity before LiteLLM strips nonstandard response fields.
+
+        The pinned OpenRouter adapter drops provider during chunk conversion.
+        Wrap only this request's raw iterator, never a global adapter or hook.
+        """
+        from litellm.llms.openrouter.chat.transformation import (
+            OpenRouterChatCompletionStreamingHandler,
+        )
+
+        iterator = getattr(stream, "completion_stream", None)
+        if not isinstance(iterator, OpenRouterChatCompletionStreamingHandler):
+            return
+        original = iterator.response_iterator
+
+        def observed() -> Iterator[Any]:
+            for chunk in original:
+                line = (
+                    chunk.decode("utf-8", errors="replace")
+                    if isinstance(chunk, bytes)
+                    else chunk
+                )
+                if isinstance(line, str) and line.startswith("data:"):
+                    try:
+                        data = json.loads(line[5:].strip())
+                    except (ValueError, TypeError):
+                        data = None
+                    if isinstance(data, dict):
+                        self._capture_upstream_identity(data)
+                yield chunk
+
+        iterator.response_iterator = observed()
 
     # ------------------------------------------------------------------
     # T11 entry-path audit (gateway choke points)
@@ -9007,15 +9180,18 @@ class OpenAIGatewayService:
             body.update(
                 self._normalize_completion_parameters(parameters, provider=provider)
             )
-            self._last_upstream_parameters = {}
-            limit = body.get("max_tokens")
-            if isinstance(limit, int) and not isinstance(limit, bool):
-                self._last_upstream_parameters["max_tokens"] = limit
             body.update(
                 model=ai_model.model_identifier, messages=messages, stream=stream
             )
+            if purpose == "gateway":
+                self._context_input_estimate = (
+                    context_truncation.estimate_request_input(body)
+                )
+                self._check_context_window(ai_model, body, gateway_provider=provider)
             if stream:
                 body["stream_options"] = {"include_usage": True}
+            self._upstream_is_openrouter = False
+            self._record_effective_request_parameters(body)
             self.release_db_for_wait(ai_model)
             return runner_completion(ai_model, body, stream=stream)
         kwargs = self._build_completion_kwargs(
@@ -9025,6 +9201,17 @@ class OpenAIGatewayService:
             stream=stream,
             provider=provider,
         )
+        if purpose == "gateway":
+            self._context_input_estimate = context_truncation.estimate_request_input(
+                kwargs
+            )
+            self._check_context_window(ai_model, kwargs, gateway_provider=provider)
+
+        def _completion() -> Any:
+            call_kwargs = dict(kwargs)
+            if isinstance(self.upstream_backend, LiteLLMModelGatewayBackend):
+                call_kwargs["logger_fn"] = self._observe_litellm_call
+            return self.upstream_backend.completion(**call_kwargs)
 
         def _invoke() -> Any:
             self.release_db_for_wait(ai_model)
@@ -9043,10 +9230,8 @@ class OpenAIGatewayService:
                 else None
             )
             if reservation is not None:
-                return reservation.invoke(
-                    lambda: self.upstream_backend.completion(**kwargs), stream=stream
-                )
-            return self.upstream_backend.completion(**kwargs)
+                return reservation.invoke(_completion, stream=stream)
+            return _completion()
 
         if retry_transient:
             response = self._run_with_upstream_retries(
@@ -9054,6 +9239,11 @@ class OpenAIGatewayService:
             )
         else:
             response = _invoke()
+        if self._upstream_is_openrouter:
+            if stream:
+                self._observe_openrouter_stream(response)
+            else:
+                self._capture_upstream_identity(response)
         if not stream:
             self._observe_first_model_response()
             # LiteLLM relays provider headers in _hidden_params; best effort,
@@ -9158,6 +9348,19 @@ class OpenAIGatewayService:
         # an optional embedding parameter should ignore it, not fail the call.
         kwargs["drop_params"] = True
         apply_preloop_client_headers(kwargs, ai_model)
+        try:
+            wire_model, _, _, _ = litellm.get_llm_provider(
+                model=kwargs["model"], api_base=kwargs.get("api_base")
+            )
+        except litellm.BadRequestError:
+            # Diagnostics must also allow custom embedding backends.
+            wire_model = kwargs["model"]
+        self._upstream_is_openrouter = _is_openrouter_upstream(ai_model)
+        if self._upstream_is_openrouter:
+            routing = self._openrouter_routing(ai_model, payload, provider="openai")
+            if routing is not None:
+                kwargs["extra_body"] = {"provider": routing}
+        self._record_effective_request_parameters({**kwargs, "model": wire_model})
         return kwargs
 
     def _call_litellm_embedding(
@@ -9173,6 +9376,14 @@ class OpenAIGatewayService:
         retry budget and rate-limit header capture.
         """
         kwargs = self._build_embedding_kwargs(ai_model, payload=payload)
+        self._context_input_estimate = context_truncation.estimate_request_input(kwargs)
+        self._check_context_window(ai_model, kwargs, gateway_provider="openai")
+
+        def _embedding() -> Any:
+            call_kwargs = dict(kwargs)
+            if isinstance(self.upstream_backend, LiteLLMModelGatewayBackend):
+                call_kwargs["logger_fn"] = self._observe_litellm_call
+            return self.upstream_backend.embedding(**call_kwargs)
 
         def _invoke() -> Any:
             self.release_db_for_wait(ai_model)
@@ -9191,10 +9402,8 @@ class OpenAIGatewayService:
                 else None
             )
             if reservation is not None:
-                return reservation.invoke(
-                    lambda: self.upstream_backend.embedding(**kwargs), stream=False
-                )
-            return self.upstream_backend.embedding(**kwargs)
+                return reservation.invoke(_embedding, stream=False)
+            return _embedding()
 
         response = self._run_with_upstream_retries(
             "openai", _invoke, ai_model=ai_model, purpose="gateway"
@@ -10213,6 +10422,16 @@ class OpenAIGatewayService:
         surfaced_message = upstream_detail.message
         error_type = getattr(exc, "type", None) or getattr(exc, "error_type", None)
         code = getattr(exc, "code", None)
+        # SDK bodies can carry the provider's class even when the wrapper is
+        # a generic APIError. Keep that class on the client-facing envelope.
+        body = getattr(exc, "body", None)
+        body_detail = extract_upstream_error_detail(
+            json.dumps(body, default=str)
+            if isinstance(body, dict)
+            else str(raw_message)
+        )
+        error_type = body_detail.error_type or upstream_detail.error_type or error_type
+        code = body_detail.code or upstream_detail.code or code
         classified = classify_upstream_error(exc)
 
         # When the upstream did not give us its own HTTP status, a 5xx mapping
@@ -10266,7 +10485,20 @@ class OpenAIGatewayService:
             else:
                 message = _origin_labelled(status_code) or surfaced_message
 
-            if classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT:
+            if classified.error_class == ERROR_CLASS_UPSTREAM_POLICY_REFUSAL:
+                if error_type in {
+                    "provider_unavailable",
+                    "upstream_disconnect",
+                    "server_error",
+                }:
+                    error_type = None
+                error_type = error_type or (
+                    "invalid_request_error"
+                    if provider != "gemini"
+                    else "INVALID_ARGUMENT"
+                )
+                code = code or "content_policy_violation"
+            elif classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT:
                 error_type = error_type or "upstream_disconnect"
                 code = code or ERROR_CLASS_UPSTREAM_DISCONNECT
             elif classified.error_class == ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED:
@@ -10421,13 +10653,16 @@ class OpenAIGatewayService:
     def _to_litellm_model(ai_model: GatewayModel) -> str:
         return to_litellm_model(ai_model)
 
-    @staticmethod
-    def _response_to_dict(response: Any) -> Dict[str, Any]:
+    def _response_to_dict(self, response: Any) -> Dict[str, Any]:
+        self._capture_upstream_identity(response)
         if hasattr(response, "model_dump"):
-            return response.model_dump()
-        if isinstance(response, dict):
-            return response
-        return dict(response)
+            result = response.model_dump()
+        elif isinstance(response, dict):
+            result = response
+        else:
+            result = dict(response)
+        self._capture_upstream_identity(result)
+        return result
 
     @staticmethod
     def _content_to_text(content: Any) -> str:
@@ -11453,6 +11688,15 @@ class OpenAIGatewayService:
         accumulated_output_text: Optional[str] = None,
     ) -> None:
         """Persist one usage fact for a gateway request."""
+        masker = getattr(self, "_execution_credential_masker", None)
+        if masker is not None:
+            error_detail = masker.mask(error_detail)
+            request_payload = masker.mask(request_payload)
+            response_payload = masker.mask(response_payload)
+            upstream_response = masker.mask(upstream_response)
+            accumulated_output_text = masker.mask(accumulated_output_text)
+        if _is_openrouter_upstream(ai_model):
+            self._capture_upstream_identity(upstream_response or {})
         if error_class is None and status_code >= 400:
             error_class = classify_recorded_error(status_code, error_detail)
         runtime = resolve_ai_model_runtime(ai_model)
@@ -11507,7 +11751,11 @@ class OpenAIGatewayService:
             )
         token_details = self._extract_token_details(usage_details)
         usage_estimated = False
-        if not prompt_tokens and not completion_tokens and status_code in (200, 499):
+        if (
+            not prompt_tokens
+            and not completion_tokens
+            and (status_code in (200, 499) or accumulated_output_text)
+        ):
             fallback = self._estimate_usage_fallback(
                 ai_model=ai_model,
                 request_payload=request_payload,
@@ -11528,6 +11776,31 @@ class OpenAIGatewayService:
         )
         runtime_principal = runtime_context.get("runtime_principal") or {}
         runtime_session_id = self._resolve_runtime_session()
+
+        input_estimate = getattr(self, "_context_input_estimate", None)
+        if input_estimate is None:
+            input_estimate = context_truncation.estimate_request_input(
+                request_payload or {}
+            )
+        truncation_signal = getattr(self, "_context_preflight_signal", None)
+        if (
+            prompt_tokens
+            and input_estimate >= context_truncation.MIN_INPUT_ESTIMATE
+            and not usage_estimated
+            and usage_source != "estimated"
+        ):
+            previous_input = crud_api_usage.get_previous_gateway_input(
+                self.db,
+                account_id=str(self.auth_context.account_id),
+                ai_model_id=str(ai_model.id),
+                runtime_session_id=runtime_session_id,
+                execution_id=runtime_context.get("flow_execution_id"),
+            )
+            truncation_signal = context_truncation.detect_truncation(
+                estimated=input_estimate,
+                reported=int(prompt_tokens),
+                previous=previous_input,
+            )
 
         model_alias = runtime.model_gateway_model_alias or requested_model
         request_fingerprint = self._gateway_request_fingerprint(
@@ -11649,7 +11922,12 @@ class OpenAIGatewayService:
             model_alias=model_alias,
             provider_name=ai_model.provider_name,
             upstream_request_id=(
-                upstream_response.get("id") if upstream_response else None
+                self._last_upstream_generation_id
+                if _is_openrouter_upstream(ai_model)
+                and self._last_upstream_generation_id
+                else upstream_response.get("id")
+                if upstream_response
+                else None
             ),
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -11691,10 +11969,20 @@ class OpenAIGatewayService:
                 if upstream_response
                 else None,
                 "usage_details": usage_details or None,
+                "input_token_estimate": input_estimate,
+                context_truncation.CONTEXT_TRUNCATED_SUSPECTED: truncation_signal,
                 "upstream_parameters": dict(self._last_upstream_parameters) or None,
+                "upstream_provider": (self._last_upstream_provider)
+                if _is_openrouter_upstream(ai_model)
+                else None,
                 "first_response_at": self._first_model_response_at,
                 "usage_warnings": (
                     self._usage_warnings(usage_details)
+                    + (
+                        [context_truncation.CONTEXT_TRUNCATED_SUSPECTED]
+                        if truncation_signal
+                        else []
+                    )
                     + (
                         ["total_tokens_below_components"]
                         if total_below_components
@@ -11759,6 +12047,13 @@ class OpenAIGatewayService:
             str(usage_identity[0]) if usage_identity is not None else str(usage_row.id)
         )
         observed_at = usage_row.timestamp
+
+        if truncation_signal and runtime_context.get("flow_execution_id"):
+            context_truncation.record_execution_truncation(
+                self.db,
+                execution_id=runtime_context["flow_execution_id"],
+                signal=truncation_signal,
+            )
 
         self._record_credential_health(
             ai_model,
@@ -12510,6 +12805,7 @@ class OpenAIGatewayService:
         gateway_provider: GatewayProvider = "openai",
     ) -> Optional[BudgetCheckResult]:
         """Check configured gateway budgets before the upstream call."""
+        self._check_context_failure(gateway_provider=gateway_provider)
         # The run's own per-execution ceiling is independent of the account
         # budget policies below: it applies even when no BudgetPolicy exists,
         # and it is refused before an extension enforcer can short-circuit.
@@ -12551,6 +12847,80 @@ class OpenAIGatewayService:
                     "Scheduling price lookup after denial failed", exc_info=True
                 )
         return result
+
+    def _check_context_failure(
+        self, *, gateway_provider: GatewayProvider
+    ) -> Optional[str]:
+        """Refuse further model work for an execution already stopped for input loss."""
+        from preloop.models.crud import crud_flow_execution
+
+        context = (
+            self.auth_context.api_key.context_data if self.auth_context.api_key else {}
+        )
+        execution_id = (context or {}).get("flow_execution_id")
+        if not execution_id:
+            return None
+        stored = crud_flow_execution.current_failure(self.db, execution_id=execution_id)
+        if (
+            stored
+            and stored.get("failure_category")
+            == context_truncation.CONTEXT_TRUNCATED_SUSPECTED
+        ):
+            if self._owns_db_session:
+                self.release_db_for_wait()
+            raise ModelGatewayAPIError(
+                provider=gateway_provider,
+                status_code=400,
+                code=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+                error_class=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+                message=stored["error_message"],
+                terminal=True,
+                origin="gateway",
+            )
+        return str(execution_id)
+
+    def _check_context_window(
+        self,
+        ai_model: GatewayModel,
+        payload: Dict[str, Any],
+        *,
+        gateway_provider: GatewayProvider,
+    ) -> None:
+        """Check the final outbound body after optimization and tool stripping."""
+        from preloop.services.model_context_limits import resolve_model_context_limits
+
+        execution_id = self._check_context_failure(gateway_provider=gateway_provider)
+        if not execution_id:
+            return
+        limits = resolve_model_context_limits(
+            model_identifier=ai_model.model_identifier,
+            provider_name=ai_model.provider_name,
+            model_parameters=ai_model.model_parameters,
+        )
+        estimate = context_truncation.estimate_request_input(payload)
+        if limits.context_window is None or estimate <= limits.context_window:
+            return
+        signal = {
+            "signal": "registered_context_window_exceeded",
+            "estimated_input_tokens": estimate,
+            "context_window": limits.context_window,
+            "context_window_source": limits.context_window_source,
+        }
+        self._context_preflight_signal = signal
+        context_truncation.record_execution_truncation(
+            self.db, execution_id=execution_id, signal=signal
+        )
+        if self._owns_db_session:
+            self.release_db_for_wait()
+        raise ModelGatewayAPIError(
+            provider=gateway_provider,
+            status_code=400,
+            code=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+            error_class=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+            message=context_truncation.truncation_message(signal),
+            terminal=True,
+            origin="gateway",
+        )
 
     @staticmethod
     def _normalize_budget_gateway_error(

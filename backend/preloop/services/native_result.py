@@ -167,6 +167,22 @@ def cold_start_context(context: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     return cleaned, True
 
 
+def validate_native_result_config(
+    agent_config: Any, result_schema: Any, validate_result: Any
+) -> None:
+    """Reject native capture without its enabled schema before launching.
+
+    Raises:
+        ValueError: Native results were explicitly enabled without validation.
+    """
+    if native_result_enabled(agent_config) and (
+        not result_schema or validate_result is False
+    ):
+        from preloop.services.flow_failure_messages import NATIVE_RESULT_SCHEMA_REQUIRED
+
+        raise ValueError(NATIVE_RESULT_SCHEMA_REQUIRED)
+
+
 RESULT_DOCUMENT_MAX_BYTES = 256 * 1024
 RESULT_TRANSPORT_MAX_BYTES = 2 * RESULT_DOCUMENT_MAX_BYTES + 1024
 

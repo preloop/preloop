@@ -341,6 +341,16 @@ describe('ApiUsageView', () => {
     localStorage.clear();
   });
 
+  it('offers a usage export for the current reporting window', async () => {
+    const element = await fixture<ApiUsageView>(
+      html`<api-usage-view></api-usage-view>`
+    );
+    await element.updateComplete;
+    const button = element.shadowRoot!.querySelector('[data-export-usage]');
+    expect(button).to.exist;
+    expect(button!.textContent).to.contain('Export usage');
+  });
+
   it('renders usage totals while captured interactions and telemetry are pending', async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -1106,5 +1116,25 @@ describe('ApiUsageView', () => {
     expect(
       kpis.compareDocumentPosition(rollup) & Node.DOCUMENT_POSITION_FOLLOWING
     ).to.not.equal(0);
+  });
+});
+
+describe('Provider policy refusal usage', () => {
+  it('names a refusal distinctly from other request errors', () => {
+    const element = document.createElement('api-usage-view') as any;
+    const item = searchResponseWithExcerpt('Request refused').items[0];
+    const container = document.createElement('div');
+    render(
+      element.renderSearchResult({
+        ...item,
+        status_code: 400,
+        outcome: 'error',
+        error_class: 'upstream_policy_refusal',
+      }),
+      container
+    );
+    expect(container.querySelector('sl-badge')?.textContent).to.contain(
+      'Provider policy refusal'
+    );
   });
 });

@@ -208,12 +208,12 @@
       "confirmation": "failure"
     },
     {
-      "name": "success-overrides-error",
+      "name": "error-overrides-success",
       "result": {
         "status": "success",
         "verdict": "error"
       },
-      "confirmation": "success"
+      "confirmation": "failure"
     },
     {
       "name": "unknown-status-falls-back",

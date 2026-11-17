@@ -881,6 +881,14 @@ def put_artifact(
         max_bytes=artifact_max_bytes(kind),
         max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
     )
+    from preloop.models.crud.execution_credentials import for_execution
+
+    archive = for_execution(db, execution_id).mask_archive(archive)
+    expanded = validate_archive(
+        archive,
+        max_bytes=artifact_max_bytes(kind),
+        max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
+    )
     metadata: dict[str, Any] = {}
     native_expiry = None
     if kind == "workspace":

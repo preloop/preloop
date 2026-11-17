@@ -11,7 +11,8 @@ OIDC or federation exchange in this version.
 
 ## Prepare a dedicated hosted flow
 
-Use an existing GitHub or GitLab tracker and synced project, then create a hosted
+Use an existing GitHub App tracker and synced project for the read-only
+examples below (legacy restricted CI also supports GitLab). Create a hosted
 review flow as a human administrator through the usual Flows API or console.
 The project needs a provider repository identifier and slug. The flow must be
 enabled, use `runner_pool: "server"`, and trigger on exactly that project. The
@@ -27,10 +28,10 @@ without them). Replace the placeholders with your own IDs:
 ```json
 {
   "name": "Repository review",
-  "prompt_template": "Review the checked-out pull request. Do not edit files. Write result.json with a review string.",
+  "prompt_template": "Inspect the checked-out pull request with shell tools. Do not edit files. Return the final structured result with a substantive review string.",
   "ai_model_id": "<model id>",
   "agent_type": "codex",
-  "agent_config": {"limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
+  "agent_config": {"native_result": true, "limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
   "runner_pool": "server",
   "allowed_mcp_tools": [],
   "allowed_mcp_servers": [],
@@ -80,6 +81,7 @@ with your disposable resources:
   "trigger_project_ids": ["00000000-0000-4000-8000-000000000001"],
   "git_clone_config": {
     "enabled": true,
+    "publication_mode": "read_only",
     "repositories": [{
       "project_id": "00000000-0000-4000-8000-000000000001",
       "tracker_id": "00000000-0000-4000-8000-000000000002"
@@ -1513,10 +1515,10 @@ CI identity, so neither can trigger for, read or cause a post on the other.
     ```json
     {
       "name": "Organisation review",
-      "prompt_template": "Review the checked-out pull request. Do not edit files. Write result.json with verdict, summary and findings.",
+      "prompt_template": "Inspect the checked-out pull request with shell tools. Do not edit files. Return the final structured result with verdict, summary and findings.",
       "ai_model_id": "<model id>",
       "agent_type": "codex",
-      "agent_config": {"limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
+      "agent_config": {"native_result": true, "limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
       "runner_pool": "server",
       "allowed_mcp_tools": [],
       "allowed_mcp_servers": [],
@@ -1669,10 +1671,10 @@ flow uses the native read-only mode described above (a complete
 ```json
 {
   "name": "Repository review",
-  "prompt_template": "Review the checked-out pull request. Do not edit files. Write result.json with a review string.",
+  "prompt_template": "Inspect the checked-out pull request with shell tools. Do not edit files. Return the final structured result with a substantive review string.",
   "ai_model_id": "<model id>",
   "agent_type": "codex",
-  "agent_config": {"limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
+  "agent_config": {"native_result": true, "limits": {"max_total_tokens": 5000000, "max_turns": 300, "max_usd": 25}},
   "runner_pool": "server",
   "trigger_project_ids": ["<project id>"],
   "validate_result": true,
@@ -1754,6 +1756,152 @@ The legacy `run-flow` action accepts broader account credentials and rejects
 typed `ci_` tokens. Restricted credentials cannot enroll/administer runners,
 edit flows/projects/policies, create keys/users/identities, retry/resume/matrix
 executions or exchange sessions.
+
+## Automatic subset review with a shadow publisher
+
+The repository's [restricted CI route workflow](https://github.com/preloop/preloop/blob/main/.github/workflows/preloop-ci-route.yml)
+and `scripts/ci_review_route.py` extend the authenticated polling example to
+same-repository PRs. The existing reviewer remains independent.
+This route is inert until the operator supplies its own configuration; merging
+the workflow does not create a flow, identity, key or model registration.
+
+**Trust boundary.** The workflow uses `pull_request_target`, rejects forks,
+drafts and Dependabot before loading the CI key, and checks out only
+the trusted default branch, then pins completion and publication to that exact
+checkout SHA. Never change that
+checkout to a PR head or merge ref, run a PR-supplied installer, or evaluate
+captured command text. Only the publisher has `statuses: write` and
+`pull-requests: write`; selection and completion have read-only GitHub tokens.
+The publisher refetches authenticated server documents, so no PR artifact can
+supply its result. A `workflow_run` or callback receiver is unnecessary here:
+completion is polled inside the trusted workflow. The callback example above
+remains an alternative for installations using signed dispatch subscriptions.
+
+The selector retrieves **every** PR file page, checks the count against
+`changed_files`, and includes both names of a rename. GitHub's 3,000-file API cap
+fails closed. GitHub Actions `paths` filters alone are insufficient: they mean
+*any* changed file matches, whereas this route requires *all* changed files.
+The default union is `docs/**`, `runtime-plugins/**`, `helm/**`, `cli/**`.
+`PRELOOP_CI_ROUTE_PATHS` overrides it with a JSON array of case-sensitive,
+repository-relative shell globs. Matching uses Python `fnmatchcase`: `*` can
+cross `/`, `**` has the same meaning, and negations are unsupported. For example,
+`["docs/**", "cli/**"]` selects only changes wholly within those two trees.
+
+The trigger body is exactly `{"pr_number": 7, "head_sha": "<full SHA>"}`.
+The completion step polls `GET /api/v1/flows/executions/{id}` with the CI key.
+The publisher independently fetches that endpoint, `/result` (retrying HTTP 409
+result-pending responses for up to 30 seconds) and every page of
+`/tool-evidence?skip=0&limit=10`, following `next_skip`. It rechecks the current
+PR head and base before publication. Matching owned executions are reused on
+reruns; failed results are not silently retried with another model run.
+The workflow allows ten minutes for scheduling and the 300-second execution;
+obsolete running work or a polling deadline uses the owned stop endpoint.
+A lost runner can leave work alive until the flow's own timeout.
+
+A result is accepted only when the execution succeeds, the schema and controller
+inspection checks pass, no review fields were withheld, and both returned SHAs
+and the startup receipt match the current PR. `/container_termination` is an
+allowed withheld path: the controller adds it after capture, and the restricted
+projection intentionally removes it even on success. Other withheld paths are
+rejected. The review must contain at least
+80 characters and 12 words (maximum 60,000 characters), the unified Preloop
+review heading, Checks section and exact reviewed-SHA marker. The strict schema is
+[`ci-route-result.schema.json`](../../examples/ci-route-result.schema.json);
+all object properties are required, all objects are closed, and absent finding
+locations use `null`. `approve` or `comment` with critical/high findings is rejected. Missing PR
+context (`context_complete: false`) is an error, never a passing review.
+
+Repository-inspection counters alone do **not** show that a diff was read.
+Configure the prompt to obtain the full head and target-branch SHA from the
+checkout, compute their unique merge base, and issue this standalone native
+shell command in the repository, substituting the literal full SHAs:
+
+```sh
+git --no-pager diff --no-ext-diff --no-textconv <merge_base_sha> <head_sha> --
+```
+
+Use the tool's working-directory argument, with no `cd`, pipeline, redirection,
+path filter or `--stat`. The validator accepts a shell `-c`/`-lc` wrapper around
+that exact command. It requires an integrity-valid evidence record with
+`document.execution_id`, `capture_complete: true`, no storage redaction, and
+an observation with `source: native`, `kind: command`, `event: item.completed`,
+`exit_code: 0`, `redacted: false` and `truncated: false`. It checks record/page
+digests and the captured result digest. Requested calls, mere command counts,
+echoed command strings and started/failed commands do not satisfy this policy.
+Other redacted records need not be accepted as proof. Enable tool-content
+capture for this flow's account; without readable native commands the publisher
+returns `error`. This is captured execution evidence, not proof the model
+understood every changed line. The startup receipt's canonical diff digest
+uses the separate reproduction command above.
+
+The target branch can advance between admission, checkout and publication.
+The checkout's `origin/main` is not a substitute for the admitted base when
+that happens: the returned base and current PR must still agree with the
+controller's binding, or the publisher reports `error`. A stale result never
+becomes a successful check for the newer head or base.
+
+**Shadow publication.** By default only the commit status
+`preloop-review/ci-route` and a job summary (verdict, counts by severity,
+execution URL) are written. `approve` and `comment` map to `success`, `request_changes` to
+`failure`, and any missing/invalid result or evidence maps to `error` with a
+safe reason. No review or comment is posted in shadow mode. Leave this status
+out of branch protection and rulesets. Set `PRELOOP_CI_ROUTE_POST_REVIEW` to
+`enabled` later to also post one COMMENT review, deduplicated by execution/head
+and verified against the bot's publication receipt. This never submits an
+APPROVE or REQUEST_CHANGES review. GitHub cannot atomically publish and lock
+PR updates; a concurrent update can leave a review on its old commit, after
+which the final head/base check reports an error.
+
+The prompt uses anonymous public GitHub GETs for PR metadata, comments and up
+to two referenced issues; clone credentials are never repurposed for those
+requests. An unavailable issue is `UNCLEAR`, not invented acceptance criteria.
+Public REST cannot establish whether an inline thread was resolved. The prompt
+suppresses matching previous feedback when that state is unknown and reports
+the limitation. It performs a full/fast-path review, without taking an
+incremental baseline from the other reviewer. Keep shadow mode until comparison
+shows these context differences do not degrade review quality. Private
+repositories need a separately designed trusted context-delivery mechanism;
+this public-repository prompt does not claim that capability.
+
+Before enabling posting, compare both reviews on the **same head and base**:
+open the execution URL from the shadow summary, read its result alongside the
+existing review, and reconcile severity, verified file/line evidence, missed
+findings, false positives, checks actually run, issue criteria and coverage,
+acknowledged/resolved feedback, and summary format. Record differences and
+execution token usage, cost and latency. Reject comparisons across different
+commits. Require representative docs, CLI, Helm and plugin changes, including
+at least one issue-linked PR and one re-review. A green status alone proves
+validation, not review quality. Keep the posting variable unset until those
+comparisons are accepted; the existing reviewer continues throughout.
+
+### Operator activation checklist
+
+1. Register a server-usable OpenRouter model with identifier
+   `deepseek/deepseek-v4-flash-0731`, endpoint
+   `https://openrouter.ai/api/v1`, and model parameter `reasoning_effort: low`.
+   Select that registration explicitly in the flow. Keep provider credentials
+   in Preloop; the Actions jobs never need them.
+2. Create an enabled, dedicated hosted Codex flow with `runner_pool: server`,
+   `agent_config.native_result: true`, `timeout_seconds: 300`,
+   `validate_result: true` and the strict schema linked above. Set explicit
+   run limits, empty MCP tool/server allowlists, and exactly this synced
+   project's owning GitHub App clone binding with `publication_mode: read_only`.
+   Use the [adapted Pull Request Reviewer prompt](../../examples/ci-route-prompt.md),
+   which preserves severity calibration, verification budgets, issue coverage
+   and the unified summary while returning a native structured result. Leave automatic event triggers, setup commands,
+   platform review posting and other publication features unset.
+3. Create a new CI identity bound to this project and flow. Grant its key
+   `flow:trigger`, `execution:read`, `execution:result:read`,
+   `execution:evidence:read` and `execution:stop`. The evidence permission is
+   additional to the basic polling/publishing examples. A callback subscription
+   and callback signing secret are not needed for this polling route.
+4. Create repository secret `PRELOOP_CI_ROUTE_TOKEN` and variables
+   `PRELOOP_CI_ROUTE_URL`, `PRELOOP_CI_ROUTE_PROJECT_ID`,
+   `PRELOOP_CI_ROUTE_FLOW_ID`, `PRELOOP_CI_ROUTE_ENABLED`.
+   Optional variables: `PRELOOP_CI_ROUTE_PATHS`, `PRELOOP_CI_ROUTE_POST_REVIEW`.
+   Set `PRELOOP_CI_ROUTE_ENABLED` to `enabled` last. A missing key, URL, flow ID,
+   project ID or enabling variable causes a clean skip. Disable the enabling
+   variable to stop new runs. Keep the review-posting variable unset for shadow.
 
 ## Local release gate and remaining proof
 
@@ -1891,3 +2039,41 @@ material. A human owner can replace or rotate the API key for that model.
 Timeouts, network failures, rate limits and provider `5xx` responses allow the
 review to proceed. Billing rejection marks do not block reviews; unmarked models
 have no extra provider call. Probe calls appear in gateway usage and audit.
+
+## Find a refused trigger in the audit trail
+
+Restricted CI refusals are recorded as `restricted_ci_denied`, including
+credential and transport failures before the trigger handler, invalid request
+shapes, flow binding mismatches, and trusted provider admission failures.
+Each record has the stored CI principal (or key when no principal is bound),
+the requested flow UUID, `details.reason_code`, a plain `details.message`, and
+`details.count`. Other refused operations use a fixed operation label instead
+of retaining arbitrary request URLs.
+
+Use your console session or a human API credential with `view_audit_logs`:
+
+```http
+GET /api/v1/audit-logs?action=restricted_ci_denied&reason_code=ci_head_mismatch
+GET /api/v1/audit-logs/grouped?reason_code=ci_flow_denied
+```
+
+Common reasons are `ci_transport_denied` (use one bearer header),
+`ci_key_inactive`, `ci_key_expired`, `ci_principal_inactive`,
+`ci_action_denied`, `ci_credential_invalid` (check the credential binding), `ci_authorization_denied`
+(check the principal's current grant and binding), `ci_flow_denied` (wrong
+flow), `ci_input_invalid` (send only the PR number and exact head),
+`ci_pr_closed`, `ci_repository_mismatch`, and `ci_head_mismatch` (refresh the
+provider's PR state). Verification or dispatch unavailability is recorded as
+`ci_verification_unavailable` rather than inventing a provider diagnosis.
+
+Identical refusals from one principal to one target with one reason share a
+single record per UTC minute. `count` includes the first attempt; `window_start`
+and `window_end` identify the interval. The current minute is visible immediately
+but remains unsealed. After the minute closes, the normal audit sealer hashes the
+final counter. Later retries create a new row; sealed evidence is never changed.
+The list's `total` counts records, so sum `details.count` to count refused attempts.
+
+Bodies, credentials, provider response text and arbitrary URLs are excluded.
+Only credentials that resolve to a stored account can be attributed to that
+account's audit trail. Unknown or missing credentials cannot safely be assigned
+to an account from a caller-supplied account or session ID.

@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 import { formatUsd, formatUsdExact } from '../../utils/money';
@@ -20,6 +21,7 @@ import '../../components/token-figures.ts';
 import '../../components/time-range-select.ts';
 import '../../components/history-cutoff-row.ts';
 import {
+  fetchWithAuth,
   getAccountGatewayUsageSearch,
   getAccountGatewayUsageSummary,
   getAccountRateLimitReport,
@@ -97,6 +99,8 @@ export const API_USAGE_BREAKDOWN_PAGE = 5;
 @customElement('api-usage-view')
 export class ApiUsageView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
+  @state() private exportingUsage = false;
+
   @state()
   private summary: AccountGatewayUsageSummaryResponse | null = null;
 
@@ -667,6 +671,40 @@ export class ApiUsageView extends LitElement {
     }
 
     return params;
+  }
+
+  private async exportUsage(): Promise<void> {
+    this.exportingUsage = true;
+    try {
+      const range = this.rangeParams();
+      const query = new URLSearchParams();
+      if (range.startDate) query.set('start_date', range.startDate);
+      if (range.endDate) query.set('end_date', range.endDate);
+      const response = await fetchWithAuth(
+        `${REST_API_PREFIX}/account/gateway-usage/export?${query}`
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(
+          typeof body.detail === 'string'
+            ? body.detail
+            : 'Could not export gateway usage.'
+        );
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'preloop-gateway-usage.csv';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      this.error =
+        error instanceof Error
+          ? error.message
+          : 'Could not export gateway usage.';
+    } finally {
+      this.exportingUsage = false;
+    }
   }
 
   private summaryLoadGeneration = 0;
@@ -1742,7 +1780,11 @@ export class ApiUsageView extends LitElement {
             pill
             variant=${item.outcome === 'error' ? 'danger' : 'success'}
           >
-            ${item.outcome}
+            ${
+              item.error_class === 'upstream_policy_refusal'
+                ? 'Provider policy refusal'
+                : item.outcome
+            }
           </sl-badge>
         </div>
         <div class="search-meta">${billingAttribution(item.meta_data)}</div>
@@ -1820,6 +1862,13 @@ export class ApiUsageView extends LitElement {
             @range-change=${this.handleRangeChange}
           ></time-range-select>
           <span class="range-window">${this.rangeWindowLabel()}</span>
+          <sl-button
+            data-export-usage
+            ?loading=${this.exportingUsage}
+            @click=${this.exportUsage}
+            title="Export all gateway requests in this date range, without message content"
+            >Export usage</sl-button
+          >
           <sl-input
             class="usage-search"
             label="Search captured interactions"

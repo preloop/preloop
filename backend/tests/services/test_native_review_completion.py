@@ -189,6 +189,9 @@ async def test_review_written_before_tool_loop_is_checked_and_recovered(
     ):
         result = await orch._monitor_agent_execution("native-session", executor)
     assert result["status"] == ("SUCCEEDED" if usable else "FAILED")
+    assert result["failure_category"] == (None if usable else "agent_tool_loop")
+    if not usable:
+        assert "20" in result["error_message"]
     assert result["result"] == executor.get_result_artifact.return_value
     executor.stop.assert_awaited_once_with("native-session")
 

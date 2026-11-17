@@ -54,6 +54,10 @@ def test_unknown_context_is_named_cli_fallback_not_upstream_capacity(
     assert catalog["models"][0]["context_window"] == CODEX_FALLBACK_CONTEXT_WINDOW
     assert "codex_fallback_not_provider_capacity" in caplog.text
     assert "max_output_tokens" not in catalog["models"][0]
+    startup = catalog_materialization_shell(catalog)
+    assert "No context window is registered" in startup
+    assert "model_parameters.context_window" in startup
+    assert "docs/guide/model-context-limits.md" in startup
 
 
 @pytest.mark.parametrize("model", ["gpt-5.4", "gpt-5.4-2026", "provider/gpt-5.4"])

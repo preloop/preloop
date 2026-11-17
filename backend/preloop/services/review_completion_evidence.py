@@ -1,5 +1,6 @@
 """Sanitised controller facts for a review, independent of its verdict."""
 
+import json
 import re
 from collections import Counter
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import crud
 from preloop.services.execution_tool_evidence import digest
+from preloop.services.upstream_request_summary import public_upstream_summary
 
 POST_RESULT_FAILURES = frozenset(
     {
@@ -304,6 +306,16 @@ def timings_projection(
                 _identifier(request.get("provider_name")),
                 effort,
                 limit,
+                json.dumps(public_upstream_summary(params), sort_keys=True),
+                (
+                    request.get("upstream_provider")
+                    if isinstance(request.get("upstream_provider"), str)
+                    and re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9 ./_-]{0,199}",
+                        request["upstream_provider"],
+                    )
+                    else None
+                ),
             )
         ] += 1
         duration = request.get("duration")
@@ -355,6 +367,8 @@ def timings_projection(
                 "reasoning_effort": key[2],
                 "max_output_tokens": key[3],
                 "request_count": count,
+                "upstream_parameters": json.loads(key[4]),
+                "upstream_provider": key[5],
             }
             for key, count in effective.items()
         ],

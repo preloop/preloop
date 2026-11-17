@@ -1,0 +1,141 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "head_sha",
+    "base_sha",
+    "verdict",
+    "review",
+    "findings",
+    "context_complete",
+    "risk_level",
+    "issue_coverage"
+  ],
+  "properties": {
+    "head_sha": {
+      "type": "string"
+    },
+    "base_sha": {
+      "type": "string"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "approve",
+        "comment",
+        "request_changes"
+      ]
+    },
+    "review": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "severity",
+          "title",
+          "body",
+          "path",
+          "line",
+          "category",
+          "recommendation",
+          "code_snippet"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low",
+              "info"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "category": {
+            "type": "string"
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "code_snippet": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "context_complete": {
+      "type": "boolean"
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "issue_coverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue",
+          "verdict",
+          "criteria_total",
+          "criteria_met",
+          "gaps"
+        ],
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "full",
+              "partial",
+              "not_addressed",
+              "unclear"
+            ]
+          },
+          "criteria_total": {
+            "type": "integer"
+          },
+          "criteria_met": {
+            "type": "integer"
+          },
+          "gaps": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  }
+}

@@ -997,8 +997,10 @@ async def test_native_tool_loop_stops_and_preserves_result(orchestrator) -> None
     executor.get_status.return_value = AgentStatus.RUNNING
     detection = {
         "pattern_length": 1,
-        "repetitions": 4,
-        "pattern": [{"server_name": "codex_cli", "tool_name": "Bash"}],
+        "repetitions": 20,
+        "pattern": [
+            {"server_name": "codex_cli", "tool_name": "Bash", "command_name": "true"}
+        ],
     }
     artifact = {"status": "incomplete", "summary": "Review interrupted"}
     orchestrator.execution_logger.log_milestone = MagicMock()
@@ -1020,6 +1022,9 @@ async def test_native_tool_loop_stops_and_preserves_result(orchestrator) -> None
     executor.stop.assert_awaited_once_with("native-session")
     assert result["status"] == "FAILED"
     assert result["result"] == artifact
+    assert result["failure_category"] == "agent_tool_loop"
+    assert "command true" in result["error_message"]
+    assert "20 times" in result["error_message"]
     assert "repeated tool loop: codex_cli/Bash" in result["error_message"]
     assert "MCP" not in result["error_message"]
     assert any(call.args[0] == "agent_loop_detected" for call in publish.call_args_list)
@@ -1027,3 +1032,13 @@ async def test_native_tool_loop_stops_and_preserves_result(orchestrator) -> None
         call.args[0] == "mcp_tool_loop_detected"
         for call in orchestrator.execution_logger.log_milestone.call_args_list
     )
+
+
+def test_tool_loop_reports_observed_repeats() -> None:
+    """The message counts observed calls, not only the detection threshold."""
+    signature = json.dumps(
+        {"server_name": "native", "tool_name": "Bash", "command_name": "true"}
+    )
+    detection = FlowExecutionOrchestrator._detect_repeated_tool_cycle([signature] * 20)
+    assert detection is not None
+    assert detection["repetitions"] == 20

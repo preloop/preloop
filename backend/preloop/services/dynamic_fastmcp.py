@@ -1774,6 +1774,7 @@ class DynamicFastMCP(FastMCP):
         justification_modes = {}
         builtin_enabled_map = {}
         account_meta = {}
+        approval_status_available = True
 
         try:
             # One shared DB session for all list_tools metadata lookups so we
@@ -1846,7 +1847,41 @@ class DynamicFastMCP(FastMCP):
                             enabled[alias_name] = bool(tc.is_enabled)
                     acc = crud_account.get(db, id=user_context.account_id)
                     meta = getattr(acc, "meta_data", {}) or {}
-                    return proxied, modes, enabled, meta
+                    approval_status = True
+                    if (
+                        getattr(user_context, "codex_tools", "default") == "lean"
+                        and user_context.allowed_flow_tools is not None
+                        and len(configs) < 1000
+                    ):
+                        from preloop.services.flow_approval_discovery import (
+                            flow_may_use_approval_status,
+                        )
+                        from preloop.services.sensitive_data.policy_store import (
+                            SensitiveDataPolicyError,
+                        )
+                        from sqlalchemy.exc import SQLAlchemyError
+
+                        try:
+                            approval_status = flow_may_use_approval_status(
+                                db,
+                                user_context,
+                                allowed=flow_allowed_tool_names(
+                                    user_context.allowed_flow_tools
+                                ),
+                                configs=visible,
+                                account_meta=meta,
+                                proxied_names={
+                                    exposed_tool_name(owner.tool_prefix, tool.name)
+                                    for owner, tool in proxied
+                                },
+                            )
+                        except (SQLAlchemyError, SensitiveDataPolicyError, ValueError):
+                            # Discovery optimization must not lose replay or
+                            # already-loaded external tools on a policy outage.
+                            logger.warning(
+                                "Approval discovery unavailable; retaining replay tool"
+                            )
+                    return proxied, modes, enabled, meta, approval_status
                 finally:
                     db.close()
 
@@ -1857,6 +1892,7 @@ class DynamicFastMCP(FastMCP):
                 justification_modes,
                 builtin_enabled_map,
                 account_meta,
+                approval_status_available,
             ) = await asyncio.wait_for(
                 loop.run_in_executor(None, _fetch_list_tools_metadata),
                 timeout=30,
@@ -2034,7 +2070,7 @@ class DynamicFastMCP(FastMCP):
         if user_context.allowed_flow_tools is not None:
             original_count = len(available_tools)
             allowed = flow_allowed_tool_names(user_context.allowed_flow_tools)
-            if allowed:
+            if allowed and approval_status_available:
                 # A flow whose allowed tool is gated by an approval workflow
                 # is parked and resumed; the resumed run needs this tool to
                 # execute the approved call (it refuses tools outside the
@@ -4792,6 +4828,13 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
             flow_execution_id=flow_execution_id,
             runtime_session_id=runtime_session_id,
             allowed_flow_tools=allowed_flow_tools,
+            codex_tools=(
+                "lean"
+                if flow_execution_id
+                and api_key
+                and (api_key.context_data or {}).get("codex_tools") == "lean"
+                else "default"
+            ),
             runtime_principal_type=runtime_principal_type,
             runtime_principal_id=runtime_principal_id,
             runtime_principal_name=runtime_principal_name,

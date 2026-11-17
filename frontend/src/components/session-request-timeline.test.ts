@@ -370,3 +370,12 @@ describe('SessionRequestTimeline cache accounting', () => {
     ).to.not.exist;
   });
 });
+
+it('shows provider policy refusals in the request timeline', async () => {
+  const element = await fixture<SessionRequestTimeline>(
+    html`<session-request-timeline
+      .requests=${[makeRequest({ status_code: 400, is_error: true, error_class: 'upstream_policy_refusal' })]}
+    ></session-request-timeline>`
+  );
+  expect(element.shadowRoot!.textContent).to.contain('Provider policy refusal');
+});

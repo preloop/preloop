@@ -154,7 +154,7 @@ def authorize(
     thread_id = artifact_thread_id(trigger, execution.id)
     if claims["thread_id"] != thread_id:
         raise HTTPException(403, "artifact_thread_mismatch")
-    if operation == "put" and execution.status not in {
+    if execution.status not in {
         "PENDING",
         "INITIALIZING",
         "RUNNING",

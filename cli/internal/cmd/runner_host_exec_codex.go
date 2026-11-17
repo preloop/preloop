@@ -77,6 +77,7 @@ func prepareCodexHostExecSandbox(p hostExecProfile, job map[string]any, workspac
 		sandbox = hostExecReadOnlySandbox
 	}
 	args := []string{"exec", "--json", "--color", "never", "--sandbox", sandbox, "--skip-git-repo-check", "-C", workspace, "-c", `approval_policy="never"`}
+	args = append(args, "-c", `shell_environment_policy.exclude=["*TOKEN*","*KEY*","*SECRET*","*PASSWORD*","*CREDENTIAL*","*CAPABILITY*","MCP_CONFIG_JSON"]`)
 	if model := jobModelIdentifier(job); model != "" {
 		alias := p.ModelMap[model]
 		if alias == "" {

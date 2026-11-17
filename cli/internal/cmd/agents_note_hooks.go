@@ -333,6 +333,11 @@ func runAgentsSessionEndHook(cmd *cobra.Command, _ []string) error {
 	if json.Unmarshal(raw, &event) != nil {
 		return nil
 	}
+	// Stop and SubagentStop finish a turn, not the conversation. Ignore a
+	// stale or manually wired hook that invokes session-end for those events.
+	if event.HookEventName != "" && event.HookEventName != "SessionEnd" && event.HookEventName != "sessionEnd" {
+		return nil
+	}
 	sessionID := strings.TrimSpace(hookEventSessionID(raw))
 	if sessionID == "" {
 		return nil

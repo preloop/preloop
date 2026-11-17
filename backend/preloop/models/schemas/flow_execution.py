@@ -274,7 +274,7 @@ class FlowExecutionBase(BaseModel):
             "(a default per-execution ceiling the flow did not set), "
             "repeated_upstream_failure (the gateway stopped a run whose "
             "model calls kept failing identically), model_config, "
-            "no_confirmation, agent_no_progress, publication_missing, "
+            "context_truncated_suspected, no_confirmation, agent_no_progress, publication_missing, "
             "result_schema_invalid (result.json does not match the flow "
             "result schema), review_binding_mismatch (a read-only review "
             "result names another revision than the admitted one), "
@@ -290,7 +290,10 @@ class FlowExecutionBase(BaseModel):
             "was refused before launch), resume_failed (a parked run could not be continued), "
             "gateway_bypassed (a private-runner host CLI made no "
             "request through the Preloop gateway), timeout, cancelled, "
-            "unknown. Null for successful or still-running executions, and "
+            "flow_config, agent_reported_failure, agent_tool_loop, orchestrator_error, "
+            "execution_error, model_policy, runner_unavailable, ci_authorization; "
+            "unknown is a legacy value. "
+            "Null for successful or still-running executions, and "
             "for executions that predate this field."
         ),
     )

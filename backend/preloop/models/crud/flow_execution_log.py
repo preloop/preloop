@@ -371,8 +371,14 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
         """
         if not batch:
             return
+        from preloop.models.crud.execution_credentials import for_execution
+
         rows = []
+        maskers = {}
         for execution_id, log_data in batch:
+            if execution_id not in maskers:
+                maskers[execution_id] = for_execution(db, execution_id)
+            log_data = maskers[execution_id].mask(log_data)
             payload = log_data.get("payload") or {}
             message = (
                 log_data.get("message") or payload.get("line") or payload.get("message")
@@ -414,6 +420,9 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
         credential formats here. This is the last gate before persistence, so
         it also covers producers that did not scrub at the source (issue #173).
         """
+        from preloop.models.crud.execution_credentials import for_execution
+
+        log_data = for_execution(db, execution_id).mask(log_data)
         payload = log_data.get("payload") or {}
         message = (
             log_data.get("message") or payload.get("line") or payload.get("message")

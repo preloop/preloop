@@ -47,6 +47,7 @@ def _audit_query_kwargs(method: Callable[..., Any], **kwargs: Any) -> dict[str, 
         ("consent_ref", "Consent reference"),
         ("include_last_known_consent", "Last-known consent"),
         ("error_code", "Error code"),
+        ("reason_code", "Reason code"),
     ):
         if field not in kwargs or field in parameters:
             continue
@@ -269,6 +270,10 @@ def list_audit_logs(
     grant_reference: Optional[str] = Query(
         None, description="Exact external grant reference"
     ),
+    reason_code: Annotated[
+        Optional[str],
+        Query(min_length=1, max_length=100, description="Exact refusal reason code"),
+    ] = None,
     error_code: Annotated[
         Optional[str],
         Query(min_length=1, max_length=200, description="Exact upstream error code"),
@@ -317,6 +322,7 @@ def list_audit_logs(
                     else {}
                 ),
                 **({"error_code": error_code} if error_code is not None else {}),
+                **({"reason_code": reason_code} if reason_code is not None else {}),
                 **(
                     {"grant_reference": grant_reference}
                     if grant_reference is not None
@@ -343,6 +349,7 @@ def list_audit_logs(
                     else {}
                 ),
                 **({"error_code": error_code} if error_code is not None else {}),
+                **({"reason_code": reason_code} if reason_code is not None else {}),
                 **(
                     {"grant_reference": grant_reference}
                     if grant_reference is not None
@@ -415,6 +422,10 @@ def list_grouped_audit_logs(
     grant_reference: Optional[str] = Query(
         None, description="Exact external grant reference"
     ),
+    reason_code: Annotated[
+        Optional[str],
+        Query(min_length=1, max_length=100, description="Exact refusal reason code"),
+    ] = None,
     error_code: Annotated[
         Optional[str],
         Query(min_length=1, max_length=200, description="Exact upstream error code"),
@@ -473,6 +484,7 @@ def list_grouped_audit_logs(
                     else {}
                 ),
                 **({"error_code": error_code} if error_code is not None else {}),
+                **({"reason_code": reason_code} if reason_code is not None else {}),
                 **(
                     {"grant_reference": grant_reference}
                     if grant_reference is not None

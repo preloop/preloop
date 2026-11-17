@@ -48,6 +48,11 @@ class VerificationError(Exception):
 class TransportError(VerificationError):
     """The remote document was never fetched, so it cannot fail verification."""
 
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        """Retain an HTTP status for bounded retries without exposing response data."""
+        super().__init__(message)
+        self.status = status
+
 
 class NoCredentialRedirect(HTTPRedirectHandler):
     """Never forward credentials to a redirected endpoint."""
@@ -88,7 +93,9 @@ def request_json(
                 raise VerificationError("Redirected credential request rejected")
             return json.load(response)
     except HTTPError as error:
-        raise TransportError(f"Remote request failed (HTTP {error.code})") from None
+        raise TransportError(
+            f"Remote request failed (HTTP {error.code})", status=error.code
+        ) from None
     except (URLError, OSError, ValueError):
         raise TransportError("Remote request or JSON response failed") from None
 
