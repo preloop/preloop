@@ -17,7 +17,7 @@ os.execvpe("bash", ["bash", "--noprofile", "--norc", *sys.argv[2:]], os.environ)
 """
 
 _MAIN = r"""
-import os, shlex, signal, subprocess, sys, tempfile
+import os, select, shlex, signal, subprocess, sys, tempfile, time
 
 environment = dict(os.environ)
 environment.pop("PRELOOP_OUTPUT_BOOTSTRAP", None)
@@ -43,15 +43,36 @@ try:
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda sig, frame: os.killpg(process.pid, sig))
     stream = CredentialStream(masker)
+    # End on the child's exit, not on pipe EOF: a background process the
+    # script left behind keeps the pipe open and must not keep us alive.
+    descriptor = process.stdout.fileno()
+    os.set_blocking(descriptor, False)
+    drain_until = None
     while True:
-        chunk = process.stdout.read1(65536)
+        exited = process.poll() is not None
+        if exited and drain_until is None:
+            drain_until = time.monotonic() + 2
+        if not select.select([descriptor], [], [], 0 if exited else 0.1)[0]:
+            if exited:
+                break
+            continue
+        try:
+            chunk = os.read(descriptor, 65536)
+        except BlockingIOError:
+            continue
         if not chunk:
             break
         sys.stdout.buffer.write(stream.feed(chunk))
         sys.stdout.buffer.flush()
+        if exited and time.monotonic() > drain_until:
+            break
     sys.stdout.buffer.write(stream.finish())
     sys.stdout.buffer.flush()
     code = process.wait()
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except OSError:
+        pass
 finally:
     if os.path.exists(path):
         os.unlink(path)
