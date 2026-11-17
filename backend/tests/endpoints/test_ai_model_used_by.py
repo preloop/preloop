@@ -110,3 +110,66 @@ def test_real_model_consumer_endpoint_reads_configuration_without_traffic(
         "disabled_flow_count": 0,
         "truncated": False,
     }
+
+
+@pytest.mark.parametrize("bound", [2, 5])
+def test_used_by_scans_every_agent_of_a_large_account(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    bound: int,
+) -> None:
+    """Matches beyond the first agents are found; only overflow truncates."""
+    from preloop.services import ai_model_usage_links
+
+    monkeypatch.setattr(ai_model_usage_links, "MAX_CONSUMERS", 3)
+    monkeypatch.setattr(ai_model_usage_links, "AGENT_SCAN_BATCH", 2)
+    crud.crud_user.update(db_session, db_obj=test_user, obj_in={"is_superuser": True})
+    model = crud.crud_ai_model.create(
+        db_session,
+        obj_in=dict(
+            account_id=test_user.account_id,
+            name="Example model",
+            provider_name="openai",
+            model_identifier="example-model",
+        ),
+    )
+    agents = [
+        crud.crud_managed_agent.create_custom_agent(
+            db_session,
+            account_id=test_user.account_id,
+            owner_user_id=test_user.id,
+            display_name=f"Agent {index}",
+            agent_kind="codex",
+        )
+        for index in range(9)
+    ]
+    # Bind the agents that sort last by id, which a first-N scan never reaches.
+    bound_agents = sorted(agents, key=lambda agent: agent.id)[-bound:]
+    for agent in bound_agents:
+        crud.crud_managed_agent_ai_model_binding.replace_for_agent(
+            db_session,
+            account_id=str(test_user.account_id),
+            agent_id=str(agent.id),
+            bindings=[
+                {
+                    "config_key": "model.primary",
+                    "gateway_alias": "example-model",
+                    "ai_model_id": str(model.id),
+                }
+            ],
+        )
+
+    response = client.get(f"/api/v1/ai-models/{model.id}/used-by")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    listed = {row["id"] for row in body["agents"]}
+    expected = {str(agent.id) for agent in bound_agents}
+    if bound <= 3:
+        assert body["truncated"] is False
+        assert listed == expected
+    else:
+        assert body["truncated"] is True
+        assert len(listed) == 3
+        assert listed <= expected

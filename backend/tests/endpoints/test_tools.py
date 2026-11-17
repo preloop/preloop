@@ -4,7 +4,7 @@ import uuid
 from unittest.mock import MagicMock, create_autospec
 
 import pytest
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Response, status
 
 from preloop.api.endpoints import tools
 from preloop.tools.native_defs import NATIVE_TOOLS
@@ -960,6 +960,7 @@ class TestApprovalWorkflowEndpoints:
         )
 
         result = await tools.list_approval_workflows(
+            response=Response(),
             account=mock_account,
             current_user=mock_user,
             db=mock_db,

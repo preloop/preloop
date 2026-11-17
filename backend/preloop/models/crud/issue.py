@@ -271,6 +271,31 @@ class CRUDIssue(CRUDBase[Issue]):
 
         return query.order_by(Issue.created_at.desc()).offset(skip).limit(limit).all()
 
+    def list_in_projects(
+        self,
+        db: Session,
+        *,
+        account_id: uuid_module.UUID,
+        project_ids: list[uuid_module.UUID],
+        status: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> List[Issue]:
+        """List issues within an explicit accessible scope, including an empty one."""
+        query = self._scope_to_account(db.query(Issue), account_id).filter(
+            Issue.project_id.in_(project_ids)
+        )
+        if status == "opened":
+            query = query.filter(Issue.status.in_(["opened", "open"]))
+        elif status == "closed":
+            query = query.filter(Issue.status.in_(["closed", "done"]))
+        return (
+            query.order_by(Issue.created_at.desc(), Issue.id)
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
     def list_filtered(
         self,
         db: Session,

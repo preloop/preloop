@@ -30,6 +30,7 @@ from preloop.api.flow_preconditions import (
     set_flow_etag,
 )
 from preloop.api.loop_safety import run_db_off_loop
+from preloop.api.traffic_attribution import set_reason_code
 from preloop.models.schemas.flow_revision import FlowRevisionMismatchError
 from preloop.cra.evidence_pack import (
     EvidenceMemberError,
@@ -57,7 +58,7 @@ from preloop.models.schemas.flow import (
     apply_flow_limit_fields,
     flow_schedule_state,
 )
-from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
+from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable, get_authorizer
 from preloop.schemas.ci_execution import (
     CiExecutionResponse,
     CiExecutionResultResponse,
@@ -608,9 +609,70 @@ def create_flow(
     return flow
 
 
+def _page_viewable_flows(
+    db: Session,
+    current_user: User,
+    response: Response,
+    *,
+    skip: int,
+    limit: int,
+    lightweight: bool,
+) -> list[Any]:
+    """Return one page of the flows the caller may view, and set the total.
+
+    Visibility is decided per row by the authorizer, so it is applied to every
+    candidate before paging; otherwise a page could come back short while more
+    visible flows exist.
+
+    Args:
+        db: Database session.
+        current_user: Authenticated user.
+        response: Receives the ``X-Total-Count`` header.
+        skip: Number of visible flows to skip.
+        limit: Maximum number of flows to return.
+        lightweight: Load only the summary columns.
+
+    Returns:
+        The requested page of visible flows, in creation order.
+    """
+    if get_authorizer() is None:
+        # Nothing is hidden per row, so page and count in SQL.
+        response.headers["X-Total-Count"] = str(
+            crud_flow.count_multi(
+                db, account_id=current_user.account_id, include_shared=True
+            )
+        )
+        return list(
+            crud_flow.get_multi(
+                db,
+                account_id=current_user.account_id,
+                skip=max(skip, 0),
+                limit=max(limit, 0),
+                include_shared=True,
+                lightweight=lightweight,
+            )
+        )
+    visible = filter_viewable(
+        db,
+        current_user,
+        VISIBLE_FLOW,
+        crud_flow.get_multi(
+            db,
+            account_id=current_user.account_id,
+            skip=0,
+            limit=None,
+            include_shared=True,
+            lightweight=lightweight,
+        ),
+    )
+    response.headers["X-Total-Count"] = str(len(visible))
+    return visible[max(skip, 0) : max(skip, 0) + max(limit, 0)]
+
+
 @router.get("/flows", response_model=List[schemas.FlowResponse])
 @require_permission("view_flows")
 def read_flows(
+    response: Response,
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 100,
@@ -628,18 +690,13 @@ def read_flows(
     ] = None,
     current_user: User = Depends(get_current_active_user),
 ):
-    """Retrieve flows for the account."""
-    flows = filter_viewable(
-        db,
-        current_user,
-        VISIBLE_FLOW,
-        crud_flow.get_multi(
-            db,
-            account_id=current_user.account_id,
-            skip=skip,
-            limit=limit,
-            include_shared=True,
-        ),
+    """Retrieve flows for the account.
+
+    Visibility is applied before paging, so a page is short only at the end.
+    The ``X-Total-Count`` header carries how many flows the caller can see.
+    """
+    flows = _page_viewable_flows(
+        db, current_user, response, skip=skip, limit=limit, lightweight=False
     )
 
     _attach_flow_stats(db, flows, current_user=current_user, stats_since=stats_since)
@@ -649,6 +706,7 @@ def read_flows(
 @router.get("/flows/summary", response_model=List[FlowSummaryResponse])
 @require_permission("view_flows")
 def read_flow_summaries(
+    response: Response,
     db: Session = Depends(get_db),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
@@ -660,19 +718,11 @@ def read_flow_summaries(
 
     Name selectors can omit execution aggregates; lists that show run counts
     request them explicitly. The full ``/flows`` response stays unchanged.
+    Visibility is applied before paging and ``X-Total-Count`` carries how many
+    flows the caller can see.
     """
-    rows = filter_viewable(
-        db,
-        current_user,
-        VISIBLE_FLOW,
-        crud_flow.get_multi(
-            db,
-            account_id=current_user.account_id,
-            skip=skip,
-            limit=limit,
-            include_shared=True,
-            lightweight=True,
-        ),
+    rows = _page_viewable_flows(
+        db, current_user, response, skip=skip, limit=limit, lightweight=True
     )
     if include_stats:
         # The list prints the window's spend and tokens, never the lifetime
@@ -4269,6 +4319,10 @@ The delete is refused with 409 and nothing is changed when:
 """
 
 
+#: Response header naming why a delete was refused.
+DELETE_BLOCKER_HEADER = "X-Preloop-Delete-Blocker"
+
+
 def _describe_delete_blockers(blockers: FlowDeleteBlockers) -> str:
     """Build an actionable 409 detail for references that block a delete."""
     parts = ["Flow cannot be deleted because other records reference it."]
@@ -4315,7 +4369,12 @@ def _describe_delete_blockers(blockers: FlowDeleteBlockers) -> str:
     description=_FLOW_DELETE_DESCRIPTION,
     responses={
         409: {
-            "description": "Running executions or references block the delete; nothing was changed."
+            "description": (
+                "Running executions or references block the delete; nothing "
+                "was changed. The X-Preloop-Delete-Blocker header carries the "
+                "reason code: active_executions, references or "
+                "reference_race."
+            )
         }
     },
 )
@@ -4325,6 +4384,7 @@ def delete_flow(
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
+    request: Request = None,  # type: ignore[assignment]
 ):
     """Delete a flow and its execution history.
 
@@ -4373,8 +4433,12 @@ def delete_flow(
         )
     except FlowDeleteRefusedError as refused:
         logger.warning(f"Refusing to delete flow {flow_id}: {refused.status_code}")
+        if request is not None:
+            set_reason_code(request, refused.reason_code)
         raise HTTPException(
-            status_code=refused.status_code, detail=refused.detail
+            status_code=refused.status_code,
+            detail=refused.detail,
+            headers={DELETE_BLOCKER_HEADER: refused.reason_code},
         ) from None
 
     logger.info(f"Successfully deleted flow {flow_id}")

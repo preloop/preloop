@@ -17,6 +17,7 @@ from datetime import datetime, UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import Response
 from fastapi import HTTPException
 
 from preloop.api.endpoints import projects
@@ -40,6 +41,8 @@ def call_endpoint(func, **kwargs):
         original_func = original_func.__wrapped__
 
     # If original is sync, call it directly
+    if "response" in inspect.signature(original_func).parameters:
+        kwargs.setdefault("response", Response())
     if not inspect.iscoroutinefunction(original_func):
         return original_func(**kwargs)
 

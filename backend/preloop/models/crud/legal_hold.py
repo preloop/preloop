@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from preloop.models.models.approval_request import ApprovalRequest
@@ -61,6 +61,24 @@ def get_active(
     ).scalar_one_or_none()
 
 
+def _account_holds_filter(
+    *,
+    account_id: Any,
+    active_only: bool,
+    resource_type: Optional[str],
+    resource_id: Optional[str],
+) -> list[Any]:
+    """Build the WHERE clauses shared by the hold list and its count."""
+    clauses: list[Any] = [LegalHold.account_id == str(account_id)]
+    if active_only:
+        clauses.append(LegalHold.released_at.is_(None))
+    if resource_type:
+        clauses.append(LegalHold.resource_type == resource_type)
+    if resource_id:
+        clauses.append(LegalHold.resource_id == str(resource_id))
+    return clauses
+
+
 def list_for_account(
     db: Session,
     *,
@@ -71,16 +89,57 @@ def list_for_account(
     skip: int = 0,
     limit: int = 100,
 ) -> list[LegalHold]:
-    """Holds for one account, newest first."""
-    stmt = select(LegalHold).where(LegalHold.account_id == str(account_id))
-    if active_only:
-        stmt = stmt.where(LegalHold.released_at.is_(None))
-    if resource_type:
-        stmt = stmt.where(LegalHold.resource_type == resource_type)
-    if resource_id:
-        stmt = stmt.where(LegalHold.resource_id == str(resource_id))
-    stmt = stmt.order_by(LegalHold.placed_at.desc()).offset(skip).limit(limit)
+    """Holds for one account, newest first (ties broken by id)."""
+    stmt = (
+        select(LegalHold)
+        .where(
+            *_account_holds_filter(
+                account_id=account_id,
+                active_only=active_only,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+        )
+        .order_by(LegalHold.placed_at.desc(), LegalHold.id)
+        .offset(skip)
+        .limit(limit)
+    )
     return list(db.execute(stmt).scalars().all())
+
+
+def count_for_account(
+    db: Session,
+    *,
+    account_id: Any,
+    active_only: bool = False,
+    resource_type: Optional[str] = None,
+    resource_id: Optional[str] = None,
+) -> int:
+    """Count the holds ``list_for_account`` would page over.
+
+    Args:
+        db: Database session.
+        account_id: Owning account.
+        active_only: Count only unreleased holds.
+        resource_type: Only holds on this resource type.
+        resource_id: Only holds on this resource id.
+
+    Returns:
+        The number of matching holds.
+    """
+    stmt = (
+        select(func.count())
+        .select_from(LegalHold)
+        .where(
+            *_account_holds_filter(
+                account_id=account_id,
+                active_only=active_only,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+        )
+    )
+    return int(db.execute(stmt).scalar_one())
 
 
 def active_resource_ids(

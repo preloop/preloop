@@ -21,6 +21,8 @@ Three properties are pinned here, none of them on wall-clock time:
 
 from __future__ import annotations
 
+from fastapi import Response
+
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List
 
@@ -642,7 +644,10 @@ async def test_flows_stats_window_uses_indexes(db_session, test_user, seeded):
     with _Statements(db_session) as log:
         await maybe_await(
             flows.read_flows(
-                db=db_session, stats_since=seeded["since"], current_user=test_user
+                response=Response(),
+                db=db_session,
+                stats_since=seeded["since"],
+                current_user=test_user,
             )
         )
     scans = [

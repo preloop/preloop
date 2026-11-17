@@ -5,11 +5,12 @@ import logging
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
 from preloop.api.common import get_accessible_projects
+from preloop.api.traffic_attribution import mark_empty_after_create
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 from preloop.schemas.readiness import ReadinessPolicy, ReadinessPolicyInput
@@ -208,16 +209,66 @@ def create_project(
     }
 
 
+#: A list that is empty this soon after a create in its scope is recorded.
+EMPTY_AFTER_CREATE_WINDOW = datetime.timedelta(seconds=120)
+
+
+def _flag_empty_after_create(
+    request: Optional[Request],
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    organization_id: Optional[uuid.UUID],
+) -> None:
+    """Record an empty project list that follows a create in the same scope.
+
+    Only called when the list matched nothing, so the extra indexed probe
+    costs nothing on ordinary reads. Direct Python callers pass no request.
+    """
+    if request is None:
+        return
+    since = (
+        datetime.datetime.now(datetime.timezone.utc) - EMPTY_AFTER_CREATE_WINDOW
+    ).replace(tzinfo=None)
+    if CRUDProject(Project).created_since(
+        db, account_id=account_id, since=since, organization_id=organization_id
+    ):
+        mark_empty_after_create(request)
+
+
 @router.get("/projects", response_model=List[ProjectResponse])
 @require_permission("view_projects")
 def list_projects(
+    response: Response,
     organization_id: Optional[str] = None,
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
+    request: Request = None,  # type: ignore[assignment]
 ) -> List[dict]:
-    """List projects accessible to the current user, applying scope rules and optionally filtered by organization."""
+    """List projects accessible to the current user.
+
+    Scope rules and the optional organization filter are applied before
+    paging. The ``X-Total-Count`` header carries how many projects matched, so
+    a caller can tell whether more pages exist.
+
+    Args:
+        request: The request, flagged when the list is empty right after a
+            create in its scope.
+        response: Carries the ``X-Total-Count`` header.
+        organization_id: Optional organization to filter by.
+        limit: Maximum number of projects to return.
+        offset: Number of matching projects to skip.
+        db: Database session.
+        current_user: Authenticated user.
+
+    Returns:
+        One page of project payloads, in a stable creation order.
+
+    Raises:
+        HTTPException: 404 when the organization is not in the account.
+    """
     # Use get_accessible_projects which applies TrackerScopeRule filtering
     accessible_projects = get_accessible_projects(
         db=db,
@@ -226,6 +277,7 @@ def list_projects(
     )
 
     # Apply organization filter if provided
+    organization = None
     if organization_id:
         # Check organization access first
         organization = _get_organization_in_account(
@@ -239,7 +291,16 @@ def list_projects(
             p for p in accessible_projects if p.organization_id == organization.id
         ]
 
-    # Apply pagination
+    # Page over a stable order so consecutive pages neither repeat nor skip.
+    accessible_projects.sort(key=lambda p: (p.created_at, str(p.id)))
+    response.headers["X-Total-Count"] = str(len(accessible_projects))
+    if not accessible_projects:
+        _flag_empty_after_create(
+            request,
+            db,
+            account_id=current_user.account_id,
+            organization_id=organization.id if organization else None,
+        )
     paginated_projects = accessible_projects[offset : offset + limit]
 
     # Convert datetime objects to ISO format strings
@@ -275,6 +336,7 @@ def list_organization_projects(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
+    request: Request = None,  # type: ignore[assignment]
 ):
     """List all projects for an organization, applying scope rules and ensuring user has access."""
     # Check if organization exists
@@ -298,6 +360,13 @@ def list_organization_projects(
 
     # Apply pagination
     total = len(org_projects)
+    if not total:
+        _flag_empty_after_create(
+            request,
+            db,
+            account_id=current_user.account_id,
+            organization_id=organization.id,
+        )
     paginated_projects = org_projects[offset : offset + limit]
 
     # Convert SQLAlchemy model objects to dictionaries

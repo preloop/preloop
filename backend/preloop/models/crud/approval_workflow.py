@@ -67,7 +67,7 @@ class CRUDApprovalWorkflow(CRUDBase[models.ApprovalWorkflow]):
         db: Session,
         account_id: str,
         skip: int = 0,
-        limit: int = 100,
+        limit: Optional[int] = 100,
     ) -> List[models.ApprovalWorkflow]:
         """Retrieve approval workflows for a specific account.
 
@@ -75,7 +75,7 @@ class CRUDApprovalWorkflow(CRUDBase[models.ApprovalWorkflow]):
             db: The database session.
             account_id: The ID of the account.
             skip: Number of records to skip.
-            limit: Maximum number of records to return.
+            limit: Maximum number of records to return; ``None`` returns all.
 
         Returns:
             List of approval workflow objects.

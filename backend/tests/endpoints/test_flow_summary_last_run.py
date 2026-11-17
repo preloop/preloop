@@ -7,6 +7,8 @@ last run of each flow, so the cell can state both again.
 
 from __future__ import annotations
 
+from fastapi import Response
+
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -97,6 +99,7 @@ def test_summary_stats_carry_the_last_run(db_session, test_user) -> None:
     run = _run(db_session, ran, status="SUCCEEDED", started=now, text="PR #2")
 
     rows = flows.read_flow_summaries(
+        response=Response(),
         db=db_session,
         skip=0,
         limit=100,

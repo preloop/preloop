@@ -1,3 +1,4 @@
+import asyncio
 from preloop.sync.config import logger
 from preloop.models.db.session import get_db_session
 from preloop.models.crud import (
@@ -46,6 +47,9 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "reconcile_flow_feedback",
     "refresh_pull_request_records",
     "reconcile_security_maintenance",
+    "expire_stale_approvals",
+    "deactivate_ended_run_keys",
+    "prune_api_traffic",
     "run_data_backfills",
     "evaluate_spend_outliers",
     "evaluate_spend_outlier_sessions",
@@ -978,6 +982,69 @@ async def run_data_backfills() -> list[dict[str, object]]:
         ]
     finally:
         db.close()
+
+
+async def expire_stale_approvals() -> int:
+    """Mark pending approval requests past their deadline as expired.
+
+    The approval list read presents such requests as expired without writing;
+    this sweep makes the stored status match and releases runtime waits.
+
+    Returns:
+        The number of requests expired by this pass.
+    """
+    from preloop.models.crud import crud_approval_request
+
+    def _sweep() -> int:
+        """Run the synchronous sweep with its own session."""
+        db = next(get_db_session())
+        try:
+            return crud_approval_request.expire_stale_pending(db)
+        finally:
+            db.close()
+
+    # The sweep is blocking database work; keep it off the worker event loop.
+    return await asyncio.to_thread(_sweep)
+
+
+async def deactivate_ended_run_keys() -> dict[str, Any]:
+    """Deactivate API keys of flow executions and runtime sessions that ended.
+
+    Returns:
+        Counts from ``preloop.services.run_key_maintenance``.
+    """
+    from preloop.services.run_key_maintenance import (
+        deactivate_ended_run_keys as _deactivate,
+    )
+
+    def _sweep() -> dict[str, Any]:
+        """Run one bounded pass with its own session."""
+        db = next(get_db_session())
+        try:
+            return _deactivate(db, dry_run=False).as_dict()
+        finally:
+            db.close()
+
+    return await asyncio.to_thread(_sweep)
+
+
+async def prune_api_traffic() -> dict[str, int]:
+    """Delete REST traffic rows past their retention.
+
+    Returns:
+        Rows deleted per table.
+    """
+    from preloop.services.api_traffic_retention import prune_api_traffic as _prune
+
+    def _sweep() -> dict[str, int]:
+        """Run one bounded pass with its own session."""
+        db = next(get_db_session())
+        try:
+            return _prune(db)
+        finally:
+            db.close()
+
+    return await asyncio.to_thread(_sweep)
 
 
 async def reconcile_security_maintenance() -> dict[str, object]:

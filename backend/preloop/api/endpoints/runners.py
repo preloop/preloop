@@ -53,6 +53,7 @@ from preloop.plugins.account_hooks import (
     Decision,
     VISIBLE_RUNNER,
     filter_viewable,
+    get_authorizer,
     may_start_runner_session,
 )
 from preloop.services.flow_pr_binding import record_runner_handoff_markers
@@ -545,6 +546,7 @@ def _session_runner_page(
 @router.get("/runners", response_model=List[schemas.RunnerResponse])
 @require_permission("view_flows")
 def list_runners(
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
     skip: int = 0,
@@ -562,11 +564,32 @@ def list_runners(
         rows, decisions = _session_runner_page(
             db, current_user, skip=skip, limit=limit, is_admin=is_admin
         )
-    else:
+    elif get_authorizer() is None:
+        # Nothing is hidden per row, so page and count in SQL.
+        response.headers["X-Total-Count"] = str(
+            crud_flow_runner.count_for_account(db, account_id=current_user.account_id)
+        )
         rows = crud_flow_runner.list_for_account(
             db, account_id=current_user.account_id, skip=skip, limit=limit
         )
-        rows = filter_viewable(db, current_user, VISIBLE_RUNNER, rows)
+        is_admin = (
+            viewer_is_account_admin(db, current_user)
+            if any(row.harness_inventory is not None for row in rows)
+            else False
+        )
+    else:
+        # Visibility is per row, so filter every candidate before paging;
+        # otherwise a page comes back short while more visible runners exist.
+        visible = filter_viewable(
+            db,
+            current_user,
+            VISIBLE_RUNNER,
+            crud_flow_runner.list_for_account(
+                db, account_id=current_user.account_id, skip=0, limit=None
+            ),
+        )
+        response.headers["X-Total-Count"] = str(len(visible))
+        rows = visible[max(skip, 0) : max(skip, 0) + max(limit, 0)]
         # One admin check for the page, rather than two queries per runner.
         is_admin = (
             viewer_is_account_admin(db, current_user)

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, time
-from typing import Annotated, List, Optional
+from typing import Annotated, Any, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -290,6 +290,7 @@ def preview_retention_purge(
 @router.get("/holds", response_model=List[LegalHoldRead])
 @require_permission(VIEW_PERMISSION)
 def list_legal_holds(
+    response: Response,
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
@@ -299,15 +300,22 @@ def list_legal_holds(
         None, description="Only holds on this resource id"
     ),
     limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0, description="Holds to skip"),
 ):
-    """List this account's legal holds, newest first."""
-    rows = crud_legal_hold.list_for_account(
-        db,
-        account_id=account.id,
-        active_only=active_only,
-        resource_type=resource_type,
-        resource_id=resource_id,
-        limit=limit,
+    """List this account's legal holds, newest first.
+
+    The ``X-Total-Count`` header carries the number of matching holds, so a
+    caller can page with ``offset`` past the first ``limit`` rows.
+    """
+    filters: dict[str, Any] = {
+        "account_id": account.id,
+        "active_only": active_only,
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+    }
+    rows = crud_legal_hold.list_for_account(db, skip=offset, limit=limit, **filters)
+    response.headers["X-Total-Count"] = str(
+        crud_legal_hold.count_for_account(db, **filters)
     )
     return [_hold_read(row) for row in rows]
 

@@ -325,6 +325,28 @@ class CRUDCiSubscription:
         assert endpoint is not None
         return endpoint
 
+    def get_for_account(
+        self, db: Session, *, account_id: UUID, endpoint_id: UUID
+    ) -> models.WebhookEndpoint | None:
+        """Read one webhook endpoint scoped to an account for a human reader.
+
+        Args:
+            db: Database session.
+            account_id: Account that must own the endpoint.
+            endpoint_id: Endpoint identifier.
+
+        Returns:
+            The endpoint, or None when it is unknown or owned by another account.
+        """
+        return (
+            db.query(models.WebhookEndpoint)
+            .filter(
+                models.WebhookEndpoint.id == endpoint_id,
+                models.WebhookEndpoint.account_id == account_id,
+            )
+            .first()
+        )
+
     def update_owned(
         self,
         db: Session,

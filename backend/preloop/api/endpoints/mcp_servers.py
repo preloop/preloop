@@ -9,7 +9,15 @@ from typing import Any, Dict, List
 from uuid import UUID
 
 from anyio import from_thread
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -232,12 +240,17 @@ async def create_mcp_server(
 @router.get("/mcp-servers", response_model=List[SharedResourceRead | MCPServerResponse])
 @require_permission("view_mcp_servers")
 def list_mcp_servers(
+    response: Response,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> List[SharedResourceRead | MCPServerResponse]:
     """List all MCP servers for the current user.
 
+    Every visible server is returned (the route has no paging), and the
+    ``X-Total-Count`` header carries the number of rows in the body.
+
     Args:
+        response: Receives the ``X-Total-Count`` header.
         current_user: Current authenticated user
         db: Database session
 
@@ -247,7 +260,7 @@ def list_mcp_servers(
     try:
         logger.info(f"Listing MCP servers for account {current_user.account_id}")
         servers = crud_mcp_server.get_multi_by_account(
-            db, account_id=str(current_user.account_id)
+            db, account_id=str(current_user.account_id), limit=None
         )
         servers = filter_viewable(db, current_user, VISIBLE_MCP_SERVER, servers)
         logger.info(f"Found {len(servers)} MCP servers")
@@ -263,13 +276,15 @@ def list_mcp_servers(
             db, account_id=current_user.account_id, resource_type="mcp_server"
         )
         states = crud_upstream_mcp_oauth.states_for_servers(db, servers)
-        return [
+        rows: List[SharedResourceRead | MCPServerResponse] = [
             *[
                 _server_response(db, server, warnings_by_server, states)
                 for server in servers
             ],
             *filter_viewable(db, current_user, VISIBLE_MCP_SERVER, shared),
         ]
+        response.headers["X-Total-Count"] = str(len(rows))
+        return rows
     except Exception as e:
         logger.error(f"Error listing MCP servers: {type(e).__name__}")
         raise

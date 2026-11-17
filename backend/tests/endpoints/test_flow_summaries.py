@@ -1,5 +1,7 @@
 """Flow list summaries defer heavy configuration and optional aggregates."""
 
+from fastapi import Response
+
 import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -105,6 +107,7 @@ def test_summary_and_full_schedule_projection_match(
         return_value=datetime(2030, 1, 1, tzinfo=timezone.utc),
     )
     result = flows.read_flow_summaries(
+        response=Response(),
         db=MagicMock(),
         skip=0,
         limit=100,
@@ -131,7 +134,9 @@ def test_summary_omits_heavy_fields_and_stats_queries(mocker: Any) -> None:
         flows.crud_flow_execution, "get_execution_stats_for_flows"
     )
     db = MagicMock()
-    result = flows.read_flow_summaries(db=db, skip=0, limit=100, current_user=user)
+    result = flows.read_flow_summaries(
+        response=Response(), db=db, skip=0, limit=100, current_user=user
+    )
     read.assert_called_once_with(
         db,
         account_id=user.account_id,
@@ -163,6 +168,7 @@ def test_summary_uses_owned_stats_and_same_window_projection(mocker: Any) -> Non
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     db = MagicMock()
     result = flows.read_flow_summaries(
+        response=Response(),
         db=db,
         skip=0,
         limit=100,
@@ -182,8 +188,12 @@ def test_summary_preserves_authorizer_visibility(mocker: Any) -> None:
     denied, allowed = summary_row(user.account_id), summary_row(user.account_id)
     mocker.patch.object(flows.crud_flow, "get_multi", return_value=[denied, allowed])
     visibility = mocker.patch.object(flows, "filter_viewable", return_value=[allowed])
+    # Per-row visibility applies only when an authorizer is registered.
+    mocker.patch.object(flows, "get_authorizer", return_value=object())
     db = MagicMock()
-    result = flows.read_flow_summaries(db=db, skip=0, limit=100, current_user=user)
+    result = flows.read_flow_summaries(
+        response=Response(), db=db, skip=0, limit=100, current_user=user
+    )
     visibility.assert_called_once_with(db, user, flows.VISIBLE_FLOW, [denied, allowed])
     assert [row.id for row in result] == [allowed.id]
 

@@ -62,7 +62,7 @@ ROUTES = [
         "GET",
         "/api/v1/approval-requests",
         "view_approvals",
-        "crud_approval_request.expire_stale_pending",
+        "crud_approval_request.stale_pending_cutoff",
         None,
     ),
     RouteCase(

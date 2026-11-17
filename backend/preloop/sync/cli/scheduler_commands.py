@@ -71,6 +71,10 @@ SPEND_OUTLIER_SESSION_CHECK_MINUTES = 15
 DATA_BACKFILL_INTERVAL_MINUTES = 15
 
 
+#: How often stale pending approval requests are written as expired.
+APPROVAL_EXPIRY_INTERVAL_SECONDS = 30
+
+
 def shutdown_scheduler():
     """Function to shut down the scheduler."""
     global scheduler
@@ -280,6 +284,45 @@ async def run_scheduler_async(
         replace_existing=True,
         misfire_grace_time=30,
     )
+
+    # Approval expiry runs here rather than on the approval list read, which
+    # clients poll; the read projects stale requests as expired meanwhile.
+    async def _publish_approval_expiry() -> None:
+        try:
+            await event_bus_service.publish_task("expire_stale_approvals")
+        except Exception:
+            logger.error("Failed to publish approval expiry sweep")
+
+    scheduler.add_job(
+        _publish_approval_expiry,
+        trigger=IntervalTrigger(seconds=APPROVAL_EXPIRY_INTERVAL_SECONDS),
+        id="approval_expiry_sweep",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=30,
+    )
+
+    # Hourly hygiene: deactivate keys of runs that ended, and drop REST
+    # traffic rows past retention. Both passes are bounded.
+    for task_name, job_id in (
+        ("deactivate_ended_run_keys", "run_key_maintenance"),
+        ("prune_api_traffic", "api_traffic_retention"),
+    ):
+
+        async def _publish_hourly(name: str = task_name) -> None:
+            try:
+                await event_bus_service.publish_task(name)
+            except Exception:
+                logger.error("Failed to publish %s", name)
+
+        scheduler.add_job(
+            _publish_hourly,
+            trigger=IntervalTrigger(hours=1),
+            id=job_id,
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=600,
+        )
 
     # Post-deploy data backfills. Migrations only register them (the Helm
     # pre-upgrade hook has a five-minute budget); a worker advances pending

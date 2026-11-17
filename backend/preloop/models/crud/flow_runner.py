@@ -421,9 +421,12 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         *,
         account_id: UUID,
         skip: int = 0,
-        limit: int = 100,
+        limit: Optional[int] = 100,
     ) -> List[FlowRunner]:
-        """Runners of the account, plus runners shared with it (hook H3)."""
+        """Runners of the account, plus runners shared with it (hook H3).
+
+        ``limit=None`` returns every row, in the same stable order.
+        """
         return (
             db.query(FlowRunner)
             .filter(_runner_visibility_clause(db, account_id))
@@ -431,6 +434,24 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             .offset(skip)
             .limit(limit)
             .all()
+        )
+
+    def count_for_account(self, db: Session, *, account_id: UUID) -> int:
+        """How many rows ``list_for_account`` pages over.
+
+        Args:
+            db: Database session.
+            account_id: Account whose own and shared runners are counted.
+
+        Returns:
+            The number of runners visible to the account before authorizer
+            filtering.
+        """
+        return int(
+            db.query(func.count(FlowRunner.id))
+            .filter(_runner_visibility_clause(db, account_id))
+            .scalar()
+            or 0
         )
 
     def find_matching(

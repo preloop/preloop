@@ -3,6 +3,9 @@
 from collections.abc import Iterator
 from unittest.mock import MagicMock
 
+from types import SimpleNamespace
+from uuid import uuid4
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -30,7 +33,13 @@ def search_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setattr(
         issues.crud_issue, "get_for_trackers", lambda *a, **kw: issue_query
     )
-    monkeypatch.setattr(search, "get_accessible_projects", lambda *a, **kw: [])
+    # One accessible project, so the handler reaches its search-mode logic
+    # instead of returning the empty-scope result.
+    monkeypatch.setattr(
+        search,
+        "get_accessible_projects",
+        lambda *a, **kw: [SimpleNamespace(id=uuid4(), organization_id=None)],
+    )
     monkeypatch.setattr(
         comments.crud_embedding_model, "get_active", lambda *a, **kw: []
     )

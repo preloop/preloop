@@ -26,6 +26,8 @@ from preloop.schemas.ci_principal import CiGrant
 from preloop.utils.permissions import user_holds_permission
 
 MAX_CONSUMERS = 5000
+#: Agents read per query while scanning an account for a model's consumers.
+AGENT_SCAN_BATCH = 1000
 
 
 def _can_view_consumers(db: Session, user: models.User, permission: str) -> bool:
@@ -171,81 +173,89 @@ def configured_model_consumers(
     account_id = str(user.account_id)
     result = AIModelUsedByResponse()
     if _can_view_consumers(db, user, "view_agents"):
-        agents = crud.crud_managed_agent.get_multi(
-            db, account_id=account_id, limit=MAX_CONSUMERS + 1
-        )
-        result.truncated = len(agents) > MAX_CONSUMERS
-        agents = filter_viewable(
-            db, user, VISIBLE_MANAGED_AGENT, agents[:MAX_CONSUMERS]
-        )
-        bindings = crud.crud_managed_agent_ai_model_binding.list_for_agents(
-            db,
-            account_id=account_id,
-            agent_ids=[str(agent.id) for agent in agents],
-            include_inactive=True,
-        )
-        legacy_ids = [str(a.id) for a in agents if not bindings.get(str(a.id))]
-        enrollments = (
-            crud.crud_managed_agent_enrollment.list_latest_by_agents(
-                db, account_id=account_id, agent_ids=legacy_ids
+        # Scan every agent of the account in stable batches. Only more
+        # matches than the response holds sets ``truncated``; a large account
+        # whose matches fit is returned complete.
+        after_id: Optional[uuid.UUID] = None
+        while len(result.agents) <= MAX_CONSUMERS:
+            batch = crud.crud_managed_agent.list_batch_after(
+                db, account_id=account_id, after_id=after_id, limit=AGENT_SCAN_BATCH
             )
-            if legacy_ids
-            else {}
-        )
-        legacy_config: dict[str, dict] = {}
-        for agent_id, picks in enrollments.items():
-            enrollment = (
-                picks.get("cli_managed_config")
-                or picks.get("runtime_plugin_control")
-                or picks.get("any")
+            if not batch:
+                break
+            after_id = batch[-1].id
+            agents = filter_viewable(db, user, VISIBLE_MANAGED_AGENT, batch)
+            bindings = crud.crud_managed_agent_ai_model_binding.list_for_agents(
+                db,
+                account_id=account_id,
+                agent_ids=[str(agent.id) for agent in agents],
+                include_inactive=True,
             )
-            if enrollment is not None:
-                summary = crud.crud_managed_agent_enrollment._to_summary(enrollment)
-                if _managed_agent_configured_model_alias(summary) is not None:
-                    legacy_config[agent_id] = summary
-        account_models = (
-            crud.crud_ai_model.get_by_account(db, account_id=account_id)
-            if legacy_config
-            else []
-        )
-        for agent in agents:
-            agent_id = str(agent.id)
-            rows = bindings.get(agent_id, [])
-            configured_ids = {
-                str(row.ai_model_id)
-                for row in rows
-                if row.status != "inactive"
-                and row.binding_type == "configured"
-                and not row.config_key.startswith("gateway.autoregister.")
-            }
-            if not rows and agent_id in legacy_config:
-                configured_alias = _managed_agent_configured_model_alias(
-                    legacy_config[agent_id]
+            legacy_ids = [str(a.id) for a in agents if not bindings.get(str(a.id))]
+            enrollments = (
+                crud.crud_managed_agent_enrollment.list_latest_by_agents(
+                    db, account_id=account_id, agent_ids=legacy_ids
                 )
-                legacy_rows = _managed_agent_configured_models_from_cache(
-                    agent_id=agent_id,
-                    binding_rows=[],
-                    latest_enrollment=legacy_config[agent_id],
-                    account_models=[
-                        model
-                        for model in account_models
-                        if _normalize_gateway_model_alias(
-                            _ai_model_meta_lookup(model, "gateway", "model_alias")
-                        )
-                        == configured_alias
-                    ],
+                if legacy_ids
+                else {}
+            )
+            legacy_config: dict[str, dict] = {}
+            for agent_id, picks in enrollments.items():
+                enrollment = (
+                    picks.get("cli_managed_config")
+                    or picks.get("runtime_plugin_control")
+                    or picks.get("any")
                 )
+                if enrollment is not None:
+                    summary = crud.crud_managed_agent_enrollment._to_summary(enrollment)
+                    if _managed_agent_configured_model_alias(summary) is not None:
+                        legacy_config[agent_id] = summary
+            account_models = (
+                crud.crud_ai_model.get_by_account(db, account_id=account_id)
+                if legacy_config
+                else []
+            )
+            for agent in agents:
+                agent_id = str(agent.id)
+                rows = bindings.get(agent_id, [])
                 configured_ids = {
-                    str(row.ai_model_id) for row in legacy_rows if row.ai_model_id
+                    str(row.ai_model_id)
+                    for row in rows
+                    if row.status != "inactive"
+                    and row.binding_type == "configured"
+                    and not row.config_key.startswith("gateway.autoregister.")
                 }
-            if model_id in configured_ids:
-                result.agents.append(
-                    AIModelAgentLink(
-                        id=agent_id,
-                        name=agent.display_name,
-                        agent_kind=agent.agent_kind,
+                if not rows and agent_id in legacy_config:
+                    configured_alias = _managed_agent_configured_model_alias(
+                        legacy_config[agent_id]
                     )
-                )
+                    legacy_rows = _managed_agent_configured_models_from_cache(
+                        agent_id=agent_id,
+                        binding_rows=[],
+                        latest_enrollment=legacy_config[agent_id],
+                        account_models=[
+                            model
+                            for model in account_models
+                            if _normalize_gateway_model_alias(
+                                _ai_model_meta_lookup(model, "gateway", "model_alias")
+                            )
+                            == configured_alias
+                        ],
+                    )
+                    configured_ids = {
+                        str(row.ai_model_id) for row in legacy_rows if row.ai_model_id
+                    }
+                if model_id in configured_ids:
+                    result.agents.append(
+                        AIModelAgentLink(
+                            id=agent_id,
+                            name=agent.display_name,
+                            agent_kind=agent.agent_kind,
+                        )
+                    )
+        if len(result.agents) > MAX_CONSUMERS:
+            result.truncated = True
+            result.agents = result.agents[:MAX_CONSUMERS]
     if _can_view_consumers(db, user, "view_flows"):
         flows = crud.crud_flow.list_configured_for_model(
             db,

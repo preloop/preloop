@@ -176,7 +176,7 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
         db: Session,
         account_id: str,
         skip: int = 0,
-        limit: int = 100,
+        limit: Optional[int] = 100,
     ) -> List[models.MCPServer]:
         """Retrieve MCP servers for a specific account.
 
@@ -184,7 +184,7 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
             db: The database session.
             account_id: The ID of the account.
             skip: Number of records to skip.
-            limit: Maximum number of records to return.
+            limit: Maximum number of records to return; ``None`` returns all.
 
         Returns:
             List of MCP server objects.

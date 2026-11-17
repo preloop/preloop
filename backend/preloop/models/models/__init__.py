@@ -29,6 +29,7 @@ from .execution_result_grant import ExecutionResultGrant
 from .review_publication_receipt import ReviewPublicationReceipt
 from .platform_review_publication import PlatformReviewPublication
 from .api_usage import ApiUsage
+from .api_traffic import ApiTrafficEvent, ApiTrafficRollup
 from .audit_log import AuditLog
 from .base import Base
 from .desktop import DESKTOP_VIEW_OPEN_STATES, DesktopEndpoint, DesktopView
@@ -317,6 +318,8 @@ __all__ = [
     "GatewayIdentityProviderAudience",
     "CiPrincipal",
     "ApiUsage",
+    "ApiTrafficEvent",
+    "ApiTrafficRollup",
     "AuditLog",
     "ClientVersionLog",
     "Comment",

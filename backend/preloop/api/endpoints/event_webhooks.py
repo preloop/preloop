@@ -251,6 +251,48 @@ def list_webhook_endpoints(
     return [_to_read(row) for row in rows]
 
 
+@router.get("/endpoints/{endpoint_id}", response_model=WebhookEndpointRead)
+@require_permission(VIEW_PERMISSION)
+def get_webhook_endpoint(
+    endpoint_id: UUID,
+    account: Annotated[models.Account, Depends(_account_for_actor)],
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
+    db: Session = Depends(get_db_session),
+    raw_body: Any = Depends(_raw_ci_body),
+) -> WebhookEndpointRead:
+    """Read one of this account's webhook endpoints, without its secret.
+
+    Args:
+        endpoint_id: Endpoint identifier.
+        account: The actor's account.
+        current_user: Human user or restricted CI authorization context.
+        db: Database session.
+        raw_body: Validated restricted CI body; a read accepts none.
+
+    Returns:
+        The endpoint's safe projection.
+
+    Raises:
+        HTTPException: 404 when the endpoint is unknown or another account's;
+            403 for a restricted CI key.
+    """
+    # Restricted CI keys stay on the reviewed machine-route ceiling, which
+    # covers the collection read but not this single-endpoint read.
+    if isinstance(current_user, CiAuthorizationContext):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="CI access denied"
+        )
+
+    endpoint = crud.crud_ci_subscription.get_for_account(
+        db, account_id=account.id, endpoint_id=endpoint_id
+    )
+    if endpoint is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Webhook endpoint not found"
+        )
+    return _to_read(endpoint)
+
+
 @router.post(
     "/endpoints",
     response_model=WebhookEndpointCreated,

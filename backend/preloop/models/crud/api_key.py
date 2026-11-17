@@ -18,6 +18,13 @@ User = models.User
 
 logger = logging.getLogger(__name__)
 
+# A run's key stays usable for a short flush after the run ends
+# (``_reject_finished_flow_execution_key`` allows five minutes; the browser
+# step route accepts a key pinned to an ended session). The ended-run sweep
+# leaves keys alone for at least that long.
+RUN_KEY_EXECUTION_FLUSH_GRACE = timedelta(minutes=5)
+RUN_KEY_SESSION_FLUSH_GRACE = timedelta(hours=1)
+
 
 class CRUDApiKey(CRUDBase[ApiKey]):
     """CRUD operations for API key."""
@@ -449,6 +456,104 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         else:
             db.flush()
         return deactivated
+
+    def ended_run_key_batch(
+        self,
+        db: Session,
+        *,
+        now: datetime,
+        after_id: Optional[Any] = None,
+        limit: int = 500,
+        account_id: Optional[Any] = None,
+    ) -> List[Tuple[Any, Any, str]]:
+        """Active keys bound to a flow execution or runtime session that ended.
+
+        Only keys whose ``context_data`` names a ``flow_execution_id`` or a
+        ``runtime_session_id`` are considered; keys a person created by hand
+        carry neither, and durable managed-agent credentials are excluded
+        explicitly. Such a key is over when it has expired, or its execution
+        is gone or has been terminal for longer than
+        ``RUN_KEY_EXECUTION_FLUSH_GRACE``, or its runtime session is gone or
+        ended more than ``RUN_KEY_SESSION_FLUSH_GRACE`` ago. The grace keeps
+        the key usable for the post-run flush an adapter makes after the run
+        ends. The key name is never used as evidence.
+
+        Args:
+            db: Database session.
+            now: Current time, naive UTC.
+            after_id: Keyset cursor: only ids greater than this.
+            limit: Maximum keys returned.
+            account_id: Restrict to one account.
+
+        Returns:
+            ``(key_id, account_id, reason)`` tuples ordered by key id, where
+            reason is ``expired``, ``execution_ended`` or ``session_ended``.
+        """
+        from sqlalchemy import String, case, cast, exists
+
+        from .flow_execution import CRUDFlowExecution
+
+        execution_ref = ApiKey.context_data.op("->>")("flow_execution_id")
+        session_ref = ApiKey.context_data.op("->>")("runtime_session_id")
+        execution_cutoff = now - RUN_KEY_EXECUTION_FLUSH_GRACE
+        session_cutoff = now - RUN_KEY_SESSION_FLUSH_GRACE
+        live_execution = exists().where(
+            cast(models.FlowExecution.id, String) == execution_ref,
+            or_(
+                models.FlowExecution.status.not_in(
+                    sorted(CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES)
+                ),
+                models.FlowExecution.end_time >= execution_cutoff,
+            ),
+        )
+        live_session = exists().where(
+            cast(models.RuntimeSession.id, String) == session_ref,
+            or_(
+                models.RuntimeSession.ended_at.is_(None),
+                models.RuntimeSession.ended_at >= session_cutoff,
+            ),
+        )
+        expired = and_(ApiKey.expires_at.is_not(None), ApiKey.expires_at < now)
+        execution_ended = and_(execution_ref.is_not(None), ~live_execution)
+        session_ended = and_(session_ref.is_not(None), ~live_session)
+        reason = case(
+            (expired, "expired"),
+            (execution_ended, "execution_ended"),
+            else_="session_ended",
+        )
+        query = (
+            db.query(ApiKey.id, ApiKey.account_id, reason)
+            .filter(
+                ApiKey.is_active.is_(True),
+                or_(execution_ref.is_not(None), session_ref.is_not(None)),
+                or_(
+                    ApiKey.context_data.op("->>")("credential_kind").is_(None),
+                    ApiKey.context_data.op("->>")("credential_kind")
+                    != "managed_agent_durable",
+                ),
+                or_(expired, execution_ended, session_ended),
+            )
+            .order_by(ApiKey.id)
+        )
+        if after_id is not None:
+            query = query.filter(ApiKey.id > after_id)
+        if account_id is not None:
+            query = query.filter(ApiKey.account_id == account_id)
+        return [tuple(row) for row in query.limit(limit).all()]
+
+    def deactivate_ids(self, db: Session, *, key_ids: List[Any]) -> int:
+        """Deactivate the given keys that are still active; no commit.
+
+        Returns:
+            Number of keys deactivated.
+        """
+        if not key_ids:
+            return 0
+        return (
+            db.query(ApiKey)
+            .filter(ApiKey.id.in_(key_ids), ApiKey.is_active.is_(True))
+            .update({ApiKey.is_active: False}, synchronize_session=False)
+        )
 
     def deactivate_runtime_keys_for_flow_execution(
         self,

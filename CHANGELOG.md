@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- REST requests are recorded for every credential (API keys, runtime keys and
+  CI identities as well as login sessions) and every status, including 5xx
+  and requests the CI middleware rejects. Success traffic is rolled up per
+  minute and route template; each 4xx and 5xx is kept individually for at
+  least 7 days. Raw paths and query values are never stored.
+- A refused flow delete names its reason in the `X-Preloop-Delete-Blocker`
+  header and in a `flow_delete_refused` audit row.
+- Keys of flow executions and runtime sessions that ended are deactivated by
+  an hourly maintenance pass (`python -m preloop.services.run_key_maintenance`
+  runs it by hand, as a dry run by default). Keys a person created are never
+  touched.
+- API lists no longer cut off silently. `GET /api/v1/projects`, `GET /api/v1/flows`
+  and `GET /api/v1/flows/summary` now send an `X-Total-Count` header with the
+  number of matching rows, like the approval and execution lists already do.
+  The flow lists apply visibility before paging, so a page is short only at
+  the end. The response bodies are unchanged.
+- The same applies to `GET /api/v1/mcp-servers`, `GET /api/v1/approval-workflows`
+  and `GET /api/v1/runners` (which no longer stop at 100 rows or return short
+  pages) and `GET /api/v1/retention/holds` (which gains an `offset`
+  parameter). `GET /api/v1/agents` and `GET /api/v1/agents/control` apply
+  visibility before paging, and their `total` counts only the agents the
+  caller can see.
+- Issue search compares the `organization_id` filter as a UUID, so an
+  organization filter (in any letter case) finds its issues. An unknown,
+  malformed or excluded organization or project filter returns no results
+  instead of widening the search, and never calls the embedding provider.
+- `GET /api/v1/ai-models/{id}/used-by` checks every agent of the account.
+  `truncated` is true only when more agents use the model than the response
+  lists.
+- `GET /api/v1/approval-requests` no longer writes on every read. A periodic
+  sweep marks requests past their deadline as expired; until it runs, the
+  list already shows them as expired and filters them that way.
 - A pull request review that was running while the flow workers restarted no
   longer leaves its commit status at "Preloop is reviewing". The worker that
   finishes the run now sets the final status. Every way a run ends sets it
@@ -111,6 +143,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Platform operators can read one account's failures and anomalies with
+  `GET /api/v1/operator/accounts/{id}/health` or
+  `preloop accounts health <account-id>`: failed executions by category,
+  successful runs with no tool calls or model requests, routes with repeated
+  errors, empty lists right after a create, and gateway upstream errors.
+- `GET /api/v1/event-webhooks/endpoints/{id}` reads one webhook endpoint
+  (without its signing secret) instead of returning 405.
+- `GET /api/v1/ci-identities/{id}/github-dispatch-subscriptions` lists a CI
+  identity's GitHub dispatch subscriptions, without tokens or secrets.
 - Review posting: a read-only review flow can now post its review only when
   asked. Platform review has three modes: off, automatic (post when the run
   finishes, as before; flows already set up keep this) and manual (post only

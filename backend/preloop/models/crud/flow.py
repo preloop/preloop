@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional, Union
 from uuid import UUID
 
-from sqlalchemy import String, cast, or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Query, Session, joinedload, load_only
 
@@ -253,7 +253,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
         db: Session,
         *,
         skip: int = 0,
-        limit: int = 100,
+        limit: Optional[int] = 100,
         account_id: Optional[str] = None,
         include_shared: bool = False,
         lightweight: bool = False,
@@ -263,6 +263,8 @@ class CRUDFlow(CRUDBase[models.Flow]):
 
         ``include_shared`` adds flows another account shares with
         ``account_id`` (account hook H3); only the flows list asks for them.
+        ``limit=None`` returns every matching row, for callers that must
+        filter visibility before paging.
         """
         query = self._query_with_ai_model(db)
         if lightweight:
@@ -325,7 +327,42 @@ class CRUDFlow(CRUDBase[models.Flow]):
         for key, value in filters.items():
             if hasattr(self.model, key):
                 query = query.filter(getattr(self.model, key) == value)
+        # A stable order keeps consecutive pages from repeating or skipping rows.
+        query = query.order_by(self.model.created_at, self.model.id)
         return query.offset(skip).limit(limit).all()
+
+    def count_multi(
+        self, db: Session, *, account_id: str, include_shared: bool = False
+    ) -> int:
+        """How many rows ``get_multi`` pages over for the same account scope.
+
+        Args:
+            db: Database session.
+            account_id: Account whose flows are counted.
+            include_shared: Also count flows shared with the account.
+
+        Returns:
+            The number of matching flows before authorizer filtering.
+        """
+        query = db.query(func.count(self.model.id))
+        shared_ids: list[Any] = []
+        if include_shared:
+            from preloop.plugins.account_hooks import (
+                VISIBLE_FLOW,
+                extra_visible_ids,
+            )
+
+            shared_ids = extra_visible_ids(db, account_id, VISIBLE_FLOW)
+        if shared_ids:
+            query = query.filter(
+                or_(
+                    self.model.account_id == account_id,
+                    self.model.id.in_(shared_ids),
+                )
+            )
+        else:
+            query = query.filter(self.model.account_id == account_id)
+        return int(query.scalar() or 0)
 
     def get_system_created(
         self, db: Session, *, account_id: Optional[Union[str, UUID]] = None
