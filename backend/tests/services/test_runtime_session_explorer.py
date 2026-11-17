@@ -974,23 +974,34 @@ def test_history_policy_is_resolved_once_per_request_and_not_cached(
     if method != "list_account_sessions":
         kwargs["runtime_session_id"] = row["id"]
     read = getattr(service, method)
-    read(**kwargs)
+
+    def read_bracketed() -> tuple[datetime, datetime]:
+        """Run one read and return the wall-clock instants just before and after.
+
+        The service derives its cutoff from the real clock during the read, so
+        asserting against these bounds holds however slow the runner is.
+        """
+        before = datetime.now(timezone.utc)
+        read(**kwargs)
+        return before, datetime.now(timezone.utc)
+
+    before, after = read_bracketed()
     assert provider.call_count == 1
     lookup = badges if method == "list_account_sessions" else summary
     first_cutoff = lookup.call_args.kwargs["start_date"]
     if first_days is None:
         assert first_cutoff is None
     else:
-        assert (
-            abs((first_cutoff - (now - timedelta(days=first_days))).total_seconds()) < 2
-        )
+        window = timedelta(days=first_days)
+        assert before - window <= first_cutoff <= after - window
 
     # Reusing the Account and service for a later request must see a plan change.
     provider.return_value = 730
-    read(**kwargs)
+    before, after = read_bracketed()
     assert provider.call_count == 2
     next_cutoff = lookup.call_args.kwargs["start_date"]
-    assert abs((next_cutoff - (now - timedelta(days=730))).total_seconds()) < 2
+    window = timedelta(days=730)
+    assert before - window <= next_cutoff <= after - window
 
 
 def test_session_detail_links_its_managed_principal_and_flow(
