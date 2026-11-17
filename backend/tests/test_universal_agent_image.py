@@ -31,7 +31,7 @@ CODEX_ENV = UNIVERSAL / "codex-env.sh"
 README = UNIVERSAL / "README.md"
 FIXTURES = UNIVERSAL / "fixtures"
 CODEX_PY = REPO / "backend" / "preloop" / "agents" / "codex.py"
-CI = REPO / ".github" / "workflows" / "ci.yml"
+CI_POLICY = REPO / ".github" / "ci-policy.json"
 BASE = (
     "ghcr.io/openai/codex-universal@sha256:"
     "905e512f36460e1be4cfedb30928a8a28299edb0fcd5de7998ceaa72d27fe304"
@@ -242,7 +242,9 @@ def test_fixtures_are_checked_in() -> None:
 
 
 def test_backend_ci_filter_includes_the_recipe() -> None:
-    assert "environments/universal/**" in CI.read_text()
+    """The authoritative backend path group in the CI policy covers the recipe."""
+    policy = json.loads(CI_POLICY.read_text())
+    assert "environments/universal/**" in policy["legacy"]["backend"]
 
 
 def test_run_smoke_uses_the_entrypoint_and_names_a_missing_tool() -> None:

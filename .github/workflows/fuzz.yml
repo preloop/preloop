@@ -1,10 +1,14 @@
 name: Continuous fuzzing
 
 on:
-  pull_request:
-    paths:
-      - 'cli/**'
-      - '.github/workflows/fuzz.yml'
+  workflow_call:
+    inputs:
+      full:
+        type: boolean
+        default: false
+      checkout_ref:
+        type: string
+        default: ''
   schedule:
     - cron: '19 3 * * *'
   workflow_dispatch:
@@ -19,11 +23,13 @@ permissions:
 
 concurrency:
   # Cancel superseded PR work; every main/release/manual run keeps its own slot.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: fuzz-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   fuzz:
+    permissions:
+      contents: read
     name: Fuzz ${{ matrix.target }}
     runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.execution_host_tests && 'gce-tests-only' || 'ubuntu-latest' }}
     timeout-minutes: 20
@@ -54,6 +60,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -88,6 +95,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: fuzz-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             cli/fuzz-results/

@@ -9,17 +9,26 @@
 name: CodeQL
 
 on:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        type: string
+        default: ''
+      analysis_ref:
+        type: string
+        default: ''
   push:
     branches: [main]
     tags: ['v*']
   # No base-branch filter: stacked PRs must still be scanned.
   pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
   schedule:
     - cron: '17 5 * * 2'
 
 concurrency:
   # Cancel superseded PR work; every main/release/manual run keeps its own slot.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: codeql-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -37,6 +46,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.checkout_ref || github.sha }}
         if: github.event_name == 'pull_request'
 
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -62,11 +72,81 @@ jobs:
               - 'pyproject.toml'
               - 'runtime-plugins/**/*.py'
             workflow:
-              - '.github/workflows/codeql.yml'
+              - '.github/**'
+              - '.pre-commit-config.yaml'
+              - '**/pyproject.toml'
+              - 'pyproject.toml'
+              - 'requirements/**'
+              - '**/requirements*.txt'
+              - '**/requirements*.in'
+              - '**/package.json'
+              - '**/package-lock.json'
+              - '**/go.mod'
+              - '**/go.sum'
+              - '**/*.lock'
+              - 'Dockerfile'
+              - '**/Dockerfile*'
+              - 'backend/preloop/models/**'
+              - 'backend/preloop/api/auth/**'
+              - 'backend/preloop/api/common*'
+              - 'backend/preloop/api/endpoints/auth*'
+              - 'backend/preloop/api/endpoints/oauth*'
+              - 'backend/preloop/api/endpoints/*permission*'
+              - 'backend/preloop/api/endpoints/*role*'
+              - 'backend/preloop/api/endpoints/*approval*'
+              - 'backend/preloop/services/*auth*'
+              - 'backend/preloop/services/*permission*'
+              - 'backend/preloop/services/*policy*'
+              - 'backend/preloop/services/*session*'
+              - 'backend/preloop/services/*secret*'
+              - 'backend/preloop/services/*token*'
+              - 'backend/preloop/services/mfa*'
+              - 'backend/preloop/services/rate_limit*'
+              - 'backend/preloop/middleware/**'
+              - 'backend/preloop/security/**'
+              - 'backend/preloop/execution/**'
+              - 'backend/preloop/config*'
+              - 'backend/preloop/app*'
+              - 'backend/preloop/main*'
+              - 'frontend/src/services/auth*'
+              - 'frontend/src/services/mfa*'
+              - 'frontend/src/services/passkey*'
+              - 'frontend/src/views/public/**'
+              - 'cli/internal/auth/**'
+              - 'cli/internal/credentials/**'
+              - 'cli/internal/cmd/auth*'
+              - 'environments/egress-proxy/**'
+              - 'security/**'
+              - 'scripts/ci_*.py'
+              - 'scripts/run_backend_shard.py'
+              - 'scripts/*install*'
+              - 'scripts/*defender*'
+              - 'backend/preloop/api/endpoints/api_key*'
+              - 'backend/preloop/api/endpoints/*polic*'
+              - 'backend/preloop/api/endpoints/*account*'
+              - 'backend/preloop/api/endpoints/*user*'
+              - 'backend/preloop/api/endpoints/*team*'
+              - 'backend/preloop/api/endpoints/*organization*'
+              - 'backend/preloop/services/*polic*'
+              - 'backend/preloop/services/*approval*'
+              - 'backend/preloop/services/*credential*'
+              - 'backend/preloop/services/*passkey*'
+              - 'backend/preloop/services/audit/**'
+              - 'backend/preloop/api/mcp*'
+              - 'backend/preloop/api/websocket*'
+              - 'backend/preloop/plugins/**'
+              - 'backend/preloop/utils/*url*'
+              - 'backend/preloop/utils/*ssrf*'
+              - 'backend/preloop/utils/*security*'
+              - 'cli/internal/mcpclient/**'
+              - 'cli/internal/verify/**'
+              - 'runtime-plugins/**'
+              - 'helm/**'
 
       - name: Build language matrix
         id: out
         env:
+          FORCE_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
           EVENT: ${{ github.event_name }}
           GO: ${{ steps.filter.outputs.go }}
           JAVASCRIPT: ${{ steps.filter.outputs.javascript }}
@@ -76,7 +156,7 @@ jobs:
           python3 - <<'PY'
           import json, os
           event = os.environ["EVENT"]
-          force = event != "pull_request" or os.environ.get("WORKFLOW") == "true"
+          force = event != "pull_request" or os.environ.get("WORKFLOW") == "true" or os.environ.get("FORCE_LABEL") == "true"
           include = [{"language": "actions", "build-mode": "none"}]
           if force or os.environ.get("GO") == "true":
               include.append({"language": "go", "build-mode": "autobuild"})
@@ -107,6 +187,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       # The JavaScript extractor requires Node even when analysis needs no
       # build; a self-hosted ubuntu-latest runner may not have it preinstalled.
@@ -138,6 +219,8 @@ jobs:
         uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           category: "/language:${{ matrix.language }}"
+          ref: ${{ inputs.analysis_ref || github.ref }}
+          sha: ${{ inputs.checkout_ref || github.sha }}
           # Scorecard SAST counts GitHub code-scanning analyses per commit.
           # Default setup is weekly / some PRs only. Advanced setup must
           # upload SARIF. Disable Settings → Code security → CodeQL default

@@ -302,7 +302,9 @@ def test_gate_reviews_a_fork_pr_from_a_member_without_a_label(tmp_path: Path) ->
 def test_label_events_only_retrigger_for_the_two_owned_labels() -> None:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     on = doc.get("on") or doc[True]
-    for event in ("pull_request", "pull_request_target"):
+    assert "workflow_call" in on
+    assert "pull_request" not in on
+    for event in ("pull_request_target",):
         assert {"labeled", "unlabeled"} <= set(on[event]["types"]), event
     condition = doc["jobs"]["trigger"]["if"]
     assert (
@@ -330,10 +332,10 @@ def _run_trigger(
         pytest.skip("bash and jq are required")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True)
-    (tmp_path / "pr.json").write_text(json.dumps(GITHUB_PR), encoding="utf-8")
+    (tmp_path / "forge-pr.json").write_text(json.dumps(GITHUB_PR), encoding="utf-8")
     (tmp_path / "statuses").write_text("\n".join(statuses) + "\n", encoding="utf-8")
     stubs = {
-        "gh": f"#!/bin/sh\ncat '{tmp_path}/pr.json'\n",
+        "gh": f"#!/bin/sh\ncat '{tmp_path}/forge-pr.json'\n",
         "sleep": "#!/bin/sh\nexit 0\n",
         "curl": (
             "#!/bin/sh\n"
@@ -415,3 +417,108 @@ def test_unreadable_execution_fails_after_bounded_retries(tmp_path: Path) -> Non
 def test_cli_success_needs_no_extra_read(tmp_path: Path) -> None:
     out = _run_trigger(tmp_path, cli_exit=0, statuses=[])
     assert out.returncode == 0, out.stdout + out.stderr
+
+
+FAKE_GH = """#!/usr/bin/env python3
+import json, os, subprocess, sys
+args = sys.argv[1:]
+path = next(a for a in args if a.startswith("repos/"))
+routes = json.load(open(os.environ["FAKE_ROUTES"]))
+body = next(v for k, v in routes.items() if path.split("?")[0].endswith(k))
+data = json.dumps(body)
+if "--jq" in args:
+    expr = args[args.index("--jq") + 1]
+    data = subprocess.run(["jq", "-r", expr], input=data, text=True,
+                          capture_output=True, check=True).stdout
+sys.stdout.write(data)
+"""
+
+
+def _run_fast_admission(
+    tmp_path: Path,
+    *,
+    fast: str,
+    reviews: list[dict[str, Any]],
+    event_name: str = "pull_request_target",
+    run_head: str = HEAD_SHA,
+) -> tuple[int, str]:
+    """Run the fast-admission step against stubbed API routes."""
+    if shutil.which("bash") is None or shutil.which("jq") is None:
+        pytest.skip("bash and jq are required")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    gh = bin_dir / "gh"
+    gh.write_text(FAKE_GH, encoding="utf-8")
+    gh.chmod(0o755)
+    routes = {
+        "/pulls/7/reviews": reviews,
+        "/pulls/7": {"state": "open", "head": {"sha": HEAD_SHA}},
+        "/runs/99/jobs": {"jobs": [{"name": "CI Fast", "conclusion": fast}]},
+        "/runs/99": {"head_sha": run_head, "event": "pull_request"},
+    }
+    (tmp_path / "routes.json").write_text(json.dumps(routes), encoding="utf-8")
+    output = tmp_path / "github_output"
+    output.touch()
+    env = {
+        "PATH": f"{bin_dir}:{shutil.os.environ['PATH']}",
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_EVENT_NAME": event_name,
+        "FAKE_ROUTES": str(tmp_path / "routes.json"),
+        "GH_REPO": "preloop/preloop",
+        "PR_NUMBER": "7",
+        "EXPECTED_HEAD": HEAD_SHA,
+        "CI_RUN_ID": "99",
+    }
+    out = subprocess.run(
+        ["bash", "-c", _steps()["fast-admission"]["run"]],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    return out.returncode, output.read_text(encoding="utf-8")
+
+
+def _review(user_type: str, state: str = "APPROVED") -> dict[str, Any]:
+    return {"id": 1, "commit_id": HEAD_SHA, "state": state, "user": {"type": user_type}}
+
+
+def test_fast_admission_admits_green_current_head(tmp_path: Path) -> None:
+    """A green CI Fast on the current head admits an unreviewed head."""
+    code, output = _run_fast_admission(tmp_path, fast="success", reviews=[])
+    assert code == 0
+    assert f"head={HEAD_SHA}" in output
+    assert "reviewed=true" not in output
+
+
+@pytest.mark.parametrize("fast", ["failure", "cancelled", "skipped"])
+def test_fast_admission_rejects_a_red_fast_tier(tmp_path: Path, fast: str) -> None:
+    """A failed fast gate never starts a review."""
+    code, _ = _run_fast_admission(tmp_path, fast=fast, reviews=[])
+    assert code != 0
+
+
+def test_fast_admission_rejects_a_run_for_another_head(tmp_path: Path) -> None:
+    """A green run for a stale head does not admit the current one."""
+    code, _ = _run_fast_admission(
+        tmp_path, fast="success", reviews=[], run_head="d" * 40
+    )
+    assert code != 0
+
+
+def test_fast_admission_dedups_only_on_bot_reviews(tmp_path: Path) -> None:
+    """A human review is not a Preloop review; a bot review of the head is."""
+    _, human = _run_fast_admission(
+        tmp_path / "h", fast="success", reviews=[_review("User")]
+    )
+    assert "reviewed=true" not in human
+    _, bot = _run_fast_admission(
+        tmp_path / "b", fast="success", reviews=[_review("Bot", "COMMENTED")]
+    )
+    assert "reviewed=true" in bot
+    _, dispatched = _run_fast_admission(
+        tmp_path / "d",
+        fast="success",
+        reviews=[_review("Bot")],
+        event_name="workflow_dispatch",
+    )
+    assert "reviewed=true" not in dispatched

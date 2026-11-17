@@ -7,29 +7,33 @@
 name: Claude Code e2e
 
 on:
-  pull_request:
-    paths:
-      - "runtime-plugins/claude-preloop/**"
-      - ".github/workflows/claude-code-e2e.yml"
-  push:
-    branches: [main]
-    paths:
-      - "runtime-plugins/claude-preloop/**"
-      - ".github/workflows/claude-code-e2e.yml"
+  workflow_call:
+    inputs:
+      full:
+        type: boolean
+        default: false
+      checkout_ref:
+        type: string
+        default: ''
   workflow_dispatch:
   schedule:
     - cron: "0 6 * * *"
 
 concurrency:
   # Cancel superseded PR work; every main/release/manual run keeps its own slot.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: claude-code-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PRELOOP_DISABLE_TELEMETRY: "true"
 
 permissions:
   contents: read
 
 jobs:
   live-sdk:
+    permissions:
+      contents: read
     name: Latest Claude Agent SDK
     runs-on: ubuntu-latest
     if: >-
@@ -42,6 +46,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
