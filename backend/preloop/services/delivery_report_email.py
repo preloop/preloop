@@ -289,12 +289,65 @@ async def distribute_report(
     }
 
 
-async def distribute_failure(db: Any, *, flow: Any, execution: Any) -> None:
-    """Send one failure notice per report run using the existing email channel.
+def notify_operator_of_failure(*, flow: Any, execution: Any, reason: str) -> bool:
+    """Alert the instance operator when one of its own reports failed.
 
-    The durable claim is committed before sending, so repeated terminal events
-    and concurrent workers cannot send the weekly failure twice. A relay error
-    is recorded; it never changes the execution's failure status.
+    Uses the admin channels every other production alert uses
+    (:func:`preloop.sync.tasks.notify_admins`: product team email, Slack,
+    Mattermost) and the health monitor's ``ALERT`` log line, so log-based
+    alerting sees it even where no webhook is configured.
+
+    Args:
+        flow: The Delivery Report flow.
+        execution: The failed run.
+        reason: Plain-language failure reason.
+
+    Returns:
+        Whether the account is an operator account and the alert was handed on.
+    """
+    from preloop.config import settings
+    from preloop.sync.tasks import notify_admins
+
+    account_id = str(getattr(flow, "account_id", "") or "")
+    if not account_id or account_id not in set(settings.operator_account_ids):
+        return False
+    link = report_url(getattr(execution, "id", ""))
+    logger.error(
+        "ALERT delivery_report_failed execution=%s category=%s",
+        getattr(execution, "id", "unknown"),
+        getattr(execution, "failure_category", None) or "unknown",
+    )
+    try:
+        notify_admins(
+            "Delivery Report failed",
+            f"{reason}\n\nRun: {link}",
+            f"<p>{html.escape(reason)}</p>"
+            f'<p><a href="{html.escape(link, quote=True)}">View the failed run</a></p>',
+        )
+    except Exception:
+        logger.error("Could not send the Delivery Report operator alert")
+    return True
+
+
+async def distribute_failure(
+    db: Any, *, flow: Any, execution: Any
+) -> Optional[Dict[str, Any]]:
+    """Send one failure notice per report run using the existing channels.
+
+    The account's report recipients get an email; an operator account also
+    alerts the admin channels. The durable claim is committed before
+    sending, so repeated terminal events and concurrent workers cannot send
+    the same failure twice. A relay error is recorded; it never changes the
+    execution's failure status.
+
+    Args:
+        db: Database session.
+        flow: The run's flow; anything but a Delivery Report is ignored.
+        execution: The run that reached a terminal status.
+
+    Returns:
+        The stored notice record, or None when no notice was due (not a
+        report, not a failure, or already claimed by another worker).
     """
     from preloop.models.crud import crud_flow_execution
     from preloop.services.delivery_report import is_delivery_report_flow
@@ -304,26 +357,33 @@ async def distribute_failure(db: Any, *, flow: Any, execution: Any) -> None:
     )
 
     if not is_delivery_report_flow(flow) or execution.status not in FAILURE_STATUSES:
-        return
+        return None
     if not crud_flow_execution.claim_report_failure_notice(
         db, execution_id=execution.id, account_id=flow.account_id
     ):
-        return
+        return None
+    report = failure_report(execution)
     try:
         record = await distribute_report(
             db,
             flow=flow,
             execution=execution,
-            report=failure_report(execution),
+            report=report,
             policy=None,
             failure_notice=True,
         )
     except Exception:
         logger.error("Could not send the Delivery Report failure notice")
         record = {"status": "failed", "at": datetime.now(timezone.utc).isoformat()}
+    record = dict(record or {"status": "skipped"})
+    if notify_operator_of_failure(
+        flow=flow, execution=execution, reason=str(report["reason"])
+    ):
+        record["operator_alerted"] = True
     crud_flow_execution.finish_report_failure_notice(
         db,
         execution_id=execution.id,
         account_id=flow.account_id,
-        record=record or {"status": "skipped"},
+        record=record,
     )
+    return record

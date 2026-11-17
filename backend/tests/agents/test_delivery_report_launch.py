@@ -330,3 +330,121 @@ def test_native_host_report_uses_data_plan_for_500_repositories(
     assert len(plan["repositories"]) == 500
     assert plan["report_kind"] == "delivery_report"
     assert len(json.dumps(plan).encode()) < 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_hosted_setup_secret_is_owner_only_and_unique_per_launch() -> None:
+    """The credential-bearing Secret is owner-read only and never read back."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from preloop.utils.repository_setup import SETUP_FILE_MODE
+
+    names = []
+    for _ in range(2):
+        context = {**report_context(3), "flow_id": str(uuid4())}
+        context["execution_id"] = "synthetic-execution"
+        agent = CodexAgent({})
+        agent.use_kubernetes = True
+        agent._init_kubernetes_clients = AsyncMock()
+        agent._prepare_environment = AsyncMock(return_value={})
+        agent._k8s_batch_api = AsyncMock()
+        agent._k8s_batch_api.read_namespaced_job.return_value = SimpleNamespace(
+            metadata=SimpleNamespace(uid="synthetic-job-uid")
+        )
+        agent._k8s_core_api = AsyncMock()
+        await agent._start_kubernetes_pod(context)
+        job = agent._k8s_batch_api.create_namespaced_job.call_args.kwargs["body"]
+        secret = agent._k8s_core_api.create_namespaced_secret.call_args.kwargs["body"]
+        volume = next(
+            v for v in job.spec.template.spec.volumes if v.name == "repository-setup"
+        )
+        assert SETUP_FILE_MODE == 0o400
+        assert volume.secret.default_mode == 0o400
+        assert volume.secret.secret_name == secret.metadata.name
+        assert len(secret.metadata.name) <= 63
+        agent._k8s_core_api.read_namespaced_secret.assert_not_called()
+        agent._k8s_core_api.replace_namespaced_secret.assert_not_called()
+        names.append(secret.metadata.name)
+    assert names[0] != names[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("container_user", "owner"), [(None, (0, 0)), ("1000:1000", (1000, 1000))]
+)
+async def test_docker_setup_file_is_readable_only_by_init_user(
+    container_user: str | None, owner: tuple[int, int]
+) -> None:
+    """The harness user cannot read the uploaded credential store."""
+    import io
+    import tarfile
+    from unittest.mock import AsyncMock
+    from preloop.utils.repository_setup import SETUP_PATH, encode_setup
+
+    agent = CodexAgent({})
+    container = AsyncMock()
+    context: dict[str, Any] = {"_repository_setup": encode_setup("true", "x", 1)}
+    if container_user:
+        context["_container_user"] = container_user
+    await agent._seed_docker_repository_setup(container, context)
+    with tarfile.open(
+        fileobj=io.BytesIO(container.put_archive.call_args.args[1])
+    ) as archive:
+        entry = archive.getmember(SETUP_PATH.lstrip("/"))
+    assert entry.mode == 0o400
+    assert (entry.uid, entry.gid) == owner
+
+
+def test_setup_shell_removes_transport_file_and_shares_credential_path(
+    tmp_path: Any,
+) -> None:
+    """After extraction only the 0600 credential store remains."""
+    import os
+    import subprocess
+    from preloop.utils.git_credentials import GIT_CREDENTIALS_FILE
+    from preloop.utils.repository_setup import SETUP_PATH, encode_setup, setup_shell
+
+    assert GIT_CREDENTIALS_FILE in setup_shell()
+    data_path = tmp_path / "setup.json.gz"
+    data_path.write_bytes(base64.b64decode(encode_setup("true", "secret", 1)))
+    script = setup_shell().replace(SETUP_PATH, str(data_path))
+    script = script.replace("/tmp/preloop", str(tmp_path / "runtime"))
+    script = script.replace(GIT_CREDENTIALS_FILE, str(tmp_path / "credentials"))
+    subprocess.run(
+        ["bash", "-ec", script],
+        env={**os.environ, "PRELOOP_DISABLE_TELEMETRY": "true"},
+        check=True,
+    )
+    assert not data_path.exists()
+    assert (tmp_path / "credentials").read_text() == "secret"
+
+
+def test_openhands_report_uses_mounted_setup() -> None:
+    """The OpenHands harness gets the same constant-size report bootstrap."""
+    from preloop.agents.openhands import OpenHandsAgent
+    from preloop.utils.repository_setup import SETUP_CONTEXT_KEY, setup_shell
+
+    context = report_context(500)
+    script = OpenHandsAgent({})._prepare_git_clone_command(context)
+    assert script == setup_shell()
+    setup = json.loads(gzip.decompress(base64.b64decode(context[SETUP_CONTEXT_KEY])))
+    assert "project-499.git" in setup["script"]
+
+
+def test_generic_private_runner_refusal_does_not_mention_reports() -> None:
+    """Ordinary flows keep the generic wording; reports name their scope."""
+    from preloop.agents.runner_launch import (
+        MAX_RUNNER_LAUNCH_STRING_BYTES,
+        RunnerLaunchRejectedError,
+        check_runner_launch,
+    )
+
+    script = "x" * (MAX_RUNNER_LAUNCH_STRING_BYTES + 1)
+    with pytest.raises(RunnerLaunchRejectedError) as generic:
+        check_runner_launch(script, {})
+    assert "repositories)" not in str(generic.value)
+    assert "report" not in str(generic.value).lower()
+    with pytest.raises(RunnerLaunchRejectedError) as report:
+        check_runner_launch(script, {"PRELOOP_REPOSITORY_COUNT": "440"})
+    assert "(440 repositories)" in str(report.value)
+    assert "The report could not start." in str(report.value)

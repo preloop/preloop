@@ -9841,10 +9841,11 @@ class FlowExecutionOrchestrator:
         try:
             if not self.flow or not self.execution_log:
                 return
+            report_notice: Optional[Dict[str, Any]] = None
             try:
                 from preloop.services.delivery_report_email import distribute_failure
 
-                await distribute_failure(
+                report_notice = await distribute_failure(
                     self.db, flow=self.flow, execution=self.execution_log
                 )
             except Exception:
@@ -9913,7 +9914,12 @@ class FlowExecutionOrchestrator:
             # independently of the tracker-comment notifications below, so a
             # flow with no ``notifications`` blob still has the safety net
             # (#1421).
-            await self._notify_failure_streak(status)
+            # A report run that already emailed its recipients about this
+            # failure keeps the streak's push alert but not a second email.
+            await self._notify_failure_streak(
+                status,
+                skip_email=bool((report_notice or {}).get("sent_to")),
+            )
             notifications = getattr(self.flow, "notifications", None)
             if not notifications:
                 return
@@ -9951,8 +9957,13 @@ class FlowExecutionOrchestrator:
                 getattr(self.execution_log, "id", "unknown"),
             )
 
-    async def _notify_failure_streak(self, status: str) -> None:
+    async def _notify_failure_streak(
+        self, status: str, *, skip_email: bool = False
+    ) -> None:
         """Alert the flow's owners after N consecutive failures (#1421).
+
+        ``skip_email`` leaves out the email channel only; push alerts still go
+        out (a Delivery Report run that emailed its own failure notice).
 
         Best-effort and independent of ``flow.notifications``: the streak
         counter/cross-replica dedup live in
@@ -9967,10 +9978,6 @@ class FlowExecutionOrchestrator:
         held, so the scan keeps its success fast path without reading an ORM
         instance across threads.
         """
-        # Reports have their own per-run recipient notice. A streak alert
-        # would send a second email for the same weekly failure.
-        if is_delivery_report_flow(self.flow):
-            return
         flow_id = getattr(self.flow, "id", None)
         execution_id = getattr(self.execution_log, "id", "unknown")
         if flow_id is None:
@@ -9996,7 +10003,9 @@ class FlowExecutionOrchestrator:
                 flow = crud_flow.get(db, id=flow_id)
                 if flow is None:
                     return None
-                return evaluate_failure_streak(db, flow=flow, execution=execution)
+                return evaluate_failure_streak(
+                    db, flow=flow, execution=execution, skip_email=skip_email
+                )
 
             outcome = await run_db_async(_evaluate)
             if outcome is not None and outcome.alerted:

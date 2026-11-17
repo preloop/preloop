@@ -12,10 +12,11 @@ metadata:
     {{- include "preloop.labels" . | nindent 4 }}
     app.kubernetes.io/component: agent-execution
 rules:
-  # Mounted repository setup belongs to the Job and expires with it.
+  # Mounted repository setup belongs to the Job and expires with it. Each
+  # launch creates a uniquely named Secret, so no read or update is granted.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "get", "update"]
+    verbs: ["create"]
   # Permissions to manage Jobs for agent execution
   - apiGroups: ["batch"]
     resources: ["jobs"]

@@ -496,12 +496,14 @@ describe('delivery-report-view', () => {
 describe('delivery-reports-view', () => {
   let fetchStub: sinon.SinonStub;
   let calls: URL[];
+  let failingFlows: unknown[] | undefined;
   const total = 30;
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.removeItem('preloop.delivery_reports.view_mode');
     calls = [];
+    failingFlows = undefined;
     fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
       const url = new URL(String(input), window.location.origin);
       calls.push(url);
@@ -515,7 +517,11 @@ describe('delivery-reports-view', () => {
               i === 0 ? { projects: ['example/api'] } : {}
             )
         );
-        return json({ items, total });
+        return json(
+          failingFlows === undefined
+            ? { items, total }
+            : { items, total, failing_flows: failingFlows }
+        );
       }
       if (url.pathname === '/api/v1/delivery-reports/run-1') {
         return json(detail());
@@ -538,6 +544,34 @@ describe('delivery-reports-view', () => {
     );
     return el;
   }
+
+  it('shows no failure strip while reports succeed or on older servers', async () => {
+    const el = await mount();
+    expect(el.shadowRoot!.querySelector('.failing-strip')).to.equal(null);
+  });
+
+  it('flags a report flow that failed its last scheduled runs', async () => {
+    failingFlows = [
+      {
+        flow_id: 'flow-1',
+        flow_name: 'Weekly Delivery Report',
+        consecutive_failures: 2,
+        latest_execution_id: 'run-0',
+        latest_failure_category: 'launch_payload_too_large',
+        reason:
+          'This Delivery Report could not finish because its repository setup was too large to start.',
+      },
+    ];
+    const el = await mount();
+    const strip = el.shadowRoot!.querySelector('.failing-strip')!;
+    expect(strip.getAttribute('role')).to.equal('status');
+    expect(strip.textContent).to.contain('Weekly Delivery Report');
+    expect(strip.textContent).to.contain('last 2 scheduled runs');
+    expect(strip.textContent).to.contain('too large to start');
+    expect(strip.querySelector('a')!.getAttribute('href')).to.equal(
+      '/console/delivery-reports/run-0'
+    );
+  });
 
   it('counts and pages with the server total', async () => {
     const el = await mount();

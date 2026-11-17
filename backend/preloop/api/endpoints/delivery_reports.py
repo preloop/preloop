@@ -49,7 +49,11 @@ def list_delivery_reports(
         db, account_id=str(account.id), skip=offset, limit=limit, since=since
     )
     return DeliveryReportList(
-        items=[delivery_report_views.report_row(row) for row in rows], total=total
+        items=[delivery_report_views.report_row(row) for row in rows],
+        total=total,
+        failing_flows=delivery_report_views.failing_report_flows(
+            db, account_id=str(account.id)
+        ),
     )
 
 

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Delivery Report: connecting a tracker no longer creates a Delivery Report
+  flow; a user adds it from the preset or an operator enables it with
+  `python -m preloop.services.delivery_report_maintenance enable`. The same
+  command's `remove-unclaimed` (dry run by default) deletes system-created
+  report flows that no user created or edited and that never succeeded,
+  through the flow delete path. Report launches no longer grow with the number
+  of repositories, skip repositories with no activity in the window, and a
+  refused launch fails as `launch_payload_too_large`. A failed run emails the
+  report recipients once, operator accounts (`OPERATOR_ACCOUNT_IDS`) also
+  alert the admin channels, and the report page flags a flow whose last two
+  scheduled runs failed. Kubernetes agent RBAC gains `create` on Secrets only.
+
 - Policies: the CLI now resolves variable references; the server no longer does.
   `policy apply --dry-run` and `policy diff` use the same local resolution.
   Unset variables stop the upload; `--no-resolve-env` preserves references.

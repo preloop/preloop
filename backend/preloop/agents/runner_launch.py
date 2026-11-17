@@ -58,7 +58,10 @@ def check_runner_launch(script: str, env: dict[str, str]) -> None:
             environment value is larger than the CLI accepts.
     """
     limit = MAX_RUNNER_LAUNCH_STRING_BYTES
-    count = env.get("PRELOOP_REPOSITORY_COUNT", "0")
+    count = env.get("PRELOOP_REPOSITORY_COUNT")
+    # Only report launches carry a repository setup file and its count.
+    scope = f" ({count} repositories)" if count else ""
+    outcome = " The report could not start." if count else ""
     if not script.strip():
         raise RunnerLaunchRejectedError(
             "Private runner launch has an empty bootstrap script; the flow's "
@@ -68,8 +71,8 @@ def check_runner_launch(script: str, env: dict[str, str]) -> None:
     if size > limit:
         raise RunnerLaunchRejectedError(
             f"Private runner bootstrap script is {size} bytes; the runner "
-            f"accepts at most {limit} bytes ({count} repositories). "
-            "The report could not start."
+            f"accepts at most {limit} bytes{scope}. Reduce setup commands or "
+            f"repositories in the flow.{outcome}"
         )
     oversized = sorted(
         (len(value.encode("utf-8")), key)
@@ -80,7 +83,7 @@ def check_runner_launch(script: str, env: dict[str, str]) -> None:
         size, key = oversized[-1]
         raise RunnerLaunchRejectedError(
             f"Private runner launch variable {key} is {size} bytes; the runner "
-            f"accepts at most {limit} bytes per variable ({count} repositories)."
+            f"accepts at most {limit} bytes per variable{scope}."
         )
 
 
@@ -253,7 +256,11 @@ async def build_runner_launch(context: dict[str, Any]) -> dict[str, Any]:
     agent._apply_git_credential_env(env, context)
     check_launch_payload(
         env={**env, "PRELOOP_RUNNER_SCRIPT": script},
-        what=f"private runner launch ({repository_count(context)} repositories)",
+        what=(
+            f"private runner launch ({repository_count(context)} repositories)"
+            if encoded_setup
+            else "private runner launch"
+        ),
     )
     check_runner_launch(script, env)
     return {"version": LAUNCH_VERSION, "script": script, "env": env}

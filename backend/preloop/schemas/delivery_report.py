@@ -39,11 +39,28 @@ class DeliveryReportRow(BaseModel):
     )
 
 
+class DeliveryReportFailingFlow(BaseModel):
+    """A report flow whose latest scheduled runs failed in a row."""
+
+    flow_id: UUID
+    flow_name: Optional[str] = None
+    consecutive_failures: int
+    latest_execution_id: UUID
+    latest_failure_category: Optional[str] = None
+    reason: str
+
+
 class DeliveryReportList(BaseModel):
     """A page of runs and the total that matched the filter."""
 
     items: List[DeliveryReportRow]
     total: int
+    failing_flows: List[DeliveryReportFailingFlow] = Field(
+        default_factory=list,
+        description=(
+            "Report flows with two or more consecutive failed scheduled runs."
+        ),
+    )
 
 
 class DeliveryReportActions(BaseModel):

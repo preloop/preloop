@@ -1619,6 +1619,67 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         return rows, total
 
+    def report_scheduled_failure_streaks(
+        self, db: Session, *, account_id: str, threshold: int = 2
+    ) -> List[Dict[str, Any]]:
+        """Delivery Report flows whose latest scheduled runs all failed.
+
+        Only runs a schedule started count (their trigger payload carries
+        ``scheduled_at``); manual runs neither start nor break a streak.
+        Stopped and still-running runs are skipped.
+
+        Args:
+            db: Database session.
+            account_id: The account whose report flows are read.
+            threshold: Consecutive failed scheduled runs that flag a flow.
+
+        Returns:
+            One entry per flagged flow: ``flow_id``, ``flow_name``,
+            ``consecutive_failures``, ``latest_execution_id`` and
+            ``latest_failure_category``.
+        """
+        if not account_id:
+            return []
+        flows = [
+            flow
+            for flow in db.query(Flow).filter(Flow.account_id == account_id).all()
+            if isinstance(flow.agent_config, dict)
+            and flow.agent_config.get("report_kind") == "delivery_report"
+        ]
+        scheduled_at = FlowExecution.trigger_event_details["payload"][
+            "scheduled_at"
+        ].astext
+        failed = ("FAILED", "TIMEOUT", "TIMED_OUT")
+        flagged: List[Dict[str, Any]] = []
+        for flow in flows:
+            rows = (
+                db.query(FlowExecution)
+                .filter(
+                    FlowExecution.flow_id == flow.id,
+                    scheduled_at.isnot(None),
+                    FlowExecution.status.in_(("SUCCEEDED", *failed)),
+                )
+                .order_by(FlowExecution.start_time.desc(), FlowExecution.id.desc())
+                .limit(max(threshold, 1) * 4)
+                .all()
+            )
+            streak: List[FlowExecution] = []
+            for row in rows:
+                if row.status not in failed:
+                    break
+                streak.append(row)
+            if len(streak) >= threshold:
+                flagged.append(
+                    {
+                        "flow_id": flow.id,
+                        "flow_name": flow.name,
+                        "consecutive_failures": len(streak),
+                        "latest_execution_id": streak[0].id,
+                        "latest_failure_category": streak[0].failure_category,
+                    }
+                )
+        return flagged
+
     def claim_report_failure_notice(
         self, db: Session, *, execution_id: Any, account_id: Any
     ) -> bool:
@@ -1818,6 +1879,18 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         row.result = result
         db.commit()
         return None
+
+    def flow_has_succeeded(self, db: Session, *, flow_id: Any) -> bool:
+        """Whether any run of the flow ever finished SUCCEEDED."""
+        return (
+            db.query(FlowExecution.id)
+            .filter(
+                FlowExecution.flow_id == flow_id,
+                FlowExecution.status == "SUCCEEDED",
+            )
+            .first()
+            is not None
+        )
 
     def last_successful_scheduled_at(
         self, db: Session, *, flow_id: Any

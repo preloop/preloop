@@ -24,13 +24,17 @@ from preloop.models.crud.issue_cost import crud_issue_cost
 from preloop.schemas.delivery_report import (
     DeliveryReportDetail,
     DeliveryReportAttention,
+    DeliveryReportFailingFlow,
     DeliveryReportPendingProposal,
     DeliveryReportRow,
     DeliveryReportWindow,
     ExecutionPullRequest,
 )
 from preloop.services.delivery_report import compute_summary
-from preloop.services.delivery_report_failure import report_document
+from preloop.services.delivery_report_failure import (
+    failure_reason,
+    report_document,
+)
 from preloop.services.delivery_report_proposals import needs_confirmation
 from preloop.services.flow_pr_binding import normalize_pr_url
 
@@ -86,6 +90,20 @@ def report_projects(report: Mapping[str, Any]) -> List[str]:
             if isinstance(ref, str) and "#" in ref and ref.split("#", 1)[0]:
                 names.add(ref.split("#", 1)[0])
     return sorted(names)
+
+
+def failing_report_flows(
+    db: Session, *, account_id: str
+) -> List[DeliveryReportFailingFlow]:
+    """Report flows to flag: two or more consecutive failed scheduled runs."""
+    return [
+        DeliveryReportFailingFlow(
+            **entry, reason=failure_reason(entry["latest_failure_category"])
+        )
+        for entry in crud_flow_execution.report_scheduled_failure_streaks(
+            db, account_id=account_id
+        )
+    ]
 
 
 def report_row(execution: Any) -> DeliveryReportRow:

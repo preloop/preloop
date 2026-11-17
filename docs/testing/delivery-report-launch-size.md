@@ -56,3 +56,21 @@ The email claim permits one send attempt per execution. As with the existing
 notification path, SMTP errors or a worker dying after the claim can leave an
 unsent notice; the failure remains visible on the report page. Enterprise
 custom roles and per-member recipient delivery are outside these OSS tests.
+
+## A scheduled run, end to end
+
+`backend/tests/services/test_delivery_report_local_run.py` seeds synthetic
+accounts in that PostgreSQL database, runs the orchestrator's checkout
+selection for the window Monday 07:00 UTC to the next Monday 07:00 UTC, and
+builds the hosted Job and setup Secret for what it selected. Two shapes: 440
+repositories, and 80 repositories (the size the earlier launch-budget fix was
+tested at), each with a handful active and with every repository active.
+
+```sh
+PRELOOP_DISABLE_TELEMETRY=true PYTHONPATH="$PWD/backend" \
+  .venv/bin/pytest backend/tests/services/test_delivery_report_local_run.py -q -s
+```
+
+Each case prints the repositories it cloned and the measured launch: about
+58.5 KB of arguments and environment whatever the count, against the 1 MiB
+budget.

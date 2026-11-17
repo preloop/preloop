@@ -266,6 +266,12 @@ async def test_delete_flow(mock_account: Account, mocker: MockerFixture):
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
     )
+    # The endpoint and operator maintenance share the delete service.
+    mocker.patch("preloop.services.flow_deletion.crud_flow", new=mock_crud_flow)
+    mocker.patch(
+        "preloop.services.flow_deletion.crud_flow_execution",
+        new=mock_crud_flow_execution,
+    )
     mock_crud_flow_execution.get_running_by_flow.return_value = []
     mock_flow = schemas.FlowResponse(
         id=flow_id,
@@ -312,6 +318,12 @@ async def test_delete_flow_with_active_execution_conflict(
     mock_crud_flow_execution = mocker.patch(
         "preloop.api.endpoints.flows.crud_flow_execution",
         new_callable=MagicMock,
+    )
+    # The endpoint and operator maintenance share the delete service.
+    mocker.patch("preloop.services.flow_deletion.crud_flow", new=mock_crud_flow)
+    mocker.patch(
+        "preloop.services.flow_deletion.crud_flow_execution",
+        new=mock_crud_flow_execution,
     )
     running_execution = MagicMock()
     running_execution.status = "RUNNING"

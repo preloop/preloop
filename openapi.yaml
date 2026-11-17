@@ -36415,6 +36415,40 @@ components:
       - report
       title: DeliveryReportDetail
       description: One run with its full report document.
+    DeliveryReportFailingFlow:
+      properties:
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+        consecutive_failures:
+          type: integer
+          title: Consecutive Failures
+        latest_execution_id:
+          type: string
+          format: uuid
+          title: Latest Execution Id
+        latest_failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Latest Failure Category
+        reason:
+          type: string
+          title: Reason
+      type: object
+      required:
+      - flow_id
+      - consecutive_failures
+      - latest_execution_id
+      - reason
+      title: DeliveryReportFailingFlow
+      description: A report flow whose latest scheduled runs failed in a row.
     DeliveryReportList:
       properties:
         items:
@@ -36425,6 +36459,13 @@ components:
         total:
           type: integer
           title: Total
+        failing_flows:
+          items:
+            $ref: '#/components/schemas/DeliveryReportFailingFlow'
+          type: array
+          title: Failing Flows
+          description: Report flows with two or more consecutive failed scheduled
+            runs.
       type: object
       required:
       - items
@@ -58328,7 +58369,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

@@ -15,11 +15,15 @@ import tarfile
 from typing import Any
 
 from preloop.utils.execve_limits import LaunchPayloadTooLargeError, chunked_env
+from preloop.utils.git_credentials import GIT_CREDENTIALS_FILE
 
 SETUP_CONTEXT_KEY = "_repository_setup"
 SETUP_DIRECTORY = "/tmp/preloop-repository-setup"
 SETUP_FILENAME = "setup.json.gz"
 SETUP_PATH = f"{SETUP_DIRECTORY}/{SETUP_FILENAME}"
+# Owner read only: the setup holds the git credential store, and the agent
+# harness runs as a different user (setpriv) in root-started containers.
+SETUP_FILE_MODE = 0o400
 # Kubernetes' hard Secret data limit, not a repository-count policy.
 MAX_SETUP_OBJECT_BYTES = 1024 * 1024
 SETUP_ENV_PREFIX = "PRELOOP_REPOSITORY_SETUP_"
@@ -79,7 +83,11 @@ def encode_setup(script: str, credentials: str, repository_count: int) -> str:
 
 
 def setup_archive(encoded: str, *, uid: int, gid: int) -> bytes:
-    """Docker's pre-start file upload, using the workspace restore mechanism."""
+    """Docker's pre-start file upload, using the workspace restore mechanism.
+
+    The file belongs to the user that runs the container's init commands and
+    only that user can read it; the bootstrap deletes it after extraction.
+    """
     output = io.BytesIO()
     data = base64.b64decode(encoded, validate=True)
     with tarfile.open(fileobj=output, mode="w") as archive:
@@ -88,13 +96,18 @@ def setup_archive(encoded: str, *, uid: int, gid: int) -> bytes:
         directory.mode, directory.uid, directory.gid = 0o755, uid, gid
         archive.addfile(directory)
         entry = tarfile.TarInfo(SETUP_PATH.lstrip("/"))
-        entry.mode, entry.uid, entry.gid, entry.size = 0o444, uid, gid, len(data)
+        entry.mode, entry.uid, entry.gid = SETUP_FILE_MODE, uid, gid
+        entry.size = len(data)
         archive.addfile(entry, io.BytesIO(data))
     return output.getvalue()
 
 
 def setup_shell() -> str:
-    """Constant bootstrap that reads the mounted file and preserves shell state."""
+    """Constant bootstrap that reads the mounted file and preserves shell state.
+
+    The transport file is removed once extracted where the filesystem allows
+    it (Docker upload); a Kubernetes Secret mount is read only and owner-only.
+    """
     return f"""(umask 077; python3 - <<'PRELOOP_REPOSITORY_SETUP'
 import gzip, json, os
 from pathlib import Path
@@ -103,13 +116,13 @@ with gzip.open('{SETUP_PATH}', 'rt') as source:
 root = Path('/tmp/preloop')
 root.mkdir(mode=0o700, parents=True, exist_ok=True)
 for path, content in ((root / 'repository-setup.sh', setup['script']),
-                      (Path('/tmp/.preloop-git-credentials'), setup['credentials'])):
+                      (Path('{GIT_CREDENTIALS_FILE}'), setup['credentials'])):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, 'w') as destination:
         destination.write(content)
 PRELOOP_REPOSITORY_SETUP
-) && . /tmp/preloop/repository-setup.sh"""
+) && {{ rm -f {SETUP_PATH} 2>/dev/null || :; }} && . /tmp/preloop/repository-setup.sh"""
 
 
 def repository_count(context: dict[str, Any]) -> int:

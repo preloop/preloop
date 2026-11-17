@@ -7,9 +7,11 @@ available evidence supports against stated criteria, and which gaps deserve
 investigation. It reads tracker and forge data only, so it works whether or
 not a Preloop-managed agent did the work.
 
-Connecting a tracker creates one enabled Delivery Report flow for the account.
-The first scheduled run is the next weekly slot and covers the prior seven
-days. Additional trackers use the same flow. Its deterministic report still
+An account gets a Delivery Report flow only when a user adds it from the
+preset, or when an operator enables it for that account (see
+[Operator maintenance](#operator-maintenance)). Connecting a tracker does not
+create one. The first scheduled run is the next weekly slot and covers the
+prior seven days. Additional trackers use the same flow. Its deterministic report still
 runs when the account has no model configured; in that case the email names
 the skipped assessment. Bind a model to the flow to enable its one-time
 onboarding assessment. The account policy can turn the report off or change
@@ -282,18 +284,35 @@ than eight repositories requires the CLI containing this change. The existing pr
 transport size limits still apply, with a specific `launch_payload_too_large`
 failure that includes repository count, measured bytes and the limit.
 
-Kubernetes deployments must include the chart's agent-manager permissions to
-create, read and update setup Secrets. Deployments using their own kubeconfig
-must grant those permissions in the agent namespace. The Job owns the Secret,
-so Job cleanup also removes its setup data and credentials.
+Kubernetes deployments must include the chart's agent-manager permission to
+create Secrets in the agent namespace. Each launch creates a uniquely named
+setup Secret, so no permission to read or update Secrets is needed. Deployments
+using their own kubeconfig must grant `create` on Secrets there. The Job owns
+the Secret, so Job cleanup also removes its setup data and credentials. The
+setup file is readable only by the user that runs the container's setup
+commands, and Docker removes it after extraction; the agent harness, which
+runs as a separate user, cannot read the credential store.
 
 A failed report appears on the Delivery Report page even if its agent never
-started. The OSS report recipient receives a short failure email with the reason
-and a link to the failed run, without needing flow notifications configured.
-A durable `failure_notice` record permits one delivery attempt per run across
-workers. Opt-outs, disabled reports and missing SMTP configuration are respected.
-Enterprise custom roles and per-member distribution use the Enterprise plugin;
-this OSS failure path covers the owner or sponsoring lead.
+started. The report recipients (the policy's owner or sponsoring lead) receive
+one short failure email per failed run, with the reason in plain words and a
+link to the failed run, without needing flow notifications configured. A
+durable `failure_notice` record permits one delivery attempt per run across
+workers. Opt-outs, disabled reports and missing SMTP configuration are
+respected. When that email went out, the flow's consecutive-failure alert
+still sends its push notification but not a second email. Enterprise custom
+roles and per-member distribution use the Enterprise plugin; this failure path
+covers the policy's recipients.
+
+When a report flow's last two or more scheduled runs failed, the Delivery
+Report page shows a warning line naming the flow, the reason for the latest
+failure and a link to that run. Manual runs neither start nor end the streak.
+
+Accounts the operator runs itself can be listed in `OPERATOR_ACCOUNT_IDS`
+(Helm: `notifications.operatorAccountIds`). A failed report in one of those
+accounts also goes to the admin alert channels (`PRODUCT_TEAM_EMAIL`, Slack
+and Mattermost webhooks), once per failed run, and logs an
+`ALERT delivery_report_failed` line for log-based alerting.
 
 For a local synthetic launch check, see
 [large-account report verification](../../testing/delivery-report-launch-size.md).
@@ -463,6 +482,30 @@ evidence does not support is downgraded, and a risk flag with no evidence is
 dropped. A markdown rendering of the report is stored as
 `report_markdown`.
 
+
+## Operator maintenance
+
+Earlier releases created a Delivery Report flow in every account that
+connected a tracker. An operator command removes the ones nobody adopted and
+enables the report for a chosen account. Both commands print JSON describing
+what they would do and change nothing unless `--apply` is given:
+
+```sh
+# Report flows the system created that no user created or edited (an
+# enable/disable toggle does not count) and that never had a successful run.
+python -m preloop.services.delivery_report_maintenance remove-unclaimed
+python -m preloop.services.delivery_report_maintenance remove-unclaimed \
+    --account-id <account-id> --apply
+
+# Install the Delivery Report flow in one account.
+python -m preloop.services.delivery_report_maintenance enable \
+    --account-id <account-id> --apply
+```
+
+Removal uses the same path as `DELETE /api/v1/flows/{id}`: running
+executions and restricting references refuse the delete (exit status 1, with
+the reason), executions are deleted with the flow, and the deletion is written
+to the audit trail as a system action.
 
 ## Local acceptance tests
 

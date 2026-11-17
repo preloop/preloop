@@ -13,6 +13,7 @@ import random
 import re
 import shlex
 import tarfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -75,6 +76,7 @@ from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
 from preloop.utils.repository_setup import (
     SETUP_CONTEXT_KEY,
     SETUP_DIRECTORY,
+    SETUP_FILE_MODE,
     SETUP_FILENAME,
     encode_setup,
     repository_count,
@@ -1662,7 +1664,12 @@ class ContainerAgentExecutor(AgentExecutor):
     ) -> None:
         """Upload the setup file before the container's entrypoint starts."""
         if encoded := execution_context.get(SETUP_CONTEXT_KEY):
-            await container.put_archive("/", setup_archive(encoded, uid=0, gid=0))
+            # Owned by the user that runs init commands; the harness user
+            # (setpriv in root containers) cannot read the credential store.
+            uid, gid = 0, 0
+            if container_user := execution_context.get("_container_user"):
+                uid, gid = (int(part) for part in str(container_user).split(":"))
+            await container.put_archive("/", setup_archive(encoded, uid=uid, gid=gid))
 
     @staticmethod
     def _workspace_restore_archive(
@@ -1908,12 +1915,16 @@ class ContainerAgentExecutor(AgentExecutor):
         ]
 
         encoded_setup = execution_context.get(SETUP_CONTEXT_KEY)
+        # One Secret name per launch, so the agent manager only needs to create
+        # Secrets; it never reads or replaces another object in the namespace.
+        setup_secret_name = f"{job_name[:48]}-{uuid.uuid4().hex[:8]}-setup"
         if encoded_setup:
             volumes.append(
                 client.V1Volume(
                     name="repository-setup",
                     secret=client.V1SecretVolumeSource(
-                        secret_name=f"{job_name}-setup", default_mode=0o440
+                        secret_name=setup_secret_name,
+                        default_mode=SETUP_FILE_MODE,
                     ),
                 )
             )
@@ -2053,7 +2064,9 @@ class ContainerAgentExecutor(AgentExecutor):
         )
         if encoded_setup:
             try:
-                await self._deliver_repository_setup(name, encoded_setup)
+                await self._deliver_repository_setup(
+                    name, encoded_setup, secret_name=setup_secret_name
+                )
             except Exception as exc:
                 try:
                     await self._k8s_batch_api.delete_namespaced_job(
@@ -2073,8 +2086,16 @@ class ContainerAgentExecutor(AgentExecutor):
                 ) from exc
         return name
 
-    async def _deliver_repository_setup(self, name: str, encoded_setup: str) -> None:
-        """Attach the compressed setup Secret to this Job's garbage collection."""
+    async def _deliver_repository_setup(
+        self, name: str, encoded_setup: str, *, secret_name: str
+    ) -> None:
+        """Attach the compressed setup Secret to this Job's garbage collection.
+
+        Args:
+            name: The created Job's name.
+            encoded_setup: Base64 gzip setup document.
+            secret_name: The launch-unique Secret name the pod volume mounts.
+        """
         # The pod waits for its Secret. Creating it after the Job lets the
         # API server attach an owner, so TTL cleanup also removes credentials.
         owner = await self._k8s_batch_api.read_namespaced_job(
@@ -2082,7 +2103,7 @@ class ContainerAgentExecutor(AgentExecutor):
         )
         secret = client.V1Secret(
             metadata=client.V1ObjectMeta(
-                name=f"{name}-setup",
+                name=secret_name,
                 owner_references=[
                     client.V1OwnerReference(
                         api_version="batch/v1",
@@ -2094,28 +2115,9 @@ class ContainerAgentExecutor(AgentExecutor):
             ),
             data={SETUP_FILENAME: encoded_setup},
         )
-        try:
-            await self._k8s_core_api.create_namespaced_secret(
-                namespace=self.agent_namespace, body=secret
-            )
-        except ApiException as exc:
-            if exc.status != 409:
-                raise
-            existing = await self._k8s_core_api.read_namespaced_secret(
-                name=f"{name}-setup", namespace=self.agent_namespace
-            )
-            if not any(
-                ref.uid == owner.metadata.uid
-                for ref in existing.metadata.owner_references or []
-            ):
-                # A finished Job's name can be reused before its dependent
-                # Secret has been collected. Replace only that stale seed.
-                secret.metadata.resource_version = existing.metadata.resource_version
-                await self._k8s_core_api.replace_namespaced_secret(
-                    name=f"{name}-setup",
-                    namespace=self.agent_namespace,
-                    body=secret,
-                )
+        await self._k8s_core_api.create_namespaced_secret(
+            namespace=self.agent_namespace, body=secret
+        )
 
     async def _create_kubernetes_job(
         self, job: Any, *, job_name: str, execution_id: str

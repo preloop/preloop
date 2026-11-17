@@ -990,6 +990,10 @@ notifications:
   # Email for admin notifications (account deletions, errors, etc.)
   productTeamEmail: ""
 
+  # Account ids the operator runs itself. A failed scheduled Delivery Report
+  # in one of these accounts is also sent to the admin channels below.
+  operatorAccountIds: []
+
   # Slack webhook URL for admin notifications (optional)
   # Get this from Slack: https://api.slack.com/messaging/webhooks
   slackWebhookUrl: ""

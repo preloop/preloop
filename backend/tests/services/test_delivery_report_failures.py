@@ -313,8 +313,8 @@ def test_concurrent_failure_notice_claims_choose_one_worker(db_engine: Any) -> N
 
 
 @pytest.mark.asyncio
-async def test_report_failure_does_not_also_send_a_streak_email() -> None:
-    """The per-run report notice replaces the extra consecutive-failure alert."""
+async def test_report_failure_streak_keeps_push_and_skips_only_email() -> None:
+    """A report flow keeps its streak safety net; only the duplicate email goes."""
     from unittest.mock import AsyncMock
 
     orchestrator = object.__new__(FlowExecutionOrchestrator)
@@ -322,9 +322,114 @@ async def test_report_failure_does_not_also_send_a_streak_email() -> None:
         id=uuid4(), agent_config={"report_kind": "delivery_report"}
     )
     orchestrator.execution_log = failed_execution()
-    with patch("preloop.services.db_executor.run_db_async", new=AsyncMock()) as run:
-        await orchestrator._notify_failure_streak("FAILED")
-    run.assert_not_called()
+    with patch(
+        "preloop.services.db_executor.run_db_async", new=AsyncMock(return_value=None)
+    ) as run:
+        await orchestrator._notify_failure_streak("FAILED", skip_email=True)
+    run.assert_awaited_once()
+
+    from preloop.services import flow_failure_alerts as alerts
+
+    owner = SimpleNamespace(id=uuid4(), email="jane@example.com")
+    streak = alerts.FailureStreak(
+        count=2,
+        execution_ids=["a", "b"],
+        last_error="x",
+        streak_start_execution_id="b",
+        already_alerted=False,
+    )
+    with (
+        patch(
+            "preloop.services.policy_notice_delivery.policy_owners",
+            return_value=[owner],
+        ),
+        patch(
+            "preloop.services.policy_notice_delivery.send_push_to_owners",
+            return_value=1,
+        ) as push,
+        patch.object(alerts, "_send_emails", return_value=1) as mail,
+    ):
+        counts = alerts.deliver_failure_alert(
+            MagicMock(),
+            flow=orchestrator.flow,
+            streak=streak,
+            threshold=2,
+            skip_email=True,
+        )
+        alerts.deliver_failure_alert(
+            MagicMock(), flow=orchestrator.flow, streak=streak, threshold=2
+        )
+    assert counts["push"] == 1 and counts["email"] == 0
+    assert push.call_count == 2
+    mail.assert_called_once()
+
+
+def _operator_failure_patches(claims: list[bool]) -> Any:
+    """Patch recipient lookup and the durable claim for operator alert tests."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "preloop.models.crud.crud_delivery_report_policy.get_overrides",
+            return_value=None,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "preloop.models.crud.crud_delivery_report_policy.report_recipients",
+            return_value=[],
+        )
+    )
+    stack.enter_context(
+        patch(
+            "preloop.models.crud.crud_flow_execution.claim_report_failure_notice",
+            side_effect=claims,
+        )
+    )
+    stack.enter_context(
+        patch("preloop.models.crud.crud_flow_execution.finish_report_failure_notice")
+    )
+    return stack
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operator_account", [True, False])
+async def test_operator_account_failure_reaches_admin_channel_once(
+    operator_account: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Only the operator's own accounts page the admins, once per failed run."""
+    from preloop.config import settings
+
+    execution = failed_execution()
+    flow = SimpleNamespace(
+        account_id=uuid4(), agent_config={"report_kind": "delivery_report"}
+    )
+    listed = [str(flow.account_id)] if operator_account else [str(uuid4())]
+    with (
+        _operator_failure_patches([True, False]),
+        patch.object(settings, "operator_account_ids", listed),
+        patch("preloop.sync.tasks.notify_admins") as admins,
+    ):
+        first = await email.distribute_failure(
+            MagicMock(), flow=flow, execution=execution
+        )
+        second = await email.distribute_failure(
+            MagicMock(), flow=flow, execution=execution
+        )
+    assert second is None
+    if not operator_account:
+        admins.assert_not_called()
+        assert "operator_alerted" not in first
+        return
+    admins.assert_called_once()
+    subject, text = admins.call_args.args[:2]
+    assert subject == "Delivery Report failed"
+    assert "repository setup was too large" in text
+    assert "500 repositories" in text
+    assert str(execution.id) in text
+    assert first["operator_alerted"] is True
+    assert "ALERT delivery_report_failed" in caplog.text
 
 
 def test_activity_query_filters_500_projects_with_account_isolation(
@@ -389,3 +494,69 @@ def test_activity_query_filters_500_projects_with_account_isolation(
         end=datetime(2026, 1, 12, tzinfo=timezone.utc),
     )
     assert active == {str(projects[i].id) for i in (0, 1, 2, 3)}
+
+
+@pytest.mark.parametrize(
+    ("history", "flagged"),
+    [
+        # Newest first: (status, scheduled?)
+        ([("FAILED", True), ("FAILED", True)], 2),
+        ([("FAILED", True), ("FAILED", False), ("TIMEOUT", True)], 2),
+        ([("FAILED", True), ("SUCCEEDED", True), ("FAILED", True)], 0),
+        ([("FAILED", True), ("FAILED", False)], 0),
+        ([("RUNNING", True), ("FAILED", True), ("FAILED", True)], 2),
+    ],
+)
+def test_two_failed_scheduled_runs_flag_the_report_page(
+    db_session: Any,
+    test_user: Any,
+    history: list[tuple[str, bool]],
+    flagged: int,
+) -> None:
+    """Only consecutive failed scheduled runs flag a report flow."""
+    from datetime import datetime, timedelta, timezone
+    from preloop.models.crud import crud_flow, crud_flow_execution
+    from preloop.models.schemas.flow import FlowCreate
+    from preloop.models.schemas.flow_execution import FlowExecutionCreate
+
+    flow = crud_flow.create(
+        db_session,
+        account_id=test_user.account_id,
+        flow_in=FlowCreate(
+            name="Weekly Delivery Report",
+            account_id=test_user.account_id,
+            agent_type="codex",
+            agent_config={"report_kind": "delivery_report"},
+            prompt_template="Report",
+            trigger_event_source="schedule",
+            trigger_event_types=["schedule"],
+        ),
+    )
+    now = datetime(2026, 1, 12, 7, tzinfo=timezone.utc)
+    newest = None
+    for index, (status, scheduled) in enumerate(history):
+        payload = {"scheduled_at": now.isoformat()} if scheduled else {}
+        execution = crud_flow_execution.create(
+            db_session,
+            obj_in=FlowExecutionCreate(
+                flow_id=flow.id,
+                status=status,
+                trigger_event_details={"source": "schedule", "payload": payload},
+            ),
+        )
+        execution.start_time = now - timedelta(days=7 * index)
+        execution.failure_category = "launch_payload_too_large"
+        if newest is None and status != "RUNNING":
+            newest = execution
+    db_session.flush()
+
+    flows = views.failing_report_flows(db_session, account_id=str(test_user.account_id))
+
+    if not flagged:
+        assert flows == []
+        return
+    assert len(flows) == 1
+    assert flows[0].flow_id == flow.id
+    assert flows[0].consecutive_failures == flagged
+    assert flows[0].latest_execution_id == newest.id
+    assert "repository setup was too large" in flows[0].reason

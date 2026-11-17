@@ -6,7 +6,6 @@ from typing import Annotated, Any, Dict, List, Literal, NoReturn, Optional, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import ValidationError
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from preloop.plugins.account_hooks import AuthorizationContext
@@ -4137,72 +4136,20 @@ def delete_flow(
             )
             raise HTTPException(status_code=404, detail="Flow not found")
 
-    # Prevent deletion of built-in presets
-    if flow.is_preset and flow.account_id is None:
-        logger.warning(f"Attempt to delete built-in preset {flow_id}")
-        raise HTTPException(
-            status_code=403, detail="Cannot delete built-in flow presets"
-        )
-
-    # Deleting a flow cascades to its executions (and their logs). If an agent
-    # is still running for one of those executions it would keep streaming
-    # logs for a row that no longer exists (FK violations in the log
-    # persister, orphaned containers). Require executions to be stopped first,
-    # via the existing stop command endpoint, before the flow can be deleted.
-    active_executions = crud_flow_execution.get_running_by_flow(
-        db, flow_id=flow.id, account_id=current_user.account_id
+    from preloop.services.flow_deletion import (
+        FlowDeleteRefusedError,
+        delete_flow_checked,
     )
-    if active_executions:
-        logger.warning(
-            f"Refusing to delete flow {flow_id}: "
-            f"{len(active_executions)} active execution(s)"
-        )
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Flow has {len(active_executions)} active execution(s). "
-                "Stop them first (POST /api/v1/flows/executions/{id}/command "
-                'with {"command": "stop"}) and retry the delete.'
-            ),
-        )
 
-    # A committed deletion detaches the ORM row. Resolve relationship-backed
-    # response fields (such as ai_model_name) while its session is available.
-    # Validate before mutating: a stored row that fails FlowResponse should
-    # remain so operators can inspect it, rather than being deleted and then
-    # returning HTTP 500 (a retry would 404 and hide the failed delete).
-    blockers = crud_flow.get_delete_blockers(
-        db, flow_id=flow.id, account_id=current_user.account_id
-    )
-    if blockers:
-        logger.warning(f"Refusing to delete flow {flow_id}: referenced by other rows")
-        raise HTTPException(status_code=409, detail=_describe_delete_blockers(blockers))
-
-    response = schemas.FlowResponse.model_validate(flow)
-    flow_name = flow.name
     try:
-        crud_flow.remove(db=db, id=flow_id, account_id=current_user.account_id)
-    except IntegrityError:
-        # A reference created after the check above, or one this endpoint
-        # does not know about. Nothing was deleted; report it as a conflict.
-        db.rollback()
-        logger.warning(f"Flow {flow_id} delete hit a foreign key restriction")
+        response = delete_flow_checked(
+            db, flow=flow, account_id=current_user.account_id, actor=current_user
+        )
+    except FlowDeleteRefusedError as refused:
+        logger.warning(f"Refusing to delete flow {flow_id}: {refused.status_code}")
         raise HTTPException(
-            status_code=409,
-            detail=(
-                "Flow cannot be deleted because other records still reference "
-                "it. Nothing was changed. Disable the flow instead, or remove "
-                "the references and retry."
-            ),
+            status_code=refused.status_code, detail=refused.detail
         ) from None
-
-    log_config_change(
-        db,
-        user=current_user,
-        config_type="flow",
-        action="deleted",
-        old_value={"id": str(flow_id), "name": flow_name},
-    )
 
     logger.info(f"Successfully deleted flow {flow_id}")
     return response

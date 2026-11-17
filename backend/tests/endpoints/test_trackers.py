@@ -547,9 +547,8 @@ async def test_register_tracker_success(
         )
         if is_delivery_report_flow(flow)
     ]
-    assert len(reports) == 1
-    assert reports[0].is_enabled is True
-    assert reports[0].schedule_config["type"] == "weekly"
+    # Connecting a tracker does not provision a Delivery Report flow.
+    assert reports == []
     assert created.credentials_secret.encrypted_value not in (None, "new_dummy_key")
     assert created.resolved_api_key == "new_dummy_key"
 

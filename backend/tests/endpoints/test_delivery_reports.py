@@ -330,3 +330,24 @@ def test_failed_launch_without_result_is_listed_and_readable(
     detail = client.get(f"{BASE}/{execution.id}")
     assert detail.status_code == 200, detail.text
     assert "500 repositories" in detail.json()["report"]["reason"]
+
+
+def test_list_flags_two_failed_scheduled_runs(
+    client: Any, db_session: Session, test_user: Any
+) -> None:
+    """The report page learns which flows have not succeeded twice running."""
+    flow = _flow(db_session, test_user.account_id, report=True)
+    assert client.get(BASE).json()["failing_flows"] == []
+    for hours in (0, 168):
+        execution = _run(db_session, flow, hours=hours, result=None)
+        execution.status = "FAILED"
+        execution.failure_category = "launch_payload_too_large"
+        execution.trigger_event_details = {
+            "source": "schedule",
+            "payload": {"scheduled_at": "2026-01-12T07:00:00+00:00"},
+        }
+    db_session.commit()
+    flagged = client.get(BASE).json()["failing_flows"]
+    assert [entry["flow_id"] for entry in flagged] == [str(flow.id)]
+    assert flagged[0]["consecutive_failures"] == 2
+    assert "could not finish" in flagged[0]["reason"]
