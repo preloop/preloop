@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import statistics
+import subprocess
 from typing import Any
 
 from ci_control import GitHub
@@ -140,7 +141,13 @@ def fetch_jobs(api: GitHub, run_id: str) -> tuple[list[dict[str, Any]], str | No
     """
     try:
         return api.pages(f"actions/runs/{run_id}/jobs", "jobs"), None
-    except RuntimeError as exc:
+    except (
+        RuntimeError,
+        subprocess.TimeoutExpired,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+    ) as exc:
         print(f"::warning::timing receipt incomplete: {exc}")
         return [], str(exc)
 

@@ -3,6 +3,7 @@
 import copy
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -120,14 +121,23 @@ def test_fork_prs_may_skip_the_secret_bound_claude_leaf() -> None:
         validate(result, "pull_request")
 
 
-def test_timing_fetch_failure_does_not_gate_the_aggregate() -> None:
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("GitHub GET jobs failed (403)"),
+        subprocess.TimeoutExpired(["gh"], 45),
+        json.JSONDecodeError("bad", "<html>", 0),
+        KeyError("jobs"),
+    ],
+)
+def test_timing_fetch_failure_does_not_gate_the_aggregate(failure: Exception) -> None:
     """An unreadable jobs API leaves an incomplete receipt, not a red CI check."""
 
     class Failing:
         def pages(self, path: str, key: str = "") -> list:
-            raise RuntimeError(f"GitHub GET {path} failed (403)")
+            raise failure
 
     jobs, error = fetch_jobs(Failing(), "1")  # type: ignore[arg-type]
     assert jobs == []
-    assert error and "403" in error
+    assert error
     assert timings(jobs)["jobs"] == []
