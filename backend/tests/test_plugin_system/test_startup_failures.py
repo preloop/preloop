@@ -136,7 +136,9 @@ def test_installed_plugin_registration_failure_is_fatal(
     with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError):
         base.PluginManager().discover_plugins("example_plugins")
     assert "example_plugins.broken" in caplog.text
-    assert "invalid plugin configuration" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "invalid plugin configuration" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
 
 
 @pytest.mark.parametrize("disabled_by", ["rbac", "proprietary"])
