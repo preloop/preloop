@@ -31,6 +31,21 @@ RESULT_SCHEMA_MAX_MESSAGE = 300
 #: Error message prefix; ``derive_failure_category`` matches on it.
 RESULT_SCHEMA_INVALID_MESSAGE = "Result document does not match the flow result schema"
 
+#: What ``validate_result_document`` records when there is no document.
+NO_RESULT_CAPTURED = "No result.json was captured"
+#: The same for native-result runs, which are asked for a final answer and
+#: never for a result.json file. Each names what was actually observed.
+NO_NATIVE_ANSWER = "No final answer was captured"
+NATIVE_ANSWER_NOT_JSON = "The final answer was not valid JSON"
+NATIVE_ANSWER_NOT_OBJECT = "The final answer was not a JSON object"
+#: A native-result run whose model request failed before any answer existed.
+MODEL_REQUEST_FAILED = (
+    "No final answer was written because the model request failed; see the "
+    "provider error in the execution's error message"
+)
+#: Most other failing paths named after the first error in the message.
+RESULT_SCHEMA_MESSAGE_PATHS = 8
+
 
 class ResultSchemaError(ValueError):
     """A flow's result schema is invalid for its configured result mode."""
@@ -316,7 +331,10 @@ def _error_path(error: Any) -> str:
 
 
 def validate_result_document(
-    document: Optional[Mapping[str, Any]], schema: Mapping[str, Any]
+    document: Optional[Mapping[str, Any]],
+    schema: Mapping[str, Any],
+    *,
+    missing_message: str = NO_RESULT_CAPTURED,
 ) -> dict[str, Any]:
     """Validate one captured result document against a flow's schema.
 
@@ -324,6 +342,8 @@ def validate_result_document(
         document: The sanitized ``result.json``, or None when none was
             captured.
         schema: The flow's result schema.
+        missing_message: The error recorded when ``document`` is None, for
+            callers that know why there is none.
 
     Returns:
         ``{"valid": bool, "errors": [{"path", "message"}], "error_count": int}``
@@ -333,7 +353,7 @@ def validate_result_document(
     if document is None:
         return {
             "valid": False,
-            "errors": [{"path": "$", "message": "No result.json was captured"}],
+            "errors": [{"path": "$", "message": missing_message}],
             "error_count": 1,
         }
     instance = dict(document)
@@ -381,11 +401,31 @@ def flow_result_schema(flow: Any) -> Optional[dict[str, Any]]:
 
 
 def schema_failure_message(validation: Mapping[str, Any]) -> str:
-    """Execution error message for an invalid result document."""
+    """Execution error message for an invalid result document.
+
+    Args:
+        validation: An outcome of :func:`validate_result_document`.
+
+    Returns:
+        The first error in full, then the count and the paths of the others
+        (at most :data:`RESULT_SCHEMA_MESSAGE_PATHS`, no values).
+    """
     errors = validation.get("errors") or []
     first = errors[0] if errors else {"path": "$", "message": "invalid"}
     count = int(validation.get("error_count") or len(errors) or 1)
-    more = f" (+{count - 1} more)" if count > 1 else ""
+    more = ""
+    if count > 1:
+        others = list(
+            dict.fromkeys(
+                str(error.get("path"))
+                for error in errors[1:]
+                if error.get("path") != first.get("path")
+            )
+        )
+        named = ", ".join(others[:RESULT_SCHEMA_MESSAGE_PATHS])
+        if len(others) > RESULT_SCHEMA_MESSAGE_PATHS:
+            named += ", ..."
+        more = f" (+{count - 1} more" + (f": {named})" if named else ")")
     return (
         f"{RESULT_SCHEMA_INVALID_MESSAGE}: {first.get('path')}: "
         f"{first.get('message')}{more}"

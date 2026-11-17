@@ -23,7 +23,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path and the keyword and says what to use instead. Flows saved earlier keep
   loading and running; if the provider refuses their schema, the run's error
   says the same thing the save would have said.
-
+- Native-result reviews: a run whose sessions never read the change and whose
+  last answer is a progress note (or is missing, not JSON, or otherwise does
+  not match the result schema) gets one more session instead of ending there.
+  That session is told that the review is not complete, what the inspection
+  check requires, and which validation errors the last answer had, and has to
+  inspect and answer. It runs at most once per run and within the execution
+  deadline, and is logged as a `PRELOOP_REVIEW_CONTINUATION` with reason
+  `uninspected_invalid_result`. A run starts at most five sessions after its
+  first (two inspection continuations, this one, two schema repairs). The
+  controller's checks are unchanged: a review that was not inspected still
+  fails with `review_not_inspected`.
+- Native-result reviews: a final answer that exists but does not match the
+  result schema now fails with `result_schema_invalid` and the failing paths
+  even when it carries no completion status. It used to fail with
+  `no_confirmation` and a message saying that no result was written. The
+  `result_schema_invalid` message now lists the other failing paths after the
+  first error.
+- Native-result runs: the `no_confirmation` message says what was observed (no
+  final answer, an answer that is not JSON, or an answer that does not match
+  the schema), and the recorded validation no longer says
+  `No result.json was captured` for a run that is never asked for that file.
+  When the model provider rejected the request before any answer, it says that
+  the model request failed and points to the provider error.
 - Native-result reviews: a final answer that does not match the result schema
   (a missing required field, a value outside an enum, a wrong type, or no
   JSON) no longer fails the run at once. The hosted Codex runtime asks the

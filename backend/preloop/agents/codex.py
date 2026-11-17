@@ -113,6 +113,31 @@ NATIVE_RESULT_REPAIR_MARGIN_SECONDS = 10
 
 NATIVE_RESULT_REPAIR_PATH = "$_pl_cont_dir/result-repair.txt"
 
+#: One more session a native-result review gets when the inspection
+#: continuations are used up, the latest session still did not read the bound
+#: change, and its answer is missing, not JSON or does not match the schema
+#: (typically a progress note). The session is told both things and must do
+#: both. It is not a third inspection continuation: a session that did not
+#: inspect but answered in the schema's shape gets none.
+UNINSPECTED_REPAIR_CONTINUATIONS = 1
+UNINSPECTED_REPAIR_REASON = "uninspected_invalid_result"
+
+#: Most sessions a run can start after its first one.
+MAX_EXTRA_SESSIONS = (
+    REVIEW_INSPECTION_CONTINUATIONS
+    + UNINSPECTED_REPAIR_CONTINUATIONS
+    + NATIVE_RESULT_REPAIR_CONTINUATIONS
+)
+
+#: What the inspection check requires, as the combined continuation says it.
+INSPECTION_REQUIREMENT = (
+    "The check needs at least one successful command in this session that "
+    "reads the bound change: run `git diff {base}...{head}` and read the "
+    "changed files. Bound head_sha: {head}; bound base_sha: {base}; base ref: "
+    "{base_ref}. {result_bindings}Directory listings and revision queries do "
+    "not count."
+)
+
 REVIEW_CONTINUATION_PROMPT = """
 
 ---
@@ -1186,28 +1211,13 @@ exit $CODEX_EXIT_CODE
         Returns:
             The shell block, or an empty string when it does not apply.
         """
-        from preloop.services.review_integrity import result_binding_instruction
-        from types import SimpleNamespace
-
         check = self._review_inspection_check(execution_context)
         if not check:
             return ""
-        clone = execution_context.get("git_clone_config")
         _, native_args = self._native_result_output(execution_context)
-        base = execution_context.get("read_only_base_sha") or ""
-        head = execution_context.get("read_only_head_sha") or ""
         prompt = shlex.quote(
             REVIEW_CONTINUATION_PROMPT.format(
-                base=base,
-                head=head,
-                base_ref=execution_context.get("read_only_base_ref") or "unavailable",
-                result_bindings=result_binding_instruction(
-                    SimpleNamespace(
-                        git_clone_config=clone,
-                        result_schema=execution_context.get("result_schema"),
-                    ),
-                    {"base_sha": base, "head_sha": head},
-                ),
+                **self._review_binding_facts(execution_context)
             )
         )
         return f"""
@@ -1236,6 +1246,37 @@ while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     fi
 done
 """
+
+    @staticmethod
+    def _review_binding_facts(execution_context: Dict[str, Any]) -> Dict[str, str]:
+        """The bound revisions a continuation prompt names.
+
+        Args:
+            execution_context: Execution context.
+
+        Returns:
+            ``base``, ``head``, ``base_ref`` and ``result_bindings`` for
+            :data:`REVIEW_CONTINUATION_PROMPT` and
+            :data:`INSPECTION_REQUIREMENT`.
+        """
+        from types import SimpleNamespace
+
+        from preloop.services.review_integrity import result_binding_instruction
+
+        base = execution_context.get("read_only_base_sha") or ""
+        head = execution_context.get("read_only_head_sha") or ""
+        return {
+            "base": base,
+            "head": head,
+            "base_ref": execution_context.get("read_only_base_ref") or "unavailable",
+            "result_bindings": result_binding_instruction(
+                SimpleNamespace(
+                    git_clone_config=execution_context.get("git_clone_config"),
+                    result_schema=execution_context.get("result_schema"),
+                ),
+                {"base_sha": base, "head_sha": head},
+            ),
+        }
 
     def _native_result_repair_block(
         self,
@@ -1267,6 +1308,16 @@ done
         validates the captured answer and applies every review check; if the
         answer stays invalid the run fails as before.
 
+        Before the repairs, one combined continuation
+        (:data:`UNINSPECTED_REPAIR_REASON`) covers the run the repairs skip:
+        the inspection continuations are used up, the latest session still
+        did not read the change, and its answer is not usable either (a
+        progress note, for example). That session gets the original prompt,
+        what the inspection check requires, the errors and the previous
+        answer, under the same deadline rules. Afterwards the normal order
+        applies: the repairs run only if that session inspected. A run starts
+        at most :data:`MAX_EXTRA_SESSIONS` sessions after its first.
+
         Args:
             execution_context: Execution context.
             event_filter: The Codex event filter command.
@@ -1284,12 +1335,14 @@ done
         _, native_args = self._native_result_output(execution_context)
         output_path = native_args.rsplit("--output-last-message ", 1)[-1].strip()
         schema_path = "/tmp/preloop-native-result-schema.json"
-        inspected = self._review_inspection_check(execution_context) or "true"
+        inspection_check = self._review_inspection_check(execution_context)
+        inspected = inspection_check or "true"
         checker = (
             inspect.getsource(native_result_repair)
             + """
 import sys
-answer_path, schema_path, prompt_path, out_path = sys.argv[1:]
+answer_path, schema_path, prompt_path, out_path = sys.argv[1:5]
+inspection = sys.argv[5] if len(sys.argv) > 5 else ""
 try:
     import os, stat
     def read(path, limit):
@@ -1309,7 +1362,7 @@ try:
         raw = read(answer_path, 256 * 1024)
     except FileNotFoundError:
         raw = None
-    text = repair_prompt(raw, schema, prompt)
+    text = repair_prompt(raw, schema, prompt, inspection)
     if not text:
         sys.exit(0)
     fd = os.open(
@@ -1342,16 +1395,52 @@ sys.exit(1)
             if isinstance(deadline, (int, float)) and not isinstance(deadline, bool)
             else ""
         )
+        combined = ""
+        if inspection_check:
+            requirement = shlex.quote(
+                INSPECTION_REQUIREMENT.format(
+                    **self._review_binding_facts(execution_context)
+                )
+            )
+            combined = f"""
+# The inspection continuations are used up, the latest session still did not
+# read the change and its answer is not usable: one session is asked for both.
+if [ "$CODEX_EXIT_CODE" -eq 0 ] \
+    && [ "$(_pl_repair_left)" -ge {NATIVE_RESULT_REPAIR_MIN_SECONDS - NATIVE_RESULT_REPAIR_MARGIN_SECONDS} ] \
+    && ! {inspection_check} \
+    && rm -f -- "{NATIVE_RESULT_REPAIR_PATH}" \
+    && ! _pl_repair_paths=$({check} {requirement}); then
+    echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":1,"reason":"{UNINSPECTED_REPAIR_REASON}","paths":'"$_pl_repair_paths"'}}' \
+        | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+    _pl_repair_limit=""
+    if [ -n "$_pl_run_deadline" ]; then
+        _pl_repair_limit="timeout -k 5 $(_pl_repair_left)"
+    fi
+    : > "{ATTEMPT_LOG_PATH}"
+    set +e
+    $_pl_repair_limit $PRELOOP_AS_AGENT codex exec {native_args} --json \
+        --skip-git-repo-check --model "{model}" {sandbox_flags} \
+        < "{NATIVE_RESULT_REPAIR_PATH}" 2>&1 \
+        | {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+    _pl_repair_codes=("${{PIPESTATUS[@]}}")
+    set -e
+    CODEX_EXIT_CODE=${{_pl_repair_codes[0]:-1}}
+    if [ "$CODEX_EXIT_CODE" -eq 0 ]; then
+        CODEX_EXIT_CODE=${{_pl_repair_codes[1]:-1}}
+    fi
+fi
+"""
         return f"""
 # A native final answer that does not match the result schema is asked for
 # again, naming the errors, a bounded number of times within the run budget.
 {CONTINUATION_DIR_SETUP}
-_pl_result_repair=0
 _pl_run_deadline={deadline}
 _pl_repair_left() {{
     if [ -z "$_pl_run_deadline" ]; then echo 999999; return; fi
     echo $(( _pl_run_deadline - $(date +%s) - {NATIVE_RESULT_REPAIR_MARGIN_SECONDS} ))
 }}
+{combined}
+_pl_result_repair=0
 while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     && [ "$_pl_result_repair" -lt {NATIVE_RESULT_REPAIR_CONTINUATIONS} ] \
     && [ "$(_pl_repair_left)" -ge {NATIVE_RESULT_REPAIR_MIN_SECONDS - NATIVE_RESULT_REPAIR_MARGIN_SECONDS} ] \
