@@ -386,3 +386,70 @@ def test_native_review_without_inspection_reports_the_missing_work(
         )
     assert status == "FAILED"
     assert result["failure_category"] == "review_not_inspected"
+
+
+@pytest.mark.parametrize(
+    "field,value", [("review", "..."), ("problem", "n"), ("evidence", "-")]
+)
+def test_each_required_narrative_must_be_substantive(field: str, value: str) -> None:
+    review = flow()
+    review.result_schema = {
+        "type": "object",
+        "required": ["review", "findings"],
+        "properties": {
+            "review": {"type": "string"},
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["problem", "evidence"],
+                    "properties": {
+                        "problem": {"type": "string"},
+                        "evidence": {"type": "string"},
+                    },
+                },
+            },
+        },
+    }
+    document = {
+        "review": "Two defects found",
+        "findings": [
+            {
+                "problem": "Incorrect documented return value",
+                "evidence": "The function raises ValueError",
+            }
+        ],
+    }
+    if field == "review":
+        document[field] = value
+    else:
+        document["findings"][0][field] = value
+    assert review_integrity.degenerate_review(review, document)
+
+
+@pytest.mark.parametrize(
+    "bindings,properties,expected",
+    [
+        (None, {"head_sha": {}}, "head_sha = " + HEAD),
+        (
+            {"reviewed_commit": "head_sha"},
+            {"reviewed_commit": {}},
+            "reviewed_commit = " + HEAD,
+        ),
+    ],
+)
+def test_result_prompt_uses_only_schema_fields(
+    bindings: Any, properties: dict, expected: str
+) -> None:
+    review = flow(**({"result_bindings": bindings} if bindings is not None else {}))
+    review.result_schema = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
+    prompt = review_integrity.result_binding_instruction(
+        review, {"head_sha": HEAD, "base_sha": BASE}
+    )
+    assert expected in prompt
+    assert "base_sha =" not in prompt
+    assert "additional fields" in prompt

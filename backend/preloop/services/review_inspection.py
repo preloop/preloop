@@ -53,10 +53,14 @@ def command_reads_change(
                 token = token.replace("$PRELOOP_REVIEW_" + name, value)
             parts[-1].append(token)
 
-    def changed(path: str) -> bool:
+    cwd = root
+
+    def changed(path: str, *, revision_path: bool = False) -> bool:
         normalized = str(PurePosixPath(path))
         if ".." in PurePosixPath(path).parts:
             return False
+        if not revision_path and not PurePosixPath(normalized).is_absolute() and cwd:
+            normalized = str(PurePosixPath(cwd) / normalized)
         if root and normalized.startswith(root.rstrip("/") + "/"):
             normalized = normalized[len(root.rstrip("/")) + 1 :]
         return normalized in files
@@ -66,6 +70,13 @@ def command_reads_change(
             continue
         program, *args = args
         program = PurePosixPath(program).name
+        if program == "cd":
+            if len(args) != 1 or ".." in PurePosixPath(args[0]).parts:
+                return False
+            cwd = str(PurePosixPath(cwd) / args[0]) if cwd else args[0]
+            if not root:
+                return False
+            continue
         if program == "git":
             if len(args) >= 2 and args[0] == "-C":
                 args = args[2:]
@@ -95,12 +106,20 @@ def command_reads_change(
                 revisions = args[: args.index("--")] if "--" in args else args
                 paths = args[args.index("--") + 1 :] if "--" in args else []
                 if f"{base}...{head}" in revisions and (
-                    not paths or any(path == "." or changed(path) for path in paths)
+                    not paths
+                    or any(
+                        path == "." or changed(path, revision_path=True)
+                        for path in paths
+                    )
                 ):
                     return True
             if operation == "show" and len(args) == 1:
                 revision, separator, path = args[0].partition(":")
-                if separator and revision in {base, head} and changed(path):
+                if (
+                    separator
+                    and revision in {base, head}
+                    and changed(path, revision_path=True)
+                ):
                     return True
         elif program in {"cat", "head", "tail", "nl"}:
             if any(arg in {"--help", "--version"} for arg in args):
@@ -140,3 +159,23 @@ def log_reads_change(
             ):
                 return True
     return False
+
+
+def inspection_receipt(binding: Any, diff: Any, root: str) -> dict[str, Any]:
+    """Bind a server-computed read receipt without retaining command or path text.
+
+    Only the native evidence writer creates this receipt, before privacy
+    redaction. Gateway/model claims never enter this channel.
+    """
+    import hashlib
+
+    context = {
+        "base": binding.get("base_sha"),
+        "head": binding.get("head_sha"),
+        "diff": diff or {},
+        "root": root,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(context, sort_keys=True).encode()
+    ).hexdigest()
+    return {"version": 1, "context_sha256": fingerprint, "read": True}

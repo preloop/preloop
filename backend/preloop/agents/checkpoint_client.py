@@ -24,7 +24,8 @@ from typing import BinaryIO
 WORKSPACE_ROOT = Path("/workspace")
 EVIDENCE_REFERENCE_PATH = Path("/tmp/preloop-evidence-reference.json")
 MAX_EVIDENCE_MEMBERS = 100_000
-RESULT_JSON_MAX_BYTES = 256 * 1024
+# A native review transport can contain two 256 KiB result candidates.
+RESULT_JSON_MAX_BYTES = 2 * 256 * 1024 + 1024
 _READ_CHUNK = 65536
 
 # Self-description member written into every evidence pack. Kept in sync

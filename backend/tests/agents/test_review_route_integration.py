@@ -345,6 +345,7 @@ def test_route_reaches_a_real_review_after_two_early_answers(
                 context, event_filter="cat", model="route", sandbox_flags="--yolo"
             )
             for original, target in {
+                "/workspace/.preloop-native-result.json": result,
                 "/workspace/result.json": result,
                 "/tmp/preloop-native-result-schema.json": schema_file,
                 "/tmp/preloop-agent-attempt.log": log,

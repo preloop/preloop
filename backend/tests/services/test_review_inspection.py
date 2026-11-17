@@ -176,15 +176,128 @@ def test_long_review_can_establish_inspection_after_earlier_evidence_rows() -> N
         ]
     }
 
-    def row(document: dict) -> tuple[dict]:
-        return ({"chunks": [json.dumps(document)], "sha256": digest(document)},)
+    def row(document: dict) -> tuple:
+        return (
+            uuid4(),
+            1,
+            {"chunks": [json.dumps(document)], "sha256": digest(document)},
+        )
 
     db = MagicMock()
-    query = db.query.return_value.filter.return_value.order_by.return_value
-    query.offset.return_value.limit.return_value.first.side_effect = [
-        row(empty)
-    ] * 501 + [row(read), None]
+    query = db.query.return_value
+    query.filter.return_value = query
+    query.order_by.return_value = query
+    query.limit.return_value = query
+    rows = [row(empty) for _ in range(501)] + [row(read)]
+    query.all.side_effect = [rows[i : i + 32] for i in range(0, len(rows), 32)]
     result = inspection_summary(
         db, execution_id=uuid4(), binding={"base_sha": BASE, "head_sha": HEAD}
     )
     assert result["diff_commands"] == 1
+
+    assert query.all.call_count == 16
+    query.offset.assert_not_called()
+
+
+@pytest.mark.parametrize("matching", [True, False])
+def test_private_inspection_receipt_is_bound_to_revision(matching: bool) -> None:
+    from preloop.services.review_integrity import ObservationCounter
+    from preloop.services.review_inspection import inspection_receipt
+
+    binding = {"base_sha": BASE, "head_sha": HEAD}
+    diff = {"files": ["changed.py"], "sha256": "d" * 64}
+    receipt = inspection_receipt(binding, diff, "/workspace")
+    counter = ObservationCounter(
+        binding=binding if matching else {**binding, "head_sha": "c" * 40},
+        diff=diff,
+        root="/workspace",
+    )
+    counter.add(
+        {
+            "observations": [
+                {
+                    "source": "native",
+                    "kind": "command",
+                    "item_id": "read",
+                    "event": "item.completed",
+                    "exit_code": 0,
+                    "value": None,
+                    "redacted": True,
+                    "inspection_receipt": receipt,
+                }
+            ]
+        }
+    )
+    assert counter.inspected() is matching
+
+
+def test_private_command_capture_keeps_only_bound_inspection_receipt() -> None:
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+    from uuid import uuid4
+    from preloop.models.crud.execution_tool_evidence import (
+        _persist_native_command_evidence,
+    )
+    from preloop.services.review_integrity import ObservationCounter
+
+    execution = SimpleNamespace(
+        ci_review_binding={"base_sha": BASE, "head_sha": HEAD},
+        startup_receipt=None,
+        flow=SimpleNamespace(git_clone_config={"publication_mode": "read_only"}),
+    )
+    event = {
+        "type": "item.completed",
+        "item": {
+            "id": "read",
+            "type": "command_execution",
+            "exit_code": 0,
+            "command": f"git diff {BASE}...{HEAD}",
+        },
+    }
+    with (
+        patch("preloop.config.settings.model_gateway_capture_content", False),
+        patch(
+            "preloop.models.crud.flow_execution_log._account_for_execution",
+            return_value=str(uuid4()),
+        ),
+        patch("preloop.models.crud.crud_flow_execution.get", return_value=execution),
+        patch(
+            "preloop.services.sensitive_data.storage.apply_storage_redaction",
+            side_effect=lambda account, doc: doc,
+        ),
+        patch(
+            "preloop.models.crud.execution_tool_evidence._persist_document"
+        ) as persist,
+    ):
+        _persist_native_command_evidence(
+            MagicMock(), execution_id=str(uuid4()), line=json.dumps(event)
+        )
+    document = persist.call_args.kwargs["document"]
+    assert document["observations"][0]["value"] is None
+    assert "git diff" not in json.dumps(document)
+    counter = ObservationCounter(binding=execution.ci_review_binding)
+    counter.add(document)
+    assert counter.inspected()
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        ("cd /tmp && cat src/changed.py", False),
+        ("cd /workspace && cat src/changed.py", True),
+        ("cd /workspace/src && cat changed.py", True),
+        ("cd /tmp && cat /workspace/src/changed.py", True),
+    ],
+)
+def test_changed_file_read_respects_explicit_working_directory(
+    command: str, expected: bool
+) -> None:
+    from preloop.services.review_inspection import command_reads_change
+
+    assert (
+        command_reads_change(
+            command, base=BASE, head=HEAD, files=["src/changed.py"], root="/workspace"
+        )
+        is expected
+    )

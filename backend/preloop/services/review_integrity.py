@@ -155,6 +155,19 @@ def _bindings(flow: Any, result: Mapping[str, Any]) -> dict[str, tuple[str, bool
     }
 
 
+def result_binding_instruction(flow: Any, binding: Mapping[str, Any]) -> str:
+    """Describe declared result bindings without adding fields to strict schemas."""
+    facts = controller_facts(binding, None)
+    mappings = [
+        f"{field} = {facts[fact]}"
+        for field, (fact, _) in _bindings(flow, {}).items()
+        if facts.get(fact)
+    ]
+    return (
+        "Result bindings: " + "; ".join(mappings) + ". " if mappings else ""
+    ) + "Follow the required result schema; do not add additional fields. "
+
+
 def controller_facts(
     binding: Mapping[str, Any] | None, diff: Mapping[str, Any] | None
 ) -> dict[str, str | None]:
@@ -194,28 +207,40 @@ def degenerate_review(flow: Any, document: Mapping[str, Any]) -> bool:
         }
     )
     strings: list[str] = []
+    required_strings: list[str] = []
 
-    def visit(value: Any, schema: Any) -> None:
+    def visit(value: Any, schema: Any, required: bool = False) -> None:
         schema = schema if isinstance(schema, Mapping) else {}
         if "enum" in schema or "const" in schema:
             return
         if isinstance(value, str):
             strings.append(value.strip())
+            if required:
+                required_strings.append(value.strip())
         elif isinstance(value, Mapping):
             properties = schema.get("properties") or {}
             for key, child in value.items():
                 if key not in excluded and not key.startswith("_"):
-                    visit(child, properties.get(key, {}))
+                    visit(
+                        child,
+                        properties.get(key, {}),
+                        key in schema.get("required", []),
+                    )
         elif isinstance(value, list):
             for child in value:
                 visit(child, schema.get("items"))
 
     visit(document, getattr(flow, "result_schema", None))
-    return bool(strings) and (
-        all(len(value) < 3 for value in strings)
-        or (
-            not document.get("findings")
-            and all(len(value.split()) < 2 for value in strings)
+    return any(
+        sum(char.isalnum() for char in value) < 3 for value in required_strings
+    ) or (
+        bool(strings)
+        and (
+            all(sum(char.isalnum() for char in value) < 3 for value in strings)
+            or (
+                not document.get("findings")
+                and all(len(value.split()) < 2 for value in strings)
+            )
         )
     )
 
@@ -303,7 +328,7 @@ def failure_message(outcome: Mapping[str, Any]) -> str:
     """A stable, value-free message for the execution row."""
     reasons = ", ".join(outcome.get("reasons") or []) or "unverified"
     if outcome.get("category") == CATEGORY_DEGENERATE:
-        return "review_degenerate: review narrative is too short or contains only a word without findings"
+        return "review_degenerate: a required narrative is too short or the review contains only a word without findings"
     if outcome.get("category") == CATEGORY_NOT_INSPECTED:
         return (
             "review_not_inspected: no successful command read the bound diff or "
@@ -350,20 +375,35 @@ class ObservationCounter:
                 identity = item.get("item_id")
                 if isinstance(identity, str):
                     self._commands.add(identity)
-                    from preloop.services.review_inspection import command_reads_change
+                    from preloop.services.review_inspection import (
+                        command_reads_change,
+                        inspection_receipt,
+                    )
 
                     if (
                         item.get("event") == "item.completed"
                         and type(item.get("exit_code")) is int
                         and item["exit_code"] == 0
-                        and not item.get("truncated")
-                        and not item.get("redacted")
-                        and command_reads_change(
-                            item.get("value"),
-                            base=self._binding.get("base_sha", ""),
-                            head=self._binding.get("head_sha", ""),
-                            files=self._diff.get("files", []),
-                            root=self._root,
+                        and (
+                            (
+                                not item.get("truncated")
+                                and not item.get("redacted")
+                                and command_reads_change(
+                                    item.get("value"),
+                                    base=self._binding.get("base_sha", ""),
+                                    head=self._binding.get("head_sha", ""),
+                                    files=self._diff.get("files", []),
+                                    root=self._root,
+                                )
+                            )
+                            or (
+                                bool(self._binding.get("base_sha"))
+                                and bool(self._binding.get("head_sha"))
+                                and item.get("inspection_receipt")
+                                == inspection_receipt(
+                                    self._binding, self._diff, self._root
+                                )
+                            )
                         )
                     ):
                         self._diff_commands.add(identity)
