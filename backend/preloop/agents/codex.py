@@ -10,6 +10,10 @@ from typing import Any, Dict, Optional
 from aiodocker.exceptions import DockerError
 
 from preloop.agents.resources import docker_memory_bytes
+from preloop.services.codex_tool_profiles import (
+    codex_tools_config,
+    validate_codex_tools_config,
+)
 from preloop.utils.execve_limits import (
     PROMPT_FILE_PATH,
     build_prompt_materialization_shell,
@@ -499,6 +503,9 @@ fi
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", cli_version):
             raise ValueError("codex_cli_version must be an exact release version")
         shell_locked = self._shell_locked(execution_context)
+        tool_profile = validate_codex_tools_config(
+            execution_context.get("agent_config") or {}
+        )
         sandbox_flags = self._codex_sandbox_flags(shell_locked)
         attach_mcp = self._attach_preloop_mcp(execution_context)
         stream_idle_timeout_seconds = resolve_stream_idle_timeout_seconds(
@@ -653,6 +660,7 @@ fi
             shell_locked=shell_locked,
             stream_idle_timeout_seconds=stream_idle_timeout_seconds,
             cli_version=cli_version,
+            codex_tools=tool_profile,
         )
         # Native OpenAI writes no provider block, so the bound is not ours
         # to report there.
@@ -1258,6 +1266,7 @@ done
         shell_locked: bool = False,
         stream_idle_timeout_seconds: int = STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
         cli_version: str = CODEX_CATALOG_VERSION,
+        codex_tools: str = "default",
     ) -> str:
         """
         Build the auth.json and config.toml shell script block for Codex CLI.
@@ -1289,11 +1298,13 @@ done
                 Native OpenAI keeps Codex's built-in value.
             cli_version: Exact hosted CLI version, used to select a validated
                 custom-model catalog schema and fallback profile.
+            codex_tools: Optional tool profile. Default preserves CLI behavior.
 
         Returns:
             Shell script block to write auth.json and config.toml
         """
         is_custom = model_provider and model_provider != "openai"
+        tool_lines = codex_tools_config(codex_tools, cli_version)
         limit_lines = self._build_codex_limit_lines(
             model, limits
         ) + self._build_codex_effort_line(model, reasoning_effort)
@@ -1325,7 +1336,7 @@ done
             catalog_line = (
                 'model_catalog_json = "$HOME/.codex/preloop-models.json"\n'
                 # Match the pinned default used to render catalog instructions.
-                "tools.update_plan.enabled = false\n"
+                + ("tools.update_plan.enabled = false\n" if not tool_lines else "")
                 if catalog
                 else ""
             )
@@ -1357,7 +1368,7 @@ EOF
 cat > ~/.codex/config.toml << EOF
 model_provider = "{provider_key}"
 model = "{model}"
-{lock_lines}{limit_lines}{catalog_line}{rmcp_line}[model_providers.{provider_key}]
+{lock_lines}{limit_lines}{catalog_line}{tool_lines}{rmcp_line}[model_providers.{provider_key}]
 name = "{model_provider.title()}"
 {base_url_line}
 http_headers = {{ Authorization = $PRELOOP_CODEX_PROVIDER_AUTH }}
@@ -1380,7 +1391,7 @@ EOF
 # Create config.toml with model and MCP server configuration
 cat > ~/.codex/config.toml << EOF
 model = "{model}"
-{lock_lines}{limit_lines}{rmcp_line}{mcp_server}EOF"""
+{lock_lines}{limit_lines}{tool_lines}{rmcp_line}{mcp_server}EOF"""
 
         shell_policy = """
 [shell_environment_policy]
