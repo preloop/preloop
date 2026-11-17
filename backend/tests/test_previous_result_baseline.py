@@ -105,7 +105,9 @@ async def _context(db_session: Session, flow: Flow, payload: dict, mock_nats_cli
         nats_client=mock_nats_client,
     )
     orchestrator._get_flow_details()
-    orchestrator.execution_log = type("ExecutionLogStub", (), {"id": uuid4()})()
+    orchestrator.execution_log = crud_flow_execution.create(
+        db_session, obj_in=FlowExecutionCreate(flow_id=flow.id, status="RUNNING")
+    )
     return await orchestrator._prepare_execution_context(resolved_prompt="review")
 
 
