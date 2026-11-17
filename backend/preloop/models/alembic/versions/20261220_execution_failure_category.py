@@ -18,6 +18,7 @@ depends_on = None
 CATEGORY_SQL = """
 CASE
     WHEN status IN ('TIMEOUT', 'TIMED_OUT') THEN 'timeout'
+    WHEN status IN ('STOPPED', 'CANCELLED') THEN 'cancelled'
     WHEN error_message ILIKE '%native_result requires an enabled result_schema%'
         THEN 'flow_config'
     WHEN error_message ILIKE '%explicit failure in result.json%'
@@ -32,17 +33,18 @@ def upgrade() -> None:
     """Backfill uncategorized failures and guard all future terminal writes."""
     op.execute(
         f"""UPDATE flow_execution SET failure_category = {CATEGORY_SQL}
-        WHERE status IN ('FAILED', 'ERROR', 'TIMEOUT', 'TIMED_OUT', 'ABORTED')
+        WHERE status IN ('FAILED', 'ERROR', 'TIMEOUT', 'TIMED_OUT', 'ABORTED', 'STOPPED', 'CANCELLED')
           AND (failure_category IS NULL OR failure_category IN ('', 'unknown'))"""
     )
     op.execute("""
         CREATE FUNCTION ensure_flow_failure_category() RETURNS trigger AS $$
         BEGIN
-            IF NEW.status IN ('FAILED', 'ERROR', 'TIMEOUT', 'TIMED_OUT', 'ABORTED')
+            IF NEW.status IN ('FAILED', 'ERROR', 'TIMEOUT', 'TIMED_OUT', 'ABORTED', 'STOPPED', 'CANCELLED')
                AND (NEW.failure_category IS NULL
                     OR NEW.failure_category IN ('', 'unknown')) THEN
                 NEW.failure_category := CASE
                     WHEN NEW.status IN ('TIMEOUT', 'TIMED_OUT') THEN 'timeout'
+                    WHEN NEW.status IN ('STOPPED', 'CANCELLED') THEN 'cancelled'
                     WHEN NEW.error_message ILIKE
                         '%native_result requires an enabled result_schema%'
                         THEN 'flow_config'
