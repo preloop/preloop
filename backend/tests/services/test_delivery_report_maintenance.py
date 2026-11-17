@@ -173,3 +173,23 @@ def test_main_defaults_to_dry_run(capsys: Any) -> None:
         assert maintenance.main(["remove-unclaimed"]) == 0
     assert remove.call_args.kwargs["dry_run"] is True
     assert '"dry_run": true' in capsys.readouterr().out
+
+
+def test_operator_enabled_flow_survives_remove_unclaimed(
+    db_session: Session, test_user: Any
+) -> None:
+    """An explicit operator enable adopts the flow it creates."""
+    account = test_user.account_id
+    with patch(
+        "preloop.api.endpoints.flows._resolve_clone_model_binding", return_value=None
+    ):
+        created = maintenance.enable_for_account(
+            db_session, account_id=account, dry_run=False
+        )
+    summary = maintenance.remove_unclaimed_report_flows(
+        db_session, account_id=account, dry_run=False
+    )
+    assert [(f.action, f.reason) for f in summary.flows] == [
+        ("keep", "enabled by an operator")
+    ]
+    assert crud_flow.get(db_session, id=UUID(created.flows[0].flow_id)) is not None

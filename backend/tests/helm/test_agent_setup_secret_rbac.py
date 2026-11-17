@@ -19,3 +19,29 @@ def test_agent_role_cannot_read_namespace_secrets() -> None:
     ]
     assert rules
     assert all(rule["verbs"] == ["create"] for rule in rules)
+
+
+def test_scheduled_flow_runners_get_operator_alert_channels() -> None:
+    """The scheduler runs scheduled flows by default; it needs the alert env."""
+    for template in (
+        "templates/spacesync-scheduler-deployment.yaml",
+        "templates/spacesync-worker-deployment.yaml",
+        "templates/api-deployment.yaml",
+    ):
+        rendered = helm_template(
+            template,
+            overrides=[
+                "notifications.operatorAccountIds[0]=synthetic-account",
+                "notifications.productTeamEmail=ops@example.com",
+                "flowExecution.workerEnabled=true",
+            ],
+        )
+        env = {
+            item["name"]: item.get("value")
+            for doc in yaml.safe_load_all(rendered)
+            if doc and doc.get("kind") == "Deployment"
+            for container in doc["spec"]["template"]["spec"]["containers"]
+            for item in container.get("env") or []
+        }
+        assert env.get("OPERATOR_ACCOUNT_IDS") == "synthetic-account", template
+        assert env.get("PRODUCT_TEAM_EMAIL") == "ops@example.com", template

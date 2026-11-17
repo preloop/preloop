@@ -432,6 +432,31 @@ async def test_operator_account_failure_reaches_admin_channel_once(
     assert "ALERT delivery_report_failed" in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_operator_alert_runs_off_loop_and_records_a_failed_send() -> None:
+    """A blocking or failing admin send never claims an alert was delivered."""
+    from preloop.config import settings
+
+    flow = SimpleNamespace(
+        account_id=uuid4(), agent_config={"report_kind": "delivery_report"}
+    )
+    with (
+        _operator_failure_patches([True]),
+        patch.object(settings, "operator_account_ids", [str(flow.account_id)]),
+        patch(
+            "preloop.sync.tasks.notify_admins", side_effect=RuntimeError("smtp down")
+        ) as admins,
+        patch.object(
+            email.asyncio, "to_thread", wraps=email.asyncio.to_thread
+        ) as to_thread,
+    ):
+        record = await email.distribute_failure(
+            MagicMock(), flow=flow, execution=failed_execution()
+        )
+    assert record["operator_alerted"] is False
+    assert any(call.args[0] is admins for call in to_thread.call_args_list)
+
+
 def test_activity_query_filters_500_projects_with_account_isolation(
     db_session: Any,
     test_user: Any,

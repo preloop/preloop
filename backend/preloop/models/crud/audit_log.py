@@ -378,6 +378,39 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         )
         return row is not None
 
+    def flow_has_config_action(
+        self,
+        db: Session,
+        *,
+        account_id: Union[UUID, str],
+        flow_id: Union[UUID, str],
+        action: str,
+    ) -> bool:
+        """Whether the audit trail records ``action`` for this flow, by anyone.
+
+        Args:
+            db: Database session.
+            account_id: The flow's account.
+            flow_id: The flow.
+            action: The configuration-change action, e.g. ``operator_enabled``.
+
+        Returns:
+            True when at least one matching entry exists.
+        """
+        new_value = AuditLog.details.op("->")("new_value")
+        row = (
+            db.query(AuditLog.id)
+            .filter(
+                AuditLog.account_id == str(account_id),
+                AuditLog.action == "configuration_change",
+                AuditLog.resource_id == "flow",
+                new_value.op("->>")("id") == str(flow_id),
+                AuditLog.details.op("->>")("action") == action,
+            )
+            .first()
+        )
+        return row is not None
+
     def get_last_grant_consent(
         self,
         db: Session,

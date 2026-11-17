@@ -290,8 +290,12 @@ setup Secret, so no permission to read or update Secrets is needed. Deployments
 using their own kubeconfig must grant `create` on Secrets there. The Job owns
 the Secret, so Job cleanup also removes its setup data and credentials. The
 setup file is readable only by the user that runs the container's setup
-commands, and Docker removes it after extraction; the agent harness, which
-runs as a separate user, cannot read the credential store.
+commands, and Docker removes it after extraction. In root-started pods (the
+default) the agent harness runs as a separate user and cannot read the
+credential store. With `AGENT_RUN_AS_NON_ROOT=true` or a numeric container
+user, setup and harness share one uid, so the harness can read the `0600`
+credential store, as it could read the credentials in its environment
+before.
 
 A failed report appears on the Delivery Report page even if its agent never
 started. The report recipients (the policy's owner or sponsoring lead) receive

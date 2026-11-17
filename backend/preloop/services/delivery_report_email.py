@@ -289,7 +289,9 @@ async def distribute_report(
     }
 
 
-def notify_operator_of_failure(*, flow: Any, execution: Any, reason: str) -> bool:
+async def notify_operator_of_failure(
+    *, flow: Any, execution: Any, reason: str
+) -> Optional[bool]:
     """Alert the instance operator when one of its own reports failed.
 
     Uses the admin channels every other production alert uses
@@ -303,14 +305,15 @@ def notify_operator_of_failure(*, flow: Any, execution: Any, reason: str) -> boo
         reason: Plain-language failure reason.
 
     Returns:
-        Whether the account is an operator account and the alert was handed on.
+        None when the account is not an operator account, True when the
+        admin channels accepted the alert, False when sending it raised.
     """
     from preloop.config import settings
     from preloop.sync.tasks import notify_admins
 
     account_id = str(getattr(flow, "account_id", "") or "")
     if not account_id or account_id not in set(settings.operator_account_ids):
-        return False
+        return None
     link = report_url(getattr(execution, "id", ""))
     logger.error(
         "ALERT delivery_report_failed execution=%s category=%s",
@@ -318,7 +321,9 @@ def notify_operator_of_failure(*, flow: Any, execution: Any, reason: str) -> boo
         getattr(execution, "failure_category", None) or "unknown",
     )
     try:
-        notify_admins(
+        # SMTP and webhook calls block; keep them off the event loop.
+        await asyncio.to_thread(
+            notify_admins,
             "Delivery Report failed",
             f"{reason}\n\nRun: {link}",
             f"<p>{html.escape(reason)}</p>"
@@ -326,6 +331,7 @@ def notify_operator_of_failure(*, flow: Any, execution: Any, reason: str) -> boo
         )
     except Exception:
         logger.error("Could not send the Delivery Report operator alert")
+        return False
     return True
 
 
@@ -376,10 +382,11 @@ async def distribute_failure(
         logger.error("Could not send the Delivery Report failure notice")
         record = {"status": "failed", "at": datetime.now(timezone.utc).isoformat()}
     record = dict(record or {"status": "skipped"})
-    if notify_operator_of_failure(
+    alerted = await notify_operator_of_failure(
         flow=flow, execution=execution, reason=str(report["reason"])
-    ):
-        record["operator_alerted"] = True
+    )
+    if alerted is not None:
+        record["operator_alerted"] = alerted
     crud_flow_execution.finish_report_failure_notice(
         db,
         execution_id=execution.id,

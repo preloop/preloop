@@ -35,6 +35,9 @@ from preloop.services.delivery_report import is_delivery_report_flow
 
 logger = logging.getLogger(__name__)
 
+# Audit action recorded when an operator enables the report for an account.
+OPERATOR_ENABLED_ACTION = "operator_enabled"
+
 
 @dataclass
 class FlowAction:
@@ -66,6 +69,13 @@ def _keep_reason(db: Session, flow: Any) -> Optional[str]:
         db, account_id=flow.account_id, flow_id=flow.id
     ):
         return "edited by a user"
+    if crud_audit_log.flow_has_config_action(
+        db,
+        account_id=flow.account_id,
+        flow_id=flow.id,
+        action=OPERATOR_ENABLED_ACTION,
+    ):
+        return "enabled by an operator"
     if crud_flow_execution.flow_has_succeeded(db, flow_id=flow.id):
         return "has a successful run"
     return None
@@ -171,6 +181,24 @@ def enable_for_account(
         )
         return summary
     if existing is None:
+        db.commit()
+        # The operator's explicit enable adopts the flow: remove-unclaimed
+        # keeps flows with this entry. Written directly so it does not depend
+        # on the audit service being enabled.
+        crud_audit_log.log_action(
+            db=db,
+            account_id=account_id,
+            user_id=None,
+            action="configuration_change",
+            resource_type="configuration",
+            resource_id="flow",
+            status="success",
+            details={
+                "config_type": "flow",
+                "action": OPERATOR_ENABLED_ACTION,
+                "new_value": {"id": str(flow.id), "name": flow.name},
+            },
+        )
         db.commit()
     summary.flows.append(
         FlowAction(
