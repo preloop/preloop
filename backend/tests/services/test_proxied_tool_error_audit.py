@@ -466,3 +466,88 @@ def test_typed_results_skip_the_text_fallback():
     assert _has_typed_content([types.TextContent(type="text", text="t"), AUDIO])
     assert not _has_typed_content([types.TextContent(type="text", text="t")])
     assert not _has_typed_content("plain")
+
+
+@pytest.mark.parametrize(
+    ("status", "header", "body", "scope"),
+    [
+        (
+            403,
+            'Bearer error="insufficient_scope", scope="records:write"',
+            {},
+            "records:write",
+        ),
+        (
+            403,
+            "",
+            {"error": "insufficient_scope", "scope": "records:write"},
+            "records:write",
+        ),
+        (
+            403,
+            "",
+            {"error": {"code": "insufficient_scope", "scope": "records:write"}},
+            "records:write",
+        ),
+        (403, 'Bearer error="insufficient_scope"', {}, None),
+        (403, "", {"error": "insufficient_scope", "scope": "x" * 1000}, "x" * 30),
+        (
+            403,
+            "",
+            {"error": "insufficient_scope", "scope": "token=synthetic-private"},
+            "[REDACTED]",
+        ),
+        (403, "", {}, False),
+        (401, 'Bearer error="insufficient_scope"', {}, False),
+    ],
+)
+async def test_scope_refusal_evidence_from_stub_upstream(
+    monkeypatch: pytest.MonkeyPatch,
+    user_context: UserContext,
+    status: int,
+    header: str,
+    body: dict,
+    scope: str | bool | None,
+) -> None:
+    """HTTP scope refusals keep their scope through transport, proxy and audit."""
+    from typing import Any
+    from tests.services.test_mcp_client_pool import mock_mcp_session
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, headers={"WWW-Authenticate": header}, json=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as upstream:
+
+        async def call(*args: Any, **kwargs: Any) -> None:
+            response = await upstream.post("https://upstream.example.com/mcp")
+            response.raise_for_status()
+
+        streams, session = mock_mcp_session()
+        session.call_tool.side_effect = call
+        monkeypatch.setattr(
+            "preloop.services.mcp_client_pool.streamable_http_client",
+            lambda *a, **k: streams,
+        )
+        monkeypatch.setattr(
+            "preloop.services.mcp_client_pool.ClientSession", lambda *a, **k: session
+        )
+        transport = MCPClient(url="https://upstream.example.com/mcp")
+        transport._connected = True
+        mcp, client, audit, _ = _setup(monkeypatch, user_context)
+        client.call_tool.side_effect = transport.call_tool
+        result = await mcp.call_tool("safe_tool", {})
+    fields = _audit_kwargs(audit)
+    assert fields["result"] == "upstream_error"
+    assert result.is_error
+    if scope is False:
+        assert fields["error_code"] == f"http_{status}"
+        assert "reconnect" in result.content[0].text
+    else:
+        assert fields["error_code"] == "insufficient_scope"
+        for text in (fields["error_reason"], result.content[0].text):
+            assert "token does not cover this call" in text
+            assert "reconnect" not in text and "rescan" not in text
+            assert "synthetic-private" not in text
+            if scope:
+                assert scope in text
+        assert len(fields["error_reason"]) <= 200

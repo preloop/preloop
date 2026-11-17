@@ -95,6 +95,38 @@ The core audit service records the delegated subject, scope list, client ID, con
 
 With permission to view audit logs, search a consent reference using `GET /api/v1/audit-logs?consent_ref=consent-example` or the grouped timeline at `GET /api/v1/audit-logs/grouped?consent_ref=consent-example`. Matching is exact and always scoped to your account. Pagination and the returned total use the same filter. A partial composite index on account and consent reference supports these lookups; its migration builds and removes the index concurrently to avoid blocking audit inserts.
 
+Grant-gate `policy_deny` rows for `grant_inactive`, `scope_not_granted` and
+`introspection_unavailable` include the same API key, runtime session and runtime
+principal fields as policy allow rows for that caller.
+
+An inactive answer may contain only `{"active": false}`. When it omits the consent
+claim, Preloop leaves `details.grant.consent_ref` null and looks up the most recent
+stored consent claim for the same account, server ID and configuration revision.
+If found, it records `details.grant.last_known_consent_ref`. This is historical
+evidence, **not a claim that the consent is currently active**. The lookup never
+uses another denial's fallback reference and adds no token cache or fingerprint.
+It does not change upstream credentials, arguments or grant decisions.
+
+Add `include_last_known_consent=true` to either consent search endpoint to include
+these denials, for example:
+
+```http
+GET /api/v1/audit-logs?consent_ref=consent-example&include_last_known_consent=true
+```
+
+The option defaults to false. Both pagination and totals use the same exact,
+account-scoped match. Last-known searches and server history lookups have partial
+composite indexes built concurrently with audit writes.
+
+History is available only from stored rows carrying the server identity and
+revision, written by this version. Configuration edits (including credential
+rotation) conservatively start a new history; OAuth credential versions are also
+separated. No reference is inferred from older rows without that attribution or
+from writes that have not reached the audit log yet. If reference-only logging
+covers the call, the fallback is omitted so a historical clear-text consent
+reference cannot be reintroduced. A failed evidence lookup also omits the
+fallback; the grant denial still takes effect.
+
 ## Test a synthetic grant
 
 In the rule or YAML simulator, enter a synthetic grant JSON object alongside sample arguments, for example `{"active": true, "scope": ["records:read"], "sub": "subject-example"}`. Do not enter a bearer token or client secret. The sample schema rejects credential fields and incorrect types.

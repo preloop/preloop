@@ -62,6 +62,29 @@ class AuditLog(Base):
             postgresql_where=text("(details -> 'grant' ->> 'consent_ref') IS NOT NULL"),
         ),
         Index(
+            "ix_audit_log_account_last_consent",
+            "account_id",
+            text("(details -> 'grant' ->> 'last_known_consent_ref')"),
+            postgresql_where=text(
+                "(details -> 'grant' ->> 'last_known_consent_ref') IS NOT NULL"
+            ),
+        ),
+        Index(
+            "ix_audit_log_server_consent_history",
+            "account_id",
+            text("(details -> 'grant' ->> 'server_id')"),
+            text("(details -> 'grant' ->> 'server_revision')"),
+            text("timestamp DESC"),
+            text("id DESC"),
+            postgresql_where=text("(details -> 'grant' ->> 'consent_ref') IS NOT NULL"),
+        ),
+        Index(
+            "ix_audit_log_account_error_code",
+            "account_id",
+            text("(details ->> 'error_code')"),
+            postgresql_where=text("(details ->> 'error_code') IS NOT NULL"),
+        ),
+        Index(
             "ix_audit_log_grant_reference",
             "account_id",
             text("((details -> 'external_result') ->> 'grant_reference')"),

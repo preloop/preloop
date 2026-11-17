@@ -49,7 +49,9 @@ async def test_scope_refusal_holds_call_and_retries_once(
         if not permitted:
             return httpx.Response(
                 403,
-                headers={"WWW-Authenticate": 'Bearer error="insufficient_scope"'},
+                headers={
+                    "WWW-Authenticate": 'Bearer error="insufficient_scope", scope="records:read"'
+                },
                 json={"error": "insufficient_scope"},
             )
         return httpx.Response(200, json={"value": "approved read"})
@@ -102,6 +104,8 @@ async def test_scope_refusal_holds_call_and_retries_once(
         assert "insufficient_scope" not in result.content[0].text
     rows = [call.kwargs for call in audit.log_tool_call_async.call_args_list]
     assert rows[0]["result"] == "upstream_error"
+    assert rows[0]["error_code"] == "insufficient_scope"
+    assert "records:read" in rows[0]["error_reason"]
     assert len({row["correlation_id"] for row in rows}) == 1
 
 

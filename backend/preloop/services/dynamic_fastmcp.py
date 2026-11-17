@@ -603,6 +603,7 @@ async def _evaluate_snapshot_grant(
 ) -> Optional[GrantResult]:
     """Check grant state for the token on the copied dispatch configuration."""
     auth = snapshot.client_config["auth_config"]
+    revision = snapshot.registry_revision
     if not isinstance(auth, dict) or auth.get("introspection") is None:
         return None
     if snapshot.client_config["auth_type"] == "oauth":
@@ -612,18 +613,31 @@ async def _evaluate_snapshot_grant(
             uuid.UUID(snapshot.client_config["server_id"])
         )
         auth = current.config
+        if revision and type(getattr(current, "version", None)) is int:
+            revision = f"{revision}:oauth:{current.version}"
         snapshot.client_config["auth_config"] = auth
     config = IntrospectionConfig.model_validate(auth["introspection"])
     auth_type = snapshot.client_config["auth_type"]
     if auth_type not in {"bearer", "oauth"}:
         raise ValueError("introspection requires bearer or OAuth authentication")
     token = auth.get("token" if auth_type == "bearer" else "access_token")
-    return await grant_introspector.evaluate(
+    result = await grant_introspector.evaluate(
         token if isinstance(token, str) else None,
         config,
         server_id=snapshot.client_config["server_id"],
         **({"force": True} if force else {}),
     )
+
+    if revision:
+        return GrantResult(
+            {
+                **result.binding,
+                "server_id": snapshot.client_config["server_id"],
+                "server_revision": revision,
+            },
+            result.deny_reason,
+        )
+    return result
 
 
 async def _prepare_grant_dispatch(
@@ -691,10 +705,68 @@ async def _record_grant_denial(
     *,
     user_id: Optional[str] = None,
     correlation_id: Optional[str] = None,
+    user_context: Optional[UserContext] = None,
+    snapshot: Optional[GrantDispatchSnapshot] = None,
 ) -> None:
     """Record the hard grant gate through the existing policy-denial audit path."""
     from preloop.services.policy_evaluator import _log_policy_decision_async
 
+    from preloop.models.crud import crud_audit_log
+
+    if (
+        grant.deny_reason == "grant_inactive"
+        and not grant.binding.get("consent_ref")
+        and grant.binding.get("server_id")
+        and grant.binding.get("server_revision")
+    ):
+
+        def last_consent() -> Optional[str]:
+            """Read stored consent only when the call permits clear-text evidence."""
+            if _reference_only_in_scope(
+                account_id,
+                tool_name=tool_name,
+                server_name=snapshot.server_name if snapshot else None,
+                managed_agent_id=getattr(user_context, "managed_agent_id", None),
+            ):
+                return None
+            db = next(get_db())
+            try:
+                return crud_audit_log.get_last_grant_consent(
+                    db,
+                    account_id=account_id,
+                    server_id=grant.binding["server_id"],
+                    server_revision=grant.binding["server_revision"],
+                )
+            finally:
+                db.close()
+
+        try:
+            reference = await asyncio.to_thread(last_consent)
+        except Exception:
+            # Evidence lookup failure must never replace the grant refusal.
+            logger.warning("Could not read last-known consent evidence", exc_info=True)
+            reference = None
+        if reference is not None:
+            grant.binding["last_known_consent_ref"] = reference
+            bound = _grant_binding_var.get()
+            if bound is not None:
+                bound["last_known_consent_ref"] = reference
+
+    principal = (
+        {
+            name: getattr(user_context, name, None)
+            for name in (
+                "runtime_session_id",
+                "runtime_principal_type",
+                "runtime_principal_id",
+                "runtime_principal_name",
+                "api_key_id",
+                "api_key_name",
+            )
+        }
+        if user_context is not None
+        else {}
+    )
     fields = dict(
         account_id=uuid.UUID(account_id),
         tool_name=tool_name,
@@ -704,7 +776,7 @@ async def _record_grant_denial(
         tool_args={},
         user_id=uuid.UUID(user_id) if user_id else None,
         correlation_id=correlation_id,
-        extra_details={"grant": grant.binding},
+        extra_details={**principal, "grant": grant.binding},
     )
 
     if outbox_enabled():
@@ -729,6 +801,7 @@ def _proxied_exception_outcome(
     failures are written to the MCP server's ``last_error``.
     """
     from preloop.services.mcp_client_pool import MCPAuthenticationError
+    from preloop.services.external_approval import scope_refusal_detail
 
     status_code = (
         cause.status_code
@@ -741,6 +814,9 @@ def _proxied_exception_outcome(
     ) and isinstance(status_code, int):
         outcome = _WRAPPER_OUTCOME_UPSTREAM_ERROR
         code = f"http_{status_code}"
+        refusal = scope_refusal_detail(cause)
+        if refusal is not None:
+            code, reason = "insufficient_scope", refusal.reason
     else:
         outcome = TOOL_CALL_STATUS_FAILED
         code = "unavailable" if unavailable else type(cause).__name__
@@ -1235,6 +1311,8 @@ _WRAPPER_NAMESPACE_KEYS = (
     "deepcopy",
     "_prepare_grant_dispatch",
     "_record_grant_denial",
+    "GrantResult",
+    "grant_introspector",
     "param_names",
     "logger",
     "get_db",
@@ -2068,12 +2146,16 @@ async def {internal_name}({params_str}):
             else:
                 snapshot, grant = await _prepare_grant_dispatch(account_id, tool_name)
         except Exception:
+            await _record_grant_denial(account_id, tool_name,
+                GrantResult(grant_introspector._unavailable(), "introspection_unavailable"),
+                user_id=user_context.user_id, user_context=user_context,
+                correlation_id=_correlation_id_var.get(None))
             return _wrapper_tool_error("Access denied: introspection_unavailable", status="refused")
         if grant is not None:
             _grant_binding_var.set(deepcopy(grant.binding))
         if grant is not None and grant.deny_reason:
             await _record_grant_denial(account_id, tool_name, grant, user_id=user_context.user_id,
-                                correlation_id=_correlation_id_var.get(None))
+                                user_context=user_context, snapshot=snapshot, correlation_id=_correlation_id_var.get(None))
             return _wrapper_tool_error(f"Access denied: {{grant.deny_reason}}", status="refused")
     if snapshot is None:
         return _wrapper_tool_error("Access denied: no active MCP server provides this tool", status="refused")
@@ -2198,6 +2280,10 @@ async def {internal_name}({params_str}):
         )
         if isinstance(cause, MCPToolOutcomeUnknownError):
             return _wrapper_tool_error(str(cause), status=outcome)
+        from preloop.services.external_approval import scope_refusal_detail
+        refusal = scope_refusal_detail(cause)
+        if refusal is not None:
+            return _wrapper_tool_error(refusal.reason, status=outcome)
         if unavailable:
             return _wrapper_tool_error(
                 f"The '{{server_label}}' MCP server is temporarily unavailable, so the "
@@ -2225,6 +2311,8 @@ async def {internal_name}({params_str}):
             "deepcopy": deepcopy,
             "_prepare_grant_dispatch": _prepare_grant_dispatch,
             "_record_grant_denial": _record_grant_denial,
+            "GrantResult": GrantResult,
+            "grant_introspector": grant_introspector,
             "param_names": param_names,
             "logger": logger,
             "get_db": get_db,
@@ -2679,6 +2767,7 @@ async def {internal_name}({params_str}):
                     user_context.account_id,
                     name,
                     GrantResult(grant_binding, "introspection_unavailable"),
+                    user_context=user_context,
                     user_id=user_context.user_id,
                     correlation_id=correlation_id,
                 )
@@ -2696,6 +2785,8 @@ async def {internal_name}({params_str}):
                         user_context.account_id,
                         name,
                         grant,
+                        user_context=user_context,
+                        snapshot=snapshot,
                         user_id=user_context.user_id,
                         correlation_id=correlation_id,
                     )
@@ -3315,6 +3406,7 @@ async def {internal_name}({params_str}):
             handoff_reference,
             outcome_error,
             scope_refusal,
+            scope_refusal_detail,
             scope_replay,
         )
 
@@ -3337,6 +3429,15 @@ async def {internal_name}({params_str}):
                 else:
                     _grant_binding_var.set(deepcopy(grant.binding))
                 if grant.deny_reason:
+                    await _record_grant_denial(
+                        snapshot.account_id,
+                        snapshot.tool_name,
+                        grant,
+                        user_id=user_context.user_id,
+                        user_context=user_context,
+                        snapshot=snapshot,
+                        correlation_id=correlation_id,
+                    )
                     return _wrapper_tool_error(
                         outcome_error(
                             "approved but grant refused",
@@ -3386,6 +3487,8 @@ async def {internal_name}({params_str}):
                 raise refusal
             return refusal
 
+        refusal_detail = scope_refusal_detail(refusal)
+        assert refusal_detail is not None
         # Record the refused attempt before approval_created, using the same
         # redaction and durable-outbox handling as every governed refusal.
         fields = await asyncio.to_thread(
@@ -3393,7 +3496,7 @@ async def {internal_name}({params_str}):
             user_context,
             client_tool_name=snapshot.tool_name,
             arguments=arguments,
-            reason="Upstream refused the call: insufficient_scope",
+            reason=refusal_detail.reason,
             correlation_id=correlation_id,
             audit_result="upstream_error",
             error_code="insufficient_scope",
@@ -4145,6 +4248,8 @@ async def {internal_name}({params_str}):
                 snapshot.account_id,
                 snapshot.tool_name,
                 grant,
+                user_context=user_context,
+                snapshot=snapshot,
                 user_id=user_context.user_id,
                 correlation_id=_correlation_id_var.get(None),
             )

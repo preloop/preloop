@@ -694,6 +694,27 @@ Monitor all external tool calls:
 
 Tool calls are recorded in each runtime session's timeline (**Audit > Sessions**). **Audit > All events** lists them account-wide in every edition.
 
+#### Upstream errors
+
+A refused upstream call is recorded as a `tool_call` with status
+`upstream_error`. The audit details distinguish these cases:
+
+| Upstream response | `details.error_code` | Agent and audit reason |
+| --- | --- | --- |
+| HTTP 403 with `insufficient_scope` in `WWW-Authenticate` or the JSON body | `insufficient_scope` | The token does not cover this call. Includes `Required scope: ...` when the challenge or body supplies `scope`. |
+| Other HTTP 401 or 403 | `http_401` or `http_403` | Authentication or authorization was rejected; configure or reconnect authentication, then rescan. |
+| Other HTTP failure | `http_<status>` | The existing bounded upstream failure reason. |
+
+Scope evidence is redacted for labelled credentials and bounded to the same
+200-character audit reason limit. An insufficient-scope error does not advise
+reconnecting or rescanning. Search it with
+`GET /api/v1/audit-logs?error_code=insufficient_scope`; the grouped endpoint also
+accepts `error_code`. The filter is exact and account-scoped.
+
+The opt-in [external approval hand-off](../grant-introspection.md#approval-after-an-upstream-scope-refusal)
+uses the same scope-refusal parser. Its initial refused-attempt audit row keeps
+the missing-scope reason before approval begins.
+
 ### 5. Rotate Credentials
 
 ```bash
