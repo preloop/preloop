@@ -155,11 +155,15 @@ async def test_integrity_error_on_remove_is_409_with_rollback(
     owner, _, flow, _ = ci_resources
     _disable(db_session, flow)
     db = MagicMock(wraps=db_session)
+    from preloop.services import flow_deletion
+
     mocker.patch.object(
-        flows.crud_flow, "get_delete_blockers", return_value=FlowDeleteBlockers()
+        flow_deletion.crud_flow,
+        "get_delete_blockers",
+        return_value=FlowDeleteBlockers(),
     )
     mocker.patch.object(
-        flows.crud_flow,
+        flow_deletion.crud_flow,
         "remove",
         side_effect=IntegrityError("DELETE", {}, Exception("fk")),
     )

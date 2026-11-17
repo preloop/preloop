@@ -268,7 +268,7 @@ class FlowExecutionBase(BaseModel):
         None,
         description=(
             "Coarse machine-readable reason a terminal execution did not "
-            "succeed: one of runner_conflict, runner_error, model_transient, "
+            "succeed: one of runner_conflict, runner_error, launch_payload_too_large, model_transient, "
             "model_auth, provider_billing, model_quota (legacy, superseded "
             "by provider_billing), budget_exceeded, default_limit_reached "
             "(a default per-execution ceiling the flow did not set), "

@@ -197,6 +197,10 @@ spec:
                   name: {{ include "preloop.secretName" $ }}
                   key: sentry-dsn
             {{- end }}
+            {{- with $.Values.notifications.operatorAccountIds }}
+            - name: OPERATOR_ACCOUNT_IDS
+              value: {{ join "," . | quote }}
+            {{- end }}
             {{- if $.Values.notifications.productTeamEmail }}
             - name: PRODUCT_TEAM_EMAIL
               value: {{ $.Values.notifications.productTeamEmail | quote }}

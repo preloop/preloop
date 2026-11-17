@@ -345,6 +345,72 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             db.flush()
         return db_obj
 
+    # Flow audit actions that do not author a flow: an enable/disable toggle
+    # (an operator pausing it) leaves the flow's content as the system made it.
+    FLOW_TOGGLE_ACTIONS = ("enabled", "disabled")
+
+    def flow_changed_by_user(
+        self, db: Session, *, account_id: Union[UUID, str], flow_id: Union[UUID, str]
+    ) -> bool:
+        """Whether a user created or edited this flow, from the audit trail.
+
+        Args:
+            db: Database session.
+            account_id: The flow's account.
+            flow_id: The flow.
+
+        Returns:
+            True when a configuration change for the flow names a user and is
+            not only an enable/disable toggle.
+        """
+        new_value = AuditLog.details.op("->")("new_value")
+        row = (
+            db.query(AuditLog.id)
+            .filter(
+                AuditLog.account_id == str(account_id),
+                AuditLog.action == "configuration_change",
+                AuditLog.resource_id == "flow",
+                AuditLog.user_id.isnot(None),
+                new_value.op("->>")("id") == str(flow_id),
+                AuditLog.details.op("->>")("action").notin_(self.FLOW_TOGGLE_ACTIONS),
+            )
+            .first()
+        )
+        return row is not None
+
+    def flow_has_config_action(
+        self,
+        db: Session,
+        *,
+        account_id: Union[UUID, str],
+        flow_id: Union[UUID, str],
+        action: str,
+    ) -> bool:
+        """Whether the audit trail records ``action`` for this flow, by anyone.
+
+        Args:
+            db: Database session.
+            account_id: The flow's account.
+            flow_id: The flow.
+            action: The configuration-change action, e.g. ``operator_enabled``.
+
+        Returns:
+            True when at least one matching entry exists.
+        """
+        new_value = AuditLog.details.op("->")("new_value")
+        row = (
+            db.query(AuditLog.id)
+            .filter(
+                AuditLog.account_id == str(account_id),
+                AuditLog.action == "configuration_change",
+                AuditLog.resource_id == "flow",
+                new_value.op("->>")("id") == str(flow_id),
+                AuditLog.details.op("->>")("action") == action,
+            )
+            .first()
+        )
+        return row is not None
+
     def get_last_grant_consent(
         self,
         db: Session,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
@@ -534,4 +535,52 @@ func useHostFlowTestURL(t *testing.T) {
 	previous := FlagURL
 	FlagURL = "https://preloop.example.test"
 	t.Cleanup(func() { FlagURL = previous })
+}
+
+func TestHostDeliveryReportWith500Repositories(t *testing.T) {
+	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
+	repositories := make([]any, 500)
+	for i := range repositories {
+		repositories[i] = map[string]any{
+			"url":  fmt.Sprintf("https://github.com/example/project-%d.git", i),
+			"path": fmt.Sprintf("workspace-%d", i+1), "branch": "main",
+			"username": "x-access-token", "token": "synthetic-token",
+		}
+	}
+	plan, err := jobHostExecCheckout(map[string]any{"host_exec_checkout": map[string]any{
+		"repositories": repositories, "report_kind": "delivery_report",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Repositories) != 500 {
+		t.Fatal("report scope was truncated")
+	}
+	workspace := t.TempDir()
+	if err := writeHostReportPaths(workspace, plan); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, ".preloop-repository-paths.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []map[string]string
+	if err := json.Unmarshal(data, &paths); err != nil || len(paths) != 500 {
+		t.Fatalf("incomplete repository path map: %v", err)
+	}
+	if strings.Contains(string(data), "synthetic-token") {
+		t.Fatal("repository path map contains credentials")
+	}
+	preamble := hostExecCheckoutPreamble(workspace, plan)
+	if len(preamble) > hostExecPreambleMaxBytes || strings.Contains(preamble, "workspace-500") {
+		t.Fatal("repository paths must be read from a file, not expanded in the prompt")
+	}
+	for _, repo := range plan.Repositories {
+		env := hostExecGitEnv([]string{"PRELOOP_DISABLE_TELEMETRY=true"}, repo)
+		for _, item := range env {
+			if len(item) >= 128*1024 {
+				t.Fatal("checkout environment crosses the Linux per-string limit")
+			}
+		}
+	}
 }

@@ -357,6 +357,7 @@ class CodexAgent(ContainerAgentExecutor):
             container = await docker.containers.create(config=container_config)
             container_id = container.id
 
+            await self._seed_docker_repository_setup(container, execution_context)
             await container.start()
 
             self._containers[container_id] = container

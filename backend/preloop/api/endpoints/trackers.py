@@ -924,16 +924,8 @@ async def register_tracker(
             db.commit()
             db.refresh(new_tracker)
 
-        from preloop.services.delivery_report_activation import (
-            ensure_default_report_flow,
-        )
-
-        ensure_default_report_flow(
-            db,
-            account_id=account.id,
-            created_by_user_id=getattr(current_user, "id", None),
-        )
-        db.commit()
+        # Connecting a tracker does not create a Delivery Report flow. A user
+        # adds the preset, or an operator enables it for the account.
 
         log_config_change(
             db,

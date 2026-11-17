@@ -109,7 +109,8 @@ def build_host_exec_checkout(context: Dict[str, Any]) -> Optional[Dict[str, Any]
     repositories = agent._resolve_git_clone_repositories(context, git_config)
     if not repositories:
         return None
-    if len(repositories) > HOST_EXEC_MAX_CHECKOUT_REPOSITORIES:
+    report = (context.get("agent_config") or {}).get("report_kind") == "delivery_report"
+    if not report and len(repositories) > HOST_EXEC_MAX_CHECKOUT_REPOSITORIES:
         raise HostExecDeliveryError(
             "Host checkout supports at most "
             f"{HOST_EXEC_MAX_CHECKOUT_REPOSITORIES} repositories"
@@ -170,6 +171,7 @@ def build_host_exec_checkout(context: Dict[str, Any]) -> Optional[Dict[str, Any]
         "repositories": planned,
         "git_user_name": git_user_name,
         "git_user_email": git_user_email,
+        **({"report_kind": "delivery_report"} if report else {}),
     }
 
 

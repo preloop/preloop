@@ -510,6 +510,14 @@ Project reruns use the existing manual flow trigger, narrow the report policy's
 scope for that execution, and recheck the policy before running. They preserve
 the account's assessment budgets and tracker-write rules.
 
+Delivery Report automatic checkout skips repositories with no synced activity
+in the report window and preserves unknowns. Setup and git credentials travel
+as a gzip file: a Job-owned Kubernetes Secret, Docker pre-start upload, or the
+private runner's existing chunked seed transport. Launch scripts contain a
+constant file reader. Failed runs remain visible without a result document;
+account-scoped row locking claims one owner/lead failure email per execution.
+See [launch verification](../testing/delivery-report-launch-size.md).
+
 Delivery Report repository checkouts never generate post-execution push or
 publication credential-refresh scripts, including for older presets using
 legacy clone configuration. Tracker-write policy does not authorize repository

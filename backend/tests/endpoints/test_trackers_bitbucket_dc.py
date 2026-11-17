@@ -351,8 +351,8 @@ async def test_registration_persists_discovered_immutable_repository_id() -> Non
             body, MagicMock(), current_user=user, db=MagicMock()
         )
     assert result.id == str(created.id)
-    default_report.assert_called_once()
-    assert default_report.call_args.kwargs["account_id"] == account_id
+    # Connecting a tracker does not provision a Delivery Report flow.
+    default_report.assert_not_called()
     persisted = create.call_args.kwargs["obj_in"]
     assert persisted["connection_details"] == {
         **DETAILS,

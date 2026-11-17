@@ -36489,6 +36489,40 @@ components:
       - report
       title: DeliveryReportDetail
       description: One run with its full report document.
+    DeliveryReportFailingFlow:
+      properties:
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+        consecutive_failures:
+          type: integer
+          title: Consecutive Failures
+        latest_execution_id:
+          type: string
+          format: uuid
+          title: Latest Execution Id
+        latest_failure_category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Latest Failure Category
+        reason:
+          type: string
+          title: Reason
+      type: object
+      required:
+      - flow_id
+      - consecutive_failures
+      - latest_execution_id
+      - reason
+      title: DeliveryReportFailingFlow
+      description: A report flow whose latest scheduled runs failed in a row.
     DeliveryReportList:
       properties:
         items:
@@ -36499,6 +36533,13 @@ components:
         total:
           type: integer
           title: Total
+        failing_flows:
+          items:
+            $ref: '#/components/schemas/DeliveryReportFailingFlow'
+          type: array
+          title: Failing Flows
+          description: Report flows with two or more consecutive failed scheduled
+            runs.
       type: object
       required:
       - items
@@ -40406,27 +40447,27 @@ components:
           - type: 'null'
           title: Failure Category
           description: 'Coarse machine-readable reason a terminal execution did not
-            succeed: one of runner_conflict, runner_error, model_transient, model_auth,
-            provider_billing, model_quota (legacy, superseded by provider_billing),
-            budget_exceeded, default_limit_reached (a default per-execution ceiling
-            the flow did not set), repeated_upstream_failure (the gateway stopped
-            a run whose model calls kept failing identically), model_config, context_truncated_suspected,
-            no_confirmation, agent_no_progress, publication_missing, result_schema_invalid
-            (result.json does not match the flow result schema), review_binding_mismatch
-            (a read-only review result names another revision than the admitted one),
-            review_degenerate (a review has no usable narrative), review_not_inspected
-            (no command read the bound change), setup_failed, repository_access (git
-            refused the repository credential), verification_failed, verification_blocked,
-            tool_error, agent_error, model_stream_idle (timed out while the model
-            stream was silent), approval_denied, approval_timeout, approval_unavailable
-            (an approval-required rule could not pause the run), hook_binding_invalid
-            (the native hook credential was refused before launch), resume_failed
-            (a parked run could not be continued), gateway_bypassed (a private-runner
-            host CLI made no request through the Preloop gateway), timeout, cancelled,
-            flow_config, agent_reported_failure, agent_tool_loop, orchestrator_error,
-            execution_error, model_policy, runner_unavailable, ci_authorization; unknown
-            is a legacy value. Null for successful or still-running executions, and
-            for executions that predate this field.'
+            succeed: one of runner_conflict, runner_error, launch_payload_too_large,
+            model_transient, model_auth, provider_billing, model_quota (legacy, superseded
+            by provider_billing), budget_exceeded, default_limit_reached (a default
+            per-execution ceiling the flow did not set), repeated_upstream_failure
+            (the gateway stopped a run whose model calls kept failing identically),
+            model_config, context_truncated_suspected, no_confirmation, agent_no_progress,
+            publication_missing, result_schema_invalid (result.json does not match
+            the flow result schema), review_binding_mismatch (a read-only review result
+            names another revision than the admitted one), review_degenerate (a review
+            has no usable narrative), review_not_inspected (no command read the bound
+            change), setup_failed, repository_access (git refused the repository credential),
+            verification_failed, verification_blocked, tool_error, agent_error, model_stream_idle
+            (timed out while the model stream was silent), approval_denied, approval_timeout,
+            approval_unavailable (an approval-required rule could not pause the run),
+            hook_binding_invalid (the native hook credential was refused before launch),
+            resume_failed (a parked run could not be continued), gateway_bypassed
+            (a private-runner host CLI made no request through the Preloop gateway),
+            timeout, cancelled, flow_config, agent_reported_failure, agent_tool_loop,
+            orchestrator_error, execution_error, model_policy, runner_unavailable,
+            ci_authorization; unknown is a legacy value. Null for successful or still-running
+            executions, and for executions that predate this field.'
         result_schema_validation:
           anyOf:
           - additionalProperties: true

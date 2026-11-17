@@ -25,6 +25,7 @@ describe('failure-category', () => {
       'ci_authorization',
       'runner_conflict',
       'runner_error',
+      'launch_payload_too_large',
       'model_transient',
       'model_auth',
       'provider_billing',

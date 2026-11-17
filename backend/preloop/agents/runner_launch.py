@@ -21,6 +21,12 @@ from preloop.utils.execve_limits import (
     check_launch_payload,
     prompt_transport_env,
 )
+from preloop.utils.repository_setup import (
+    SETUP_CONTEXT_KEY,
+    repository_count,
+    setup_seed_env,
+    setup_seed_shell,
+)
 
 LAUNCH_VERSION = 1
 MAX_RESULT_BYTES = 256 * 1024
@@ -52,6 +58,10 @@ def check_runner_launch(script: str, env: dict[str, str]) -> None:
             environment value is larger than the CLI accepts.
     """
     limit = MAX_RUNNER_LAUNCH_STRING_BYTES
+    count = env.get("PRELOOP_REPOSITORY_COUNT")
+    # Only report launches carry a repository setup file and its count.
+    scope = f" ({count} repositories)" if count else ""
+    outcome = " The report could not start." if count else ""
     if not script.strip():
         raise RunnerLaunchRejectedError(
             "Private runner launch has an empty bootstrap script; the flow's "
@@ -61,8 +71,8 @@ def check_runner_launch(script: str, env: dict[str, str]) -> None:
     if size > limit:
         raise RunnerLaunchRejectedError(
             f"Private runner bootstrap script is {size} bytes; the runner "
-            f"accepts at most {limit}. Reduce setup commands or repositories "
-            "in the flow."
+            f"accepts at most {limit} bytes{scope}. Reduce setup commands or "
+            f"repositories in the flow.{outcome}"
         )
     oversized = sorted(
         (len(value.encode("utf-8")), key)
@@ -73,7 +83,7 @@ def check_runner_launch(script: str, env: dict[str, str]) -> None:
         size, key = oversized[-1]
         raise RunnerLaunchRejectedError(
             f"Private runner launch variable {key} is {size} bytes; the runner "
-            f"accepts at most {limit} per variable."
+            f"accepts at most {limit} bytes per variable{scope}."
         )
 
 
@@ -235,6 +245,9 @@ async def build_runner_launch(context: dict[str, Any]) -> dict[str, Any]:
     env["MCP_CONFIG_JSON"] = json.dumps(mcp_config)
     # The script builder resolves repository credentials into transient env refs.
     script = build_script(context)
+    if encoded_setup := context.get(SETUP_CONTEXT_KEY):
+        env.update(setup_seed_env(encoded_setup))
+        script = setup_seed_shell() + script
     # The script reads the prompt from a file it materializes out of these
     # chunks (preloop.utils.execve_limits). The runner applies `env` to the
     # container it starts, so the chunks must be part of the launch or the
@@ -244,7 +257,14 @@ async def build_runner_launch(context: dict[str, Any]) -> dict[str, Any]:
     from preloop.agents.credential_bootstrap import bootstrap_source
 
     env["PRELOOP_OUTPUT_BOOTSTRAP"] = bootstrap_source()
-    check_launch_payload(command=None, args=None, env=env, what="private runner launch")
+    check_launch_payload(
+        env={**env, "PRELOOP_RUNNER_SCRIPT": script},
+        what=(
+            f"private runner launch ({repository_count(context)} repositories)"
+            if encoded_setup
+            else "private runner launch"
+        ),
+    )
     check_runner_launch(script, env)
     return {"version": LAUNCH_VERSION, "script": script, "env": env}
 
