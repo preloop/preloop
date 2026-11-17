@@ -301,3 +301,58 @@ def test_changed_file_read_respects_explicit_working_directory(
         )
         is expected
     )
+
+
+@pytest.mark.parametrize("capture_content,expected_lookups", [(True, 0), (False, 1)])
+def test_command_batch_resolves_private_inspection_context_once(
+    capture_content: bool, expected_lookups: int
+) -> None:
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+    from uuid import uuid4
+    from preloop.models.crud.execution_tool_evidence import (
+        _persist_native_command_evidence,
+    )
+
+    execution_id = str(uuid4())
+    execution = SimpleNamespace(
+        ci_review_binding={"base_sha": BASE, "head_sha": HEAD},
+        startup_receipt={},
+        flow=SimpleNamespace(git_clone_config={"publication_mode": "read_only"}),
+    )
+    event = {
+        "type": "item.completed",
+        "item": {
+            "id": "read",
+            "type": "command_execution",
+            "exit_code": 0,
+            "command": f"git diff {BASE}...{HEAD}",
+        },
+    }
+    with (
+        patch("preloop.config.settings.model_gateway_capture_content", capture_content),
+        patch(
+            "preloop.models.crud.flow_execution_log._account_for_execution",
+            return_value=str(uuid4()),
+        ),
+        patch(
+            "preloop.models.crud.crud_flow_execution.get", return_value=execution
+        ) as lookup,
+        patch(
+            "preloop.services.review_diff.review_diff_identity",
+            return_value={"files": []},
+        ),
+        patch(
+            "preloop.services.sensitive_data.storage.apply_storage_redaction",
+            side_effect=lambda account, doc: doc,
+        ),
+        patch("preloop.models.crud.execution_tool_evidence._persist_document"),
+    ):
+        db = MagicMock()
+        for index in range(20):
+            event["item"]["id"] = str(index)
+            _persist_native_command_evidence(
+                db, execution_id=execution_id, line=json.dumps(event)
+            )
+    assert lookup.call_count == expected_lookups

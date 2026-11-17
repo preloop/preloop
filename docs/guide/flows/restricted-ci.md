@@ -496,8 +496,9 @@ on the pull request:
   fewer than three letters/digits (including `review: "..."` alongside useful
   findings), or which have no findings
   and only single-word narrative strings (for example `review: "starting"`).
-  Revision bindings, status/verdict/severity controls, schema enum/constant
-  values and platform metadata are excluded. `No issues found` is accepted.
+  Revision bindings, status/verdict/severity/result/confidence/priority controls,
+  schema enum/constant
+  values (including local schema references) and platform metadata are excluded. `No issues found` is accepted.
   Degenerate results are rejected before revision binding evaluation.
 
 When content capture is disabled, Preloop classifies the command before redaction

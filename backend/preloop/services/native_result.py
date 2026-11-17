@@ -193,14 +193,17 @@ NATIVE_CANDIDATES_KEY = "_preloop_native_result_candidates_v1"
 # and integrity validation remain controller responsibilities. File writes are
 # atomic so a concurrent capture sees either the original file or both candidates.
 NATIVE_RESULT_CAPTURE = r"""
-import json, os
+import json, os, stat, tempfile
 from pathlib import Path
 from typing import Any
 native_path = Path("/workspace/.preloop-native-result.json")
 result_path = Path("/workspace/result.json")
 def read(path: Path) -> Any:
     try:
-        with path.open("rb") as source:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                return None
             raw = source.read(256 * 1024 + 1)
         if len(raw) > 256 * 1024:
             return {"error": "result_artifact_too_large"}
@@ -213,9 +216,14 @@ if native is not None:
     key = "_preloop_native_result_candidates_v1"
     if isinstance(file_result, dict) and key in file_result:
         file_result = file_result[key].get("file")
-    temporary = result_path.with_suffix(".capture.tmp")
-    temporary.write_text(json.dumps({key: {"native": native, "file": file_result}}, ensure_ascii=False, separators=(",", ":")))
-    os.replace(temporary, result_path)
+    # Reclamation has stopped agent processes and restored root ownership.
+    # A new private directory and exclusive no-follow file also refuse links.
+    with tempfile.TemporaryDirectory(prefix=".preloop-result-", dir=result_path.parent) as directory:
+        temporary = Path(directory) / "capture.json"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as destination:
+            json.dump({key: {"native": native, "file": file_result}}, destination, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temporary, result_path)
 """
 
 

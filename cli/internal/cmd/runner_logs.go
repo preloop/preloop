@@ -373,7 +373,7 @@ func nativeRunnerResult(b *runnerLogBuffer, waitErr error) (map[string]any, erro
 
 // maskRunnerCredentials covers the forms commonly printed by command tools.
 func maskRunnerCredentials(text string, secrets []string) string {
-	forms := make([]string, 0, len(secrets)*7)
+	var forms []string
 	for _, secret := range secrets {
 		if secret == "" {
 			continue
