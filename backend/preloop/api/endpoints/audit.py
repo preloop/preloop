@@ -41,22 +41,22 @@ router = APIRouter()
 
 
 def _audit_query_kwargs(method: Callable[..., Any], **kwargs: Any) -> dict[str, Any]:
-    """Drop ``consent_ref`` when this core build cannot filter on it.
-
-    The audit API grew the filter before every deployed core accepted the
-    argument. Passing it on the unfiltered timeline then raises ``TypeError``
-    and the console shows a 500.
-    """
-    if "consent_ref" not in kwargs:
-        return kwargs
-    if "consent_ref" in inspect.signature(method).parameters:
-        return kwargs
-    if kwargs["consent_ref"] is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Consent reference filtering is not available on this server",
-        )
-    return {key: value for key, value in kwargs.items() if key != "consent_ref"}
+    """Reject unsupported requested filters and omit unused filters on older cores."""
+    parameters = inspect.signature(method).parameters
+    for field, label in (
+        ("consent_ref", "Consent reference"),
+        ("include_last_known_consent", "Last-known consent"),
+        ("error_code", "Error code"),
+    ):
+        if field not in kwargs or field in parameters:
+            continue
+        if kwargs[field] is not None and kwargs[field] is not False:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{label} filtering is not available on this server",
+            )
+        kwargs.pop(field)
+    return kwargs
 
 
 def _core_matches_any_outcome() -> bool:
@@ -269,6 +269,14 @@ def list_audit_logs(
     grant_reference: Optional[str] = Query(
         None, description="Exact external grant reference"
     ),
+    error_code: Annotated[
+        Optional[str],
+        Query(min_length=1, max_length=200, description="Exact upstream error code"),
+    ] = None,
+    include_last_known_consent: Annotated[
+        bool,
+        Query(description="Include last-known consent matches when consent_ref is set"),
+    ] = False,
     consent_ref: Optional[str] = Query(
         None,
         min_length=1,
@@ -304,6 +312,12 @@ def list_audit_logs(
                 end_date=end_date,
                 consent_ref=consent_ref,
                 **(
+                    {"include_last_known_consent": True}
+                    if include_last_known_consent
+                    else {}
+                ),
+                **({"error_code": error_code} if error_code is not None else {}),
+                **(
                     {"grant_reference": grant_reference}
                     if grant_reference is not None
                     else {}
@@ -323,6 +337,12 @@ def list_audit_logs(
                 start_date=start_date,
                 end_date=end_date,
                 consent_ref=consent_ref,
+                **(
+                    {"include_last_known_consent": True}
+                    if include_last_known_consent
+                    else {}
+                ),
+                **({"error_code": error_code} if error_code is not None else {}),
                 **(
                     {"grant_reference": grant_reference}
                     if grant_reference is not None
@@ -395,6 +415,14 @@ def list_grouped_audit_logs(
     grant_reference: Optional[str] = Query(
         None, description="Exact external grant reference"
     ),
+    error_code: Annotated[
+        Optional[str],
+        Query(min_length=1, max_length=200, description="Exact upstream error code"),
+    ] = None,
+    include_last_known_consent: Annotated[
+        bool,
+        Query(description="Include last-known consent matches when consent_ref is set"),
+    ] = False,
     consent_ref: Optional[str] = Query(
         None,
         min_length=1,
@@ -439,6 +467,12 @@ def list_grouped_audit_logs(
                 start_date=start_date,
                 end_date=end_date,
                 consent_ref=consent_ref,
+                **(
+                    {"include_last_known_consent": True}
+                    if include_last_known_consent
+                    else {}
+                ),
+                **({"error_code": error_code} if error_code is not None else {}),
                 **(
                     {"grant_reference": grant_reference}
                     if grant_reference is not None

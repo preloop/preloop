@@ -3,7 +3,7 @@
 import uuid
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import ForeignKey, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -53,6 +53,14 @@ class MCPServer(Base):
     # plaintext.
     auth_config: Mapped[Optional[Dict]] = mapped_column(
         SecretFieldsJSON("mcp_auth_config", jsonb=True), nullable=True
+    )
+
+    # Opaque credential/configuration generation; observations do not rotate it.
+    grant_revision: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
     )
 
     # Status tracking
