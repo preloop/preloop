@@ -606,11 +606,14 @@ def _is_openrouter_upstream(ai_model: GatewayModel) -> bool:
 #: but rejects ``json_schema`` with an HTTP 400 ("This response_format type is
 #: unavailable now"), although LiteLLM's catalog lists schema support.
 _JSON_OBJECT_ONLY_HOSTS = frozenset({"api.deepseek.com"})
-_JSON_OBJECT_ONLY_MODEL_PREFIXES = ("deepseek/",)
 
 
 def _upstream_supports_json_object_only(kwargs: Dict[str, Any]) -> bool:
     """Whether the resolved upstream supports JSON mode but not JSON schemas."""
+    from preloop.services.model_family import is_deepseek_family
+
+    if is_deepseek_family(str(kwargs.get("model") or "")):
+        return True
     api_base = kwargs.get("api_base")
     if isinstance(api_base, str) and api_base.strip():
         try:
@@ -618,8 +621,7 @@ def _upstream_supports_json_object_only(kwargs: Dict[str, Any]) -> bool:
         except ValueError:
             return False
         return (host or "").lower() in _JSON_OBJECT_ONLY_HOSTS
-    model = str(kwargs.get("model") or "").lower()
-    return model.startswith(_JSON_OBJECT_ONLY_MODEL_PREFIXES)
+    return False
 
 
 def _json_schema_as_json_mode(
@@ -2399,6 +2401,7 @@ class OpenAIGatewayService:
         messages = self._normalize_responses_input_recorded(
             payload, ai_model=model, endpoint_kind="responses"
         )
+        payload = self._defer_codex_response_format(payload, messages)
         started_at = time.perf_counter()
         self._reject_if_gateway_halted(
             endpoint="/openai/v1/responses",
@@ -3831,6 +3834,7 @@ class OpenAIGatewayService:
         messages = self._normalize_responses_input_recorded(
             payload, ai_model=model, endpoint_kind="responses_stream"
         )
+        payload = self._defer_codex_response_format(payload, messages)
         started_at = time.perf_counter()
         self._reject_if_gateway_halted(
             endpoint="/openai/v1/responses",
@@ -8473,6 +8477,38 @@ class OpenAIGatewayService:
             kwargs["response_format"] = response_format
         return kwargs
 
+    def _defer_codex_response_format(
+        self, payload: Dict[str, Any], messages: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Let Codex use a tool before enforcing its final-answer format.
+
+        Only the Codex CLI with tools, an output format and fully supplied
+        history qualifies. Other clients and server-stored histories retain
+        their requested semantics. Final result validation is unchanged.
+        """
+        identity = self._client_identity_headers.get("User-Agent", "")
+        if (
+            not identity.startswith(("codex_exec/", "codex_cli_rs/"))
+            or not payload.get("tools")
+            or payload.get("tool_choice") == "none"
+            or payload.get("previous_response_id")
+            or any(message.get("role") == "tool" for message in messages)
+        ):
+            return payload
+        text = payload.get("text")
+        if payload.get("response_format") is None and not (
+            isinstance(text, dict) and text.get("format")
+        ):
+            return payload
+        deferred = {
+            key: value for key, value in payload.items() if key != "response_format"
+        }
+        if isinstance(text, dict):
+            deferred["text"] = {
+                key: value for key, value in text.items() if key != "format"
+            }
+        return deferred
+
     def _build_completion_kwargs(
         self,
         ai_model: GatewayModel,
@@ -8706,6 +8742,7 @@ class OpenAIGatewayService:
             # unknown "usage" body field.
             extra_body = kwargs.setdefault("extra_body", {})
             extra_body.setdefault("usage", {"include": True})
+        payload = self._defer_codex_response_format(payload, messages)
         kwargs.update(self._normalize_completion_parameters(payload, provider=provider))
         # Codex omits sampling controls. Compatible local servers otherwise
         # receive LiteLLM's defaults instead of the operator's model settings.

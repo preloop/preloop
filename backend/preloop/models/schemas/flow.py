@@ -316,8 +316,8 @@ class ReviewIntegrity(BaseModel):
     named ``head_sha``, ``base_sha``, ``merge_base_sha`` or ``diff_sha256``
     that the result schema declares, or the result contains, must equal the
     admitted head and base, the computed merge base or the computed diff
-    digest. A review that made no repository tool call and ran no command
-    fails with ``review_not_inspected``.
+    digest. A review without a successful command reading the bound diff or
+    a changed file fails with ``review_not_inspected``.
     """
 
     model_config = ConfigDict(extra="forbid")

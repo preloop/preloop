@@ -5343,8 +5343,17 @@ class FlowExecutionOrchestrator:
 
         execution = getattr(self, "execution_log", None)
         flow = getattr(self, "flow", None)
+        early_native_answer = (
+            getattr(self, "_native_result_effective", False) is True
+            and final_status == "FAILED"
+            and agent_result.get("failure_category")
+            in {
+                "no_confirmation",
+                "result_schema_invalid",
+            }
+        )
         if (
-            final_status != "SUCCEEDED"
+            (final_status != "SUCCEEDED" and not early_native_answer)
             or execution is None
             or not review_integrity.applies(flow, execution)
         ):
@@ -5364,14 +5373,27 @@ class FlowExecutionOrchestrator:
             )
         )
         try:
-            inspection = inspection_summary(self.db, execution_id=execution.id)
+            inspection = inspection_summary(
+                self.db,
+                execution_id=execution.id,
+                binding=execution.ci_review_binding,
+                diff=diff,
+                root=review_integrity.inspection_root(
+                    flow, execution.ci_review_binding
+                ),
+            )
         except Exception:
             self.db.rollback()
             logger.warning("Could not read tool evidence for the review floor")
             inspection = None
+        if early_native_answer and (
+            not review_integrity.inspection_required(flow)
+            or (inspection or {}).get("diff_commands")
+        ):
+            return final_status, agent_result, merged_result
         outcome = review_integrity.evaluate(
             flow,
-            result=merged_result,
+            result=None if early_native_answer else merged_result,
             binding=execution.ci_review_binding,
             diff=diff,
             inspection=inspection,
@@ -8704,15 +8726,18 @@ class FlowExecutionOrchestrator:
                         await asyncio.sleep(0)
                         continue
 
-                # Publish status update (best effort - don't fail if NATS is down)
-                try:
-                    await self._publish_update(
-                        "agent_status", {"status": status.value, "elapsed": elapsed}
-                    )
-                except Exception as publish_error:
-                    logger.warning(
-                        f"Failed to publish status update: {type(publish_error).__name__}"
-                    )
+                # Runtime exit is provisional until result/integrity gates finish.
+                # Only finalization may publish a terminal execution status.
+                if status.value not in TERMINAL_EXECUTION_STATUSES:
+                    try:
+                        await self._publish_update(
+                            "agent_status", {"status": status.value, "elapsed": elapsed}
+                        )
+                    except Exception as publish_error:
+                        logger.warning(
+                            "Failed to publish status update: %s",
+                            type(publish_error).__name__,
+                        )
 
                 # A run that has changed nothing at all after the configured
                 # deadline is reminded once and, if still unchanged after the

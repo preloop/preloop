@@ -40,6 +40,7 @@ describe('failure-category', () => {
       'repository_access',
       'review_binding_mismatch',
       'review_not_inspected',
+      'review_degenerate',
       'tool_error',
       'agent_error',
       'model_stream_idle',

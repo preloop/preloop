@@ -40339,17 +40339,17 @@ components:
             a run whose model calls kept failing identically), model_config, no_confirmation,
             agent_no_progress, publication_missing, result_schema_invalid (result.json
             does not match the flow result schema), review_binding_mismatch (a read-only
-            review result names another revision than the admitted one), review_not_inspected
-            (a read-only review made no repository tool call or command), setup_failed,
-            repository_access (git refused the repository credential), verification_failed,
-            verification_blocked, tool_error, agent_error, model_stream_idle (timed
-            out while the model stream was silent), approval_denied, approval_timeout,
-            approval_unavailable (an approval-required rule could not pause the run),
-            hook_binding_invalid (the native hook credential was refused before launch),
-            resume_failed (a parked run could not be continued), gateway_bypassed
-            (a private-runner host CLI made no request through the Preloop gateway),
-            timeout, cancelled, flow_config, agent_reported_failure, agent_tool_loop,
-            orchestrator_error, execution_error, model_policy, runner_unavailable,
+            review result names another revision than the admitted one), review_degenerate
+            (a review has no usable narrative), review_not_inspected (no command read
+            the bound change), setup_failed, repository_access (git refused the repository
+            credential), verification_failed, verification_blocked, tool_error, agent_error,
+            model_stream_idle (timed out while the model stream was silent), approval_denied,
+            approval_timeout, approval_unavailable (an approval-required rule could
+            not pause the run), hook_binding_invalid (the native hook credential was
+            refused before launch), resume_failed (a parked run could not be continued),
+            gateway_bypassed (a private-runner host CLI made no request through the
+            Preloop gateway), timeout, cancelled, flow_config, agent_reported_failure,
+            agent_tool_loop, orchestrator_error, execution_error, model_policy, runner_unavailable,
             ci_authorization; unknown is a legacy value. Null for successful or still-running
             executions, and for executions that predate this field.'
         result_schema_validation:
@@ -50705,9 +50705,9 @@ components:
 
         admitted head and base, the computed merge base or the computed diff
 
-        digest. A review that made no repository tool call and ran no command
+        digest. A review without a successful command reading the bound diff or
 
-        fails with ``review_not_inspected``.'
+        a changed file fails with ``review_not_inspected``.'
     ReviewIntegrityBinding:
       properties:
         field:
@@ -50754,6 +50754,10 @@ components:
         native_commands:
           type: integer
           title: Native Commands
+        diff_commands:
+          type: integer
+          title: Diff Commands
+          default: 0
       type: object
       required:
       - required
@@ -59785,9 +59789,9 @@ components:
 
         admitted head and base, the computed merge base or the computed diff
 
-        digest. A review that made no repository tool call and ran no command
+        digest. A review without a successful command reading the bound diff or
 
-        fails with ``review_not_inspected``.'
+        a changed file fails with ``review_not_inspected``.'
     preloop__schemas__ci_execution__ReviewIntegrity:
       properties:
         status:
@@ -59802,6 +59806,7 @@ components:
             enum:
             - review_binding_mismatch
             - review_not_inspected
+            - review_degenerate
           - type: 'null'
           title: Category
         reasons:

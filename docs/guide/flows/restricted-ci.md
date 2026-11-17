@@ -466,7 +466,7 @@ Recover without rerunning:
 
 A schema-valid result is not by itself a review of the admitted change. For
 every restricted-CI read-only review that would otherwise succeed, the
-controller runs two checks, and runs them again before Preloop posts anything
+controller runs three checks, and runs them again before Preloop posts anything
 on the pull request:
 
 - **Result binding.** Result fields named `head_sha`, `base_sha`,
@@ -478,36 +478,64 @@ on the pull request:
   omits is a mismatch; an optional field may be omitted. When a bound fact is
   unknown (for example `diff` is null), a result that names it is rejected
   with `<field>_fact_unavailable`.
-- **Repository inspection.** The run must have made at least one tool call
-  that can read the repository, or produced a native command event. This is
-  counted from tool evidence Preloop captured at its gateway and from the
-  native command stream, never from the result. Only read-capable tools
-  count: `exec_command`, `shell`, `local_shell`, `container.exec`,
-  `read_file`, `list_dir`, `grep_files`, `Bash`, `Read`, `Grep`, `Glob` and
-  `LS`. Any other tool, such as `apply_patch`, `request_user_input` or
-  `view_image`, does not.
+- **Repository inspection.** At least one successful completed native command
+  must read the bound patch or a changed file. The controller and hosted
+  continuation use the same command matcher; neither interprets assistant
+  prose as evidence. `git diff <base>...<head>` qualifies (including the
+  `PRELOOP_REVIEW_*` variables below). `git show <base-or-head>:<changed-path>`
+  or `cat`, `head`, `tail`, `nl`, or `sed -n '<line-range>p'` of a
+  checkout-relative path in the trusted diff's file list also qualifies.
+  Simple shell wrappers and `&&` chains are supported. Summary flags such as
+  `--stat`, `--name-only`, revision queries, directory listings, failed commands,
+  pipelines, redirections and arbitrary scripts do not qualify. This is a
+  minimum evidence floor; it does not prove complete coverage or correctness.
+- **Usable narrative.** `review_degenerate` rejects results whose narrative
+  strings are all shorter than three characters, or which have no findings
+  and only single-word narrative strings (for example `review: "starting"`).
+  Revision bindings, status/verdict/severity controls, schema enum/constant
+  values and platform metadata are excluded. `No issues found` is accepted.
+  Degenerate results are rejected before revision binding evaluation.
+
+**Bound review context.** Preloop prepends the admitted head SHA, base SHA and
+base ref to the prompt for restricted-CI and tracker-triggered read-only reviews.
+Hosted checkouts export `PRELOOP_REVIEW_HEAD_SHA`, `PRELOOP_REVIEW_BASE_SHA` and
+`PRELOOP_REVIEW_BASE_REF`. These are controller-bound values, independent of
+which template fields the flow uses. The hosted checkout fetches a missing
+admitted base before removing clone credentials and verifies that
+`git diff "$PRELOOP_REVIEW_BASE_SHA"..."$PRELOOP_REVIEW_HEAD_SHA"` works.
+Use the admitted base in `base_sha`; it is distinct from `merge_base_sha`.
 
 **Inspection continuation.** With `agent_config.native_result: true`, the
-Codex CLI ends a session as soon as the model answers without a tool call,
-and that answer becomes the result. A model can therefore satisfy the result
-schema on its first turn ("starting by locating the checkout") without
-reading anything. When a Codex read-only review session ends with exit 0 and
-no command event, Preloop starts up to two fresh sessions in the same
-container, with the same result schema and the prompt followed by an
-instruction to inspect the checkout first and take commit ids from commands
-it ran. Each is marked `PRELOOP_REVIEW_CONTINUATION` in the agent log. They
-run inside the flow's existing timeout and model budget. Preloop never
-writes or repairs the result itself: if no session inspects, the last answer
-is stored as the model wrote it and the run fails `review_not_inspected`. The
-continuation is off when the flow sets `review_integrity.require_inspection:
-false` or uses `sandbox_type: read-only` (no shell).
+Codex CLI ends a session when the model answers without a tool call and captures
+that answer as the result. If the session exits successfully without a qualifying
+read, Preloop starts up to two fresh sessions in the same container. Each gets
+the same prompt/schema and a short instruction naming the bound revisions,
+requesting the diff and changed files, and describing a usable review. The
+`PRELOOP_REVIEW_CONTINUATION` log records each attempt. Existing timeout and
+model budgets apply; no token, turn or cost ceiling is added. Preloop never
+repairs the model's result. The continuation is off with
+`review_integrity.require_inspection: false` or `sandbox_type: read-only`
+(no shell).
 
-A run that fails either check ends `FAILED` with `failure_category`
-`review_binding_mismatch` or `review_not_inspected`. When a run made no
+**Native format compatibility.** For Codex CLI requests identified by the
+`codex_exec/` or `codex_cli_rs/` user agent, with tools and an output format,
+the gateway withholds the upstream format until the supplied conversation
+contains a tool result. It applies across gateway Responses transports and
+chat translation. Requests with `tool_choice: none` or `previous_response_id`
+retain their format, because tools are disabled or history is held upstream.
+Other clients and requests without tools retain their format. Final result
+schema validation still applies. DeepSeek routes, including OpenRouter and
+other aggregators with a `deepseek` model namespace, use JSON-object mode
+with the schema in instructions once formatting resumes. DeepSeek reasoning
+continuity also follows the family through these aggregators.
+
+A run that fails a check ends `FAILED` with `failure_category`
+`review_binding_mismatch`, `review_not_inspected` or `review_degenerate`. For non-degenerate results with no
 repository inspection, the category is `review_not_inspected` even if its
 ids also mismatch: ids in a result that never read the change are a symptom,
 not the cause. The document is still
-stored, with a controller-owned `_review_integrity` member (withheld from the
+stored. The first terminal status event reflects these final checks, rather
+than the provisional agent exit. Results include a controller-owned `_review_integrity` member (withheld from the
 restricted `result`), and `/result` reports the outcome without values in
 `completion.review_integrity`. Platform posting additionally requires a
 result field bound to `head_sha` that matches (publication reason
@@ -530,7 +558,8 @@ is not posted:
     "inspected": false,
     "repository_tool_calls": 0,
     "other_tool_calls": 0,
-    "native_commands": 0
+    "native_commands": 0,
+    "diff_commands": 0
   }
 }
 ```

@@ -1,6 +1,7 @@
 """Scoped durable tool evidence and safe terminal-delivery diagnostics."""
 
 import logging
+from itertools import count
 from collections.abc import Callable
 from typing import Any
 from uuid import UUID, NAMESPACE_URL, uuid5
@@ -353,12 +354,14 @@ def _persist_native_command_evidence(
     )
 
 
-#: Evidence rows read to decide whether a review inspected the repository.
-#: One inspecting call is enough, so the scan stops as soon as one is seen.
-MAX_INSPECTION_ROWS = 500
-
-
-def inspection_summary(db: Session, *, execution_id: Any) -> dict[str, int]:
+def inspection_summary(
+    db: Session,
+    *,
+    execution_id: Any,
+    binding: dict[str, Any] | None = None,
+    diff: dict[str, Any] | None = None,
+    root: str = "",
+) -> dict[str, int]:
     """Count inspecting tool calls and native commands for one execution.
 
     Reads only integrity-valid stored evidence, oldest first, and stops at
@@ -368,10 +371,14 @@ def inspection_summary(db: Session, *, execution_id: Any) -> dict[str, int]:
     Args:
         db: Database session.
         execution_id: Execution to summarise.
+        binding: Admitted revision pair.
+        diff: Trusted changed-file list.
+        root: Admitted checkout path for absolute file reads.
 
     Returns:
         ``repository_tool_calls``, ``other_tool_calls`` and
-        ``native_commands`` (lower bounds once one inspection is seen).
+        ``native_commands`` and ``diff_commands`` (lower bounds once a
+        qualifying inspection is seen).
     """
     import json
 
@@ -385,10 +392,10 @@ def inspection_summary(db: Session, *, execution_id: Any) -> dict[str, int]:
         )
         .order_by(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
     )
-    counter = ObservationCounter()
+    counter = ObservationCounter(binding=binding, diff=diff, root=root)
     # One row per query bounds driver buffering to one document, as in
     # ``evidence_page``; the scan stops at the first inspecting observation.
-    for index in range(MAX_INSPECTION_ROWS):
+    for index in count():
         row = ordered.offset(index).limit(1).first()
         if row is None:
             break

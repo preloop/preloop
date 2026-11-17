@@ -6,6 +6,7 @@ turn), a later session runs a command first. No model provider is called.
 """
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -34,7 +35,8 @@ while [ $# -gt 0 ]; do
 done
 echo '{"type":"turn.started"}'
 if [ "$n" -ge "$INSPECT_FROM" ]; then
-  echo '{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"git log -1"}}'
+  git diff "$PRELOOP_REVIEW_BASE_SHA...$PRELOOP_REVIEW_HEAD_SHA" > "$STATE/diff-$n"
+  echo '{"type":"item.completed","item":{"id":"i1","type":"command_execution","exit_code":0,"command":"git diff $PRELOOP_REVIEW_BASE_SHA...$PRELOOP_REVIEW_HEAD_SHA"}}'
   msg='{"status":"success","head_sha":"real"}'
 else
   msg='{"status":"success","head_sha":"invented"}'
@@ -54,12 +56,36 @@ def _context(**overrides: object) -> dict:
         "agent_config": {"native_result": True},
         "result_schema": SCHEMA,
         "git_clone_config": {"publication_mode": "read_only"},
+        "read_only_head_sha": "a" * 40,
+        "read_only_base_sha": "b" * 40,
+        "read_only_base_ref": "main",
     }
     context.update(overrides)
     return context
 
 
 def _run_block(tmp_path: Path, block: str, inspect_from: int) -> tuple[int, Path]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(repo), *args],
+            text=True,
+            env={**os.environ, "PRELOOP_DISABLE_TELEMETRY": "true"},
+        ).strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Jane Doe")
+    git("config", "user.email", "jane@example.com")
+    (repo / "change.txt").write_text("before\n")
+    git("add", ".")
+    git("commit", "-qm", "Base")
+    base = git("rev-parse", "HEAD")
+    (repo / "change.txt").write_text("after\n")
+    git("commit", "-qam", "Change")
+    head = git("rev-parse", "HEAD")
+    block = block.replace("a" * 40, head).replace("b" * 40, base)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     stub = bindir / "codex"
@@ -79,7 +105,9 @@ def _run_block(tmp_path: Path, block: str, inspect_from: int) -> tuple[int, Path
         .replace("/tmp/preloop-agent-output.log", str(out_log))
         .replace("/tmp/preloop-review-continuation.txt", str(tmp_path / "cont"))
     )
-    block = block.replace(PROMPT_FILE_PATH, str(prompt))
+    block = block.replace(PROMPT_FILE_PATH, str(prompt)).replace(
+        "/workspace", str(repo)
+    )
     # The first session, exactly as the main exec runs it.
     script = (
         "set -e\nPRELOOP_AS_AGENT=\n"
@@ -90,9 +118,13 @@ def _run_block(tmp_path: Path, block: str, inspect_from: int) -> tuple[int, Path
         ["bash", "-c", script],
         env={
             "PATH": f"{bindir}:/usr/bin:/bin",
+            "PRELOOP_DISABLE_TELEMETRY": "true",
+            "PRELOOP_REVIEW_BASE_SHA": base,
+            "PRELOOP_REVIEW_HEAD_SHA": head,
             "STATE": str(state),
             "INSPECT_FROM": str(inspect_from),
         },
+        cwd=repo,
         capture_output=True,
         text=True,
         check=True,
@@ -112,7 +144,9 @@ def test_review_that_stops_before_inspection_is_continued(tmp_path: Path) -> Non
     assert json.loads(result.read_text())["head_sha"] == "real"
     prompt = (tmp_path / "state" / "prompt-2").read_text()
     assert prompt.startswith("Review the change")
-    assert "ran no command" in prompt
+    assert "bound base_sha:" in prompt and "Bound head_sha:" in prompt
+    assert "diff" in prompt and "changed files" in prompt
+    assert "take every commit id" not in prompt
 
 
 def test_continuation_is_bounded_and_keeps_rejectable_result(tmp_path: Path) -> None:

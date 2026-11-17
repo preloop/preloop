@@ -773,3 +773,14 @@ categories, recognizing the native-result and explicit-result failure messages.
 It does not infer a historical root cause when the stored message cannot name one.
 Shared messages and categories live in `services/flow_failure_messages.py`;
 restricted-CI and permission-hook audit writers can reuse that vocabulary.
+
+### Read-only review completion
+
+Hosted native-result reviews receive the admitted head/base/ref in their prompt
+and checkout environment. A shared command-log matcher drives both the bounded
+Codex inspection continuation and the controller integrity gate: directory and
+revision queries do not establish that the change was read. Degenerate narrative
+results are rejected before revision binding. The monitor publishes only
+nonterminal agent status; terminal execution events follow final result,
+integrity and publication checks. See [restricted CI](../guide/flows/restricted-ci.md#result-binding-and-repository-inspection)
+for the supported command forms and gateway output-format compatibility scope.

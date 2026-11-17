@@ -353,6 +353,21 @@ async def prepare_read_only_review(
         target_branch=None,
         ci_project_selection=False,
     )
+    context["read_only_head_sha"] = binding.head_sha
+    context["read_only_base_sha"] = getattr(binding, "base_sha", None)
+    context["read_only_base_ref"] = binding.base_branch
+    context["prompt"] = (
+        "Preloop review target (controller-bound):\n"
+        f"Head SHA: {binding.head_sha}\n"
+        f"Base SHA: {context['read_only_base_sha'] or 'unavailable'}\n"
+        f"Base ref: {binding.base_branch}\n"
+        "Use these exact head_sha and base_sha values in the result. "
+        'Before answering, read `git diff "$PRELOOP_REVIEW_BASE_SHA"...'
+        '"$PRELOOP_REVIEW_HEAD_SHA"` and the changed files. '
+        "Return an evidence-based review with actionable findings, or a clear "
+        "no-issues conclusion. If the change cannot be read, report failure.\n\n"
+        + context.get("prompt", "")
+    )
     if not mint:
         context["git_clone_config"] = config
         context["read_only_review"] = True
@@ -370,7 +385,6 @@ async def prepare_read_only_review(
         raise ValueError("Read-only review lease is invalid or expired")
     context["git_clone_config"] = config
     context["read_only_review"] = True
-    context["read_only_base_sha"] = getattr(binding, "base_sha", None)
     context["git_credentials_map"] = {
         url: {
             "token": lease.token,

@@ -1,5 +1,6 @@
 """OpenAI Codex CLI agent implementation."""
 
+import inspect
 import json
 import logging
 import os
@@ -72,7 +73,7 @@ CODEX_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 CODEX_MCP_STARTUP_TIMEOUT_SECONDS = 60
 
 #: Extra sessions a native-result read-only review gets when a session ends
-#: without running a single command. One covers a sporadic early stop; a
+#: without reading the bound change. One covers a sporadic early stop; a
 #: second tells a sporadic stop from a model that will not use its tools on
 #: this route. More would only spend the flow's timeout on the same answer.
 #: This is a behaviour, not a budget: every session runs inside the flow's
@@ -87,12 +88,11 @@ REVIEW_CONTINUATION_PATH = "/tmp/preloop-review-continuation.txt"
 REVIEW_CONTINUATION_PROMPT = """
 
 ---
-Your previous attempt at this review ended before you read the repository: \
-it ran no command, so its answer was discarded. Do not answer yet. First \
-inspect the checked-out change with your shell tool (for example \
-`git rev-parse HEAD`, `git log -1`, `git diff` against the base, and the \
-changed files). Give your final answer only after that, and take every \
-commit id in it from a command you ran.
+Your previous attempt did not read the bound change. Before answering, run \
+`git diff {base}...{head}` and read the changed files. Bound head_sha: {head}; \
+bound base_sha: {base}; base ref: {base_ref}. Use these exact IDs. Return a \
+substantive review: actionable findings with evidence and fixes, or a clear \
+no-issues conclusion. Directory listings and revision queries are not a review.
 """
 
 
@@ -1099,7 +1099,7 @@ exit $CODEX_EXIT_CODE
 
         Each continuation is a fresh ``codex exec`` with the same output
         schema, because the pinned CLI's ``exec resume`` cannot keep it; the
-        abandoned session ran no command, so it holds no inspection to lose.
+        abandoned session established no qualifying inspection.
         Nothing here writes a result: if no session inspects, the last
         answer stays as the model wrote it and the controller fails the run.
 
@@ -1129,14 +1129,50 @@ exit $CODEX_EXIT_CODE
         ):
             return ""
         _, native_args = self._native_result_output(execution_context)
-        prompt = shlex.quote(REVIEW_CONTINUATION_PROMPT)
+        from preloop.services import review_inspection
+
+        base = execution_context.get("read_only_base_sha") or ""
+        head = execution_context.get("read_only_head_sha") or ""
+        prompt = shlex.quote(
+            REVIEW_CONTINUATION_PROMPT.format(
+                base=base,
+                head=head,
+                base_ref=execution_context.get("read_only_base_ref") or "unavailable",
+            )
+        )
+        root = self._primary_workspace_path(execution_context, clone)
+        checker = (
+            inspect.getsource(review_inspection)
+            + """
+import subprocess, sys
+root, base, head, log = sys.argv[1:]
+try:
+    paths = subprocess.check_output(
+        ["git", "-C", root, "diff", "--name-only", "-z", base + "..." + head, "--"],
+        stderr=subprocess.DEVNULL,
+    ).decode().split("\\0")
+    with open(log) as lines:
+        inspected = log_reads_change(lines, base=base, head=head, files=paths, root=root)
+except (OSError, ValueError, subprocess.SubprocessError):
+    inspected = False
+sys.exit(0 if inspected else 1)
+"""
+        )
+        check = (
+            "python3 -c "
+            + shlex.quote(checker)
+            + " "
+            + " ".join(
+                shlex.quote(value) for value in (root, base, head, ATTEMPT_LOG_PATH)
+            )
+        )
         return f"""
-# A native-result review whose session ran no command did not read the
+# A native-result review without a qualifying command did not read the
 # change. Start a bounded number of fresh sessions that must inspect first.
 _pl_review_continuation=0
 while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     && [ "$_pl_review_continuation" -lt {REVIEW_INSPECTION_CONTINUATIONS} ] \
-    && ! grep -Eq '"type": ?"command_execution"' "{ATTEMPT_LOG_PATH}"; do
+    && ! {check}; do
     _pl_review_continuation=$((_pl_review_continuation + 1))
     echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":'"$_pl_review_continuation"',"reason":"no_repository_inspection"}}' \
         | tee -a "{AGENT_OUTPUT_LOG_PATH}"
