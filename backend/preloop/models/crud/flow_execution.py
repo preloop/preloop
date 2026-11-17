@@ -268,6 +268,17 @@ def pull_request_payload_match(object_key: str) -> Optional[ColumnElement[bool]]
     return None
 
 
+def _parse_iso(value: Any) -> Optional[datetime]:
+    """Parse a stored ISO timestamp; None when absent or malformed."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 class CRUDFlowExecution(CRUDBase[FlowExecution]):
     """CRUD operations for FlowExecution model."""
 
@@ -1370,6 +1381,205 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             changes["result_schema_validation"] = validation
         self.update(db, db_obj=execution, obj_in=changes)
         db.commit()
+
+    #: Key in ``startup_receipt`` recording the commit status of the run.
+    COMMIT_STATUS_KEY = "_commit_status"
+    #: Final status attempts before the sweep stops trying.
+    COMMIT_STATUS_MAX_ATTEMPTS = 3
+
+    def _locked(self, db: Session, execution_id: Any) -> Any:
+        return (
+            db.query(models.FlowExecution)
+            .filter(models.FlowExecution.id == execution_id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+
+    def commit_status_record(self, execution: Any) -> dict[str, Any]:
+        """The commit status record of an execution (empty when none).
+
+        Shape: ``{"pending": {sha, context, refname, at}, "final": {state,
+        claimed_at, attempts, posted_at?, gave_up?}}``.
+        """
+        receipt = getattr(execution, "startup_receipt", None)
+        record: Any = (
+            receipt.get(self.COMMIT_STATUS_KEY) if isinstance(receipt, dict) else None
+        )
+        return dict(record) if isinstance(record, dict) else {}
+
+    def _write_commit_status(
+        self, db: Session, execution: Any, record: dict[str, Any]
+    ) -> None:
+        receipt = dict(execution.startup_receipt or {})
+        receipt[self.COMMIT_STATUS_KEY] = record
+        self.update(db, db_obj=execution, obj_in={"startup_receipt": receipt})
+        db.commit()
+
+    def record_pending_commit_status(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        sha: str,
+        context: str,
+        refname: str | None,
+    ) -> None:
+        """Record that a pending commit status was set for this execution.
+
+        Args:
+            db: Database session.
+            execution_id: The execution.
+            sha: Commit the pending status was set on.
+            context: Status context.
+            refname: Source branch, when the provider needs one.
+        """
+        execution = self._locked(db, execution_id)
+        if execution is None:
+            return
+        record = self.commit_status_record(execution)
+        record["pending"] = {
+            "sha": sha,
+            "context": context,
+            "refname": refname,
+            "at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._write_commit_status(db, execution, record)
+
+    def claim_final_commit_status(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        state: str,
+        stale_after: timedelta | None = None,
+    ) -> bool:
+        """Take the one right to set the final commit status of an execution.
+
+        Exactly one terminal path wins: the claim is taken under the row
+        lock and a posted final status is never claimed again. A claim whose
+        post never completed can be taken over after ``stale_after`` (the
+        settlement sweep), up to :data:`COMMIT_STATUS_MAX_ATTEMPTS`.
+
+        Args:
+            db: Database session.
+            execution_id: The execution.
+            state: Final state about to be posted.
+            stale_after: Take over an unfinished claim older than this; None
+                never takes one over.
+
+        Returns:
+            True when the caller should post the final status now.
+        """
+        execution = self._locked(db, execution_id)
+        if execution is None:
+            return False
+        record: dict[str, Any] = self.commit_status_record(execution)
+        final: Any = record.get("final")
+        now = datetime.now(timezone.utc)
+        attempts = 0
+        if isinstance(final, dict):
+            if final.get("posted_at") or final.get("gave_up"):
+                db.commit()
+                return False
+            claimed = _parse_iso(final.get("claimed_at"))
+            if stale_after is None or (
+                claimed is not None and now - claimed < stale_after
+            ):
+                db.commit()
+                return False
+            attempts = int(final.get("attempts") or 0)
+            if attempts >= self.COMMIT_STATUS_MAX_ATTEMPTS:
+                record["final"] = {**final, "gave_up": True}
+                self._write_commit_status(db, execution, record)
+                return False
+        record["final"] = {
+            "state": state,
+            "claimed_at": now.isoformat(),
+            "attempts": attempts + 1,
+        }
+        self._write_commit_status(db, execution, record)
+        return True
+
+    def record_final_commit_status(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        posted: bool,
+        handed_to: Any = None,
+    ) -> None:
+        """Record the outcome of a claimed final commit status post.
+
+        Args:
+            db: Database session.
+            execution_id: The execution.
+            posted: The provider accepted the status.
+            handed_to: A continuation execution that set the final status on
+                the same commit instead (a released park); nothing was posted
+                for this execution and nothing will be.
+        """
+        execution = self._locked(db, execution_id)
+        if execution is None:
+            return
+        record = self.commit_status_record(execution)
+        final = dict(record.get("final") or {})
+        if handed_to is not None:
+            final["handed_to"] = str(handed_to)
+            final["gave_up"] = True
+        elif posted:
+            final["posted_at"] = datetime.now(timezone.utc).isoformat()
+        else:
+            final["failed_at"] = datetime.now(timezone.utc).isoformat()
+            if int(final.get("attempts") or 0) >= self.COMMIT_STATUS_MAX_ATTEMPTS:
+                final["gave_up"] = True
+        record["final"] = final
+        self._write_commit_status(db, execution, record)
+
+    def unsettled_commit_status_ids(
+        self,
+        db: Session,
+        *,
+        ended_within: timedelta,
+        settle_after: timedelta,
+        limit: int = 50,
+    ) -> list[uuid.UUID]:
+        """Terminal executions whose pending commit status was never replaced.
+
+        Args:
+            db: Database session.
+            ended_within: Only executions that ended this recently.
+            settle_after: Leave the finishing worker this long first.
+            limit: Batch size.
+
+        Returns:
+            Execution ids, oldest end first.
+        """
+        model = models.FlowExecution
+        record: Any = model.startup_receipt[self.COMMIT_STATUS_KEY]
+        final: Any = model.startup_receipt[(self.COMMIT_STATUS_KEY, "final")]
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        rows: list[Any] = (
+            db.query(model.id)
+            .filter(
+                model.status.in_(sorted(self.TERMINAL_EXECUTION_STATUSES)),
+                model.end_time.isnot(None),
+                model.end_time >= now - ended_within,
+                model.end_time <= now - settle_after,
+                record.has_key("pending"),  # noqa: W601 - JSONB operator
+                or_(
+                    ~record.has_key("final"),  # noqa: W601
+                    ~(
+                        final.has_key("posted_at")  # noqa: W601
+                        | final.has_key("gave_up")  # noqa: W601
+                    ),
+                ),
+            )
+            .order_by(model.end_time.asc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+        return [row[0] for row in rows]
 
     def settle_result_capture(
         self,

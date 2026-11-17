@@ -89,6 +89,16 @@ describe('flow-platform-review-card', () => {
   const q = (element: Element, selector: string): any =>
     element.shadowRoot!.querySelector(selector);
 
+  const chooseMode = async (
+    element: FlowPlatformReviewCard,
+    mode: 'off' | 'automatic' | 'manual'
+  ): Promise<void> => {
+    const group = q(element, '[data-field="mode"]');
+    group.value = mode;
+    group.dispatchEvent(new Event('sl-change'));
+    await element.updateComplete;
+  };
+
   it('lists the prerequisites as checks with no change pending', async () => {
     const element = await mount();
     const checks = element.shadowRoot!.querySelectorAll('[data-check]');
@@ -112,10 +122,7 @@ describe('flow-platform-review-card', () => {
 
   it('enables posting with a verdict mapping and saves only that block', async () => {
     const element = await mount();
-    const toggle = q(element, '[data-field="enabled"]');
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event('sl-change'));
-    await element.updateComplete;
+    await chooseMode(element, 'automatic');
     const statusOn = q(element, '[data-field="status_on"]');
     statusOn.checked = true;
     statusOn.dispatchEvent(new Event('sl-change'));
@@ -150,7 +157,7 @@ describe('flow-platform-review-card', () => {
     });
     expect(saved).to.not.equal(null);
     expect(q(element, '[data-saved]')).to.exist;
-    expect(q(element, 'sl-badge').textContent.trim()).to.equal('On');
+    expect(q(element, 'sl-badge').textContent.trim()).to.equal('Automatic');
   });
 
   it('recovers from a concurrent change: keeps the draft, retries on the latest revision', async () => {
@@ -190,10 +197,7 @@ describe('flow-platform-review-card', () => {
       }
     );
     const element = await mount({ ...FLOW, revision: 4 });
-    const toggle = q(element, '[data-field="enabled"]');
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event('sl-change'));
-    await element.updateComplete;
+    await chooseMode(element, 'automatic');
     const statusOn = q(element, '[data-field="status_on"]');
     statusOn.checked = true;
     statusOn.dispatchEvent(new Event('sl-change'));
@@ -205,7 +209,7 @@ describe('flow-platform-review-card', () => {
     expect(ifMatch).to.deep.equal(['"4"']);
     expect(q(element, '[data-error]').textContent).to.contain('Save again');
     // The draft survived the refresh to the latest flow.
-    expect(q(element, '[data-field="enabled"]').checked).to.equal(true);
+    expect(q(element, '[data-field="mode"]').value).to.equal('automatic');
 
     q(element, '[data-action="save"]').click();
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -219,12 +223,95 @@ describe('flow-platform-review-card', () => {
     expect(q(element, '[data-saved]')).to.exist;
   });
 
+  it('offers off, automatic and manual where the switch was', async () => {
+    const element = await mount();
+    const group = q(element, '[data-field="mode"]');
+    expect(group.tagName.toLowerCase()).to.equal('sl-radio-group');
+    expect(
+      [...group.querySelectorAll('sl-radio')].map((r: any) => r.value)
+    ).to.deep.equal(['off', 'automatic', 'manual']);
+    expect(group.value).to.equal('off');
+  });
+
+  it('saves manual mode and shows it', async () => {
+    const element = await mount();
+    await chooseMode(element, 'manual');
+    expect(q(element, '[data-field="mode"]').helpText).to.contain(
+      'publish endpoint'
+    );
+    const statusOn = q(element, '[data-field="status_on"]');
+    statusOn.checked = true;
+    statusOn.dispatchEvent(new Event('sl-change'));
+    await element.updateComplete;
+    q(element, '[data-action="save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await element.updateComplete;
+    expect(putBodies[0].git_clone_config.platform_review).to.deep.equal({
+      enabled: true,
+      mode: 'manual',
+      status: {
+        context: 'preloop/review',
+        verdict_states: { pass: 'success', fail: 'failure' },
+      },
+    });
+    expect(q(element, 'sl-badge').textContent.trim()).to.equal('Manual');
+  });
+
+  it('keeps a stored manual mode when another setting changes', async () => {
+    const element = await mount({
+      ...FLOW,
+      git_clone_config: {
+        ...FLOW.git_clone_config,
+        platform_review: {
+          enabled: true,
+          mode: 'manual',
+          status: { verdict_states: { pass: 'success', fail: 'failure' } },
+        },
+      },
+    });
+    expect(q(element, '[data-field="mode"]').value).to.equal('manual');
+    expect(q(element, '[data-action="save"]').disabled).to.equal(true);
+    const fail = q(element, '[data-verdict="fail"]');
+    fail.value = 'error';
+    fail.dispatchEvent(new Event('sl-change'));
+    await element.updateComplete;
+    q(element, '[data-action="save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(putBodies[0].git_clone_config.platform_review.mode).to.equal(
+      'manual'
+    );
+  });
+
+  it('turns posting off from manual and treats a stored automatic mode as unchanged', async () => {
+    const stored = {
+      ...FLOW,
+      git_clone_config: {
+        ...FLOW.git_clone_config,
+        platform_review: {
+          enabled: true,
+          mode: 'automatic',
+          status: { verdict_states: { pass: 'success', fail: 'failure' } },
+        },
+      },
+    };
+    const element = await mount(stored);
+    expect(q(element, '[data-field="mode"]').value).to.equal('automatic');
+    // The server echoes mode: automatic; that is the same as no mode.
+    expect(q(element, '[data-action="save"]').disabled).to.equal(true);
+    await chooseMode(element, 'off');
+    q(element, '[data-action="save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(putBodies[0].git_clone_config.platform_review.enabled).to.equal(
+      false
+    );
+    expect(putBodies[0].git_clone_config.platform_review).to.not.have.property(
+      'mode'
+    );
+  });
+
   it('blocks a save the server would refuse and says why', async () => {
     const element = await mount({ ...FLOW, validate_result: false });
-    const toggle = q(element, '[data-field="enabled"]');
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event('sl-change'));
-    await element.updateComplete;
+    await chooseMode(element, 'automatic');
     expect(q(element, '[data-blocker]').textContent).to.contain(
       'Validate result is off'
     );
@@ -233,10 +320,7 @@ describe('flow-platform-review-card', () => {
 
   it('shows the server refusal as an error', async () => {
     const element = await mount();
-    const toggle = q(element, '[data-field="enabled"]');
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event('sl-change'));
-    await element.updateComplete;
+    await chooseMode(element, 'automatic');
     const statusOn = q(element, '[data-field="status_on"]');
     statusOn.checked = true;
     statusOn.dispatchEvent(new Event('sl-change'));
@@ -256,10 +340,7 @@ describe('flow-platform-review-card', () => {
 
   it('refuses a status name GitHub would not accept', async () => {
     const element = await mount();
-    const toggle = q(element, '[data-field="enabled"]');
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event('sl-change'));
-    await element.updateComplete;
+    await chooseMode(element, 'automatic');
     const statusOn = q(element, '[data-field="status_on"]');
     statusOn.checked = true;
     statusOn.dispatchEvent(new Event('sl-change'));
@@ -289,10 +370,13 @@ describe('flow-platform-review-card', () => {
       },
       false
     );
-    expect(q(element, '[data-field="enabled"]')).to.equal(null);
+    expect(q(element, '[data-field="mode"]')).to.equal(null);
+    expect(q(element, '[data-mode]').textContent).to.contain(
+      'Posted when each run finishes'
+    );
     expect(q(element, '[data-action="save"]')).to.equal(null);
     expect(q(element, '[data-mapping]').textContent).to.contain('failure');
-    expect(q(element, 'sl-badge').textContent.trim()).to.equal('On');
+    expect(q(element, 'sl-badge').textContent.trim()).to.equal('Automatic');
   });
 
   it('says there is nothing to map when the schema has no verdicts', async () => {

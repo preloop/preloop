@@ -17,8 +17,13 @@ export interface PlatformReviewStatusConfig {
   incomplete_state?: 'error' | 'failure' | null;
 }
 
+/** When Preloop posts: off is `enabled: false`; no `mode` means automatic. */
+export type PlatformReviewMode = 'off' | 'automatic' | 'manual';
+
 export interface PlatformReviewConfig {
   enabled: boolean;
+  /** Posting mode when enabled; absent means automatic. */
+  mode?: 'automatic' | 'manual';
   action?: 'comment';
   verdict_actions?: Record<string, ReviewAction> | null;
   status?: PlatformReviewStatusConfig | null;
@@ -26,6 +31,10 @@ export interface PlatformReviewConfig {
 
 /** The record the API returns on an execution (`platform_review`). */
 export interface PlatformReviewRecord {
+  /** The flow's posting mode. */
+  mode?: PlatformReviewMode;
+  /** How the review reached the pull request; null when not recorded. */
+  posted_by?: 'automatic' | 'manual' | 'none' | null;
   status:
     | 'pending'
     | 'publishing'
@@ -335,4 +344,12 @@ export function publicationSummary(
 export function canPublishAgain(record: PlatformReviewRecord): boolean {
   // `posted` and `status_only` are final: the server changes nothing for them.
   return !['publishing', 'posted', 'status_only'].includes(record.status);
+}
+
+/** The posting mode a stored block means. */
+export function platformReviewMode(
+  block: PlatformReviewConfig | null | undefined
+): PlatformReviewMode {
+  if (!block || block.enabled !== true) return 'off';
+  return block.mode === 'manual' ? 'manual' : 'automatic';
 }

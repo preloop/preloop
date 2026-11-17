@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A pull request review that was running while the flow workers restarted no
+  longer leaves its commit status at "Preloop is reviewing". The worker that
+  finishes the run now sets the final status. Every way a run ends sets it
+  exactly once, on the commit that got the pending status. An error after the
+  final status was set no longer replaces success with failure. The scheduled
+  monitor sets the final status for runs from the last seven days that still
+  have only a pending one.
+- Native-result flows that run on the Codex backend of a ChatGPT plan
+  (provider `openai-codex`) now have their result schema checked when the
+  flow is saved, like flows on OpenAI. A schema the provider would refuse,
+  for example one that uses `oneOf`, is refused with a 422 that names the
+  path and the keyword and says what to use instead. Flows saved earlier keep
+  loading and running; if the provider refuses their schema, the run's error
+  says the same thing the save would have said.
+
 - Native-result reviews: a final answer that does not match the result schema
   (a missing required field, a value outside an enum, a wrong type, or no
   JSON) no longer fails the run at once. The hosted Codex runtime asks the
@@ -59,6 +74,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deny and approval defaults are opt-in (#2313).
 
 ### Added
+
+- Review posting: a read-only review flow can now post its review only when
+  asked. Platform review has three modes: off, automatic (post when the run
+  finishes, as before; flows already set up keep this) and manual (post only
+  when the publish call is made). The flow editor shows the three choices.
+- Review posting: the publish call
+  (`POST /api/v1/flows/executions/{id}/platform-review`) accepts optional
+  preconditions: the expected head and base commit, the expected result digest
+  and the expected flow revision. If one does not hold, nothing is posted and
+  the call answers 412 naming the precondition and its current value. A
+  malformed value or an unknown member answers 400.
+- `GET .../result` returns `result_sha256`, the digest of the result to
+  compare with what will be posted. The canonical form is documented.
+- The posted-review record, the finished webhook and the audit log say
+  whether a review was posted automatically, manually or not at all.
 
 - flows: changes can be made conditional, so one editor cannot silently
   overwrite another. Each flow has a configuration revision that goes up by

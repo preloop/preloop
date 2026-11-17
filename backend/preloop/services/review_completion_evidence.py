@@ -46,6 +46,34 @@ def completion_facts(execution: Any) -> dict[str, Any]:
     return facts if isinstance(facts, dict) else {}
 
 
+def result_sha256(document: Any) -> str:
+    """SHA-256 of a stored result, as published to API callers.
+
+    Canonical form (version 1), applied to the stored result document:
+
+    1. Drop controller-private members at every depth (the restricted
+       projection a CI identity reads as ``result``; members named in
+       ``result_withheld_paths`` are not part of it).
+    2. Serialise as JSON with keys sorted by code point, no whitespace
+       (separators ``,`` and ``:``), non-ASCII characters written as UTF-8
+       rather than escaped, and no NaN or Infinity.
+    3. Hash the UTF-8 bytes with SHA-256; the value is lowercase hex.
+
+    Key order and whitespace of the original document therefore never change
+    the digest. In Python: ``hashlib.sha256(json.dumps(result,
+    sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())``.
+
+    Args:
+        document: The stored ``result`` of an execution.
+
+    Returns:
+        Lowercase hexadecimal SHA-256.
+    """
+    from preloop.services.ci_execution import public_ci_result
+
+    return digest(public_ci_result(document))
+
+
 def result_availability(execution: Any) -> str:
     """Distinguish a result artifact from pending capture and controller metadata."""
     facts = completion_facts(execution)
@@ -75,8 +103,6 @@ def completion_projection(
     The digest covers the restricted result projection, exactly like the CI
     callback and export grant. Withheld values never contribute a digest.
     """
-    from preloop.services.ci_execution import public_ci_result
-
     facts = completion_facts(execution)
     agent = facts.get("agent_finished")
     finished = None
@@ -117,9 +143,7 @@ def completion_projection(
                 "file",
             }
             else None,
-            "result_sha256": digest(public_ci_result(execution.result))
-            if available
-            else None,
+            "result_sha256": result_sha256(execution.result) if available else None,
         },
         "result_valid": valid if type(valid) is bool else None,
         "review_integrity": review_integrity_projection(execution),

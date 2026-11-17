@@ -14,6 +14,7 @@ The CRA presets are exempt: they have a dedicated validator
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
 
@@ -100,6 +101,41 @@ def check_result_schema(schema: Any) -> Optional[dict[str, Any]]:
     return schema
 
 
+#: Providers whose every model answers through OpenAI strict structured
+#: output (``text.format`` / ``response_format`` with ``strict: true``).
+STRICT_OUTPUT_PROVIDERS = frozenset({"openai-codex"})
+
+#: Keywords OpenAI strict structured output rejects, and what to use instead.
+#: Source: OpenAI Structured Outputs, "Supported schemas"
+#: (https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas):
+#: composition keywords ``allOf``, ``not``, ``dependentRequired``,
+#: ``dependentSchemas``, ``if``, ``then``, ``else`` are not supported; only
+#: ``anyOf`` is, and not at the root; every object needs
+#: ``additionalProperties: false`` and every property in ``required``. The
+#: provider also answers ``'oneOf' is not permitted`` for ``oneOf``. The
+#: remaining entries are keywords outside the documented subset.
+STRICT_OUTPUT_UNSUPPORTED: dict[str, str] = {
+    "oneOf": "use anyOf with the same branches",
+    "allOf": "merge the subschemas into one schema",
+    "not": "list the allowed values with enum or anyOf",
+    "if": "use anyOf with one branch per case",
+    "then": "use anyOf with one branch per case",
+    "else": "use anyOf with one branch per case",
+    "dependentRequired": (
+        "list every property in required and give optional ones a nullable type"
+    ),
+    "dependentSchemas": (
+        "list every property in required and give optional ones a nullable type"
+    ),
+    "patternProperties": "name each property under properties",
+    "propertyNames": "name each property under properties",
+    "unevaluatedProperties": "set additionalProperties to false",
+    "prefixItems": "use items with one schema for every element",
+    "contains": "use items with one schema for every element",
+    "unevaluatedItems": "use items with one schema for every element",
+}
+
+
 def uses_openai_strict_results(model: Any) -> bool:
     """Identify OpenAI strict-output families without restricting other providers.
 
@@ -117,6 +153,11 @@ def uses_openai_strict_results(model: Any) -> bool:
         return False
     if provider in OPENAI_COMPATIBLE_PROVIDERS:
         return False
+    if provider in STRICT_OUTPUT_PROVIDERS:
+        # The Codex backend of a ChatGPT plan: the gateway always forwards
+        # these models to OpenAI's Codex Responses endpoint, whose
+        # structured output is strict whatever the model is called.
+        return True
     identifier = identifier.removeprefix("openai/")
     if identifier.startswith("gpt-oss"):
         return False
@@ -194,7 +235,8 @@ def check_native_result_schema(schema: Any) -> None:
         )
     if "anyOf" in root or "anyOf" in schema:
         raise ResultSchemaError(
-            "result_schema at $: native results cannot use root anyOf"
+            "result_schema at $: native results cannot use root anyOf; "
+            "make the root an object and put the alternatives in a property"
         )
 
     visited_references: set[str] = set()
@@ -218,7 +260,7 @@ def check_native_result_schema(schema: Any) -> None:
             if node.get("additionalProperties") is not False:
                 raise ResultSchemaError(
                     f"result_schema at {path}: additionalProperties must be false "
-                    "for native results"
+                    "for native results; add additionalProperties: false"
                 )
             properties = node.get("properties", {})
             if set(node.get("required", [])) != set(properties):
@@ -226,26 +268,11 @@ def check_native_result_schema(schema: Any) -> None:
                     f"result_schema at {path}: required must include every property "
                     "for native results (use a nullable type for optional values)"
                 )
-        for keyword in (
-            "allOf",
-            "oneOf",
-            "not",
-            "if",
-            "then",
-            "else",
-            "dependentRequired",
-            "dependentSchemas",
-            "patternProperties",
-            "prefixItems",
-            "contains",
-            "unevaluatedProperties",
-            "unevaluatedItems",
-            "propertyNames",
-        ):
+        for keyword, instead in STRICT_OUTPUT_UNSUPPORTED.items():
             if keyword in node:
                 raise ResultSchemaError(
                     f"result_schema at {path}: {keyword} is unsupported "
-                    "in native results"
+                    f"in native results; {instead}"
                 )
         for keyword in ("properties", "$defs", "definitions"):
             for name, child in node.get(keyword, {}).items():
@@ -363,3 +390,38 @@ def schema_failure_message(validation: Mapping[str, Any]) -> str:
         f"{RESULT_SCHEMA_INVALID_MESSAGE}: {first.get('path')}: "
         f"{first.get('message')}{more}"
     )
+
+
+_PROVIDER_SCHEMA_REJECTION_RE = re.compile(
+    r"invalid schema for (?:response_format|text\.format)", re.IGNORECASE
+)
+
+
+def explain_provider_schema_rejection(error_message: Any, schema: Any) -> Optional[str]:
+    """Reword a provider's schema refusal the way a save would have.
+
+    A flow saved before its route was checked (or whose route changed) can
+    still reach the provider with a schema the provider refuses. The run
+    then fails with the provider's own text; this returns the message the
+    save-time check gives for the same schema, so both say the same thing.
+
+    Args:
+        error_message: The run's failure text.
+        schema: The flow's result schema.
+
+    Returns:
+        The save-time message followed by the provider's text, or None when
+        the failure is not a schema refusal or the schema passes the check.
+    """
+    if not isinstance(error_message, str) or not (
+        _PROVIDER_SCHEMA_REJECTION_RE.search(error_message)
+    ):
+        return None
+    try:
+        check_native_result_schema(schema)
+    except ResultSchemaError as error:
+        return (
+            f"The model provider refused the result schema: {error}. "
+            f"Provider response: {_bounded(error_message)}"
+        )
+    return None
