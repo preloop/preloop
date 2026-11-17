@@ -688,7 +688,7 @@ async def test_reported_placeholder_pass_posts_an_error_status_and_no_review(
     assert outcome is not None
     assert world.github.reviews == {}
     assert outcome["review"] == "skipped"
-    assert outcome["review_reason"] == "review_binding_mismatch"
+    assert outcome["review_reason"] == "review_not_inspected"
     status_entry = world.github.statuses[(project.slug, HEAD)][0]
     assert status_entry["state"] == "error"
     assert status_entry["description"].startswith("Review not verified")
