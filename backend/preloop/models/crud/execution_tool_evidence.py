@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID, NAMESPACE_URL, uuid5
 
-from sqlalchemy import String, cast
+from sqlalchemy import String, cast, tuple_
 from sqlalchemy.dialects.postgresql import insert
 
 from sqlalchemy.orm import Session
@@ -282,6 +282,50 @@ def _native_item_id(line: Any) -> str | None:
     return str(sanitize_for_jsonb(item_id))
 
 
+# Admission facts are immutable for a running execution. Cache only complete
+# review contexts, and negative non-review decisions, never ORM/session objects.
+_INSPECTION_CONTEXTS: dict[str, tuple[dict[str, Any], dict[str, Any], str] | None] = {}
+_INSPECTION_CONTEXT_CACHE_LIMIT = 256
+
+
+def _inspection_context(
+    db: Session, execution_id: str
+) -> tuple[dict[str, Any], dict[str, Any], str] | None:
+    """Resolve private inspection context once after its startup receipt arrives."""
+    from copy import deepcopy
+    from preloop.models.crud import crud_flow_execution
+    from preloop.services.review_diff import review_diff_identity
+    from preloop.services.review_integrity import applies, inspection_root
+
+    if execution_id in _INSPECTION_CONTEXTS:
+        return _INSPECTION_CONTEXTS[execution_id]
+    execution = crud_flow_execution.get(db, id=execution_id)
+    if execution is None:
+        return None
+    context = None
+    cacheable = True
+    if applies(execution.flow, execution):
+        binding = execution.ci_review_binding
+        diff = review_diff_identity(execution)
+        context = (
+            deepcopy(binding),
+            deepcopy(diff or {}),
+            inspection_root(execution.flow, binding),
+        )
+        # An early log can precede the startup receipt. Retry until it is known.
+        receipt = getattr(execution, "startup_receipt", None)
+        cacheable = diff is not None or (
+            isinstance(receipt, dict)
+            and receipt.get("checkout_verified") is True
+            and receipt.get("setup_completed") is True
+        )
+    if cacheable:
+        if len(_INSPECTION_CONTEXTS) >= _INSPECTION_CONTEXT_CACHE_LIMIT:
+            _INSPECTION_CONTEXTS.clear()
+        _INSPECTION_CONTEXTS[execution_id] = context
+    return context
+
+
 def _persist_native_command_evidence(
     db: Session, *, execution_id: str, line: Any
 ) -> None:
@@ -344,6 +388,31 @@ def _persist_native_command_evidence(
     sanitized["storage_redacted"] = (
         document.get("storage_redacted", False) or sanitized != document
     )
+    observation = sanitized["observations"][0]
+    if (
+        event["type"] == "item.completed"
+        and type(item.get("exit_code")) is int
+        and item["exit_code"] == 0
+        and (observation.get("value") != raw or observation.get("truncated"))
+    ):
+        from preloop.services.review_inspection import (
+            command_reads_change,
+            inspection_receipt,
+        )
+
+        context = _inspection_context(db, execution_id)
+        if context is not None:
+            binding, diff, root = context
+            if command_reads_change(
+                raw,
+                base=binding.get("base_sha", ""),
+                head=binding.get("head_sha", ""),
+                files=diff.get("files", []),
+                root=root,
+            ):
+                observation["inspection_receipt"] = inspection_receipt(
+                    binding, diff, root
+                )
     _persist_document(
         db,
         execution_id=UUID(str(execution_id)),
@@ -353,12 +422,14 @@ def _persist_native_command_evidence(
     )
 
 
-#: Evidence rows read to decide whether a review inspected the repository.
-#: One inspecting call is enough, so the scan stops as soon as one is seen.
-MAX_INSPECTION_ROWS = 500
-
-
-def inspection_summary(db: Session, *, execution_id: Any) -> dict[str, int]:
+def inspection_summary(
+    db: Session,
+    *,
+    execution_id: Any,
+    binding: dict[str, Any] | None = None,
+    diff: dict[str, Any] | None = None,
+    root: str = "",
+) -> dict[str, int]:
     """Count inspecting tool calls and native commands for one execution.
 
     Reads only integrity-valid stored evidence, oldest first, and stops at
@@ -368,39 +439,55 @@ def inspection_summary(db: Session, *, execution_id: Any) -> dict[str, int]:
     Args:
         db: Database session.
         execution_id: Execution to summarise.
+        binding: Admitted revision pair.
+        diff: Trusted changed-file list.
+        root: Admitted checkout path for absolute file reads.
 
     Returns:
         ``repository_tool_calls``, ``other_tool_calls`` and
-        ``native_commands`` (lower bounds once one inspection is seen).
+        ``native_commands`` and ``diff_commands`` (lower bounds once a
+        qualifying inspection is seen).
     """
     import json
 
     from preloop.services.review_integrity import ObservationCounter
 
-    ordered = (
-        db.query(models.FlowExecutionLog.metadata_)
-        .filter(
-            models.FlowExecutionLog.execution_id == UUID(str(execution_id)),
-            models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
-        )
-        .order_by(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
+    query = db.query(
+        models.FlowExecutionLog.id,
+        models.FlowExecutionLog.timestamp,
+        models.FlowExecutionLog.metadata_,
+    ).filter(
+        models.FlowExecutionLog.execution_id == UUID(str(execution_id)),
+        models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
     )
-    counter = ObservationCounter()
-    # One row per query bounds driver buffering to one document, as in
-    # ``evidence_page``; the scan stops at the first inspecting observation.
-    for index in range(MAX_INSPECTION_ROWS):
-        row = ordered.offset(index).limit(1).first()
-        if row is None:
+    counter = ObservationCounter(binding=binding, diff=diff, root=root)
+    cursor = None
+    while True:
+        page = query
+        if cursor is not None:
+            page = page.filter(
+                tuple_(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
+                > cursor
+            )
+        rows = (
+            page.order_by(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
+            .limit(32)
+            .all()
+        )
+        if not rows:
             break
-        stored = row[0] or {}
-        try:
-            document = json.loads("".join(stored["chunks"]))
-        except (KeyError, TypeError, ValueError):
-            continue
-        if digest(document) != stored.get("sha256"):
-            continue
-        counter.add(document)
-        if counter.inspected():
+        for row_id, timestamp, stored in rows:
+            cursor = (timestamp, row_id)
+            try:
+                document = json.loads("".join((stored or {})["chunks"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if digest(document) != stored.get("sha256"):
+                continue
+            counter.add(document)
+            if counter.inspected():
+                return counter.counts()
+        if len(rows) < 32:
             break
     return counter.counts()
 

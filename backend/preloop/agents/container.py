@@ -21,6 +21,10 @@ import aiodocker
 from aiodocker.exceptions import DockerError
 
 from preloop.agents.resources import docker_memory_bytes
+from preloop.services.native_result import (
+    NATIVE_RESULT_BUNDLE_PATH,
+    RESULT_TRANSPORT_MAX_BYTES,
+)
 from preloop.config import settings
 from preloop.utils import pr_metadata
 from preloop.services.flow_failure_category import (
@@ -954,7 +958,7 @@ def k8s_workspace_snapshot_limit() -> int:
 
 
 _WORST_CASE_EMISSION_LINES = (
-    MAX_RESULT_ARTIFACT_BYTES
+    RESULT_TRANSPORT_MAX_BYTES
     + MAX_EVIDENCE_ARCHIVE_BYTES
     + K8S_WORKSPACE_STREAM_MAX_BYTES
 ) * 4 // (3 * 60) + 64
@@ -1085,6 +1089,12 @@ async def _sleep_before_job_create_retry(seconds: float) -> None:
 # token is absent, the wrapper prints unavailable/skipped markers and no bytes.
 K8S_ARTIFACT_WRAPPER_SCRIPT = f"""
 _preloop_emit_artifacts() {{
+    _pl_result={RESULT_ARTIFACT_PATH}
+    _pl_result_limit={MAX_RESULT_ARTIFACT_BYTES}
+    if [ -f {NATIVE_RESULT_BUNDLE_PATH} ]; then
+        _pl_result={NATIVE_RESULT_BUNDLE_PATH}
+        _pl_result_limit={RESULT_TRANSPORT_MAX_BYTES}
+    fi
     if [ -n "${{PRELOOP_EVIDENCE_PUT_TOKEN:-}}" ]; then
         _pl_ev_rc=1
         if [ -f /tmp/preloop-checkpoint-client.py ]; then
@@ -1104,7 +1114,7 @@ _preloop_emit_artifacts() {{
             echo "PRELOOP_ARTIFACT_BEGIN evidence error"
             echo "PRELOOP_ARTIFACT_END evidence"
         fi
-        if [ -f {RESULT_ARTIFACT_PATH} ]; then
+        if [ -f "$_pl_result" ]; then
             if [ "$_pl_ev_rc" -eq 0 ]; then
                 echo "PRELOOP_ARTIFACT_BEGIN result uploaded"
                 echo "PRELOOP_ARTIFACT_END result"
@@ -1127,13 +1137,17 @@ _preloop_emit_artifacts() {{
         echo "PRELOOP_ARTIFACT_END workspace"
         return
     fi
-    if [ -f {RESULT_ARTIFACT_PATH} ]; then
-        _pl_size=$(wc -c < {RESULT_ARTIFACT_PATH} | tr -d ' ')
-        if [ "$_pl_size" -gt {MAX_RESULT_ARTIFACT_BYTES} ] 2>/dev/null; then
+    if [ -L "$_pl_result" ]; then
+        echo "PRELOOP_ARTIFACT_BEGIN result error"
+        echo "PRELOOP_ARTIFACT_END result"
+    elif [ -f "$_pl_result" ]; then
+        if ! _pl_size=$(stat -c %s "$_pl_result" 2>/dev/null || stat -f %z "$_pl_result"); then
+            echo "PRELOOP_ARTIFACT_BEGIN result error"
+        elif [ "$_pl_size" -gt "$_pl_result_limit" ] 2>/dev/null; then
             echo "PRELOOP_ARTIFACT_BEGIN result too_large $_pl_size"
         else
             echo "PRELOOP_ARTIFACT_BEGIN result present $_pl_size"
-            base64 < {RESULT_ARTIFACT_PATH} | sed 's/^/PRELOOP_ARTIFACT_B64 /'
+            base64 < "$_pl_result" | sed 's/^/PRELOOP_ARTIFACT_B64 /'
         fi
         echo "PRELOOP_ARTIFACT_END result"
     else
@@ -2628,9 +2642,9 @@ class ContainerAgentExecutor(AgentExecutor):
     ) -> Optional[Dict[str, Any]]:
         """Capture the structured result artifact written by the agent.
 
-        Reads ``RESULT_ARTIFACT_PATH`` (``/workspace/result.json``) out of the
-        container via the Docker archive API — no log scraping or sentinel
-        parsing. Works for both running and exited containers (containers are
+        Reads ``RESULT_ARTIFACT_PATH`` (``/workspace/result.json``), preferring
+        the separate native candidate bundle for Codex, via the Docker archive
+        API. Works for both running and exited containers (containers are
         started with ``AutoRemove: False``).
 
         Returns the parsed JSON object, a wrapped ``{"error": ...}`` object
@@ -2649,7 +2663,17 @@ class ContainerAgentExecutor(AgentExecutor):
         try:
             docker = await self._get_docker_client()
             container = await docker.containers.get(session_reference)
-            tar = await container.get_archive(RESULT_ARTIFACT_PATH)
+            result_limit = MAX_RESULT_ARTIFACT_BYTES
+            tar = None
+            if self.agent_type == "codex":
+                try:
+                    tar = await container.get_archive(NATIVE_RESULT_BUNDLE_PATH)
+                    result_limit = RESULT_TRANSPORT_MAX_BYTES
+                except DockerError as exc:
+                    if exc.status != 404:
+                        raise
+            if tar is None:
+                tar = await container.get_archive(RESULT_ARTIFACT_PATH)
         except DockerError as e:
             if e.status == 404:
                 # File (or container) not found: the agent did not write a
@@ -2677,7 +2701,7 @@ class ContainerAgentExecutor(AgentExecutor):
             member = next((m for m in tar.getmembers() if m.isfile()), None)
             if member is None:
                 return None
-            if member.size > MAX_RESULT_ARTIFACT_BYTES:
+            if member.size > result_limit:
                 self.logger.warning(
                     f"Result artifact from container {session_reference[:12]} "
                     f"is too large ({member.size} bytes), not persisting content"
@@ -2685,12 +2709,12 @@ class ContainerAgentExecutor(AgentExecutor):
                 return {
                     "error": "result_artifact_too_large",
                     "size_bytes": member.size,
-                    "limit_bytes": MAX_RESULT_ARTIFACT_BYTES,
+                    "limit_bytes": result_limit,
                 }
             fileobj = tar.extractfile(member)
             if fileobj is None:
                 return None
-            raw = fileobj.read(MAX_RESULT_ARTIFACT_BYTES + 1)
+            raw = fileobj.read(result_limit + 1)
         finally:
             tar.close()
 
@@ -2713,6 +2737,13 @@ class ContainerAgentExecutor(AgentExecutor):
             return {
                 "error": "result_artifact_invalid_json",
                 "detail": str(e)[:500],
+            }
+        from preloop.services.native_result import result_transport_within_limit
+
+        if not result_transport_within_limit(parsed):
+            return {
+                "error": "result_artifact_too_large",
+                "limit_bytes": MAX_RESULT_ARTIFACT_BYTES,
             }
         if not isinstance(parsed, dict):
             return {
@@ -4189,6 +4220,11 @@ class ContainerAgentExecutor(AgentExecutor):
         if review_checkout:
             from preloop.services import review_diff
 
+            for name in ("head_sha", "base_sha", "base_ref"):
+                commands.append(
+                    f"export PRELOOP_REVIEW_{name.upper()}="
+                    + shlex.quote(execution_context.get("read_only_" + name) or "")
+                )
             diff_script = inspect.getsource(review_diff) + (
                 "\nimport sys\nprint(DIFF_MARKER + json.dumps("
                 "compute_diff(sys.argv[1], sys.argv[2] or None, sys.argv[3])))\n"
@@ -5049,6 +5085,25 @@ fi
 cd /workspace
 """.strip()
 
+    def _build_review_base_fetch_shell(
+        self, full_path: str, base: str, head: str
+    ) -> str:
+        """Keep the admitted base and its history available after lease revocation."""
+        from preloop.services.product_provenance import is_git_sha
+
+        if not is_git_sha(base) or not is_git_sha(head):
+            raise ValueError("Read-only review requires valid bound revisions")
+        root = shlex.quote(full_path)
+        return f"""
+if ! git -C {root} cat-file -e {base}^{{commit}} 2>/dev/null; then
+    git -C {root} fetch origin {base} || exit 1
+fi
+git -C {root} diff --no-ext-diff --no-textconv {base}...{head} -- >/dev/null || {{
+    echo 'FATAL ERROR: The admitted review diff is unavailable'
+    exit 1
+}}
+""".strip()
+
     def _build_git_pre_clone_shell(self, full_path: str) -> str:
         """Build shell that prepares the clone target directory."""
 
@@ -5467,6 +5522,14 @@ true
                 if rebase_shell:
                     commands.append(rebase_shell)
                     execution_context["_git_resume_rebase"] = True
+        if execution_context.get("read_only_review") and execution_context.get(
+            "read_only_base_sha"
+        ):
+            commands.append(
+                self._build_review_base_fetch_shell(
+                    full_path, execution_context["read_only_base_sha"], pin_sha
+                )
+            )
         return commands
 
     def _evidence_exclude_commands(self, execution_context: Dict[str, Any]) -> list:

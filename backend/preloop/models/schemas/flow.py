@@ -312,12 +312,13 @@ class PlatformReviewStatus(BaseModel):
 class ReviewIntegrity(BaseModel):
     """Controller checks on a read-only review result (#2100).
 
-    Both checks are on by default for every read-only review. Result fields
+    Binding, inspection and narrative checks apply to every read-only review. Result fields
     named ``head_sha``, ``base_sha``, ``merge_base_sha`` or ``diff_sha256``
     that the result schema declares, or the result contains, must equal the
     admitted head and base, the computed merge base or the computed diff
-    digest. A review that made no repository tool call and ran no command
-    fails with ``review_not_inspected``.
+    digest. A review without a successful command reading the bound diff or
+    a changed file fails with ``review_not_inspected``. Degenerate required
+    narrative fields fail with ``review_degenerate``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -335,8 +336,8 @@ class ReviewIntegrity(BaseModel):
     require_inspection: bool = Field(
         default=True,
         description=(
-            "Fail a review that made no repository tool call and ran no "
-            "command, counted from Preloop's own tool evidence"
+            "Fail a review without a successful command reading the bound diff "
+            "or a changed file, determined from Preloop's captured evidence"
         ),
     )
 

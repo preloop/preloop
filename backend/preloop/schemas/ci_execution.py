@@ -264,13 +264,17 @@ class ReviewIntegrityInspection(BaseModel):
     repository_tool_calls: int
     other_tool_calls: int
     native_commands: int
+    diff_commands: int = 0
 
 
 class ReviewIntegrity(BaseModel):
     """Result binding and evidence floor for a read-only review."""
 
     status: Literal["verified", "rejected"]
-    category: Literal["review_binding_mismatch", "review_not_inspected"] | None
+    category: (
+        Literal["review_binding_mismatch", "review_not_inspected", "review_degenerate"]
+        | None
+    )
     reasons: list[str]
     bindings: list[ReviewIntegrityBinding]
     inspection: ReviewIntegrityInspection

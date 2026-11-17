@@ -312,8 +312,14 @@ AUDIT_RESULT_SCHEMA_MARKERS = (
 )
 
 
-def _success_instruction_for_prompt(prompt: str) -> str:
+def _success_instruction_for_prompt(prompt: str, *, native_result: bool = False) -> str:
     """Select the completion instruction matching the prompt's result contract."""
+    if native_result:
+        return (
+            "\n\n---\nComplete the task, then return your final answer in the required "
+            "result format. That final answer ends the run. Include the full review "
+            "and evidence in that answer.\n---"
+        )
     normalized_prompt = prompt.lower()
     if (
         "preloop.eval.result/v1" in normalized_prompt
@@ -2292,7 +2298,8 @@ class FlowExecutionOrchestrator:
         # last instruction it saw (see execution ff1294e1 — work done, marker
         # forgotten). Nothing may be appended after this.
         resolved_prompt = resolved_prompt + _success_instruction_for_prompt(
-            resolved_prompt
+            resolved_prompt,
+            native_result=getattr(self, "_native_result_effective", False) is True,
         )
 
         logger.info("Prompt resolution complete")
@@ -5027,6 +5034,105 @@ class FlowExecutionOrchestrator:
         )
         return archive
 
+    def _native_candidate_valid(self, document: Any) -> bool:
+        """Validate a native candidate against the schema and bound review facts."""
+        from preloop.services.flow_result_schema import (
+            flow_result_schema,
+            validate_result_document,
+        )
+        from preloop.services import review_integrity
+        from preloop.services.review_diff import review_diff_identity
+        from preloop.models.crud.execution_tool_evidence import inspection_summary
+        from types import SimpleNamespace
+
+        if not isinstance(document, dict):
+            return False
+        schema = flow_result_schema(getattr(self, "flow", None))
+        if not schema or not validate_result_document(document, schema)["valid"]:
+            return False
+        execution = getattr(self, "execution_log", None)
+        if not review_integrity.applies(self.flow, execution):
+            return True
+        receipt = getattr(self, "_startup_receipt", None)
+        diff = review_diff_identity(
+            SimpleNamespace(
+                startup_receipt=receipt
+                if isinstance(receipt, dict)
+                else getattr(execution, "startup_receipt", None),
+                ci_review_binding=execution.ci_review_binding,
+            )
+        )
+        try:
+            inspection = inspection_summary(
+                self.db,
+                execution_id=execution.id,
+                binding=execution.ci_review_binding,
+                diff=diff,
+                root=review_integrity.inspection_root(
+                    self.flow, execution.ci_review_binding
+                ),
+            )
+        except Exception:
+            self.db.rollback()
+            logger.warning("Could not verify native review candidate inspection")
+            return False
+        return (
+            review_integrity.evaluate(
+                self.flow,
+                result=document,
+                binding=execution.ci_review_binding,
+                diff=diff,
+                inspection=inspection,
+            )["status"]
+            == review_integrity.STATUS_VERIFIED
+        )
+
+    def _usable_native_review(self, document: Any) -> bool:
+        """Allow a completed native review to survive a subsequent tool loop."""
+        from preloop.services import review_integrity
+
+        return (
+            getattr(self, "_native_result_effective", False) is True
+            and review_integrity.applies(
+                getattr(self, "flow", None), getattr(self, "execution_log", None)
+            )
+            and _result_artifact_confirmation(document) != "failure"
+            and self._native_candidate_valid(document)
+        )
+
+    def _select_native_result_candidate(self, document: Any) -> Any:
+        """Prefer a usable native answer; otherwise use a verified file result.
+
+        Explicit native failure reports remain authoritative. If neither
+        candidate validates, retain the native answer (or file when absent)
+        for ordinary schema/integrity diagnostics. Arrival order is irrelevant.
+        """
+        from preloop.services.native_result import NATIVE_CANDIDATES_KEY
+        from preloop.services.flow_result_schema import (
+            flow_result_schema,
+            validate_result_document,
+        )
+
+        if getattr(
+            self, "_native_result_effective", False
+        ) is not True or not isinstance(document, dict):
+            return document
+        candidates = document.get(NATIVE_CANDIDATES_KEY)
+        if not isinstance(candidates, dict):
+            return document
+        native, file_result = candidates.get("native"), candidates.get("file")
+        schema = flow_result_schema(getattr(self, "flow", None))
+        if (
+            schema
+            and isinstance(native, dict)
+            and validate_result_document(native, schema)["valid"]
+            and _result_artifact_confirmation(native) == "failure"
+        ) or self._native_candidate_valid(native):
+            return native
+        if self._native_candidate_valid(file_result):
+            return file_result
+        return native if native is not None else file_result
+
     async def _capture_result_artifact(
         self,
         agent_executor: Any,
@@ -5061,6 +5167,7 @@ class FlowExecutionOrchestrator:
 
         def accept(document: Any) -> None:
             nonlocal artifact, persisted
+            document = self._select_native_result_candidate(document)
             artifact = sanitize_captured_result(document)
             if artifact is None:
                 return
@@ -5322,8 +5429,17 @@ class FlowExecutionOrchestrator:
 
         execution = getattr(self, "execution_log", None)
         flow = getattr(self, "flow", None)
+        early_native_answer = (
+            getattr(self, "_native_result_effective", False) is True
+            and final_status == "FAILED"
+            and agent_result.get("failure_category")
+            in {
+                "no_confirmation",
+                "result_schema_invalid",
+            }
+        )
         if (
-            final_status != "SUCCEEDED"
+            (final_status != "SUCCEEDED" and not early_native_answer)
             or execution is None
             or not review_integrity.applies(flow, execution)
         ):
@@ -5343,14 +5459,27 @@ class FlowExecutionOrchestrator:
             )
         )
         try:
-            inspection = inspection_summary(self.db, execution_id=execution.id)
+            inspection = inspection_summary(
+                self.db,
+                execution_id=execution.id,
+                binding=execution.ci_review_binding,
+                diff=diff,
+                root=review_integrity.inspection_root(
+                    flow, execution.ci_review_binding
+                ),
+            )
         except Exception:
             self.db.rollback()
             logger.warning("Could not read tool evidence for the review floor")
             inspection = None
+        if early_native_answer and (
+            not review_integrity.inspection_required(flow)
+            or (inspection or {}).get("diff_commands")
+        ):
+            return final_status, agent_result, merged_result
         outcome = review_integrity.evaluate(
             flow,
-            result=merged_result,
+            result=None if early_native_answer else merged_result,
             binding=execution.ci_review_binding,
             diff=diff,
             inspection=inspection,
@@ -8683,15 +8812,18 @@ class FlowExecutionOrchestrator:
                         await asyncio.sleep(0)
                         continue
 
-                # Publish status update (best effort - don't fail if NATS is down)
-                try:
-                    await self._publish_update(
-                        "agent_status", {"status": status.value, "elapsed": elapsed}
-                    )
-                except Exception as publish_error:
-                    logger.warning(
-                        f"Failed to publish status update: {type(publish_error).__name__}"
-                    )
+                # Runtime exit is provisional until result/integrity gates finish.
+                # Only finalization may publish a terminal execution status.
+                if status.value not in TERMINAL_EXECUTION_STATUSES:
+                    try:
+                        await self._publish_update(
+                            "agent_status", {"status": status.value, "elapsed": elapsed}
+                        )
+                    except Exception as publish_error:
+                        logger.warning(
+                            "Failed to publish status update: %s",
+                            type(publish_error).__name__,
+                        )
 
                 # A run that has changed nothing at all after the configured
                 # deadline is reminded once and, if still unchanged after the
@@ -8745,16 +8877,16 @@ class FlowExecutionOrchestrator:
                         },
                     )
                     await agent_executor.stop(session_reference)
+                    artifact = await self._capture_result_artifact(
+                        agent_executor, session_reference
+                    )
+                    completed_review = self._usable_native_review(artifact)
                     return {
-                        "status": "FAILED",
-                        "error_message": error_message,
+                        "status": "SUCCEEDED" if completed_review else "FAILED",
+                        "error_message": None if completed_review else error_message,
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                        # Capture whatever the agent reported before it got
-                        # stuck in the tool loop.
-                        "result": await self._capture_result_artifact(
-                            agent_executor, session_reference
-                        ),
+                        "result": artifact,
                     }
 
                 if status in (
