@@ -201,6 +201,8 @@ class ReviewEffectiveRequest(BaseModel):
     reasoning_effort: str | None
     max_output_tokens: int | None
     request_count: int
+    upstream_parameters: dict[str, Any] | None = None
+    upstream_provider: str | None = None
 
 
 class ReviewTimings(BaseModel):

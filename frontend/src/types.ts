@@ -206,6 +206,7 @@ export interface Flow {
 }
 
 export interface AIModel {
+  model_parameters?: Record<string, unknown> | null;
   /** Recipient projections are owned and edited by the sharing account. */
   is_shared?: boolean;
   read_only?: boolean;
@@ -354,6 +355,8 @@ export interface FlowGatewayEventPayload {
   gateway_provider?: string | null;
   requested_model?: string | null;
   upstream_request_id?: string | null;
+  upstream_provider?: string | null;
+  upstream_parameters?: Record<string, unknown> | null;
   request_fingerprint?: string | null;
   gateway_attempt?: number | null;
   is_retry?: boolean | null;

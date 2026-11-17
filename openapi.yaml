@@ -2893,6 +2893,57 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/account/gateway-usage/export:
+    get:
+      tags:
+      - Account
+      summary: Export Account Gateway Usage
+      description: Download usage and effective upstream controls as a content-free
+        CSV.
+      operationId: export_account_gateway_usage_api_v1_account_gateway_usage_export_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            text/csv:
+              schema:
+                type: string
+        '413':
+          description: Choose a shorter date range; export exceeds 10,000 rows
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/gateway-usage/search:
     get:
       tags:
@@ -26967,7 +27018,9 @@ components:
             type: object
           - type: 'null'
           title: Model Parameters
-          description: Optional, for model-specific parameters like temperature, max_tokens
+          description: Model-specific parameters such as temperature and max_tokens.
+            For OpenRouter, provider is a validated routing preferences object; saved
+            preferences override client routing and unknown fields are rejected.
         meta_data:
           anyOf:
           - additionalProperties: true
@@ -50684,6 +50737,17 @@ components:
         request_count:
           type: integer
           title: Request Count
+        upstream_parameters:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Upstream Parameters
+        upstream_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Upstream Provider
       type: object
       required:
       - model

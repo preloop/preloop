@@ -39,6 +39,27 @@ describe('preloop-gateway-event', () => {
     return element;
   }
 
+  it('shows the serving provider and effective request next to the client request', async () => {
+    const element = await render(
+      modelCall({
+        upstream_provider: 'Host A',
+        upstream_request_id: 'gen-example',
+        upstream_parameters: {
+          model: 'example/model',
+          output_format: { type: 'json_object' },
+          schema_in_instructions: true,
+          tool_count: 2,
+          provider: { only: ['host-a'] },
+        },
+      })
+    );
+    const text = element.shadowRoot!.textContent!;
+    expect(text).to.contain('Served by');
+    expect(text).to.contain('Host A');
+    expect(text).to.contain('Effective upstream request');
+    expect(text).to.contain('gen-example');
+  });
+
   it('summarises a model call on one line', async () => {
     const element = await render(modelCall());
     const summary = element.shadowRoot!.querySelector(

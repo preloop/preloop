@@ -4,14 +4,22 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
-from preloop.services.azure_openai import normalize_azure_auth_meta
 from preloop.schemas.gateway_usage import (
     GatewayTokenUsage,
     GatewayUsageByDay,
     GatewayUsageBySession,
 )
+from preloop.schemas.openrouter import validate_model_routing
+from preloop.services.azure_openai import normalize_azure_auth_meta
 
 OPENAI_CODEX_OAUTH_TYPE = "oauth_openai_codex"
 ANTHROPIC_CLAUDE_CODE_OAUTH_TYPE = "oauth_anthropic_claude_code"
@@ -280,10 +288,18 @@ class AIModelBase(BaseModel):
     )
     model_parameters: Optional[Dict] = Field(
         None,
-        description="Optional, for model-specific parameters like temperature, max_tokens",
+        description=(
+            "Model-specific parameters such as temperature and max_tokens. "
+            "For OpenRouter, provider is a validated routing preferences object; "
+            "saved preferences override client routing and unknown fields are rejected."
+        ),
     )
     meta_data: Optional[Dict] = Field(
         None, description="Optional, for custom fields, labels, etc."
+    )
+
+    _validate_model_routing = field_validator("model_parameters")(
+        validate_model_routing
     )
 
 
@@ -375,6 +391,10 @@ class AIModelUpdate(BaseModel):
     is_default: Optional[bool] = None
     model_parameters: Optional[Dict] = None
     meta_data: Optional[Dict] = None
+    _validate_model_routing = field_validator("model_parameters")(
+        validate_model_routing
+    )
+
     codex_upstream_websocket: Optional[bool] = Field(
         None,
         description=(

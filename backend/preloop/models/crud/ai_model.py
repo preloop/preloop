@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session, joinedload
 
 from preloop.models import models
 from preloop.models.crud.secret_reference import crud_secret_reference
+from preloop.schemas.openrouter import validate_model_routing
 from preloop.services.secret_service import get_secret_service
+
 from .base import CRUDBase
 
 AIModel = models.AIModel
@@ -641,6 +643,10 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 and commit themselves.
         """
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
+        if "model_parameters" in obj_data:
+            obj_data["model_parameters"] = validate_model_routing(
+                obj_data["model_parameters"]
+            )
         self._inherit_reused_credential_routing(
             db, obj_data=obj_data, account_id=account_id
         )
@@ -905,6 +911,10 @@ class CRUDAIModel(CRUDBase[AIModel]):
     ) -> AIModel:
         """Update an AIModel. If setting a model as default, ensure others are not."""
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
+        if "model_parameters" in obj_data:
+            obj_data["model_parameters"] = validate_model_routing(
+                obj_data["model_parameters"]
+            )
         secret_id = obj_data.get("credentials_secret_id")
         if secret_id is not None and str(secret_id) != str(
             db_obj.credentials_secret_id
