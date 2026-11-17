@@ -4418,7 +4418,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 func.coalesce(models.FlowExecution.stop_reason, "") == "",
                 reason,
             ),
-            else_=func.left(models.FlowExecution.stop_reason + "; " + reason, 500),
+            # Trim the earlier reason, never the marker: the marker is the
+            # only record that nobody saw the runtime end.
+            else_=func.left(
+                models.FlowExecution.stop_reason, max(0, 500 - len(reason) - 2)
+            )
+            + "; "
+            + reason,
         )
         db.query(models.FlowExecution).filter(
             models.FlowExecution.id == execution_id,

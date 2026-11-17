@@ -449,3 +449,32 @@ async def test_confirmed_stop_retires_the_runtime_credentials(
     assert end_session.call_args.kwargs["execution_id"] == execution.id
     assert end_session.call_args.kwargs["account_id"] == flow.account_id
     assert revoke.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_bound_retires_credentials_and_keeps_the_marker_of_a_long_reason(
+    db_session: Session, flow: models.Flow
+) -> None:
+    execution = _stopped_run(db_session, flow.id)
+    execution.stop_reason = "x" * 500
+    execution.redispatch_count = MAX_TERMINAL_REDISPATCHES
+    db_session.commit()
+    with (
+        patch(
+            "preloop.services.flow_runtime_token.end_flow_execution_runtime_session"
+        ) as end_session,
+        patch(
+            "preloop.services.flow_runtime_token.revoke_flow_runtime_tokens"
+        ) as revoke,
+    ):
+        await _recovery_pass(
+            db_session,
+            create_executor_for_execution=MagicMock(return_value=GoneRuntime(False)),
+        )
+    db_session.refresh(execution)
+    assert execution.stop_confirmed_at is not None
+    assert len(execution.stop_reason) <= 500
+    assert execution.stop_reason.endswith("operator inspection required")
+    assert "termination not verified" in execution.stop_reason
+    assert end_session.call_args.kwargs["execution_id"] == execution.id
+    assert revoke.call_count == 1

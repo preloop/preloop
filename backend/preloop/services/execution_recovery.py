@@ -340,6 +340,10 @@ class ExecutionRecoveryService:
                     execution_id=execution.id,
                     reason=RECOVERY_EXHAUSTED_REASON.format(attempts=attempts),
                 )
+                # Recovery gives up on the runtime, not on its credentials:
+                # a runtime that may still be alive must not keep a valid
+                # token after it leaves the recovery set.
+                _retire_runtime_credentials(db, execution)
             except Exception as exc:  # noqa: BLE001 - one row must not end the pass
                 db.rollback()
                 logger.error(
