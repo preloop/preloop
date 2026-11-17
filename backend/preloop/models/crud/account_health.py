@@ -11,8 +11,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, exists, func, select
-from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from preloop.models.models.api_usage import ApiUsage
@@ -52,26 +51,40 @@ class CRUDAccountHealth:
             Entries with ``category``, ``count``, ``first_execution_id`` and
             ``first_at``, largest count first.
         """
-        category = func.coalesce(FlowExecution.failure_category, "uncategorized")
-        count = func.count().label("count")
-        first_id = func.array_agg(
-            aggregate_order_by(FlowExecution.id, FlowExecution.created_at)
+        category = func.coalesce(FlowExecution.failure_category, "uncategorized").label(
+            "category"
         )
-        rows = db.execute(
+        window = and_(
+            _account_executions(account_id, since, until),
+            FlowExecution.status.in_(FAILED_EXECUTION_STATUSES),
+        )
+        count = func.count().label("count")
+        totals = db.execute(
             select(
-                category.label("category"),
-                count,
-                first_id[1].label("first_execution_id"),
-                func.min(FlowExecution.created_at).label("first_at"),
+                category, count, func.min(FlowExecution.created_at).label("first_at")
             )
-            .where(
-                _account_executions(account_id, since, until),
-                FlowExecution.status.in_(FAILED_EXECUTION_STATUSES),
-            )
+            .where(window)
             .group_by(category)
             .order_by(count.desc())
         ).all()
-        return [dict(row._mapping) for row in rows]
+        # DISTINCT ON keeps one row per category without collecting every id.
+        firsts = dict(
+            db.execute(
+                select(category, FlowExecution.id)
+                .where(window)
+                .distinct(category)
+                .order_by(category, FlowExecution.created_at, FlowExecution.id)
+            ).all()
+        )
+        return [
+            {
+                "category": row.category,
+                "count": row.count,
+                "first_execution_id": firsts.get(row.category),
+                "first_at": row.first_at,
+            }
+            for row in totals
+        ]
 
     def hollow_successes(
         self, db: Session, *, account_id: UUID, since: datetime, until: datetime
@@ -114,6 +127,10 @@ class CRUDAccountHealth:
     ) -> list[dict[str, Any]]:
         """Gateway requests that failed upstream, per provider and error class.
 
+        Only the upstream taxonomy counts (``network`` and ``upstream_*``):
+        client cancels, abandoned streams, budget and hosted-credit gating
+        and translation errors are not provider failures.
+
         Served by ``ix_api_usage_account_action_ts``.
         """
         count = func.count().label("count")
@@ -130,7 +147,10 @@ class CRUDAccountHealth:
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.timestamp >= since.replace(tzinfo=None),
                 ApiUsage.timestamp < until.replace(tzinfo=None),
-                ApiUsage.error_class.is_not(None),
+                or_(
+                    ApiUsage.error_class == "network",
+                    ApiUsage.error_class.like("upstream%"),
+                ),
             )
             .group_by("provider", ApiUsage.error_class)
             .order_by(count.desc())

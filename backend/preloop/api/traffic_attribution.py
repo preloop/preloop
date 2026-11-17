@@ -16,6 +16,7 @@ from preloop.services.api_traffic_recorder import ANONYMOUS, TrafficPrincipal
 
 _PRINCIPAL_KEY = "traffic_principal"
 _REASON_KEY = "traffic_reason_code"
+_TEMPLATE_KEY = "traffic_route_template"
 _EMPTY_AFTER_CREATE_KEY = "traffic_empty_after_create"
 
 
@@ -84,6 +85,20 @@ def traffic_principal(target: Any) -> TrafficPrincipal:
     state = _state(target)
     value = state.get(_PRINCIPAL_KEY) if state else None
     return value if isinstance(value, TrafficPrincipal) else ANONYMOUS
+
+
+def set_route_template(target: Any, template: str) -> None:
+    """Record the route template for a request the router never sees."""
+    state = _state(target)
+    if state is not None:
+        state[_TEMPLATE_KEY] = template
+
+
+def route_template(target: Any) -> Optional[str]:
+    """Return a template recorded with ``set_route_template``, if any."""
+    state = _state(target)
+    value = state.get(_TEMPLATE_KEY) if state else None
+    return value if isinstance(value, str) else None
 
 
 def set_reason_code(target: Any, reason_code: str) -> None:

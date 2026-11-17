@@ -168,7 +168,12 @@ def _route_template(request: Request) -> str:
     template = getattr(route, "path_format", None) or getattr(route, "path", None)
     if isinstance(template, str) and template:
         return template[:255]
+    from preloop.api.traffic_attribution import route_template
     from preloop.services.api_traffic_recorder import UNMATCHED_ROUTE
+
+    recorded = route_template(request)
+    if recorded:
+        return recorded[:255]
 
     return UNMATCHED_ROUTE
 
@@ -193,7 +198,7 @@ def _record_traffic(
         TrafficSample(
             started_at=start_time,
             principal=traffic_principal(request),
-            method=request.method,
+            method=request.method[:10],
             route_template=_route_template(request),
             status_code=status_code,
             duration_ms=int((time.perf_counter() - started) * 1000),

@@ -678,3 +678,48 @@ def test_revoked_key_denial_retains_safe_attribution(
     assert decisions[-1].ci_project_id == str(ci_resources[1].id)
     assert decisions[-1].ci_flow_id == str(ci_resources[2].id)
     assert token not in caplog.text
+
+
+def test_denied_ci_request_is_recorded_with_its_route_and_identity(
+    app: Any,
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    ci_http: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CI denial never reaches the router; the policy names the route."""
+    from fastapi.testclient import TestClient
+
+    from preloop.api.app import ApiUsageMiddleware
+    from preloop.plugins.ci_authorization import register_ci_machine_authorizer
+    from preloop.services import api_traffic_recorder
+
+    samples: list[Any] = []
+
+    class _Recorder:
+        def record(self, sample: Any) -> None:
+            samples.append(sample)
+
+    monkeypatch.setattr(
+        api_traffic_recorder, "get_api_traffic_recorder", lambda: _Recorder()
+    )
+    monkeypatch.setattr("preloop.api.app.record_api_usage", lambda record: True)
+    principal, _, token = provision(db_session, ci_resources)
+    owner, _, flow, _ = ci_resources
+    register_ci_machine_authorizer(lambda context, action: False)
+    try:
+        client = TestClient(ApiUsageMiddleware(app))
+        response = client.post(
+            f"/api/v1/flows/{flow.id}/trigger",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"pr_number": 1, "head_sha": "a" * 40},
+        )
+    finally:
+        register_ci_machine_authorizer(None)
+
+    assert response.status_code == 403, response.text
+    [sample] = samples
+    assert sample.route_template == "/api/v1/flows/{flow_id}/trigger"
+    assert sample.principal.kind == "ci_identity"
+    assert sample.principal.principal_id == principal.id
+    assert sample.principal.account_id == owner.account_id

@@ -1,8 +1,11 @@
 # API traffic records and account health
 
-Preloop records every `/api/v1` request, whatever credential it carried
+Preloop records `/api/v1` requests, whatever credential they carried
 (login session, account API key, run-scoped runtime key or CI identity) and
-whatever status it returned. Platform operators can read one account's
+whatever status they returned. Health probes (`/api/v1/health*`), the public
+billing routes (`/api/v1/billing/plans*`, `/api/v1/billing/create-checkout-session*`,
+`/api/v1/billing/webhooks*`) and `/api/v1/ai-models/providers/*` are not
+recorded. Platform operators can read one account's
 failures and anomalies over a time window from these records.
 
 ## What is recorded
@@ -47,7 +50,9 @@ one account and a window of at most 31 days (default 24 hours):
   error responses grouped by status, principal kind and reason code;
 - list responses that came back empty right after a create in the same
   scope;
-- gateway upstream errors per provider and error class.
+- gateway upstream errors (`network` and `upstream_*` classes) per provider
+  and error class. Client cancels, budget and hosted-credit gating are not
+  counted as upstream errors.
 
 Only categories, counts, ids, route templates and first-party codes are
 returned, never prompts, outputs, raw error text or provider error bodies.
@@ -82,7 +87,8 @@ with the key ids and the counts per reason (`expired`, `execution_ended`,
 ## Flow delete refusals
 
 A refused `DELETE /api/v1/flows/{id}` sends an `X-Preloop-Delete-Blocker`
-header (`active_executions`, `references` or `reference_race`) and writes a
+header (`built_in_preset` on the 403 for a built-in preset; `active_executions`,
+`references` or `reference_race` on a 409) and writes a
 `flow_delete_refused` audit row whose `details.reason_code` holds the same
 code, with ids and counts but no names. The traffic event for the 409 holds
 the code too.

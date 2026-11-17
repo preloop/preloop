@@ -16,7 +16,9 @@ Nothing here may slow or fail a request. Memory is bounded: past
 ``MAX_ROLLUP_KEYS`` distinct series or ``MAX_PENDING_EVENTS`` events in one
 flush interval, the excess is counted as dropped (the rollup still counts an
 overflowing event's request when its series already exists). A failed flush
-puts the data back, within the same bounds, for the next attempt.
+puts the data back, within the same bounds, for the next attempt; after
+``MAX_CONSECUTIVE_FAILURES`` failures in a row the pending data is dropped
+and counted, so one row the database rejects cannot block later traffic.
 """
 
 from __future__ import annotations
@@ -36,6 +38,9 @@ DEFAULT_FLUSH_SECONDS = 10.0
 MAX_ROLLUP_KEYS = 20_000
 MAX_PENDING_EVENTS = 20_000
 LOG_THROTTLE_SECONDS = 60.0
+#: Consecutive failed flushes after which pending data is dropped, so a
+#: row the database always rejects cannot block every later flush.
+MAX_CONSECUTIVE_FAILURES = 3
 
 UNMATCHED_ROUTE = "<unmatched>"
 
@@ -152,6 +157,7 @@ class ApiTrafficRecorder:
         self._pending = _Pending()
         self._dropped = 0
         self._failed_flushes = 0
+        self._consecutive_failures = 0
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._last_log = 0.0
@@ -171,8 +177,8 @@ class ApiTrafficRecorder:
             minute_bucket(sample.started_at),
             sample.principal.account_id,
             sample.principal.kind,
-            sample.method,
-            sample.route_template,
+            sample.method[:10],
+            sample.route_template[:255],
             sample.status_code // 100,
         )
         is_event = sample.status_code >= 400 or sample.empty_after_create
@@ -206,10 +212,19 @@ class ApiTrafficRecorder:
             return True
         try:
             self._writer(pending.rollups, pending.events)
+            self._consecutive_failures = 0
             return True
         except Exception:
             self._failed_flushes += 1
-            self._restore(pending)
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                self._consecutive_failures = 0
+                with self._lock:
+                    self._dropped += len(pending.events) + sum(
+                        c.request_count for c in pending.rollups.values()
+                    )
+            else:
+                self._restore(pending)
             now = time.monotonic()
             if now - self._last_log >= LOG_THROTTLE_SECONDS:
                 self._last_log = now
@@ -331,8 +346,8 @@ def event_row(sample: TrafficSample) -> dict[str, Any]:
         "account_id": sample.principal.account_id,
         "principal_kind": sample.principal.kind,
         "principal_id": sample.principal.principal_id,
-        "method": sample.method,
-        "route_template": sample.route_template,
+        "method": sample.method[:10],
+        "route_template": sample.route_template[:255],
         "status_code": sample.status_code,
         "duration_ms": sample.duration_ms,
         "reason_code": (sample.reason_code or None) and sample.reason_code[:64],

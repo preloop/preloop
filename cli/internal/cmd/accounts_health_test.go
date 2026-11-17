@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/testenv"
@@ -73,4 +74,23 @@ func TestAccountsHealthRefusedForNonOperators(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "platform operators only") {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+func TestAccountsHealthSendsUntilAndCapsTheWindow(t *testing.T) {
+	var seen string
+	server := healthTestServer(t, http.StatusOK, `{"account_id":"a","hollow_successes":{}}`, &seen)
+	defer server.Close()
+	setupHealthEnv(t, server.URL)
+
+	if _, err := runRoot(t, "--profile", "work", "accounts", "health", "a", "--since", "743h"); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(seen, "until=") {
+		t.Fatalf("request lacks until: %s", seen)
+	}
+	_, err := runRoot(t, "--profile", "work", "accounts", "health", "a", "--since", "744h")
+	if err == nil || !strings.Contains(err.Error(), "743h") {
+		t.Fatalf("err = %v", err)
+	}
+	accountsHealthSince = 24 * time.Hour
 }

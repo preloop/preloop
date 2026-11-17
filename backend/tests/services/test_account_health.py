@@ -58,7 +58,12 @@ def seeded(db_session: Session, test_user: models.User) -> dict[str, Any]:
     hollow = _execution(db_session, flow, status="SUCCEEDED", tool_calls_count=0)
     busy = _execution(db_session, flow, status="SUCCEEDED", tool_calls_count=4)
     # A failed model attempt still counts as a model request.
-    for execution, error_class in ((busy, "upstream_overloaded"), (busy, None)):
+    for execution, error_class in (
+        (busy, "upstream_overloaded"),
+        (busy, None),
+        (busy, "client_cancelled"),
+        (busy, "budget_exceeded"),
+    ):
         db_session.add(
             models.ApiUsage(
                 account_id=account_id,

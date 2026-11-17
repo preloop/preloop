@@ -320,3 +320,57 @@ def test_usage_middleware_wraps_the_ci_middleware(
     app = create_app()
     order = [entry.cls for entry in app.user_middleware]
     assert order.index(ApiUsageMiddleware) < order.index(RestrictedCiAuthMiddleware)
+
+
+def test_a_long_method_is_truncated_and_flushes(
+    db_session: Session, test_user: models.User
+) -> None:
+    """An 11-character method must not make every flush fail."""
+    captured: list[tuple[dict, list]] = []
+
+    def _write(rollups: dict, events: list) -> None:
+        crud_api_traffic.add_rollups(
+            db_session,
+            rows=[
+                {
+                    "bucket_start": key[0],
+                    "account_id": key[1],
+                    "principal_kind": key[2],
+                    "method": key[3],
+                    "route_template": key[4],
+                    "status_class": key[5],
+                    "request_count": c.request_count,
+                    "total_duration_ms": c.total_duration_ms,
+                    "max_duration_ms": c.max_duration_ms,
+                }
+                for key, c in rollups.items()
+            ],
+        )
+        crud_api_traffic.add_events(
+            db_session, events=[api_traffic_recorder.event_row(e) for e in events]
+        )
+        captured.append((rollups, events))
+
+    recorder = _recorder(_write)  # type: ignore[arg-type]
+    recorder.record(
+        _sample(
+            405,
+            method="UNSUBSCRIBE",
+            principal=TrafficPrincipal(kind="session", account_id=test_user.account_id),
+        )
+    )
+    assert recorder.flush() is True
+    event = crud_api_traffic.latest_event(db_session, account_id=test_user.account_id)
+    assert event is not None and event.method == "UNSUBSCRIB"
+
+
+def test_a_batch_that_keeps_failing_is_dropped_not_retried_forever() -> None:
+    writer = _Capture(fail=3)
+    recorder = _recorder(writer)
+    recorder.record(_sample(500))
+    assert [recorder.flush() for _ in range(3)] == [False, False, False]
+    assert recorder.stats()["dropped"] == 2  # one event, one rollup request
+    recorder.record(_sample(200))
+    assert recorder.flush() is True
+    [(rollups, events)] = writer.flushes
+    assert events == [] and [c.request_count for c in rollups.values()] == [1]

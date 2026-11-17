@@ -71,7 +71,7 @@ route templates, never customer content.`,
 }
 
 func init() {
-	accountsHealthCmd.Flags().DurationVar(&accountsHealthSince, "since", 24*time.Hour, "Window length ending now (at most 744h)")
+	accountsHealthCmd.Flags().DurationVar(&accountsHealthSince, "since", 24*time.Hour, "Window length ending now (at most 743h)")
 	accountsHealthCmd.Flags().BoolVar(&accountsHealthJSON, "json", false, "Print the raw JSON response")
 	accountsCmd.AddCommand(accountsHealthCmd)
 }
@@ -83,7 +83,12 @@ func runAccountsHealth(cmd *cobra.Command, args []string) error {
 	}
 	accountID := strings.TrimSpace(args[0])
 	query := url.Values{}
-	query.Set("since", time.Now().UTC().Add(-accountsHealthSince).Format(time.RFC3339))
+	if accountsHealthSince <= 0 || accountsHealthSince > 743*time.Hour {
+		return fmt.Errorf("--since must be between 1s and 743h")
+	}
+	now := time.Now().UTC()
+	query.Set("since", now.Add(-accountsHealthSince).Format(time.RFC3339))
+	query.Set("until", now.Format(time.RFC3339))
 	path := api.RESTPrefix + "/operator/accounts/" + url.PathEscape(accountID) + "/health?" + query.Encode()
 	var raw json.RawMessage
 	if err := client.Get(path, &raw); err != nil {
