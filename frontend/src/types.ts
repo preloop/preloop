@@ -126,6 +126,12 @@ export interface FlowExecutionStats {
  */
 export interface Flow {
   id?: string;
+  /**
+   * Configuration revision; increases on every configuration change. Sent
+   * back as `If-Match` so a save never overwrites a change made since the
+   * flow was loaded.
+   */
+  revision?: number;
   name?: string;
   description?: string;
   icon?: string;

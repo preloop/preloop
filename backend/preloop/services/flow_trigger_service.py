@@ -14,6 +14,10 @@ from preloop.api.loop_safety import run_db_off_loop
 from preloop.plugins.account_hooks import AuthorizationContext
 
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue
+from preloop.models.schemas.flow_revision import (
+    FlowRevisionMismatchError,
+    RevisionCondition,
+)
 from preloop.models.db.session import get_session_factory
 from preloop.models.models import Flow
 from preloop.models.models.flow_execution import FlowExecution
@@ -2998,6 +3002,33 @@ class FlowTriggerService:
         logger.info(f"Scheduled execution initiated for flow '{flow.name}' ({flow.id})")
         return "triggered"
 
+    def _require_revision(
+        self, flow_id: uuid.UUID, expected: Optional[RevisionCondition]
+    ) -> None:
+        """Share-lock the flow and check the caller's revision precondition.
+
+        Called right before the execution insert. The lock lasts until that
+        insert commits, so a concurrent configuration write waits and the
+        execution records the revision checked here.
+
+        Args:
+            flow_id: Flow about to get an execution.
+            expected: The caller's ``If-Match``, or None for no condition.
+
+        Raises:
+            FlowRevisionMismatchError: The flow is at another revision. The
+                transaction is rolled back first, releasing the lock.
+        """
+        if expected is None:
+            return
+        revision = crud_flow.lock_revision(self.db, flow_id=flow_id)
+        if revision is None:
+            self.db.rollback()
+            raise ValueError(f"Flow {flow_id} not found")
+        if not expected.matches(revision):
+            self.db.rollback()
+            raise FlowRevisionMismatchError(revision)
+
     async def trigger_flow(
         self,
         flow_id: uuid.UUID,
@@ -3013,6 +3044,7 @@ class FlowTriggerService:
         batch_id: Optional[uuid.UUID] = None,
         no_progress_escalation: Optional[Dict[str, Any]] = None,
         authorization_context: AuthorizationContext | None = None,
+        expected_revision: Optional[RevisionCondition] = None,
     ) -> Dict[str, Any]:
         """
         Manually trigger a flow execution for testing purposes or as a retry.
@@ -3043,9 +3075,18 @@ class FlowTriggerService:
                 of one delegated fan out (#631) exactly as a matrix trigger
                 shares one across its cells, so the batch rollup endpoint
                 reports the fan out as a unit. Controller owned, as above.
+            authorization_context: Caller identity for run authorization.
+            expected_revision: The caller's ``If-Match``: the execution is
+                created only while the flow is at that configuration
+                revision, checked under a share lock in the inserting
+                transaction.
 
         Returns:
             Dict with execution_id and status
+
+        Raises:
+            FlowRevisionMismatchError: ``expected_revision`` does not hold;
+                no execution was created.
         """
         # Get the flow
         flow_id_str = str(flow_id)
@@ -3157,6 +3198,7 @@ class FlowTriggerService:
             reserve_triage_execution,
         )
 
+        self._require_revision(flow_id, expected_revision)
         coalesced = False
         triage_flow = is_triage_flow(self.db, flow)
         if triage_flow:
@@ -3230,6 +3272,7 @@ class FlowTriggerService:
         trigger_event_data: Optional[Dict[str, Any]] = None,
         triggered_by: Optional[str] = None,
         authorization_context: AuthorizationContext | None = None,
+        expected_revision: Optional[RevisionCondition] = None,
     ) -> Dict[str, Any]:
         """Fan a single trigger out to one execution per matrix entry.
 
@@ -3245,11 +3288,16 @@ class FlowTriggerService:
             test_mode: Whether this is a test/manual trigger
             trigger_event_data: Optional trigger event data shared by all cells
             triggered_by: Who started the batch, for the execution subject
+            authorization_context: Caller identity for run authorization.
+            expected_revision: The caller's ``If-Match``; as for
+                :meth:`trigger_flow`, every cell or none is created.
 
         Returns:
             Dict with batch_id, flow_id and per-cell execution references.
 
         Raises:
+            FlowRevisionMismatchError: ``expected_revision`` does not hold;
+                no execution was created.
             ValueError: If the flow does not exist or the matrix is empty or
                 exceeds MATRIX_MAX_ENTRIES. (Entry contents are validated at
                 the API layer, where account scoping is known.)
@@ -3347,6 +3395,7 @@ class FlowTriggerService:
 
         # Validate every cell before CRUD.create (which may commit) so an
         # incompatible later selection cannot leave a partially created batch.
+        self._require_revision(flow_id, expected_revision)
         for execution_data in execution_inputs:
             executions.append(
                 crud_flow_execution.create(self.db, obj_in=execution_data)

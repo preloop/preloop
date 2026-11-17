@@ -94,7 +94,7 @@ def current_trusted_run(api: GitHub, run: dict) -> bool:
             ):
                 return True
         return False
-    if run.get("event") == "push" and run.get("head_branch") == "main":
+    if run.get("event") in {"push", "schedule"} and run.get("head_branch") == "main":
         ref = api.request("git/ref/heads/main")
         return ref["object"]["sha"] == run["head_sha"]
     return False
@@ -125,6 +125,8 @@ def needs_recovery(jobs: list[dict], runners: list[dict] | None, now: datetime) 
     for job in jobs:
         if not self_hosted_backend(job):
             continue
+        if disk_preflight_failed(job):
+            return True
         if job.get("status") == "queued" and not job.get("runner_id"):
             created = datetime.fromisoformat(job["created_at"].replace("Z", "+00:00"))
             if (now - created).total_seconds() >= QUEUE_GRACE_SECONDS:
@@ -140,6 +142,24 @@ def needs_recovery(jobs: list[dict], runners: list[dict] | None, now: datetime) 
         ):
             return True
     return False
+
+
+def disk_preflight_failed(job: dict) -> bool:
+    """Recognize a failed disk reserve check before any tests could execute."""
+    steps = job.get("steps") or []
+    return (
+        self_hosted_backend(job)
+        and any(
+            step.get("name") == "Check runner disk reserve"
+            and step.get("conclusion") == "failure"
+            for step in steps
+        )
+        and not any(
+            step.get("name") == "Run tests"
+            and step.get("conclusion") not in {None, "skipped"}
+            for step in steps
+        )
+    )
 
 
 def recovery_snapshot(api: GitHub, path: str) -> tuple[list[dict], list[dict] | None]:
@@ -175,6 +195,8 @@ def unrelated_failure(jobs: list[dict], runners: list[dict] | None) -> bool:
         # CI is the dependent aggregate check; the failing source jobs below
         # establish whether the failure is eligible for recovery.
         if job.get("name") == "CI":
+            continue
+        if disk_preflight_failed(job):
             continue
         if not (
             self_hosted_backend(job)

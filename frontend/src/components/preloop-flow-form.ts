@@ -674,6 +674,14 @@ export class PreloopFlowForm extends LitElement {
   @state()
   private formError: string | null = null;
 
+  /**
+   * Set by the parent when a save was refused because the flow changed
+   * after it was loaded: the error then offers to reload the latest version.
+   * The form keeps what the user typed until they choose to reload.
+   */
+  @state()
+  private revisionConflict = false;
+
   /** Reference lists ("trackers", "models") that failed to load. */
   @state()
   private referenceListsFailed: string[] = [];
@@ -1930,6 +1938,7 @@ export class PreloopFlowForm extends LitElement {
       return;
     }
     this.formError = null;
+    this.revisionConflict = false;
 
     if (!this.flow.name) {
       await this.failField('[data-field="name"]', 'Flow name is required.');
@@ -5625,6 +5634,25 @@ export class PreloopFlowForm extends LitElement {
                 <sl-alert variant="danger" open role="alert" data-form-error>
                   <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
                   <strong>Error:</strong> ${this.formError}
+                  ${
+                    this.revisionConflict
+                      ? html`<div style="margin-top: var(--sl-spacing-small);">
+                          <sl-button
+                            size="small"
+                            data-reload-latest
+                            @click=${() =>
+                              this.dispatchEvent(
+                                new CustomEvent('flow-reload', {
+                                  bubbles: true,
+                                  composed: true,
+                                })
+                              )}
+                          >
+                            Reload latest version
+                          </sl-button>
+                        </div>`
+                      : nothing
+                  }
                 </sl-alert>
               `
             : nothing
