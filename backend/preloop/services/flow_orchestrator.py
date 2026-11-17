@@ -5201,6 +5201,8 @@ class FlowExecutionOrchestrator:
             validate_result_document,
         )
 
+        # Each capture states its own reason; none carries over from an earlier one.
+        self._native_answer_error = None
         if getattr(
             self, "_native_result_effective", False
         ) is not True or not isinstance(document, dict):

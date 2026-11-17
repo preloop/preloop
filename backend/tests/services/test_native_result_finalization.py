@@ -445,3 +445,14 @@ def test_capture_reports_an_answer_that_is_not_json(
     candidates = json.loads(written.read_text())[NATIVE_CANDIDATES_KEY]
     # The reason travels, the text of the answer does not.
     assert candidates == {**expected, "native_error": "not_json"}
+
+
+def test_an_earlier_capture_does_not_decide_the_wording_of_a_later_one() -> None:
+    orch = codex(orchestrator())
+    assert orch._select_native_result_candidate(bundle(["note"])) == ["note"]
+    assert orch._native_answer_error == "not_object"
+    assert orch._select_native_result_candidate(None) is None
+    orch._check_result_schema(None)
+    assert orch._result_schema_validation["errors"] == [
+        {"path": "$", "message": "No final answer was captured"}
+    ]
