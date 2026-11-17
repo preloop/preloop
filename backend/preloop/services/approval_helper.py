@@ -742,26 +742,42 @@ async def require_approval(
 
             try:
                 # Create approval request and send notification
-                approval_request = await approval_service.create_and_notify(
-                    account_id=account_id,
-                    tool_configuration_id=config.id,
-                    approval_workflow=workflow,
-                    tool_name=tool_name,
-                    tool_args=arguments,
-                    agent_reasoning=justification,
-                    # Attribution from the authenticated MCP caller. Without
-                    # it a gated builtin (ask_user, request_approval, any
-                    # proxied tool) landed on the approval pages with no agent,
-                    # no key and no session, and rendered as "AI agent".
-                    execution_id=caller.execution_id,
-                    managed_agent_id=caller.managed_agent_id,
-                    runtime_session_id=caller.runtime_session_id,
-                    managed_agent_name=caller.managed_agent_name,
-                    api_key_id=caller.api_key_id,
-                    rule_context=rule_context,
-                    timeout_seconds=window.seconds,
-                    server_name=server_name,
+                registry_request_id = (rule_context or {}).get(
+                    "registry_approval_request_id"
                 )
+                if registry_request_id:
+                    from preloop.models.crud.approval_request import (
+                        get_approval_request_async,
+                    )
+
+                    approval_request = await get_approval_request_async(
+                        db, request_id=registry_request_id
+                    )
+                    if approval_request is None or str(
+                        approval_request.account_id
+                    ) != str(account_id):
+                        return False, "Registry approval is unavailable"
+                else:
+                    approval_request = await approval_service.create_and_notify(
+                        account_id=account_id,
+                        tool_configuration_id=config.id,
+                        approval_workflow=workflow,
+                        tool_name=tool_name,
+                        tool_args=arguments,
+                        agent_reasoning=justification,
+                        # Attribution from the authenticated MCP caller. Without
+                        # it a gated builtin (ask_user, request_approval, any
+                        # proxied tool) landed on the approval pages with no agent,
+                        # no key and no session, and rendered as "AI agent".
+                        execution_id=caller.execution_id,
+                        managed_agent_id=caller.managed_agent_id,
+                        runtime_session_id=caller.runtime_session_id,
+                        managed_agent_name=caller.managed_agent_name,
+                        api_key_id=caller.api_key_id,
+                        rule_context=rule_context,
+                        timeout_seconds=window.seconds,
+                        server_name=server_name,
+                    )
 
                 # Extract every value needed past this point into plain
                 # locals, then release this session BEFORE any waiting
