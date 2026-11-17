@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Native-result reviews: a final answer that does not match the result schema
+  (a missing required field, a value outside an enum, a wrong type, or no
+  JSON) no longer fails the run at once. The hosted Codex runtime asks the
+  model again, at most twice and within the execution deadline, naming each
+  validation error by JSON path. Each attempt is logged as a
+  `PRELOOP_REVIEW_CONTINUATION` with reason `result_schema_invalid`. An answer
+  that is still invalid fails with `result_schema_invalid` as before.
+- Native-result reviews: a review that was already written when the execution
+  deadline expired is finalized when it passes the same schema, binding,
+  inspection and narrative checks as a review that survives a
+  repeated-tool-loop stop. The completion facts record
+  `time_limit_after_result: true`. Otherwise the run still ends with `timeout`.
+
 ### Changed
 
 - Delivery Report: connecting a tracker no longer creates a Delivery Report

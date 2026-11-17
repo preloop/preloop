@@ -1261,6 +1261,12 @@ except ImportError:
 #: ``activeDeadlineSeconds``. One constant so a rename cannot drop the backstop.
 RUNTIME_DEADLINE_CONTEXT_KEY = "runtime_deadline_seconds"
 
+#: ``execution_context`` key carrying the execution's deadline as a Unix
+#: timestamp (whole seconds). The orchestrator writes it with the runtime
+#: backstop; an agent script uses it to keep optional extra sessions (such as
+#: a native result repair) inside the run's budget.
+RUN_DEADLINE_EPOCH_CONTEXT_KEY = "run_deadline_epoch"
+
 
 def runtime_deadline_seconds(execution_context: Dict[str, Any]) -> Optional[int]:
     """``activeDeadlineSeconds`` for an agent Job, or None for no deadline.

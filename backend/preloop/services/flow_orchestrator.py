@@ -3,6 +3,7 @@ import uuid
 import json
 import asyncio
 import shlex
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
@@ -38,6 +39,7 @@ from preloop.agents import (
 )
 from preloop.agents.container import (
     AGENT_SESSION_SUFFIX_KEY,
+    RUN_DEADLINE_EPOCH_CONTEXT_KEY,
     RUNTIME_DEADLINE_CONTEXT_KEY,
 )
 from preloop.agents.kubernetes import detect_kubernetes_environment
@@ -4974,11 +4976,12 @@ class FlowExecutionOrchestrator:
                     )
                     backstop = nudge_timeout + RUNTIME_DEADLINE_GRACE_SECONDS
                 else:
-                    backstop = (
-                        self._execution_deadline(
-                            self._execution_timeout_budget()
-                        ).remaining_seconds()
-                        + RUNTIME_DEADLINE_GRACE_SECONDS
+                    remaining = self._execution_deadline(
+                        self._execution_timeout_budget()
+                    ).remaining_seconds()
+                    backstop = remaining + RUNTIME_DEADLINE_GRACE_SECONDS
+                    execution_context[RUN_DEADLINE_EPOCH_CONTEXT_KEY] = int(
+                        time.time() + remaining
                     )
                 execution_context[RUNTIME_DEADLINE_CONTEXT_KEY] = backstop
             except Exception:
@@ -9345,6 +9348,29 @@ class FlowExecutionOrchestrator:
                 )
             finally:
                 await agent_executor.stop(session_reference)
+
+            # The limit can fire after the agent already answered (a container
+            # that outlives its agent, or a final answer that lands just
+            # before the budget). A native review that every check the
+            # tool-loop path applies accepts is finalized as that path does;
+            # the finalize gates still run on it. Anything else stays timeout.
+            if self._usable_native_review(result_artifact):
+                self._record_completion(time_limit_after_result=True)
+                self.execution_logger.log_milestone(
+                    "native_result_ready_at_time_limit",
+                    {
+                        "timeout_seconds": timeout_budget.seconds,
+                        "elapsed_seconds": elapsed,
+                    },
+                )
+                return {
+                    "status": "SUCCEEDED",
+                    "error_message": None,
+                    "failure_category": None,
+                    "actions_taken": self.execution_logger.get_actions_taken(),
+                    "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                    "result": result_artifact,
+                }
 
             timeout_result = {
                 "status": "FAILED",
