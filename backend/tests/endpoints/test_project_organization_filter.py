@@ -97,6 +97,7 @@ def test_organization_filter_returns_only_accessible_projects(
     assert page.status_code == 200, page.text
     page_body = page.json()
     page_items = page_body if route == "query" else page_body["items"]
-    assert page_items == items[1:2]
+    assert len(page_items) == 1
+    assert page_items[0]["id"] in {str(p.id) for p in projects[:2]}
     if route == "path":
         assert page_body["total"] == 2

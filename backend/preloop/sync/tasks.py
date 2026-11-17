@@ -80,7 +80,7 @@ async def poll_tracker_on_demand(
         raise
     logger.info(
         "Tracker sync %s: task_id=%s tracker_id=%s",
-        "completed" if result is not None else "failed",
+        "completed" if result is not None and not result.get("errors", 0) else "failed",
         task_id,
         tracker_id,
     )

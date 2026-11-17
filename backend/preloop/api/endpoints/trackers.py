@@ -1375,9 +1375,17 @@ async def sync_tracker(
         )
 
     task_id = uuid4()
-    ack = await event_bus_service.publish_task(
-        "poll_tracker_on_demand", str(tracker.id), task_id=str(task_id)
-    )
+    try:
+        ack = await event_bus_service.publish_task(
+            "poll_tracker_on_demand", str(tracker.id), task_id=str(task_id)
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to queue tracker sync: task_id=%s error_type=%s",
+            task_id,
+            type(exc).__name__,
+        )
+        ack = None
     if ack is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
