@@ -88,7 +88,14 @@ REVIEW_INSPECTION_CONTINUATIONS = 2
 #: Written to the agent log before each continuation session.
 REVIEW_CONTINUATION_MARKER = "PRELOOP_REVIEW_CONTINUATION"
 
-REVIEW_CONTINUATION_PATH = "/tmp/preloop-review-continuation.txt"
+#: Continuation prompts are written by root, which also runs the checks, while
+#: the Codex session runs as the unprivileged agent user. They live in a
+#: private directory created by ``mktemp -d`` (owned by root, mode 0700) so
+#: the agent cannot plant a link at a predictable path for root to follow.
+CONTINUATION_DIR_SETUP = (
+    '_pl_cont_dir="${_pl_cont_dir:-$(mktemp -d /tmp/preloop-continuation.XXXXXX)}"'
+)
+REVIEW_CONTINUATION_PATH = "$_pl_cont_dir/review-continuation.txt"
 
 #: Extra sessions a native-result run gets when its final answer does not
 #: match the result schema (a missing required field, a value outside an
@@ -104,7 +111,7 @@ NATIVE_RESULT_REPAIR_CONTINUATIONS = 2
 NATIVE_RESULT_REPAIR_MIN_SECONDS = 30
 NATIVE_RESULT_REPAIR_MARGIN_SECONDS = 10
 
-NATIVE_RESULT_REPAIR_PATH = "/tmp/preloop-result-repair.txt"
+NATIVE_RESULT_REPAIR_PATH = "$_pl_cont_dir/result-repair.txt"
 
 REVIEW_CONTINUATION_PROMPT = """
 
@@ -1206,6 +1213,7 @@ exit $CODEX_EXIT_CODE
         return f"""
 # A native-result review without a qualifying command did not read the
 # change. Start a bounded number of fresh sessions that must inspect first.
+{CONTINUATION_DIR_SETUP}
 _pl_review_continuation=0
 while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     && [ "$_pl_review_continuation" -lt {REVIEW_INSPECTION_CONTINUATIONS} ] \
@@ -1283,22 +1291,36 @@ done
 import sys
 answer_path, schema_path, prompt_path, out_path = sys.argv[1:]
 try:
-    with open(schema_path) as handle:
-        schema = json.load(handle)
-    with open(prompt_path) as handle:
-        prompt = handle.read()
+    import os, stat
+    def read(path, limit):
+        # Root reads files the agent may have replaced: never follow a link,
+        # never block on a FIFO, accept only a bounded regular file.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError("not a regular file")
+            data = handle.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError("too large")
+        return data.decode("utf-8", "replace")
+    schema = json.loads(read(schema_path, 64 * 1024))
+    prompt = read(prompt_path, 4 * 1024 * 1024)
     try:
-        with open(answer_path) as handle:
-            raw = handle.read(256 * 1024 + 1)
+        raw = read(answer_path, 256 * 1024)
     except FileNotFoundError:
         raw = None
     text = repair_prompt(raw, schema, prompt)
+    if not text:
+        sys.exit(0)
+    fd = os.open(
+        out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+    )
+    with os.fdopen(fd, "w") as handle:
+        handle.write(text)
+except SystemExit:
+    raise
 except Exception:
     sys.exit(0)
-if not text:
-    sys.exit(0)
-with open(out_path, "w") as handle:
-    handle.write(text)
 print(json.dumps(repair_paths(raw, schema)))
 sys.exit(1)
 """
@@ -1309,13 +1331,10 @@ sys.exit(1)
             + " "
             + " ".join(
                 shlex.quote(value)
-                for value in (
-                    output_path,
-                    schema_path,
-                    PROMPT_FILE_PATH,
-                    NATIVE_RESULT_REPAIR_PATH,
-                )
+                for value in (output_path, schema_path, PROMPT_FILE_PATH)
             )
+            # Expanded by the shell: the private continuation directory.
+            + f' "{NATIVE_RESULT_REPAIR_PATH}"'
         )
         deadline = execution_context.get(RUN_DEADLINE_EPOCH_CONTEXT_KEY)
         deadline = (
@@ -1326,6 +1345,7 @@ sys.exit(1)
         return f"""
 # A native final answer that does not match the result schema is asked for
 # again, naming the errors, a bounded number of times within the run budget.
+{CONTINUATION_DIR_SETUP}
 _pl_result_repair=0
 _pl_run_deadline={deadline}
 _pl_repair_left() {{
@@ -1336,6 +1356,7 @@ while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     && [ "$_pl_result_repair" -lt {NATIVE_RESULT_REPAIR_CONTINUATIONS} ] \
     && [ "$(_pl_repair_left)" -ge {NATIVE_RESULT_REPAIR_MIN_SECONDS - NATIVE_RESULT_REPAIR_MARGIN_SECONDS} ] \
     && {inspected} \
+    && rm -f -- "{NATIVE_RESULT_REPAIR_PATH}" \
     && ! _pl_repair_paths=$({check}); do
     _pl_result_repair=$((_pl_result_repair + 1))
     echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":'"$_pl_result_repair"',"reason":"result_schema_invalid","paths":'"$_pl_repair_paths"'}}' \

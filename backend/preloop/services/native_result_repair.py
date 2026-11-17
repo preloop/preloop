@@ -4,8 +4,9 @@ Stdlib only: :func:`repair_prompt` runs in the hosted wrapper (see
 ``CodexAgent._native_result_repair_block``), where ``jsonschema`` is not
 installed. It covers the keywords a native-result schema can use (types,
 ``enum``/``const``, ``properties``/``required``/``additionalProperties``,
-``items``, length and size bounds, ``pattern``, numeric bounds, ``anyOf`` and
-local ``$ref``). It only decides whether to ask the model for a corrected
+``minProperties``/``maxProperties``, ``items``, ``uniqueItems``, length and
+size bounds, ``pattern``, numeric bounds, ``multipleOf``, ``anyOf`` and local
+``$ref``). It only decides whether to ask the model for a corrected
 answer; the controller validates the captured document with the full draft
 2020-12 validator and stays authoritative. A keyword this module does not
 know is skipped, so it can under-report but never invents an error that the
@@ -20,6 +21,9 @@ from typing import Any
 MAX_REPAIR_ERRORS = 20
 #: Longest previous answer quoted back to the model, in characters.
 MAX_PREVIOUS_ANSWER_CHARS = 64 * 1024
+#: Longest value shown inside one error message, in characters (the
+#: controller caps stored messages at 300 characters too).
+MAX_VALUE_CHARS = 200
 
 REPAIR_INSTRUCTIONS = """
 
@@ -48,6 +52,14 @@ _TYPES: dict[str, Any] = {
     "integer": lambda value: (isinstance(value, int) and not isinstance(value, bool))
     or (isinstance(value, float) and value.is_integer()),
 }
+
+
+def _show(value: Any) -> str:
+    """``repr`` of a value, shortened so one error cannot flood the prompt."""
+    text = repr(value)
+    if len(text) <= MAX_VALUE_CHARS:
+        return text
+    return text[: MAX_VALUE_CHARS - 3] + "..."
 
 
 def _path(parts: list[Any]) -> str:
@@ -99,7 +111,7 @@ def schema_errors(document: Any, schema: Any) -> list[dict[str, str]]:
                 errors.append(
                     {
                         "path": _path(parts),
-                        "message": f"{value!r} is not valid under any of the "
+                        "message": f"{_show(value)} is not valid under any of the "
                         "given schemas",
                     }
                 )
@@ -112,7 +124,7 @@ def schema_errors(document: Any, schema: Any) -> list[dict[str, str]]:
                 errors.append(
                     {
                         "path": _path(parts),
-                        "message": f"{value!r} is not of type {wanted}",
+                        "message": f"{_show(value)} is not of type {wanted}",
                     }
                 )
                 return
@@ -121,12 +133,15 @@ def schema_errors(document: Any, schema: Any) -> list[dict[str, str]]:
                 errors.append(
                     {
                         "path": _path(parts),
-                        "message": f"{value!r} is not one of {node['enum']!r}",
+                        "message": f"{_show(value)} is not one of {_show(node['enum'])}",
                     }
                 )
         if "const" in node and not _equal(value, node["const"]):
             errors.append(
-                {"path": _path(parts), "message": f"{node['const']!r} was expected"}
+                {
+                    "path": _path(parts),
+                    "message": f"{_show(node['const'])} was expected",
+                }
             )
         if isinstance(value, str):
             _string(value, node, parts)
@@ -147,9 +162,13 @@ def schema_errors(document: Any, schema: Any) -> list[dict[str, str]]:
     def _string(value: str, node: dict[str, Any], parts: list[Any]) -> None:
         minimum, maximum = node.get("minLength"), node.get("maxLength")
         if isinstance(minimum, int) and len(value) < minimum:
-            errors.append({"path": _path(parts), "message": f"{value!r} is too short"})
+            errors.append(
+                {"path": _path(parts), "message": f"{_show(value)} is too short"}
+            )
         if isinstance(maximum, int) and len(value) > maximum:
-            errors.append({"path": _path(parts), "message": f"{value!r} is too long"})
+            errors.append(
+                {"path": _path(parts), "message": f"{_show(value)} is too long"}
+            )
         pattern = node.get("pattern")
         if isinstance(pattern, str):
             try:
@@ -160,7 +179,7 @@ def schema_errors(document: Any, schema: Any) -> list[dict[str, str]]:
                 errors.append(
                     {
                         "path": _path(parts),
-                        "message": f"{value!r} does not match {pattern!r}",
+                        "message": f"{_show(value)} does not match {pattern!r}",
                     }
                 )
 
@@ -183,7 +202,20 @@ def schema_errors(document: Any, schema: Any) -> list[dict[str, str]]:
             limit = node.get(keyword)
             if _TYPES["number"](limit) and fails(limit):
                 errors.append(
-                    {"path": _path(parts), "message": f"{value!r} is {words} {limit!r}"}
+                    {
+                        "path": _path(parts),
+                        "message": f"{_show(value)} is {words} {limit!r}",
+                    }
+                )
+        step = node.get("multipleOf")
+        if _TYPES["number"](step) and step > 0:
+            quotient = value / step
+            if isinstance(quotient, float) and not quotient.is_integer():
+                errors.append(
+                    {
+                        "path": _path(parts),
+                        "message": f"{_show(value)} is not a multiple of {step!r}",
+                    }
                 )
 
     def _array(
@@ -191,9 +223,25 @@ def schema_errors(document: Any, schema: Any) -> list[dict[str, str]]:
     ) -> None:
         minimum, maximum = node.get("minItems"), node.get("maxItems")
         if isinstance(minimum, int) and len(value) < minimum:
-            errors.append({"path": _path(parts), "message": f"{value!r} is too short"})
+            errors.append(
+                {"path": _path(parts), "message": f"{_show(value)} is too short"}
+            )
         if isinstance(maximum, int) and len(value) > maximum:
-            errors.append({"path": _path(parts), "message": f"{value!r} is too long"})
+            errors.append(
+                {"path": _path(parts), "message": f"{_show(value)} is too long"}
+            )
+        if node.get("uniqueItems") is True:
+            seen: list[Any] = []
+            for item in value:
+                if any(_equal(item, other) for other in seen):
+                    errors.append(
+                        {
+                            "path": _path(parts),
+                            "message": f"{_show(value)} has non-unique elements",
+                        }
+                    )
+                    break
+                seen.append(item)
         items = node.get("items")
         if isinstance(items, dict):
             for index, item in enumerate(value):
@@ -210,9 +258,24 @@ def schema_errors(document: Any, schema: Any) -> list[dict[str, str]]:
                 errors.append(
                     {
                         "path": _path([*parts, name]),
-                        "message": f"{name!r} is a required property",
+                        "message": f"{_show(name)} is a required property",
                     }
                 )
+        fewest, most = node.get("minProperties"), node.get("maxProperties")
+        if isinstance(fewest, int) and len(value) < fewest:
+            errors.append(
+                {
+                    "path": _path(parts),
+                    "message": f"{_show(value)} does not have enough properties",
+                }
+            )
+        if isinstance(most, int) and len(value) > most:
+            errors.append(
+                {
+                    "path": _path(parts),
+                    "message": f"{_show(value)} has too many properties",
+                }
+            )
         extra = node.get("additionalProperties")
         unexpected = [name for name in value if name not in properties]
         if extra is False and unexpected:

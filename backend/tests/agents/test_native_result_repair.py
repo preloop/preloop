@@ -122,6 +122,52 @@ def test_checker_accepts_a_valid_review() -> None:
     assert repair_prompt(json.dumps(review()), SCHEMA, "Review") == ""
 
 
+KEYWORDS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "minProperties": 2,
+    "maxProperties": 3,
+    "properties": {
+        "tags": {"type": "array", "uniqueItems": True},
+        "score": {"type": "number", "multipleOf": 0.5},
+        "count": {"type": "integer", "multipleOf": 2},
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"tags": ["a", "a"], "score": 1.0},
+        {"tags": ["a"], "score": 1.25},
+        {"tags": ["a"], "count": 3},
+        {"tags": ["a"]},
+        {"tags": ["a"], "score": 1.0, "count": 2, "other": 1},
+    ],
+)
+def test_controller_keywords_are_checked(document: dict[str, Any]) -> None:
+    expected = {
+        error["path"]
+        for error in validate_result_document(document, KEYWORDS_SCHEMA)["errors"]
+    }
+    assert expected
+    assert {e["path"] for e in schema_errors(document, KEYWORDS_SCHEMA)} == expected
+
+
+def test_keywords_accept_a_valid_document() -> None:
+    document = {"tags": ["a", "b"], "score": 1.5, "count": 4}
+    assert schema_errors(document, KEYWORDS_SCHEMA) == []
+
+
+def test_large_invalid_value_is_shortened_in_the_prompt() -> None:
+    answer = json.dumps(review(verdict="x" * 100_000))
+    errors = schema_errors(json.loads(answer), SCHEMA)
+    assert all(len(error["message"]) < 400 for error in errors)
+    prompt = repair_prompt(answer, SCHEMA, "Review")
+    # The previous answer is capped separately; the error list stays small.
+    error_section = prompt.split("Your previous final answer, verbatim:")[0]
+    assert len(error_section) < 2_000
+
+
 def test_missing_field_is_named_by_its_path() -> None:
     errors = schema_errors(review(findings=...), SCHEMA)
     assert errors == [
@@ -271,8 +317,6 @@ def _run(
         .replace("/tmp/preloop-native-result-schema.json", str(schema))
         .replace("/tmp/preloop-agent-attempt.log", str(log))
         .replace("/tmp/preloop-agent-output.log", str(out_log))
-        .replace("/tmp/preloop-review-continuation.txt", str(tmp_path / "cont"))
-        .replace("/tmp/preloop-result-repair.txt", str(tmp_path / "repair"))
     )
     block = block.replace(PROMPT_FILE_PATH, str(prompt)).replace(
         "/workspace", str(repo)
@@ -377,6 +421,28 @@ def test_repair_follows_an_inspection_continuation(tmp_path: Path) -> None:
         "result_schema_invalid",
     ]
     assert "findings" in json.loads(result.read_text())
+
+
+def test_checker_never_follows_an_agent_planted_link(tmp_path: Path) -> None:
+    secret = tmp_path / "root-only-secret"
+    secret.write_text("CREDENTIAL-VALUE")
+    # After the first session the agent replaces its answer with a link to a
+    # file only root can read; the root-run checker must not quote it.
+    answer = "/workspace/.preloop-native-result.json"
+    planted = f"rm -f {answer}; ln -s {secret} {answer}\n"
+    calls, _, log = _run(tmp_path, planted + _blocks(_context()), [review()])
+    assert calls == 1
+    assert _markers(log) == []
+    assert not list((tmp_path / "state").glob("prompt-2"))
+
+
+def test_continuation_prompts_live_in_a_private_directory() -> None:
+    block = _blocks(_context())
+    assert "mktemp -d /tmp/preloop-continuation." in block
+    assert "/tmp/preloop-result-repair.txt" not in block
+    assert "/tmp/preloop-review-continuation.txt" not in block
+    assert '"$_pl_cont_dir/result-repair.txt"' in block
+    assert "O_NOFOLLOW" in block
 
 
 def test_valid_answer_runs_exactly_one_session(tmp_path: Path) -> None:
