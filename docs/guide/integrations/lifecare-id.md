@@ -1,5 +1,7 @@
 # Consent-gated tool calls with LifeCare.ID
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 LifeCare.ID is a consent layer for personal health data. The person holds the grants, every grant has a consent receipt, and every read writes a line in the person's ledger.
 
 This page shows how to put Preloop in front of an agent that reads from a LifeCare.ID data source, so that:
@@ -20,7 +22,7 @@ This page is written for and was run on Preloop 1.0.2. The flow was run end to e
 
 ## 1. Add the data source with introspection
 
-Add the source as an MCP server and point introspection at the LifeCare.ID token endpoint. The three `${...}` values below are placeholders: put the real values in before you apply the file, and do not commit the result. `preloop policy apply` uploads the file as it is and does not read your shell environment.
+Add the source as an MCP server and point introspection at the LifeCare.ID token endpoint. The three `${...}` values below are placeholders: on 1.0.2, put the real values in before you apply the file, and do not commit the result. The 1.0.2 `preloop policy apply` uploads the file as it is and does not read your shell environment. From the first CLI release after 1.0.2, `preloop policy apply` fills `${...}` references from your environment, so you can export the three values and keep the placeholders in the file (`--no-resolve-env` keeps them literal).
 
 ```yaml
 version: "1.0"
@@ -181,7 +183,9 @@ One read with an active grant, then one read after the person revokes:
 |---|---|---|
 | Read, grant active | `policy_allow`, then `tool_call` with status `executed`. `details.grant` holds `active: true`, the scope list and `consent_ref`. | Read served. One access line in the person's ledger with the same consent id. |
 | Person revokes | nothing | Revocation recorded. |
-| Read, grant revoked | `policy_deny` with rule `grant_inactive`. No `tool_call` row. | Never called. No ledger line. |
+| Read, grant revoked | `policy_deny` with rule `grant_inactive`. On a self-hosted 1.0.2 open source install, no `tool_call` row (see below). | Never called. No ledger line. |
+
+A deployment that runs the audit service for refused calls (the audit outbox, or an audit plugin) also writes a `tool_call` row with status `declined` for a refused call. The self-hosted 1.0.2 open source install does not.
 
 The rows of one call share a `correlation_id`. The rows are hash-chained, so a removed or edited row is detectable. Sealing runs in the background: a new row shows empty chain fields for a minute or two.
 
