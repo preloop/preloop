@@ -467,3 +467,158 @@ def test_result_validation_logs_metadata(
     assert decision.invalid
     assert decision.artifact["raw"]["verdict"] == MARKER
     assert_metadata_only(caplog)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 503])
+async def test_kubernetes_failures_keep_status_without_response_content(
+    caplog: pytest.LogCaptureFixture, mocker: MockerFixture, status: int
+) -> None:
+    """Retry and terminal logs retain HTTP status without exception bodies."""
+    from kubernetes_asyncio.client.exceptions import ApiException
+    from preloop.agents import container
+    from preloop.agents.errors import AgentStartError
+
+    caplog.set_level(logging.DEBUG)
+    executor = container.ContainerAgentExecutor.__new__(
+        container.ContainerAgentExecutor
+    )
+    executor.logger = logging.getLogger(container.__name__)
+    executor.agent_namespace = "example-agents"
+    executor._k8s_batch_api = AsyncMock()
+    error = ApiException(status=status, reason=MARKER)
+    error.body = MARKER
+    executor._k8s_batch_api.create_namespaced_job.side_effect = error
+    mocker.patch.object(container.settings, "agent_job_create_max_attempts", 2)
+    mocker.patch.object(container, "_sleep_before_job_create_retry", AsyncMock())
+    with pytest.raises(AgentStartError):
+        await executor._create_kubernetes_job(
+            object(), job_name="example-job", execution_id=str(uuid.uuid4())
+        )
+    assert_metadata_only(caplog)
+    assert f"status={status}" in caplog.text
+    if status == 503:
+        assert "after HTTP 503" in caplog.text
+
+
+def test_launch_guard_keeps_sizes_without_payload_values(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Known launch-budget diagnostics contain only names and numeric sizes."""
+    from preloop.agents.container import ContainerAgentExecutor
+    from preloop.agents.errors import AgentStartError
+    from preloop.utils.execve_limits import MAX_LAUNCH_STRING_BYTES
+
+    caplog.set_level(logging.DEBUG)
+    executor = ContainerAgentExecutor.__new__(ContainerAgentExecutor)
+    executor.logger = logging.getLogger("preloop.agents.container")
+    with pytest.raises(AgentStartError):
+        executor._guard_launch_payload(
+            env={"EXAMPLE_PROMPT": MARKER * MAX_LAUNCH_STRING_BYTES},
+            what="example job",
+        )
+    assert_metadata_only(caplog)
+    assert "env[EXAMPLE_PROMPT]" in caplog.text
+    assert str(MAX_LAUNCH_STRING_BYTES) in caplog.text
+
+
+def test_unscoped_authentication_drops_unrecognized_codes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Only dedicated log-safe authentication codes are retained as values."""
+    from preloop.services.auth_audit import record_auth_event
+
+    caplog.set_level(logging.DEBUG)
+    record_auth_event(
+        MagicMock(),
+        action="auth.login.failed",
+        details={"method": MARKER, "reason_code": MARKER, "prefix": MARKER},
+    )
+    assert_metadata_only(caplog)
+
+
+@pytest.mark.parametrize("operation", ["setup_database", "reset_database"])
+def test_migration_failure_omits_redacted_stderr_content(
+    caplog: pytest.LogCaptureFixture, mocker: MockerFixture, operation: str
+) -> None:
+    """Migration stderr remains outside logs after URL credential redaction."""
+    from preloop.models.db import setup
+
+    caplog.set_level(logging.DEBUG)
+    mocker.patch.object(setup, "get_engine", return_value=MagicMock())
+    mocker.patch.object(
+        setup.subprocess,
+        "run",
+        return_value=SimpleNamespace(returncode=1, stderr=f"Invalid value: {MARKER}"),
+    )
+    with pytest.raises(RuntimeError, match=MARKER):
+        getattr(setup, operation)("postgresql://example:password@example.com/example")
+    assert_metadata_only(caplog)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_connection_failure_omits_redacted_exception_content(
+    mocker: MockerFixture, asynchronous: bool
+) -> None:
+    """Connection diagnostics preserve the raised error outside log records."""
+    from sqlalchemy.exc import SQLAlchemyError
+    from preloop.models.db import session
+
+    mocker.patch.object(session, "_async_engine" if asynchronous else "_engine", None)
+    mocker.patch.object(
+        session,
+        "create_async_engine" if asynchronous else "create_engine",
+        side_effect=SQLAlchemyError(MARKER),
+    )
+    messages: list = []
+    sink = session.logger.add(messages.append, format="{message}", level="INFO")
+    try:
+        get_engine = session.get_async_engine if asynchronous else session.get_engine
+        with pytest.raises(Exception, match=MARKER):
+            get_engine("postgresql://example:password@example.com/example")
+    finally:
+        session.logger.remove(sink)
+    assert messages
+    assert all(MARKER not in str(message) for message in messages)
+    assert all(message.record["exception"] is None for message in messages)
+    assert "SQLAlchemyError" in str(messages[-1])
+
+
+def test_migration_retry_logs_sqlstate_without_error_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Migration retries retain structured driver codes without SQL values."""
+    from sqlalchemy.exc import OperationalError
+    from preloop.models.migrate import _log_retry
+
+    caplog.set_level(logging.DEBUG)
+
+    class DriverError(RuntimeError):
+        """Synthetic driver error with a structured PostgreSQL code."""
+
+        sqlstate = "55P03"
+
+    original = DriverError(MARKER)
+    _log_retry(1, 0.1, OperationalError("INSERT", {"note": MARKER}, original))
+    assert_metadata_only(caplog)
+    assert "SQLSTATE 55P03" in caplog.text
+
+
+def test_catalog_failure_logs_http_status_without_response_content(
+    caplog: pytest.LogCaptureFixture, mocker: MockerFixture
+) -> None:
+    """Catalog downloads retain the bounded HTTP classification."""
+    import httpx
+    from preloop.services.model_price_catalog import _download_openrouter_price_map
+
+    caplog.set_level(logging.DEBUG)
+    mocker.patch.object(
+        httpx,
+        "get",
+        return_value=httpx.Response(
+            429, request=httpx.Request("GET", "https://example.com/models"), text=MARKER
+        ),
+    )
+    assert _download_openrouter_price_map() is None
+    assert_metadata_only(caplog)
+    assert "reason=http_429" in caplog.text

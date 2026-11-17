@@ -2088,7 +2088,10 @@ class ContainerAgentExecutor(AgentExecutor):
                         return job_name
                 elif not self._is_retryable_job_api_error(e):
                     self.logger.error(
-                        f"Failed to create Kubernetes Job for execution {execution_id}: {type(e).__name__}"
+                        "Failed to create Kubernetes Job: execution_id=%s status=%s error_type=%s",
+                        execution_id,
+                        e.status,
+                        type(e).__name__,
                     )
                     raise AgentStartError(
                         f"Failed to start agent Job: {e}",
@@ -2102,7 +2105,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 self.logger.warning(
                     "Retrying Kubernetes Job creation for execution %s after HTTP %s (attempt %s/%s, delay=%.2fs)",
                     execution_id,
-                    type(e).__name__,
+                    e.status,
                     attempt + 1,
                     max_attempts,
                     delay,
@@ -2111,9 +2114,10 @@ class ContainerAgentExecutor(AgentExecutor):
 
         assert last_error is not None
         self.logger.error(
-            "Kubernetes job creation failed: execution_id=%s attempts=%s error_type=%s",
+            "Kubernetes job creation failed: execution_id=%s attempts=%s status=%s error_type=%s",
             execution_id,
             max_attempts,
+            last_error.status,
             type(last_error).__name__,
         )
         raise AgentStartError(
@@ -2747,7 +2751,8 @@ class ContainerAgentExecutor(AgentExecutor):
                 command=command, args=args, env=env, what=what
             )
         except LaunchPayloadTooLargeError as exc:
-            self.logger.warning("%s", type(exc).__name__)
+            # This diagnostic is built from launch labels and byte counts.
+            self.logger.warning("%s", str(exc))
             raise AgentStartError(
                 str(exc), category=FAILURE_CATEGORY_RUNNER_ERROR
             ) from exc

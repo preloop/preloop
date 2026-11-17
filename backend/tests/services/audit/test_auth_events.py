@@ -78,6 +78,8 @@ def test_unknown_identity_is_logged_without_tenant_or_raw_identifier(caplog) -> 
     assert event == {
         "action": "auth.login.failed",
         "detail_keys": ["method", "reason_code"],
+        "method": "social",
+        "reason_code": "invalid_state",
     }
 
 

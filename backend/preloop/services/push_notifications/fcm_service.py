@@ -338,16 +338,6 @@ def get_fcm_project_id() -> Optional[str]:
     return _fcm_project_id
 
 
-def _mask_token(token: str) -> str:
-    """Return a short, non-sensitive identifier for a device token."""
-    cleaned = (token or "").strip()
-    if not cleaned:
-        return "<blank>"
-    if len(cleaned) <= 12:
-        return cleaned
-    return f"{cleaned[:8]}...{cleaned[-4:]}"
-
-
 def _send_fcm_sync(
     token: str,
     title: str,

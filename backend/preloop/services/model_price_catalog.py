@@ -869,7 +869,7 @@ def _download_openrouter_price_map() -> Optional[Dict[str, Any]]:
         logger.debug("OpenRouter price list download failed", exc_info=True)
         logger.warning(
             "Model price map fetch: source=openrouter outcome=failed reason=%s retry_in_seconds=%s",
-            _fetch_failure_reason(type(exc).__name__),
+            _fetch_failure_reason(exc),
             _REMOTE_FAILURE_BACKOFF_SECONDS,
         )
         return None

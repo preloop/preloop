@@ -46,6 +46,32 @@ _SAFE_FIELDS = frozenset(
 )
 
 
+# Application logs accept known codes only; the audit payload is unchanged.
+_LOG_AUTH_METHODS = frozenset(
+    {"password", "passkey", "social", "oidc", "saml", "sso", "email_link"}
+)
+_LOG_AUTH_REASONS = frozenset(
+    {
+        "internal_error",
+        "mfa_required",
+        "password_login_disabled",
+        "challenge_rejected",
+        "invalid_request",
+        "invalid_credentials",
+        "invalid_state",
+        "identity_or_policy_rejected",
+        "identity_conflict",
+        "rate_limited",
+    }
+    | {
+        f"{method}_{suffix}"
+        for method in _LOG_AUTH_METHODS
+        for suffix in ("disabled", "rejected")
+    }
+)
+_LOG_AUTH_VALUES = {"method": _LOG_AUTH_METHODS, "reason_code": _LOG_AUTH_REASONS}
+
+
 # Existing SSO configuration identifiers retain their API schema lengths.
 _SSO_IDENTIFIER_LIMITS = {
     "name": 255,
@@ -174,7 +200,17 @@ def record_auth_event(
     if account_id is None:
         logger.info(
             "Unscoped authentication event",
-            extra={"auth_event": {"action": action, "detail_keys": sorted(clean)}},
+            extra={
+                "auth_event": {
+                    "action": action,
+                    "detail_keys": sorted(clean),
+                    **{
+                        key: clean[key]
+                        for key, allowed in _LOG_AUTH_VALUES.items()
+                        if clean.get(key) in allowed
+                    },
+                }
+            },
         )
         return
     try:

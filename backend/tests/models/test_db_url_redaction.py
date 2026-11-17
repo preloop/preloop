@@ -82,7 +82,9 @@ def test_connection_failure_message_hides_password(monkeypatch, loguru_caplog):
     rendered = "".join(traceback.format_exception(exc_info.value))
     assert PASSWORD not in rendered
     assert PASSWORD not in loguru_caplog.text
-    assert "db.example.internal" in loguru_caplog.text
+    assert "OperationalError" in loguru_caplog.text
+    assert "db.example.internal" not in loguru_caplog.text
+    assert "db.example.internal" in str(exc_info.value)
 
 
 def test_redact_secrets_in_text_strips_bare_password():
