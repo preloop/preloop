@@ -8,6 +8,7 @@ model. No model provider is called.
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -333,7 +334,8 @@ def _run(
     proc = subprocess.run(
         ["bash", "-c", script],
         env={
-            "PATH": f"{bindir}:/usr/bin:/bin",
+            # The block runs python3; slim images keep it in /usr/local/bin.
+            "PATH": f"{bindir}:{Path(sys.executable).parent}:/usr/bin:/bin",
             "PRELOOP_DISABLE_TELEMETRY": "true",
             "PRELOOP_REVIEW_BASE_SHA": base,
             "PRELOOP_REVIEW_HEAD_SHA": head,
