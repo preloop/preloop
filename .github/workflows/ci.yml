@@ -433,6 +433,11 @@ jobs:
       contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # The hosted image exports XDG_*; Go treats an empty value as unset, so
+    # os.UserConfigDir/UserCacheDir follow the test's sandboxed HOME.
+    env:
+      XDG_CONFIG_HOME: ""
+      XDG_CACHE_HOME: ""
     defaults:
       run:
         working-directory: cli
@@ -456,6 +461,11 @@ jobs:
       contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The hosted image exports XDG_*; Go treats an empty value as unset, so
+    # os.UserConfigDir/UserCacheDir follow the test's sandboxed HOME.
+    env:
+      XDG_CONFIG_HOME: ""
+      XDG_CACHE_HOME: ""
     defaults:
       run:
         working-directory: cli
