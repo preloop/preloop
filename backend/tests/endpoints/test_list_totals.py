@@ -130,3 +130,16 @@ def test_flow_lists_filter_visibility_before_paging(
     ids = [row["id"] for row in first.json() + second.json()]
     assert len(ids) == 3
     assert set(ids) == visible
+
+
+@pytest.mark.parametrize("path", ["/api/v1/flows", "/api/v1/flows/summary"])
+def test_flow_lists_without_authorizer_page_in_sql(
+    client: TestClient, account_flows: list[models.Flow], path: str
+) -> None:
+    """With nothing hidden, SQL paging and the SQL count agree."""
+    pages = [client.get(path, params={"skip": skip, "limit": 4}) for skip in (0, 4)]
+    assert all(page.status_code == 200 for page in pages)
+    assert {page.headers["X-Total-Count"] for page in pages} == {"6"}
+    assert [len(page.json()) for page in pages] == [4, 2]
+    ids = {row["id"] for page in pages for row in page.json()}
+    assert ids == {str(flow.id) for flow in account_flows}

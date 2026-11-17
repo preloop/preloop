@@ -201,3 +201,30 @@ def test_agent_list_without_authorizer_still_pages_in_sql(
     assert response.status_code == 200, response.text
     assert response.json()["total"] == 6
     assert len(response.json()["items"]) == 4
+
+
+def test_runner_list_without_authorizer_pages_in_sql(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """With nothing hidden, SQL paging and the SQL count agree."""
+    for index in range(5):
+        db_session.add(
+            models.FlowRunner(
+                account_id=test_user.account_id,
+                name=f"runner-{index}",
+                token_hash=hash_runner_token(f"plain-token-{index}"),
+                labels=[],
+                status="offline",
+            )
+        )
+    db_session.commit()
+
+    pages = [
+        client.get("/api/v1/runners", params={"skip": skip, "limit": 2})
+        for skip in (0, 2, 4)
+    ]
+    assert all(page.status_code == 200 for page in pages)
+    assert {page.headers["X-Total-Count"] for page in pages} == {"5"}
+    assert [len(page.json()) for page in pages] == [2, 2, 1]
+    names = [row["name"] for page in pages for row in page.json()]
+    assert sorted(names) == [f"runner-{index}" for index in range(5)]
