@@ -3551,9 +3551,7 @@ class TestPublicReviewFindings:
                     new_callable=AsyncMock,
                     side_effect=RuntimeError("reconcile_broke"),
                 ),
-                patch(
-                    "preloop.api.endpoints.approval_requests.logger.exception"
-                ) as logged,
+                patch("preloop.api.endpoints.approval_requests.logger.error") as logged,
             ):
                 await _advance_security_maintenance(db_session, updated)
             logged.assert_called()

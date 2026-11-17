@@ -204,16 +204,16 @@ async def perform_search(
                 provider=getattr(model, "provider", None),
             )
         except ModelGatewayAPIError as exc:
-            logger.warning("Search query embedding did not recover: %s", exc)
+            logger.warning(
+                "Search query embedding did not recover: %s", type(exc).__name__
+            )
             raise HTTPException(
                 status_code=exc.status_code,
                 detail="Embedding provider is rate limited; retry later.",
                 headers=exc.response_headers(),
             )
         except Exception as e:
-            logger.error(
-                f"Error generating query vector for '{query}': {e}", exc_info=True
-            )
+            logger.error("Query embedding failed: error_type=%s", type(e).__name__)
             raise HTTPException(
                 status_code=500,
                 detail="Error generating query vector for similarity search.",
@@ -390,7 +390,10 @@ async def search_all(
 ):
     try:
         logger.info(
-            f"Search request: query='{query}', search_type={search_type}, embedding_type={embedding_type}, limit={limit}"
+            "Search request: search_type=%s embedding_type=%s limit=%s",
+            search_type,
+            embedding_type,
+            limit,
         )
         return await perform_search(
             query=query,
@@ -410,5 +413,5 @@ async def search_all(
             status=status,
         )
     except Exception as e:
-        logger.error(f"Error in search endpoint: {e}", exc_info=True)
+        logger.error(f"Error in search endpoint: {type(e).__name__}")
         raise

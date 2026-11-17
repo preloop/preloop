@@ -128,5 +128,5 @@ def hosted_model_selectable(model: Any) -> bool:
     except Exception:
         # A metering failure must not take every model picker down; fail open
         # to the pre-hook behavior (the request-time guard still refuses).
-        logger.exception("hosted_spend.selectable failed for model %s", model.id)
+        logger.error("hosted_spend.selectable failed for model %s", model.id)
         return True

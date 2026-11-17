@@ -96,4 +96,4 @@ class AnthropicCacheInputRepair:
             if changed:
                 logger.info("Stored %s Anthropic usage row(s) cache inclusive", changed)
         except Exception:
-            logger.error("Anthropic cache input repair failed", exc_info=True)
+            logger.error("Anthropic cache input repair failed")

@@ -179,7 +179,7 @@ class GitHubTracker(BaseTracker):
 
             return token
         except Exception as e:
-            logger.error(f"Failed to get installation access token: {e}")
+            logger.error(f"Failed to get installation access token: {type(e).__name__}")
             raise TrackerAuthenticationError(
                 f"Failed to get GitHub App installation token: {e}"
             )
@@ -758,7 +758,7 @@ class GitHubTracker(BaseTracker):
                                 )
                     except Exception as e:
                         logger.warning(
-                            f"Error checking org membership for {org_identifier}: {e}"
+                            f"Error checking org membership for {org_identifier}: {type(e).__name__}"
                         )
                         result["is_org_admin"] = None
 
@@ -988,7 +988,7 @@ class GitHubTracker(BaseTracker):
             return comments_data_transformed
         except TrackerResponseError as e:
             logger.error(
-                f"Failed to get comments for issue {repo_full_name}#{issue_id}: {e}"
+                f"Failed to get comments for issue {repo_full_name}#{issue_id}: {type(e).__name__}"
             )
             return []
 
@@ -1170,7 +1170,7 @@ class GitHubTracker(BaseTracker):
             await self.add_comment(issue_number, comment)
             return True
         except Exception as e:
-            logger.exception(f"Failed to add relation: {e}")
+            logger.error(f"Failed to add relation: {type(e).__name__}")
             return False
 
     async def get_organizations(self) -> List[Dict[str, Any]]:
@@ -1363,7 +1363,7 @@ class GitHubTracker(BaseTracker):
                 repo_name = repo_details["full_name"]
             except TrackerResponseError as e:
                 logger.error(
-                    f"Failed to get repository details for project_id {project_id}: {e}"
+                    f"Failed to get repository details for project_id {project_id}: {type(e).__name__}"
                 )
                 return []
 
@@ -1380,7 +1380,9 @@ class GitHubTracker(BaseTracker):
         try:
             raw_issues_data = await self._make_request(issues_endpoint, params)
         except TrackerResponseError as e:
-            logger.error(f"Failed to get issues for repo {repo_name}: {e}")
+            logger.error(
+                f"Failed to get issues for repo {repo_name}: {type(e).__name__}"
+            )
             return []
 
         processed_issues = []
@@ -1411,7 +1413,7 @@ class GitHubTracker(BaseTracker):
                     )
             except TrackerResponseError as e:
                 logger.error(
-                    f"Failed to get comments for issue {repo_name}#{issue_number}: {e}"
+                    f"Failed to get comments for issue {repo_name}#{issue_number}: {type(e).__name__}"
                 )
 
             issue_data["comments"] = comments_data_transformed
@@ -1539,25 +1541,23 @@ class GitHubTracker(BaseTracker):
                     return True
                 else:
                     logger.error(
-                        f"Failed to register webhook for GitHub org '{org_identifier}' (Unprocessable Entity - check config/permissions): {response.text}"
+                        "Webhook registration failed: status=%s", response.status_code
                     )
                     return False
             else:
                 logger.error(
-                    f"GitHub API error registering webhook for org '{org_identifier}': {response.status_code} - {response.text}"
+                    "Webhook registration failed: status=%s", response.status_code
                 )
                 return False
 
         except httpx.RequestError as e:
             logger.error(
-                f"GitHub connection error while registering webhook for org '{org_identifier}': {e}",
-                exc_info=True,
+                f"GitHub connection error while registering webhook for org '{org_identifier}': {type(e).__name__}"
             )
             return False
         except Exception as e:
             logger.error(
-                f"Unexpected error registering webhook for GitHub org '{org_identifier}': {e}",
-                exc_info=True,
+                f"Unexpected error registering webhook for GitHub org '{org_identifier}': {type(e).__name__}"
             )
             return False
 
@@ -1615,19 +1615,19 @@ class GitHubTracker(BaseTracker):
                 return True
             else:
                 logger.error(
-                    f"Failed to unregister webhook {webhook_id} for GitHub org '{org_identifier}': {response.status_code} - {response.text}"
+                    "Webhook deletion failed: id=%s status=%s",
+                    webhook_id,
+                    response.status_code,
                 )
                 return False
         except httpx.RequestError as e:
             logger.error(
-                f"GitHub connection error while unregistering webhook for org '{org_identifier}': {e}",
-                exc_info=True,
+                f"GitHub connection error while unregistering webhook for org '{org_identifier}': {type(e).__name__}"
             )
             return False
         except Exception as e:
             logger.error(
-                f"Unexpected error unregistering webhook for GitHub org '{org_identifier}': {e}",
-                exc_info=True,
+                f"Unexpected error unregistering webhook for GitHub org '{org_identifier}': {type(e).__name__}"
             )
             return False
 
@@ -1672,14 +1672,13 @@ class GitHubTracker(BaseTracker):
 
         except Exception as e:
             logger.error(
-                f"An unexpected error occurred during webhook unregistration for tracker {self.tracker_id}: {e}",
-                exc_info=True,
+                f"An unexpected error occurred during webhook unregistration for tracker {self.tracker_id}: {type(e).__name__}"
             )
             results["failed"] += 1
         logger.info(
             f"Finished unregistering all webhooks for tracker {self.tracker_id}."
         )
-        logger.info(f"GitHub unregister_all_webhooks summary: {results}")
+        logger.info("GitHub webhook cleanup finished")
         return results
 
     async def cleanup_stale_webhooks(
@@ -1708,7 +1707,7 @@ class GitHubTracker(BaseTracker):
         else:
             await self._cleanup_organization_webhooks(preloop_url, results)
 
-        logger.info(f"Webhook cleanup summary: {results}")
+        logger.info("Webhook cleanup finished")
         return results
 
     async def _cleanup_organization_webhooks(
@@ -1718,7 +1717,7 @@ class GitHubTracker(BaseTracker):
         try:
             organizations = await self.get_organizations()
         except (TrackerConnectionError, TrackerResponseError) as e:
-            logger.error(f"Failed to retrieve organizations: {e}")
+            logger.error(f"Failed to retrieve organizations: {type(e).__name__}")
             return
 
         for org in organizations:
@@ -1730,7 +1729,9 @@ class GitHubTracker(BaseTracker):
             try:
                 hooks = await self._make_request(f"orgs/{org_login}/hooks")
             except (TrackerConnectionError, TrackerResponseError) as e:
-                logger.error(f"Failed to list webhooks for {org_login}: {e}")
+                logger.error(
+                    f"Failed to list webhooks for {org_login}: {type(e).__name__}"
+                )
                 results["failed"] += 1
                 continue
 
@@ -1744,7 +1745,7 @@ class GitHubTracker(BaseTracker):
         try:
             organizations = await self.get_organizations()
         except (TrackerConnectionError, TrackerResponseError) as e:
-            logger.error(f"Failed to retrieve organizations: {e}")
+            logger.error(f"Failed to retrieve organizations: {type(e).__name__}")
             return
 
         for org in organizations:
@@ -1756,7 +1757,7 @@ class GitHubTracker(BaseTracker):
                 projects = await self.get_projects(org_id)
             except (TrackerConnectionError, TrackerResponseError) as e:
                 logger.error(
-                    f"Failed to retrieve projects for org {org.get('name')}: {e}"
+                    f"Failed to retrieve projects for org {org.get('name')}: {type(e).__name__}"
                 )
                 continue
 
@@ -1769,7 +1770,9 @@ class GitHubTracker(BaseTracker):
                 try:
                     hooks = await self._make_request(f"repos/{repo_full_name}/hooks")
                 except (TrackerConnectionError, TrackerResponseError) as e:
-                    logger.error(f"Failed to list webhooks for {repo_full_name}: {e}")
+                    logger.error(
+                        f"Failed to list webhooks for {repo_full_name}: {type(e).__name__}"
+                    )
                     results["failed"] += 1
                     continue
 
@@ -1839,7 +1842,7 @@ class GitHubTracker(BaseTracker):
                     results["failed"] += 1
             except (TrackerConnectionError, TrackerResponseError) as e:
                 logger.error(
-                    f"An error occurred while deleting webhook {hook_id} from {base_endpoint}: {e}"
+                    f"An error occurred while deleting webhook {hook_id} from {base_endpoint}: {type(e).__name__}"
                 )
                 results["failed"] += 1
         finally:
@@ -1891,7 +1894,9 @@ class GitHubTracker(BaseTracker):
                 )
                 all_webhooks.extend(repo_webhooks)
             except TrackerResponseError as e:
-                logger.error(f"Failed to get webhooks for repo {repo_full_name}: {e}")
+                logger.error(
+                    f"Failed to get webhooks for repo {repo_full_name}: {type(e).__name__}"
+                )
         return all_webhooks
 
     async def delete_webhook(self, webhook: Dict[str, Any]) -> bool:
@@ -1918,7 +1923,7 @@ class GitHubTracker(BaseTracker):
         try:
             return await self._make_request_delete(endpoint)
         except TrackerResponseError as e:
-            logger.error(f"Failed to delete webhook {webhook_id}: {e}")
+            logger.error(f"Failed to delete webhook {webhook_id}: {type(e).__name__}")
             return False
 
     async def is_webhook_registered_for_project(
@@ -2208,7 +2213,7 @@ class GitHubTracker(BaseTracker):
             }
 
         except Exception as e:
-            logger.error(f"Error getting pull request {pr_number}: {e}")
+            logger.error(f"Error getting pull request {pr_number}: {type(e).__name__}")
             raise TrackerResponseError(f"Failed to get pull request: {e}")
 
     async def get_pull_request_engagement(self, pr_number: str) -> Dict[str, Any]:
@@ -2606,7 +2611,7 @@ class GitHubTracker(BaseTracker):
             }
 
         except Exception as e:
-            logger.error(f"Error updating pull request {pr_number}: {e}")
+            logger.error(f"Error updating pull request {pr_number}: {type(e).__name__}")
             raise TrackerResponseError(f"Failed to update pull request: {e}")
 
     async def create_pull_request(
@@ -2658,7 +2663,7 @@ class GitHubTracker(BaseTracker):
             pr_data = await self._request("POST", pr_path, data=create_data)
             pr_number = pr_data["number"]
 
-            logger.info(f"Created pull request #{pr_number}: {title}")
+            logger.info("Created pull request #%s", pr_number)
 
             # Add assignees if provided
             if assignees:
@@ -2670,7 +2675,9 @@ class GitHubTracker(BaseTracker):
                         "POST", assignees_path, data={"assignees": assignees}
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to add assignees to PR #{pr_number}: {e}")
+                    logger.warning(
+                        f"Failed to add assignees to PR #{pr_number}: {type(e).__name__}"
+                    )
 
             # Request reviewers if provided
             if reviewers:
@@ -2682,7 +2689,9 @@ class GitHubTracker(BaseTracker):
                         "POST", reviewers_path, data={"reviewers": reviewers}
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to add reviewers to PR #{pr_number}: {e}")
+                    logger.warning(
+                        f"Failed to add reviewers to PR #{pr_number}: {type(e).__name__}"
+                    )
 
             # Add labels if provided
             if labels:
@@ -2690,7 +2699,9 @@ class GitHubTracker(BaseTracker):
                     labels_path = f"/repos/{owner}/{repo}/issues/{pr_number}/labels"
                     await self._request("POST", labels_path, data={"labels": labels})
                 except Exception as e:
-                    logger.warning(f"Failed to add labels to PR #{pr_number}: {e}")
+                    logger.warning(
+                        f"Failed to add labels to PR #{pr_number}: {type(e).__name__}"
+                    )
 
             # Set milestone if provided
             if milestone:
@@ -2730,7 +2741,9 @@ class GitHubTracker(BaseTracker):
                             "PATCH", issue_path, data={"milestone": milestone_number}
                         )
                 except Exception as e:
-                    logger.warning(f"Failed to set milestone on PR #{pr_number}: {e}")
+                    logger.warning(
+                        f"Failed to set milestone on PR #{pr_number}: {type(e).__name__}"
+                    )
 
             return {
                 "id": str(pr_data["id"]),
@@ -2745,7 +2758,7 @@ class GitHubTracker(BaseTracker):
             }
 
         except Exception as e:
-            logger.error(f"Error creating pull request: {e}")
+            logger.error(f"Error creating pull request: {type(e).__name__}")
             raise TrackerResponseError(f"Failed to create pull request: {e}")
 
     @async_retry()
@@ -2828,9 +2841,7 @@ class GitHubTracker(BaseTracker):
                         try:
                             line_val = int(line_val)
                         except ValueError:
-                            logger.warning(
-                                f"Invalid line number '{comment['line']}', skipping"
-                            )
+                            logger.warning("Invalid review line number; skipping")
                             continue
                     formatted_comment["line"] = int(line_val)
                 # Use side if provided, default to RIGHT
@@ -2867,9 +2878,7 @@ class GitHubTracker(BaseTracker):
             ):
                 if comments:
                     logger.warning(
-                        f"PR review for {pr_num} failed due to invalid line references. "
-                        f"Retrying without {len(formatted_comments)} inline comment(s). "
-                        f"Original error: {e}"
+                        f"PR review for {pr_num} failed due to invalid line references. Retrying without {len(formatted_comments)} inline comment(s). Original error: {type(e).__name__}"
                     )
                     # Retry without inline comments - just submit the review body
                     payload_without_comments = {
@@ -2896,7 +2905,7 @@ class GitHubTracker(BaseTracker):
                         }
                     except Exception as retry_error:
                         logger.error(
-                            f"Retry without comments also failed for {pr_num}: {retry_error}"
+                            f"Retry without comments also failed for {pr_num}: {type(retry_error).__name__}"
                         )
                         raise TrackerResponseError(
                             f"Failed to submit PR review (even without comments): {retry_error}"
@@ -2905,7 +2914,7 @@ class GitHubTracker(BaseTracker):
             raise
 
         except Exception as e:
-            logger.error(f"Error submitting PR review for {pr_num}: {e}")
+            logger.error(f"Error submitting PR review for {pr_num}: {type(e).__name__}")
             raise TrackerResponseError(f"Failed to submit pull request review: {e}")
 
     @async_retry()
@@ -2972,7 +2981,7 @@ class GitHubTracker(BaseTracker):
 
         except Exception as e:
             logger.error(
-                f"Error getting review comments for PR {pr_num}, review {review_id}: {e}"
+                f"Error getting review comments for PR {pr_num}, review {review_id}: {type(e).__name__}"
             )
             raise TrackerResponseError(f"Failed to get review comments: {e}")
 
@@ -3046,9 +3055,7 @@ class GitHubTracker(BaseTracker):
                 data = response.json()
 
                 if "errors" in data:
-                    logger.warning(
-                        f"GraphQL errors in thread mapping: {data['errors']}"
-                    )
+                    logger.warning("GraphQL operation returned errors")
                     return {}
 
                 # Build mapping from comment database ID to thread ID
@@ -3077,7 +3084,9 @@ class GitHubTracker(BaseTracker):
                 return mapping
 
         except Exception as e:
-            logger.warning(f"Error building thread_id mapping for PR {pr_number}: {e}")
+            logger.warning(
+                f"Error building thread_id mapping for PR {pr_number}: {type(e).__name__}"
+            )
             return {}
 
     @async_retry()
@@ -3188,7 +3197,7 @@ class GitHubTracker(BaseTracker):
             return all_comments
 
         except Exception as e:
-            logger.error(f"Error getting PR comments for {pr_num}: {e}")
+            logger.error(f"Error getting PR comments for {pr_num}: {type(e).__name__}")
             raise TrackerResponseError(f"Failed to get pull request comments: {e}")
 
     @async_retry()
@@ -3243,7 +3252,9 @@ class GitHubTracker(BaseTracker):
             if "404" in error_msg or "Not Found" in error_msg:
                 logger.debug(f"Review comment {comment_id} not found (404): {e}")
             else:
-                logger.error(f"Error updating review comment {comment_id}: {e}")
+                logger.error(
+                    f"Error updating review comment {comment_id}: {type(e).__name__}"
+                )
             raise TrackerResponseError(f"Failed to update review comment: {e}")
 
     @async_retry()
@@ -3296,9 +3307,13 @@ class GitHubTracker(BaseTracker):
             error_msg = str(e)
             # 404s for issue comments are actual errors (not fallback cases)
             if "404" in error_msg or "Not Found" in error_msg:
-                logger.warning(f"Issue comment {comment_id} not found (404): {e}")
+                logger.warning(
+                    f"Issue comment {comment_id} not found (404): {type(e).__name__}"
+                )
             else:
-                logger.error(f"Error updating issue comment {comment_id}: {e}")
+                logger.error(
+                    f"Error updating issue comment {comment_id}: {type(e).__name__}"
+                )
             raise TrackerResponseError(f"Failed to update issue comment: {e}")
 
     @async_retry()
@@ -3355,7 +3370,7 @@ class GitHubTracker(BaseTracker):
 
         except Exception as e:
             logger.error(
-                f"Error replying to review comment {comment_id} on PR {pr_number}: {e}"
+                f"Error replying to review comment {comment_id} on PR {pr_number}: {type(e).__name__}"
             )
             raise TrackerResponseError(f"Failed to reply to review comment: {e}")
 
@@ -3614,7 +3629,7 @@ class GitHubTracker(BaseTracker):
                     data = response.json()
 
                     if "errors" in data:
-                        logger.warning(f"GraphQL errors: {data['errors']}")
+                        logger.warning("GraphQL operation returned errors")
                         return None
 
                     connection = (
@@ -3663,7 +3678,7 @@ class GitHubTracker(BaseTracker):
                             data = response.json()
 
                             if "errors" in data:
-                                logger.warning(f"GraphQL errors: {data['errors']}")
+                                logger.warning("GraphQL operation returned errors")
                                 return None
 
                             updated = data.get("data", {}).get("node", {}) or {}
@@ -3682,7 +3697,9 @@ class GitHubTracker(BaseTracker):
                 return None
 
         except Exception as e:
-            logger.warning(f"Error looking up thread for comment {comment_id}: {e}")
+            logger.warning(
+                f"Error looking up thread for comment {comment_id}: {type(e).__name__}"
+            )
             return None
 
     @async_retry()
@@ -3736,9 +3753,7 @@ class GitHubTracker(BaseTracker):
                 }
             else:
                 error_msg = response.text
-                logger.error(
-                    f"Failed to add reaction to issue {issue_number}: {error_msg}"
-                )
+                logger.error("Failed to add reaction: issue_number=%s", issue_number)
                 raise TrackerResponseError(
                     f"Failed to add reaction: {response.status_code} - {error_msg}"
                 )
@@ -3784,7 +3799,9 @@ class GitHubTracker(BaseTracker):
             )
 
             if response.status_code != HTTP_STATUS_OK:
-                logger.warning(f"Could not list reactions: {response.text}")
+                logger.warning(
+                    "Could not list reactions: status=%s", response.status_code
+                )
                 return False
 
             reactions = response.json()
@@ -3838,7 +3855,7 @@ class GitHubTracker(BaseTracker):
                                 "connection_details to enable reaction removal."
                             )
             except Exception as e:
-                logger.warning(f"Could not get authenticated user: {e}")
+                logger.warning(f"Could not get authenticated user: {type(e).__name__}")
 
             # Find the reaction matching the content type AND created by us
             reaction_to_delete = None
@@ -3976,7 +3993,7 @@ class GitHubTracker(BaseTracker):
                 }
             else:
                 error_msg = response.text
-                logger.error(f"Failed to create commit status: {error_msg}")
+                logger.error("Failed to create commit status")
                 raise TrackerResponseError(
                     f"Failed to create commit status: {response.status_code} - {error_msg}"
                 )

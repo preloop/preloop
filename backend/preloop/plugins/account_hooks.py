@@ -874,7 +874,7 @@ def resolve_runner_policy(db: "Session", user: "User") -> Mapping[str, Any]:
         try:
             provided = provider(db, user.account_id, user)
         except Exception:
-            logger.exception("runner policy provider failed; using the OSS default")
+            logger.error("runner policy provider failed; using the OSS default")
             provided = None
         if provided is not None:
             return dict(provided)

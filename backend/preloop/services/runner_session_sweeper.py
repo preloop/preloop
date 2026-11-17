@@ -103,7 +103,7 @@ class RunnerSessionSweeper:
                 if ended:
                     logger.info("Runner session sweep ended %s session(s)", ended)
             except Exception:
-                logger.error("Error in runner session sweep", exc_info=True)
+                logger.error("Error in runner session sweep")
 
 
 _sweeper_instance: Optional[RunnerSessionSweeper] = None

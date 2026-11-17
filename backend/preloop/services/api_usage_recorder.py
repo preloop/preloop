@@ -319,12 +319,10 @@ class ApiUsageRecorder:
         self._emit_metric("preloop.api_usage.failed", count)
         if self._error_log.should_emit():
             logger.error(
-                "API usage logging %s (%d rows affected, %d total failures). "
-                "The request itself was unaffected.",
+                "API usage logging %s (%d rows affected, %d total failures). The request itself was unaffected.",
                 reason,
                 count,
                 self._failed,
-                exc_info=True,
             )
 
     def _emit_metric(self, name: str, value: int) -> None:

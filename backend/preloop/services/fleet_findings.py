@@ -24,4 +24,4 @@ def evaluate_fleet_findings(db: Session, *, account_id: UUID) -> None:
         db.commit()
     except Exception:
         db.rollback()
-        logger.exception("Optional fleet finding evaluation failed")
+        logger.error("Optional fleet finding evaluation failed")

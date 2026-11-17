@@ -140,7 +140,7 @@ class GatewayUsageIndexQueue:
             db = next(get_db_session())
         except Exception:
             self.failed += 1
-            logger.exception(
+            logger.error(
                 "Gateway interaction indexing could not open a session for usage %s",
                 document.api_usage_id,
             )
@@ -159,7 +159,7 @@ class GatewayUsageIndexQueue:
             db.rollback()
             # The message carries the usage id and nothing else: the
             # document is built from customer content.
-            logger.exception(
+            logger.error(
                 "Gateway interaction indexing failed for usage %s",
                 document.api_usage_id,
             )

@@ -173,7 +173,7 @@ def _policies_to_response(
             db, account_id=policies[0].account_id, buckets=list(dict.fromkeys(buckets))
         )
     except Exception:  # noqa: BLE001 - unavailable spend is unknown, never zero
-        logger.exception("Failed to resolve current spend for account policies")
+        logger.error("Failed to resolve current spend for account policies")
         return responses
     for response, bucket in zip(responses, buckets, strict=False):
         response.current_spend_usd = spend.get(bucket, 0.0)

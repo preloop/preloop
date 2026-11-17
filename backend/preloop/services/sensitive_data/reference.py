@@ -613,7 +613,7 @@ def unseal_original(token: Optional[str]) -> Optional[Any]:
     try:
         return json.loads(decrypt_value(token))
     except Exception:  # noqa: BLE001 - a bad seal reads as absent
-        logger.warning("Sealed approval arguments could not be read", exc_info=True)
+        logger.warning("Sealed approval arguments could not be read")
         return None
 
 

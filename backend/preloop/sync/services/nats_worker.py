@@ -40,7 +40,7 @@ async def _webhook_progress(msg: Any) -> AsyncIterator[None]:
             try:
                 await msg.in_progress()
             except Exception:
-                logger.warning("Failed to renew webhook task progress", exc_info=True)
+                logger.warning("Failed to renew webhook task progress")
 
     heartbeat = asyncio.create_task(renew())
     try:
@@ -64,7 +64,7 @@ async def _acquire_slot_with_progress(msg: Any, slots: asyncio.Semaphore) -> Non
             try:
                 await msg.in_progress()
             except Exception:
-                logger.warning("Failed to renew waiting task progress", exc_info=True)
+                logger.warning("Failed to renew waiting task progress")
 
     heartbeat = asyncio.create_task(renew())
     acquired = False
@@ -140,9 +140,8 @@ class PreloopSyncNatsWorker:
                 legacy_durable,
             )
         except Exception:
-            logger.exception(
-                "Failed to remove legacy wildcard consumer '%s'; filtered "
-                "subscriptions will fail until it is deleted.",
+            logger.error(
+                "Failed to remove legacy wildcard consumer '%s'; filtered subscriptions will fail until it is deleted.",
                 legacy_durable,
             )
 
@@ -263,13 +262,13 @@ class PreloopSyncNatsWorker:
 
         except ErrNoServers as e:
             logger.error(
-                f"Worker '{self.connection_name}' could not connect to NATS: No servers available at {self.nats_url}. Error: {e}"
+                f"Worker '{self.connection_name}' could not connect to NATS: No servers available at {self.nats_url}. Error: {type(e).__name__}"
             )
             self.nc = None
             raise
         except Exception as e:
             logger.error(
-                f"Worker '{self.connection_name}' error connecting to NATS at {self.nats_url}: {e}"
+                f"Worker '{self.connection_name}' error connecting to NATS at {self.nats_url}: {type(e).__name__}"
             )
             self.nc = None
             raise
@@ -282,7 +281,7 @@ class PreloopSyncNatsWorker:
 
             load_catalog()
         except Exception:
-            logger.exception("Model price catalog load failed; using litellm defaults")
+            logger.error("Model price catalog load failed; using litellm defaults")
 
         if not self.nc or not self.nc.is_connected:
             await self.connect()
@@ -338,7 +337,9 @@ class PreloopSyncNatsWorker:
                 )
                 self.subs.append((subject, sub))
             except Exception as e:
-                logger.error(f"Failed to subscribe to NATS subject '{subject}': {e}")
+                logger.error(
+                    f"Failed to subscribe to NATS subject '{subject}': {type(e).__name__}"
+                )
                 raise
 
         logger.info(f"Worker '{self.connection_name}' is now listening for messages.")
@@ -346,7 +347,9 @@ class PreloopSyncNatsWorker:
         async def message_handler(msg):
             subject = msg.subject
             data = msg.data.decode()
-            logger.info(f"Received message on '{subject}': {data}")
+            logger.info(
+                "Received task message: subject=%s bytes=%s", subject, len(msg.data)
+            )
 
             start_time = datetime.datetime.now()
             acked = False
@@ -356,7 +359,7 @@ class PreloopSyncNatsWorker:
                 task_name = payload.get("function")
 
                 if not task_name:
-                    logger.error(f"Unknown message format: {data}")
+                    logger.error("Unknown task message format: bytes=%s", len(msg.data))
                     if os.getenv("SENTRY_DSN"):
                         import sentry_sdk
 
@@ -390,7 +393,6 @@ class PreloopSyncNatsWorker:
                         logger.warning(
                             "Failed to nak %s while draining; continuing drain",
                             task_name,
-                            exc_info=True,
                         )
                     logger.info(
                         "Draining: nacked %s so another worker can adopt it",
@@ -480,20 +482,21 @@ class PreloopSyncNatsWorker:
                     try:
                         await msg.nak()
                     except Exception:  # noqa: BLE001 - cancel-path nak is best-effort
-                        logger.warning(
-                            "Failed to nak cancelled task before re-raise",
-                            exc_info=True,
-                        )
+                        logger.warning("Failed to nak cancelled task before re-raise")
                 raise
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to decode JSON payload: {data}. Error: {e}")
+                logger.error(
+                    "Failed to decode JSON payload: bytes=%s error_type=%s",
+                    len(data),
+                    type(e).__name__,
+                )
                 if os.getenv("SENTRY_DSN"):
                     import sentry_sdk
 
                     sentry_sdk.capture_exception(e)
                 await msg.ack()
             except Exception as e:
-                logger.error(f"Error processing task: {e}", exc_info=True)
+                logger.error(f"Error processing task: {type(e).__name__}")
                 if os.getenv("SENTRY_DSN"):
                     import sentry_sdk
 
@@ -552,8 +555,7 @@ class PreloopSyncNatsWorker:
                 if not self._accepting:
                     return
                 logger.error(
-                    f"Error fetching/processing messages from subscription '{sub.subject}': {e}",
-                    exc_info=True,
+                    f"Error fetching/processing messages from subscription '{sub.subject}': {type(e).__name__}"
                 )
                 await asyncio.sleep(1)
                 continue
@@ -688,7 +690,7 @@ class PreloopSyncNatsWorker:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                logger.error("Stale-claim reaper failed: %s", exc, exc_info=True)
+                logger.error("Stale-claim reaper failed: %s", type(exc).__name__)
 
     async def begin_drain(self) -> None:
         """Stop accepting work and hand off owned flow claims to peers."""
@@ -732,7 +734,7 @@ class PreloopSyncNatsWorker:
                         "Drain evacuated %s remaining owned claim(s)", evacuated
                     )
             except Exception as exc:
-                logger.error("Drain evacuate failed: %s", exc, exc_info=True)
+                logger.error("Drain evacuate failed: %s", type(exc).__name__)
 
     async def stop(self):
         logger.info("Worker stop signal received.")
@@ -748,7 +750,9 @@ class PreloopSyncNatsWorker:
                 await sub.unsubscribe()
                 logger.info(f"Unsubscribed from '{subject}'.")
             except Exception as e:
-                logger.error(f"Error unsubscribing from '{subject}': {e}")
+                logger.error(
+                    f"Error unsubscribing from '{subject}': {type(e).__name__}"
+                )
 
         if self.nc and not self.nc.is_closed:
             logger.info("Closing worker NATS client connection...")
@@ -756,7 +760,9 @@ class PreloopSyncNatsWorker:
                 await self.nc.close()
                 logger.info("Worker NATS client connection closed.")
             except Exception as e:
-                logger.error(f"Error closing worker NATS client connection: {e}")
+                logger.error(
+                    f"Error closing worker NATS client connection: {type(e).__name__}"
+                )
         self.nc = None
 
 
@@ -787,9 +793,7 @@ async def _run_boot_recovery(tasks_allowlist: Optional[List[str]]) -> None:
             db.close()
     except Exception as recovery_error:
         logger.error(
-            "Flow-execution worker recovery failed: %s",
-            recovery_error,
-            exc_info=True,
+            "Flow-execution worker recovery failed: %s", type(recovery_error).__name__
         )
 
 
@@ -809,7 +813,7 @@ async def main(
         await event_bus_service.connect()
         logger.info("Event bus service connected successfully")
     except Exception as e:
-        logger.error(f"Failed to connect event bus service: {e}", exc_info=True)
+        logger.error(f"Failed to connect event bus service: {type(e).__name__}")
         logger.warning(
             "Flow execution updates will not be published to NATS, but worker will continue"
         )
@@ -870,7 +874,7 @@ async def main(
             f"NATS Worker could not connect to {nats_server_url}. Ensure NATS is running and accessible."
         )
     except Exception as e:
-        logger.error(f"NATS Worker encountered an unhandled error: {e}", exc_info=True)
+        logger.error(f"NATS Worker encountered an unhandled error: {type(e).__name__}")
     finally:
         drain_wait.cancel()
         logger.info("NATS Worker shutting down...")

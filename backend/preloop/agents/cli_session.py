@@ -261,7 +261,9 @@ def extract_session_pack(workspace_snapshot: bytes) -> Optional[bytes]:
                 if member.name.startswith(prefix)
             ]
     except (tarfile.TarError, OSError, EOFError) as e:
-        logger.warning("Could not read workspace snapshot for session pack: %s", e)
+        logger.warning(
+            "Could not read workspace snapshot for session pack: %s", type(e).__name__
+        )
         return None
     if not members:
         return None
@@ -303,7 +305,9 @@ def extract_session_pack(workspace_snapshot: bytes) -> Optional[bytes]:
                     packed.size = 0
                     pack.addfile(packed)
     except (tarfile.TarError, OSError) as e:
-        logger.warning("Could not build session pack from workspace snapshot: %s", e)
+        logger.warning(
+            "Could not build session pack from workspace snapshot: %s", type(e).__name__
+        )
         return None
 
     archive = out.getvalue()

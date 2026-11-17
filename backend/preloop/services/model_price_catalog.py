@@ -320,7 +320,7 @@ def load_catalog(path: Optional[Path] = None, *, force: bool = False) -> bool:
             )
             return False
         except (OSError, ValueError):
-            logger.exception("Failed to read model price catalog %s", catalog_path)
+            logger.error("Failed to read model price catalog %s", catalog_path)
             return False
 
         metadata = raw.pop(META_KEY, None)
@@ -341,7 +341,7 @@ def load_catalog(path: Optional[Path] = None, *, force: bool = False) -> bool:
                     sample_key,
                 )
         except Exception:  # noqa: BLE001 - litellm.register_model may reject bad pricing
-            logger.exception("Failed to register model price catalog with litellm")
+            logger.error("Failed to register model price catalog with litellm")
             return False
 
         _loaded = True
@@ -705,7 +705,7 @@ def refresh_price_map_once() -> float:
         try:
             registered = merge_upstream_prices(price_map)
         except Exception:  # noqa: BLE001 - keep serving the snapshot
-            logger.exception("Merging the upstream model price map failed")
+            logger.error("Merging the upstream model price map failed")
         else:
             _merge_state["generation"] = generation
             _record_fetch(registered_count=registered)
@@ -737,7 +737,7 @@ class PriceMapRefresher:
             try:
                 delay = await asyncio.to_thread(refresh_price_map_once)
             except Exception:  # noqa: BLE001 - never let the loop die
-                logger.exception("Model price map refresh cycle failed")
+                logger.error("Model price map refresh cycle failed")
                 delay = float(_REMOTE_FAILURE_BACKOFF_SECONDS)
             self.first_cycle_done.set()
             await asyncio.sleep(max(self.MIN_DELAY_SECONDS, delay))
@@ -868,9 +868,8 @@ def _download_openrouter_price_map() -> Optional[Dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001 - network is best-effort here
         logger.debug("OpenRouter price list download failed", exc_info=True)
         logger.warning(
-            "Model price map fetch: source=openrouter outcome=failed reason=%s "
-            "retry_in_seconds=%s",
-            _fetch_failure_reason(exc),
+            "Model price map fetch: source=openrouter outcome=failed reason=%s retry_in_seconds=%s",
+            _fetch_failure_reason(type(exc).__name__),
             _REMOTE_FAILURE_BACKOFF_SECONDS,
         )
         return None
@@ -973,9 +972,8 @@ def lookup_model_price_now(candidates: List[str]) -> Optional[str]:
                 )
                 break
             except Exception:  # noqa: BLE001
-                logger.exception(
-                    "Failed to register live price for %s",
-                    _model_log_token(candidate),
+                logger.error(
+                    "Failed to register live price for %s", _model_log_token(candidate)
                 )
                 return None
 
@@ -1114,7 +1112,7 @@ def schedule_price_lookup(
                 matched = bool(lookup_model_price_now(candidates))
                 status = "ingested" if matched else "unavailable"
         except Exception:  # noqa: BLE001 - background best-effort
-            logger.exception(
+            logger.error(
                 "Live price lookup failed for %s", _model_log_token(dedupe_key)
             )
         finally:
@@ -1128,7 +1126,7 @@ def schedule_price_lookup(
                         _reprice_usage_row(usage_id)
                 except Exception:  # noqa: BLE001 - preserve unresolved notification
                     row_status = f"{status}_repricing_failed"
-                    logger.exception("Post-refresh usage recovery failed")
+                    logger.error("Post-refresh usage recovery failed")
                 if notify:
                     try:
                         from preloop.services.unpriced_model_alert import (
@@ -1137,7 +1135,7 @@ def schedule_price_lookup(
 
                         notify_unpriced_usage_row(usage_id, refresh_status=row_status)
                     except Exception:  # noqa: BLE001 - one row must not block others
-                        logger.exception("Post-refresh unresolved notification failed")
+                        logger.error("Post-refresh unresolved notification failed")
 
     try:
         _LOOKUP_EXECUTOR.submit(_run)
@@ -1155,7 +1153,7 @@ def schedule_price_lookup(
 
                 notify_unpriced_usage_row(usage_id, refresh_status="submit_failed")
             except Exception:  # noqa: BLE001 - one row must not block others
-                logger.exception("Submit-failure unresolved notification failed")
+                logger.error("Submit-failure unresolved notification failed")
         raise
     return True
 

@@ -96,7 +96,7 @@ def _emit(
             )
         )
     except Exception:
-        logger.warning("Failed to emit %s", event_type, exc_info=True)
+        logger.warning("Failed to emit %s", event_type)
 
 
 def record_prompt(

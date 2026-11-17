@@ -286,10 +286,7 @@ class SessionOptimizationService:
                 # Warning, not info: reaching this path means the configured
                 # model produced unusable output (or the call failed), which
                 # is a model-quality signal worth monitoring.
-                logger.warning(
-                    "Falling back to local runtime-session optimizations",
-                    exc_info=True,
-                )
+                logger.warning("Falling back to local runtime-session optimizations")
         response = RuntimeSessionOptimizationResponse(
             generated_by="local",
             fast_model_name=fast_model.name if fast_model else None,
@@ -784,10 +781,7 @@ class SessionOptimizationService:
                 scope_hash=scope_hash,
             )
         except SQLAlchemyError:
-            logger.warning(
-                "Optimization cache lookup failed; continuing without cache",
-                exc_info=True,
-            )
+            logger.warning("Optimization cache lookup failed; continuing without cache")
             return None
         if cached is None:
             return None
@@ -822,10 +816,7 @@ class SessionOptimizationService:
                 runtime_session_ids=[runtime_session_id],
             )
         except SQLAlchemyError:
-            logger.warning(
-                "Optimization latest-cache lookup failed; continuing",
-                exc_info=True,
-            )
+            logger.warning("Optimization latest-cache lookup failed; continuing")
             return None
         if not rows or not isinstance(rows[0].response, dict):
             return None
@@ -853,9 +844,7 @@ class SessionOptimizationService:
                 response=json.loads(response.model_dump_json()),
             )
         except Exception:
-            logger.warning(
-                "Failed to cache session optimization response", exc_info=True
-            )
+            logger.warning("Failed to cache session optimization response")
 
     def _builtin_catalog_names(self) -> set[str]:
         """Return bare names from the BUILTIN_TOOLS catalog."""
@@ -915,9 +904,7 @@ class SessionOptimizationService:
             counts = invocation_counts_by_tool(usage_rows)
         except Exception:
             logger.warning(
-                "Failed to load account tool usage for builtin disable tiering; "
-                "skipping account-wide disable recommendation",
-                exc_info=True,
+                "Failed to load account tool usage for builtin disable tiering; skipping account-wide disable recommendation"
             )
             # Without corroboration, keep everything on the agent-scoped path.
             return UnusedBuiltinPartition(

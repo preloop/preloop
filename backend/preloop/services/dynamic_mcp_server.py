@@ -271,7 +271,7 @@ class DynamicMCPServer:
                 logger.warning("No request context available (LookupError)")
                 return []
             except Exception as e:
-                logger.error(f"Error in handle_list_tools: {e}", exc_info=True)
+                logger.error(f"Error in handle_list_tools: {type(e).__name__}")
                 return []
 
         async def handle_call_tool(
@@ -332,16 +332,11 @@ class DynamicMCPServer:
                     rule_description,
                 ) = policy_decision
 
-                logger.info(
-                    f"Policy evaluation for tool '{name}': "
-                    f"action={action}, rule='{rule_description}'"
-                )
+                logger.info("Policy evaluation: tool=%s action=%s", name, action)
 
                 # Handle deny action - block execution
                 if action == "deny":
-                    logger.warning(
-                        f"Tool {name} execution DENIED by policy rule: {rule_description}"
-                    )
+                    logger.warning("Tool denied by policy: tool=%s", name)
                     return [
                         types.TextContent(
                             type="text",
@@ -368,7 +363,9 @@ class DynamicMCPServer:
                         )
                         logger.info(f"Tool {name} approved - proceeding with execution")
                     except TimeoutError as e:
-                        logger.warning(f"Approval timeout for tool {name}: {e}")
+                        logger.warning(
+                            f"Approval timeout for tool {name}: {type(e).__name__}"
+                        )
                         return [
                             types.TextContent(
                                 type="text",
@@ -376,7 +373,9 @@ class DynamicMCPServer:
                             )
                         ]
                     except PermissionError as e:
-                        logger.warning(f"Approval declined for tool {name}: {e}")
+                        logger.warning(
+                            f"Approval declined for tool {name}: {type(e).__name__}"
+                        )
                         return [
                             types.TextContent(
                                 type="text",
@@ -385,7 +384,7 @@ class DynamicMCPServer:
                         ]
                     except Exception as e:
                         logger.error(
-                            f"Approval flow error for tool {name}: {e}", exc_info=True
+                            f"Approval flow error for tool {name}: {type(e).__name__}"
                         )
                         return [
                             types.TextContent(
@@ -405,11 +404,11 @@ class DynamicMCPServer:
                         )
                     ]
 
-                from preloop.utils.redaction import redact_for_log
-
                 logger.info(
-                    f"Executing tool {name} for user {user_context.username} "
-                    f"with args: {redact_for_log(arguments or {})}"
+                    "Executing tool %s for user_id=%s arg_keys=%s",
+                    name,
+                    user_context.user_id,
+                    sorted(arguments or {}),
                 )
 
                 # Track execution time
@@ -450,7 +449,7 @@ class DynamicMCPServer:
                 return [types.TextContent(type="text", text=result_text)]
 
             except Exception as e:
-                logger.error(f"Error executing tool {name}: {e}", exc_info=True)
+                logger.error(f"Error executing tool {name}: {type(e).__name__}")
                 # Log failed tool execution to audit
                 await _enqueue_tool_execution(
                     account_id=user_context.account_id if user_context else "unknown",
@@ -612,16 +611,17 @@ class DynamicMCPServer:
                 action, approval_workflow_id, rule_description = decision
 
                 logger.info(
-                    f"Policy evaluation result for '{tool_name}': "
-                    f"action={action}, approval_workflow_id={approval_workflow_id}, "
-                    f"rule='{rule_description}'"
+                    "Policy evaluation for %s: action=%s workflow_id=%s",
+                    tool_name,
+                    action,
+                    approval_workflow_id,
                 )
 
                 return decision
 
         except Exception as e:
             # SECURITY: Fail closed on errors
-            logger.error(f"Error evaluating policy for {tool_name}: {e}", exc_info=True)
+            logger.error(f"Error evaluating policy for {tool_name}: {type(e).__name__}")
             return PolicyDecision(
                 "require_approval",
                 None,
@@ -782,7 +782,7 @@ class DynamicMCPServer:
             logger.info(f"Tool {tool_name} approved by user")
 
         except Exception as e:
-            logger.error(f"Error in approval flow: {e}", exc_info=True)
+            logger.error(f"Error in approval flow: {type(e).__name__}")
             raise
 
     def _get_tools_for_user(self, user_context: UserContext) -> List[types.Tool]:

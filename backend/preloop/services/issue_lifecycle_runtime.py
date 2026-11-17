@@ -49,9 +49,7 @@ def _sweep_deferred_merge_audits_worker() -> None:
         try:
             anyio.run(_retry_deferred_merge_audit, account_id, issue_id, merge_sha)
         except Exception:
-            logger.exception(
-                "Could not retry deferred merge audit for issue %s", issue_id
-            )
+            logger.error("Could not retry deferred merge audit for issue %s", issue_id)
             try:
                 with factory() as db:
                     crud_issue_lifecycle.touch_waiting_merge_audit(
@@ -61,7 +59,7 @@ def _sweep_deferred_merge_audits_worker() -> None:
                         revision=merge_sha,
                     )
             except Exception:
-                logger.exception(
+                logger.error(
                     "Could not rotate deferred merge audit for issue %s", issue_id
                 )
 

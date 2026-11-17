@@ -557,7 +557,7 @@ class BitbucketTracker(BaseTracker):
             name = data.get("name") or name
         except (TrackerResponseError, TrackerAuthenticationError) as exc:
             # Access tokens bound to a repository cannot read the workspace.
-            logger.info("Bitbucket workspace lookup skipped: %s", exc)
+            logger.info("Bitbucket workspace lookup skipped: %s", type(exc).__name__)
         return [{"id": self.workspace, "name": name}]
 
     def _repository_to_project(self, repo: Dict[str, Any]) -> Dict[str, Any]:
@@ -805,7 +805,7 @@ class BitbucketTracker(BaseTracker):
         )
         pr = response.json()
         pr_id = int(pr.get("id") or 0)
-        logger.info("Created Bitbucket pull request #%s: %s", pr_id, title)
+        logger.info("Created Bitbucket pull request #%s", pr_id)
 
         for name, value in (("assignees", assignees), ("labels", labels)):
             if value:
@@ -833,7 +833,9 @@ class BitbucketTracker(BaseTracker):
                 pr = response.json()
             except (TrackerResponseError, TrackerPermissionError) as exc:
                 logger.warning(
-                    "Failed to add reviewers to Bitbucket PR #%s: %s", pr_id, exc
+                    "Failed to add reviewers to Bitbucket PR #%s: %s",
+                    pr_id,
+                    type(exc).__name__,
                 )
 
         return self._normalize_created_pull_request(pr)
@@ -1287,7 +1289,9 @@ class BitbucketTracker(BaseTracker):
                     await self._remove_duplicate_hook(db, full_name, hook)
                 except TrackerResponseError as exc:
                     # Another racer may already have deleted it.
-                    logger.info("Duplicate hook %s already gone: %s", hook, exc)
+                    logger.info(
+                        "Duplicate hook %s already gone: %s", hook, type(exc).__name__
+                    )
         return winner
 
     def _upsert_stored_hook(
@@ -1372,7 +1376,9 @@ class BitbucketTracker(BaseTracker):
                 hook = keep
         except (TrackerResponseError, TrackerAuthenticationError) as exc:
             logger.error(
-                "Failed to register Bitbucket webhook for %s: %s", full_name, exc
+                "Failed to register Bitbucket webhook for %s: %s",
+                full_name,
+                type(exc).__name__,
             )
             return False
 
@@ -1398,7 +1404,11 @@ class BitbucketTracker(BaseTracker):
         try:
             hooks = await self._list_hooks(full_name)
         except (TrackerResponseError, TrackerAuthenticationError) as exc:
-            logger.error("Failed to list Bitbucket hooks for %s: %s", full_name, exc)
+            logger.error(
+                "Failed to list Bitbucket hooks for %s: %s",
+                full_name,
+                type(exc).__name__,
+            )
             return False
         return any(hook.get("url") == webhook_url for hook in hooks)
 
@@ -1422,7 +1432,7 @@ class BitbucketTracker(BaseTracker):
                 allow_status=(404,),
             )
         except TrackerResponseError as exc:
-            logger.error("Failed to check Bitbucket hook: %s", exc)
+            logger.error("Failed to check Bitbucket hook: %s", type(exc).__name__)
             return False
         return response.status_code == 200
 
@@ -1459,7 +1469,7 @@ class BitbucketTracker(BaseTracker):
                     {"uuid": webhook.external_id, "repo_full_name": full_name}
                 )
         except (TrackerResponseError, TrackerAuthenticationError) as exc:
-            logger.error("Failed to delete Bitbucket hook: %s", exc)
+            logger.error("Failed to delete Bitbucket hook: %s", type(exc).__name__)
             return False
         crud_webhook.remove(db, id=webhook.id)
         return True

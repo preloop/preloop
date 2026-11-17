@@ -163,9 +163,8 @@ async def _advance_security_maintenance(db: Session, updated: ApprovalRequest) -
         service = SecurityMaintenanceService(db, account_id=updated.account_id)
         await service.reconcile_platform_approval(updated.id)
     except Exception:
-        logger.exception(
-            "Security-maintenance reconcile failed after committed approval %s; "
-            "retryable",
+        logger.error(
+            "Security-maintenance reconcile failed after committed approval %s; retryable",
             updated.id,
         )
 
@@ -1118,8 +1117,7 @@ async def decide_requests_batch(
             logger.warning(
                 "Batch decision failed for approval %s: %s",
                 request_id,
-                error,
-                exc_info=True,
+                type(error).__name__,
             )
             results.append(
                 ApprovalBatchItemResult(

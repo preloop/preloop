@@ -461,4 +461,4 @@ def _audit(
             extra_details={"native_park": True},
         )
     except Exception:
-        logger.exception("Could not audit native park event %s", event)
+        logger.error("Could not audit native park event %s", event)

@@ -115,7 +115,7 @@ class IssueCostRebuildSweeper:
             try:
                 await asyncio.to_thread(run_scheduled_rebuild_once)
             except Exception:
-                logger.error("Error in issue cost rebuild pass", exc_info=True)
+                logger.error("Error in issue cost rebuild pass")
 
 
 _sweeper_instance: Optional[IssueCostRebuildSweeper] = None

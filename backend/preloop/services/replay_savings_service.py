@@ -708,8 +708,7 @@ def run_session_replay(
         headroom = headroom_fn(db, account.id)
     except Exception:
         logger.warning(
-            "replay: failed to read account budget headroom; using max_spend",
-            exc_info=True,
+            "replay: failed to read account budget headroom; using max_spend"
         )
         headroom = None
     effective_budget = min(max_spend, headroom) if headroom is not None else max_spend

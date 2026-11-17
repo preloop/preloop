@@ -84,16 +84,13 @@ class ArgumentEvaluator(ConditionEvaluatorPlugin):
             return bool(result)
 
         except celpy.CELParseError as e:
-            logger.error(f"CEL parse error in expression '{expression}': {e}")
+            logger.error("Condition evaluation failed: error_type=%s", type(e).__name__)
             raise ValueError(f"Invalid CEL syntax: {str(e)}")
         except celpy.CELEvalError as e:
-            logger.error(f"CEL evaluation error for expression '{expression}': {e}")
+            logger.error("Condition evaluation failed: error_type=%s", type(e).__name__)
             raise ValueError(f"CEL evaluation failed: {str(e)}")
         except Exception as e:
-            logger.error(
-                f"Unexpected error evaluating expression '{expression}': {e}",
-                exc_info=True,
-            )
+            logger.error("Condition evaluation failed: error_type=%s", type(e).__name__)
             raise
 
     async def validate_config(self, condition_config: Dict[str, Any]) -> List[str]:

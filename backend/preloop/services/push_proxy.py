@@ -108,7 +108,7 @@ async def send_push_via_proxy(
         logger.error("Push proxy request timed out")
         return {"success": False, "error": "Push proxy request timed out"}
     except Exception as e:
-        logger.error(f"Push proxy error: {e}")
+        logger.error(f"Push proxy error: {type(e).__name__}")
         return {"success": False, "error": str(e)}
 
 
@@ -152,7 +152,7 @@ async def send_bulk_push_via_proxy(
                 return [{"success": False, "error": error} for _ in notifications]
 
     except Exception as e:
-        logger.error(f"Bulk push proxy error: {e}")
+        logger.error(f"Bulk push proxy error: {type(e).__name__}")
         return [{"success": False, "error": str(e)} for _ in notifications]
 
 

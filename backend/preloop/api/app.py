@@ -272,7 +272,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         load_catalog()
     except ImportError:
-        logger.exception("Model price catalog load failed; using litellm defaults")
+        logger.error("Model price catalog load failed; using litellm defaults")
 
     # Initialize database connection and optionally create tables.
     logger.info("Setting up database connection...")
@@ -311,7 +311,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("Skipping test data initialization for %s role.", service_role)
 
     except Exception as e:
-        logger.error(f"Database setup failed: {e}", exc_info=True)
+        logger.error(f"Database setup failed: {type(e).__name__}")
         raise RuntimeError("Database setup failed") from e
 
     # Connect to NATS (skip in testing mode)
@@ -322,7 +322,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.nats_connected = True
             logger.info("NATS connection established.")
         except Exception as e:
-            logger.error(f"NATS connection failed: {e}", exc_info=True)
+            logger.error(f"NATS connection failed: {type(e).__name__}")
             raise RuntimeError("NATS connection failed") from e
 
         # Start the NATS consumer for WebSocket broadcasting only on the core API.
@@ -560,7 +560,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     db.close()
             except Exception as e:
                 logger.error(
-                    f"Error recovering orphaned executions: {e}", exc_info=True
+                    f"Error recovering orphaned executions: {type(e).__name__}"
                 )
                 # Don't fail startup - continue anyway
     else:
@@ -624,7 +624,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 finally:
                     db.close()
         except Exception as e:
-            logger.warning(f"Plan catalog check did not run: {e}", exc_info=True)
+            logger.warning(f"Plan catalog check did not run: {type(e).__name__}")
 
     # Register instance and send version check (skip in testing mode)
     if not is_testing and is_api_role:
@@ -633,7 +633,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         try:
             await register_instance()
         except Exception as e:
-            logger.warning(f"Instance registration failed: {e}")
+            logger.warning(f"Instance registration failed: {type(e).__name__}")
             # Don't fail startup - continue anyway
     else:
         logger.info("Skipping instance registration for %s role.", service_role)
@@ -664,8 +664,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
         except Exception as e:
             logger.warning(
-                f"Default approval workflow repair pass failed: {e}",
-                exc_info=True,
+                f"Default approval workflow repair pass failed: {type(e).__name__}"
             )
     else:
         logger.info("Skipping approval workflow repair pass for %s role.", service_role)
@@ -692,10 +691,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "webhook_secrets=%(migrated_webhook_secrets)s" % tracker_stats
                 )
         except (ImportError, SQLAlchemyError) as e:
-            logger.warning(
-                f"Tracker credential backfill failed: {e}",
-                exc_info=True,
-            )
+            logger.warning(f"Tracker credential backfill failed: {type(e).__name__}")
 
     # All roles, including a dedicated gateway, need the same current prices.
     from preloop.services.model_content_policy import set_model_io_approval_loop
@@ -732,7 +728,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("All in-flight executions completed or timed out.")
         except Exception as e:
             logger.error(
-                f"Error waiting for executions to complete: {e}", exc_info=True
+                f"Error waiting for executions to complete: {type(e).__name__}"
             )
     else:
         logger.info("Skipping execution wait for %s role.", service_role)
@@ -753,7 +749,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await plugin_manager.shutdown_gateway()
             logger.info("Plugin system shut down successfully.")
         except Exception as e:
-            logger.error(f"Error shutting down plugins: {e}", exc_info=True)
+            logger.error(f"Error shutting down plugins: {type(e).__name__}")
     else:
         logger.info("Skipping plugin shutdown for %s role.", service_role)
 
@@ -763,7 +759,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await mcp_lifespan.__aexit__(None, None, None)
             logger.info("MCP server lifespan stopped")
         except Exception as e:
-            logger.error(f"Error stopping MCP lifespan: {e}", exc_info=True)
+            logger.error(f"Error stopping MCP lifespan: {type(e).__name__}")
     else:
         logger.info("Skipping MCP shutdown for %s role.", service_role)
 
@@ -775,7 +771,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await webhook_delivery_worker.stop()
             logger.info("Webhook delivery worker stopped.")
         except Exception as e:
-            logger.error(f"Error stopping webhook delivery worker: {e}", exc_info=True)
+            logger.error(f"Error stopping webhook delivery worker: {type(e).__name__}")
 
     # Stop the audit chain sealer. Rows it did not reach stay unsealed and are
     # picked up by the next process; the chain is append only, so an
@@ -785,7 +781,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await audit_chain_sealer.stop()
             logger.info("Audit chain sealer stopped.")
         except Exception as e:
-            logger.error(f"Error stopping audit chain sealer: {e}", exc_info=True)
+            logger.error(f"Error stopping audit chain sealer: {type(e).__name__}")
 
     # Stop the session search backfill sweeper. A pass in flight finishes the
     # source it is chunking and stops; the watermark it already persisted is
@@ -796,7 +792,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("Session search backfill sweeper stopped.")
         except Exception as e:
             logger.error(
-                f"Error stopping session search backfill sweeper: {e}", exc_info=True
+                f"Error stopping session search backfill sweeper: {type(e).__name__}"
             )
 
     if not is_testing and discovery_candidate_purge_sweeper:
@@ -804,7 +800,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await discovery_candidate_purge_sweeper.stop()
         except Exception as e:
             logger.error(
-                f"Error stopping discovery candidate purge: {e}", exc_info=True
+                f"Error stopping discovery candidate purge: {type(e).__name__}"
             )
 
     if readiness_sweeper:
@@ -814,13 +810,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         try:
             await anthropic_cache_input_repair.stop()
         except Exception:
-            logger.error("Error stopping Anthropic cache input repair", exc_info=True)
+            logger.error("Error stopping Anthropic cache input repair")
 
     if not is_testing and runner_session_sweeper:
         try:
             await runner_session_sweeper.stop()
         except Exception:
-            logger.error("Error stopping runner session sweeper", exc_info=True)
+            logger.error("Error stopping runner session sweeper")
 
     if not is_testing and issue_cost_rebuild_sweeper:
         try:
@@ -828,7 +824,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("Issue cost rebuild sweeper stopped.")
         except Exception as e:
             logger.error(
-                f"Error stopping issue cost rebuild sweeper: {e}", exc_info=True
+                f"Error stopping issue cost rebuild sweeper: {type(e).__name__}"
             )
 
     # Stop the retention purge sweeper. A pass in flight finishes its current
@@ -839,7 +835,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await retention_purge_sweeper.stop()
             logger.info("Retention purge sweeper stopped.")
         except Exception as e:
-            logger.error(f"Error stopping retention purge sweeper: {e}", exc_info=True)
+            logger.error(f"Error stopping retention purge sweeper: {type(e).__name__}")
 
     # Stop the optimization-job sweeper and abandon in-flight optimization
     # jobs (skip in testing mode). shutdown(wait=False) on purpose: a model
@@ -852,7 +848,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await optimization_job_sweeper.stop()
             logger.info("Optimization job sweeper stopped.")
         except Exception as e:
-            logger.error(f"Error stopping optimization job sweeper: {e}", exc_info=True)
+            logger.error(f"Error stopping optimization job sweeper: {type(e).__name__}")
         shutdown_job_executor()
         logger.info("Optimization job executor shut down.")
     else:
@@ -864,7 +860,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await execution_monitor.stop()
             logger.info("Execution monitor stopped.")
         except Exception as e:
-            logger.error(f"Error stopping execution monitor: {e}", exc_info=True)
+            logger.error(f"Error stopping execution monitor: {type(e).__name__}")
     else:
         logger.info("Skipping execution monitor shutdown for %s role.", service_role)
 
@@ -874,7 +870,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await db_pool_monitor.stop()
             logger.info("DB pool monitor stopped.")
         except Exception as e:
-            logger.error(f"Error stopping DB pool monitor: {e}", exc_info=True)
+            logger.error(f"Error stopping DB pool monitor: {type(e).__name__}")
 
     # Cancel the NATS consumer task (skip in testing mode)
     if not is_testing and getattr(app.state, "nats_connected", False):
@@ -887,7 +883,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await close_nats()
             logger.info("NATS connection closed.")
         except Exception as e:
-            logger.error(f"Error closing NATS connection: {e}", exc_info=True)
+            logger.error(f"Error closing NATS connection: {type(e).__name__}")
     else:
         logger.info("Skipping NATS shutdown for %s role.", service_role)
 
@@ -1586,12 +1582,7 @@ def create_app() -> FastAPI:
         request: Request, exc: ModelGatewayAPIError
     ) -> JSONResponse:
         """Render provider-native gateway error bodies."""
-        logger.warning(
-            "Model gateway error in %s %s: %s",
-            request.method,
-            request.url.path,
-            exc.message,
-        )
+        logger.warning("Model gateway error: error_type=%s", type(exc).__name__)
         return JSONResponse(
             status_code=exc.status_code,
             content=exc.to_payload(),
@@ -1608,12 +1599,7 @@ def create_app() -> FastAPI:
         as 503 with ``Retry-After`` lets clients and load balancers back off,
         and keeps it out of the 500 rate that pages someone.
         """
-        logger.warning(
-            "Database pool exhausted serving %s %s: %s",
-            request.scope.get("method", "WEBSOCKET"),
-            request.url.path,
-            exc,
-        )
+        logger.warning("Database pool exhausted: error_type=%s", type(exc).__name__)
         if isinstance(request, WebSocket):
             if request.application_state != WebSocketState.DISCONNECTED:
                 await request.close(
@@ -1641,7 +1627,6 @@ def create_app() -> FastAPI:
             type(exc).__name__,
             request.scope.get("method", "WEBSOCKET"),
             request.url.path,
-            exc_info=(type(exc), exc, exc.__traceback__),
         )
         if isinstance(request, WebSocket):
             if request.application_state != WebSocketState.DISCONNECTED:

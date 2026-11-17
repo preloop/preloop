@@ -94,7 +94,7 @@ def emit_account_event(event: dict[str, Any]) -> None:
         )
     except Exception:
         # Realtime delivery should not fail the caller.
-        logger.exception("Failed to encode account realtime event")
+        logger.error("Failed to encode account realtime event")
         return
     if payload_bytes is None:
         return

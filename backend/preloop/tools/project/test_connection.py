@@ -153,7 +153,9 @@ async def verify_connection(
                 )
 
             except Exception as e:
-                logger.exception(f"Error testing connection to {tracker_name}: {e}")
+                logger.error(
+                    f"Error testing connection to {tracker_name}: {type(e).__name__}"
+                )
                 results[tracker_name] = ConnectionResult(
                     connected=False, message=f"Error testing connection: {str(e)}"
                 )

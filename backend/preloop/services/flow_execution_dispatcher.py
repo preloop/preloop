@@ -169,8 +169,7 @@ async def _dispatch(
             "Failed to publish %s for execution %s: %s",
             task_name,
             execution_id_str,
-            exc,
-            exc_info=True,
+            type(exc).__name__,
         )
         ack = None
 

@@ -31,8 +31,7 @@ def setup_database(database_url: Optional[str] = None) -> None:
                 logger.info("PGVector extension created successfully")
             except Exception as e:
                 logger.warning(
-                    "Failed to create vector extension: "
-                    f"{redact_secrets_in_text(e, database_url)}"
+                    f"Failed to create vector extension: {redact_secrets_in_text(type(e).__name__, database_url)}"
                 )
 
         # Get the models directory (one level up from db/)
@@ -52,14 +51,13 @@ def setup_database(database_url: Optional[str] = None) -> None:
             stderr = redact_secrets_in_text(
                 result.stderr, database_url or os.getenv("DATABASE_URL")
             )
-            logger.error(f"Alembic migration failed: {stderr}")
+            logger.error("Alembic migration failed: stderr_bytes=%s", len(stderr))
             raise RuntimeError(f"Alembic migration failed: {stderr}")
 
         logger.info("Database schema created successfully via Alembic")
     except SQLAlchemyError as e:
         logger.error(
-            "Error setting up database: "
-            f"{redact_secrets_in_text(e, database_url or os.getenv('DATABASE_URL'))}"
+            f"Error setting up database: {redact_secrets_in_text(type(e).__name__, database_url or os.getenv('DATABASE_URL'))}"
         )
         raise
 
@@ -86,7 +84,7 @@ def reset_database(database_url: Optional[str] = None) -> None:
             stderr = redact_secrets_in_text(
                 result.stderr, database_url or os.getenv("DATABASE_URL")
             )
-            logger.error(f"Alembic downgrade failed: {stderr}")
+            logger.error("Alembic downgrade failed: stderr_bytes=%s", len(stderr))
             raise RuntimeError(f"Alembic downgrade failed: {stderr}")
 
         logger.info("Database schema dropped successfully")
@@ -95,8 +93,7 @@ def reset_database(database_url: Optional[str] = None) -> None:
         setup_database(database_url)
     except SQLAlchemyError as e:
         logger.error(
-            "Error resetting database: "
-            f"{redact_secrets_in_text(e, database_url or os.getenv('DATABASE_URL'))}"
+            f"Error resetting database: {redact_secrets_in_text(type(e).__name__, database_url or os.getenv('DATABASE_URL'))}"
         )
         raise
 

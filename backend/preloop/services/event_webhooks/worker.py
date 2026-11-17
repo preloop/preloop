@@ -531,7 +531,7 @@ async def run_once(db_factory=_open_worker_session) -> int:
     try:
         prepared = await asyncio.to_thread(claim_batch, db)
     except Exception:  # noqa: BLE001 - a failed claim retries next tick
-        logger.warning("Webhook delivery claim failed", exc_info=True)
+        logger.warning("Webhook delivery claim failed")
         db.close()
         return 0
     if not prepared:
@@ -563,7 +563,7 @@ async def run_once(db_factory=_open_worker_session) -> int:
         outcomes = [outcome for outcome in outcomes if outcome is not None]
         await asyncio.to_thread(apply_outcomes, db, list(outcomes))
     except Exception:  # noqa: BLE001 - claims lapse and the rows retry
-        logger.warning("Webhook delivery pass failed", exc_info=True)
+        logger.warning("Webhook delivery pass failed")
     finally:
         db.close()
     await send_external_notifications()
@@ -583,9 +583,8 @@ async def send_external_notifications() -> None:
         for request_id in ids:
             async with get_async_db_session() as db:
                 request = await db.run_sync(
-                    lambda sync,
-                    request_id=request_id: handoff_crud.notification_request(
-                        sync, request_id
+                    lambda sync, request_id=request_id: (
+                        handoff_crud.notification_request(sync, request_id)
                     )
                 )
                 if request is None:
@@ -609,14 +608,13 @@ async def send_external_notifications() -> None:
                         )
                         continue
                 await db.run_sync(
-                    lambda sync,
-                    request_id=request_id: handoff_crud.notifications_finished(
-                        sync, request_id
+                    lambda sync, request_id=request_id: (
+                        handoff_crud.notifications_finished(sync, request_id)
                     )
                 )
                 await db.commit()
     except Exception:
-        logger.exception("External approval notifications will retry on the next pass")
+        logger.error("External approval notifications will retry on the next pass")
 
 
 class WebhookDeliveryWorker:
@@ -664,7 +662,7 @@ class WebhookDeliveryWorker:
                 if self._passes % 120 == 1:
                     await asyncio.to_thread(self._purge)
             except Exception:  # noqa: BLE001 - the loop outlives one bad pass
-                logger.error("Webhook delivery pass failed", exc_info=True)
+                logger.error("Webhook delivery pass failed")
             try:
                 await asyncio.sleep(self.poll_interval)
             except asyncio.CancelledError:
@@ -681,7 +679,7 @@ class WebhookDeliveryWorker:
                 logger.info("Purged %d terminal webhook deliveries", deleted)
         except Exception:  # noqa: BLE001 - retention is best effort
             db.rollback()
-            logger.warning("Webhook delivery purge failed", exc_info=True)
+            logger.warning("Webhook delivery purge failed")
         finally:
             db.close()
 

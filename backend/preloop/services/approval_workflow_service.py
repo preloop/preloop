@@ -136,8 +136,7 @@ def create_default_approval_workflow_for_account(
 
     except Exception as e:
         logger.error(
-            f"Failed to create default approval workflow for account {account_id}: {e}",
-            exc_info=True,
+            f"Failed to create default approval workflow for account {account_id}: {type(e).__name__}"
         )
     finally:
         try:
@@ -147,7 +146,7 @@ def create_default_approval_workflow_for_account(
             db.commit()
         except Exception:
             db.rollback()
-            logger.exception("Failed to seed note policy for account %s", account_id)
+            logger.error("Failed to seed note policy for account %s", account_id)
         db.close()
 
 
@@ -207,8 +206,7 @@ def repair_default_approval_workflow_for_account(
 
     except Exception as e:
         logger.error(
-            f"Failed to repair default approval workflow for account {account_id}: {e}",
-            exc_info=True,
+            f"Failed to repair default approval workflow for account {account_id}: {type(e).__name__}"
         )
         db.rollback()
         return False
@@ -234,9 +232,7 @@ def create_default_approval_workflow_background(
     except Exception as e:
         # Log but don't raise - this is a background task
         logger.error(
-            f"Background task failed to create default approval workflow "
-            f"for account {account_id}: {e}",
-            exc_info=True,
+            f"Background task failed to create default approval workflow for account {account_id}: {type(e).__name__}"
         )
 
 
@@ -262,7 +258,7 @@ def run_default_approval_workflow_startup_repair() -> dict[str, int]:
             logger.warning(
                 "Default workflow repair failed for account %s: %s",
                 account_id,
-                inner_exc,
+                type(inner_exc).__name__,
             )
 
     seeded = 0
@@ -274,7 +270,7 @@ def run_default_approval_workflow_startup_repair() -> dict[str, int]:
             logger.warning(
                 "Default workflow seeding failed for account %s: %s",
                 account_id,
-                inner_exc,
+                type(inner_exc).__name__,
             )
 
     return {

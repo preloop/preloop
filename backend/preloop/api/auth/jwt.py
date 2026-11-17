@@ -346,7 +346,6 @@ def _authenticate_with_api_key(
             extra={
                 "event": "api_key_account_mismatch",
                 "api_key_id": str(api_key.id),
-                "api_key_prefix": getattr(api_key, "key_prefix", None),
                 "user_id": str(user.id),
                 "key_account_id": str(api_key.account_id),
                 "user_account_id": str(user.account_id),
@@ -847,7 +846,9 @@ def get_current_user(
             # Preserve authentication errors and transient database capacity failures
             raise
         except Exception as e:
-            logger.error(f"Error in API key first-try authentication: {str(e)}")
+            logger.error(
+                f"Error in API key first-try authentication: {type(e).__name__}"
+            )
             # Fall through to JWT authentication
             logger.info("API key authentication failed, falling back to JWT")
 
@@ -856,7 +857,7 @@ def get_current_user(
         # Try to decode as JWT token
         logger.info("Attempting JWT authentication")
         token_data = decode_token(token)
-        logger.info(f"JWT decoded successfully: {token_data}")
+        logger.info("JWT decoded successfully")
 
         # Check if it's a refresh token. decode_token() returns a TokenData
         # model (never a dict), so the refresh flag must be read as an
@@ -932,7 +933,7 @@ def get_current_user(
         except (HTTPException, SQLAlchemyPoolTimeout):
             raise
         except Exception as e:
-            logger.error(f"Error getting current user from JWT: {str(e)}")
+            logger.error(f"Error getting current user from JWT: {type(e).__name__}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication error",
@@ -944,7 +945,7 @@ def get_current_user(
             "." in token
         ):  # Only try API key auth if we haven't already (tokens with dots were tried as JWT first)
             logger.info(
-                f"JWT authentication failed: {str(e)}, attempting API key authentication as fallback"
+                f"JWT authentication failed: {type(e).__name__}, attempting API key authentication as fallback"
             )
             try:
                 # Look up the API key using CRUD
@@ -979,7 +980,7 @@ def get_current_user(
                 # Preserve authentication errors and transient database capacity failures
                 raise
             except Exception as e:
-                logger.error(f"Error authenticating with API key: {str(e)}")
+                logger.error(f"Error authenticating with API key: {type(e).__name__}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Authentication error",
@@ -1046,7 +1047,9 @@ def get_current_active_user_optional(
         )
         return None
     except Exception as e:
-        logger.warning("Unexpected error in get_current_active_user_optional: %s", e)
+        logger.warning(
+            "Unexpected error in get_current_active_user_optional: %s", type(e).__name__
+        )
         return None
 
 
@@ -1161,10 +1164,14 @@ def get_user_from_token_if_valid_sync(
     except HTTPException as e:
         # Raised by _authenticate_with_api_key with the concrete rejection
         # reason (inactive key, expired key, deleted/suspended managed agent).
-        logger.info("Token rejected in get_user_from_token_if_valid: %s", e.detail)
+        logger.info(
+            "Token rejected in get_user_from_token_if_valid: %s", type(e).__name__
+        )
     except PyJWTError as e:
         logger.debug("Token validation failed in get_user_from_token_if_valid: %s", e)
     except Exception as e:
-        logger.warning("Unexpected error in get_user_from_token_if_valid: %s", e)
+        logger.warning(
+            "Unexpected error in get_user_from_token_if_valid: %s", type(e).__name__
+        )
 
     return None

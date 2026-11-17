@@ -265,7 +265,7 @@ async def distribute_report(
                 }
             sent.append(str(user.id))
         except EmailError:
-            logger.warning("Could not email the delivery report", exc_info=True)
+            logger.warning("Could not email the delivery report")
             failed.append(str(user.id))
     return {
         "status": "failed" if failed else "sent",

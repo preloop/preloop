@@ -373,7 +373,7 @@ async def open_follow_up(ctx: ActionContext, index: int) -> Dict[str, Any]:
             project_key=project.identifier, issue_data=payload
         )
     except Exception as exc:  # noqa: BLE001 - every tracker failure is settled
-        logger.warning("Opening follow-up %s failed", key, exc_info=True)
+        logger.warning("Opening follow-up %s failed", key)
         if request_started:
             _release(ctx, key, base, exc)
         else:
@@ -508,7 +508,7 @@ async def reopen_issue(ctx: ActionContext, ref: str) -> Dict[str, Any]:
         await client.update_issue(target, payload)
         await client.add_comment(target, comment)
     except Exception as exc:  # noqa: BLE001 - every tracker failure is settled
-        logger.warning("Reopening %s failed", ref, exc_info=True)
+        logger.warning("Reopening %s failed", ref)
         if request_started:
             _release(ctx, key, base, exc)
         else:

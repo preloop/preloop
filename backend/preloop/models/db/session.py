@@ -157,18 +157,24 @@ def release_transaction(db: Session) -> None:
         if db.in_transaction():
             db.commit()
     except SQLAlchemyError as exc:
-        logger.warning(f"Releasing database transaction failed, rolling back: {exc}")
+        logger.warning(
+            f"Releasing database transaction failed, rolling back: {type(exc).__name__}"
+        )
         try:
             db.rollback()
         except SQLAlchemyError as rollback_exc:
-            logger.warning(f"Rollback after failed release failed: {rollback_exc}")
+            logger.warning(
+                f"Rollback after failed release failed: {type(rollback_exc).__name__}"
+            )
             # Last resort, and it must stay quiet: the caller is about to wait
             # on a socket, and raising from the cleanup path would take down
             # the handler this function exists to protect.
             try:
                 db.invalidate()
             except SQLAlchemyError as invalidate_exc:
-                logger.warning(f"Invalidating the session failed: {invalidate_exc}")
+                logger.warning(
+                    f"Invalidating the session failed: {type(invalidate_exc).__name__}"
+                )
 
 
 def _safe_close_db_session(db: Session) -> None:
@@ -177,14 +183,16 @@ def _safe_close_db_session(db: Session) -> None:
         if db.in_transaction():
             db.rollback()
     except SQLAlchemyError as exc:
-        logger.warning(f"Database session rollback failed during close: {exc}")
+        logger.warning(
+            f"Database session rollback failed during close: {type(exc).__name__}"
+        )
         db.invalidate()
         return
     finally:
         try:
             db.close()
         except SQLAlchemyError as exc:
-            logger.warning(f"Database session close failed: {exc}")
+            logger.warning(f"Database session close failed: {type(exc).__name__}")
             db.invalidate()
 
 
@@ -222,14 +230,16 @@ async def _close_async_db_session(session: AsyncSession) -> None:
         if session.in_transaction():
             await session.rollback()
     except SQLAlchemyError as exc:
-        logger.warning(f"Async database session rollback failed during close: {exc}")
+        logger.warning(
+            f"Async database session rollback failed during close: {type(exc).__name__}"
+        )
         await session.invalidate()
         return
     finally:
         try:
             await session.close()
         except SQLAlchemyError as exc:
-            logger.warning(f"Async database session close failed: {exc}")
+            logger.warning(f"Async database session close failed: {type(exc).__name__}")
             await session.invalidate()
 
 
@@ -270,7 +280,7 @@ def get_engine(database_url: Optional[str] = None):
         return _engine
     except (ImportError, SQLAlchemyError) as e:
         safe_error = redact_secrets_in_text(e, url)
-        logger.error(f"Database connection failed: {safe_error}")
+        logger.error("Database connection failed: error_type=%s", type(e).__name__)
     # Raised outside the except block so the original error, whose message
     # may quote the URL, is neither the cause nor the context of this one.
     raise Exception(f"Database connection failed: {safe_error}")
@@ -455,7 +465,9 @@ def get_async_engine(database_url: Optional[str] = None) -> AsyncEngine:
         return _async_engine
     except (ImportError, SQLAlchemyError) as e:
         safe_error = redact_secrets_in_text(e, url)
-        logger.error(f"Async database connection failed: {safe_error}")
+        logger.error(
+            "Async database connection failed: error_type=%s", type(e).__name__
+        )
     # Raised outside the except block so the original error, whose message
     # may quote the URL, is neither the cause nor the context of this one.
     raise Exception(f"Async database connection failed: {safe_error}")

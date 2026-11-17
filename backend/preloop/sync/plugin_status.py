@@ -195,9 +195,7 @@ async def _heartbeat(worker_id: str, role: str, subjects: list[str]) -> None:
                         )
                     await asyncio.sleep(HEARTBEAT_SECONDS)
         except Exception:
-            logger.exception(
-                "Plugin status reporting unavailable; processing continues"
-            )
+            logger.error("Plugin status reporting unavailable; processing continues")
             await asyncio.sleep(HEARTBEAT_SECONDS)
 
 

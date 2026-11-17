@@ -699,7 +699,9 @@ class SbomUpstreamResolver:
                     return None, last_error
             if attempt < self._retries and self._retry_delay > 0:
                 await asyncio.sleep(self._retry_delay * (attempt + 1))
-        logger.warning("Registry request failed for %s: %s", url, last_error)
+        logger.warning(
+            "Registry request failed: error_type=%s", type(last_error).__name__
+        )
         return None, last_error
 
 

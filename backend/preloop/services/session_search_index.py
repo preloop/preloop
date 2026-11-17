@@ -259,11 +259,7 @@ def request_embedding(account_id: Any) -> None:
 
         submit_account_for_embedding(account_id)
     except Exception:  # noqa: BLE001 - indexing never fails over embedding
-        logger.warning(
-            "Session embedding hand-off failed for account %s",
-            account_id,
-            exc_info=True,
-        )
+        logger.warning("Session embedding hand-off failed for account %s", account_id)
 
 
 def _request_embedding(account_id: Any, stored: List[SessionSearchDocument]) -> None:
@@ -393,10 +389,7 @@ def write_source_chunks(
         return stored
     except Exception:  # noqa: BLE001 - indexing never fails its caller
         logger.warning(
-            "Session search indexing failed for %s %s",
-            source_kind,
-            source_id,
-            exc_info=True,
+            "Session search indexing failed for %s %s", source_kind, source_id
         )
         return []
 
@@ -443,7 +436,6 @@ def index_gateway_interaction(
         logger.warning(
             "Session search text build failed for gateway usage %s",
             getattr(usage, "id", None),
-            exc_info=True,
         )
         return []
 
@@ -721,9 +713,7 @@ def index_artifact_text(
         else:
             db.flush()
     except Exception:  # noqa: BLE001 - indexing never fails its caller
-        logger.warning(
-            "Artifact text extraction failed for %s", artifact.id, exc_info=True
-        )
+        logger.warning("Artifact text extraction failed for %s", artifact.id)
         db.rollback()
         return []
 
@@ -865,9 +855,7 @@ def _drop_session_summary_chunks(
         return removed
     except Exception:  # noqa: BLE001 - indexing never fails its caller
         logger.warning(
-            "Session summary chunk cleanup failed for session %s",
-            runtime_session_id,
-            exc_info=True,
+            "Session summary chunk cleanup failed for session %s", runtime_session_id
         )
         return 0
 

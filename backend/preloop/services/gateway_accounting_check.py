@@ -280,9 +280,7 @@ def run_accounting_checks(
     except SQLAlchemyError as exc:
         # Health checks must report degraded state, not crash the endpoint.
         logger.warning(
-            "Gateway accounting health counter query failed: %s",
-            exc,
-            exc_info=True,
+            "Gateway accounting health counter query failed: %s", type(exc).__name__
         )
         return {
             "window_hours": window_hours,
@@ -317,7 +315,7 @@ def run_accounting_checks(
                 checks.append(run(db, account_id=account_id, start=start))
             except SQLAlchemyError as exc:
                 logger.warning(
-                    "Gateway accounting %s check failed: %s", key, exc, exc_info=True
+                    "Gateway accounting %s check failed: %s", key, type(exc).__name__
                 )
                 checks.append(
                     _check(key, "fail", f"query failed: {exc.__class__.__name__}")
@@ -326,9 +324,7 @@ def run_accounting_checks(
             checks.append(_audit_events_check(db, account_id=account_id, start=start))
         except SQLAlchemyError as exc:
             logger.warning(
-                "Gateway accounting audit check failed: %s",
-                exc,
-                exc_info=True,
+                "Gateway accounting audit check failed: %s", type(exc).__name__
             )
             checks.append(
                 _check(

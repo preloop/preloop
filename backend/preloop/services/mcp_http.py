@@ -294,21 +294,15 @@ async def get_user_context_for_mcp(
 
     if not current_user:
         # Fallback: re-validate if account wasn't cached (shouldn't happen)
-        logger.warning(
-            f"Account not cached in AccessToken, re-validating token {token[:10]}..."
-        )
+        logger.warning("Account not cached in access token; revalidating")
         current_user = await get_user_from_token_if_valid(
             token, db, allow_managed_agent=True
         )
         if not current_user:
-            logger.warning(
-                f"MCP authentication failed: Could not load user for token {token[:10]}..."
-            )
+            logger.warning("MCP authentication failed: could not load user")
             raise HTTPException(status_code=401, detail="Invalid authentication token")
 
-    logger.info(
-        f"MCP request from user {current_user.username} (token: {token[:10]}...)"
-    )
+    logger.info("MCP request: user_id=%s", current_user.id)
 
     # Check if user has tracker(s)
     from preloop.models.crud import crud_account
@@ -366,7 +360,7 @@ async def mcp_http_streaming_endpoint(
     try:
         body = await request.json()
     except Exception as e:
-        logger.error(f"Failed to parse request body: {e}")
+        logger.error(f"Failed to parse request body: {type(e).__name__}")
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")
 
     # Extract MCP method
@@ -451,7 +445,7 @@ async def mcp_http_streaming_endpoint(
             )
 
         except Exception as e:
-            logger.error(f"Error handling tools/list: {e}", exc_info=True)
+            logger.error(f"Error handling tools/list: {type(e).__name__}")
             raise HTTPException(
                 status_code=500, detail=f"Internal server error: {str(e)}"
             )
@@ -518,7 +512,7 @@ async def mcp_http_streaming_endpoint(
                     )
                 except TimeoutError as e:
                     logger.warning(
-                        f"Approval timeout for tool {tool_name}: {e}", exc_info=True
+                        f"Approval timeout for tool {tool_name}: {type(e).__name__}"
                     )
                     response_data = {
                         "jsonrpc": "2.0",
@@ -534,7 +528,7 @@ async def mcp_http_streaming_endpoint(
                     )
                 except PermissionError as e:
                     logger.warning(
-                        f"Approval declined for tool {tool_name}: {e}", exc_info=True
+                        f"Approval declined for tool {tool_name}: {type(e).__name__}"
                     )
                     response_data = {
                         "jsonrpc": "2.0",
@@ -550,7 +544,7 @@ async def mcp_http_streaming_endpoint(
                     )
                 except Exception as e:
                     logger.error(
-                        f"Approval flow error for tool {tool_name}: {e}", exc_info=True
+                        f"Approval flow error for tool {tool_name}: {type(e).__name__}"
                     )
                     response_data = {
                         "jsonrpc": "2.0",
@@ -582,12 +576,7 @@ async def mcp_http_streaming_endpoint(
                     media_type="application/json",
                 )
 
-            from preloop.utils.redaction import redact_for_log
-
-            logger.info(
-                f"Executing tool {tool_name} for user {user_context['username']} "
-                f"with args: {redact_for_log(tool_args)}"
-            )
+            logger.info("Executing tool %s arg_keys=%s", tool_name, sorted(tool_args))
 
             # Call handler
             result = await handler(**tool_args)
@@ -618,7 +607,7 @@ async def mcp_http_streaming_endpoint(
             )
 
         except Exception as e:
-            logger.error(f"Error executing tool {tool_name}: {e}", exc_info=True)
+            logger.error(f"Error executing tool {tool_name}: {type(e).__name__}")
             response_data = {
                 "jsonrpc": "2.0",
                 "id": body.get("id", 1),

@@ -442,13 +442,12 @@ class MCPClient:
             self._session = None
             self._exit_stack = None
             logger.info(
-                f"Connected to MCP server at {self.url} "
-                f"(protocol: {init_result.protocol_version})"
+                "Connected to MCP server (protocol=%s)", init_result.protocol_version
             )
         except BaseException as e:
             target_exc = _unwrap_exception_group(e)
             logger.warning(
-                "Failed to connect to MCP server: %s", describe_mcp_connection_error(e)
+                "Failed to connect to MCP server: error_type=%s", type(e).__name__
             )
             self._connected = False
             if isinstance(target_exc, Exception):
@@ -478,7 +477,7 @@ class MCPClient:
         was_connected = self._connected
         self._connected = False
         if was_connected:
-            logger.info(f"Closed connection to MCP server at {self.url}")
+            logger.info("Closed MCP server connection")
 
     def is_connected(self) -> bool:
         """Check if client is connected.
@@ -516,7 +515,7 @@ class MCPClient:
             target_exc = _unwrap_exception_group(e)
 
             logger.error(
-                "Error listing MCP tools: %s", describe_mcp_connection_error(target_exc)
+                "Error listing MCP tools: error_type=%s", type(target_exc).__name__
             )
 
             if isinstance(target_exc, Exception):
@@ -654,7 +653,10 @@ class MCPClient:
             if isinstance(target_exc, asyncio.CancelledError):
                 raise
             message = describe_mcp_connection_error(target_exc)
-            logger.warning("Upstream MCP tool request failed: %s", message)
+            logger.warning(
+                "Upstream MCP tool request failed: error_type=%s",
+                type(target_exc).__name__,
+            )
             if dispatched and not (
                 isinstance(
                     target_exc,

@@ -200,7 +200,8 @@ async def _tear_down_runtime(
                 )
         except Exception as log_error:
             logger.error(
-                "Failed to fetch and persist logs before stopping: %s", log_error
+                "Failed to fetch and persist logs before stopping: %s",
+                type(log_error).__name__,
             )
 
         await agent.stop(session_reference)
@@ -211,7 +212,9 @@ async def _tear_down_runtime(
         )
     except Exception as error:
         logger.error(
-            "Failed to stop container for execution %s: %s", execution_id, error
+            "Failed to stop container for execution %s: %s",
+            execution_id,
+            type(error).__name__,
         )
         return TeardownOutcome(
             confirmed=False,
@@ -229,7 +232,7 @@ async def _tear_down_runtime(
             "Could not verify termination of %s for execution %s: %s",
             session_reference,
             execution_id,
-            error,
+            type(error).__name__,
         )
         confirmed = False
     return TeardownOutcome(confirmed=confirmed)
@@ -280,7 +283,7 @@ def _audit_stop_request(
             },
         )
     except Exception:
-        logger.exception("Failed to audit the stop of execution %s", execution.id)
+        logger.error("Failed to audit the stop of execution %s", execution.id)
         try:
             db.rollback()
         except Exception:  # pragma: no cover - session already unusable
@@ -303,7 +306,7 @@ async def _stop_tree(
             nats_client=nats_client,
         )
     except Exception:
-        logger.exception("Failed to stop the tree of execution %s", execution.id)
+        logger.error("Failed to stop the tree of execution %s", execution.id)
 
 
 async def _send_stop_command(
@@ -320,7 +323,7 @@ async def _send_stop_command(
             nats_client=nats_client,
         )
     except Exception as error:
-        logger.warning("Failed to send stop command via NATS: %s", error)
+        logger.warning("Failed to send stop command via NATS: %s", type(error).__name__)
 
 
 async def stop_execution(

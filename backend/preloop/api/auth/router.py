@@ -258,16 +258,14 @@ def _resolve_user_permissions(user: UserModel, db: Session) -> Optional[List[str
     try:
         from preloop.plugins.proprietary.rbac.permissions import get_user_permissions
     except ImportError:
-        logger.exception(
-            "Commercial permission module unavailable; denying permissions"
-        )
+        logger.error("Commercial permission module unavailable; denying permissions")
         return []
 
     try:
         return get_user_permissions(user, db)
     except Exception:
         # RBAC is optional on this path; never 500 /users/me for permission lookup.
-        logger.exception("Failed to resolve user permissions; denying permissions")
+        logger.error("Failed to resolve user permissions; denying permissions")
         return []
 
 
@@ -292,7 +290,7 @@ def _resolve_team_ids(user: UserModel, db: Session) -> List[UUID]:
     except Exception:
         # Same rule as permissions above: never 500 /users/me over an
         # optional field.
-        logger.exception("Failed to resolve team memberships; returning empty list")
+        logger.error("Failed to resolve team memberships; returning empty list")
         return []
     return [team.id for team in teams]
 
@@ -307,7 +305,7 @@ def _runner_policy_for(user: UserModel, db: Session) -> RunnerPolicy:
     try:
         return RunnerPolicy.model_validate(raw)
     except ValidationError:
-        logger.exception("Invalid runner policy from provider; using OSS default")
+        logger.error("Invalid runner policy from provider; using OSS default")
         return RunnerPolicy.model_validate(
             account_hooks.oss_default_runner_policy(db, user)
         )
@@ -336,7 +334,7 @@ def _build_auth_user_response(user: UserModel, db: Session) -> AuthUserResponse:
         ):
             profile = crud_person.profile_for_membership(db, membership_id=user.id)
     except Exception:
-        logger.exception("Could not restore an SSO profile photo")
+        logger.error("Could not restore an SSO profile photo")
     return AuthUserResponse(
         id=user.id,
         person_id=profile.person_id,
@@ -814,7 +812,7 @@ async def register(
         )
     except Exception as e:
         session.rollback()
-        logger.error(f"Error registering user: {str(e)}")
+        logger.error(f"Error registering user: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error registering user",
@@ -924,7 +922,7 @@ async def verify_email(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Error verifying email: {str(e)}")
+        logger.error(f"Error verifying email: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error verifying email",
@@ -997,7 +995,7 @@ def _send_verification_email_task(
     try:
         send_verification_email(user_email=user_email, token=token, username=username)
     except EmailError as error:
-        logger.error("Failed to resend verification email: %s", error)
+        logger.error("Failed to resend verification email: %s", type(error).__name__)
 
 
 def _send_password_reset_email_task(
@@ -1007,7 +1005,7 @@ def _send_password_reset_email_task(
     try:
         send_password_reset_email(user_email=user_email, token=token, username=username)
     except EmailError as error:
-        logger.error("Failed to send password reset email: %s", error)
+        logger.error("Failed to send password reset email: %s", type(error).__name__)
 
 
 @router.post("/forgot-password", status_code=status.HTTP_200_OK)
@@ -1099,7 +1097,7 @@ async def reset_password(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Error resetting password: {str(e)}")
+        logger.error(f"Error resetting password: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error resetting password",
@@ -1490,7 +1488,7 @@ def refresh_token(
     except (HTTPException, SQLAlchemyTimeoutError):
         raise
     except Exception as e:
-        logger.error("Unexpected error refreshing token: %s", e, exc_info=True)
+        logger.error("Unexpected error refreshing token: %s", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token",
@@ -2424,7 +2422,7 @@ def delete_api_key(
         session.commit()
     except Exception as e:
         session.rollback()
-        logger.error(f"Error deleting API key: {str(e)}")
+        logger.error(f"Error deleting API key: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error deleting API key",
@@ -2574,7 +2572,7 @@ def _record_successful_login(
                     source_ip=source_ip,
                 )
             except Exception as e:
-                logger.error(f"Failed to send login notification: {e}")
+                logger.error(f"Failed to send login notification: {type(e).__name__}")
 
         thread = threading.Thread(target=send_login_notification)
         thread.daemon = True

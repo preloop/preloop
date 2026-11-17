@@ -165,7 +165,7 @@ async def _claim_forge_delivery(
     try:
         return await run_db_off_loop(claim)
     except Exception:
-        logger.exception("Webhook delivery dedupe unavailable; queueing anyway")
+        logger.error("Webhook delivery dedupe unavailable; queueing anyway")
         return None
 
 
@@ -208,7 +208,7 @@ async def _mark_forge_delivery_published(db: Session, plan: _WebhookPlan) -> Non
     try:
         await run_db_off_loop(mark)
     except Exception:
-        logger.exception("Webhook delivery publication mark failed")
+        logger.error("Webhook delivery publication mark failed")
 
 
 async def _release_forge_delivery(db: Session, plan: _WebhookPlan) -> None:
@@ -232,7 +232,7 @@ async def _release_forge_delivery(db: Session, plan: _WebhookPlan) -> None:
     try:
         await run_db_off_loop(release)
     except Exception:
-        logger.exception("Webhook delivery claim release failed")
+        logger.error("Webhook delivery claim release failed")
 
 
 @router.post("/private/webhooks/{tracker_type}/{organization_id}", response_model=None)
@@ -304,7 +304,7 @@ async def receive_webhook(
             if ack is None:
                 raise RuntimeError("NATS did not acknowledge the webhook task")
         except Exception:
-            logger.exception("Webhook task publication failed: %s", name)
+            logger.error("Webhook task publication failed: %s", name)
             if name != "notify_admins":
                 publish_failed = True
 
@@ -340,7 +340,7 @@ async def receive_webhook(
         try:
             await run_db_off_loop(update_timestamp)
         except Exception:
-            logger.exception(
+            logger.error(
                 "Webhook timestamp update failed for tracker %s", plan.tracker_id
             )
         return {
@@ -471,7 +471,9 @@ def _prepare_bitbucket_dc_webhook(
         )
     except BitbucketDCWebhookRejectedError as exc:
         logger.warning(
-            "Bitbucket DC webhook rejected for tracker %s: %s", tracker.id, exc.reason
+            "Bitbucket DC webhook rejected for tracker %s: %s",
+            tracker.id,
+            type(exc).__name__,
         )
         raise HTTPException(status_code=exc.status_code, detail=exc.reason)
 
@@ -927,7 +929,9 @@ def _prepare_webhook(
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error during GitHub signature verification: {e}")
+            logger.error(
+                f"Error during GitHub signature verification: {type(e).__name__}"
+            )
             # Notify admins
             plan.queue_task(
                 "notify_admins",
@@ -1036,7 +1040,7 @@ def _prepare_webhook(
                 raise
             except Exception as e:
                 logger.error(
-                    f"Error during Jira signature verification for tracker ID {resolved_tracker.id}: {e}"
+                    f"Error during Jira signature verification for tracker ID {resolved_tracker.id}: {type(e).__name__}"
                 )
                 # Notify admins
                 plan.queue_task(
@@ -1094,7 +1098,7 @@ def _prepare_webhook(
         parsed_payload = json.loads(raw_body)
     except Exception as e:
         logger.error(
-            f"Failed to parse webhook JSON payload for tracker ID {resolved_tracker.id}: {e}"
+            f"Failed to parse webhook JSON payload for tracker ID {resolved_tracker.id}: {type(e).__name__}"
         )
         # Notify admins
         plan.queue_task(
@@ -1172,7 +1176,7 @@ def _prepare_webhook(
         except Exception as e_ts:
             db.rollback()
             logger.error(
-                f"Failed to update timestamp after skipping non-subscribed event for tracker {resolved_tracker.id}: {e_ts}"
+                f"Failed to update timestamp after skipping non-subscribed event for tracker {resolved_tracker.id}: {type(e_ts).__name__}"
             )
             # Notify admins
             plan.queue_task(
@@ -1310,12 +1314,7 @@ def _prepare_webhook(
             # Atomic upsert: concurrent deliveries for one issue (opened plus
             # several labeled events within a second) converge on one row.
             db_issue, created = crud_issue.upsert(db, obj_in=transformed_issue)
-            logger.info(
-                "%s issue %s from webhook (title: '%s')",
-                "Created" if created else "Updated",
-                db_issue.id,
-                db_issue.title,
-            )
+            logger.info("Webhook issue stored: id=%s created=%s", db_issue.id, created)
 
             plan.embeddings.append({"issue_id": db_issue.id, "force_update": True})
 
@@ -1427,25 +1426,27 @@ def _prepare_webhook(
         # Use warning level for expected cases like "Issue not found"
         # These are common when webhooks arrive for issues not yet synced
         if http_exc.status_code == 404:
-            logger.warning(f"HTTP 404 during webhook processing: {http_exc.detail}")
+            logger.warning(
+                f"HTTP 404 during webhook processing: {type(http_exc).__name__}"
+            )
         elif http_exc.status_code == 400 and http_exc.detail in {
             "Issue data missing from payload",
             "Missing data to construct GitLab issue key.",
         }:
             logger.warning(
-                "Ignored webhook payload without issue data: %s", http_exc.detail
+                "Ignored webhook payload without issue data: %s",
+                type(http_exc).__name__,
             )
         else:
             logger.warning(
-                "HTTP exception during webhook processing: %s", http_exc.detail
+                "HTTP exception during webhook processing: %s", type(http_exc).__name__
             )
         # Don't raise yet - publish to NATS first
     except Exception as e:
         db.rollback()
         db_processing_success = False
         logger.error(
-            f"Failed to process webhook payload for tracker {resolved_tracker.id}: {e}",
-            exc_info=True,
+            f"Failed to process webhook payload for tracker {resolved_tracker.id}: {type(e).__name__}"
         )
         # Don't raise yet - publish to NATS first
 

@@ -178,7 +178,7 @@ class GitLabTracker(BaseTracker):
         except Exception as e:
             # Catching potential exceptions from to_thread if the callable fails
             logger.error(
-                f"An unexpected error occurred in GitLab request: {e}", exc_info=True
+                f"An unexpected error occurred in GitLab request: {type(e).__name__}"
             )
             raise TrackerResponseError(f"GitLab API error: {e}")
 
@@ -276,7 +276,7 @@ class GitLabTracker(BaseTracker):
         except Exception as e:
             # Catching potential exceptions from to_thread if the callable fails
             logger.error(
-                f"An unexpected error occurred in GitLab request: {e}", exc_info=True
+                f"An unexpected error occurred in GitLab request: {type(e).__name__}"
             )
             raise TrackerResponseError(f"GitLab API error: {e}")
 
@@ -303,7 +303,7 @@ class GitLabTracker(BaseTracker):
                 )
             except Exception as e:
                 logger.error(
-                    f"Could not process GitLab issue link for target iid {link.iid}: {e}"
+                    f"Could not process GitLab issue link for target iid {link.iid}: {type(e).__name__}"
                 )
                 continue
         return dependencies
@@ -754,7 +754,7 @@ class GitLabTracker(BaseTracker):
             await self._make_request(issue.links.create, link_dict)
             return True
         except Exception as e:
-            logger.exception(f"Failed to add relation: {e}")
+            logger.error(f"Failed to add relation: {type(e).__name__}")
             return False
 
     async def get_organizations(self) -> List[Dict[str, Any]]:
@@ -841,7 +841,7 @@ class GitLabTracker(BaseTracker):
                 )
             except Exception as e:
                 logger.error(
-                    f"Failed to fetch notes for GitLab issue {issue_obj.iid} in project {project_id}: {e}"
+                    f"Failed to fetch notes for GitLab issue {issue_obj.iid} in project {project_id}: {type(e).__name__}"
                 )
                 notes = []
 
@@ -887,7 +887,7 @@ class GitLabTracker(BaseTracker):
                     dependencies = await self._parse_dependencies(links_list)
                 except Exception as e:
                     logger.warning(
-                        f"Failed to parse dependencies for issue {issue_obj.iid}: {e}"
+                        f"Failed to parse dependencies for issue {issue_obj.iid}: {type(e).__name__}"
                     )
                     dependencies = []
             issue_data["dependencies"] = dependencies
@@ -952,14 +952,12 @@ class GitLabTracker(BaseTracker):
                 )
                 return True
             logger.error(
-                f"Failed to create project webhook for GitLab project '{project.identifier}': {e}",
-                exc_info=True,
+                f"Failed to create project webhook for GitLab project '{project.identifier}': {type(e).__name__}"
             )
             return False
         except Exception as e:
             logger.error(
-                f"An unexpected error occurred during project webhook registration for GitLab project '{project.identifier}': {e}",
-                exc_info=True,
+                f"An unexpected error occurred during project webhook registration for GitLab project '{project.identifier}': {type(e).__name__}"
             )
             return False
 
@@ -1024,8 +1022,7 @@ class GitLabTracker(BaseTracker):
                     )
                     return "group_hooks_not_supported"
                 logger.error(
-                    f"Error listing group hooks for GitLab group '{organization.identifier}': {e}",
-                    exc_info=True,
+                    f"Error listing group hooks for GitLab group '{organization.identifier}': {type(e).__name__}"
                 )
                 return False  # Other errors during list are a failure
 
@@ -1076,8 +1073,7 @@ class GitLabTracker(BaseTracker):
                     raise TrackerAuthenticationError("GitLab authentication failed")
                 else:
                     logger.error(
-                        f"Failed to create group webhook for GitLab group '{organization.identifier}': {e}",
-                        exc_info=True,
+                        f"Failed to create group webhook for GitLab group '{organization.identifier}': {type(e).__name__}"
                     )
                     return False
 
@@ -1085,8 +1081,7 @@ class GitLabTracker(BaseTracker):
             raise
         except Exception as e:
             logger.error(
-                f"An unexpected error occurred during group webhook registration for GitLab group '{organization.identifier}': {e}",
-                exc_info=True,
+                f"An unexpected error occurred during group webhook registration for GitLab group '{organization.identifier}': {type(e).__name__}"
             )
             return False
 
@@ -1160,7 +1155,7 @@ class GitLabTracker(BaseTracker):
                 if "404" in str(e):
                     return False
                 logger.error(
-                    f"Failed to check project webhook {webhook.external_id}: {e}"
+                    f"Failed to check project webhook {webhook.external_id}: {type(e).__name__}"
                 )
                 return False
         elif webhook.organization:
@@ -1174,7 +1169,7 @@ class GitLabTracker(BaseTracker):
                 if "404" in str(e):
                     return False
                 logger.error(
-                    f"Failed to check group webhook {webhook.external_id}: {e}"
+                    f"Failed to check group webhook {webhook.external_id}: {type(e).__name__}"
                 )
                 return False
         return False
@@ -1221,7 +1216,7 @@ class GitLabTracker(BaseTracker):
         else:
             logger.info(f"No webhooks found for GitLab tracker {self.tracker_id}.")
 
-        logger.info(f"GitLab unregister_all_webhooks summary: {results}")
+        logger.info("GitLab webhook cleanup finished")
         return results
 
     async def _unregister_all_webhooks_for_organization(
@@ -1288,7 +1283,7 @@ class GitLabTracker(BaseTracker):
             return any(h.url == webhook_url for h in hooks)
         except (TrackerConnectionError, TrackerResponseError) as e:
             logger.error(
-                f"Failed to check webhooks for project {project.identifier}: {e}"
+                f"Failed to check webhooks for project {project.identifier}: {type(e).__name__}"
             )
             return False
 
@@ -1306,7 +1301,7 @@ class GitLabTracker(BaseTracker):
             return any(h.url == webhook_url for h in hooks)
         except (TrackerConnectionError, TrackerResponseError) as e:
             logger.error(
-                f"Failed to check webhooks for organization {organization.identifier}: {e}"
+                f"Failed to check webhooks for organization {organization.identifier}: {type(e).__name__}"
             )
             return False
 
@@ -1349,7 +1344,7 @@ class GitLabTracker(BaseTracker):
                 groups = await self._make_request(self.gl.groups.list, all=True)
             except (TrackerConnectionError, TrackerResponseError) as e:
                 logger.error(
-                    f"Failed to retrieve groups for stale webhook cleanup: {e}"
+                    f"Failed to retrieve groups for stale webhook cleanup: {type(e).__name__}"
                 )
                 # If we can't list groups, skip to project webhooks
                 skip_group_webhooks = True
@@ -1398,7 +1393,7 @@ class GitLabTracker(BaseTracker):
                                 TrackerResponseError,
                             ) as delete_error:
                                 logger.error(
-                                    f"Failed to delete stale group webhook {hook.id} for group {group.id}: {delete_error}"
+                                    f"Failed to delete stale group webhook {hook.id} for group {group.id}: {type(delete_error).__name__}"
                                 )
                                 results["failed"] += 1
                         finally:
@@ -1411,14 +1406,16 @@ class GitLabTracker(BaseTracker):
                         )
                         break
                     logger.error(
-                        f"Failed to list hooks for group {group.id}: {list_error}"
+                        f"Failed to list hooks for group {group.id}: {type(list_error).__name__}"
                     )
                     results["failed"] += 1
 
         try:
             projects = await self._make_request(self.gl.projects.list, all=True)
         except (TrackerConnectionError, TrackerResponseError) as e:
-            logger.error(f"Failed to retrieve projects for stale webhook cleanup: {e}")
+            logger.error(
+                f"Failed to retrieve projects for stale webhook cleanup: {type(e).__name__}"
+            )
             return results
 
         for project in projects:
@@ -1459,14 +1456,14 @@ class GitLabTracker(BaseTracker):
                             TrackerResponseError,
                         ) as delete_error:
                             logger.error(
-                                f"Failed to delete stale project webhook {hook.id} for project {project.id}: {delete_error}"
+                                f"Failed to delete stale project webhook {hook.id} for project {project.id}: {type(delete_error).__name__}"
                             )
                             results["failed"] += 1
                     finally:
                         db.close()
             except (TrackerConnectionError, TrackerResponseError) as list_error:
                 logger.error(
-                    f"Failed to list hooks for project {project.id}: {list_error}"
+                    f"Failed to list hooks for project {project.id}: {type(list_error).__name__}"
                 )
                 results["failed"] += 1
 
@@ -1561,7 +1558,9 @@ class GitLabTracker(BaseTracker):
                     )
                 )
         except Exception as e:
-            logger.error(f"Failed to fetch notes for issue {issue_id}: {e}")
+            logger.error(
+                f"Failed to fetch notes for issue {issue_id}: {type(e).__name__}"
+            )
 
         return comments_data
 
@@ -1714,7 +1713,7 @@ class GitLabTracker(BaseTracker):
             }
 
         except Exception as e:
-            logger.error(f"Error getting merge request {mr_iid}: {e}")
+            logger.error(f"Error getting merge request {mr_iid}: {type(e).__name__}")
             raise TrackerResponseError(f"Failed to get merge request: {e}")
 
     async def list_merge_requests(
@@ -1976,7 +1975,7 @@ class GitLabTracker(BaseTracker):
             }
 
         except Exception as e:
-            logger.error(f"Error updating merge request {mr_iid}: {e}")
+            logger.error(f"Error updating merge request {mr_iid}: {type(e).__name__}")
             raise TrackerResponseError(f"Failed to update merge request: {e}")
 
     async def create_merge_request(
@@ -2048,7 +2047,7 @@ class GitLabTracker(BaseTracker):
             # Create the merge request
             mr = await self._make_request(project.mergerequests.create, create_data)
 
-            logger.info(f"Created merge request !{mr.iid}: {title}")
+            logger.info("Created merge request !%s", mr.iid)
 
             return {
                 "id": str(mr.id),
@@ -2063,7 +2062,7 @@ class GitLabTracker(BaseTracker):
             }
 
         except Exception as e:
-            logger.error(f"Error creating merge request: {e}")
+            logger.error(f"Error creating merge request: {type(e).__name__}")
             raise TrackerResponseError(f"Failed to create merge request: {e}")
 
     async def approve_merge_request(self, mr_iid: str) -> Dict[str, Any]:
@@ -2104,7 +2103,7 @@ class GitLabTracker(BaseTracker):
             }
 
         except Exception as e:
-            logger.error(f"Error approving merge request {mr_iid}: {e}")
+            logger.error(f"Error approving merge request {mr_iid}: {type(e).__name__}")
             raise TrackerResponseError(f"Failed to approve merge request: {e}")
 
     async def unapprove_merge_request(self, mr_iid: str) -> Dict[str, Any]:
@@ -2128,7 +2127,9 @@ class GitLabTracker(BaseTracker):
             project = await self._make_request(self.gl.projects.get, project_id)
             mr = await self._make_request(project.mergerequests.get, mr_iid)
         except Exception as e:
-            logger.error(f"Error unapproving merge request {mr_iid}: {e}")
+            logger.error(
+                f"Error unapproving merge request {mr_iid}: {type(e).__name__}"
+            )
             raise TrackerResponseError(f"Failed to unapprove merge request: {e}")
 
         try:
@@ -2157,7 +2158,9 @@ class GitLabTracker(BaseTracker):
                     "skipped": True,
                     "reason": "no approval to revoke (404)",
                 }
-            logger.error(f"Error unapproving merge request {mr_iid}: {e}")
+            logger.error(
+                f"Error unapproving merge request {mr_iid}: {type(e).__name__}"
+            )
             raise TrackerResponseError(f"Failed to unapprove merge request: {e}")
 
         return {
@@ -2250,7 +2253,9 @@ class GitLabTracker(BaseTracker):
             return result
 
         except Exception as e:
-            logger.warning("Error getting MR discussions for %s: %s", mr_iid, e)
+            logger.warning(
+                "Error getting MR discussions for %s: %s", mr_iid, type(e).__name__
+            )
             raise TrackerResponseError(f"Failed to get MR discussions: {e}")
 
     async def update_mr_note(
@@ -2295,7 +2300,9 @@ class GitLabTracker(BaseTracker):
             }
 
         except Exception as e:
-            logger.error(f"Error updating MR note {note_id} for MR {mr_iid}: {e}")
+            logger.error(
+                f"Error updating MR note {note_id} for MR {mr_iid}: {type(e).__name__}"
+            )
             raise TrackerResponseError(f"Failed to update MR note: {e}")
 
     async def resolve_mr_discussion(
@@ -2337,7 +2344,7 @@ class GitLabTracker(BaseTracker):
 
         except Exception as e:
             logger.error(
-                f"Error resolving MR discussion {discussion_id} for MR {mr_iid}: {e}"
+                f"Error resolving MR discussion {discussion_id} for MR {mr_iid}: {type(e).__name__}"
             )
             raise TrackerResponseError(f"Failed to resolve MR discussion: {e}")
 
@@ -2437,7 +2444,9 @@ class GitLabTracker(BaseTracker):
             }
 
         except Exception as e:
-            logger.error(f"Error creating MR discussion for MR {mr_iid}: {e}")
+            logger.error(
+                f"Error creating MR discussion for MR {mr_iid}: {type(e).__name__}"
+            )
             raise TrackerResponseError(f"Failed to create MR discussion: {e}")
 
     async def reply_to_mr_discussion(
@@ -2495,7 +2504,7 @@ class GitLabTracker(BaseTracker):
 
         except Exception as e:
             logger.error(
-                f"Error replying to discussion {discussion_id} on MR {mr_iid}: {e}"
+                f"Error replying to discussion {discussion_id} on MR {mr_iid}: {type(e).__name__}"
             )
             raise TrackerResponseError(f"Failed to reply to MR discussion: {e}")
 
@@ -2555,7 +2564,7 @@ class GitLabTracker(BaseTracker):
                     "user": None,
                     "already_existed": True,
                 }
-            logger.error(f"Error adding award emoji to MR {mr_iid}: {e}")
+            logger.error(f"Error adding award emoji to MR {mr_iid}: {type(e).__name__}")
             raise TrackerResponseError(f"Failed to add award emoji: {e}")
 
     async def remove_mr_award_emoji(
@@ -2618,7 +2627,9 @@ class GitLabTracker(BaseTracker):
             return True
 
         except Exception as e:
-            logger.warning(f"Failed to remove award emoji from MR {mr_iid}: {e}")
+            logger.warning(
+                f"Failed to remove award emoji from MR {mr_iid}: {type(e).__name__}"
+            )
             return False
 
     async def create_commit_status(
@@ -2705,7 +2716,9 @@ class GitLabTracker(BaseTracker):
             return result
 
         except Exception as e:
-            logger.error(f"Error creating commit status on {sha[:8]}: {e}")
+            logger.error(
+                f"Error creating commit status on {sha[:8]}: {type(e).__name__}"
+            )
             raise TrackerResponseError(f"Failed to create commit status: {e}")
 
     async def get_user_id_by_username(self, username: str) -> Optional[int]:
@@ -2734,7 +2747,9 @@ class GitLabTracker(BaseTracker):
             return None
 
         except Exception as e:
-            logger.warning(f"Error looking up GitLab user '{username}': {e}")
+            logger.warning(
+                f"Error looking up GitLab user '{username}': {type(e).__name__}"
+            )
             return None
 
     async def get_user_ids_by_usernames(self, usernames: List[str]) -> List[int]:

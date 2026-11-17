@@ -669,7 +669,7 @@ class _AuditContext:
         except Exception:
             # An audit failure must not leave the request half done, but it
             # must be visible.
-            logger.exception("runner session audit write failed: %s", action)
+            logger.error("runner session audit write failed: %s", action)
             self.db.rollback()
 
     def reject(self, status_code: int, code: str, message: str) -> HTTPException:
@@ -1112,7 +1112,7 @@ def _require_start_consent(
                     with anyio.fail_after(25):
                         await notify_owner_consent(consent.approval_id)
                 except Exception:
-                    logger.exception(
+                    logger.error(
                         "Runner owner notification pending retry for %s",
                         consent.approval_id,
                     )

@@ -275,7 +275,9 @@ def create_user(
 
         sync_subscription_quantity(db, str(current_user.account_id))
     except Exception as e:
-        logger.warning(f"Failed to update Stripe subscription quantity: {e}")
+        logger.warning(
+            f"Failed to update Stripe subscription quantity: {type(e).__name__}"
+        )
         # Don't fail user creation if billing update fails
 
     return _build_admin_user_response(db, user)
@@ -534,7 +536,9 @@ def deactivate_user(
 
         sync_subscription_quantity(db, str(current_user.account_id))
     except Exception as e:
-        logger.warning(f"Failed to update Stripe subscription quantity: {e}")
+        logger.warning(
+            f"Failed to update Stripe subscription quantity: {type(e).__name__}"
+        )
         # Don't fail user deactivation if billing update fails
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -765,7 +769,7 @@ def bulk_delete_users(
                 f"User {user_id} hard-deleted (bulk) by {current_user.username}"
             )
         except Exception as e:
-            logger.error(f"Bulk delete failed for user {user_id}: {e}", exc_info=True)
+            logger.error(f"Bulk delete failed for user {user_id}: {type(e).__name__}")
             db.rollback()
             results.append(
                 BulkDeleteUserResult(user_id=user_id, status="error", reason=str(e))
@@ -780,8 +784,7 @@ def bulk_delete_users(
                 billing_service.update_subscription_quantity(account_id)
             except Exception as e:
                 logger.warning(
-                    f"Failed to update Stripe subscription quantity for "
-                    f"account {account_id}: {e}"
+                    f"Failed to update Stripe subscription quantity for account {account_id}: {type(e).__name__}"
                 )
 
     return BulkDeleteUsersResponse(results=results)

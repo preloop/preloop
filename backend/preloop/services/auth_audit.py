@@ -174,12 +174,7 @@ def record_auth_event(
     if account_id is None:
         logger.info(
             "Unscoped authentication event",
-            extra={
-                "auth_event": {
-                    "action": action,
-                    "details": clean,
-                }
-            },
+            extra={"auth_event": {"action": action, "detail_keys": sorted(clean)}},
         )
         return
     try:

@@ -135,10 +135,12 @@ def list_project_pull_requests(
     except HTTPException:
         raise
     except TrackerError as exc:
-        logger.warning("Tracker request failed listing pull requests: %s", exc)
+        logger.warning(
+            "Tracker request failed listing pull requests: %s", type(exc).__name__
+        )
         raise HTTPException(status_code=502, detail="Tracker request failed") from exc
     except (httpx.HTTPError, gitlab.exceptions.GitlabError) as exc:
-        logger.exception("Unexpected tracker error listing pull requests")
+        logger.error("Unexpected tracker error listing pull requests")
         raise HTTPException(status_code=502, detail="Tracker request failed") from exc
 
     payload = {

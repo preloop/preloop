@@ -203,7 +203,7 @@ def send_email_notices(
             )
             sent += 1
         except Exception:  # noqa: BLE001 - one bad address must not stop the rest
-            logger.warning("Policy notice email failed", exc_info=True)
+            logger.warning("Policy notice email failed")
     return sent
 
 
@@ -343,7 +343,7 @@ def send_push_to_owners(
                 else:
                     ok = False
             except Exception:  # noqa: BLE001 - keep going with the next device
-                logger.warning("Policy notice push failed", exc_info=True)
+                logger.warning("Policy notice push failed")
                 ok = False
             sent += int(ok)
         return sent
@@ -472,7 +472,7 @@ def deliver_policy_notice(
         try:
             result[channel] = send()
         except Exception:  # noqa: BLE001 - one channel must not stop the others
-            logger.warning("Policy notice %s delivery failed", channel, exc_info=True)
+            logger.warning("Policy notice %s delivery failed", channel)
             try:
                 db.rollback()
             except Exception:  # noqa: BLE001

@@ -221,7 +221,6 @@ def _audit(
         logger.warning(
             "Artifact read audit row could not be written for account %s",
             caller.account_id,
-            exc_info=True,
         )
 
 

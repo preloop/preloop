@@ -319,11 +319,7 @@ def _resolve_bearer_context(
         else:
             reason = "key binding is invalid (managed agent missing or inactive)"
         logger.warning(
-            "Model gateway rejected API key %s (%s): %s — re-run "
-            "`preloop agents onboard` to mint a fresh credential",
-            rejected_key.key_prefix,
-            rejected_key.name,
-            reason,
+            "Model gateway rejected API key: id=%s reason=%s", rejected_key.id, reason
         )
         return None
 

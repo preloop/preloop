@@ -236,10 +236,8 @@ def _evict_live_runner_from_worker(
         )
     except RuntimeError:
         logger.warning(
-            "Could not close the live socket for runner %s from this thread; "
-            "it ends on its next frame",
+            "Could not close the live socket for runner %s from this thread; it ends on its next frame",
             runner_key,
-            exc_info=True,
         )
 
 
@@ -1341,7 +1339,7 @@ async def runner_ws(
                 try:
                     reauthorize_live_sessions(db, runner)
                 except Exception:  # noqa: BLE001 - liveness must not drop
-                    logger.exception(
+                    logger.error(
                         "Runner session re-authorization failed for %s", runner.id
                     )
                     db.rollback()
@@ -1682,7 +1680,7 @@ def _mark_sessions_away(db: Session, runner: FlowRunner) -> None:
     try:
         mark_sessions_away(db, runner)
     except Exception:  # noqa: BLE001 - the sweep repeats it
-        logger.exception("Marking sessions away failed for runner %s", runner.id)
+        logger.error("Marking sessions away failed for runner %s", runner.id)
         db.rollback()
 
 

@@ -305,7 +305,7 @@ async def search_issues(
                     await ctx.info(f"Found {len(issues)} issues in {tracker}")
 
             except Exception as e:
-                logger.exception(f"Error searching {tracker}: {e}")
+                logger.error(f"Error searching {tracker}: {type(e).__name__}")
                 results[tracker] = TrackerError(
                     error="search_failed", message=f"Error searching issues: {str(e)}"
                 ).model_dump()

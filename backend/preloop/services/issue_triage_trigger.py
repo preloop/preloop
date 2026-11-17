@@ -77,7 +77,7 @@ def is_triage_preset_flow(db: Session, flow: Any) -> bool:
     except SQLAlchemyError:
         # Identity is an optimization for a skip decision. If it cannot be
         # read, keep the delivery rather than dropping a run silently.
-        logger.warning("Could not read the triage preset row", exc_info=True)
+        logger.warning("Could not read the triage preset row")
         return False
     return preset is not None and str(preset.id) == str(source_preset_id)
 

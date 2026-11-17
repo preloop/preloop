@@ -109,7 +109,9 @@ def bound_repository(
             trigger_project_id=details.get("project_id"),
         )
     except RepositoryBindingError as exc:
-        logger.warning("Cannot bind feedback: repository binding failed: %s", exc)
+        logger.warning(
+            "Cannot bind feedback: repository binding failed: %s", type(exc).__name__
+        )
         return None
     if applied is None or applied.tracker_type not in CODE_HOSTS:
         return None
@@ -726,7 +728,7 @@ async def run_feedback_tick(db: Session, *, now: datetime | None = None) -> int:
                 )
         except Exception:
             crud_flow_feedback.rollback(db)
-            logger.exception(
+            logger.error(
                 "Feedback registration failed for execution %s",
                 getattr(publication, "id", None),
             )
@@ -759,7 +761,7 @@ async def run_feedback_tick(db: Session, *, now: datetime | None = None) -> int:
                     delay_seconds=feedback_retry_delay(delay),
                 )
                 continue
-            logger.exception("Feedback reconciliation failed for thread %s", thread_id)
+            logger.error("Feedback reconciliation failed for thread %s", thread_id)
             crud_flow_feedback.update(
                 db,
                 thread_id,

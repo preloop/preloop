@@ -507,7 +507,6 @@ def _emit_session_updated(
             )
         )
     except Exception:
-        logger.exception(
-            "Failed to emit runtime_session_updated for session %s",
-            runtime_session_id,
+        logger.error(
+            "Failed to emit runtime_session_updated for session %s", runtime_session_id
         )

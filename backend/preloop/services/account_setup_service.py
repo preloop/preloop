@@ -116,7 +116,9 @@ def notify_admins_new_user_signup(
         notify_admins(subject, message, message_html)
         logger.info(f"Admin notification sent for new user signup: {username}")
     except Exception as e:
-        logger.error(f"Failed to notify admins about new user signup: {e}")
+        logger.error(
+            f"Failed to notify admins about new user signup: {type(e).__name__}"
+        )
 
 
 def notify_admins_user_login_after_inactivity(
@@ -191,7 +193,7 @@ def notify_admins_user_login_after_inactivity(
             f"Admin notification sent for user login after inactivity: {username}"
         )
     except Exception as e:
-        logger.error(f"Failed to notify admins about user login: {e}")
+        logger.error(f"Failed to notify admins about user login: {type(e).__name__}")
 
 
 def notify_admins_user_joined_organization(
@@ -253,7 +255,9 @@ def notify_admins_user_joined_organization(
         notify_admins(subject, message, message_html)
         logger.info(f"Admin notification sent for user joined organization: {username}")
     except Exception as e:
-        logger.error(f"Failed to notify admins about user joining organization: {e}")
+        logger.error(
+            f"Failed to notify admins about user joining organization: {type(e).__name__}"
+        )
 
 
 def should_notify_on_login(
@@ -327,14 +331,16 @@ def complete_new_account_setup(
             )
             logger.info(f"Verification email sent to {user_email}")
         except Exception as e:
-            logger.error(f"Failed to send verification email to {user_email}: {e}")
+            logger.error(
+                f"Failed to send verification email to {user_email}: {type(e).__name__}"
+            )
 
     # 2. Ensure global flow presets exist
     try:
         ensure_global_presets_exist_background()
         logger.info("Global flow presets ensured for new account setup")
     except Exception as e:
-        logger.error(f"Failed to ensure global flow presets: {e}")
+        logger.error(f"Failed to ensure global flow presets: {type(e).__name__}")
 
     # 3. Create default approval workflow
     try:
@@ -342,7 +348,7 @@ def complete_new_account_setup(
         logger.info(f"Default approval workflow created for account {account_id}")
     except Exception as e:
         logger.error(
-            f"Failed to create default approval workflow for account {account_id}: {e}"
+            f"Failed to create default approval workflow for account {account_id}: {type(e).__name__}"
         )
 
     # 4. Notify admins about new signup
@@ -357,7 +363,7 @@ def complete_new_account_setup(
             organization_name=organization_name,
         )
     except Exception as e:
-        logger.error(f"Failed to notify admins about new signup: {e}")
+        logger.error(f"Failed to notify admins about new signup: {type(e).__name__}")
 
     logger.info(f"Account setup completed for account {account_id}")
 
@@ -396,6 +402,5 @@ def complete_new_account_setup_background(
         )
     except Exception as e:
         logger.error(
-            f"Background task failed to complete account setup for {account_id}: {e}",
-            exc_info=True,
+            f"Background task failed to complete account setup for {account_id}: {type(e).__name__}"
         )

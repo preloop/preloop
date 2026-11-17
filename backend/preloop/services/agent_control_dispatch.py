@@ -324,7 +324,7 @@ async def persist_and_deliver_command(
                     )
                 db.commit()
             except SQLAlchemyError:
-                logger.exception(
+                logger.error(
                     "Failed to mark Agent Control command %s failed",
                     envelope.message_id,
                 )

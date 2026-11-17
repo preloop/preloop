@@ -588,7 +588,7 @@ def _finish(
                 correlation_id=correlation_id,
             )
         except Exception:  # noqa: BLE001 - redaction audit must not fail the call
-            logger.warning("Sensitive data redaction audit failed", exc_info=True)
+            logger.warning("Sensitive data redaction audit failed")
     for rule, view in outcome.notices:
         try:
             _audit_rule(
@@ -612,7 +612,7 @@ def _finish(
             if notice is not None:
                 schedule_policy_notice(notice)
         except Exception:  # noqa: BLE001 - notify must never fail the call
-            logger.warning("Sensitive data notice failed", exc_info=True)
+            logger.warning("Sensitive data notice failed")
     return outcome
 
 
@@ -676,7 +676,7 @@ def _audit(
             reason=outcome.reason,
         )
     except Exception:  # noqa: BLE001 - audit must not change the decision
-        logger.warning("Sensitive data audit failed", exc_info=True)
+        logger.warning("Sensitive data audit failed")
 
 
 def _audit_rule(

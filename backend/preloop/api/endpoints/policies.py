@@ -137,7 +137,7 @@ def _audit_policy_change(
             **build(),
         )
     except Exception:
-        logger.warning("Failed to audit policy %s", action, exc_info=True)
+        logger.warning("Failed to audit policy %s", action)
 
 
 # Pydantic models for version management endpoints
@@ -438,7 +438,7 @@ async def validate_policy(
         content = await file.read()
         content_str = content.decode("utf-8")
     except UnicodeDecodeError as e:
-        logger.warning(f"Failed to decode policy file: {e}")
+        logger.warning(f"Failed to decode policy file: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File must be UTF-8 encoded text",
@@ -667,7 +667,7 @@ async def upload_policy(
         content = await file.read()
         content_str = content.decode("utf-8")
     except UnicodeDecodeError as e:
-        logger.warning(f"Failed to decode policy file: {e}")
+        logger.warning(f"Failed to decode policy file: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File must be UTF-8 encoded text",
@@ -685,8 +685,9 @@ async def upload_policy(
 
     if not validation_result.is_valid or policy is None:
         logger.warning(
-            f"Policy validation failed for account {account.id}: "
-            f"{validation_result.errors}"
+            "Policy validation failed: account_id=%s error_count=%s",
+            account.id,
+            len(validation_result.errors),
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -710,10 +711,9 @@ async def upload_policy(
 
     if not result.success:
         logger.warning(
-            "Policy apply rejected for account %s policy '%s': %s",
+            "Policy apply rejected: account_id=%s error_count=%s",
             account.id,
-            policy.metadata.name,
-            result.errors,
+            len(result.errors),
         )
         raise HTTPException(
             status_code=(
@@ -1213,7 +1213,7 @@ async def diff_policy(
         content = await file.read()
         content_str = content.decode("utf-8")
     except UnicodeDecodeError as e:
-        logger.warning(f"Failed to decode policy file: {e}")
+        logger.warning(f"Failed to decode policy file: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File must be UTF-8 encoded text",
@@ -1233,8 +1233,9 @@ async def diff_policy(
 
     if not validation_result.is_valid or incoming_policy is None:
         logger.warning(
-            f"Policy validation failed for diff, account {account.id}: "
-            f"{validation_result.errors}"
+            "Policy validation failed: account_id=%s error_count=%s",
+            account.id,
+            len(validation_result.errors),
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1661,7 +1662,7 @@ async def delete_policy_version(
     try:
         deleted_ref = _snapshot_audit_ref(service.get_snapshot(version_id))
     except Exception:
-        logger.warning("Failed to read policy version for audit", exc_info=True)
+        logger.warning("Failed to read policy version for audit")
         deleted_ref = {"version_id": str(version_id)}
     success, error = service.delete_snapshot(version_id)
 
@@ -1988,7 +1989,7 @@ async def generate_policy_from_audit(
         logger.warning(
             "Audit-based policy generation failed for account %s: %s",
             account.id,
-            exc,
+            type(exc).__name__,
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

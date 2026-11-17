@@ -344,7 +344,7 @@ def _ensure_sweeper() -> None:
             try:
                 await sweep_once()
             except Exception:  # noqa: BLE001 - keep sweeping
-                logger.exception("Desktop view sweep failed")
+                logger.error("Desktop view sweep failed")
 
     _sweeper = asyncio.create_task(loop())
 
@@ -1528,7 +1528,7 @@ def _pump_outcome(task: asyncio.Task[str], error_reason: str) -> tuple[str, int]
         return error_reason, broker.CLOSE_PROTOCOL
     if exc is not None:
         if not isinstance(exc, (WebSocketDisconnect, RuntimeError, OSError)):
-            logger.error("Desktop relay failed", exc_info=exc)
+            logger.error("Desktop relay failed")
         return error_reason, broker.CLOSE_CODE_BY_REASON[error_reason]
     reason = task.result()
     return reason, broker.CLOSE_CODE_BY_REASON[reason]

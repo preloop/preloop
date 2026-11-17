@@ -93,10 +93,8 @@ def _active_run_for_target(
         )
     except (SQLAlchemyError, TypeError, ValueError, AttributeError):
         logger.warning(
-            "Could not check for an active run of flow %s on this target; "
-            "starting the requested run",
+            "Could not check for an active run of flow %s on this target; starting the requested run",
             getattr(flow, "id", None),
-            exc_info=True,
         )
         return None
     if found is None:

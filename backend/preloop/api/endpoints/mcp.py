@@ -143,13 +143,11 @@ def _rollback_tool_session(session: Session) -> bool:
         session.rollback()
         return True
     except Exception:
-        logger.warning(
-            "Database session rollback failed after tool error", exc_info=True
-        )
+        logger.warning("Database session rollback failed after tool error")
         try:
             session.invalidate()
         except Exception:
-            logger.warning("Database session invalidation failed", exc_info=True)
+            logger.warning("Database session invalidation failed")
         return False
 
 
@@ -166,7 +164,7 @@ def _database_error_detail(rolled_back: bool) -> str:
 def _batch_error_detail(exc: Exception, db: Session, prefix: str) -> str:
     """Sanitize DB errors caught inside batch tools and recover before the next item."""
     if _is_database_error(exc):
-        logger.error("Database error processing batch tool item", exc_info=exc)
+        logger.error("Database error processing batch tool item")
         return _database_error_detail(_rollback_tool_session(db))
     detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
     return f"{prefix}: {detail}"
@@ -216,9 +214,7 @@ def _with_tool_db(
             if isinstance(exc, asyncio.CancelledError):
                 raise
             if _is_database_error(exc):
-                logger.error(
-                    "Database error executing tool %s", tool.__name__, exc_info=True
-                )
+                logger.error("Database error executing tool %s", tool.__name__)
                 raise HTTPException(
                     status_code=500,
                     detail=_database_error_detail(rolled_back),
@@ -586,7 +582,7 @@ async def _run_bitbucket(action: str, call: Awaitable[_ToolResult]) -> _ToolResu
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        logger.error(f"Bitbucket: failed to {action}: {e}", exc_info=True)
+        logger.error(f"Bitbucket: failed to {action}: {type(e).__name__}")
         raise HTTPException(
             status_code=502,
             detail=f"Failed to {action} on Bitbucket: {str(e)}",
@@ -861,7 +857,6 @@ def _record_review_receipt(
         logger.error(
             "Could not record the review publication receipt for execution %s",
             execution_id,
-            exc_info=True,
         )
 
 
@@ -1173,7 +1168,9 @@ async def create_issue(
             )
             search_results = search_response.results
         except Exception as e:
-            logger.error(f"Similarity search failed during duplicate check: {e}")
+            logger.error(
+                f"Similarity search failed during duplicate check: {type(e).__name__}"
+            )
             search_results = []
 
         if search_results:
@@ -1218,7 +1215,7 @@ async def create_issue(
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error(f"Failed to create issue: {e}", exc_info=True)
+        logger.error(f"Failed to create issue: {type(e).__name__}")
         raise HTTPException(status_code=500, detail="Failed to create issue.")
 
 
@@ -1411,8 +1408,7 @@ async def update_issue(
                 raise
             except Exception as e:
                 logger.error(
-                    f"Error updating issue reaction on {issue_obj.external_id}: {e}",
-                    exc_info=True,
+                    f"Error updating issue reaction on {issue_obj.external_id}: {type(e).__name__}"
                 )
                 raise HTTPException(
                     status_code=502,
@@ -1422,7 +1418,8 @@ async def update_issue(
         if update_data_for_tracker:
             try:
                 logger.info(
-                    f"Calling tracker client to update issue {issue_repo_id} with data: {update_data_for_tracker}"
+                    "Updating tracker issue: field_keys=%s",
+                    sorted(update_data_for_tracker),
                 )
                 await tracker_client.update_issue(
                     issue_repo_id, IssueUpdate(**update_data_for_tracker)
@@ -1436,8 +1433,7 @@ async def update_issue(
                 )
             except Exception as e:
                 logger.error(
-                    f"Error updating issue {issue_obj.external_id} via tracker client: {e}",
-                    exc_info=True,
+                    f"Error updating issue {issue_obj.external_id} via tracker client: {type(e).__name__}"
                 )
                 raise HTTPException(
                     status_code=502,
@@ -1457,7 +1453,7 @@ async def update_issue(
         else:
             try:
                 logger.info(
-                    f"Updating local DB for issue {issue_obj.id} with data: {update_data_for_db}"
+                    "Updating local issue: field_keys=%s", sorted(update_data_for_db)
                 )
                 # Update the local database record
                 # Note: crud_issue.update expects the db object, the existing db_obj, and the update obj (Pydantic model or dict)
@@ -1473,7 +1469,7 @@ async def update_issue(
             except SQLAlchemyError as e:
                 db.rollback()
                 logger.error(
-                    f"Database error updating issue {issue_obj.id}: {e}", exc_info=True
+                    f"Database error updating issue {issue_obj.id}: {type(e).__name__}"
                 )
                 raise HTTPException(
                     status_code=500, detail="Database error during issue update."
@@ -1601,7 +1597,7 @@ async def search_issues(
     except HTTPException as e:
         raise e
     except Exception as e:
-        logger.error(f"Failed to perform search for query '{query}': {e}")
+        logger.error("Search failed: error_type=%s", type(e).__name__)
         raise HTTPException(status_code=500, detail="Failed to perform search.")
 
 
@@ -1681,8 +1677,9 @@ async def estimate_compliance(
             failed_issues.append(issue_identifier)
             errors.append(f"{issue_identifier}: {error_msg}")
             logger.error(
-                f"Exception processing issue '{issue_identifier}': {result}",
-                exc_info=True,
+                "Issue processing failed: issue_id=%s error_type=%s",
+                issue_identifier,
+                type(result).__name__,
             )
         elif result.success:
             compliance_results.append(result.data)
@@ -1739,7 +1736,7 @@ async def _process_single_issue_estimate(
         )
 
     except IssueNotFoundError as e:
-        logger.warning(f"Issue not found: '{issue_identifier}': {str(e)}")
+        logger.warning(f"Issue not found: '{issue_identifier}': {type(e).__name__}")
         return ProcessingResult(
             success=False,
             error=f"Issue not found: {str(e)}",
@@ -1747,7 +1744,7 @@ async def _process_single_issue_estimate(
         )
     except HTTPException as e:
         logger.warning(
-            f"Could not get compliance estimate for issue '{issue_identifier}': {e.detail}"
+            f"Could not get compliance estimate for issue '{issue_identifier}': {type(e).__name__}"
         )
         return ProcessingResult(
             success=False,
@@ -1756,8 +1753,7 @@ async def _process_single_issue_estimate(
         )
     except Exception as e:
         logger.error(
-            f"Unexpected error processing issue '{issue_identifier}': {e}",
-            exc_info=True,
+            f"Unexpected error processing issue '{issue_identifier}': {type(e).__name__}"
         )
         return ProcessingResult(
             success=False,
@@ -1800,7 +1796,7 @@ async def _process_single_issue_compliance(
         )
 
     except IssueNotFoundError as e:
-        logger.warning(f"Issue not found: '{issue_identifier}': {str(e)}")
+        logger.warning(f"Issue not found: '{issue_identifier}': {type(e).__name__}")
         return ProcessingResult(
             success=False,
             error=f"Issue not found: {str(e)}",
@@ -1808,7 +1804,7 @@ async def _process_single_issue_compliance(
         )
     except HTTPException as e:
         logger.warning(
-            f"Could not get compliance suggestion for issue '{issue_identifier}': {e.detail}"
+            f"Could not get compliance suggestion for issue '{issue_identifier}': {type(e).__name__}"
         )
         return ProcessingResult(
             success=False,
@@ -1817,8 +1813,7 @@ async def _process_single_issue_compliance(
         )
     except Exception as e:
         logger.error(
-            f"Unexpected error processing issue '{issue_identifier}': {e}",
-            exc_info=True,
+            f"Unexpected error processing issue '{issue_identifier}': {type(e).__name__}"
         )
         return ProcessingResult(
             success=False,
@@ -1890,8 +1885,9 @@ async def improve_compliance(
             failed_issues.append(issue_identifier)
             errors.append(f"{issue_identifier}: {error_msg}")
             logger.error(
-                f"Exception processing issue '{issue_identifier}': {result}",
-                exc_info=True,
+                "Issue processing failed: issue_id=%s error_type=%s",
+                issue_identifier,
+                type(result).__name__,
             )
         elif result.success:
             suggested_updates.append(result.data)
@@ -2157,7 +2153,7 @@ async def add_comment(
                             )
                     except Exception as e:
                         logger.warning(
-                            f"Could not fetch review comment ID, using review ID: {e}"
+                            f"Could not fetch review comment ID, using review ID: {type(e).__name__}"
                         )
 
                     return AddCommentResponse(
@@ -2282,8 +2278,7 @@ async def add_comment(
             raise
         except Exception as e:
             logger.error(
-                f"Error adding comment to {target_id} via tracker client: {e}",
-                exc_info=True,
+                f"Error adding comment to {target_id} via tracker client: {type(e).__name__}"
             )
             raise HTTPException(
                 status_code=502,
@@ -2388,8 +2383,7 @@ async def add_comment(
             raise
         except Exception as e:
             logger.error(
-                f"Error adding comment to {target_id} via tracker client: {e}",
-                exc_info=True,
+                f"Error adding comment to {target_id} via tracker client: {type(e).__name__}"
             )
             raise HTTPException(
                 status_code=502,
@@ -2529,8 +2523,7 @@ async def get_pull_request(
 
     except Exception as e:
         logger.error(
-            f"Error getting pull request/merge request {pr_number}: {e}",
-            exc_info=True,
+            f"Error getting pull request/merge request {pr_number}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=502,
@@ -2916,7 +2909,9 @@ async def update_pull_request(
                                 f"Resolved {len(assignee_ids)}/{len(assignees)} assignee IDs"
                             )
                         except Exception as e:
-                            logger.warning(f"Failed to resolve assignee IDs: {e}")
+                            logger.warning(
+                                f"Failed to resolve assignee IDs: {type(e).__name__}"
+                            )
                             gitlab_warnings.append(
                                 f"assignees not applied (lookup failed: {e})"
                             )
@@ -2942,7 +2937,9 @@ async def update_pull_request(
                                 f"Resolved {len(reviewer_ids)}/{len(reviewers)} reviewer IDs"
                             )
                         except Exception as e:
-                            logger.warning(f"Failed to resolve reviewer IDs: {e}")
+                            logger.warning(
+                                f"Failed to resolve reviewer IDs: {type(e).__name__}"
+                            )
                             gitlab_warnings.append(
                                 f"reviewers not applied (lookup failed: {e})"
                             )
@@ -2989,7 +2986,9 @@ async def update_pull_request(
                         reaction_added = True
                     except Exception as e:
                         error_msg = f"Failed to add reaction '{add_reaction}': {e}"
-                        logger.error(error_msg)
+                        logger.error(
+                            "Reaction update failed: error_type=%s", type(e).__name__
+                        )
                         reaction_errors.append(error_msg)
 
                 if remove_reaction:
@@ -3018,7 +3017,9 @@ async def update_pull_request(
                         error_msg = (
                             f"Failed to remove reaction '{remove_reaction}': {e}"
                         )
-                        logger.error(error_msg)
+                        logger.error(
+                            "Reaction update failed: error_type=%s", type(e).__name__
+                        )
                         reaction_errors.append(error_msg)
 
             else:  # GitLab
@@ -3037,7 +3038,9 @@ async def update_pull_request(
                         reaction_added = True
                     except Exception as e:
                         error_msg = f"Failed to add emoji '{add_reaction}': {e}"
-                        logger.error(error_msg)
+                        logger.error(
+                            "Reaction update failed: error_type=%s", type(e).__name__
+                        )
                         reaction_errors.append(error_msg)
 
                 if remove_reaction:
@@ -3053,7 +3056,9 @@ async def update_pull_request(
                         reaction_removed = True
                     except Exception as e:
                         error_msg = f"Failed to remove emoji '{remove_reaction}': {e}"
-                        logger.error(error_msg)
+                        logger.error(
+                            "Reaction update failed: error_type=%s", type(e).__name__
+                        )
                         reaction_errors.append(error_msg)
 
         # Build response message
@@ -3110,8 +3115,7 @@ async def update_pull_request(
         raise
     except Exception as e:
         logger.error(
-            f"Error updating pull request/merge request {pr_number}: {e}",
-            exc_info=True,
+            f"Error updating pull request/merge request {pr_number}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=502,
@@ -3140,10 +3144,7 @@ def _record_opened_pr_on_execution(
             source_branch,
         )
     except Exception:
-        logger.warning(
-            "Failed to record opened PR URL on the current flow execution",
-            exc_info=True,
-        )
+        logger.warning("Failed to record opened PR URL on the current flow execution")
 
 
 @_with_tool_db
@@ -3243,7 +3244,9 @@ async def create_pull_request(
 
     if platform == "bitbucket":
         logger.info(
-            f"Creating Bitbucket PR: {title} ({source_branch} -> {target_branch})"
+            "Creating pull request: source_branch=%s target_branch=%s",
+            source_branch,
+            target_branch,
         )
         response = await _run_bitbucket(
             "create pull request",
@@ -3269,7 +3272,9 @@ async def create_pull_request(
     try:
         if platform == "github":
             logger.info(
-                f"Creating GitHub PR: {title} ({source_branch} -> {target_branch})"
+                "Creating pull request: source_branch=%s target_branch=%s",
+                source_branch,
+                target_branch,
             )
             result = await tracker_client.create_pull_request(
                 title=title,
@@ -3300,7 +3305,9 @@ async def create_pull_request(
 
         else:  # GitLab
             logger.info(
-                f"Creating GitLab MR: {title} ({source_branch} -> {target_branch})"
+                "Creating pull request: source_branch=%s target_branch=%s",
+                source_branch,
+                target_branch,
             )
 
             # Parse extra options for GitLab
@@ -3333,7 +3340,9 @@ async def create_pull_request(
                         f"Resolved {len(assignee_ids)}/{len(assignees)} assignee IDs for MR creation"
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to resolve assignee IDs: {e}")
+                    logger.warning(
+                        f"Failed to resolve assignee IDs: {type(e).__name__}"
+                    )
                     warnings.append("assignees not applied (lookup failed)")
 
             if extra_options and "reviewer_ids" in extra_options:
@@ -3350,7 +3359,9 @@ async def create_pull_request(
                         f"Resolved {len(reviewer_ids)}/{len(reviewers)} reviewer IDs for MR creation"
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to resolve reviewer IDs: {e}")
+                    logger.warning(
+                        f"Failed to resolve reviewer IDs: {type(e).__name__}"
+                    )
                     warnings.append("reviewers not applied (lookup failed)")
 
             milestone_id = None
@@ -3410,10 +3421,7 @@ async def create_pull_request(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(
-            f"Error creating pull request/merge request: {e}",
-            exc_info=True,
-        )
+        logger.error(f"Error creating pull request/merge request: {type(e).__name__}")
         raise HTTPException(
             status_code=502,
             detail=f"Failed to create pull request/merge request: {str(e)}",
@@ -3661,7 +3669,7 @@ async def update_comment(
                     raise
                 except Exception as e:
                     logger.warning(
-                        f"Pre-check failed, proceeding with auto-detect: {e}"
+                        f"Pre-check failed, proceeding with auto-detect: {type(e).__name__}"
                     )
 
             # Update comment body if provided
@@ -3800,7 +3808,7 @@ async def update_comment(
                         except HTTPException:
                             raise
                         except Exception as e:
-                            logger.warning(f"Thread lookup failed: {e}")
+                            logger.warning(f"Thread lookup failed: {type(e).__name__}")
                             raise HTTPException(
                                 status_code=400,
                                 detail=(
@@ -3864,7 +3872,9 @@ async def update_comment(
                             if thread_id:
                                 break
                     except Exception as e:
-                        logger.warning(f"Failed to auto-lookup discussion ID: {e}")
+                        logger.warning(
+                            f"Failed to auto-lookup discussion ID: {type(e).__name__}"
+                        )
 
                     if not thread_id:
                         raise HTTPException(
@@ -3913,14 +3923,15 @@ async def update_comment(
             # Expected client-class failure (stale/wrong comment id, unresolvable
             # GraphQL node): log at warning without exc_info so Sentry/GlitchTip
             # does not promote it to an exception event.
-            logger.warning(f"Comment {comment_id} not found for {target}: {e}")
+            logger.warning(
+                f"Comment {comment_id} not found for {target}: {type(e).__name__}"
+            )
             raise HTTPException(
                 status_code=404,
                 detail=f"Comment {comment_id} not found: {str(e)}",
             ) from e
         logger.error(
-            f"Error updating comment {comment_id} for {target}: {e}",
-            exc_info=True,
+            f"Error updating comment {comment_id} for {target}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=502,

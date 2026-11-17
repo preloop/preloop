@@ -60,7 +60,6 @@ def revoke_flow_runtime_tokens(
             "Failed to revoke runtime tokens for flow execution %s: %s",
             execution_id,
             type(exc).__name__,
-            exc_info=True,
         )
         db.rollback()
         return 0
@@ -118,7 +117,6 @@ def end_flow_execution_runtime_session(
             "Failed to end runtime session for flow execution %s: %s",
             execution_id,
             type(exc).__name__,
-            exc_info=True,
         )
         db.rollback()
         return False
@@ -262,9 +260,7 @@ def create_flow_runtime_token(
         return token_key, api_key.id
     except Exception as exc:
         logger.error(
-            "Failed to create temporary API key record: %s",
-            type(exc).__name__,
-            exc_info=True,
+            "Failed to create temporary API key record: %s", type(exc).__name__
         )
         db.rollback()
         return None, None

@@ -166,14 +166,10 @@ class GoogleSpeechAudioProviderBackend:
                 response_payload = json.loads(response.read().decode("utf-8"))
         except urllib_error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            logger.warning(
-                "Google STT request failed with HTTP %s: %s",
-                exc.code,
-                detail[:500],
-            )
+            logger.warning("Google STT request failed: status=%s", exc.code)
             raise ValueError("Google STT request failed") from exc
         except urllib_error.URLError as exc:
-            logger.warning("Google STT request failed: %s", exc.reason)
+            logger.warning("Google STT request failed: %s", type(exc).__name__)
             raise ValueError("Google STT request failed") from exc
 
         transcripts = [

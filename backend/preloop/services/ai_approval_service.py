@@ -195,8 +195,8 @@ class AIApprovalService:
             )
 
         except Exception as e:
-            logger.exception(
-                f"Error during AI approval evaluation for {tool_name}: {e}"
+            logger.error(
+                f"Error during AI approval evaluation for {tool_name}: {type(e).__name__}"
             )
             return AIApprovalResult(
                 decision="uncertain",
@@ -550,7 +550,7 @@ class AIApprovalService:
             )
 
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse AI response as JSON: {e}")
+            logger.warning(f"Failed to parse AI response as JSON: {type(e).__name__}")
 
             # Try to extract decision from text if JSON parsing fails
             response_upper = raw_response.upper()
@@ -570,7 +570,7 @@ class AIApprovalService:
             )
 
         except Exception as e:
-            logger.exception(f"Error parsing AI response: {e}")
+            logger.error(f"Error parsing AI response: {type(e).__name__}")
             return AIApprovalResult(
                 decision="uncertain",
                 confidence=0.0,

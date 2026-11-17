@@ -646,7 +646,6 @@ def _raise_chain_floor(
             "Could not raise the audit chain floor for account %s to seq %s",
             account_id,
             up_to_seq,
-            exc_info=True,
         )
 
 
@@ -693,7 +692,6 @@ def purge_account(
                 "Retention purge failed for account %s class %s",
                 account.id,
                 record_class,
-                exc_info=True,
             )
             continue
         results.append(result)
@@ -715,7 +713,6 @@ def purge_account(
                     "Retention purge audit row failed for account %s class %s",
                     account.id,
                     record_class,
-                    exc_info=True,
                 )
     return results
 
@@ -852,7 +849,7 @@ class RetentionPurgeSweeper:
             try:
                 await asyncio.to_thread(self._sweep_once)
             except Exception:
-                logger.error("Error in retention purge pass", exc_info=True)
+                logger.error("Error in retention purge pass")
 
     @staticmethod
     def _sweep_once() -> None:

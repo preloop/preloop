@@ -1617,7 +1617,7 @@ def audit_dora_export(
         )
     except Exception:
         db.rollback()
-        logger.error("Failed to audit DORA export", exc_info=True)
+        logger.error("Failed to audit DORA export")
 
 
 def json_envelope(export: DoraExport) -> dict[str, Any]:

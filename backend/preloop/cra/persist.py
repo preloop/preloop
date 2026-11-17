@@ -136,7 +136,9 @@ def load_platform_approvals(db: Any, execution_id: Any) -> list[PlatformApproval
     try:
         rows = crud_approval_request.get_multi_by_execution(db, execution_id=exec_id)
     except Exception as exc:
-        logger.warning("CRA persist: could not load platform approvals: %s", exc)
+        logger.warning(
+            "CRA persist: could not load platform approvals: %s", type(exc).__name__
+        )
         raise CraAuthorityUnavailableError("approval lookup failed") from exc
     if not isinstance(rows, (list, tuple)):
         raise CraAuthorityUnavailableError("approval lookup returned an invalid result")
@@ -382,18 +384,18 @@ def apply_cra_persist_boundary(
                     + corrections_summary(corrections)
                 )
                 logger.warning(
-                    "CRA result %s corrected at persist: %s",
+                    "CRA result corrected: schema_id=%s correction_count=%s",
                     revalidated.schema_id,
-                    corrections_summary(corrections),
+                    len(corrections),
                 )
             return CraPersistDecision(artifact=candidate, validation=revalidated)
         reported = revalidated
     elif validation.ok:
         if validation.advisories:
             logger.info(
-                "CRA result %s coverage advisories: %s",
+                "CRA result coverage: schema_id=%s advisory_count=%s",
                 validation.schema_id,
-                "; ".join(validation.advisories),
+                len(validation.advisories),
             )
         persisted = candidate if isinstance(candidate, dict) else payload
         return CraPersistDecision(artifact=persisted, validation=validation)

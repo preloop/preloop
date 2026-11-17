@@ -301,8 +301,7 @@ async def search_issues(
             except Exception as e:
                 # Catch potential errors during client creation/validation
                 logger.error(
-                    f"Error validating tracker access for search (org: {org.id}, proj: {proj.id}): {e}",
-                    exc_info=True,
+                    f"Error validating tracker access for search (org: {org.id}, proj: {proj.id}): {type(e).__name__}"
                 )
                 raise HTTPException(
                     status_code=500,
@@ -442,7 +441,8 @@ async def search_issues(
 
             except ModelGatewayAPIError as exc:
                 logger.warning(
-                    "Similarity search query embedding did not recover: %s", exc
+                    "Similarity search query embedding did not recover: %s",
+                    type(exc).__name__,
                 )
                 raise HTTPException(
                     status_code=exc.status_code,
@@ -450,7 +450,7 @@ async def search_issues(
                     headers=exc.response_headers(),
                 )
             except Exception as e:
-                logger.error(f"Error during similarity search: {e}", exc_info=True)
+                logger.error(f"Error during similarity search: {type(e).__name__}")
                 raise HTTPException(
                     status_code=500,
                     detail="An error occurred during similarity search.",
@@ -582,7 +582,7 @@ async def search_issues(
                     )
 
             except Exception as e:
-                logger.error(f"Error during full-text search: {e}", exc_info=True)
+                logger.error(f"Error during full-text search: {type(e).__name__}")
                 raise HTTPException(
                     status_code=500, detail="An error occurred during full-text search."
                 )
@@ -601,7 +601,7 @@ async def search_issues(
         raise
     except Exception as e:
         # Catch any other unexpected errors
-        logger.error(f"Unexpected error searching issues: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error searching issues: {type(e).__name__}")
         raise HTTPException(
             status_code=500, detail="Internal server error during issue search."
         )
@@ -909,7 +909,7 @@ async def create_issue(
         except Exception as db_exc:
             db.rollback()  # Rollback on error
             logger.error(
-                f"Error saving created issue to database: {db_exc}", exc_info=True
+                f"Error saving created issue to database: {type(db_exc).__name__}"
             )
             # Consider if we should delete the issue from the tracker here?
             # For now, return an error indicating partial success/failure.
@@ -955,7 +955,7 @@ async def create_issue(
         # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        logger.error(f"Error creating issue: {e}", exc_info=True)
+        logger.error(f"Error creating issue: {type(e).__name__}")
         raise HTTPException(status_code=500, detail=f"Error creating issue: {str(e)}")
 
 
@@ -1238,7 +1238,7 @@ def get_issue(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving issue {issue_id}: {e}", exc_info=True)
+        logger.error(f"Error retrieving issue {issue_id}: {type(e).__name__}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -1438,11 +1438,13 @@ async def update_issue(
             )
         except HTTPException as e:
             # Re-raise authorization or configuration errors from get_tracker_client
-            logger.warning(f"Access validation failed for issue {issue.id}: {e.detail}")
+            logger.warning(
+                f"Access validation failed for issue {issue.id}: {type(e).__name__}"
+            )
             raise e
         except Exception as e:
             logger.error(
-                f"Error getting tracker client for issue {issue.id}: {e}", exc_info=True
+                f"Error getting tracker client for issue {issue.id}: {type(e).__name__}"
             )
             raise HTTPException(
                 status_code=500, detail="Error preparing tracker connection."
@@ -1480,7 +1482,8 @@ async def update_issue(
 
             try:
                 logger.info(
-                    f"Calling tracker client to update issue {issue.key} with data: {update_data_for_tracker}"
+                    "Updating tracker issue: field_keys=%s",
+                    sorted(update_data_for_tracker),
                 )
                 # Use the issue's key for the tracker API call (e.g., "owner/repo#123")
                 # The tracker client will extract the issue number from it
@@ -1498,8 +1501,7 @@ async def update_issue(
                 # raise HTTPException(status_code=501, detail="Issue updates not supported by this tracker type.")
             except Exception as e:
                 logger.error(
-                    f"Error updating issue {issue.external_id} via tracker client: {e}",
-                    exc_info=True,
+                    f"Error updating issue {issue.external_id} via tracker client: {type(e).__name__}"
                 )
                 # Depending on requirements, you might still update the local DB or raise an error
                 raise HTTPException(
@@ -1520,7 +1522,7 @@ async def update_issue(
         else:
             try:
                 logger.info(
-                    f"Updating local DB for issue {issue.id} with data: {update_data_for_db}"
+                    "Updating local issue: field_keys=%s", sorted(update_data_for_db)
                 )
                 # Update the local database record
                 # Note: crud_issue.update expects the db object, the existing db_obj, and the update obj (Pydantic model or dict)
@@ -1536,7 +1538,7 @@ async def update_issue(
             except SQLAlchemyError as e:
                 db.rollback()
                 logger.error(
-                    f"Database error updating issue {issue.id}: {e}", exc_info=True
+                    f"Database error updating issue {issue.id}: {type(e).__name__}"
                 )
                 raise HTTPException(
                     status_code=500, detail="Database error during issue update."
@@ -1619,7 +1621,7 @@ async def update_issue(
         raise
     except Exception as e:
         db.rollback()  # Rollback on any unexpected error
-        logger.error(f"Unexpected error updating issue {issue_id}: {e}", exc_info=True)
+        logger.error(f"Unexpected error updating issue {issue_id}: {type(e).__name__}")
         raise HTTPException(
             status_code=500, detail="Internal server error during issue update."
         )

@@ -38,7 +38,7 @@ def submit_off_loop(operation: Callable[[], None]) -> None:
         try:
             operation()
         except Exception:
-            logger.exception("Off-loop database work failed")
+            logger.error("Off-loop database work failed")
 
     _db_executor.submit(_run)
 

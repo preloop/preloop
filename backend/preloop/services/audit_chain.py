@@ -486,9 +486,7 @@ def run_seal_pass(
             )
         except Exception:
             db.rollback()
-            logger.error(
-                "Audit chain sealing failed for account %s", account.id, exc_info=True
-            )
+            logger.error("Audit chain sealing failed for account %s", account.id)
     if summary.sealed:
         logger.info("Audit chain seal pass: %s", summary.as_dict())
     return summary
@@ -1165,7 +1163,7 @@ class AuditChainSealer:
             try:
                 await asyncio.to_thread(self._seal_once)
             except Exception:
-                logger.error("Error in audit chain seal pass", exc_info=True)
+                logger.error("Error in audit chain seal pass")
 
     @staticmethod
     def _seal_once() -> None:

@@ -249,7 +249,7 @@ def build_excerpt(
         excerpt = " ".join(scrubbed[cut_start:cut_end].split())
         return excerpt[:max_chars] or None
     except Exception:  # noqa: BLE001 - fall back to hash and rule id only
-        logger.warning("Policy notice excerpt redaction failed", exc_info=True)
+        logger.warning("Policy notice excerpt redaction failed")
         return None
 
 
@@ -319,7 +319,7 @@ def record_policy_notice(
     try:
         outcome.delivery = deliver(db, hit)
     except Exception:  # noqa: BLE001 - a notice must never raise upstream
-        logger.exception("Policy notice delivery failed for rule %s", hit.rule_id)
+        logger.error("Policy notice delivery failed for rule %s", hit.rule_id)
         outcome.delivery = {"error": "delivery_failed"}
     return outcome
 
@@ -332,7 +332,7 @@ def process_policy_notice(notice: PolicyNotice) -> Optional[PolicyNoticeOutcome]
     try:
         return record_policy_notice(db, notice)
     except Exception:  # noqa: BLE001 - background work, log and drop
-        logger.exception("Failed to record policy notice for rule %s", notice.rule_id)
+        logger.error("Failed to record policy notice for rule %s", notice.rule_id)
         try:
             db.rollback()
         except Exception:  # noqa: BLE001
@@ -366,9 +366,7 @@ def _persist_policy_match_hit(notice: PolicyNotice) -> None:
         _enqueue_hit_audit(db, notice)
         db.commit()
     except Exception:  # noqa: BLE001 - a hit must never fail the model call
-        logger.exception(
-            "Failed to record policy match hit for rule %s", notice.rule_id
-        )
+        logger.error("Failed to record policy match hit for rule %s", notice.rule_id)
         try:
             db.rollback()
         except Exception:  # noqa: BLE001
@@ -388,7 +386,7 @@ def schedule_policy_match_hit(notice: PolicyNotice) -> None:
 
         submit_off_loop(lambda: _persist_policy_match_hit(notice))
     except Exception:  # noqa: BLE001 - scheduling must never fail the call
-        logger.exception("Could not schedule policy match hit for %s", notice.rule_id)
+        logger.error("Could not schedule policy match hit for %s", notice.rule_id)
 
 
 def schedule_policy_notice(notice: PolicyNotice) -> None:
@@ -402,7 +400,7 @@ def schedule_policy_notice(notice: PolicyNotice) -> None:
 
         submit_off_loop(lambda: process_policy_notice(notice))
     except Exception:  # noqa: BLE001 - scheduling must never fail the call
-        logger.exception("Could not schedule policy notice for %s", notice.rule_id)
+        logger.error("Could not schedule policy notice for %s", notice.rule_id)
 
 
 def summarize_policy_notices(

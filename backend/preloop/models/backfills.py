@@ -145,7 +145,7 @@ def run_pending_backfills(
                 db.commit()
             except Exception as exc:  # one failing backfill must not block others
                 db.rollback()
-                logger.exception("Backfill %s batch failed", name)
+                logger.error("Backfill %s batch failed", name)
                 result.errors.append(str(exc))
                 break
             result.batches += 1

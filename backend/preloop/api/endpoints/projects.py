@@ -516,7 +516,7 @@ async def test_project_connection(
             if not tracker_client:
                 raise ValueError("Unsupported tracker type or configuration error")
         except Exception as e:
-            logger.error(f"Error creating tracker client: {e}")
+            logger.error(f"Error creating tracker client: {type(e).__name__}")
             return TestConnectionResponse(
                 success=False,
                 message="Error creating tracker client",
@@ -534,7 +534,7 @@ async def test_project_connection(
                 details=connection_result.details,
             )
         except Exception as e:
-            logger.error(f"Error testing connection: {e}")
+            logger.error(f"Error testing connection: {type(e).__name__}")
             return TestConnectionResponse(
                 success=False,
                 message="Error testing connection",
@@ -545,7 +545,7 @@ async def test_project_connection(
         # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        logger.error(f"Error in test_project_connection: {e}")
+        logger.error(f"Error in test_project_connection: {type(e).__name__}")
         raise HTTPException(
             status_code=500, detail=f"Error testing connection: {str(e)}"
         )
@@ -735,7 +735,9 @@ def transfer_project(
         visible = _list_destination_repositories(dest_tracker, destination)
     except Exception as exc:  # tracker/network failure, never a bare 500
         logger.warning(
-            "Destination access check failed for project %s: %s", project.id, exc
+            "Destination access check failed for project %s: %s",
+            project.id,
+            type(exc).__name__,
         )
         raise _transfer_error(
             502,

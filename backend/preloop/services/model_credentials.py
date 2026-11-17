@@ -167,8 +167,7 @@ def resolve_model_call_credentials(
             "Failed to resolve credentials for model %s (%s): %s. Proceeding without an api_key.",
             model.id,
             model.model_identifier,
-            exc,
-            exc_info=True,
+            type(exc).__name__,
         )
 
     if uses_azure_entra(model):

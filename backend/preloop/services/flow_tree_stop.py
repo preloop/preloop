@@ -163,7 +163,7 @@ def collect_subtree(db: Any, *, parent: Any, account_id: Any) -> Tuple[List[Any]
                     )
                 )
             except Exception:
-                logger.exception("Could not read the children of execution %s", node.id)
+                logger.error("Could not read the children of execution %s", node.id)
                 truncated = True
                 continue
             for child in children:
@@ -195,7 +195,7 @@ def _resume_execution_of(db: Any, parent: Any) -> Optional[Any]:
     try:
         return crud_flow_execution.get(db, id=str(resume_id))
     except Exception:
-        logger.exception("Could not read the resume execution of %s", parent.id)
+        logger.error("Could not read the resume execution of %s", parent.id)
         return None
 
 
@@ -221,7 +221,7 @@ async def _signal_runtime(db: Any, execution: Any, *, nats_client: Any = None) -
                     db, runner_id=runner.id, execution_id=execution.id
                 )
         except Exception:
-            logger.exception(
+            logger.error(
                 "Could not flag the runner of execution %s to halt", execution.id
             )
         return
@@ -238,7 +238,7 @@ async def _signal_runtime(db: Any, execution: Any, *, nats_client: Any = None) -
         logger.warning(
             "Could not send the stop command for execution %s: %s",
             execution.id,
-            error,
+            type(error).__name__,
         )
 
 
@@ -259,7 +259,7 @@ def _record_on_child(db: Any, execution: Any, *, parent_execution_id: Any) -> No
             },
         )
     except Exception:
-        logger.exception("Could not log the parent stop on execution %s", execution.id)
+        logger.error("Could not log the parent stop on execution %s", execution.id)
 
 
 def _child_row(execution: Any, *, outcome: str, status: str) -> Dict[str, Any]:
@@ -375,7 +375,7 @@ async def stop_tree_for_stopped_parent(
                 db, execution_id=execution.id, reason=reason, now=moment
             )
         except Exception:
-            logger.exception(
+            logger.error(
                 "Could not stop execution %s with its parent %s",
                 execution.id,
                 parent.id,
@@ -430,10 +430,8 @@ async def stop_tree_for_stopped_parent(
                     db, execution_id=late.id, reason=reason, now=moment
                 )
             except Exception:
-                logger.exception(
-                    "Could not stop late resume %s of parent %s",
-                    late.id,
-                    parent.id,
+                logger.error(
+                    "Could not stop late resume %s of parent %s", late.id, parent.id
                 )
             if late_stopped:
                 _record_on_child(db, late, parent_execution_id=parent.id)
@@ -470,7 +468,7 @@ async def stop_tree_for_stopped_parent(
             db, execution_id=parent.id, coverage=coverage
         )
     except Exception:
-        logger.exception("Could not record the stop coverage of %s", parent.id)
+        logger.error("Could not record the stop coverage of %s", parent.id)
     try:
         crud_flow_execution.append_log(
             db,
@@ -492,7 +490,7 @@ async def stop_tree_for_stopped_parent(
             },
         )
     except Exception:
-        logger.exception("Could not log the stop coverage of %s", parent.id)
+        logger.error("Could not log the stop coverage of %s", parent.id)
     logger.info(
         "Stopped the tree of execution %s: %s child execution(s), %s stopped, "
         "tree cost $%.4f",

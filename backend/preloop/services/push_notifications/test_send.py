@@ -336,7 +336,7 @@ async def _send_one(
         )
 
     except Exception as exc:  # pragma: no cover - defensive
-        logger.exception("Test push to %s device %s raised", platform, masked)
+        logger.error("Test push to %s device %s raised", platform, masked)
         return DeviceSendResult(
             platform=platform,
             token=masked,

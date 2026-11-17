@@ -1204,8 +1204,8 @@ class TestRequireApprovalProgressReporting:
         assert error == ""
 
 
-async def test_in_band_context_lookup_failure_logs_traceback(caplog):
-    """Context lookup is best-effort; keep the exception traceback."""
+async def test_in_band_context_lookup_failure_logs_exception_class(caplog):
+    """Context lookup is best-effort; log the exception class."""
     from preloop.services.approval_helper import _session_context_for_in_band
 
     with patch(
@@ -1217,7 +1217,8 @@ async def test_in_band_context_lookup_failure_logs_traceback(caplog):
     assert ctx.managed_agent_id is None
     assert ctx.user_id is None
     assert "Error getting current user context" in caplog.text
-    assert "no request context" in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "no request context" not in caplog.text
 
 
 async def test_resolve_responder_display_name_prefers_email() -> None:

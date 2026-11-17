@@ -627,10 +627,7 @@ class RuntimeSessionExplorerService:
             if schedule is not None:
                 schedule(account_id=account_id, session_ids=session_ids)
         except Exception:
-            logger.info(
-                "Background title scheduling failed; skipping optional work",
-                exc_info=True,
-            )
+            logger.info("Background title scheduling failed; skipping optional work")
 
     @staticmethod
     def _session_needs_title(row: dict) -> bool:
@@ -947,10 +944,7 @@ class RuntimeSessionExplorerService:
             if generated is None:
                 return fallback.model_copy(update={"model_name": model.name})
         except Exception:
-            logger.info(
-                "Falling back to local interaction summary",
-                exc_info=True,
-            )
+            logger.info("Falling back to local interaction summary")
             return fallback.model_copy(update={"model_name": model.name})
 
         return RuntimeSessionInteractionSummary(

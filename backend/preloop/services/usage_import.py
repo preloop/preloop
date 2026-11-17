@@ -530,11 +530,7 @@ def sync_runtime_session_for_record(
                 commit=False,
             )
         except Exception:  # noqa: BLE001 - ingest is never lost over search
-            logger.warning(
-                "Session summary indexing failed for session %s",
-                session.id,
-                exc_info=True,
-            )
+            logger.warning("Session summary indexing failed for session %s", session.id)
     return session
 
 
@@ -820,7 +816,6 @@ def ingest_push_records(
                     "Runtime session sync failed for ingest record %s (source=%s)",
                     record.external_id,
                     source,
-                    exc_info=True,
                 )
             # estimated_cost is a Float column; Decimal is request-only.
             cost_usd = (
@@ -881,11 +876,9 @@ def ingest_push_records(
                     except SQLAlchemyError:
                         # Activities are bookkeeping; the ledger row stands.
                         logger.warning(
-                            "Transcript activity sync failed for ingest record %s "
-                            "(source=%s)",
+                            "Transcript activity sync failed for ingest record %s (source=%s)",
                             record.external_id,
                             source,
-                            exc_info=True,
                         )
                 results.append(UsageIngestRecordResult(external_id=record.external_id))
                 continue

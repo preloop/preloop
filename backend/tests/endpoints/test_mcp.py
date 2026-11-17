@@ -2263,8 +2263,8 @@ async def test_update_comment_genuine_api_failure_maps_to_502_with_error_log(
         if r.levelno >= logging.ERROR and "Error updating comment" in r.getMessage()
     ]
     assert error_records, "genuine API failures must be logged as errors"
-    assert any(r.exc_info for r in error_records), (
-        "error-level logs should include exc_info"
+    assert all(r.exc_info is None for r in error_records), (
+        "application errors must omit exception payloads"
     )
 
 

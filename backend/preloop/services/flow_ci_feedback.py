@@ -248,11 +248,7 @@ def extract_ci_failure(
         if event_type in GITLAB_CI_EVENT_TYPES:
             return _gitlab_failure(event_type, payload)
     except Exception:
-        logger.warning(
-            "Could not read CI failure details from a %s event",
-            event_type,
-            exc_info=True,
-        )
+        logger.warning("Could not read CI failure details from a %s event", event_type)
     return None
 
 

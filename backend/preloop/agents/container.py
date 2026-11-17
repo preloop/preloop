@@ -1641,7 +1641,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
         except DockerError as e:
             self.logger.error(
-                f"Failed to start container for execution {execution_id}: {e}"
+                f"Failed to start container for execution {execution_id}: {type(e).__name__}"
             )
             raise RuntimeError(f"Failed to start agent container: {e}")
 
@@ -1701,7 +1701,7 @@ class ContainerAgentExecutor(AgentExecutor):
             self.logger.warning(
                 "Failed to restore workspace snapshot for execution %s: %s",
                 execution_context.get("execution_id"),
-                _exception_message(e),
+                type(e).__name__,
             )
             return False
         self.logger.info(
@@ -2088,8 +2088,7 @@ class ContainerAgentExecutor(AgentExecutor):
                         return job_name
                 elif not self._is_retryable_job_api_error(e):
                     self.logger.error(
-                        f"Failed to create Kubernetes Job for execution "
-                        f"{execution_id}: {e}"
+                        f"Failed to create Kubernetes Job for execution {execution_id}: {type(e).__name__}"
                     )
                     raise AgentStartError(
                         f"Failed to start agent Job: {e}",
@@ -2101,10 +2100,9 @@ class ContainerAgentExecutor(AgentExecutor):
 
                 delay = _job_create_retry_delay_seconds(attempt)
                 self.logger.warning(
-                    "Retrying Kubernetes Job creation for execution %s after "
-                    "HTTP %s (attempt %s/%s, delay=%.2fs)",
+                    "Retrying Kubernetes Job creation for execution %s after HTTP %s (attempt %s/%s, delay=%.2fs)",
                     execution_id,
-                    e.status,
+                    type(e).__name__,
                     attempt + 1,
                     max_attempts,
                     delay,
@@ -2113,8 +2111,10 @@ class ContainerAgentExecutor(AgentExecutor):
 
         assert last_error is not None
         self.logger.error(
-            f"Failed to create Kubernetes Job for execution {execution_id} after "
-            f"{max_attempts} attempts: {last_error}"
+            "Kubernetes job creation failed: execution_id=%s attempts=%s error_type=%s",
+            execution_id,
+            max_attempts,
+            type(last_error).__name__,
         )
         raise AgentStartError(
             f"Failed to start agent Job: {last_error}",
@@ -2168,7 +2168,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 # Raced with the owner's own cleanup: the name is free again.
                 return False
             self.logger.warning(
-                f"Could not read conflicting Job {job_name}: {read_error}"
+                f"Could not read conflicting Job {job_name}: {type(read_error).__name__}"
             )
             return False
 
@@ -2222,7 +2222,7 @@ class ContainerAgentExecutor(AgentExecutor):
         except ApiException as delete_error:
             if delete_error.status != 404:
                 self.logger.warning(
-                    f"Could not delete leftover Job {job_name}: {delete_error}"
+                    f"Could not delete leftover Job {job_name}: {type(delete_error).__name__}"
                 )
                 return False
 
@@ -2294,7 +2294,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
         except DockerError as e:
             self.logger.error(
-                f"Failed to get status for container {session_reference}: {e}"
+                f"Failed to get status for container {session_reference}: {type(e).__name__}"
             )
             return AgentStatus.FAILED
 
@@ -2340,7 +2340,9 @@ class ContainerAgentExecutor(AgentExecutor):
             if e.status == 404:
                 self.logger.warning(f"Job {job_name} not found")
                 return AgentStatus.FAILED
-            self.logger.error(f"Failed to get status for Job {job_name}: {e}")
+            self.logger.error(
+                f"Failed to get status for Job {job_name}: {type(e).__name__}"
+            )
             return AgentStatus.FAILED
 
     @staticmethod
@@ -2465,7 +2467,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
         except DockerError as e:
             self.logger.error(
-                f"Failed to get result for container {session_reference}: {e}"
+                f"Failed to get result for container {session_reference}: {type(e).__name__}"
             )
             return AgentExecutionResult(
                 status=AgentStatus.FAILED,
@@ -2568,7 +2570,9 @@ class ContainerAgentExecutor(AgentExecutor):
                             )
                         break
             except Exception as e:
-                self.logger.warning(f"Could not get exit code for Job {job_name}: {e}")
+                self.logger.warning(
+                    f"Could not get exit code for Job {job_name}: {type(e).__name__}"
+                )
 
             failure_analysis = None
             if termination is not None and termination.oom_killed:
@@ -2598,7 +2602,9 @@ class ContainerAgentExecutor(AgentExecutor):
             )
 
         except ApiException as e:
-            self.logger.error(f"Failed to get result for Job {job_name}: {e}")
+            self.logger.error(
+                f"Failed to get result for Job {job_name}: {type(e).__name__}"
+            )
             return AgentExecutionResult(
                 status=AgentStatus.FAILED,
                 session_reference=job_name,
@@ -2650,8 +2656,7 @@ class ContainerAgentExecutor(AgentExecutor):
             # could not be fetched must not look identical to a run that
             # reported nothing.
             self.logger.warning(
-                f"Failed to read result artifact from container "
-                f"{session_reference[:12]}: {_exception_message(e)}"
+                f"Failed to read result artifact from container {session_reference[:12]}: {type(e).__name__}"
             )
             return {
                 "error": "result_artifact_fetch_failed",
@@ -2660,8 +2665,7 @@ class ContainerAgentExecutor(AgentExecutor):
             }
         except Exception as e:
             self.logger.warning(
-                f"Failed to read result artifact from container "
-                f"{session_reference[:12]}: {_exception_message(e)}"
+                f"Failed to read result artifact from container {session_reference[:12]}: {type(e).__name__}"
             )
             return None
 
@@ -2700,7 +2704,7 @@ class ContainerAgentExecutor(AgentExecutor):
             parsed = json.loads(raw.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             self.logger.warning(
-                f"Result artifact from {session_reference[:40]} is not valid JSON: {e}"
+                f"Result artifact from {session_reference[:40]} is not valid JSON: {type(e).__name__}"
             )
             return {
                 "error": "result_artifact_invalid_json",
@@ -2743,7 +2747,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 command=command, args=args, env=env, what=what
             )
         except LaunchPayloadTooLargeError as exc:
-            self.logger.warning("%s", exc)
+            self.logger.warning("%s", type(exc).__name__)
             raise AgentStartError(
                 str(exc), category=FAILURE_CATEGORY_RUNNER_ERROR
             ) from exc
@@ -2987,8 +2991,7 @@ class ContainerAgentExecutor(AgentExecutor):
             lines = await self._get_kubernetes_terminal_logs(job_name)
         except Exception as e:
             self.logger.warning(
-                f"Failed to read logs for result artifact of Job {job_name}: "
-                f"{_exception_message(e)}"
+                f"Failed to read logs for result artifact of Job {job_name}: {type(e).__name__}"
             )
             return None
 
@@ -3074,8 +3077,7 @@ class ContainerAgentExecutor(AgentExecutor):
             lines = await self._get_kubernetes_terminal_logs(job_name)
         except Exception as e:
             self.logger.warning(
-                f"Failed to read logs for evidence archive of Job {job_name}: "
-                f"{_exception_message(e)}"
+                f"Failed to read logs for evidence archive of Job {job_name}: {type(e).__name__}"
             )
             return None
         stream = self._extract_artifact_stream(lines, "evidence")
@@ -3106,8 +3108,7 @@ class ContainerAgentExecutor(AgentExecutor):
                 lines = await self.get_logs(session_reference)
             except Exception as e:
                 self.logger.warning(
-                    f"Failed to read logs for evidence archive of container "
-                    f"{session_reference[:12]}: {_exception_message(e)}"
+                    f"Failed to read logs for evidence archive of container {session_reference[:12]}: {type(e).__name__}"
                 )
                 return None
             self._record_direct_evidence_log_outcome(lines)
@@ -3119,14 +3120,12 @@ class ContainerAgentExecutor(AgentExecutor):
         except DockerError as e:
             if e.status != 404:
                 self.logger.warning(
-                    f"Failed to read evidence archive from container "
-                    f"{session_reference[:12]}: {_exception_message(e)}"
+                    f"Failed to read evidence archive from container {session_reference[:12]}: {type(e).__name__}"
                 )
             return None
         except Exception as e:
             self.logger.warning(
-                f"Failed to read evidence archive from container "
-                f"{session_reference[:12]}: {_exception_message(e)}"
+                f"Failed to read evidence archive from container {session_reference[:12]}: {type(e).__name__}"
             )
             return None
 
@@ -3249,7 +3248,7 @@ class ContainerAgentExecutor(AgentExecutor):
             self.logger.warning(
                 "Workspace progress probe failed in container %s: %s",
                 session_reference[:12],
-                _exception_message(e),
+                type(e).__name__,
             )
             return None
 
@@ -3304,7 +3303,7 @@ class ContainerAgentExecutor(AgentExecutor):
             self.logger.warning(
                 "Live nudge delivery failed in container %s: %s",
                 session_reference[:12],
-                _exception_message(e),
+                type(e).__name__,
             )
             return False
         self.logger.info(
@@ -3348,8 +3347,7 @@ class ContainerAgentExecutor(AgentExecutor):
             lines = await self._get_kubernetes_terminal_logs(job_name)
         except Exception as e:
             self.logger.warning(
-                f"Failed to read logs for workspace snapshot of Job {job_name}: "
-                f"{_exception_message(e)}"
+                f"Failed to read logs for workspace snapshot of Job {job_name}: {type(e).__name__}"
             )
             return None
         stream = self._extract_artifact_stream(lines, "workspace")
@@ -3425,8 +3423,7 @@ class ContainerAgentExecutor(AgentExecutor):
         except DockerError as e:
             if e.status != 404:
                 self.logger.warning(
-                    f"Failed to build workspace snapshot for container "
-                    f"{session_reference[:12]}: {_exception_message(e)}"
+                    f"Failed to build workspace snapshot for container {session_reference[:12]}: {type(e).__name__}"
                 )
             else:
                 self.logger.info(
@@ -3436,8 +3433,7 @@ class ContainerAgentExecutor(AgentExecutor):
             return None
         except Exception as e:
             self.logger.warning(
-                f"Failed to build workspace snapshot for container "
-                f"{session_reference[:12]}: {_exception_message(e)}"
+                f"Failed to build workspace snapshot for container {session_reference[:12]}: {type(e).__name__}"
             )
             return None
         finally:
@@ -3678,7 +3674,9 @@ class ContainerAgentExecutor(AgentExecutor):
                 del self._containers[session_reference]
 
         except DockerError as e:
-            self.logger.error(f"Failed to stop container {session_reference}: {e}")
+            self.logger.error(
+                f"Failed to stop container {session_reference}: {type(e).__name__}"
+            )
             raise
 
     async def _stop_kubernetes_pod(self, job_name: str) -> None:
@@ -3706,7 +3704,9 @@ class ContainerAgentExecutor(AgentExecutor):
             if e.status == 404:
                 self.logger.warning(f"Job {job_name} not found, already deleted")
             else:
-                self.logger.error(f"Failed to delete Job {job_name}: {e}")
+                self.logger.error(
+                    f"Failed to delete Job {job_name}: {type(e).__name__}"
+                )
                 raise
 
     async def get_logs(
@@ -3750,7 +3750,7 @@ class ContainerAgentExecutor(AgentExecutor):
 
         except DockerError as e:
             self.logger.error(
-                f"Failed to get logs for container {session_reference}: {e}"
+                f"Failed to get logs for container {session_reference}: {type(e).__name__}"
             )
             return []
 
@@ -3822,14 +3822,13 @@ class ContainerAgentExecutor(AgentExecutor):
 
         except DockerError as e:
             self.logger.error(
-                f"Error streaming logs from container {container_id}: {e}"
+                f"Error streaming logs from container {container_id}: {type(e).__name__}"
             )
             yield f"[ERROR] Failed to stream logs: {e}"
         except Exception as e:
             error_message = _exception_message(e)
             self.logger.error(
-                f"Unexpected error streaming Docker logs for {container_id}: {error_message}",
-                exc_info=True,
+                f"Unexpected error streaming Docker logs for {container_id}: {type(e).__name__}"
             )
             yield f"[ERROR] Unexpected error: {error_message}"
 
@@ -3900,7 +3899,9 @@ class ContainerAgentExecutor(AgentExecutor):
             if e.status == 404:
                 self.logger.warning(f"Job or Pod for {job_name} not found")
                 return []
-            self.logger.error(f"Failed to get logs for Job {job_name}: {e}")
+            self.logger.error(
+                f"Failed to get logs for Job {job_name}: {type(e).__name__}"
+            )
             return []
 
     async def _stream_kubernetes_logs(self, job_name: str):
@@ -3997,13 +3998,14 @@ class ContainerAgentExecutor(AgentExecutor):
                 self.logger.warning(f"Job or Pod for {job_name} not found")
                 yield "[WARN] Job or Pod not found"
             else:
-                self.logger.error(f"Error streaming logs for Job {job_name}: {e}")
+                self.logger.error(
+                    f"Error streaming logs for Job {job_name}: {type(e).__name__}"
+                )
                 yield f"[ERROR] Failed to stream logs: {e}"
         except Exception as e:
             error_message = _exception_message(e)
             self.logger.error(
-                f"Unexpected error streaming Kubernetes logs for {job_name}: {error_message}",
-                exc_info=True,
+                f"Unexpected error streaming Kubernetes logs for {job_name}: {type(e).__name__}"
             )
             yield f"[ERROR] Unexpected error: {error_message}"
 
@@ -4132,7 +4134,9 @@ class ContainerAgentExecutor(AgentExecutor):
         if review_checkout:
             commands.append("echo 'PRELOOP_REVIEW_PHASE clone_started'")
         git_clone_config = execution_context.get("git_clone_config")
-        self.logger.info(f"Git clone config: {git_clone_config}")
+        self.logger.info(
+            "Git clone configuration: keys=%s", sorted(git_clone_config or {})
+        )
 
         if git_clone_config:
             is_enabled = git_clone_config.get("enabled", False)
@@ -5382,11 +5386,9 @@ true
         )
         if not repo_url:
             self.logger.error(
-                f"No repository URL found for repo #{repo_index + 1}. "
-                f"Please add 'repository_url' field to git_clone_config.repositories, "
-                f"or select a project in the trigger configuration. "
-                f"Repo config: {repo_config}, "
-                f"Trigger project ID: {execution_context.get('trigger_project_id')}"
+                "No repository URL: repository_index=%s config_keys=%s",
+                repo_index + 1,
+                sorted(repo_config),
             )
             return None
 
@@ -5600,7 +5602,7 @@ true
             return " && ".join(git_setup_commands + [credential_setup] + clone_commands)
 
         except Exception as e:
-            self.logger.error(f"Error preparing git clone command: {e}", exc_info=True)
+            self.logger.error(f"Error preparing git clone command: {type(e).__name__}")
             if (
                 execution_context.get("read_only_review") is True
                 or (execution_context.get("git_clone_config") or {}).get(
@@ -5876,7 +5878,7 @@ true
         try:
             plan = resolve_report_publication(git_config)
         except ReportPublicationError as error:
-            self.logger.warning("Report publication refused: %s", error)
+            self.logger.warning("Report publication refused: %s", type(error).__name__)
             return build_failed_report_publication_shell(error.reason)
         if plan is None:
             return ""
@@ -6060,7 +6062,7 @@ true
             # so a refused publication is never silent.
             self.logger.warning(
                 "Report publication plan unavailable for refusal marker: %s",
-                error,
+                type(error).__name__,
             )
         return build_failed_report_publication_shell(reason, fields) + "\n"
 
@@ -6102,7 +6104,7 @@ true
             # agent commits take the normal push path with a marker.
             self.logger.warning(
                 "Report publication plan unavailable for write-flow conflict: %s",
-                error,
+                type(error).__name__,
             )
         refusal = build_failed_report_publication_shell("write_flow_conflict", fields)
         return (
@@ -6669,7 +6671,7 @@ trap _preloop_publication_cleanup EXIT
 
         except Exception as e:
             self.logger.error(
-                f"Error preparing git post-execution commands: {e}", exc_info=True
+                f"Error preparing git post-execution commands: {type(e).__name__}"
             )
             return ""
 
@@ -6837,8 +6839,7 @@ trap _preloop_publication_cleanup EXIT
 
         except Exception as e:
             self.logger.error(
-                f"Error constructing repository URL from project {project_id}: {e}",
-                exc_info=True,
+                f"Error constructing repository URL from project {project_id}: {type(e).__name__}"
             )
             return None
 
@@ -6914,7 +6915,9 @@ trap _preloop_publication_cleanup EXIT
                 db.close()
 
         except Exception as e:
-            self.logger.warning(f"Error getting token from project {project_id}: {e}")
+            self.logger.warning(
+                f"Error getting token from project {project_id}: {type(e).__name__}"
+            )
             return None, None, None
 
     def _extract_merge_request_ref_from_trigger(
@@ -7167,7 +7170,9 @@ trap _preloop_publication_cleanup EXIT
             )
             return ""
         except Exception as e:
-            self.logger.error(f"Error extracting repo URL from trigger: {e}")
+            self.logger.error(
+                f"Error extracting repo URL from trigger: {type(e).__name__}"
+            )
             return ""
 
     async def cleanup(self) -> None:

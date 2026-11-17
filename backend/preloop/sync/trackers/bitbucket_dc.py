@@ -1312,9 +1312,7 @@ class BitbucketDCTracker(BaseTracker):
             "POST", f"{self._repo_path(repo_full_name)}/pull-requests", json=payload
         )
         pr = self._assert_pull_request(response.json(), key, slug)
-        logger.info(
-            "Created Bitbucket Data Center pull request #%s: %s", pr["id"], title
-        )
+        logger.info("Created Bitbucket Data Center pull request #%s", pr["id"])
         return self._normalize_created_pull_request(pr)
 
     async def update_pull_request(

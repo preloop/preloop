@@ -1497,7 +1497,7 @@ class DynamicFastMCP(FastMCP):
         logger.info("!!! list_tools called - ENTRY POINT !!!")
         # Get current user context
         user_context = self._get_current_user_context()
-        logger.info(f"!!! Got user context: {user_context} !!!")
+        logger.debug("User context available: %s", user_context is not None)
 
         if not user_context:
             logger.warning("No user context available, returning empty tool list")
@@ -1707,7 +1707,6 @@ class DynamicFastMCP(FastMCP):
                         logger.warning(
                             "Skipping proxied tool %r: wrapper creation failed",
                             exposed_name,
-                            exc_info=True,
                         )
                         continue
                     if wrapper is None:
@@ -1745,7 +1744,9 @@ class DynamicFastMCP(FastMCP):
                     )
                     available_tools.append(tool)
                     logger.info(
-                        f"Exposing proxied tool: {original_name} (internal: {internal_name}) mcp_server: {mcp_server}"
+                        "Exposing proxied tool: tool=%s server_id=%s",
+                        original_name,
+                        mcp_server.id,
                     )
                 else:
                     logger.warning(
@@ -1757,7 +1758,7 @@ class DynamicFastMCP(FastMCP):
             )
 
         except Exception as e:
-            logger.error(f"Error loading proxied tools: {e}", exc_info=True)
+            logger.error(f"Error loading proxied tools: {type(e).__name__}")
             # Continue with just default tools
 
         # ── Enforce builtin tool enable/disable configuration ────────────
@@ -1871,8 +1872,7 @@ class DynamicFastMCP(FastMCP):
             available_tools = modified_tools
         except Exception as e:
             logger.error(
-                f"Error injecting justification parameters: {e}",
-                exc_info=True,
+                f"Error injecting justification parameters: {type(e).__name__}"
             )
 
         logger.info(
@@ -1898,7 +1898,7 @@ class DynamicFastMCP(FastMCP):
 
         except Exception as e:
             logger.error(
-                f"Error filtering tools through subject governance: {e}", exc_info=True
+                f"Error filtering tools through subject governance: {type(e).__name__}"
             )
 
         for tool in available_tools:
@@ -1928,7 +1928,7 @@ class DynamicFastMCP(FastMCP):
                 logger.warning("User context provider returned None")
             return context
         except Exception as e:
-            logger.error(f"Error getting user context: {e}", exc_info=True)
+            logger.error(f"Error getting user context: {type(e).__name__}")
             return None
 
     def _create_proxied_tool_wrapper(
@@ -2189,8 +2189,8 @@ async def {internal_name}({params_str}):
         cause = _unwrap_exception_group(e)
         server_label = snapshot.server_name
         logger.error(
-            f"Error executing proxied tool {{tool_name}} via {{server_label}}: {{cause}}",
-            exc_info=True,
+            "Error executing proxied tool %s: error_type=%s",
+            tool_name, type(cause).__name__,
         )
         unavailable = is_mcp_unavailable_error(cause)
         outcome = _proxied_exception_outcome(
@@ -2473,8 +2473,7 @@ async def {internal_name}({params_str}):
             # block the call rather than risk executing tools during an
             # emergency.
             logger.error(
-                f"Kill-switch check failed for tool '{name}': {e}. "
-                f"Blocking tool call (fail closed)."
+                f"Kill-switch check failed for tool '{name}': {type(e).__name__}. Blocking tool call (fail closed)."
             )
             return await _refuse(
                 "Error: Unable to verify account halt state "
@@ -2637,8 +2636,7 @@ async def {internal_name}({params_str}):
                 # justification is required, block the call rather than
                 # allowing potentially unjustified tool executions.
                 logger.error(
-                    f"Justification enforcement check failed for '{name}': {e}. "
-                    f"Blocking tool call (fail closed)."
+                    f"Justification enforcement check failed for '{name}': {type(e).__name__}. Blocking tool call (fail closed)."
                 )
                 return await _refuse(
                     f"Error: Unable to verify justification requirements "
@@ -2741,8 +2739,7 @@ async def {internal_name}({params_str}):
             # SECURITY: fail closed. A rule the operator wrote must not be
             # skipped because the policy could not be read.
             logger.error(
-                f"Sensitive data policy load failed for '{name}': {e}. "
-                "Blocking tool call (fail closed)."
+                f"Sensitive data policy load failed for '{name}': {type(e).__name__}. Blocking tool call (fail closed)."
             )
             return await _refuse(
                 f"Access denied: sensitive data policy for '{name}' could not "
@@ -2875,8 +2872,10 @@ async def {internal_name}({params_str}):
             matched_rule_description = reason
 
             logger.info(
-                f"Policy evaluation for '{name}': action={action}, "
-                f"workflow_id={approval_workflow_id}, reason={reason}"
+                "Policy evaluation for %s: action=%s workflow_id=%s",
+                name,
+                action,
+                approval_workflow_id,
             )
 
             if action == "deny":
@@ -2947,7 +2946,7 @@ async def {internal_name}({params_str}):
 
         except Exception as e:
             logger.error(
-                f"Error evaluating access rules for '{name}': {e}", exc_info=True
+                f"Error evaluating access rules for '{name}': {type(e).__name__}"
             )
             # SECURITY: fail CLOSED. If the central policy evaluation itself
             # raises (DB outage, malformed principal id, etc.) we must not fall
@@ -3174,7 +3173,7 @@ async def {internal_name}({params_str}):
                             raw_result=proxied_raw_result,
                         )
                     except Exception:
-                        logger.exception(
+                        logger.error(
                             "Failed to derive browser step from tool '%s'",
                             client_tool_name,
                         )
@@ -3497,7 +3496,7 @@ async def {internal_name}({params_str}):
                 )
             return retried
         except Exception:
-            logger.exception("External approval retry could not complete")
+            logger.error("External approval retry could not complete")
             return _wrapper_tool_error(
                 outcome_error("retry unavailable", handoff_reference.get()),
                 status="failed",
@@ -3870,9 +3869,7 @@ async def {internal_name}({params_str}):
                     error = screenshot_bytes_error(media_type, data)
                     if error is not None:
                         logger.info(
-                            "Skipping Playwright screenshot for step %s: %s",
-                            correlation_id,
-                            error,
+                            "Skipping Playwright screenshot: step_id=%s", correlation_id
                         )
                     else:
                         image, content_type = data, media_type
@@ -4166,7 +4163,7 @@ async def {internal_name}({params_str}):
         try:
             halted = await asyncio.wait_for(asyncio.to_thread(check), timeout=5)
         except Exception:
-            logger.exception("Unable to verify halt state before tool dispatch")
+            logger.error("Unable to verify halt state before tool dispatch")
             return "Access denied: unable to verify account halt state"
         return kill_switch_service.TOOL_DENIAL_MESSAGE if halted else None
 
@@ -4282,7 +4279,7 @@ async def {internal_name}({params_str}):
                 ) != str(request.approval_workflow_id):
                     return "Access denied: approval workflow changed"
         except Exception:
-            logger.exception("Unable to recheck policy for approval replay")
+            logger.error("Unable to recheck policy for approval replay")
             return "Access denied: approval replay policy check failed"
         return None
 

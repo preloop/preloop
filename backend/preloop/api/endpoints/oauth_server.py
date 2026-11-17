@@ -236,18 +236,12 @@ async def _handle_authorization_code(
         # When absent, look up by hash only and use the stored client_id.
         if client_id:
             effective_client_id = client_id
-            logger.info(
-                f"Auth code exchange: client_id={effective_client_id!r}, "
-                f"redirect_uri={redirect_uri!r}"
-            )
+            logger.info("Auth code exchange: client_id=%s", effective_client_id)
             db_code = crud_oauth_mcp_auth_code.get_by_code(
                 db, code=code, client_id=effective_client_id
             )
         else:
-            logger.info(
-                f"Auth code exchange: client_id not provided, "
-                f"looking up by code hash only. redirect_uri={redirect_uri!r}"
-            )
+            logger.info("Auth code exchange: looking up client by code hash")
             db_code = crud_oauth_mcp_auth_code.get_by_code_hash(db, code=code)
             if db_code:
                 effective_client_id = db_code.client_id
@@ -281,8 +275,7 @@ async def _handle_authorization_code(
                 )
             if db_code.redirect_uri != redirect_uri:
                 logger.warning(
-                    f"redirect_uri mismatch: expected={db_code.redirect_uri!r}, "
-                    f"got={redirect_uri!r}"
+                    "OAuth redirect URI mismatch: client_id=%s", effective_client_id
                 )
                 return _oauth_error(
                     "invalid_grant",

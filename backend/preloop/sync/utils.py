@@ -37,13 +37,14 @@ def retry(
                 except exceptions as e:
                     attempt += 1
                     if attempt >= max_attempts:
-                        logger.error(f"Failed after {max_attempts} attempts: {str(e)}")
+                        logger.error(
+                            f"Failed after {max_attempts} attempts: {type(e).__name__}"
+                        )
                         raise
 
                     wait_time = backoff_factor * (2 ** (attempt - 1))
                     logger.warning(
-                        f"Attempt {attempt} failed with {str(e)}. "
-                        f"Retrying in {wait_time:.2f} seconds."
+                        f"Attempt {attempt} failed with {type(e).__name__}. Retrying in {wait_time:.2f} seconds."
                     )
                     time.sleep(wait_time)
 

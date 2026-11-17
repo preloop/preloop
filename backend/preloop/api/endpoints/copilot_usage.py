@@ -220,7 +220,7 @@ def sync_copilot_connection(
     try:
         ack = from_thread.run(publish)
     except Exception as exc:
-        logger.exception("Failed to queue Copilot usage import")
+        logger.error("Failed to queue Copilot usage import")
         raise HTTPException(
             status_code=503, detail="Could not queue the Copilot import"
         ) from exc

@@ -673,7 +673,7 @@ async def file_follow_ups(
             # The tracker message is not repeated into the result: it is
             # unbounded, may quote a credential, and an operator reading the
             # receipt needs the diagnosis, not the provider's prose.
-            logger.exception("Filing follow up %s failed", row.id)
+            logger.error("Filing follow up %s failed", row.id)
             results.append(
                 RowFiling(
                     index=row.index,
@@ -823,7 +823,7 @@ def load_filed_follow_ups(
     try:
         executions = crud_flow_execution.get_by_flow(db, flow_id=flow_id, limit=limit)
     except Exception:
-        logger.exception("Could not read earlier executions for the follow up ledger")
+        logger.error("Could not read earlier executions for the follow up ledger")
         return {}
 
     results = []

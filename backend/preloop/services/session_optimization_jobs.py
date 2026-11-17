@@ -237,9 +237,7 @@ def _touch_heartbeat(job_id: uuid.UUID) -> None:
     try:
         crud_optimization_job.touch_heartbeat(db, job_id=job_id)
     except Exception:
-        logger.warning(
-            "Optimization job %s heartbeat update failed", job_id, exc_info=True
-        )
+        logger.warning("Optimization job %s heartbeat update failed", job_id)
     finally:
         db.close()
 
@@ -334,7 +332,7 @@ def _execute_job(
         if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
             raise
         # Row gets the stable user-facing copy; the log line keeps the detail.
-        logger.warning("Optimization job %s failed: %s", job_id, exc, exc_info=True)
+        logger.warning("Optimization job %s failed: %s", job_id, type(exc).__name__)
         try:
             # The failed pass may have left the session mid-transaction; the
             # failure-recording UPDATE needs a clean one.
@@ -347,11 +345,7 @@ def _execute_job(
                 error=USER_FACING_JOB_ERROR,
             )
         except Exception:
-            logger.error(
-                "Could not record failure for optimization job %s",
-                job_id,
-                exc_info=True,
-            )
+            logger.error("Could not record failure for optimization job %s", job_id)
     finally:
         if heartbeat_stop is not None:
             heartbeat_stop.set()
@@ -453,7 +447,7 @@ class OptimizationJobSweeper:
             try:
                 await asyncio.to_thread(self._sweep_once)
             except Exception:
-                logger.error("Error in optimization job sweep", exc_info=True)
+                logger.error("Error in optimization job sweep")
             try:
                 await asyncio.sleep(self.check_interval)
             except asyncio.CancelledError:

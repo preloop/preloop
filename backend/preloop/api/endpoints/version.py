@@ -88,7 +88,7 @@ def _log_cli_activity(
                 "Failed to roll back CLI activity audit session",
                 exc_info=True,
             )
-        logger.exception("Failed to record CLI activity audit log")
+        logger.error("Failed to record CLI activity audit log")
     finally:
         audit_db.close()
 
@@ -136,8 +136,7 @@ async def get_version_info(
             except Exception as e:
                 # Log unexpected errors but don't fail the request
                 logger.error(
-                    f"Unexpected error during optional auth in /version: {e}",
-                    exc_info=True,
+                    f"Unexpected error during optional auth in /version: {type(e).__name__}"
                 )
 
         # Log the client version information
@@ -156,7 +155,7 @@ async def get_version_info(
             )
         except Exception as e:
             db.rollback()  # Remove await for synchronous rollback
-            logger.error(f"Failed to log client version: {e}", exc_info=True)
+            logger.error(f"Failed to log client version: {type(e).__name__}")
             # Continue even if logging fails, returning version info is primary
 
         # Best-effort audit; uses its own session (sync, matching other audit

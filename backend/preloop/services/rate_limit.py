@@ -447,7 +447,7 @@ def _record_store_error(rule: Rule, exc: Exception) -> None:
         logger.error(
             "Rate limit store unavailable (rule=%s); enforcing per process: %s",
             rule.name,
-            exc,
+            type(exc).__name__,
         )
     _count(
         "preloop_rate_limit_store_errors_total",

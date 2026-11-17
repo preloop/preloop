@@ -967,8 +967,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             # approval_helper — a gated call must never run un-approved
             # because the approval check itself errored.
             logger.error(
-                f"permission_prompt failed for tool {tool_name}: {exc}",
-                exc_info=True,
+                f"permission_prompt failed for tool {tool_name}: {type(exc).__name__}"
             )
             behavior = {
                 "behavior": "deny",
@@ -2226,9 +2225,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             UUID(str(request_id))
         except (ValueError, TypeError, AttributeError):
             logger.warning(
-                "Invalid approval request_id %r for account %s",
-                request_id,
-                user_context.account_id,
+                "Invalid approval request ID for account %s", user_context.account_id
             )
             return json.dumps(
                 {
@@ -2529,8 +2526,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
 
                         except Exception as exec_err:
                             logger.error(
-                                f"Error executing tool after approval: {exec_err}",
-                                exc_info=True,
+                                f"Error executing tool after approval: {type(exec_err).__name__}"
                             )
                             # Store a failure sentinel so subsequent polls
                             # do not re-execute the tool.
@@ -2610,7 +2606,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 return json.dumps(response)
 
         except Exception as e:
-            logger.error(f"Error checking approval status: {e}", exc_info=True)
+            logger.error(f"Error checking approval status: {type(e).__name__}")
             return json.dumps({"error": f"Failed to check approval status: {str(e)}"})
 
     logger.info("Default tools registered with DynamicFastMCP")

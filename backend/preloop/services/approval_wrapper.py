@@ -128,16 +128,11 @@ def with_approval(tool_func: Callable) -> Callable:
                     await db.commit()
                 action, approval_workflow_id, rule_description = policy_decision
 
-                logger.info(
-                    f"Policy evaluation for tool '{tool_name}': "
-                    f"action={action}, rule='{rule_description}'"
-                )
+                logger.info("Policy evaluation: tool=%s action=%s", tool_name, action)
 
                 # Handle deny action - block execution
                 if action == "deny":
-                    logger.warning(
-                        f"Tool {tool_name} execution DENIED by policy rule: {rule_description}"
-                    )
+                    logger.warning("Tool denied by policy: tool=%s", tool_name)
                     return f"Tool execution denied: {rule_description}"
 
                 if action != "allow":
@@ -208,8 +203,7 @@ def with_approval(tool_func: Callable) -> Callable:
                         )
                     except Exception as e:
                         logger.error(
-                            f"Approval flow error for tool {tool_name}: {e}",
-                            exc_info=True,
+                            f"Approval flow error for tool {tool_name}: {type(e).__name__}"
                         )
                         return f"Approval error: {str(e)}"
 
@@ -229,25 +223,15 @@ def with_approval(tool_func: Callable) -> Callable:
             # Handle allow action - execute directly (outside the session so a
             # long-running tool does not pin a pooled connection either)
             if action == "allow":
-                logger.info(
-                    f"Tool {tool_name} allowed by policy rule: {rule_description}"
-                )
+                logger.info("Tool allowed by policy: tool=%s", tool_name)
                 return await tool_func(*args, **kwargs)
 
-            from preloop.utils.redaction import redact_for_log
-
             logger.warning(
-                f"\n{'=' * 60}\n"
-                f"🚨 APPROVAL REQUIRED 🚨\n"
-                f"{'=' * 60}\n"
-                f"Tool: {tool_name}\n"
-                f"Arguments: {redact_for_log(kwargs)}\n"
-                f"Request ID: {approval_request_id}\n"
-                f"Notification sent to: {approval_type} ({notification_channel})\n"
-                f"Timeout: {timeout_seconds}s\n"
-                f"Approval URL: [sent via notification]\n"
-                f"{'=' * 60}\n"
-                f"⏳ Waiting for approval (polling every 2s)..."
+                "Approval required: tool=%s request_id=%s arg_keys=%s timeout_seconds=%s",
+                tool_name,
+                approval_request_id,
+                sorted(kwargs),
+                timeout_seconds,
             )
 
             # Send initial notification via Context (FastMCP streaming)
@@ -257,7 +241,9 @@ def with_approval(tool_func: Callable) -> Callable:
                     await ctx.report_progress(progress=0, total=100)
                     logger.info("✅ Sent initial progress via Context (0%)")
                 except Exception as e:
-                    logger.warning(f"Could not send progress via Context: {e}")
+                    logger.warning(
+                        f"Could not send progress via Context: {type(e).__name__}"
+                    )
 
             try:
                 # Polling loop with progress updates. Each poll opens a fresh,
@@ -333,8 +319,7 @@ def with_approval(tool_func: Callable) -> Callable:
                             )
                         except Exception as e:
                             logger.error(
-                                f"Failed to send progress update: {e}",
-                                exc_info=True,
+                                f"Failed to send progress update: {type(e).__name__}"
                             )
 
                     # Wait before next poll
@@ -350,8 +335,7 @@ def with_approval(tool_func: Callable) -> Callable:
                         )
                     except Exception as e:
                         logger.error(
-                            f"Failed to send completion notification: {e}",
-                            exc_info=True,
+                            f"Failed to send completion notification: {type(e).__name__}"
                         )
 
                 # Check final status
@@ -374,11 +358,13 @@ def with_approval(tool_func: Callable) -> Callable:
                 )
 
             except TimeoutError as e:
-                logger.error(f"⏱️ Approval timeout for tool {tool_name}: {e}")
+                logger.error(
+                    f"⏱️ Approval timeout for tool {tool_name}: {type(e).__name__}"
+                )
                 return f"Approval timeout: {str(e)}"
             except Exception as e:
                 logger.error(
-                    f"Approval flow error for tool {tool_name}: {e}", exc_info=True
+                    f"Approval flow error for tool {tool_name}: {type(e).__name__}"
                 )
                 return f"Approval error: {str(e)}"
 
@@ -392,8 +378,7 @@ def with_approval(tool_func: Callable) -> Callable:
             # SECURITY: Fail closed on errors - do not execute tool
             # If we can't determine whether approval is required, we must assume it is
             logger.error(
-                f"Error checking approval requirement for {tool_name}: {e}",
-                exc_info=True,
+                f"Error checking approval requirement for {tool_name}: {type(e).__name__}"
             )
             return (
                 f"Tool execution blocked: Error evaluating access workflow - {str(e)}"

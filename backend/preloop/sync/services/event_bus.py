@@ -106,17 +106,19 @@ class EventBus:
             logger.info(f"Successfully connected to NATS server: {self.nats_url}")
         except ErrNoServers as e:
             logger.error(
-                f"Could not connect to NATS: No servers available at {self.nats_url}. Error: {e}"
+                f"Could not connect to NATS: No servers available at {self.nats_url}. Error: {type(e).__name__}"
             )
             self.nc = None
             self.js = None
         except Exception as e:
-            logger.error(f"Error connecting to NATS at {self.nats_url}: {e}")
+            logger.error(
+                f"Error connecting to NATS at {self.nats_url}: {type(e).__name__}"
+            )
             self.nc = None
             self.js = None
 
     async def _error_cb(self, e: Exception):
-        logger.error(f"NATS client error: {e}")
+        logger.error(f"NATS client error: {type(e).__name__}")
 
     async def _reconnected_cb(self):
         logger.info(f"NATS client reconnected to {self.nats_url}")
@@ -170,13 +172,13 @@ class EventBus:
             return ack
         except (ErrTimeout, ErrConnectionClosed) as e:
             logger.error(
-                f"Failed to publish task '{function_name}' to NATS subject '{subject}': {e}"
+                f"Failed to publish task '{function_name}' to NATS subject '{subject}': {type(e).__name__}"
             )
             # Let the bounded retry decorator actually retry transient failures.
             raise
         except Exception as e:
             logger.error(
-                f"An unexpected error occurred while publishing task '{function_name}' to NATS subject '{subject}': {e}"
+                f"An unexpected error occurred while publishing task '{function_name}' to NATS subject '{subject}': {type(e).__name__}"
             )
         return None
 
@@ -190,7 +192,9 @@ class EventBus:
                 await self.nc.drain()
                 logger.info("NATS client connection drained and closed.")
             except Exception as e:
-                logger.error(f"Error closing NATS client connection: {e}")
+                logger.error(
+                    f"Error closing NATS client connection: {type(e).__name__}"
+                )
         else:
             logger.info("NATS client connection already closed or not established.")
         self.nc = None

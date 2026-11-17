@@ -229,10 +229,7 @@ def _bound_repository(event: Dict[str, Any], context: Any) -> Optional[Tuple[str
         )
         return None
     except (SQLAlchemyError, TypeError, ValueError, AttributeError):
-        logger.warning(
-            "Could not resolve the bound repository for a Jira trigger",
-            exc_info=True,
-        )
+        logger.warning("Could not resolve the bound repository for a Jira trigger")
         return None
     if binding is None:
         return None
@@ -287,9 +284,7 @@ def _attach_referenced_issues(
         refs = references_from_trigger_payload(payload, attrs, source)
         attrs["referenced_issues"] = format_issue_references(refs)
     except Exception:  # pragma: no cover - never fail prompt resolution
-        logger.warning(
-            "Failed to parse issue references from PR payload", exc_info=True
-        )
+        logger.warning("Failed to parse issue references from PR payload")
         attrs["referenced_issues"] = NO_REFERENCES
 
 

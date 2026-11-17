@@ -516,7 +516,7 @@ async def test_session_boundary_other_failures_keep_error_diagnostics(
     boundary: str,
     make_exc: Callable[[], BaseException],
 ) -> None:
-    """Unrelated and non-disconnect operational errors keep a traceback."""
+    """Unrelated and non-disconnect operational errors log exception classes."""
     from preloop.services.audit.async_writer import schedule_audit_write
 
     exc = make_exc()
@@ -538,7 +538,7 @@ async def test_session_boundary_other_failures_keep_error_diagnostics(
     assert isolated_writer.dropped_count == 0
     errors = _error_records(caplog, "preloop.services.audit.async_writer")
     assert len(errors) == 1
-    assert errors[0].exc_info is not None
+    assert errors[0].exc_info is None
     assert "Asynchronous audit database write failed" in errors[0].getMessage()
     assert not any(
         record.levelno == logging.WARNING and "pool timeout" in record.getMessage()
@@ -619,7 +619,7 @@ async def test_lifecycle_crud_failure_classification_closes_session(
         assert "Traceback" not in caplog.text
     else:
         assert len(service_errors) == 1
-        assert service_errors[0].exc_info is not None
+        assert service_errors[0].exc_info is None
         assert service_warnings == []
 
     def succeed(**kwargs: Any) -> Any:

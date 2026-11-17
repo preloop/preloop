@@ -35,8 +35,7 @@ async def poll_tracker(tracker_id: str):
             logger.error(f"Failed to publish poll task for tracker {tracker_id}.")
     except Exception as e:
         logger.error(
-            f"An exception occurred while trying to publish poll task for tracker {tracker_id}: {e}",
-            exc_info=True,
+            f"An exception occurred while trying to publish poll task for tracker {tracker_id}: {type(e).__name__}"
         )
 
 
@@ -99,7 +98,7 @@ def sync_scheduled_jobs(scheduler: AsyncIOScheduler, db: Session):
                     f"Job {job_id} not found in scheduler, likely already removed."
                 )
             except Exception as e:
-                logger.error(f"Error removing job {job_id}: {e}")
+                logger.error(f"Error removing job {job_id}: {type(e).__name__}")
 
         # 6. Add jobs for new active trackers
         for tracker_id in trackers_to_add:
@@ -131,7 +130,7 @@ def sync_scheduled_jobs(scheduler: AsyncIOScheduler, db: Session):
         logger.info("Tracker job synchronization complete.")
 
     except Exception as e:
-        logger.error(f"Error during tracker job synchronization: {e}", exc_info=True)
+        logger.error(f"Error during tracker job synchronization: {type(e).__name__}")
     finally:
         # Ensure the locally acquired DB session is closed
         if db:
@@ -139,4 +138,6 @@ def sync_scheduled_jobs(scheduler: AsyncIOScheduler, db: Session):
                 db.close()
                 logger.debug("Closed DB session for job synchronization.")
             except Exception as e:
-                logger.error(f"Error closing DB session in job synchronization: {e}")
+                logger.error(
+                    f"Error closing DB session in job synchronization: {type(e).__name__}"
+                )

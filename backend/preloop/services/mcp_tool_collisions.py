@@ -362,11 +362,11 @@ def recompute_and_audit(
     try:
         changes = recompute_shadowing(db, account_id)
     except Exception:
-        logger.warning("Could not recompute MCP tool shadowing", exc_info=True)
+        logger.warning("Could not recompute MCP tool shadowing")
         db.rollback()
         return ShadowingChanges()
     try:
         log_shadowing_audit(db, user, changes)
     except Exception:
-        logger.warning("Could not audit MCP tool shadowing", exc_info=True)
+        logger.warning("Could not audit MCP tool shadowing")
     return changes

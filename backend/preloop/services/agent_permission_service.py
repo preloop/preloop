@@ -875,9 +875,8 @@ async def request_agent_permission(
             # agents still fail closed by propagating.
             if not approvals_off or matched_require is not None:
                 raise
-            logger.exception(
-                "Failed to record the auto-approved request for managed agent %s "
-                "(account %s, tool %s); allowing per governance config",
+            logger.error(
+                "Failed to record the auto-approved request for managed agent %s (account %s, tool %s); allowing per governance config",
                 managed_agent_id,
                 account_id,
                 tool_name,

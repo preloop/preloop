@@ -129,7 +129,7 @@ async def resolve_tracker_git_token(tracker: Any) -> Optional[str]:
         logger.warning(
             "Could not mint an installation access token for tracker %s: %s",
             getattr(tracker, "id", "unknown"),
-            exc,
+            type(exc).__name__,
         )
         return None
 

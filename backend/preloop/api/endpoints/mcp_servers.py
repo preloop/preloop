@@ -144,7 +144,7 @@ async def create_mcp_server(
 
         except Exception as e:
             validation_error = describe_mcp_connection_error(e)
-            logger.warning("MCP server validation failed: %s", validation_error)
+            logger.warning("MCP server validation failed")
             # Don't raise here - we'll store the error and mark status as 'error'
 
     # Create new MCP server
@@ -191,9 +191,7 @@ async def create_mcp_server(
         )
 
         if validation_error:
-            logger.warning(
-                f"Created MCP server {new_server.id} with error status: {validation_error}"
-            )
+            logger.warning("Created MCP server with error status: id=%s", new_server.id)
         else:
             logger.info(
                 f"Created MCP server {new_server.id} for account {current_user.account_id}"
@@ -216,14 +214,16 @@ async def create_mcp_server(
                         f"Auto-scan complete: discovered {len(tools)} tools for {new_server.name}"
                     )
                 except Exception as e:
-                    logger.warning(f"Auto-scan failed for {new_server.id}: {e}")
+                    logger.warning(
+                        f"Auto-scan failed for {new_server.id}: {type(e).__name__}"
+                    )
                     # Don't fail the creation if scan fails - user can manually rescan
 
         return _server_response(db, new_server)
 
     except Exception as e:
         db.rollback()
-        logger.error(f"Error creating MCP server: {e}", exc_info=True)
+        logger.error(f"Error creating MCP server: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating MCP server: {str(e)}",
@@ -256,7 +256,7 @@ def list_mcp_servers(
         try:
             warnings_by_server = server_warnings_map(db, str(current_user.account_id))
         except Exception:
-            logger.warning("Could not compute MCP tool warnings", exc_info=True)
+            logger.warning("Could not compute MCP tool warnings")
             warnings_by_server = {}
         from preloop.models.crud.resource_share import crud_resource_share
 
@@ -272,7 +272,7 @@ def list_mcp_servers(
             *filter_viewable(db, current_user, VISIBLE_MCP_SERVER, shared),
         ]
     except Exception as e:
-        logger.error(f"Error listing MCP servers: {e}", exc_info=True)
+        logger.error(f"Error listing MCP servers: {type(e).__name__}")
         raise
 
 
@@ -350,7 +350,7 @@ def _server_response(
         else:
             response.warnings = server_warnings(db, server)
     except Exception:
-        logger.warning("Could not compute MCP tool warnings", exc_info=True)
+        logger.warning("Could not compute MCP tool warnings")
     return response
 
 
@@ -365,7 +365,7 @@ async def _evict_mcp_client(server_id: UUID) -> None:
     try:
         await get_mcp_client_pool().close_client(str(server_id))
     except Exception:
-        logger.warning("Could not evict pooled MCP client", exc_info=True)
+        logger.warning("Could not evict pooled MCP client")
 
 
 def _unregister_proxied_tools(
@@ -382,7 +382,7 @@ def _unregister_proxied_tools(
     try:
         mcp.unregister_proxied_tools(account_id, str(server_id), tool_names)
     except Exception:
-        logger.warning("Could not unregister proxied MCP tools", exc_info=True)
+        logger.warning("Could not unregister proxied MCP tools")
 
 
 @router.put("/mcp-servers/{server_id}", response_model=MCPServerResponse)
@@ -469,7 +469,7 @@ async def update_mcp_server(
 
     except Exception as e:
         db.rollback()
-        logger.error(f"Error updating MCP server {server_id}: {e}", exc_info=True)
+        logger.error(f"Error updating MCP server {server_id}: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating MCP server: {str(e)}",
@@ -556,7 +556,7 @@ async def delete_mcp_server(
 
     except Exception as e:
         db.rollback()
-        logger.error(f"Error deleting MCP server {server_id}: {e}", exc_info=True)
+        logger.error(f"Error deleting MCP server {server_id}: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error deleting MCP server: {str(e)}",
@@ -640,7 +640,7 @@ async def scan_mcp_server(
             detail=str(e),
         )
     except Exception as e:
-        logger.error(f"Error scanning MCP server {server_id}: {e}", exc_info=True)
+        logger.error(f"Error scanning MCP server {server_id}: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error scanning MCP server: {str(e)}",
@@ -693,7 +693,7 @@ async def list_mcp_server_tools(
 
     except Exception as e:
         logger.error(
-            f"Error listing tools for MCP server {server_id}: {e}", exc_info=True
+            f"Error listing tools for MCP server {server_id}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

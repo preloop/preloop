@@ -521,7 +521,7 @@ def _hosted_runner_session_id(
             actor_user_id=context.api_key.user_id or context.api_key.id,
         )
     except Exception:
-        logger.warning("Resolving the hosted runner session failed", exc_info=True)
+        logger.warning("Resolving the hosted runner session failed")
         return None
     return str(hosted.id) if hosted is not None else None
 
@@ -556,7 +556,7 @@ def _hook_origin_session_id(
             principal_id=principal_id,
         )
     except Exception:
-        logger.warning("Resolving the hook origin session failed", exc_info=True)
+        logger.warning("Resolving the hook origin session failed")
         return None
     # Ownership must be positive: a session with no runtime principal (an
     # importer row keyed on the bare id) or another principal's session in the

@@ -137,10 +137,9 @@ async def register_mobile_device(
     )
     if not is_valid:
         logger.warning(
-            "Rejected device registration for user %s (platform=%s): %s",
+            "Device registration rejected: user_id=%s platform=%s",
             current_user.id,
             device_in.platform,
-            validation_error,
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -408,10 +407,9 @@ async def register_device_via_token(
             db.flush()
     else:
         logger.warning(
-            "QR pairing for user %s completed WITHOUT push: platform=%s %s",
+            "QR pairing completed without push: user_id=%s platform=%s",
             user_id,
             device_in.platform,
-            push_error,
         )
         prefs = notification_preferences.get_or_create(db, user_id)
 

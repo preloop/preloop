@@ -91,7 +91,7 @@ def enqueue_credential_rejection_notice(
                     build_credential_rejection_message(data),
                 )
         except Exception:
-            logger.warning("Credential rejection notice failed", exc_info=True)
+            logger.warning("Credential rejection notice failed")
         finally:
             _PENDING.release()
 
@@ -99,4 +99,4 @@ def enqueue_credential_rejection_notice(
         _EXECUTOR.submit(deliver)
     except Exception:
         _PENDING.release()
-        logger.warning("Could not enqueue credential rejection notice", exc_info=True)
+        logger.warning("Could not enqueue credential rejection notice")

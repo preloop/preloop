@@ -96,11 +96,9 @@ def concurrent_index_ddl(context: MigrationContext) -> Iterator[None]:
             yield
         except SQLAlchemyError as error:
             logger.warning(
-                "Concurrent-index DDL failed after %.1fs (SQLSTATE %s); inspect old transactions, "
-                "pg_blocking_pids and pg_stat_progress_create_index before retrying. "
-                "An interrupted build may leave an invalid index for repair.",
+                "Concurrent-index DDL failed after %.1fs (SQLSTATE %s); inspect old transactions, pg_blocking_pids and pg_stat_progress_create_index before retrying. An interrupted build may leave an invalid index for repair.",
                 time.monotonic() - started,
-                sqlstate_of(error) or "unknown",
+                sqlstate_of(type(error).__name__) or "unknown",
             )
             raise
         else:

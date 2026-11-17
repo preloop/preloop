@@ -83,7 +83,7 @@ def get_example_runtime_session_optimization(
     try:
         return build_example_optimization_response(db)
     except ExampleSessionUnavailableError:
-        logger.warning("Bundled example session unavailable", exc_info=True)
+        logger.warning("Bundled example session unavailable")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Example session is not available",

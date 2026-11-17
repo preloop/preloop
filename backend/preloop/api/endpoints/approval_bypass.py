@@ -161,15 +161,10 @@ def create_bypass(
     # Log loudly. A governance bypass being opened is a security-relevant
     # event and should be greppable in the server log without a DB query.
     logger.warning(
-        "APPROVAL BYPASS OPENED: mode=%s user=%s account=%s scope=%s "
-        "expires_at=%s via=%s reason=%r",
-        bypass.mode,
-        bypass.user_id,
+        "Approval bypass opened: id=%s account_id=%s mode=%s",
+        bypass.id,
         bypass.account_id,
-        bypass.managed_agent_id or "account-wide",
-        bypass.expires_at.isoformat(),
-        bypass.created_via,
-        bypass.reason,
+        bypass.mode,
     )
     return bypass
 

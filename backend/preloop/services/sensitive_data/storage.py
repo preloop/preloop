@@ -204,7 +204,7 @@ def redact_for_storage(
     try:
         redacted, counts = redact_structure(obj, detector_config_for(config, rules))
     except Exception:  # noqa: BLE001 - never lose the row over a detector bug
-        logger.warning("Storage redaction failed; storing unredacted", exc_info=True)
+        logger.warning("Storage redaction failed; storing unredacted")
         return obj, {}, []
     return redacted, counts, rules
 
@@ -268,7 +268,7 @@ def reference_record_for_storage(
                 kept_redactor=kept_redactor,
             )
     except Exception:  # noqa: BLE001 - fall back to redaction, never to raw
-        logger.warning("Reference record could not be built", exc_info=True)
+        logger.warning("Reference record could not be built")
         return None
     if isinstance(obj, str):
         return reference_module.reference_summary(record)
@@ -325,7 +325,7 @@ def attach_result_to_reference(
             kept_redactor=kept_redactor,
         )
     except Exception:  # noqa: BLE001 - keep the argument record as built
-        logger.warning("Result reference could not be attached", exc_info=True)
+        logger.warning("Result reference could not be attached")
         return stored
 
 

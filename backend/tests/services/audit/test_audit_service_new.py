@@ -777,7 +777,7 @@ class TestApprovalLifecycleFailureClassification:
         ]
         assert len(errors) == 1
         assert errors[0].levelno == logging.ERROR
-        assert errors[0].exc_info is not None
+        assert errors[0].exc_info is None
         assert "Failed to log approval lifecycle" in errors[0].getMessage()
         assert not any(
             record.levelno == logging.WARNING and "disconnected" in record.getMessage()

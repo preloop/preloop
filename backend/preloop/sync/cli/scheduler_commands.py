@@ -80,7 +80,7 @@ def shutdown_scheduler():
             scheduler.shutdown(wait=False)  # Use wait=False for atexit
             logger.info("Scheduler shut down successfully.")
         except Exception as e:
-            logger.error(f"Error shutting down scheduler: {e}")
+            logger.error(f"Error shutting down scheduler: {type(e).__name__}")
 
 
 # Register the shutdown hook globally for the CLI process
@@ -97,7 +97,7 @@ async def run_scheduler_async(
     try:
         await event_bus_service.connect()
     except Exception as e:
-        logger.error(f"Scheduler failed to connect to NATS: {e}", exc_info=True)
+        logger.error(f"Scheduler failed to connect to NATS: {type(e).__name__}")
         # Depending on strictness, you might want to exit here.
         # For now, we'll allow the scheduler to run but it won't be able to queue tasks.
     loop = asyncio.get_running_loop()
@@ -150,7 +150,7 @@ async def run_scheduler_async(
             try:
                 await event_bus_service.publish_task("ingest_provider_billing")
             except Exception:
-                logger.exception("Failed to publish provider billing ingest task")
+                logger.error("Failed to publish provider billing ingest task")
 
         scheduler.add_job(
             _publish_provider_billing_ingest,
@@ -172,7 +172,7 @@ async def run_scheduler_async(
             try:
                 await event_bus_service.publish_task("ingest_copilot_usage")
             except Exception:
-                logger.exception("Failed to publish Copilot usage import task")
+                logger.error("Failed to publish Copilot usage import task")
 
         scheduler.add_job(
             _publish_copilot_usage_import,
@@ -193,7 +193,7 @@ async def run_scheduler_async(
             try:
                 await event_bus_service.publish_task("ingest_anthropic_usage")
             except Exception:
-                logger.exception("Failed to publish Anthropic usage import task")
+                logger.error("Failed to publish Anthropic usage import task")
 
         scheduler.add_job(
             _publish_anthropic_usage_import,
@@ -221,7 +221,7 @@ async def run_scheduler_async(
             try:
                 await event_bus_service.publish_task("sync_model_catalog")
             except Exception:
-                logger.exception("Failed to publish model catalog sync task")
+                logger.error("Failed to publish model catalog sync task")
 
         scheduler.add_job(
             _publish_model_catalog_sync,
@@ -241,7 +241,7 @@ async def run_scheduler_async(
         try:
             await event_bus_service.publish_task("reconcile_flow_feedback")
         except Exception:
-            logger.exception("Failed to publish feedback reconciliation")
+            logger.error("Failed to publish feedback reconciliation")
 
     scheduler.add_job(
         _publish_feedback_tick,
@@ -257,7 +257,7 @@ async def run_scheduler_async(
         try:
             await event_bus_service.publish_task("refresh_pull_request_records")
         except Exception:
-            logger.exception("Failed to publish pull request record refresh")
+            logger.error("Failed to publish pull request record refresh")
 
     scheduler.add_job(
         _publish_pull_request_refresh,
@@ -271,7 +271,7 @@ async def run_scheduler_async(
         try:
             await event_bus_service.publish_task("reconcile_security_maintenance")
         except Exception:
-            logger.exception("Failed to publish security-maintenance reconciliation")
+            logger.error("Failed to publish security-maintenance reconciliation")
 
     scheduler.add_job(
         _publish_security_maintenance_tick,
@@ -290,7 +290,7 @@ async def run_scheduler_async(
         try:
             await event_bus_service.publish_task("run_data_backfills")
         except Exception:
-            logger.exception("Failed to publish data backfill task")
+            logger.error("Failed to publish data backfill task")
 
     scheduler.add_job(
         _publish_data_backfills,
@@ -309,7 +309,7 @@ async def run_scheduler_async(
         try:
             await event_bus_service.publish_task("cleanup_flow_workspaces")
         except Exception:
-            logger.exception("Failed to publish workspace cleanup task")
+            logger.error("Failed to publish workspace cleanup task")
 
     scheduler.add_job(
         _publish_workspace_cleanup,
@@ -332,7 +332,7 @@ async def run_scheduler_async(
         try:
             await event_bus_service.publish_task("maintain_gateway_activity")
         except Exception:
-            logger.exception("Failed to publish gateway activity maintenance task")
+            logger.error("Failed to publish gateway activity maintenance task")
 
     if (
         settings.gateway_activity_compaction_enabled
@@ -365,7 +365,7 @@ async def run_scheduler_async(
         try:
             await event_bus_service.publish_task("reconcile_stripe_subscriptions")
         except Exception:
-            logger.exception("Failed to publish subscription reconciliation task")
+            logger.error("Failed to publish subscription reconciliation task")
 
     scheduler.add_job(
         _publish_subscription_reconcile,
@@ -388,7 +388,7 @@ async def run_scheduler_async(
         try:
             await event_bus_service.publish_task("evaluate_spend_outliers")
         except Exception:
-            logger.exception("Failed to publish spend outlier daily pass")
+            logger.error("Failed to publish spend outlier daily pass")
 
     scheduler.add_job(
         _publish_spend_outlier_daily,
@@ -403,7 +403,7 @@ async def run_scheduler_async(
         try:
             await event_bus_service.publish_task("evaluate_spend_outlier_sessions")
         except Exception:
-            logger.exception("Failed to publish spend outlier session check")
+            logger.error("Failed to publish spend outlier session check")
 
     scheduler.add_job(
         _publish_spend_outlier_sessions,
@@ -430,7 +430,7 @@ async def run_scheduler_async(
             try:
                 await event_bus_service.publish_task("send_optimization_digest")
             except Exception:
-                logger.exception("Failed to publish optimization digest task")
+                logger.error("Failed to publish optimization digest task")
 
         scheduler.add_job(
             _publish_optimization_digest,
@@ -453,7 +453,7 @@ async def run_scheduler_async(
             try:
                 await event_bus_service.publish_task("governance_session_digest_sweep")
             except Exception:
-                logger.exception("Failed to publish governance session digest sweep")
+                logger.error("Failed to publish governance session digest sweep")
 
         scheduler.add_job(
             _publish_governance_session_digest_sweep,
@@ -468,7 +468,7 @@ async def run_scheduler_async(
             try:
                 await event_bus_service.publish_task("governance_weekly_review")
             except Exception:
-                logger.exception("Failed to publish governance weekly review")
+                logger.error("Failed to publish governance weekly review")
 
         scheduler.add_job(
             _publish_governance_weekly_review,
@@ -577,5 +577,7 @@ def scheduler_cmd(reload_interval: int, max_workers: int, log_level: str) -> Non
                 db.close()
                 logger.info("Initial database session closed.")
             except Exception as e:
-                logger.error(f"Error closing initial database session: {e}")
+                logger.error(
+                    f"Error closing initial database session: {type(e).__name__}"
+                )
         click.echo("Preloop Sync scheduler service stopped.")

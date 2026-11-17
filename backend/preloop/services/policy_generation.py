@@ -363,7 +363,9 @@ class PolicyGenerationService:
                 policy_name="(current configuration)",
             )
         except Exception as exc:
-            logger.warning("Could not export current policy for merge: %s", exc)
+            logger.warning(
+                "Could not export current policy for merge: %s", type(exc).__name__
+            )
             if not starter_server:
                 return generated_yaml
             generated.tools = self._scope_tools_to_starter_server(
@@ -572,7 +574,7 @@ class PolicyGenerationService:
                 + "--- END CURRENT CONFIGURATION ---\n"
             )
         except Exception as exc:
-            logger.warning("Could not export current config: %s", exc)
+            logger.warning("Could not export current config: %s", type(exc).__name__)
             return ""
 
     def _build_system_prompt(self, schema_json: str, context_block: str) -> str:

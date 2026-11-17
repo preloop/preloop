@@ -24,7 +24,7 @@ def test_google_speech_backend_posts_recognize_payload(monkeypatch):
         def __exit__(self, exc_type, exc, traceback):
             return False
 
-        def read(self):
+        def read(self) -> bytes:
             return json.dumps(
                 {
                     "results": [
@@ -70,7 +70,9 @@ def test_google_speech_backend_posts_recognize_payload(monkeypatch):
     assert captured["body"]["audio"]["content"]
 
 
-def test_google_speech_backend_hides_http_error_detail(monkeypatch):
+def test_google_speech_backend_hides_http_error_detail(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     """Google STT failures should not leak provider response bodies to callers."""
 
     class FakeHTTPError(urllib_error.HTTPError):
@@ -83,7 +85,7 @@ def test_google_speech_backend_hides_http_error_detail(monkeypatch):
                 fp=BytesIO(b'{"error":{"message":"secret project id"}}'),
             )
 
-        def read(self):
+        def read(self) -> bytes:
             return b'{"error":{"message":"secret project id"}}'
 
     monkeypatch.setattr(
@@ -107,3 +109,7 @@ def test_google_speech_backend_hides_http_error_detail(monkeypatch):
             filename="clip.webm",
             content_type="audio/webm",
         )
+    assert "secret project id" not in caplog.text
+    assert all(
+        "secret project id" not in repr(record.args) for record in caplog.records
+    )

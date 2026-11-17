@@ -181,7 +181,7 @@ def stale_reopen_requests(
         try:
             reason = _stale_reason(db, account_id=account_id, report=report, ref=ref)
         except Exception:  # noqa: BLE001 - an unknown state is shown as current
-            logger.warning("Could not check reopen request %s", ref, exc_info=True)
+            logger.warning("Could not check reopen request %s", ref)
             continue
         if reason:
             stale[ref] = reason

@@ -71,7 +71,9 @@ def _build_activity_event(data: dict, session: WebSocketSession) -> Event:
             else:
                 timestamp = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
         except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid timestamp format: {timestamp_str}, error: {e}")
+            logger.warning(
+                f"Invalid timestamp format: {timestamp_str}, error: {type(e).__name__}"
+            )
             timestamp = datetime.now(timezone.utc)
     else:
         timestamp = datetime.now(timezone.utc)
@@ -134,7 +136,7 @@ async def handle_activity(data: dict, session: WebSocketSession) -> None:
     """Handle activity tracking messages from client."""
     event_type = data.get("event")
     if not event_type:
-        logger.warning(f"Activity message missing event type: {data}")
+        logger.warning("Activity message missing event type: keys=%s", sorted(data))
         return
 
     session_manager.update_activity(session.id)
@@ -142,7 +144,7 @@ async def handle_activity(data: dict, session: WebSocketSession) -> None:
     try:
         activity = _build_activity_event(data, session)
     except ValueError as e:
-        logger.warning(str(e))
+        logger.warning(type(e).__name__)
         return
 
     try:
@@ -150,7 +152,7 @@ async def handle_activity(data: dict, session: WebSocketSession) -> None:
             lambda db: _persist_activity_event(db, activity)
         )
     except Exception as e:
-        logger.error(f"Failed to persist activity: {e}", exc_info=True)
+        logger.error(f"Failed to persist activity: {type(e).__name__}")
         return
 
     logger.debug(
@@ -174,7 +176,7 @@ async def handle_activity(data: dict, session: WebSocketSession) -> None:
             )
             logger.debug(f"Published activity event to NATS: {event_type}")
         except Exception as nats_error:
-            logger.error(f"Failed to publish to NATS: {nats_error}")
+            logger.error(f"Failed to publish to NATS: {type(nats_error).__name__}")
 
 
 def _persist_activity_event(db: Session, activity: Event) -> dict[str, object]:
@@ -207,7 +209,7 @@ async def track_system_event(
         db.commit()
         logger.debug(f"Tracked system event {event_type} for account {account_id}")
     except Exception as e:
-        logger.error(f"Failed to persist system event: {e}", exc_info=True)
+        logger.error(f"Failed to persist system event: {type(e).__name__}")
         db.rollback()
 
 

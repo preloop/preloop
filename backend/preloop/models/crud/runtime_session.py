@@ -1921,9 +1921,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             )
         except Exception:  # noqa: BLE001 - a title is never lost over search
             logger.warning(
-                "Session summary indexing failed for session %s",
-                runtime_session_id,
-                exc_info=True,
+                "Session summary indexing failed for session %s", runtime_session_id
             )
         return db_obj
 

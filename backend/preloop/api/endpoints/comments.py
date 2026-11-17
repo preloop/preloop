@@ -102,7 +102,7 @@ async def list_issue_comments(
         # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        logger.error(f"Error getting comments: {e}")
+        logger.error(f"Error getting comments: {type(e).__name__}")
         raise HTTPException(status_code=500, detail=f"Error getting comments: {str(e)}")
 
 
@@ -150,7 +150,7 @@ async def add_issue_comment(
         # Re-raise HTTP exceptions
         raise
     except Exception as e:
-        logger.error(f"Error adding comment: {e}")
+        logger.error(f"Error adding comment: {type(e).__name__}")
         raise HTTPException(status_code=500, detail=f"Error adding comment: {str(e)}")
 
 
@@ -233,7 +233,8 @@ async def search_comments(
                 )
             except ModelGatewayAPIError as exc:
                 logger.warning(
-                    "Comment similarity query embedding did not recover: %s", exc
+                    "Comment similarity query embedding did not recover: %s",
+                    type(exc).__name__,
                 )
                 raise HTTPException(
                     status_code=exc.status_code,
@@ -242,7 +243,7 @@ async def search_comments(
                 )
             except Exception as e:
                 logger.error(
-                    f"Error generating query vector for '{query}': {e}", exc_info=True
+                    "Error generating query vector: error_type=%s", type(e).__name__
                 )
                 raise HTTPException(
                     status_code=500,
@@ -365,8 +366,9 @@ async def search_comments(
         raise
     except Exception as e:
         logger.error(
-            f"Error searching comments (type: {search_type}, query: '{query}'): {e}",
-            exc_info=True,
+            "Error searching comments: search_type=%s error_type=%s",
+            search_type,
+            type(e).__name__,
         )
         raise HTTPException(
             status_code=500,

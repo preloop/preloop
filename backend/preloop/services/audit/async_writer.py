@@ -79,15 +79,13 @@ def log_best_effort_failure(
 
     Pool checkout timeouts and disconnected connections become a warning with
     a fixed summary. Exception text, SQL, and parameters are omitted. Every
-    other exception stays at error level with a traceback.
+    other exception stays at error level with its class name.
 
     Args:
         log: Logger for the failing component.
         exc: The caught failure.
         summary: Stable description that does not include exception text.
-        diagnostic: Error-level message for unexpected failures. When omitted,
-            ``summary`` is logged with the traceback and without appending
-            ``str(exc)`` again.
+        diagnostic: Legacy diagnostic text; omitted from application logs.
     """
     reason = infrastructure_failure_reason(exc)
     if reason == "pool_timeout":
@@ -98,10 +96,7 @@ def log_best_effort_failure(
         _increment_infrastructure_skip_metric(reason)
         log.warning("%s after a disconnected database connection", summary)
         return
-    if diagnostic is None:
-        log.error(summary, exc_info=exc)
-        return
-    log.error(diagnostic, exc_info=exc)
+    log.error("%s: error_type=%s", summary, type(exc).__name__)
 
 
 origin_loop: ContextVar[asyncio.AbstractEventLoop | None] = ContextVar(
@@ -270,7 +265,7 @@ class BoundedAuditWriter:
             with self._lock:
                 self._pending -= 1
             self._drop("submission failed")
-            logger.exception("Could not submit asynchronous audit write")
+            logger.error("Could not submit asynchronous audit write")
 
     def _done(self, future: Future[None]) -> None:
         with self._lock:

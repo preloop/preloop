@@ -1754,9 +1754,9 @@ class JiraTracker(BaseTracker):
             import json
 
             logger.info(
-                f"Processing description update: type={type(issue_data.description).__name__}, "
-                f"length={len(str(issue_data.description))}, "
-                f"first 200 chars: {str(issue_data.description)[:200]}"
+                "Processing description update: type=%s chars=%s",
+                type(issue_data.description).__name__,
+                len(str(issue_data.description)),
             )
 
             desc_to_parse = None  # Will hold string to parse recursively, or None if no parsing needed
@@ -1796,9 +1796,7 @@ class JiraTracker(BaseTracker):
                 max_parse_attempts = 10  # Increased to handle deeply nested JSON
                 parsed_desc = None
 
-                logger.info(
-                    f"Attempting to parse description (length: {len(desc)}), first 200 chars: {desc[:200]}"
-                )
+                logger.info("Parsing description: chars=%s", len(desc))
 
                 for attempt in range(max_parse_attempts):
                     try:
@@ -1819,7 +1817,7 @@ class JiraTracker(BaseTracker):
                                     parsed
                                 )
                                 logger.info(
-                                    f"Extracted text from ADF (length: {len(text_content)}), first 100 chars: {text_content[:100]}"
+                                    "Extracted ADF text: chars=%s", len(text_content)
                                 )
 
                                 # Check if extracted text is still JSON
@@ -1853,8 +1851,7 @@ class JiraTracker(BaseTracker):
                                         # This means it's probably escaped/malformed
                                         # Treat the whole text_content as plain text
                                         logger.warning(
-                                            f"Text content looks like JSON but failed to parse: {nested_e}. "
-                                            f"Converting to plain text."
+                                            f"Text content looks like JSON but failed to parse: {type(nested_e).__name__}. Converting to plain text."
                                         )
                                         # Use the plain text version (the text_content, not the whole desc)
                                         parsed_desc = {
@@ -1881,8 +1878,7 @@ class JiraTracker(BaseTracker):
                                     )
                                     if re.match(test_suffix_pattern, text_content):
                                         logger.warning(
-                                            f"After unwrapping, description contains only test suffixes: '{text_content}'. "
-                                            "Treating as empty description."
+                                            "Description contains only test suffixes; treating as empty"
                                         )
                                         # Create ADF with empty text
                                         parsed_desc = {
@@ -1922,7 +1918,9 @@ class JiraTracker(BaseTracker):
                             break
                     except (json.JSONDecodeError, ValueError) as e:
                         # Not JSON, stop parsing
-                        logger.info(f"JSON parse failed at attempt {attempt + 1}: {e}")
+                        logger.info(
+                            f"JSON parse failed at attempt {attempt + 1}: {type(e).__name__}"
+                        )
                         logger.info(
                             f"Failed to parse desc (length {len(desc)}): {desc[:500]}"
                         )
@@ -1975,7 +1973,9 @@ class JiraTracker(BaseTracker):
         if "description" in fields and isinstance(fields["description"], dict):
             fields["description"] = self._adf_to_plain_text(fields["description"])
 
-        logger.info(f"Sending update request for {issue_id} with fields: {fields}")
+        logger.info(
+            "Sending update request for %s: field_keys=%s", issue_id, sorted(fields)
+        )
         await self._make_request(
             "PUT",
             f"issue/{issue_id}",
@@ -2143,7 +2143,7 @@ class JiraTracker(BaseTracker):
             )
             return True
         except Exception as e:
-            logger.exception(f"Failed to add relation: {e}")
+            logger.error(f"Failed to add relation: {type(e).__name__}")
             return False
 
     async def get_organizations(self) -> List[Dict[str, Any]]:
@@ -2320,7 +2320,9 @@ class JiraTracker(BaseTracker):
                     "POST", "search/jql", json_data=payload, api_version="3"
                 )
             except TrackerResponseError as e:
-                logger.error(f"Failed to get Jira issues for project {project_id}: {e}")
+                logger.error(
+                    f"Failed to get Jira issues for project {project_id}: {type(e).__name__}"
+                )
                 break
 
             issues_data = issues_response.get("issues", [])
@@ -2413,7 +2415,7 @@ class JiraTracker(BaseTracker):
                     }
                 )
             except (KeyError, TypeError) as e:
-                logger.warning(f"Could not parse Jira issue link: {e}")
+                logger.warning(f"Could not parse Jira issue link: {type(e).__name__}")
                 continue
         return dependencies
 
@@ -2585,8 +2587,9 @@ class JiraTracker(BaseTracker):
 
             # Log the response details for debugging
             logger.info(
-                f"Webhook registration response status: {response.status_code}, "
-                f"Response text: {response.text[:500]}"
+                "Webhook registration response: status=%s bytes=%s",
+                response.status_code,
+                len(response.content),
             )
 
             response.raise_for_status()
@@ -2598,17 +2601,14 @@ class JiraTracker(BaseTracker):
 
             if not webhook_id:
                 logger.error(
-                    f"Could not extract webhook ID from response. "
-                    f"Response: {webhook_data}"
+                    "Could not extract webhook ID: response_keys=%s",
+                    sorted(webhook_data) if isinstance(webhook_data, dict) else [],
                 )
                 return False
 
             webhook_id = str(webhook_id)  # Ensure it's a string
 
-            logger.info(
-                f"Webhook created in Jira with ID: {webhook_id}. "
-                f"Full response: {webhook_data}"
-            )
+            logger.info("Webhook created: id=%s", webhook_id)
 
             # Store webhook in database
             crud_webhook.create(
@@ -2647,12 +2647,14 @@ class JiraTracker(BaseTracker):
                         break
                     else:
                         logger.warning(
-                            f"Could not verify webhook {webhook_id} exists in Jira (attempt {attempt + 1}/{max_retries}). "
-                            f"Status: {verify_response.status_code}, Response: {verify_response.text[:200]}"
+                            "Could not verify webhook %s (attempt=%s status=%s)",
+                            webhook_id,
+                            attempt + 1,
+                            verify_response.status_code,
                         )
                 except Exception as verify_error:
                     logger.warning(
-                        f"Error verifying webhook {webhook_id} in Jira (attempt {attempt + 1}/{max_retries}): {verify_error}"
+                        f"Error verifying webhook {webhook_id} in Jira (attempt {attempt + 1}/{max_retries}): {type(verify_error).__name__}"
                     )
 
             # If verification failed after all retries, notify admins (but not in test/dev environments)
@@ -2661,7 +2663,7 @@ class JiraTracker(BaseTracker):
                     f"Failed to verify webhook {webhook_id} for project {project.identifier} "
                     f"after {max_retries} attempts. The webhook may not be properly registered in Jira."
                 )
-                logger.error(error_msg)
+                logger.error("Could not verify webhook registration: id=%s", webhook_id)
 
                 # Only send notifications in production environments
                 # Skip notifications if:
@@ -2686,8 +2688,7 @@ class JiraTracker(BaseTracker):
                         )
                     except Exception as notify_error:
                         logger.error(
-                            f"Failed to send admin notification: {notify_error}",
-                            exc_info=True,
+                            f"Failed to send admin notification: {type(notify_error).__name__}"
                         )
                 else:
                     logger.warning(
@@ -2714,8 +2715,7 @@ class JiraTracker(BaseTracker):
             return False
         except Exception as e:
             logger.error(
-                f"Unexpected error registering webhook for {project.identifier}: {e}",
-                exc_info=True,
+                f"Unexpected error registering webhook for {project.identifier}: {type(e).__name__}"
             )
             raise TrackerConnectionError(
                 f"Unexpected error registering webhook for {project.identifier}: {str(e)}"
@@ -2806,14 +2806,13 @@ class JiraTracker(BaseTracker):
                     results["not_found"] += 1
             except Exception as e:
                 logger.error(
-                    f"Failed to unregister webhook for project {proj.identifier}: {e}",
-                    exc_info=True,
+                    f"Failed to unregister webhook for project {proj.identifier}: {type(e).__name__}"
                 )
                 results["failed"] += 1
         logger.info(
             f"Finished unregistering webhooks for organization {organization_id}."
         )
-        logger.info(f"Jira unregister_all_webhooks summary: {results}")
+        logger.info("Jira webhook cleanup finished")
         return results
 
     def cleanup_stale_webhooks(self, preloop_url: str) -> Dict[str, int]:
@@ -2846,7 +2845,7 @@ class JiraTracker(BaseTracker):
             all_webhooks = response.json()
         except (JIRAError, requests.RequestException) as e:
             text = getattr(e, "text", str(e))
-            logger.error(f"Failed to retrieve webhooks from Jira: {text}")
+            logger.error("Failed to retrieve Jira webhooks")
             if isinstance(e, JIRAError):
                 self._handle_jira_error(e, "retrieving webhooks for cleanup")
             results["failed"] = 1
@@ -2901,14 +2900,11 @@ class JiraTracker(BaseTracker):
                     results["unregistered"] += 1
                 except (JIRAError, requests.RequestException) as e:
                     text = getattr(e, "text", str(e))
-                    logger.error(
-                        f"Failed to delete stale webhook ID {webhook_id}: {text}"
-                    )
+                    logger.error("Failed to delete stale webhook: id=%s", webhook_id)
                     results["failed"] += 1
                 except Exception as e:
                     logger.error(
-                        f"An unexpected error occurred while deleting webhook ID {webhook_id}: {e}",
-                        exc_info=True,
+                        f"An unexpected error occurred while deleting webhook ID {webhook_id}: {type(e).__name__}"
                     )
                     results["failed"] += 1
             finally:
@@ -2944,7 +2940,7 @@ class JiraTracker(BaseTracker):
             return False
         except (TrackerConnectionError, TrackerResponseError) as e:
             logger.error(
-                f"Failed to check webhook {webhook.external_id} due to API error: {e}"
+                f"Failed to check webhook {webhook.external_id} due to API error: {type(e).__name__}"
             )
             return False
 
@@ -3002,7 +2998,7 @@ class JiraTracker(BaseTracker):
                     f"Webhook {webhook_id} not found in Jira, considering it deleted."
                 )
                 return True
-            logger.error(f"Failed to delete webhook {webhook_id}: {e}")
+            logger.error(f"Failed to delete webhook {webhook_id}: {type(e).__name__}")
             return False
 
     def is_webhook_registered_for_project(

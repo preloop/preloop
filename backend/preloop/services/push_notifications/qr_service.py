@@ -86,7 +86,7 @@ def validate_registration_token(db: Session, token: str) -> Optional[uuid.UUID]:
     token_obj = crud_registration_token.validate_and_consume(db, token=token)
 
     if not token_obj:
-        logger.warning(f"Invalid or expired registration token: {token[:8]}...")
+        logger.warning("Invalid or expired registration token")
         return None
 
     logger.info(f"Validated registration token for user {token_obj.user_id}")

@@ -253,7 +253,7 @@ class DbPoolMonitor:
             try:
                 self.check_once()
             except Exception:
-                logger.error("Error in DB pool monitor check", exc_info=True)
+                logger.error("Error in DB pool monitor check")
             try:
                 await asyncio.sleep(self.interval_seconds)
             except asyncio.CancelledError:

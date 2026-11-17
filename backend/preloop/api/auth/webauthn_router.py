@@ -420,7 +420,7 @@ def registration_verify(
             require_user_verification=_uv_required_for(db, person.id),
         )
     except InvalidRegistrationResponse as e:
-        logger.warning(f"Passkey registration verification failed: {e}")
+        logger.warning(f"Passkey registration verification failed: {type(e).__name__}")
         _raise_if_user_not_verified(e)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -598,7 +598,9 @@ def _authentication_verify(
             or _uv_required_for(db, cred.person_id),
         )
     except InvalidAuthenticationResponse as e:
-        logger.warning(f"Passkey authentication verification failed: {e}")
+        logger.warning(
+            f"Passkey authentication verification failed: {type(e).__name__}"
+        )
         _raise_if_user_not_verified(e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -727,7 +729,7 @@ def _authentication_verify(
                     source_ip=source_ip,
                 )
             except Exception as e:
-                logger.error(f"Failed to send login notification: {e}")
+                logger.error(f"Failed to send login notification: {type(e).__name__}")
 
         thread = threading.Thread(target=send_login_notification)
         thread.daemon = True

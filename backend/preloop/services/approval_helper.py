@@ -122,7 +122,7 @@ def _session_context_for_in_band() -> _InBandSessionContext:
 
         user_context = get_current_user_context()
     except Exception as e:
-        logger.warning("Error getting current user context: %s", e, exc_info=True)
+        logger.warning("Error getting current user context: %s", type(e).__name__)
         return empty
     if not user_context:
         return empty
@@ -155,7 +155,6 @@ async def _flow_for_execution(db: AsyncSession, execution_id: Any) -> Any:
         logger.warning(
             "Could not resolve the flow for execution %s; using the workflow window",
             execution_id,
-            exc_info=True,
         )
         return None
 
@@ -192,7 +191,7 @@ async def _park_execution(
     try:
         return await run_db_off_loop(_write)
     except Exception:
-        logger.exception("Could not park execution %s", execution_id)
+        logger.error("Could not park execution %s", execution_id)
         return False
 
 
@@ -302,9 +301,7 @@ async def _deliver_question_in_band(
         )
     except Exception:
         logger.warning(
-            "In-band question delivery failed for approval %s",
-            approval_request_id,
-            exc_info=True,
+            "In-band question delivery failed for approval %s", approval_request_id
         )
         return False
 
@@ -426,7 +423,7 @@ async def require_approval(
             if halt_scope in scopes:
                 return False, "Access denied: the account kill switch is active"
         except Exception:
-            logger.exception("Unable to verify account halt state after approval")
+            logger.error("Unable to verify account halt state after approval")
             return False, "Access denied: unable to verify account halt state"
         return True, comment
 
@@ -595,9 +592,12 @@ async def require_approval(
 
                 matched_require_approval = False
                 for rule in access_rules:
-                    logger.info(
-                        f"  - rule={rule.id}, action={rule.action}, "
-                        f"type={rule.condition_type}, expr={rule.condition_expression}"
+                    logger.debug(
+                        "Evaluating approval rule %s: action=%s condition_type=%s arg_keys=%s",
+                        rule.id,
+                        rule.action,
+                        rule.condition_type,
+                        sorted(arguments),
                     )
 
                     if rule.condition_expression:
@@ -640,7 +640,7 @@ async def require_approval(
                                 continue  # Rule condition didn't match, try next rule
                         except Exception as e:
                             logger.warning(
-                                f"Failed to evaluate access rule for {tool_name}: {e}. Skipping rule."
+                                f"Failed to evaluate access rule for {tool_name}: {type(e).__name__}. Skipping rule."
                             )
                             continue
                     # Rule matched (or has no condition expression — unconditional)
@@ -818,21 +818,12 @@ async def require_approval(
                 )
                 channels_display = ", ".join(notification_channels)
 
-                from preloop.utils.redaction import redact_for_log
-
                 logger.warning(
-                    f"\n{'=' * 60}\n"
-                    f"🚨 APPROVAL REQUIRED ({tool_source.upper()} Tool) 🚨\n"
-                    f"{'=' * 60}\n"
-                    f"Tool: {tool_name}\n"
-                    f"Arguments: {redact_for_log(arguments)}\n"
-                    f"Request ID: {approval_request_id}\n"
-                    f"Notification sent via: {channels_display}\n"
-                    f"Approval type: {workflow_approval_type}\n"
-                    f"Timeout: {workflow_timeout_seconds}s\n"
-                    f"Approval URL: [sent via notification]\n"
-                    f"{'=' * 60}\n"
-                    f"⏳ Waiting for approval (polling every 2s)..."
+                    "Approval required: tool=%s request_id=%s arg_keys=%s timeout_seconds=%s",
+                    tool_name,
+                    approval_request_id,
+                    sorted(arguments),
+                    workflow_timeout_seconds,
                 )
 
                 # Record initial events in the event log
@@ -1035,7 +1026,9 @@ async def require_approval(
                                 else None
                             )
                         except Exception as e:
-                            logger.error(f"Error getting progressToken: {e}")
+                            logger.error(
+                                f"Error getting progressToken: {type(e).__name__}"
+                            )
 
                         # Only send progress notification if we have a valid progressToken
                         if progress_token is not None:
@@ -1053,22 +1046,22 @@ async def require_approval(
                                 )
                             except Exception as e:
                                 logger.error(
-                                    f"❌ DIRECT send_progress_notification failed: {e}",
-                                    exc_info=True,
+                                    f"❌ DIRECT send_progress_notification failed: {type(e).__name__}"
                                 )
 
                         result = await ctx.report_progress(
                             progress=0, total=100, message=status_message
                         )
                         logger.info(
-                            f"✅ Sent initial progress via ctx.report_progress: {status_message}, result: {result}"
+                            "Initial approval progress sent: request_id=%s",
+                            approval_request_id,
                         )
-                        logger.info(
-                            f"   Context session: {ctx.session}, request_id: {ctx.request_id}"
+                        logger.debug(
+                            "Approval progress context: request_id=%s", ctx.request_id
                         )
                     except Exception as e:
                         logger.error(
-                            f"Could not send progress via Context: {e}", exc_info=True
+                            f"Could not send progress via Context: {type(e).__name__}"
                         )
                 else:
                     logger.warning(
@@ -1312,8 +1305,7 @@ async def require_approval(
                                     )
                                 except Exception as e:
                                     logger.error(
-                                        f"Failed to send escalation notification: {e}",
-                                        exc_info=True,
+                                        f"Failed to send escalation notification: {type(e).__name__}"
                                     )
 
                             # Reset elapsed for escalation period
@@ -1333,8 +1325,7 @@ async def require_approval(
                                     )
                                 except Exception as e:
                                     logger.error(
-                                        f"Failed to send timeout notification: {e}",
-                                        exc_info=True,
+                                        f"Failed to send timeout notification: {type(e).__name__}"
                                     )
 
                             async with get_async_db_session() as update_db:
@@ -1364,8 +1355,7 @@ async def require_approval(
                                 )
                             except Exception as e:
                                 logger.error(
-                                    f"Failed to send timeout notification: {e}",
-                                    exc_info=True,
+                                    f"Failed to send timeout notification: {type(e).__name__}"
                                 )
 
                         async with get_async_db_session() as update_db:
@@ -1409,8 +1399,7 @@ async def require_approval(
                                 )
                             else:
                                 logger.error(
-                                    f"Failed to send progress update: {e}",
-                                    exc_info=True,
+                                    f"Failed to send progress update: {type(e).__name__}"
                                 )
 
                     # Wait before next poll
@@ -1438,12 +1427,12 @@ async def require_approval(
                             progress=100, total=100, message=status_message
                         )
                         logger.info(
-                            f"[Polling] Sent completion: 100% - {status_message}"
+                            "Approval completion sent: request_id=%s",
+                            approval_request_id,
                         )
                     except Exception as e:
                         logger.error(
-                            f"Failed to send completion notification: {e}",
-                            exc_info=True,
+                            f"Failed to send completion notification: {type(e).__name__}"
                         )
 
                 # Check final status
@@ -1486,12 +1475,12 @@ async def require_approval(
                 )
             except Exception as e:
                 logger.error(
-                    f"Approval flow error for tool {tool_name}: {e}", exc_info=True
+                    f"Approval flow error for tool {tool_name}: {type(e).__name__}"
                 )
                 return (False, f"Approval error: {str(e)}")
 
     except Exception as e:
-        logger.error(f"Error checking approval requirement: {e}", exc_info=True)
+        logger.error(f"Error checking approval requirement: {type(e).__name__}")
         # SECURITY: fail CLOSED. If the approval check itself fails (DB outage,
         # workflow lookup error, etc.) we must block rather than execute — a
         # tool gated behind ``require_approval`` must never run un-approved just

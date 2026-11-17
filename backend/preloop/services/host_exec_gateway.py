@@ -268,7 +268,7 @@ async def attach_execution_marker(
         entries = await run_db_off_loop(resolve)
         return with_execution_context(auth_context, entries)
     except ExecutionMarkerError as exc:
-        logger.warning("Gateway execution marker refused: %s", exc)
+        logger.warning("Gateway execution marker refused: %s", type(exc).__name__)
         raise ModelGatewayAPIError(
             provider=provider,  # type: ignore[arg-type]
             status_code=403,

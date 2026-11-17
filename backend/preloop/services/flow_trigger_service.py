@@ -88,7 +88,7 @@ def _previous_fire_iso(raw_schedule: Any, now: datetime) -> str:
     try:
         _, previous = parse_schedule_config(raw_schedule).fire_window(now)
     except Exception:
-        logger.warning("Could not compute previous fire time", exc_info=True)
+        logger.warning("Could not compute previous fire time")
         previous = now - MIN_SCHEDULE_INTERVAL
     return previous.isoformat()
 
@@ -367,9 +367,8 @@ def _record_local_run_failure(
         record_execution_finished_safely(db, execution_id)
         return True
     except Exception:
-        logger.exception(
-            "Could not record the local dispatch failure of execution %s",
-            execution_id,
+        logger.error(
+            "Could not record the local dispatch failure of execution %s", execution_id
         )
         try:
             db.rollback()
@@ -412,10 +411,9 @@ def _supervise_local_run(
     if exc is None:
         return
     logger.error(
-        "Local flow run for execution %s failed: %s",
+        "Local flow run for execution %s failed: error_type=%s",
         execution_id,
-        exc,
-        exc_info=exc,
+        type(exc).__name__,
     )
     # This callback runs on the event-loop thread. The status write is
     # synchronous SQLAlchemy work that can block on a slow or exhausted pool
@@ -491,9 +489,7 @@ def _log_failure_write_outcome(
     write_exc = write_task.exception()
     if write_exc is not None:
         logger.error(
-            "Could not record the local dispatch failure of execution %s",
-            execution_id,
-            exc_info=write_exc,
+            "Could not record the local dispatch failure of execution %s", execution_id
         )
 
 
@@ -897,7 +893,6 @@ class FlowTriggerService:
                 "Could not record the skipped trigger for flow %s on %s",
                 flow.id,
                 object_key,
-                exc_info=True,
             )
 
     @staticmethod
@@ -991,9 +986,7 @@ class FlowTriggerService:
             )
         except Exception:  # noqa: BLE001 - audit must never block the stop
             logger.warning(
-                "Could not record the pull request stop of execution %s",
-                execution.id,
-                exc_info=True,
+                "Could not record the pull request stop of execution %s", execution.id
             )
         return True
 
@@ -1067,7 +1060,7 @@ class FlowTriggerService:
                 ):
                     stopped.append(str(execution.id))
             except Exception:
-                logger.exception(
+                logger.error(
                     "Could not stop execution %s for %s", execution.id, object_key
                 )
                 self._rollback_quietly()
@@ -1171,7 +1164,7 @@ class FlowTriggerService:
                 ):
                     stopped.append(str(execution.id))
             except Exception:
-                logger.exception(
+                logger.error(
                     "Could not stop superseded execution %s for %s",
                     execution.id,
                     object_key,
@@ -1960,9 +1953,10 @@ class FlowTriggerService:
                 flattened_config[key] = value
 
         logger.info(
-            f"Flow {flow.id} ({flow.name}): Checking trigger_config. "
-            f"Original: {flow.trigger_config}, Flattened: {flattened_config}, "
-            f"Payload keys: {list(payload.keys())}"
+            "Checking trigger config: flow_id=%s config_keys=%s payload_keys=%s",
+            flow.id,
+            sorted(flattened_config),
+            sorted(payload),
         )
 
         bound_cache: List[bool] = []
@@ -2411,7 +2405,7 @@ class FlowTriggerService:
             accelerate(self.db, event_data)
         except Exception:
             self.db.rollback()
-            logger.exception("Pull request refresh acceleration failed")
+            logger.error("Pull request refresh acceleration failed")
 
         # A merged or closed pull request ends every run still working on it
         # (#1032), before anything else: the flow lookup below returns early
@@ -2421,7 +2415,7 @@ class FlowTriggerService:
             try:
                 await self.stop_executions_for_ended_pull_request(event_data)
             except Exception:
-                logger.exception(
+                logger.error(
                     "Could not stop executions for %s event from %s",
                     event_type,
                     event_source,
@@ -2528,10 +2522,7 @@ class FlowTriggerService:
                     continue
 
                 if not self._matches_trigger_config(flow, flow_event):
-                    logger.info(
-                        f"Skipping flow '{flow.name}' ({flow.id}) - trigger_config does not match. "
-                        f"Config: {flow.trigger_config}"
-                    )
+                    logger.info("Trigger config did not match: flow_id=%s", flow.id)
                     continue
 
                 flows_to_trigger.append(flow)
@@ -2847,7 +2838,6 @@ class FlowTriggerService:
                         "Model routing blocked event %s for flow %s",
                         event_type,
                         flow.id,
-                        exc_info=True,
                     )
                 except FlowHaltActiveError:
                     # The kill switch is not an error: record that the trigger
@@ -2873,14 +2863,12 @@ class FlowTriggerService:
                     )
                 except Exception as e:
                     logger.error(
-                        f"Error initiating flow '{flow.name}' ({flow.id}): {e}",
-                        exc_info=True,
+                        f"Error initiating flow '{flow.name}' ({flow.id}): {type(e).__name__}"
                     )
 
         except Exception as e:
             logger.error(
-                f"Error processing event source='{event_source}', type='{event_type}': {e}",
-                exc_info=True,
+                f"Error processing event source='{event_source}', type='{event_type}': {type(e).__name__}"
             )
 
     async def run_scheduled_tick(self, flow_id: uuid.UUID | str) -> str:
@@ -3407,5 +3395,5 @@ class FlowTriggerService:
                     logger.debug("Closed orchestrator database session")
                 except Exception as close_error:
                     logger.warning(
-                        f"Error closing orchestrator database session: {close_error}"
+                        f"Error closing orchestrator database session: {type(close_error).__name__}"
                     )

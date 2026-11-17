@@ -84,7 +84,8 @@ def normalize_harness_inventory(raw: Any) -> Optional[Dict[str, Any]]:
         inventory = HarnessInventory.model_validate({**raw, "entries": known})
     except ValidationError as exc:
         logger.info(
-            "Ignoring invalid harness inventory: %s", exc.errors(include_input=False)
+            "Ignoring invalid harness inventory: %s",
+            exc.error_count(),
         )
         return None
     return inventory.to_wire()
