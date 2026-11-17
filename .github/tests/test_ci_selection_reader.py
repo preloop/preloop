@@ -2,6 +2,7 @@
 
 import io
 import json
+import subprocess
 from pathlib import Path
 import sys
 from typing import Any
@@ -105,3 +106,22 @@ def test_malformed_or_oversized_evidence_fails_closed(
     """Bad archives never raise into the workflow and never trigger a rerun."""
     _serve(monkeypatch, payload, code)
     assert ci_control.read_selection(FakeApi(ONE), 1) is None  # type: ignore[arg-type]
+
+
+def test_stalled_download_is_killed_mid_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A download that writes a byte and then stalls is bounded by wall clock."""
+    import time
+
+    real_popen = subprocess.Popen
+    stall = (
+        "import sys, time; sys.stdout.write('x'); sys.stdout.flush(); time.sleep(30)"
+    )
+
+    def popen(args: Any, **kwargs: Any) -> Any:
+        return real_popen([sys.executable, "-c", stall], **kwargs)
+
+    monkeypatch.setattr(ci_control, "DOWNLOAD_TIMEOUT", 0.5)
+    monkeypatch.setattr(ci_control.subprocess, "Popen", popen)
+    start = time.monotonic()
+    assert ci_control.read_selection(FakeApi(ONE), 1) is None  # type: ignore[arg-type]
+    assert time.monotonic() - start < 10

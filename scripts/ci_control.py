@@ -11,7 +11,11 @@ from pathlib import Path
 import re
 import subprocess
 from typing import Any
+import threading
 import zipfile
+
+
+DOWNLOAD_TIMEOUT = 45.0
 
 
 class GitHub:
@@ -87,12 +91,19 @@ def read_selection(api: GitHub, run_id: int) -> dict[str, Any] | None:
         stderr=subprocess.DEVNULL,
     ) as proc:
         assert proc.stdout is not None
-        payload = proc.stdout.read(limit + 1)
+        # The wall-clock bound covers the read itself: a stalled download is
+        # killed mid-read, which ends the read with a short or empty payload.
+        timer = threading.Timer(DOWNLOAD_TIMEOUT, proc.kill)
+        timer.start()
+        try:
+            payload = proc.stdout.read(limit + 1)
+        finally:
+            timer.cancel()
         if len(payload) > limit:
             proc.kill()
             return None
         try:
-            code = proc.wait(timeout=45)
+            code = proc.wait(timeout=DOWNLOAD_TIMEOUT)
         except subprocess.TimeoutExpired:
             proc.kill()
             return None

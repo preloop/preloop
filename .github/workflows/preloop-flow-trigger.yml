@@ -11,9 +11,10 @@
 # PR while the prod flow is being prepared. `workflow_dispatch` ignores
 # the switch: it is how a maintainer trials the flow on one PR.
 #
-# Runs on open, non-draft PRs. Skip a PR with the label
+# Runs on open PRs once CI Fast is green on the current head (PRs here are
+# ready from the start; draft state is not a gate). Skip a PR with the label
 # `preloop-skip-review`; removing that label retriggers. Manual dispatch
-# also respects the draft, label and open-state gates. Same-repo PRs use
+# also respects the label and open-state gates. Same-repo PRs use
 # `pull_request` (this file on the PR). Fork PRs use
 # `pull_request_target` so PRELOOP_TOKEN is available; the job still
 # checks out the default branch, never the PR head.
@@ -140,7 +141,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - name: Gate (rollout switch, state, draft, label, fork author)
+      - name: Gate (rollout switch, state, label, fork author)
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -161,7 +162,7 @@ jobs:
           if [ "$EVENT_NAME" != "workflow_dispatch" ] && [ "${PROD_REVIEW}" != "enabled" ]; then
             skip "PR #${PR_NUMBER}: repository variable PRELOOP_PROD_REVIEW is not 'enabled', so the prod reviewer is not called."
           fi
-          meta=$(gh pr view "$PR_NUMBER" --json state,isDraft,labels)
+          meta=$(gh pr view "$PR_NUMBER" --json state,labels)
           state=$(printf '%s' "$meta" | jq -r .state)
           label=$(printf '%s' "$meta" | jq -r '[.labels[].name] | index("preloop-skip-review") != null')
           optin=$(printf '%s' "$meta" | jq -r '[.labels[].name] | index("preloop-review") != null')
