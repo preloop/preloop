@@ -138,8 +138,8 @@ Tool conditions do not accept `redact`. A `sensitive_data` rule does:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `unknown_tools` | string | `allow` | Unmatched MCP calls: `allow`, `deny`, or `require_approval` |
-| `require_approval_for_new_tools` | bool | `false` | Only `false` is supported; `apply` rejects `true` |
-| `default_approval_workflow` | string | n/a | Workflow name, required for `unknown_tools: require_approval` |
+| `require_approval_for_new_tools` | bool | `false` | Require approval once per account and MCP tool route |
+| `default_approval_workflow` | string | n/a | Workflow name, required for approval defaults or approve-once |
 | `inherit_from_parent` | bool | `true` | Not used; `apply` accepts any value and ignores it |
 
 `validate` and `apply` resolve workflow names against the file and your account.
@@ -175,7 +175,8 @@ defaults:
 | Precedence | Outcome |
 |------------|---------|
 | Explicit tool or subject rule matches | Rule action |
-| No rule matches an MCP call | `defaults.unknown_tools` |
+| Approve-once enabled and no rule matches | Registry pending: approval; approved: allow; denied: deny |
+| No rule matches and approve-once is disabled | `defaults.unknown_tools` |
 | Native agent tool (Bash, Edit, Read) | Existing rule and client-decision fallback |
 
 To ask a human for every unmatched MCP call, use `unknown_tools: require_approval`
@@ -297,3 +298,40 @@ If validation fails, you get detailed error messages pointing to the exact issue
   "warnings": ["Available approval workflows: [my-workflow]"]
 }
 ```
+
+### Approve a tool once
+
+```yaml
+defaults:
+  unknown_tools: deny
+  require_approval_for_new_tools: true
+  default_approval_workflow: Review
+```
+
+Define `Review` in `approval_workflows` or configure it in the account. The first
+unmatched MCP call records a pending entry and one approval request in the same
+transaction. Concurrent calls reuse that request. Approving it authorizes this
+route for future unmatched calls; denying it refuses them. An expired or
+cancelled request leaves the entry pending, and the next call raises a fresh
+request. Policy changes do not erase decisions; disabling approve-once skips the
+registry. Explicit matching rules take precedence over registry decisions.
+
+The first observer sets the shared request's approval window using its flow,
+workflow and account cap. Later observers reuse that request and its expiry.
+After approval, each parked run retries its own original call under current
+policy. A refusal or expiry ends every run parked on that request; arguments
+from the first caller are not copied into another run's resume instructions.
+
+In **Policies → Tools seen**, filter pending/approved/denied tools and Approve or
+Deny a route. Deny also revokes a prior approval. A manual decision settles the
+route's open approval with the same outcome. Viewing requires `view_policies`;
+deciding requires `manage_policies`. The API is `GET /api/v1/tools/registry`
+(with `state`, `page`, `page_size`) and
+`POST /api/v1/tools/registry/{id}/decision` with `state: approved` or `denied`.
+
+Entries are isolated by account, selected MCP server and exposed tool name. A
+hook-observed server label with no Preloop server ID is a separate route.
+Changing a server prefix changes the exposed name and requires a new approval.
+The registry records first/last seen, count, first observed agent when known,
+and who decided. It authorizes a tool route, regardless of later argument
+values; use explicit conditional rules for argument-specific restrictions.

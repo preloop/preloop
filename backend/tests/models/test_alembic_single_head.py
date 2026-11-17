@@ -602,12 +602,19 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
         rotation.revision,
         external_grant_indexes.revision,
     }
+    registry = script.get_revision("20261116_tool_registry")
+    assert registry.down_revision == merged.revision
     sign_in_policy = script.get_revision("20261116_sign_in_policy")
     assert sign_in_policy.down_revision == bundle_registry.revision
     joined_policy = script.get_revision("20261213_flow_signin_merge")
     assert set(joined_policy.down_revision) == {
         merged.revision,
         sign_in_policy.revision,
+    }
+    joined_registry = script.get_revision("20261214_mcp_registry_merge")
+    assert set(joined_registry.down_revision) == {
+        registry.revision,
+        joined_policy.revision,
     }
     sign_in_approval = script.get_revision("20261212_sign_in_approval_merge")
     assert set(sign_in_approval.down_revision) == {
@@ -619,4 +626,9 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
         joined_policy.revision,
         sign_in_approval.revision,
     }
-    assert script.get_heads() == [flow_policy.revision]
+    tool_policy = script.get_revision("20261216_tool_policy_merge")
+    assert set(tool_policy.down_revision) == {
+        joined_registry.revision,
+        flow_policy.revision,
+    }
+    assert script.get_heads() == [tool_policy.revision]

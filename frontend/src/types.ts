@@ -2777,7 +2777,8 @@ export type ApprovalRuleContextSource =
   | 'rule_evaluation_error'
   | 'agent_permission_hook'
   | 'model_io_rule'
-  | 'unknown_tools_default';
+  | 'unknown_tools_default'
+  | 'registry';
 
 /**
  * Snapshot of the policy rule that required an approval.

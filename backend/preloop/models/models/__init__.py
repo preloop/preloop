@@ -216,6 +216,7 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "ToolRegistryEntry",
     "UserMfaFactor",
     "UserMfaRecoveryCode",
     "RateLimitBucket",
@@ -503,3 +504,4 @@ from .entitlement_enforcement import EntitlementEnforcementSetting
 
 from .managed_bundle import RegisteredBundleRevision, ControlExpectation
 from .mfa import UserMfaFactor, UserMfaRecoveryCode
+from .tool_registry_entry import ToolRegistryEntry

@@ -2811,6 +2811,7 @@ async def {internal_name}({params_str}):
                     if user_context.user_id
                     else None,
                     server_name=scope_server_name,
+                    execution_id=getattr(user_context, "flow_execution_id", None),
                     tool_source="mcp"
                     if name in self._proxied_tool_servers
                     else "builtin",
@@ -4258,6 +4259,7 @@ async def {internal_name}({params_str}):
                     mcp_server_id=uuid.UUID(server_id),
                     subject_context=subject_context,
                     execution_id=execution_id,
+                    record=False,
                 )
                 if outbox_enabled():
                     await db.commit()
@@ -4266,6 +4268,15 @@ async def {internal_name}({params_str}):
                     or decision.source == "rule_evaluation_error"
                 ):
                     return "Access denied: current policy blocks approval replay"
+                if (
+                    decision.action == "require_approval"
+                    and decision.source == "registry"
+                ):
+                    registry_request_id = (decision.rule_context or {}).get(
+                        "registry_approval_request_id"
+                    )
+                    if str(registry_request_id) != str(request.id):
+                        return "Access denied: current registry approval is pending"
                 if decision.action == "require_approval" and str(
                     decision.approval_workflow_id
                 ) != str(request.approval_workflow_id):

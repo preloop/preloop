@@ -410,10 +410,8 @@ class TestPolicyApplierDefaults:
         )
 
         assert applier._apply_defaults(defaults, dry_run=True) is False
-        assert any(
-            "require_approval_for_new_tools" in error
-            for error in applier._result.errors
-        )
+        # protects=approve-once requires a resolvable workflow;
+        # fails_when=missing workflow accepted; no_claim=dry-run validation.
         assert any(
             "default_approval_workflow" in error for error in applier._result.errors
         )

@@ -53,6 +53,9 @@ SOURCE_SENSITIVE_DATA_RULE = "sensitive_data_rule"
 #: An unmatched MCP call requires approval under the account default.
 SOURCE_UNKNOWN_TOOLS_DEFAULT = "unknown_tools_default"
 
+#: A first-seen MCP route awaits a shared approve-once decision.
+SOURCE_TOOL_REGISTRY = "registry"
+
 #: Every ``source`` value a caller may persist.
 KNOWN_SOURCES = frozenset(
     {
@@ -64,12 +67,16 @@ KNOWN_SOURCES = frozenset(
         SOURCE_MODEL_IO_RULE,
         SOURCE_SENSITIVE_DATA_RULE,
         SOURCE_UNKNOWN_TOOLS_DEFAULT,
+        SOURCE_TOOL_REGISTRY,
     }
 )
 
 #: Plain statements for the cases where no named rule fired. These say what
 #: actually happened; they do not imply anyone assessed the call.
 _DEFAULT_EXPLANATIONS = {
+    SOURCE_TOOL_REGISTRY: (
+        "No access rule matched. Approve this MCP tool route once for the account."
+    ),
     SOURCE_UNKNOWN_TOOLS_DEFAULT: (
         "No access rule matched. The account default requires approval "
         "for unlisted MCP tools."
@@ -97,6 +104,7 @@ _DEFAULT_EXPLANATIONS = {
 
 #: Label of last resort when a rule has neither description nor expression.
 _GENERIC_LABELS = {
+    SOURCE_TOOL_REGISTRY: "First-seen MCP tool",
     SOURCE_UNKNOWN_TOOLS_DEFAULT: "Unlisted MCP tool",
     SOURCE_TOOL_ACCESS_RULE: "Access rule",
     SOURCE_SUBJECT_SCOPED_RULE: "Scoped governance rule",
