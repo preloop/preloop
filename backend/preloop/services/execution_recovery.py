@@ -297,6 +297,63 @@ class ExecutionRecoveryService:
 
         return keep
 
+    def _settle_exhausted_terminal(
+        self,
+        db: Session,
+        candidates: List[models.FlowExecution],
+        summary: Any,
+    ) -> List[models.FlowExecution]:
+        """Settle terminal runs whose stop recovery keeps making no progress.
+
+        A terminal run is only a candidate because its stop was never
+        confirmed. Its claim does not reset the re-dispatch counter, so the
+        counter measures attempts that ended without confirming the stop.
+        Past the bound the row is taken out of recovery with its stop still
+        unconfirmed and marked as abandoned, with one ERROR line naming the
+        execution, so a case the resume path does not handle costs a few
+        attempts instead of a publish every pass forever.
+
+        Returns:
+            The candidates still worth re-dispatching.
+        """
+        from preloop.services.execution_reaper import MAX_TERMINAL_REDISPATCHES
+
+        keep: List[models.FlowExecution] = []
+        for execution in candidates:
+            attempts = int(getattr(execution, "redispatch_count", 0) or 0)
+            terminal = (
+                execution.status in crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+            )
+            if not terminal or attempts < MAX_TERMINAL_REDISPATCHES:
+                keep.append(execution)
+                continue
+            try:
+                crud_flow_execution.abandon_unverified_stop(
+                    db, execution_id=execution.id, attempts=attempts
+                )
+                # Recovery gives up on the runtime, not on its credentials:
+                # a runtime that may still be alive must not keep a valid
+                # token after it leaves the recovery set.
+                _retire_runtime_credentials(db, execution)
+            except Exception as exc:  # noqa: BLE001 - one row must not end the pass
+                db.rollback()
+                logger.error(
+                    "Could not settle execution %s: %s",
+                    execution.id,
+                    type(exc).__name__,
+                )
+                continue
+            summary.settled += 1
+            logger.error(
+                "Settled %s execution %s after %s re-dispatches without "
+                "confirming its stop; its runtime was NOT verified gone and "
+                "needs operator inspection",
+                execution.status,
+                execution.id,
+                attempts,
+            )
+        return keep
+
     async def _redispatch_stale_executions(
         self,
         db: Session,
@@ -327,6 +384,7 @@ class ExecutionRecoveryService:
             limit=500,
         )
         summary = ReaperPassSummary(candidates=len(candidates))
+        candidates = self._settle_exhausted_terminal(db, candidates, summary)
         if not candidates:
             logger.debug("No stale/unclaimed executions to re-dispatch")
             logger.info(summary.as_log_line())
@@ -383,10 +441,18 @@ class ExecutionRecoveryService:
         summary.redispatched = len(published)
         summary.failed = len(admissible) - len(published)
 
-        if published:
+        # A terminal row is counted even when its publish failed: otherwise
+        # a dispatch that keeps failing would never reach the terminal bound.
+        counted = published + [
+            execution.id
+            for execution, ok in zip(admissible, results, strict=False)
+            if not ok
+            and execution.status in crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+        ]
+        if counted:
             # Count the publish against each row before the next pass reads
             # it, so the backoff holds across workers and across restarts.
-            crud_flow_execution.record_redispatch(db, execution_ids=published, now=now)
+            crud_flow_execution.record_redispatch(db, execution_ids=counted, now=now)
 
         logger.info(summary.as_log_line())
         return summary.redispatched

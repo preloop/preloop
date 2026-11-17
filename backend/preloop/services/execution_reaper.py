@@ -42,6 +42,12 @@ BACKOFF_FACTOR = 2
 #: Never let a misconfigured interval collapse the backoff to nothing.
 MIN_BACKOFF_SECONDS = 5
 
+#: Re-dispatches a terminal execution gets to finish its stop. Such a run is
+#: only recovered to confirm that its runtime is gone; when that has not
+#: happened after this many attempts, more attempts will not do it either, and
+#: the reaper settles the row instead of publishing it again.
+MAX_TERMINAL_REDISPATCHES = 5
+
 
 def reaper_interval_seconds() -> int:
     """How often a reaper pass runs, and the first backoff step."""
@@ -135,13 +141,14 @@ class ReaperPassSummary:
     skipped_account_cap: int = 0
     skipped_no_capacity: int = 0
     failed: int = 0
+    settled: int = 0
 
     def as_log_line(self) -> str:
         """One human-readable line with every count in it."""
         return (
             "Stale-claim reaper pass: candidates=%s re-dispatched=%s "
             "skipped_backoff=%s skipped_account_cap=%s "
-            "skipped_no_capacity=%s failed=%s"
+            "skipped_no_capacity=%s failed=%s settled=%s"
             % (
                 self.candidates,
                 self.redispatched,
@@ -149,5 +156,6 @@ class ReaperPassSummary:
                 self.skipped_account_cap,
                 self.skipped_no_capacity,
                 self.failed,
+                self.settled,
             )
         )
