@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.crud.ai_model import ai_model as crud_ai_model
 from preloop.models.models.ai_model import AIModel
+from preloop.schemas.openrouter import validate_provider_preferences
 from preloop.services.aux_model_retry import call_with_aux_retry
 from preloop.services.azure_entra import AzureEntraTokenError
 from preloop.services.azure_openai import (
@@ -35,6 +36,7 @@ from preloop.services.azure_openai import (
 )
 from preloop.services.litellm_routing import (
     apply_preloop_client_headers,
+    is_openrouter_model,
     model_api_base,
 )
 from preloop.services.secret_service import get_secret_service
@@ -354,9 +356,24 @@ def build_aux_kwargs(
         except AzureEntraTokenError as exc:
             raise azure_entra_auth_error(exc, provider="openai") from exc
 
-    # Layer 1: call-site explicit args (always win).
+    # Layer 1: call-site sampling args; routing policy is enforced below.
     _merge_extra_body(merged, call_site_kwargs)
 
+    # Routing policy is an account control, not a call-site sampling default.
+    merged.pop("provider", None)
+    extra = merged.get("extra_body")
+    if isinstance(extra, dict):
+        extra = dict(extra)
+        extra.pop("provider", None)
+        merged["extra_body"] = extra
+    if (
+        is_openrouter_model(model)
+        and isinstance(model_params, dict)
+        and "provider" in model_params
+    ):
+        merged.setdefault("extra_body", {})["provider"] = validate_provider_preferences(
+            model_params["provider"]
+        )
     apply_preloop_client_headers(merged, model)
     return merged
 
@@ -512,6 +529,18 @@ def get_aux_openai_sdk_extra_kwargs(
         for k in call_site_kwargs:
             extras.pop(k, None)
 
+    if (
+        is_openrouter_model(model)
+        and isinstance(model_params, dict)
+        and "provider" in model_params
+    ):
+        if call_site_kwargs and "extra_body" in call_site_kwargs:
+            raise ValueError(
+                "OpenRouter routing requires the managed auxiliary extra_body"
+            )
+        extras.setdefault("extra_body", {})["provider"] = validate_provider_preferences(
+            model_params["provider"]
+        )
     return extras
 
 

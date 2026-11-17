@@ -1580,6 +1580,42 @@ def get_account_gateway_usage_summary(
 
 
 @router.get(
+    "/account/gateway-usage/export",
+    response_class=Response,
+    responses={
+        200: {"content": {"text/csv": {"schema": {"type": "string"}}}},
+        413: {"description": "Choose a shorter date range; export exceeds 10,000 rows"},
+    },
+)
+@heavy_route
+@require_permission("view_cost")
+def export_account_gateway_usage(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+) -> Response:
+    """Download usage and effective upstream controls as a content-free CSV."""
+    from preloop.services.gateway_usage_export import export_gateway_usage
+
+    content = export_gateway_usage(
+        db,
+        account=account,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    return Response(
+        content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": 'attachment; filename="preloop-gateway-usage.csv"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get(
     "/account/gateway-usage/search",
     response_model=AccountGatewayUsageSearchResponse,
 )

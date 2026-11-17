@@ -341,6 +341,16 @@ describe('ApiUsageView', () => {
     localStorage.clear();
   });
 
+  it('offers a usage export for the current reporting window', async () => {
+    const element = await fixture<ApiUsageView>(
+      html`<api-usage-view></api-usage-view>`
+    );
+    await element.updateComplete;
+    const button = element.shadowRoot!.querySelector('[data-export-usage]');
+    expect(button).to.exist;
+    expect(button!.textContent).to.contain('Export usage');
+  });
+
   it('renders usage totals while captured interactions and telemetry are pending', async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => {

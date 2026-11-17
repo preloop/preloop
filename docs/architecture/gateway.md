@@ -295,3 +295,14 @@ Claude/Codex subscription recovery preserves agent enrollment through
 `preloop agents reconnect`. Credential imports serialize with rotation and reject
 recently consumed refresh tokens; provider-declared invalid grants require fresh
 authorization. See [OAuth credential recovery](#gateway-database-ownership).
+
+## Effective upstream requests and OpenRouter routing
+
+Model routing preferences live in `model_parameters.provider`, validated on model
+save. The saved object replaces client routing preferences on OpenRouter requests.
+Other upstreams never receive it. Usage rows store a content-free effective request
+summary in `meta_data.upstream_parameters`, the reported OpenRouter serving host in
+`meta_data.upstream_provider`, and the generation ID in `upstream_request_id`. The
+gateway observes adapter transformations before sending, including structured output
+downgrades. Session and execution details, restricted timing projections, and the
+account usage CSV expose these controls. See the [OpenRouter guide](../guide/providers/openrouter.md).

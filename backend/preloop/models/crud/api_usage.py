@@ -3283,6 +3283,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 usage.is_retry,
                 usage.error_class,
                 usage.meta_data["upstream_parameters"].label("upstream_parameters"),
+                usage.meta_data["upstream_provider"].astext.label("upstream_provider"),
                 usage.meta_data["upstream_retries"].label("upstream_retries"),
                 usage.meta_data["first_response_at"].label("first_response_at"),
             )
@@ -3637,6 +3638,44 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .limit(limit)
             .all()
         )
+
+    def export_gateway_rows(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: datetime,
+        end: datetime,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Read bounded usage facts without loading content-bearing metadata."""
+        row = self.model
+        rows = (
+            db.query(
+                row.id,
+                row.timestamp,
+                row.model_alias,
+                row.provider_name,
+                row.upstream_request_id,
+                row.status_code,
+                row.prompt_tokens,
+                row.completion_tokens,
+                row.total_tokens,
+                row.estimated_cost,
+                row.meta_data["upstream_provider"].astext.label("upstream_provider"),
+                row.meta_data["upstream_parameters"].label("upstream_parameters"),
+            )
+            .filter(
+                row.account_id == account_id,
+                row.action_type == "model_gateway",
+                row.timestamp >= start,
+                row.timestamp < end,
+            )
+            .order_by(row.timestamp.desc(), row.id.desc())
+            .limit(limit)
+            .all()
+        )
+        return [dict(item._mapping) for item in rows]
 
     def list_gateway_rows_in_window(
         self,

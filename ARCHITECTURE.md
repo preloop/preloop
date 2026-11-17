@@ -125,3 +125,8 @@ and desktop views separately count persisted rows over a rolling hour. See the
 [rules and audit behavior](docs/operations/rate-limiting.md), and the supported
 [Helm extraEnv configuration](helm/preloop/README.md#request-rate-limiting), which
 keeps backend defaults authoritative across deployment methods.
+
+OpenRouter model configurations can enforce provider routing preferences. Gateway
+usage records include a content-free summary of effective upstream controls and
+the OpenRouter serving host when reported; see the
+[provider guide](docs/guide/providers/openrouter.md).
