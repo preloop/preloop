@@ -80,6 +80,7 @@ def test_projection_result_and_rotation(
         "start_time",
         "end_time",
         "failure_category",
+        "flow_revision",
         "startup_receipt",
         "startup_receipt_status",
         "timings",

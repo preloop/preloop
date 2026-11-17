@@ -232,3 +232,10 @@ class CiSharedFlowRead(BaseModel):
     binding_mode: Literal["dedicated", "shared"]
     read_only: bool
     projects: list[CiSharedFlowProject]
+    revision: int = Field(
+        default=1,
+        description=(
+            "The flow's configuration revision, also sent as the ETag header. "
+            "Send it as If-Match on PUT to refuse a stale allowlist with 412."
+        ),
+    )

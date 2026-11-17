@@ -4,7 +4,15 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Dict, List, Literal, NoReturn, Optional, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -12,7 +20,16 @@ from preloop.plugins.account_hooks import AuthorizationContext
 
 from preloop.api.auth import get_current_active_user
 from preloop.api.auth.ci import get_current_actor
+from preloop.api.flow_preconditions import (
+    CONDITIONAL_RESPONSES,
+    IF_MATCH_DESCRIPTION,
+    if_match_condition,
+    precondition_failed,
+    require_flow_revision,
+    set_flow_etag,
+)
 from preloop.api.loop_safety import run_db_off_loop
+from preloop.models.schemas.flow_revision import FlowRevisionMismatchError
 from preloop.cra.evidence_pack import (
     EvidenceMemberError,
     list_evidence_members,
@@ -3406,7 +3423,8 @@ def _validate_matrix(
                 "include model_name, origin, provider, category, upstream_status, "
                 "provider_message, first_rejected_at, and key replacement instructions."
             )
-        }
+        },
+        **CONDITIONAL_RESPONSES,
     },
 )
 @require_permission("execute_flows", ci_action=CiAction.TRIGGER)
@@ -3416,6 +3434,16 @@ async def trigger_flow_execution(
     flow_id: uuid.UUID,
     current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
     trigger_event_data: Optional[Dict[str, Any]] = None,
+    if_match: Optional[str] = Header(
+        default=None,
+        alias="If-Match",
+        description=(
+            "Optional: run only the configuration you reviewed. Send the "
+            'flow\'s ETag (its revision in quotes, for example "7"); a flow '
+            "at another revision is refused with 412 and no execution is "
+            "created."
+        ),
+    ),
 ):
     """
     Trigger a flow execution: a restricted CI review, or a human test run.
@@ -3438,6 +3466,13 @@ async def trigger_flow_execution(
     one execution per entry, all sharing a ``batch_id`` (an empty object runs
     the flow defaults). Without ``matrix`` the behaviour is unchanged.
 
+    **Either credential** may send ``If-Match`` with the flow's ETag. The
+    execution is then created only while the flow is still at that
+    configuration revision (checked under a share lock in the transaction
+    that inserts it); otherwise the response is 412, carries the current
+    ETag, and nothing is created. Each execution records the revision it was
+    created with as ``flow_revision``.
+
     Args:
         flow_id: Flow to trigger
         trigger_event_data: ``pr_number`` and ``head_sha`` for a restricted
@@ -3449,6 +3484,7 @@ async def trigger_flow_execution(
         The CI status projection, execution details, or batch details
         (``batch_id`` + per-cell ``execution_id``) when a matrix was given
     """
+    expected_revision = if_match_condition(if_match)
     if not isinstance(current_user, CiAuthorizationContext):
         await run_db_off_loop(
             lambda: ensure_permission_in_oss(db, current_user, "execute_flows")
@@ -3463,7 +3499,14 @@ async def trigger_flow_execution(
                 422, "Restricted CI requires PR number and exact head only"
             ) from None
         try:
-            return await trigger_ci_review(db, context=current_user, request=request)
+            return await trigger_ci_review(
+                db,
+                context=current_user,
+                request=request,
+                expected_revision=expected_revision,
+            )
+        except FlowRevisionMismatchError as exc:
+            raise precondition_failed(exc.current_revision) from None
         except PermissionError as error:
             from preloop.services.denial_audit import REASONS, reason_for_detail
 
@@ -3488,6 +3531,9 @@ async def trigger_flow_execution(
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
+    # Refuse a stale precondition early; the service checks it again under a
+    # share lock right before the insert, which is the authoritative check.
+    require_flow_revision(expected_revision, flow)
 
     _reject_reserved_trigger_keys(trigger_event_data)
     _reject_oversized_workspace_seeds(trigger_event_data)
@@ -3534,7 +3580,10 @@ async def trigger_flow_execution(
                 authorization_context=AuthorizationContext(
                     account_id=current_user.account_id, db=db, user=current_user
                 ),
+                expected_revision=expected_revision,
             )
+        except FlowRevisionMismatchError as exc:
+            raise precondition_failed(exc.current_revision) from None
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
@@ -3555,7 +3604,10 @@ async def trigger_flow_execution(
             authorization_context=AuthorizationContext(
                 account_id=current_user.account_id, db=db, user=current_user
             ),
+            expected_revision=expected_revision,
         )
+    except FlowRevisionMismatchError as exc:
+        raise precondition_failed(exc.current_revision) from None
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except (TriageControllerError, ReadOnlyHumanTriggerError) as exc:
@@ -3670,8 +3722,13 @@ def read_flow(
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
+    response: Response = None,  # type: ignore[assignment]
 ):
-    """Get flow by ID."""
+    """Get flow by ID.
+
+    The ``ETag`` header carries the flow's configuration revision; send it
+    back as ``If-Match`` to make a later write or trigger conditional.
+    """
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow or not filter_viewable(db, current_user, VISIBLE_FLOW, [flow]):
         raise HTTPException(status_code=404, detail="Flow not found")
@@ -3692,12 +3749,14 @@ def read_flow(
         "estimated_cost": float(getattr(stat, "estimated_cost", 0.0) or 0.0),
         "token_usage": getattr(stat, "token_usage", None),
     }
+    set_flow_etag(response, getattr(flow, "config_revision", None))
     return flow
 
 
 @router.post(
     "/flows/{flow_id}/webhook-secret/rotate",
     response_model=schemas.FlowResponse,
+    responses=CONDITIONAL_RESPONSES,
 )
 @require_permission("edit_flows")
 def rotate_flow_webhook_secret(
@@ -3705,6 +3764,10 @@ def rotate_flow_webhook_secret(
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
+    if_match: Optional[str] = Header(
+        default=None, alias="If-Match", description=IF_MATCH_DESCRIPTION
+    ),
+    response: Response = None,  # type: ignore[assignment]
 ) -> schemas.FlowResponse:
     """Rotate an ingress secret and return its new value once.
 
@@ -3712,18 +3775,28 @@ def rotate_flow_webhook_secret(
         db: Active database session.
         flow_id: Flow owned by the caller's account.
         current_user: User performing the rotation.
+        if_match: Optional revision precondition, checked under the row lock.
+        response: Carries the new ETag.
 
     Returns:
         Flow metadata with the new webhook_secret, shown only in this response.
 
     Raises:
         HTTPException: 404 for an inaccessible flow, 400 without a webhook
-            trigger, or 403 without edit_flows permission.
+            trigger or for a malformed If-Match, 403 without edit_flows
+            permission, or 412 when If-Match names another revision.
     """
     ensure_permission_in_oss(db, current_user, "edit_flows")
-    flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
+    condition = if_match_condition(if_match)
+    flow = crud_flow.get(
+        db=db,
+        id=flow_id,
+        account_id=current_user.account_id,
+        for_update=condition is not None,
+    )
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
+    require_flow_revision(condition, flow)
     if flow.trigger_event_source != "webhook":
         raise HTTPException(status_code=400, detail="Flow has no webhook trigger")
     secret = secrets.token_urlsafe(32)
@@ -3735,12 +3808,17 @@ def rotate_flow_webhook_secret(
         action="webhook_secret_rotated",
         new_value={"id": str(flow.id), "name": flow.name},
     )
-    response = schemas.FlowResponse.model_validate(flow)
-    response.webhook_secret = secret
-    return response
+    rotated = schemas.FlowResponse.model_validate(flow)
+    rotated.webhook_secret = secret
+    set_flow_etag(response, getattr(flow, "config_revision", None))
+    return rotated
 
 
-@router.put("/flows/{flow_id}", response_model=schemas.FlowResponse)
+@router.put(
+    "/flows/{flow_id}",
+    response_model=schemas.FlowResponse,
+    responses=CONDITIONAL_RESPONSES,
+)
 @require_permission("edit_flows")
 def update_flow(
     *,
@@ -3748,16 +3826,35 @@ def update_flow(
     flow_id: uuid.UUID,
     flow_in: schemas.FlowUpdate,
     current_user: User = Depends(get_current_active_user),
+    if_match: Optional[str] = Header(
+        default=None, alias="If-Match", description=IF_MATCH_DESCRIPTION
+    ),
+    response: Response = None,  # type: ignore[assignment]
 ):
-    """Update a flow."""
+    """Update a flow.
+
+    Top-level fields that are sent replace the stored value; fields that are
+    omitted are kept. A nested object that is sent (``agent_config``,
+    ``git_clone_config``, ``webhook_config``, ``result_schema``,
+    ``custom_commands``, ``schedule_config``, ``notifications``) replaces the
+    stored object whole, except that omitted webhook secrets are kept and the
+    run-limit fields merge into ``agent_config``.
+
+    With ``If-Match`` the update is conditional: it is applied only when the
+    flow is still at that revision, checked under the row lock, and refused
+    with 412 otherwise. The response's ``ETag`` is the new revision.
+    """
     ensure_permission_in_oss(db, current_user, "edit_flows")
+    condition = if_match_condition(if_match)
     # Settings saves preserve omitted credentials from the current locked row,
-    # so a concurrent rotation cannot be undone by a stale ORM snapshot.
+    # so a concurrent rotation cannot be undone by a stale ORM snapshot. The
+    # same lock makes the If-Match check and the write one atomic step.
     flow = crud_flow.get(
         db=db, id=flow_id, account_id=current_user.account_id, for_update=True
     )
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
+    require_flow_revision(condition, flow)
 
     # Omission preserves the harness, but an explicit null cannot be stored
     # in Flow.agent_type. Reject it before any harness-specific validation.
@@ -4047,6 +4144,7 @@ def update_flow(
         new_value={"id": str(flow.id), "name": flow.name},
     )
 
+    set_flow_etag(response, getattr(flow, "config_revision", None))
     return flow
 
 
@@ -4183,7 +4281,9 @@ def delete_flow(
 
 
 @router.post(
-    "/flows/{flow_id}/apply-preset-update", response_model=schemas.FlowResponse
+    "/flows/{flow_id}/apply-preset-update",
+    response_model=schemas.FlowResponse,
+    responses=CONDITIONAL_RESPONSES,
 )
 @require_permission("edit_flows")
 def apply_preset_update(
@@ -4191,6 +4291,10 @@ def apply_preset_update(
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
+    if_match: Optional[str] = Header(
+        default=None, alias="If-Match", description=IF_MATCH_DESCRIPTION
+    ),
+    response: Response = None,  # type: ignore[assignment]
 ):
     """
     Apply pending preset update to a flow.
@@ -4203,10 +4307,18 @@ def apply_preset_update(
     ensure_permission_in_oss(db, current_user, "edit_flows")
     from preloop.services.flow_presets_service import apply_preset_update_to_flow
 
-    # Check that flow belongs to user's account
-    flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
+    condition = if_match_condition(if_match)
+    # Check that flow belongs to user's account. The lock holds until the
+    # service commits, so the If-Match check and the write are one step.
+    flow = crud_flow.get(
+        db=db,
+        id=flow_id,
+        account_id=current_user.account_id,
+        for_update=condition is not None,
+    )
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
+    require_flow_revision(condition, flow)
 
     if not flow.source_preset_id:
         raise HTTPException(
@@ -4215,13 +4327,16 @@ def apply_preset_update(
 
     try:
         updated_flow = apply_preset_update_to_flow(db, flow_id)
+        set_flow_etag(response, getattr(updated_flow, "config_revision", None))
         return updated_flow
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post(
-    "/flows/{flow_id}/dismiss-preset-update", response_model=schemas.FlowResponse
+    "/flows/{flow_id}/dismiss-preset-update",
+    response_model=schemas.FlowResponse,
+    responses=CONDITIONAL_RESPONSES,
 )
 @require_permission("edit_flows")
 def dismiss_preset_update(
@@ -4229,6 +4344,10 @@ def dismiss_preset_update(
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
+    if_match: Optional[str] = Header(
+        default=None, alias="If-Match", description=IF_MATCH_DESCRIPTION
+    ),
+    response: Response = None,  # type: ignore[assignment]
 ):
     """
     Dismiss the preset update notification for a flow.
@@ -4242,13 +4361,23 @@ def dismiss_preset_update(
         dismiss_preset_update as dismiss_update,
     )
 
-    # Check that flow belongs to user's account
-    flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
+    condition = if_match_condition(if_match)
+    # Check that flow belongs to user's account (locked for a conditional
+    # dismiss, as for apply). Dismissing is not a configuration change and
+    # keeps the revision.
+    flow = crud_flow.get(
+        db=db,
+        id=flow_id,
+        account_id=current_user.account_id,
+        for_update=condition is not None,
+    )
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
+    require_flow_revision(condition, flow)
 
     try:
         updated_flow = dismiss_update(db, flow_id)
+        set_flow_etag(response, getattr(updated_flow, "config_revision", None))
         return updated_flow
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -1,4 +1,5 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import { Router } from '../../router';
 import sinon from 'sinon';
 
 import './flow-view';
@@ -1028,6 +1029,7 @@ describe('FlowView webhook URL', () => {
               webhook_secret_set: true,
               webhook_secret_rotated_at: '2026-11-16T12:00:00Z',
               execution_stats: null,
+              revision: 8,
             }),
             { status: 200 }
           );
@@ -1051,6 +1053,7 @@ describe('FlowView webhook URL', () => {
         webhook_secret_hint: 'abcd',
         webhook_config: {},
         execution_stats: { total_execs: 7 },
+        revision: 7,
       },
     });
     document.body.appendChild(element);
@@ -1138,6 +1141,8 @@ describe('FlowView webhook URL', () => {
     expect(call?.args[1]?.method).to.equal('POST');
     expect(element.flow.webhook_secret).to.be.undefined;
     expect(element.flow.execution_stats).to.deep.equal({ total_execs: 7 });
+    // Rotation moved the revision; the next save must not send the old one.
+    expect(element.flow.revision).to.equal(8);
     expect(element.shadowRoot.textContent).to.contain('shown once');
     element.disconnectedCallback();
     expect(element.newWebhookSecret).to.equal(null);
@@ -1408,6 +1413,78 @@ describe('FlowView saving from the form', () => {
       expect(form.formError).to.equal('Name already taken');
     } finally {
       host.remove();
+      fetchStub.restore();
+    }
+  });
+});
+
+describe('FlowView saving a flow someone else changed', () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('sends If-Match, keeps the edit on 412 and offers a reload', async () => {
+    localStorage.setItem('accessToken', 'test-access-token');
+    const sent: RequestInit[] = [];
+    const fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (_input, init) => {
+        sent.push(init || {});
+        return new Response(
+          JSON.stringify({
+            detail: {
+              code: 'flow_revision_mismatch',
+              message: 'The flow changed since it was read.',
+              current_revision: 4,
+            },
+          }),
+          { status: 412, headers: { 'Content-Type': 'application/json' } }
+        );
+      });
+    const routed = sinon.stub(Router, 'go');
+    const element = document.createElement('flow-view') as any;
+    element.isNew = false;
+    element.flowId = 'flow-1';
+    element.flow = { id: 'flow-1', name: 'Example flow', revision: 3 };
+
+    const host = document.createElement('div');
+    const root = host.attachShadow({ mode: 'open' });
+    const form = document.createElement('div') as HTMLElement & {
+      formError?: string;
+      revisionConflict?: boolean;
+    };
+    root.appendChild(form);
+    document.body.appendChild(host);
+    const waited: Promise<unknown>[] = [];
+    const markSaved = sinon.spy();
+    form.addEventListener('flow-submit', (event) => {
+      const save = element.saveFlowFromForm(event as CustomEvent);
+      (event as CustomEvent).detail.waitUntil(save);
+    });
+
+    try {
+      form.dispatchEvent(
+        new CustomEvent('flow-submit', {
+          bubbles: true,
+          composed: true,
+          detail: {
+            flow: { name: 'Example flow', description: 'My unsaved edit' },
+            markSaved,
+            waitUntil: (work: Promise<unknown>) => waited.push(work),
+          },
+        })
+      );
+      await waited[0];
+      expect(new Headers(sent[0].headers).get('If-Match')).to.equal('"3"');
+      expect(form.revisionConflict).to.equal(true);
+      expect(form.formError).to.include('changed after you opened it');
+      // Nothing navigates away and the form is not marked saved, so the
+      // typed edit stays on screen until the user chooses to reload.
+      expect(routed.called).to.equal(false);
+      expect(markSaved.called).to.equal(false);
+    } finally {
+      host.remove();
+      routed.restore();
       fetchStub.restore();
     }
   });

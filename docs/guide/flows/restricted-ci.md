@@ -92,11 +92,41 @@ with your disposable resources:
 
 Do not supply an arbitrary repository URL, a second repository or another
 runner pool.
+
 The server verifies the actual project, tracker and flow rather than trusting
 the selector. If the repository identity changes, provision a new principal;
 its stored project/flow/repository snapshot is immutable. Configure the flow
 to return a structured result with a `review` string when using the publication
 example below.
+
+### Changing a flow safely
+
+A review flow is often configured by automation while a person may also edit
+it in the console. Make every change conditional so neither silently
+overwrites the other:
+
+1. `GET /api/v1/flows/{flow_id}` and keep the `ETag` header (the flow's
+   configuration revision in quotes, such as `"7"`; also returned as
+   `revision`).
+2. Send the change with `If-Match: "7"`. On `200` the response's `ETag` is
+   the new revision.
+3. On `412` nothing was saved. The body's `current_revision` and the `ETag`
+   header give the revision now. Read the flow again, reconsider the change
+   against what is stored, and resend with the new value.
+
+A `PUT` keeps top-level fields you omit, but a nested object you send
+(`git_clone_config`, `agent_config`, `webhook_config`, `result_schema`,
+`custom_commands`) replaces the stored one whole, so send the complete object
+you read and changed. The shared-flow allowlist,
+`PUT /api/v1/ci-identities/shared-flows/{flow_id}`, accepts the same
+`If-Match`.
+
+The restricted CI trigger accepts `If-Match` too, so a pipeline can refuse to
+run a configuration other than the one it reviewed: a flow at another
+revision returns `412` and no execution is created. The execution's status
+projection reports the revision it was created with as `flow_revision`. See
+[Changing a flow safely through the API](creating-flows.md#changing-a-flow-safely-through-the-api)
+for the full contract.
 
 ## Model eligibility
 

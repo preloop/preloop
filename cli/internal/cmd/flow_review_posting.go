@@ -10,9 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -414,11 +416,21 @@ func saveReviewPostingBlock(client *api.Client, flowID string, flow map[string]a
 		}
 	}
 	config["platform_review"] = block
+	// git_clone_config is replaced whole, so make the write conditional on
+	// the revision this command read: a change saved meanwhile is reported
+	// instead of overwritten. A server without revisions gets a plain PUT.
+	headers := map[string]string{}
+	if revision, ok := flowRevision(flow); ok {
+		headers["If-Match"] = fmt.Sprintf("%q", strconv.FormatInt(revision, 10))
+	}
 	var saved map[string]any
-	if err := client.Put(flowsPath+"/"+flowID, map[string]any{"git_clone_config": config}, &saved); err != nil {
+	if err := client.PutWithHeaders(flowsPath+"/"+flowID, map[string]any{"git_clone_config": config}, headers, &saved); err != nil {
 		var apiErr *api.APIError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == 422 {
 			return nil, fmt.Errorf("flow not saved: %s", apiDetail(apiErr.Body))
+		}
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusPreconditionFailed {
+			return nil, fmt.Errorf("flow %s changed since it was read%s; nothing was saved. Run the command again to apply the change to the current configuration", flowID, currentRevisionNote(apiErr.Body))
 		}
 		return nil, err
 	}
@@ -427,6 +439,28 @@ func saveReviewPostingBlock(client *api.Client, flowID string, flow map[string]a
 		stored = block
 	}
 	return stored, nil
+}
+
+// flowRevision is the configuration revision of a flow read from the API.
+func flowRevision(flow map[string]any) (int64, bool) {
+	value, ok := flow["revision"].(float64)
+	if !ok || value < 1 || value != float64(int64(value)) {
+		return 0, false
+	}
+	return int64(value), true
+}
+
+// currentRevisionNote names the flow's current revision from a 412 body.
+func currentRevisionNote(body string) string {
+	var parsed struct {
+		Detail struct {
+			CurrentRevision *int64 `json:"current_revision"`
+		} `json:"detail"`
+	}
+	if json.Unmarshal([]byte(body), &parsed) != nil || parsed.Detail.CurrentRevision == nil {
+		return ""
+	}
+	return fmt.Sprintf(" (now at revision %d)", *parsed.Detail.CurrentRevision)
 }
 
 // apiDetail is the readable part of a FastAPI error body.

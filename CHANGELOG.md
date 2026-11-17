@@ -60,6 +60,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- flows: changes can be made conditional, so one editor cannot silently
+  overwrite another. Each flow has a configuration revision that goes up by
+  one on every configuration change (never on runs). Flow reads and writes
+  return it as `revision` and as the `ETag` header. Send that value in
+  `If-Match` on `PUT /api/v1/flows/{id}` or the other flow write actions:
+  if the flow changed since you read it, nothing is saved and the response
+  is `412` with the current revision. Requests without `If-Match` work as
+  before. The console editor uses this and offers to reload instead of
+  overwriting, and `preloop flow review-posting` sends it. Triggers accept
+  `If-Match` too, so a caller can refuse to run a configuration it did not
+  review, and each execution records the revision it was created with as
+  `flow_revision` (#2375).
+
 - flows: rotate webhook ingress secrets with
   `POST /api/v1/flows/{id}/webhook-secret/rotate`,
   `preloop flow webhook-secret rotate <flow-id-or-name>`, or the console

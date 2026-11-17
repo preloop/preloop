@@ -284,4 +284,34 @@ describe('PreloopFlowForm submit validation', () => {
     const group = element.shadowRoot!.querySelector('sl-radio-group');
     expect(group?.getAttribute('label')).to.equal('Trigger type');
   });
+
+  it('offers to reload after a conflicting save and keeps the typed edit', async () => {
+    const element = await mount({
+      id: 'flow-1',
+      name: 'Issue triage',
+      description: 'Typed but not saved',
+      revision: 3,
+    });
+    (element as any).formError = 'This flow was changed after you opened it.';
+    (element as any).revisionConflict = true;
+    await element.updateComplete;
+
+    const reload = banner(element)!.querySelector<HTMLElement>(
+      '[data-reload-latest]'
+    );
+    expect(reload).to.exist;
+    expect(reload!.textContent).to.include('Reload latest version');
+    const reloaded = sandbox.spy();
+    element.addEventListener('flow-reload', reloaded);
+    reload!.click();
+    expect(reloaded.calledOnce).to.equal(true);
+    // Showing the conflict changes nothing the user typed.
+    expect((element as any).flow.description).to.equal('Typed but not saved');
+
+    // A new attempt clears the conflict; the reload offer goes with it.
+    await submit(element);
+    expect(
+      banner(element)?.querySelector('[data-reload-latest]') ?? null
+    ).to.equal(null);
+  });
 });
