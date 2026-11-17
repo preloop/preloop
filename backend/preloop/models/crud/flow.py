@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Any, List, Optional, Union
 from uuid import UUID
 
-from sqlalchemy import String, cast, func, or_
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Query, Session, joinedload, load_only
 
@@ -50,6 +50,34 @@ class CRUDFlow(CRUDBase[models.Flow]):
     def __init__(self):
         """Initialize with the Flow model."""
         super().__init__(model=models.Flow)
+
+    def lock_revision(
+        self,
+        db: Session,
+        *,
+        flow_id: Union[str, UUID],
+        account_id: Union[str, UUID, None] = None,
+    ) -> Optional[int]:
+        """Share-lock a flow row and return its configuration revision.
+
+        ``FOR SHARE`` blocks configuration writers (which take ``FOR UPDATE``)
+        until this transaction ends, so an execution inserted in the same
+        transaction records exactly the revision returned here.
+
+        Args:
+            db: Database session; the lock lasts until it commits or rolls back.
+            flow_id: Flow to lock.
+            account_id: Restrict the lookup to this account when given.
+
+        Returns:
+            The current ``config_revision``, or None when the flow is not found.
+        """
+        query = select(self.model.config_revision).where(
+            self.model.id == UUID(str(flow_id))
+        )
+        if account_id is not None:
+            query = query.where(self.model.account_id == UUID(str(account_id)))
+        return db.execute(query.with_for_update(read=True)).scalar_one_or_none()
 
     def rotate_webhook_secret(
         self,

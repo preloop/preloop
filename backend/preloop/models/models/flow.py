@@ -1,4 +1,5 @@
-from typing import Dict, Optional
+import uuid
+from typing import Any, Dict, Optional
 from sqlalchemy import (  # Added JSON
     Boolean,
     Column,
@@ -9,12 +10,14 @@ from sqlalchemy import (  # Added JSON
     Text,
     JSON,
     cast,
+    event,
     func,
     text,
 )
+from sqlalchemy import inspect as sa_inspect
 
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, JSONPATH, UUID
-from sqlalchemy.orm import column_property, relationship
+from sqlalchemy.orm import Session, column_property, relationship
 
 from preloop.models.db.encrypted_types import SecretFieldsJSON
 
@@ -237,6 +240,15 @@ class Flow(Base):
     validate_result = Column(
         Boolean, nullable=False, default=True, server_default=text("true")
     )
+    # Configuration revision (#2375): starts at 1 and increases by one in the
+    # same flush as any change to a configuration column (see
+    # NON_CONFIGURATION_COLUMNS and _bump_config_revision below). Conditional
+    # writes compare it under the row lock; executions record it at creation.
+    # updated_at is not used for this: it also moves on non-configuration
+    # writes (preset notices) and has no ordering guarantee between replicas.
+    config_revision = Column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
 
     ai_model = relationship("AIModel", back_populates="flows")
     account = relationship("Account", back_populates="flows", foreign_keys=[account_id])
@@ -282,3 +294,83 @@ class Flow(Base):
 
     def __repr__(self) -> str:
         return f"<Flow(id={self.id}, name='{self.name}')>"
+
+
+# Columns whose change is bookkeeping, not configuration: they never move
+# config_revision. Every other column of the flow row is configuration, so a
+# column added later is covered by default.
+NON_CONFIGURATION_COLUMNS = frozenset(
+    {
+        "id",
+        "created_at",
+        "updated_at",
+        "config_revision",
+        # Preset sync bookkeeping: the "an update is available" notice, the
+        # hashes it compares and the customization markers derived from them.
+        # The content they describe (prompt, tools) is configuration.
+        "preset_update_available",
+        "source_prompt_hash",
+        "source_tools_hash",
+        "prompt_customized",
+        "tools_customized",
+        # Set together with a webhook secret change, which itself bumps.
+        "webhook_secret_rotated_at",
+    }
+)
+
+
+def configuration_changed(flow: Flow) -> bool:
+    """Report whether a pending flush changes a configuration column's value.
+
+    An assignment of the value already stored is not a change, so a write
+    that resends the current configuration keeps the revision.
+
+    Args:
+        flow: A persistent flow in the session.
+
+    Returns:
+        True when at least one configuration column will change.
+    """
+    state = sa_inspect(flow)
+    for attr in state.mapper.column_attrs:
+        if attr.key in NON_CONFIGURATION_COLUMNS:
+            continue
+        history = state.attrs[attr.key].history
+        if not history.added:
+            continue
+        if not history.deleted or [_comparable(v) for v in history.added] != [
+            _comparable(v) for v in history.deleted
+        ]:
+            return True
+    return False
+
+
+def _comparable(value: Any) -> Any:
+    """Compare ids by value, also inside lists and dicts.
+
+    Writers assign ids as str or UUID (for example ``trigger_project_ids``
+    arrives as UUIDs and is stored as strings), so both spellings of the
+    same id are the same value.
+    """
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_comparable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _comparable(item) for key, item in value.items()}
+    return value
+
+
+@event.listens_for(Session, "before_flush")
+def _bump_config_revision(session: Session, flush_context: Any, instances: Any) -> None:
+    """Increase config_revision in the same flush as a configuration change.
+
+    The increment is written as ``config_revision + 1`` in the UPDATE, so it
+    is relative to the stored row even for a writer that did not lock it.
+    """
+    for obj in session.dirty:
+        if not isinstance(obj, Flow) or not configuration_changed(obj):
+            continue
+        if sa_inspect(obj).attrs.config_revision.history.added:
+            continue  # already bumped (or set explicitly) in this flush
+        obj.config_revision = Flow.config_revision + 1

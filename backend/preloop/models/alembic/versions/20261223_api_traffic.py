@@ -4,8 +4,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "20261222_api_traffic"
-down_revision = "20261221_records_merge"
+revision = "20261223_api_traffic"
+down_revision = "20261222_flow_config_revision"
 branch_labels = None
 depends_on = None
 

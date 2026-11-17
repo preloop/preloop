@@ -6,6 +6,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import (
+    AliasChoices,
     computed_field,
     BaseModel,
     ConfigDict,
@@ -2064,6 +2065,16 @@ class FlowResponse(FlowBase):
     created_by_user_id: Optional[UUID] = None
     created_at: datetime
     updated_at: datetime
+    revision: int = Field(
+        default=1,
+        validation_alias=AliasChoices("revision", "config_revision"),
+        description=(
+            "Configuration revision. Increases by one on every change to the "
+            "flow's configuration and never on run bookkeeping. The ETag header "
+            'of flow reads and writes is the revision in quotes ("7"); send it as If-Match '
+            "to make a write conditional."
+        ),
+    )
     # Catalog identity for built-in presets. Null for account flows and for
     # cloned presets, whose name is user-editable and is not identity.
     slug: Optional[str] = None

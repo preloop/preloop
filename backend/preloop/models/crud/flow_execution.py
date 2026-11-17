@@ -3303,6 +3303,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if commit:
             db.commit()
 
+    #: Written to ``stop_reason`` by :meth:`abandon_unverified_stop`. A
+    #: terminal row carrying it is out of recovery with its stop unconfirmed.
+    RECOVERY_EXHAUSTED_MARKER = "recovery exhausted, termination not verified"
+
     ACTIVE_ORCHESTRATOR_STATUSES = (
         "PENDING",
         "INITIALIZING",
@@ -4397,6 +4401,53 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if commit:
             db.commit()
 
+    def abandon_unverified_stop(
+        self,
+        db: Session,
+        *,
+        execution_id: Any,
+        attempts: int,
+    ) -> None:
+        """Take a terminal run out of recovery without claiming termination.
+
+        Only the recovery bound calls this, after repeated attempts could not
+        confirm the stop. ``stop_confirmed_at`` stays NULL, because nobody saw
+        the runtime end. :data:`RECOVERY_EXHAUSTED_MARKER` is appended to
+        ``stop_reason`` instead, and the recovery predicate skips a terminal
+        row that carries it, so the row leaves recovery while still reading
+        as unconfirmed.
+        """
+        reason = (
+            f"{self.RECOVERY_EXHAUSTED_MARKER} after {int(attempts)} attempts; "
+            "operator inspection required"
+        )
+        reason_value = case(
+            (
+                func.coalesce(models.FlowExecution.stop_reason, "") == "",
+                reason,
+            ),
+            # Trim the earlier reason, never the marker: the predicate and
+            # the operator both read it.
+            else_=func.left(
+                models.FlowExecution.stop_reason, max(0, 500 - len(reason) - 2)
+            )
+            + "; "
+            + reason,
+        )
+        db.query(models.FlowExecution).filter(
+            models.FlowExecution.id == execution_id,
+            models.FlowExecution.stop_requested_at.isnot(None),
+            models.FlowExecution.stop_confirmed_at.is_(None),
+            models.FlowExecution.status.in_(self.TERMINAL_EXECUTION_STATUSES),
+            ~func.coalesce(models.FlowExecution.stop_reason, "").contains(
+                self.RECOVERY_EXHAUSTED_MARKER
+            ),
+        ).update(
+            {models.FlowExecution.stop_reason: reason_value},
+            synchronize_session=False,
+        )
+        db.commit()
+
     def fail_unleased_runner_execution(
         self,
         db: Session,
@@ -4530,6 +4581,14 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 models.FlowExecution.stop_requested_at.isnot(None),
                 models.FlowExecution.stop_confirmed_at.is_(None),
                 models.FlowExecution.agent_session_reference.isnot(None),
+                # A terminal run the recovery bound gave up on stays
+                # unconfirmed but is no longer recovered.
+                or_(
+                    ~models.FlowExecution.status.in_(cls.TERMINAL_EXECUTION_STATUSES),
+                    ~func.coalesce(models.FlowExecution.stop_reason, "").contains(
+                        cls.RECOVERY_EXHAUSTED_MARKER
+                    ),
+                ),
             ),
         )
 
@@ -4907,12 +4966,15 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         row.orchestrator_claimed_at = now
         row.orchestrator_heartbeat_at = now
         row.queued_reason = None
-        # A claim is progress, so the reaper's backoff for this execution
+        # Claiming an unfinished run is progress, so the reaper's backoff for it
         # starts again from zero. Without this, a run that queued for an hour
         # and then died on its new owner would wait out a fifteen minute gap
-        # before anyone adopted it.
-        row.redispatch_count = 0
-        row.last_redispatch_at = None
+        # before anyone adopted it. A run that is already terminal is only
+        # claimed to finish its stop; that claim proves nothing, and resetting
+        # here is what let such a row be re-dispatched forever.
+        if row.status not in self.TERMINAL_EXECUTION_STATUSES:
+            row.redispatch_count = 0
+            row.last_redispatch_at = None
         db.add(row)
         db.commit()
         db.refresh(row)

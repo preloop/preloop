@@ -5261,6 +5261,8 @@ export async function rotateFlowWebhookSecret(flowId: string): Promise<{
   webhook_secret_set: boolean;
   webhook_secret_hint: string | null;
   webhook_secret_rotated_at: string | null;
+  /** The flow's configuration revision after the rotation. */
+  revision?: number;
 }> {
   const response = await fetchWithAuth(
     `${REST_API_PREFIX}/flows/${flowId}/webhook-secret/rotate`,
@@ -5341,15 +5343,57 @@ export async function createFlow(flow: FlowWrite): Promise<any> {
   return response.json();
 }
 
+/**
+ * A conditional flow write was refused because the flow changed after it was
+ * read (HTTP 412). Nothing was saved; `currentRevision` is the flow's
+ * revision now.
+ */
+export class FlowRevisionConflictError extends Error {
+  readonly currentRevision: number | null;
+
+  constructor(currentRevision: number | null) {
+    super(
+      'This flow was changed after you opened it, so nothing was saved. ' +
+        'Your edits are still in the form. Reload the latest version to ' +
+        'see the other change, then make your edit again.'
+    );
+    this.name = 'FlowRevisionConflictError';
+    this.currentRevision = currentRevision;
+  }
+}
+
+export interface FlowWriteOptions {
+  /**
+   * The flow revision the change was made against. When set, the write is
+   * sent with `If-Match` and refused with FlowRevisionConflictError if the
+   * flow has changed since.
+   */
+  revision?: number | null;
+}
+
 export async function updateFlow(
   flowId: string,
-  flow: FlowWrite
+  flow: FlowWrite,
+  options: FlowWriteOptions = {}
 ): Promise<any> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (typeof options.revision === 'number') {
+    headers['If-Match'] = `"${options.revision}"`;
+  }
   const response = await fetchWithAuth(`${REST_API_PREFIX}/flows/${flowId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(flow),
   });
+  if (response.status === 412) {
+    const errorData = await response.json().catch(() => ({}));
+    const current = errorData?.detail?.current_revision;
+    throw new FlowRevisionConflictError(
+      typeof current === 'number' ? current : null
+    );
+  }
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(flowWriteErrorMessage(errorData, 'Failed to update flow'));

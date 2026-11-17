@@ -20,6 +20,7 @@ import {
   FLOW_LIST_MAX_PAGES,
   createFlow,
   updateFlow,
+  FlowRevisionConflictError,
   deleteModelPriceOverride,
   updateModelPriceOverride,
   listProjectsForOrg,
@@ -1606,6 +1607,65 @@ describe('api', () => {
       expect(await messageOf(updateFlow('flow-1', {}))).to.equal(
         'Failed to update flow'
       );
+    });
+  });
+  describe('conditional flow writes', () => {
+    it('sends the loaded revision as If-Match', async () => {
+      fetchStub.resolves(
+        new Response(JSON.stringify({ id: 'flow-1', revision: 8 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', ETag: '"8"' },
+        })
+      );
+      const updated = await updateFlow(
+        'flow-1',
+        { description: 'Reviews pull requests' },
+        { revision: 7 }
+      );
+      expect(updated.revision).to.equal(8);
+      const init = fetchStub.lastCall.args[1] as RequestInit;
+      const headers = new Headers(init.headers);
+      expect(headers.get('If-Match')).to.equal('"7"');
+      expect(init.method).to.equal('PUT');
+    });
+
+    it('stays unconditional without a revision', async () => {
+      fetchStub.resolves(
+        new Response(JSON.stringify({ id: 'flow-1' }), { status: 200 })
+      );
+      await updateFlow('flow-1', { is_enabled: false });
+      const headers = new Headers(
+        (fetchStub.lastCall.args[1] as RequestInit).headers
+      );
+      expect(headers.has('If-Match')).to.equal(false);
+    });
+
+    it('turns 412 into a conflict that names the current revision', async () => {
+      fetchStub.resolves(
+        new Response(
+          JSON.stringify({
+            detail: {
+              code: 'flow_revision_mismatch',
+              message: 'The flow changed since it was read.',
+              current_revision: 9,
+            },
+          }),
+          {
+            status: 412,
+            headers: { 'Content-Type': 'application/json', ETag: '"9"' },
+          }
+        )
+      );
+      let caught: unknown;
+      try {
+        await updateFlow('flow-1', { description: 'x' }, { revision: 7 });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).to.be.instanceOf(FlowRevisionConflictError);
+      expect((caught as FlowRevisionConflictError).currentRevision).to.equal(9);
+      expect((caught as Error).message).to.include('nothing was saved');
+      expect((caught as Error).message).to.include('Your edits are still');
     });
   });
   describe('price override write refusals', () => {

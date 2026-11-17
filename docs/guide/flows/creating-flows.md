@@ -618,6 +618,76 @@ Commands run with full container privileges, so they are restricted: they are co
 
 New blank flows start **Enabled** and trigger on matching events immediately. Preset copies start **Disabled**: configure their tracker and project scope, save, then explicitly enable them from Flows. Built-in presets remain disabled templates. Use **Pause** on the flow details page if you want to stop it from triggering, and **Resume** to turn it back on.
 
+### Changing a flow safely through the API
+
+Every flow has a configuration revision. It starts at 1 and goes up by one
+each time the flow's configuration changes: prompt, model, harness, triggers,
+clone settings, webhook settings, result schema, custom commands, enable or
+disable, a preset update being applied, and so on. Runs, run counters and
+the "a preset update is available" notice do not change it. A write that
+sends the values already stored does not change it either.
+
+`GET /api/v1/flows/{flow_id}` returns the revision as `revision` and as the
+`ETag` response header, which is the revision in quotes (`"7"`). To change a
+flow without overwriting someone else's change:
+
+1. Read the flow and keep its `ETag`.
+2. Send the change with that value in `If-Match`:
+
+    ```http
+    PUT /api/v1/flows/{flow_id}
+    If-Match: "7"
+    Content-Type: application/json
+
+    {"prompt_template": "Review only the changed files"}
+    ```
+
+3. On `200` the change is saved and the response's `ETag` is the new
+   revision (`"8"`). Use it for your next change.
+4. On `412 Precondition Failed` nothing was saved: another editor (a person
+   in the console or another API client) changed the flow after you read it.
+   The body names the current revision and the `ETag` header carries it:
+
+    ```json
+    {"detail": {"code": "flow_revision_mismatch",
+                "message": "The flow changed since it was read. ...",
+                "current_revision": 8}}
+    ```
+
+    Read the flow again, decide whether your change still applies to what is
+    there now, and send it again with the new `ETag`.
+
+The check and the write happen together under a lock on the flow, so of two
+clients that send the same `If-Match` at the same moment exactly one
+succeeds. `If-Match: *` only requires that the flow exists. A malformed
+`If-Match` is refused with `400`. Without `If-Match` a write is applied
+unconditionally, as before, and the response still carries the new `ETag`.
+
+What a `PUT` replaces and what it merges: top-level fields you send replace
+the stored value and fields you leave out are kept. A nested object you send
+(`agent_config`, `git_clone_config`, `webhook_config`, `result_schema`,
+`custom_commands`, `schedule_config`, `notifications`) replaces the stored
+object whole, so read it, change it and send all of it. Two exceptions: an
+omitted webhook secret is kept, and `max_budget` / `max_iterations` sent
+without an `agent_config` are merged into the stored one. Because a nested
+object is replaced whole, a read-modify-write of one is exactly where
+`If-Match` matters.
+
+The same `If-Match` is accepted by the other flow write actions:
+`POST /api/v1/flows/{flow_id}/webhook-secret/rotate`,
+`POST /api/v1/flows/{flow_id}/apply-preset-update`,
+`POST /api/v1/flows/{flow_id}/dismiss-preset-update` (which does not change
+the revision) and `PUT /api/v1/ci-identities/shared-flows/{flow_id}`.
+
+To run only the configuration you reviewed, send `If-Match` on
+`POST /api/v1/flows/{flow_id}/trigger` as well. If the flow has changed the
+trigger is refused with `412` and no execution is created. Every execution
+records the revision it was created with as `flow_revision`.
+
+The console uses the same check: if you save a flow that someone changed
+after you opened it, nothing is saved, your edits stay in the form, and you
+can reload the latest version.
+
 ### Run now
 
 Start a run by hand before real events trigger it. The run is a real one and spends like any other:
