@@ -8907,9 +8907,14 @@ class OpenAIGatewayService:
         apply_preloop_client_headers(kwargs, ai_model)
 
         # LiteLLM's prefix selects an adapter; it is not part of the wire model.
-        wire_model, _, _, _ = litellm.get_llm_provider(
-            model=kwargs["model"], api_base=kwargs.get("api_base")
-        )
+        try:
+            wire_model, _, _, _ = litellm.get_llm_provider(
+                model=kwargs["model"], api_base=kwargs.get("api_base")
+            )
+        except litellm.BadRequestError:
+            # Custom backends may accept models outside LiteLLM's registry.
+            # Diagnostics must not reject a request before backend dispatch.
+            wire_model = kwargs["model"]
         self._record_effective_request_parameters(
             {**kwargs, "model": wire_model},
             schema_in_instructions=schema_in_instructions,
