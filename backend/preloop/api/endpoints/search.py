@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import List, Optional, Union
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -85,6 +86,28 @@ async def perform_search(
     - **search_type**: 'similarity' or 'fulltext'.
     - Filters: project_id, limit, etc. Note: issue_id, organization_id, author are not used for similarity search.
     """
+    # Validate the requested search before resolving scope, so an empty scope
+    # never hides an unsupported request.
+    if query:
+        if search_type == "fulltext":
+            raise HTTPException(
+                status_code=501,  # Not Implemented
+                detail="Full-text search is not implemented on this generic endpoint. Please use specific issue or comment search endpoints.",
+            )
+        if search_type != "similarity":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid search_type: '{search_type}'. Must be 'similarity' or 'fulltext'.",
+            )
+
+    # Reject malformed filters without allowing an empty scope to broaden search.
+    try:
+        organization_uuid = UUID(organization_id) if organization_id else None
+        if project_id:
+            project_id = str(UUID(project_id))
+    except ValueError:
+        return SearchResponse(results=[])
+
     # --- Project and Organization Resolution Logic ---
     # ALWAYS get accessible projects to apply scope rules
     accessible_projects = get_accessible_projects(
@@ -103,7 +126,7 @@ async def perform_search(
         # Filter by organization
         if organization_id:
             accessible_projects = [
-                p for p in accessible_projects if p.organization_id == organization_id
+                p for p in accessible_projects if p.organization_id == organization_uuid
             ]
         elif organization:
             accessible_projects = [
@@ -126,6 +149,8 @@ async def perform_search(
             f"organization_id={organization_id}, project={project}, organization={organization}"
         )
 
+        return SearchResponse(results=[])
+
     # --- End of Project and Organization Resolution Logic ---
 
     # If no query provided, just list issues from database
@@ -133,37 +158,15 @@ async def perform_search(
         logger.info(
             f"No query provided, listing issues from database for user {current_user.username}"
         )
-        # Query issues directly from database with filters
-        # Need to join through Project -> Organization -> Tracker to access account_id
-        from preloop.models.models.tracker import Tracker
-        from preloop.models.models.organization import Organization
-
-        issues_query = (
-            db.query(Issue)
-            .join(Project, Issue.project_id == Project.id)
-            .join(Organization, Project.organization_id == Organization.id)
-            .join(Tracker, Organization.tracker_id == Tracker.id)
-            .filter(Tracker.account_id == current_user.account_id)
+        issues = crud_issue.list_in_projects(
+            db,
+            account_id=current_user.account_id,
+            project_ids=resolved_project_ids_param,
+            status=status,
+            skip=skip,
+            limit=limit,
         )
-
-        # Apply project filter if provided
-        if resolved_project_ids_param:
-            issues_query = issues_query.filter(
-                Issue.project_id.in_(resolved_project_ids_param)
-            )
-
-        # Apply status filter if provided
-        if status:
-            if status == "opened":
-                issues_query = issues_query.filter(Issue.status.in_(["opened", "open"]))
-            elif status == "closed":
-                issues_query = issues_query.filter(Issue.status.in_(["closed", "done"]))
-            # 'all' means no filtering
-
-        # Apply pagination
-        issues_query = issues_query.offset(skip).limit(limit).all()
-
-        db_results_with_scores = [(issue, 1.0) for issue in issues_query]
+        db_results_with_scores = [(issue, 1.0) for issue in issues]
 
     elif search_type == "similarity":
         # Validate query is not empty for similarity search

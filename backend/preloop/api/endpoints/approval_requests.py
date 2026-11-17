@@ -659,7 +659,13 @@ def list_approval_requests(
             "this session needs nothing".
     """
     ensure_permission_in_oss(db, current_user, "view_approvals")
-    crud_approval_request.expire_stale_pending(db, account_id=current_user.account_id)
+    # A pure read: the periodic sweep writes expiry. A request past its
+    # deadline that the sweep has not reached yet is still filtered and
+    # shown as expired, so a poller sees the same state either way.
+    now = datetime.utcnow()
+    halt_cutoff = crud_approval_request.stale_pending_cutoff(
+        db, account_id=current_user.account_id
+    )
     # Use CRUD layer to get approval requests with filters. `runtime_session_id`
     # is ANDed with the caller's account inside the CRUD layer, so a session id
     # from another account yields no rows rather than that account's approvals.
@@ -670,6 +676,8 @@ def list_approval_requests(
         "runtime_session_id": runtime_session_id,
         "tool_name": tool_name,
         "search": q,
+        "now": now,
+        "halt_cutoff": halt_cutoff,
     }
     rows = crud_approval_request.get_multi_by_account(
         db, skip=skip, limit=limit, **filters
@@ -683,10 +691,17 @@ def list_approval_requests(
     response.headers["X-Total-Count"] = str(total)
     # One batched pass for the page, not four lookups per row, then convert
     # every row while the request session is still open.
-    return [
-        ApprovalRequestResponse.model_validate(row)
-        for row in attach_attribution(db, rows)
-    ]
+    responses = []
+    for row in attach_attribution(db, rows):
+        item = ApprovalRequestResponse.model_validate(row)
+        if crud_approval_request.is_stale_pending(
+            row, now=now, halt_cutoff=halt_cutoff
+        ):
+            item = item.model_copy(
+                update={"status": "expired", "resolved_at": row.expires_at}
+            )
+        responses.append(item)
+    return responses
 
 
 @router.post(

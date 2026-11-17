@@ -421,9 +421,12 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
         *,
         account_id: UUID,
         skip: int = 0,
-        limit: int = 100,
+        limit: Optional[int] = 100,
     ) -> List[FlowRunner]:
-        """Runners of the account, plus runners shared with it (hook H3)."""
+        """Runners of the account, plus runners shared with it (hook H3).
+
+        ``limit=None`` returns every row, in the same stable order.
+        """
         return (
             db.query(FlowRunner)
             .filter(_runner_visibility_clause(db, account_id))

@@ -8,7 +8,7 @@ import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, UTC
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI, HTTPException, Response
@@ -119,6 +119,7 @@ class TestListApprovalRequests:
         with patch(
             "preloop.api.endpoints.approval_requests.crud_approval_request"
         ) as mock_crud:
+            mock_crud.is_stale_pending.return_value = False
             mock_crud.get_multi_by_account.return_value = [mock_approval_request]
 
             result = approval_requests.list_approval_requests(
@@ -136,9 +137,8 @@ class TestListApprovalRequests:
             assert result[0] == ApprovalRequestResponse.model_validate(
                 mock_approval_request
             )
-            mock_crud.expire_stale_pending.assert_called_once_with(
-                mock_db_session, account_id=mock_user.account_id
-            )
+            # The list is a pure read; the periodic sweep writes expiry.
+            mock_crud.expire_stale_pending.assert_not_called()
             mock_crud.get_multi_by_account.assert_called_once_with(
                 mock_db_session,
                 account_id=mock_user.account_id,
@@ -149,6 +149,8 @@ class TestListApprovalRequests:
                 search=None,
                 skip=0,
                 limit=50,
+                now=ANY,
+                halt_cutoff=ANY,
             )
 
     def test_list_approval_requests_with_status_filter(
@@ -158,6 +160,7 @@ class TestListApprovalRequests:
         with patch(
             "preloop.api.endpoints.approval_requests.crud_approval_request"
         ) as mock_crud:
+            mock_crud.is_stale_pending.return_value = False
             mock_crud.get_multi_by_account.return_value = [mock_approval_request]
 
             approval_requests.list_approval_requests(
@@ -181,6 +184,8 @@ class TestListApprovalRequests:
                 search=None,
                 skip=0,
                 limit=50,
+                now=ANY,
+                halt_cutoff=ANY,
             )
 
     def test_list_approval_requests_with_execution_id_filter(
@@ -191,6 +196,7 @@ class TestListApprovalRequests:
         with patch(
             "preloop.api.endpoints.approval_requests.crud_approval_request"
         ) as mock_crud:
+            mock_crud.is_stale_pending.return_value = False
             mock_crud.get_multi_by_account.return_value = [mock_approval_request]
 
             approval_requests.list_approval_requests(
@@ -214,6 +220,8 @@ class TestListApprovalRequests:
                 search=None,
                 skip=0,
                 limit=50,
+                now=ANY,
+                halt_cutoff=ANY,
             )
 
     def test_list_approval_requests_with_runtime_session_id_filter(
@@ -224,6 +232,7 @@ class TestListApprovalRequests:
         with patch(
             "preloop.api.endpoints.approval_requests.crud_approval_request"
         ) as mock_crud:
+            mock_crud.is_stale_pending.return_value = False
             mock_crud.get_multi_by_account.return_value = []
             approval_requests.list_approval_requests(
                 response=Response(),
@@ -245,6 +254,8 @@ class TestListApprovalRequests:
                 search=None,
                 skip=100,
                 limit=25,
+                now=ANY,
+                halt_cutoff=ANY,
             )
 
     def test_invalid_session_uuid_is_rejected_before_crud(
@@ -274,6 +285,7 @@ class TestListApprovalRequests:
         with patch(
             "preloop.api.endpoints.approval_requests.crud_approval_request"
         ) as mock_crud:
+            mock_crud.is_stale_pending.return_value = False
             mock_crud.get_multi_by_account.return_value = []
 
             result = approval_requests.list_approval_requests(
@@ -1443,8 +1455,23 @@ def test_pending_list_expires_past_deadline_rows(db_engine) -> None:
             )
             assert rows == []
             assert response.headers["X-Total-Count"] == "0"
+            # The read writes nothing; the periodic sweep stores the expiry.
             row = db.get(models.ApprovalRequest, request_id)
-            assert row.status == "expired"
-            assert row.resolved_at == expired_at
+            assert row.status == "pending"
+            expired = approval_requests.list_approval_requests(
+                response=Response(),
+                status="expired",
+                execution_id=None,
+                runtime_session_id=None,
+                tool_name=None,
+                q=None,
+                skip=0,
+                limit=50,
+                current_user=user,
+                db=db,
+            )
+            assert [item.id for item in expired] == [request_id]
+            assert expired[0].status == "expired"
+            assert expired[0].resolved_at == expired_at
     finally:
         TestDecideRequestsBatchAgainstPostgres._drop(db_engine, owner)

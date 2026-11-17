@@ -591,9 +591,53 @@ def create_flow(
     return flow
 
 
+def _page_viewable_flows(
+    db: Session,
+    current_user: User,
+    response: Response,
+    *,
+    skip: int,
+    limit: int,
+    lightweight: bool,
+) -> list[Any]:
+    """Return one page of the flows the caller may view, and set the total.
+
+    Visibility is decided per row by the authorizer, so it is applied to every
+    candidate before paging; otherwise a page could come back short while more
+    visible flows exist.
+
+    Args:
+        db: Database session.
+        current_user: Authenticated user.
+        response: Receives the ``X-Total-Count`` header.
+        skip: Number of visible flows to skip.
+        limit: Maximum number of flows to return.
+        lightweight: Load only the summary columns.
+
+    Returns:
+        The requested page of visible flows, in creation order.
+    """
+    visible = filter_viewable(
+        db,
+        current_user,
+        VISIBLE_FLOW,
+        crud_flow.get_multi(
+            db,
+            account_id=current_user.account_id,
+            skip=0,
+            limit=None,
+            include_shared=True,
+            lightweight=lightweight,
+        ),
+    )
+    response.headers["X-Total-Count"] = str(len(visible))
+    return visible[max(skip, 0) : max(skip, 0) + max(limit, 0)]
+
+
 @router.get("/flows", response_model=List[schemas.FlowResponse])
 @require_permission("view_flows")
 def read_flows(
+    response: Response,
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 100,
@@ -611,18 +655,13 @@ def read_flows(
     ] = None,
     current_user: User = Depends(get_current_active_user),
 ):
-    """Retrieve flows for the account."""
-    flows = filter_viewable(
-        db,
-        current_user,
-        VISIBLE_FLOW,
-        crud_flow.get_multi(
-            db,
-            account_id=current_user.account_id,
-            skip=skip,
-            limit=limit,
-            include_shared=True,
-        ),
+    """Retrieve flows for the account.
+
+    Visibility is applied before paging, so a page is short only at the end.
+    The ``X-Total-Count`` header carries how many flows the caller can see.
+    """
+    flows = _page_viewable_flows(
+        db, current_user, response, skip=skip, limit=limit, lightweight=False
     )
 
     _attach_flow_stats(db, flows, current_user=current_user, stats_since=stats_since)
@@ -632,6 +671,7 @@ def read_flows(
 @router.get("/flows/summary", response_model=List[FlowSummaryResponse])
 @require_permission("view_flows")
 def read_flow_summaries(
+    response: Response,
     db: Session = Depends(get_db),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
@@ -643,19 +683,11 @@ def read_flow_summaries(
 
     Name selectors can omit execution aggregates; lists that show run counts
     request them explicitly. The full ``/flows`` response stays unchanged.
+    Visibility is applied before paging and ``X-Total-Count`` carries how many
+    flows the caller can see.
     """
-    rows = filter_viewable(
-        db,
-        current_user,
-        VISIBLE_FLOW,
-        crud_flow.get_multi(
-            db,
-            account_id=current_user.account_id,
-            skip=skip,
-            limit=limit,
-            include_shared=True,
-            lightweight=True,
-        ),
+    rows = _page_viewable_flows(
+        db, current_user, response, skip=skip, limit=limit, lightweight=True
     )
     if include_stats:
         # The list prints the window's spend and tokens, never the lifetime

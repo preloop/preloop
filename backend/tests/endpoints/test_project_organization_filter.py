@@ -117,6 +117,7 @@ def search_issues(
             obj_in={
                 "title": f"Issue in {project.name}",
                 "external_id": str(index),
+                "key": f"ISSUE-{index}",
                 "project_id": project.id,
                 "tracker_id": test_tracker.id,
             },

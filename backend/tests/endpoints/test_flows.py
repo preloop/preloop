@@ -1,10 +1,11 @@
+from fastapi import Response
 import uuid
 from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException, Response
+from fastapi import HTTPException
 from pytest_mock import MockerFixture
 
 from preloop.api.endpoints import flows
@@ -92,7 +93,7 @@ async def test_read_flows(mock_account: Account, mocker: MockerFixture):
 
     # Act
     result = await maybe_await(
-        flows.read_flows(db=MagicMock(), current_user=mock_account)
+        flows.read_flows(response=Response(), db=MagicMock(), current_user=mock_account)
     )
 
     # Assert
@@ -101,8 +102,9 @@ async def test_read_flows(mock_account: Account, mocker: MockerFixture):
         mocker.ANY,
         account_id=mock_account.account_id,
         skip=0,
-        limit=100,
+        limit=None,
         include_shared=True,
+        lightweight=False,
     )
 
 

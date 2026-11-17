@@ -18,6 +18,7 @@ from preloop.models.crud.ci_principal import (
     stored_binding,
 )
 from preloop.models.crud.ci_subscription import crud_ci_subscription
+from preloop.models.models.webhook_endpoint import DELIVERY_KIND_GITHUB_DISPATCH
 from preloop.schemas.ci_administration import (
     CiAdminCapabilities,
     CiAdminCreate,
@@ -589,6 +590,44 @@ class CRUDCiAdministration:
             principal_id=principal_id,
             payload=receiver,
             dispatch=(payload.event_type, payload.token.get_secret_value()),
+        )
+
+    def list_dispatch_subscriptions(
+        self, db: Session, *, actor: models.User, principal_id: UUID
+    ) -> Sequence[models.WebhookEndpoint]:
+        """List one principal's GitHub dispatch subscriptions, newest first.
+
+        Args:
+            db: Database session.
+            actor: Human reader; needs the CI ``view`` operation.
+            principal_id: CI identity whose subscriptions are listed.
+
+        Returns:
+            The principal's dispatch endpoints within the actor's account.
+
+        Raises:
+            LookupError: The identity is unknown or owned by another account.
+            PermissionError: The actor may not view this identity.
+        """
+        principal = self._principal(
+            db, actor=actor, principal_id=principal_id, operation="view"
+        )
+        self._authorize(
+            db,
+            actor=actor,
+            operation="view",
+            grant=CiGrant.model_validate(principal.grant),
+            principal_id=principal.id,
+        )
+        return (
+            db.query(models.WebhookEndpoint)
+            .filter(
+                models.WebhookEndpoint.account_id == principal.account_id,
+                models.WebhookEndpoint.ci_principal_id == principal.id,
+                models.WebhookEndpoint.delivery_kind == DELIVERY_KIND_GITHUB_DISPATCH,
+            )
+            .order_by(models.WebhookEndpoint.created_at.desc())
+            .all()
         )
 
     def replace_dispatch_token(

@@ -14,7 +14,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -529,6 +529,7 @@ async def test_flow_summaries_mark_a_rejected_model(
 
     rows = await maybe_await(
         read_flow_summaries(
+            response=Response(),
             db=db_session,
             skip=0,
             limit=100,

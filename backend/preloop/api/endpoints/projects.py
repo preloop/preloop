@@ -5,7 +5,7 @@ import logging
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
@@ -211,13 +211,33 @@ def create_project(
 @router.get("/projects", response_model=List[ProjectResponse])
 @require_permission("view_projects")
 def list_projects(
+    response: Response,
     organization_id: Optional[str] = None,
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> List[dict]:
-    """List projects accessible to the current user, applying scope rules and optionally filtered by organization."""
+    """List projects accessible to the current user.
+
+    Scope rules and the optional organization filter are applied before
+    paging. The ``X-Total-Count`` header carries how many projects matched, so
+    a caller can tell whether more pages exist.
+
+    Args:
+        response: Carries the ``X-Total-Count`` header.
+        organization_id: Optional organization to filter by.
+        limit: Maximum number of projects to return.
+        offset: Number of matching projects to skip.
+        db: Database session.
+        current_user: Authenticated user.
+
+    Returns:
+        One page of project payloads, in a stable creation order.
+
+    Raises:
+        HTTPException: 404 when the organization is not in the account.
+    """
     # Use get_accessible_projects which applies TrackerScopeRule filtering
     accessible_projects = get_accessible_projects(
         db=db,
@@ -239,7 +259,9 @@ def list_projects(
             p for p in accessible_projects if p.organization_id == organization.id
         ]
 
-    # Apply pagination
+    # Page over a stable order so consecutive pages neither repeat nor skip.
+    accessible_projects.sort(key=lambda p: (p.created_at, str(p.id)))
+    response.headers["X-Total-Count"] = str(len(accessible_projects))
     paginated_projects = accessible_projects[offset : offset + limit]
 
     # Convert datetime objects to ISO format strings

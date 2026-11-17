@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- API lists no longer cut off silently. `GET /api/v1/projects`, `GET /api/v1/flows`
+  and `GET /api/v1/flows/summary` now send an `X-Total-Count` header with the
+  number of matching rows, like the approval and execution lists already do.
+  The flow lists apply visibility before paging, so a page is short only at
+  the end. The response bodies are unchanged.
+- Issue search compares the `organization_id` filter as a UUID, so an
+  organization filter (in any letter case) finds its issues. An unknown,
+  malformed or excluded organization or project filter returns no results
+  instead of widening the search, and never calls the embedding provider.
+- `GET /api/v1/ai-models/{id}/used-by` checks every agent of the account.
+  `truncated` is true only when more agents use the model than the response
+  lists.
+- `GET /api/v1/approval-requests` no longer writes on every read. A periodic
+  sweep marks requests past their deadline as expired; until it runs, the
+  list already shows them as expired and filters them that way.
+
+### Added
+
+- `GET /api/v1/event-webhooks/endpoints/{id}` reads one webhook endpoint
+  (without its signing secret) instead of returning 405.
+- `GET /api/v1/ci-identities/{id}/github-dispatch-subscriptions` lists a CI
+  identity's GitHub dispatch subscriptions, without tokens or secrets.
+
 ### Changed
 
 - Policies: the CLI now resolves variable references; the server no longer does.

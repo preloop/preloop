@@ -249,6 +249,70 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
             .all()
         )
 
+    def stale_pending_cutoff(
+        self, db: Session, *, account_id: Union[UUID, str]
+    ) -> Optional[datetime]:
+        """Return the halt time that freezes pending deadlines, if any.
+
+        A pending request whose deadline passed counts as expired, except when
+        a tools halt was active before that deadline: the halt froze it. This
+        mirrors the rule ``expire_stale_pending`` applies when it writes.
+
+        Args:
+            db: Database session.
+            account_id: Account whose tools halt is checked.
+
+        Returns:
+            The naive UTC activation time of an active tools halt, or None.
+        """
+        from .account_halt import crud_account_halt
+
+        halted = crud_account_halt.get_for_scope(
+            db, account_id=account_id, scope="tools"
+        )
+        if halted is None or not halted.is_active:
+            return None
+        return halted.activated_at.replace(tzinfo=None)
+
+    def _stale_pending(self, now: datetime, halt_cutoff: Optional[datetime]) -> Any:
+        """SQL predicate for pending rows the expiry sweep would expire."""
+        clause = and_(
+            self.model.status == "pending",
+            self.model.expires_at <= now,
+            # Desktop control requests expire through the approvals service.
+            self.model.tool_name != "desktop_control",
+        )
+        if halt_cutoff is not None:
+            clause = and_(clause, self.model.expires_at < halt_cutoff)
+        return clause
+
+    def is_stale_pending(
+        self,
+        row: ApprovalRequest,
+        *,
+        now: datetime,
+        halt_cutoff: Optional[datetime],
+    ) -> bool:
+        """Whether a loaded row is pending past a deadline the sweep would expire.
+
+        Args:
+            row: Loaded approval request.
+            now: Naive UTC reference time.
+            halt_cutoff: Result of :meth:`stale_pending_cutoff`.
+
+        Returns:
+            True when a read should present the row as expired.
+        """
+        expires_at = row.expires_at
+        if row.status != "pending" or expires_at is None:
+            return False
+        if row.tool_name == "desktop_control":
+            return False
+        expires_at = expires_at.replace(tzinfo=None)
+        if expires_at > now:
+            return False
+        return halt_cutoff is None or expires_at < halt_cutoff
+
     def _account_query(
         self,
         db: Session,
@@ -259,8 +323,15 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         runtime_session_id: Optional[Union[UUID, str]] = None,
         tool_name: Optional[str] = None,
         search: Optional[str] = None,
+        now: Optional[datetime] = None,
+        halt_cutoff: Optional[datetime] = None,
     ) -> "Query[ApprovalRequest]":
-        """The account's requests with the list filters applied, unordered."""
+        """The account's requests with the list filters applied, unordered.
+
+        When ``now`` is given, a status filter uses the effective status: a
+        pending request past its deadline matches ``expired``, not
+        ``pending``, before the periodic sweep has written it.
+        """
         query = db.query(self.model).filter(self.model.account_id == account_id)
 
         if execution_id:
@@ -271,7 +342,13 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
                 self.model.runtime_session_id == str(runtime_session_id)
             )
 
-        if status:
+        if status and now is not None and status in ("pending", "expired"):
+            stale = self._stale_pending(now, halt_cutoff)
+            if status == "pending":
+                query = query.filter(self.model.status == "pending", ~stale)
+            else:
+                query = query.filter(or_(self.model.status == "expired", stale))
+        elif status:
             query = query.filter(self.model.status == status)
 
         if tool_name:
@@ -305,6 +382,8 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         search: Optional[str] = None,
         skip: int = 0,
         limit: int = 100,
+        now: Optional[datetime] = None,
+        halt_cutoff: Optional[datetime] = None,
     ) -> list[ApprovalRequest]:
         """Get approval requests for an account with optional filters.
 
@@ -317,7 +396,8 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
 
         Expiry is handled by explicit sweep callers via ``expire_stale_pending``;
         keeping this method read-only avoids hidden UPDATE+COMMIT work on list
-        endpoints.
+        endpoints. Pass ``now`` (and ``halt_cutoff``) so a status filter
+        treats unswept stale requests as expired.
         """
         query = self._account_query(
             db,
@@ -327,6 +407,8 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
             runtime_session_id=runtime_session_id,
             tool_name=tool_name,
             search=search,
+            now=now,
+            halt_cutoff=halt_cutoff,
         )
         return (
             query.order_by(self.model.requested_at.desc(), self.model.id.desc())
@@ -345,6 +427,8 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         runtime_session_id: Optional[Union[UUID, str]] = None,
         tool_name: Optional[str] = None,
         search: Optional[str] = None,
+        now: Optional[datetime] = None,
+        halt_cutoff: Optional[datetime] = None,
     ) -> int:
         """How many rows ``get_multi_by_account`` pages over, same filters."""
         query = self._account_query(
@@ -355,6 +439,8 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
             runtime_session_id=runtime_session_id,
             tool_name=tool_name,
             search=search,
+            now=now,
+            halt_cutoff=halt_cutoff,
         )
         return int(
             query.with_entities(func.count(self.model.id)).order_by(None).scalar() or 0

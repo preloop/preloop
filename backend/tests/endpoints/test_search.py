@@ -174,7 +174,7 @@ class TestPerformSearch:
         mock_user.account_id = uuid4()
 
         # Mock accessible projects
-        mock_get_accessible.return_value = []
+        mock_get_accessible.return_value = [MagicMock(id=uuid4())]
 
         # Mock no active embedding model
         mock_crud_embed_model.get_active.return_value = []
@@ -209,7 +209,7 @@ class TestPerformSearch:
         mock_user.account_id = uuid4()
 
         # Mock accessible projects
-        mock_get_accessible.return_value = []
+        mock_get_accessible.return_value = [MagicMock(id=uuid4())]
 
         # Mock active embedding model
         mock_model = MagicMock()
@@ -512,7 +512,10 @@ class TestPerformSearchRateLimit:
     """Transient 429 handling for generic similarity search (#269)."""
 
     @pytest.mark.asyncio
-    @patch("preloop.api.endpoints.search.get_accessible_projects", return_value=[])
+    @patch(
+        "preloop.api.endpoints.search.get_accessible_projects",
+        return_value=[MagicMock(id=uuid4())],
+    )
     @patch("preloop.api.endpoints.search.crud_issue_embedding")
     @patch("preloop.api.endpoints.search.crud_embedding_model")
     async def test_similarity_search_embedding_429_is_retried(
@@ -549,7 +552,10 @@ class TestPerformSearchRateLimit:
         assert mock_crud_issue_embed._generate_embedding_vector.call_count == 2
 
     @pytest.mark.asyncio
-    @patch("preloop.api.endpoints.search.get_accessible_projects", return_value=[])
+    @patch(
+        "preloop.api.endpoints.search.get_accessible_projects",
+        return_value=[MagicMock(id=uuid4())],
+    )
     @patch("preloop.api.endpoints.search.crud_issue_embedding")
     @patch("preloop.api.endpoints.search.crud_embedding_model")
     async def test_similarity_search_embedding_429_surfaces_retry_after(

@@ -225,7 +225,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
         db: Session,
         *,
         skip: int = 0,
-        limit: int = 100,
+        limit: Optional[int] = 100,
         account_id: Optional[str] = None,
         include_shared: bool = False,
         lightweight: bool = False,
@@ -235,6 +235,8 @@ class CRUDFlow(CRUDBase[models.Flow]):
 
         ``include_shared`` adds flows another account shares with
         ``account_id`` (account hook H3); only the flows list asks for them.
+        ``limit=None`` returns every matching row, for callers that must
+        filter visibility before paging.
         """
         query = self._query_with_ai_model(db)
         if lightweight:
@@ -297,6 +299,8 @@ class CRUDFlow(CRUDBase[models.Flow]):
         for key, value in filters.items():
             if hasattr(self.model, key):
                 query = query.filter(getattr(self.model, key) == value)
+        # A stable order keeps consecutive pages from repeating or skipping rows.
+        query = query.order_by(self.model.created_at, self.model.id)
         return query.offset(skip).limit(limit).all()
 
     def get_by_account(

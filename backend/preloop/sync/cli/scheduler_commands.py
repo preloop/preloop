@@ -71,6 +71,10 @@ SPEND_OUTLIER_SESSION_CHECK_MINUTES = 15
 DATA_BACKFILL_INTERVAL_MINUTES = 15
 
 
+#: How often stale pending approval requests are written as expired.
+APPROVAL_EXPIRY_INTERVAL_SECONDS = 30
+
+
 def shutdown_scheduler():
     """Function to shut down the scheduler."""
     global scheduler
@@ -278,6 +282,23 @@ async def run_scheduler_async(
         trigger=IntervalTrigger(seconds=30),
         id="security_maintenance_reconciliation",
         replace_existing=True,
+        misfire_grace_time=30,
+    )
+
+    # Approval expiry runs here rather than on the approval list read, which
+    # clients poll; the read projects stale requests as expired meanwhile.
+    async def _publish_approval_expiry() -> None:
+        try:
+            await event_bus_service.publish_task("expire_stale_approvals")
+        except Exception:
+            logger.error("Failed to publish approval expiry sweep")
+
+    scheduler.add_job(
+        _publish_approval_expiry,
+        trigger=IntervalTrigger(seconds=APPROVAL_EXPIRY_INTERVAL_SECONDS),
+        id="approval_expiry_sweep",
+        replace_existing=True,
+        max_instances=1,
         misfire_grace_time=30,
     )
 

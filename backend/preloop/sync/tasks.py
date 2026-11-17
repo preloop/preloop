@@ -46,6 +46,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "reconcile_flow_feedback",
     "refresh_pull_request_records",
     "reconcile_security_maintenance",
+    "expire_stale_approvals",
     "run_data_backfills",
     "evaluate_spend_outliers",
     "evaluate_spend_outlier_sessions",
@@ -976,6 +977,24 @@ async def run_data_backfills() -> list[dict[str, object]]:
             }
             for result in results
         ]
+    finally:
+        db.close()
+
+
+async def expire_stale_approvals() -> int:
+    """Mark pending approval requests past their deadline as expired.
+
+    The approval list read presents such requests as expired without writing;
+    this sweep makes the stored status match and releases runtime waits.
+
+    Returns:
+        The number of requests expired by this pass.
+    """
+    from preloop.models.crud import crud_approval_request
+
+    db = next(get_db_session())
+    try:
+        return crud_approval_request.expire_stale_pending(db)
     finally:
         db.close()
 

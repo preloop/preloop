@@ -14,6 +14,8 @@ last 30d" heading. ``stats_since`` answers both from the same window.
 
 from __future__ import annotations
 
+from fastapi import Response
+
 from datetime import UTC, datetime, timedelta
 import json
 
@@ -295,7 +297,12 @@ async def test_flow_stats_window_answers_runs_failed_and_cost(db_session, test_u
 
     since = now - timedelta(days=30)
     result = await maybe_await(
-        flows.read_flows(db=db_session, stats_since=since, current_user=test_user)
+        flows.read_flows(
+            response=Response(),
+            db=db_session,
+            stats_since=since,
+            current_user=test_user,
+        )
     )
     stats = {
         str(item.id): item.execution_stats
@@ -328,7 +335,12 @@ async def test_flow_stats_window_failed_counts_terminal_failures(db_session, tes
 
     since = datetime.now(UTC) - timedelta(days=30)
     result = await maybe_await(
-        flows.read_flows(db=db_session, stats_since=since, current_user=test_user)
+        flows.read_flows(
+            response=Response(),
+            db=db_session,
+            stats_since=since,
+            current_user=test_user,
+        )
     )
     stats = {
         str(item.id): item.execution_stats
@@ -371,7 +383,12 @@ async def test_flow_stats_window_cost_follows_execution_start_time(
 
     since = now - timedelta(days=30)
     result = await maybe_await(
-        flows.read_flows(db=db_session, stats_since=since, current_user=test_user)
+        flows.read_flows(
+            response=Response(),
+            db=db_session,
+            stats_since=since,
+            current_user=test_user,
+        )
     )
     stats = {
         str(item.id): item.execution_stats
@@ -392,7 +409,9 @@ async def test_flow_stats_without_a_window_are_unchanged(db_session, test_user):
         db_session, FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
     )
 
-    result = await maybe_await(flows.read_flows(db=db_session, current_user=test_user))
+    result = await maybe_await(
+        flows.read_flows(response=Response(), db=db_session, current_user=test_user)
+    )
     stats = {
         str(item.id): item.execution_stats
         for item in result
@@ -457,7 +476,12 @@ async def test_flow_stats_window_carries_token_split_beside_cost(db_session, tes
 
     since = now - timedelta(days=30)
     result = await maybe_await(
-        flows.read_flows(db=db_session, stats_since=since, current_user=test_user)
+        flows.read_flows(
+            response=Response(),
+            db=db_session,
+            stats_since=since,
+            current_user=test_user,
+        )
     )
     stats = {
         str(item.id): item.execution_stats
@@ -483,7 +507,12 @@ async def test_flow_stats_window_without_runs_has_null_token_usage(
 
     since = datetime.now(UTC) + timedelta(days=1)
     result = await maybe_await(
-        flows.read_flows(db=db_session, stats_since=since, current_user=test_user)
+        flows.read_flows(
+            response=Response(),
+            db=db_session,
+            stats_since=since,
+            current_user=test_user,
+        )
     )
     stats = [item.execution_stats for item in result][0]
 
@@ -522,7 +551,9 @@ async def test_flow_stats_without_a_window_carry_lifetime_tokens(db_session, tes
         estimated_cost=0.04,
     )
 
-    result = await maybe_await(flows.read_flows(db=db_session, current_user=test_user))
+    result = await maybe_await(
+        flows.read_flows(response=Response(), db=db_session, current_user=test_user)
+    )
     stats = {
         str(item.id): item.execution_stats
         for item in result

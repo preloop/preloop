@@ -1026,6 +1026,32 @@ def _usage_aggregate_for_principal(
 class CRUDManagedAgent(CRUDBase[ManagedAgent]):
     """CRUD helpers for account-scoped managed-agent registry entries."""
 
+    def list_batch_after(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        after_id: Optional[UUID] = None,
+        limit: int = 1000,
+    ) -> list[ManagedAgent]:
+        """Return one batch of the account's agents ordered by id.
+
+        Keyset pagination over ``id`` lets a caller scan every agent of a
+        large account in stable batches.
+
+        Args:
+            db: Database session.
+            account_id: Account whose agents are read.
+            after_id: Last id of the previous batch, or None for the first.
+            limit: Maximum batch size.
+
+        Returns:
+            Up to ``limit`` agents with ids greater than ``after_id``.
+        """
+        query = self._scope_to_account(db.query(ManagedAgent), account_id)
+        if after_id is not None:
+            query = query.filter(ManagedAgent.id > after_id)
+        return query.order_by(ManagedAgent.id).limit(limit).all()
     def governed_owner_ids(
         self,
         db: Session,
@@ -1690,10 +1716,13 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         status: str = "all",
         tags: Optional[dict[str, str]] = None,
         owner_username: Optional[str] = None,
-        limit: int = 20,
+        limit: Optional[int] = 20,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """List managed agents with runtime-session and gateway usage summary."""
+        """List managed agents with runtime-session and gateway usage summary.
+
+        ``limit=None`` returns every matching agent, in the same stable order.
+        """
         base_query = (
             db.query(self.model)
             .outerjoin(

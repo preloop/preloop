@@ -276,6 +276,41 @@ def create_subscription(
     return _call(create)
 
 
+@router.get(
+    "/{principal_id}/github-dispatch-subscriptions",
+    response_model=list[WebhookEndpointRead],
+)
+def list_github_dispatch_subscriptions(
+    principal_id: UUID,
+    response: Response,
+    actor: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> list[WebhookEndpointRead]:
+    """List this identity's GitHub repository_dispatch subscriptions.
+
+    Neither the signing secret nor the GitHub token is ever returned; only
+    whether a dispatch credential is configured.
+
+    Args:
+        principal_id: CI identity whose subscriptions are listed.
+        response: Response used to set the ``X-Total-Count`` header.
+        actor: Authenticated human user.
+        db: Database session.
+
+    Returns:
+        Safe projections of the identity's dispatch subscriptions.
+    """
+    from preloop.api.endpoints.event_webhooks import _to_read
+
+    rows = _call(
+        lambda: crud.crud_ci_administration.list_dispatch_subscriptions(
+            db, actor=actor, principal_id=principal_id
+        )
+    )
+    response.headers["X-Total-Count"] = str(len(rows))
+    return [_to_read(row) for row in rows]
+
+
 @router.post(
     "/{principal_id}/github-dispatch-subscriptions",
     response_model=WebhookEndpointCreated,
