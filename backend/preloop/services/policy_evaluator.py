@@ -24,6 +24,8 @@ from preloop.models.crud.approval_workflow import (
 )
 from preloop.models.crud.tool_access_rule import get_multi_by_config_async
 from preloop.models.crud.tool_configuration import (
+    get_tool_config_for_route,
+    get_tool_config_for_route_async,
     get_tool_config_by_id_async,
     get_tool_config_by_tool_name_async,
 )
@@ -142,8 +144,9 @@ class PolicyDecision(tuple):
         rule_context: JSON-serialisable snapshot of the rule that produced a
             ``require_approval`` decision, or None when nothing gated the call
             (allow/deny) or no rule identity exists.
-        source: Why this decision was produced (``tool_access_rule``,
-            ``subject_scoped_rule``, ``rule_evaluation_error``, ...). Set
+        matched: Whether a rule or an existing explicit gate decided this call.
+        source: Why this decision was produced (``rule``, ``scoped_rule``,
+            ``unknown_tools_default``, ``no_configuration``, ...). Set
             whenever a rule wins, including allow and deny, so callers do
             not have to read ``rule_context``.
         stored_source: For a scoped rule, the rule dict's own ``source``
@@ -161,6 +164,7 @@ class PolicyDecision(tuple):
         rule_context: Optional[Dict[str, Any]] = None,
         *,
         source: Optional[str] = None,
+        matched: bool = True,
         stored_source: Optional[str] = None,
     ) -> "PolicyDecision":
         """Build the 3-tuple and attach the rule context."""
@@ -171,7 +175,11 @@ class PolicyDecision(tuple):
         if source is None and isinstance(rule_context, dict):
             raw_source = rule_context.get("source")
             source = raw_source if isinstance(raw_source, str) else None
-        decision.source = source
+        decision.source = {
+            SOURCE_TOOL_ACCESS_RULE: "rule",
+            SOURCE_SUBJECT_SCOPED_RULE: "scoped_rule",
+        }.get(source, source) or ("rule" if matched else "no_configuration")
+        decision.matched = matched
         decision.stored_source = stored_source
         return decision
 
@@ -714,19 +722,7 @@ def _evaluate_loaded_access_rules(
                     tool_configuration_id=tool_config.id,
                 ),
             )
-        if record:
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="allow",
-                rule_description="No access rules defined",
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-                correlation_id=correlation_id,
-                extra_details=extra_details,
-            )
-        return PolicyDecision("allow", None, "No access rules defined")
+        return PolicyDecision("allow", None, "No access rules defined", matched=False)
 
     for index, rule in enumerate(rules):
         try:
@@ -853,19 +849,69 @@ def _evaluate_loaded_access_rules(
                 ),
             )
 
-    if record:
-        _log_policy_decision_async(
-            account_id=account_id,
-            tool_name=tool_name,
-            action="allow",
-            rule_description="No rules matched (default allow)",
-            tool_args=tool_args,
-            user_id=user_id,
-            execution_id=execution_id,
-            correlation_id=correlation_id,
-            extra_details=extra_details,
+    return PolicyDecision(
+        "allow", None, "No rules matched (default allow)", matched=False
+    )
+
+
+def _unmatched_policy_decision(
+    *,
+    account_meta: dict[str, Any],
+    tool_source: Optional[str],
+    tool_config: Any,
+    decision: PolicyDecision,
+    workflow: Any = None,
+) -> PolicyDecision:
+    """Apply account defaults only to MCP tools that no rule decided."""
+    from preloop.services.policy.defaults import (
+        POLICY_DEFAULTS_META_KEY,
+        parse_defaults,
+    )
+
+    if tool_source is None and tool_config is not None:
+        tool_source = getattr(tool_config, "tool_source", None)
+    if tool_source != "mcp":
+        return decision
+    defaults = parse_defaults(account_meta.get(POLICY_DEFAULTS_META_KEY))
+    action = defaults.unknown_tools
+    workflow_id = workflow.id if workflow is not None else None
+    if action == "require_approval" and workflow_id is None:
+        return PolicyDecision(
+            "deny",
+            None,
+            "defaults.default_approval_workflow is unavailable (failing closed)",
+            matched=False,
+            source="unknown_tools_default",
         )
-    return PolicyDecision("allow", None, "No rules matched (default allow)")
+    return PolicyDecision(
+        action,
+        workflow_id if action == "require_approval" else None,
+        f"No rule matched; defaults.unknown_tools={action}",
+        build_rule_context(source="unknown_tools_default", decision=action)
+        if action == "require_approval"
+        else None,
+        matched=False,
+        source="unknown_tools_default",
+    )
+
+
+def _defaults_workflow(
+    db: Session, account_id: Any, account_meta: dict[str, Any]
+) -> Any:
+    """Resolve the configured workflow by name in this account only."""
+    from preloop.services.policy.defaults import (
+        POLICY_DEFAULTS_META_KEY,
+        parse_defaults,
+    )
+
+    defaults = parse_defaults(account_meta.get(POLICY_DEFAULTS_META_KEY))
+    if not defaults.default_approval_workflow:
+        return None
+    return crud_approval_workflow.get_by_name(
+        db,
+        account_id=str(account_id),
+        name=defaults.default_approval_workflow,
+    )
 
 
 def _account_authorizer_denial(
@@ -950,6 +996,9 @@ def evaluate_policy(
     extra_bindings: Optional[Dict[str, Any]] = None,
     record: bool = True,
     trace: Optional[list[dict[str, Any]]] = None,
+    tool_source: Optional[str] = None,
+    mcp_server_id: Optional[uuid.UUID] = None,
+    server_label: Optional[str] = None,
 ) -> PolicyDecision:
     """Evaluate tool access policy and determine the action to take.
 
@@ -990,7 +1039,7 @@ def evaluate_policy(
     writes: list[Callable[[Session], None]] = []
     audit_token = _policy_audit_writes.set(writes)
     scope_token = _policy_storage_scope.set(
-        _storage_scope_identity(subject_context, server_name)
+        _storage_scope_identity(subject_context, server_name or server_label)
     )
     try:
         denial = _account_authorizer_denial(
@@ -1035,6 +1084,14 @@ def evaluate_policy(
         if tool_configuration_id:
             tool_config = crud_tool_configuration.get(
                 db, id=tool_configuration_id, account_id=account_id
+            )
+        elif tool_source is not None:
+            tool_config = get_tool_config_for_route(
+                db,
+                account_id=account_id,
+                tool_name=tool_name,
+                tool_source=tool_source,
+                mcp_server_id=mcp_server_id,
             )
         elif resolve_tool_configuration:
             tool_config = crud_tool_configuration.get_by_tool_name(
@@ -1098,56 +1155,100 @@ def evaluate_policy(
             return scoped_decision
 
         if scoped_rules:
-            if record:
-                _log_policy_decision_async(
-                    account_id=account_id,
-                    tool_name=tool_name,
-                    action="allow",
-                    rule_description="No scoped rules matched (default allow for subject)",
-                    tool_args=tool_args,
-                    user_id=user_id,
-                    execution_id=execution_id,
-                )
-            return PolicyDecision(
-                "allow", None, "No scoped rules matched (default allow for subject)"
+            decision = PolicyDecision(
+                "allow",
+                None,
+                "No scoped rules matched (default allow for subject)",
+                matched=False,
+            )
+        elif not tool_config:
+            decision = PolicyDecision(
+                "allow",
+                None,
+                "No tool configuration found",
+                matched=False,
+            )
+        else:
+            # Load all access rules for this tool, ordered by priority (lower first)
+            rules = crud_tool_access_rule.get_multi_by_config(
+                db,
+                config_id=tool_config.id,
+                account_id=account_id,
+                enabled_only=True,
             )
 
-        if not tool_config:
-            # No configuration found, default allow
-            # Log the policy decision (fire-and-forget)
-            if record:
-                _log_policy_decision_async(
-                    account_id=account_id,
-                    tool_name=tool_name,
-                    action="allow",
-                    rule_description="No tool configuration found",
-                    tool_args=tool_args,
-                    user_id=user_id,
-                    execution_id=execution_id,
-                )
-            return PolicyDecision("allow", None, "No tool configuration found")
+            decision = _evaluate_loaded_access_rules(
+                record=record,
+                trace=trace,
+                rules=rules,
+                tool_config=tool_config,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                context=context,
+                account_id=account_id,
+                user_id=user_id,
+                execution_id=execution_id,
+                default_workflow_id_for_account=default_workflow_id_for_account,
+            )
 
-        # Load all access rules for this tool, ordered by priority (lower first)
-        rules = crud_tool_access_rule.get_multi_by_config(
-            db,
-            config_id=tool_config.id,
-            account_id=account_id,
-            enabled_only=True,
+        if decision.matched:
+            return decision
+        effective_source = tool_source or (subject_context or {}).get("tool_source")
+        if effective_source is None and tool_config is not None:
+            effective_source = getattr(tool_config, "tool_source", None)
+        workflow = (
+            _defaults_workflow(db, account_id, account_meta)
+            if effective_source == "mcp"
+            else None
+        )
+        from preloop.services.policy.defaults import (
+            POLICY_DEFAULTS_META_KEY,
+            parse_defaults,
         )
 
-        return _evaluate_loaded_access_rules(
-            record=record,
-            trace=trace,
-            rules=rules,
-            tool_config=tool_config,
-            tool_name=tool_name,
-            tool_args=tool_args,
-            context=context,
-            account_id=account_id,
-            user_id=user_id,
-            execution_id=execution_id,
-            default_workflow_id_for_account=default_workflow_id_for_account,
+        defaults = (
+            parse_defaults(account_meta.get(POLICY_DEFAULTS_META_KEY))
+            if effective_source == "mcp"
+            else None
         )
+        if defaults is not None and defaults.require_approval_for_new_tools:
+            from preloop.services.tool_registry import observe_sync
+
+            decision = observe_sync(
+                db=db,
+                account_id=account_id,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                server_id=mcp_server_id or getattr(tool_config, "mcp_server_id", None),
+                server_label=server_label,
+                server_name=server_name,
+                workflow=workflow,
+                user_id=user_id,
+                subject_context=subject_context,
+                execution_id=execution_id,
+                record=record,
+            )
+        else:
+            decision = _unmatched_policy_decision(
+                account_meta=account_meta,
+                tool_source=effective_source,
+                tool_config=tool_config,
+                decision=decision,
+                workflow=workflow,
+            )
+
+        if record:
+            _log_policy_decision_async(
+                account_id=account_id,
+                tool_name=tool_name,
+                action=decision.action,
+                rule_description=decision.rule_description,
+                tool_args=tool_args,
+                user_id=user_id,
+                execution_id=execution_id,
+                extra_details={"source": decision.source},
+            )
+        return decision
 
     finally:
         _policy_storage_scope.reset(scope_token)
@@ -1644,6 +1745,9 @@ async def evaluate_policy_async(
     record: bool = True,
     trace: Optional[list[dict[str, Any]]] = None,
     defer_note_scope: bool = False,
+    tool_source: Optional[str] = None,
+    mcp_server_id: Optional[uuid.UUID] = None,
+    server_label: Optional[str] = None,
 ) -> PolicyDecision:
     """Async version of evaluate_policy.
 
@@ -1654,7 +1758,7 @@ async def evaluate_policy_async(
     writes: list[Callable[[Session], None]] = []
     audit_token = _policy_audit_writes.set(writes)
     scope_token = _policy_storage_scope.set(
-        _storage_scope_identity(subject_context, server_name)
+        _storage_scope_identity(subject_context, server_name or server_label)
     )
     try:
         denial = _account_authorizer_denial(
@@ -1710,6 +1814,14 @@ async def evaluate_policy_async(
         if tool_configuration_id:
             tool_config = await get_tool_config_by_id_async(
                 db, id=tool_configuration_id, account_id=account_id
+            )
+        elif tool_source is not None:
+            tool_config = await get_tool_config_for_route_async(
+                db,
+                account_id=account_id,
+                tool_name=tool_name,
+                tool_source=tool_source,
+                mcp_server_id=mcp_server_id,
             )
         elif resolve_tool_configuration:
             tool_config = await get_tool_config_by_tool_name_async(
@@ -1778,61 +1890,104 @@ async def evaluate_policy_async(
             return scoped_decision
 
         if scoped_rules:
-            if record:
-                _log_policy_decision_async(
-                    account_id=account_id,
-                    tool_name=tool_name,
-                    action="allow",
-                    rule_description="No scoped rules matched (default allow for subject)",
-                    tool_args=tool_args,
-                    user_id=user_id,
-                    execution_id=execution_id,
-                    correlation_id=correlation_id,
-                    extra_details=extra_details,
-                )
-            return PolicyDecision(
-                "allow", None, "No scoped rules matched (default allow for subject)"
+            decision = PolicyDecision(
+                "allow",
+                None,
+                "No scoped rules matched (default allow for subject)",
+                matched=False,
+            )
+        elif not tool_config:
+            decision = PolicyDecision(
+                "allow",
+                None,
+                "No tool configuration found",
+                matched=False,
+            )
+        else:
+            # Load all access rules for this tool, ordered by priority (lower first)
+            rules = await get_multi_by_config_async(
+                db,
+                config_id=tool_config.id,
+                account_id=account_id,
+                enabled_only=True,
             )
 
-        if not tool_config:
-            # Log the policy decision (fire-and-forget)
-            if record:
-                _log_policy_decision_async(
-                    account_id=account_id,
-                    tool_name=tool_name,
-                    action="allow",
-                    rule_description="No tool configuration found",
-                    tool_args=tool_args,
-                    user_id=user_id,
-                    execution_id=execution_id,
-                    correlation_id=correlation_id,
-                    extra_details=extra_details,
-                )
-            return PolicyDecision("allow", None, "No tool configuration found")
+            decision = _evaluate_loaded_access_rules(
+                record=record,
+                trace=trace,
+                rules=rules,
+                tool_config=tool_config,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                context=context,
+                account_id=account_id,
+                user_id=user_id,
+                execution_id=execution_id,
+                default_workflow_id_for_account=default_workflow_id_for_account,
+                correlation_id=correlation_id,
+                extra_details=extra_details,
+            )
 
-        # Load all access rules for this tool, ordered by priority (lower first)
-        rules = await get_multi_by_config_async(
-            db,
-            config_id=tool_config.id,
-            account_id=account_id,
-            enabled_only=True,
+        if decision.matched:
+            return decision
+        effective_source = tool_source or (subject_context or {}).get("tool_source")
+        if effective_source is None and tool_config is not None:
+            effective_source = getattr(tool_config, "tool_source", None)
+        workflow = (
+            await db.run_sync(_defaults_workflow, account_id, account_meta_data)
+            if effective_source == "mcp"
+            else None
+        )
+        from preloop.services.policy.defaults import (
+            POLICY_DEFAULTS_META_KEY,
+            parse_defaults,
         )
 
-        return _evaluate_loaded_access_rules(
-            record=record,
-            trace=trace,
-            rules=rules,
-            tool_config=tool_config,
-            tool_name=tool_name,
-            tool_args=tool_args,
-            context=context,
-            account_id=account_id,
-            user_id=user_id,
-            execution_id=execution_id,
-            default_workflow_id_for_account=default_workflow_id_for_account,
-            correlation_id=correlation_id,
-            extra_details=extra_details,
+        defaults = (
+            parse_defaults(account_meta_data.get(POLICY_DEFAULTS_META_KEY))
+            if effective_source == "mcp"
+            else None
         )
+        if defaults is not None and defaults.require_approval_for_new_tools:
+            from preloop.services.tool_registry import observe
+
+            decision = await observe(
+                db=db,
+                account_id=account_id,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                server_id=mcp_server_id or getattr(tool_config, "mcp_server_id", None),
+                server_label=server_label,
+                server_name=server_name,
+                workflow=workflow,
+                user_id=user_id,
+                subject_context=subject_context,
+                execution_id=execution_id,
+                record=record,
+            )
+        else:
+            decision = _unmatched_policy_decision(
+                account_meta=account_meta_data,
+                tool_source=effective_source,
+                tool_config=tool_config,
+                decision=decision,
+                workflow=workflow,
+            )
+
+        if record:
+            _log_policy_decision_async(
+                account_id=account_id,
+                tool_name=tool_name,
+                action=decision.action,
+                rule_description=decision.rule_description,
+                tool_args=tool_args,
+                user_id=user_id,
+                execution_id=execution_id,
+                correlation_id=correlation_id,
+                extra_details={**(extra_details or {}), "source": decision.source},
+            )
+        return decision
+
     finally:
         _policy_storage_scope.reset(scope_token)
         _policy_audit_writes.reset(audit_token)

@@ -1008,29 +1008,179 @@ describe('FlowView all-of labels filter', () => {
 });
 
 describe('FlowView webhook URL', () => {
-  it('names the read-only webhook URL field', async () => {
-    const element = document.createElement('flow-view') as any;
-    element.flowReady = true;
-    element.isNew = false;
-    element.isEditing = false;
-    element.initialized = true;
-    element.flowId = 'flow-1';
-    element.flow = {
-      id: 'flow-1',
-      name: 'Inbound hook',
-      agent_type: 'codex',
-      trigger_event_source: 'webhook',
-      webhook_config: { webhook_secret: 'example-secret' },
-    };
+  let element: any;
+  let fetchStub: sinon.SinonStub;
+  let toastStub: sinon.SinonStub;
+
+  beforeEach(async () => {
+    toastStub = sinon
+      .stub(customElements.get('sl-alert')!.prototype, 'toast')
+      .resolves();
+    localStorage.setItem('accessToken', 'test-token');
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        if (input.toString().endsWith('/webhook-secret/rotate')) {
+          return new Response(
+            JSON.stringify({
+              webhook_secret: 'new-example-secret',
+              webhook_secret_hint: 'cret',
+              webhook_secret_set: true,
+              webhook_secret_rotated_at: '2026-11-16T12:00:00Z',
+              execution_stats: null,
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response('{}', { status: 200 });
+      });
+    element = document.createElement('flow-view') as any;
+    Object.assign(element, {
+      flowReady: true,
+      isNew: false,
+      isEditing: false,
+      initialized: true,
+      flowId: 'flow-1',
+      canEditFlows: true,
+      flow: {
+        id: 'flow-1',
+        name: 'Inbound hook',
+        agent_type: 'codex',
+        trigger_event_source: 'webhook',
+        webhook_secret_set: true,
+        webhook_secret_hint: 'abcd',
+        webhook_config: {},
+        execution_stats: { total_execs: 7 },
+      },
+    });
     document.body.appendChild(element);
-    try {
-      await element.updateComplete;
-      const input = element.shadowRoot.querySelector('sl-input[readonly]');
-      expect(input?.getAttribute('label')).to.equal('Webhook URL');
-    } finally {
-      element.remove();
-    }
+    await element.updateComplete;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    element.canEditFlows = true;
+    await element.updateComplete;
   });
+
+  afterEach(() => {
+    element.remove();
+    localStorage.clear();
+    fetchStub.restore();
+    toastStub.restore();
+    document.querySelector('confirm-dialog')?.remove();
+    document.querySelectorAll('sl-alert').forEach((alert) => alert.remove());
+  });
+
+  it('keeps a URL template and status visible to editors without a read secret', () => {
+    const input = element.shadowRoot.querySelector(
+      'sl-input[label="Webhook URL"]'
+    );
+    expect(input?.value).to.contain('/flow-1/{webhook_secret}');
+    expect(element.shadowRoot.textContent).to.contain('abcd');
+    expect(element.shadowRoot.querySelector('[data-rotate-webhook-secret]')).to
+      .exist;
+  });
+
+  it('hides the URL and rotation action from readers', async () => {
+    element.canEditFlows = false;
+    await element.updateComplete;
+    expect(element.shadowRoot.querySelector('[data-rotate-webhook-secret]')).not
+      .to.exist;
+    expect(element.shadowRoot.querySelector('sl-input[label="Webhook URL"]'))
+      .not.to.exist;
+  });
+
+  it('cancels rotation without sending a request', async () => {
+    const pending = element.rotateWebhookSecret();
+    const dialog = document.querySelector('confirm-dialog') as any;
+    await dialog.updateComplete;
+    dialog.shadowRoot.querySelector('sl-button[slot="footer"]').click();
+    await pending;
+    expect(
+      fetchStub.getCalls().some((call) => call.args[1]?.method === 'POST')
+    ).to.equal(false);
+    expect(element.newWebhookSecret).to.equal(null);
+  });
+
+  it('keeps the secret hidden when rotation fails', async () => {
+    fetchStub.callsFake(
+      async () =>
+        new Response(JSON.stringify({ detail: 'edit_flows required' }), {
+          status: 403,
+        })
+    );
+    const pending = element.rotateWebhookSecret();
+    const dialog = document.querySelector('confirm-dialog') as any;
+    await dialog.updateComplete;
+    dialog.shadowRoot
+      .querySelector('[data-testid="confirm-dialog-confirm"]')
+      .click();
+    await pending;
+    expect(element.newWebhookSecret).to.equal(null);
+    expect(element.rotatingWebhookSecret).to.equal(false);
+  });
+
+  it('shows the new URL once after confirmed rotation and clears it on navigation', async () => {
+    element.shadowRoot.querySelector('[data-rotate-webhook-secret]').click();
+    const dialog = document.querySelector('confirm-dialog') as any;
+    await dialog.updateComplete;
+    dialog.shadowRoot
+      .querySelector('[data-testid="confirm-dialog-confirm"]')
+      .click();
+    await waitUntil(() =>
+      element.shadowRoot
+        .querySelector('sl-input[label="Webhook URL"]')
+        ?.value.includes('new-example-secret')
+    );
+    const call = fetchStub
+      .getCalls()
+      .find((call) =>
+        call.args[0].toString().endsWith('/webhook-secret/rotate')
+      );
+    expect(call?.args[1]?.method).to.equal('POST');
+    expect(element.flow.webhook_secret).to.be.undefined;
+    expect(element.flow.execution_stats).to.deep.equal({ total_execs: 7 });
+    expect(element.shadowRoot.textContent).to.contain('shown once');
+    element.disconnectedCallback();
+    expect(element.newWebhookSecret).to.equal(null);
+  });
+
+  for (const change of ['disconnect', 'reload', 'another-flow']) {
+    it(`warns when a confirmed rotation completes after ${change}`, async () => {
+      let finish!: (response: Response) => void;
+      fetchStub.callsFake((input: RequestInfo | URL) => {
+        if (input.toString().endsWith('/webhook-secret/rotate')) {
+          return new Promise<Response>((resolve) => {
+            finish = resolve;
+          });
+        }
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      });
+      const pending = element.rotateWebhookSecret();
+      const dialog = document.querySelector('confirm-dialog') as any;
+      await dialog.updateComplete;
+      dialog.shadowRoot
+        .querySelector('[data-testid="confirm-dialog-confirm"]')
+        .click();
+      await waitUntil(() => typeof finish === 'function');
+      if (change === 'disconnect') element.remove();
+      else if (change === 'reload') ++element.flowLoadGeneration;
+      else element.flowId = 'flow-2';
+      finish(
+        new Response(
+          JSON.stringify({ webhook_secret: 'late-example-secret' }),
+          { status: 200 }
+        )
+      );
+      await pending;
+      const warning = [...document.querySelectorAll('sl-alert')].find((alert) =>
+        alert.textContent?.includes('Webhook secret rotated')
+      ) as any;
+      expect(warning).to.exist;
+      expect(warning.textContent).to.contain('Rotate again');
+      expect(warning.duration).to.equal(Infinity);
+      expect(warning.textContent).not.to.contain('late-example-secret');
+      expect(element.newWebhookSecret).to.equal(null);
+    });
+  }
 });
 
 describe('FlowView load failure', () => {

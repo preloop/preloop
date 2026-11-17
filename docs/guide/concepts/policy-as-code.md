@@ -137,13 +137,14 @@ Tool conditions do not accept `redact`. A `sensitive_data` rule does:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `unknown_tools` | string | `allow` | Only `allow` is supported; `apply` rejects `deny` and `require_approval` |
-| `require_approval_for_new_tools` | bool | `false` | Only `false` is supported; `apply` rejects `true` |
-| `default_approval_workflow` | string | n/a | Not implemented yet; `apply` rejects any value |
+| `unknown_tools` | string | `allow` | Unmatched MCP calls: `allow`, `deny`, or `require_approval` |
+| `require_approval_for_new_tools` | bool | `false` | Require approval once per account and MCP tool route |
+| `default_approval_workflow` | string | n/a | Workflow name, required for approval defaults or approve-once |
 | `inherit_from_parent` | bool | `true` | Not used; `apply` accepts any value and ignores it |
 
-`apply` rejects the unsupported values, also with `--dry-run`, so that a policy
-does not look stricter than it is.
+`validate` and `apply` resolve workflow names against the file and your account.
+A missing workflow is an error, including with `--dry-run`. Scoped defaults
+are rejected: only the account policy supplies defaults.
 
 **Native tool rules in unattended flow runs.** Rules on native agent tools
 (`Bash`, `Write`, ...) also govern flow executions. A flow run on a private
@@ -161,12 +162,43 @@ any enabled native tool configuration (including agent-pinned ones) has a rule
 requiring approval, or when such a rule is scoped to the flow or to an employee
 flow's target agent.
 
-A tool the policy does not list is allowed.
-To put a tool behind approval, list it under `tools:` with an
-`approval_workflow`. To deny every tool on an MCP server except a list, add a
-`sensitive_data` rule scoped to that server with a CEL `condition`, as the
-[read-only production access example](../examples/production-access/README.md#why-the-policy-is-an-allowlist)
-does.
+### Unlisted tools
+
+An MCP tool is unlisted when no explicit rule matches the call, including a
+configured tool with no matching condition. Its account policy controls it:
+
+```yaml
+defaults:
+  unknown_tools: deny
+```
+
+| Precedence | Outcome |
+|------------|---------|
+| Explicit tool or subject rule matches | Rule action |
+| Approve-once enabled and no rule matches | Registry pending: approval; approved: allow; denied: deny |
+| No rule matches and approve-once is disabled | `defaults.unknown_tools` |
+| Native agent tool (Bash, Edit, Read) | Existing rule and client-decision fallback |
+
+To ask a human for every unmatched MCP call, use `unknown_tools: require_approval`
+and `default_approval_workflow: Review`, where `Review` is a workflow defined in
+the file or account. Decisions are audited with `source: unknown_tools_default`.
+Workflow lookup or evaluation errors block execution. An async approved call is
+checked again before replay; a new deny blocks it.
+
+Omitting the block preserves stored defaults. An account with no stored block
+loads `unknown_tools: allow` and `require_approval_for_new_tools: false`, keeping
+historical behavior. Exports and snapshots include defaults; rollback restores
+them. `inherit_from_parent` is accepted and unread. Defaults are account-wide;
+there are no scoped defaults in this version.
+
+Tools are identified by the selected MCP server and exposed name. A prefix is
+part of that name; a same-name tool on another server cannot lend its rules.
+Claude Code hook names `mcp__<server>__<tool>` also count as MCP calls. Their
+server label is a distinct route from a registered Preloop proxy server.
+
+A server-scoped `sensitive_data` CEL allowlist remains useful when only one
+server should be restricted, or a tool delegates to other tools by name. See the
+[read-only production access example](../examples/production-access/README.md#why-the-policy-is-an-allowlist).
 
 ---
 
@@ -249,7 +281,7 @@ The schema validates:
 2. **Valid references**: Tools, `model_io` rules and escalation settings that reference approval workflows or MCP servers must point to a name defined in the file or already configured in your account
 3. **AI policy completeness**: AI-driven workflows require `ai_model` (`ai_guidelines` is optional)
 4. **Expression syntax**: Tool condition expressions cannot be empty
-5. **Default references**: `default_approval_workflow` must reference a workflow defined in the file or in your account (`apply` does not support the setting yet; see [`defaults`](#defaults))
+5. **Default references**: `default_approval_workflow` must reference a workflow defined in the file or in your account (see [`defaults`](#defaults))
 
 If validation fails, you get detailed error messages pointing to the exact issue:
 
@@ -266,3 +298,40 @@ If validation fails, you get detailed error messages pointing to the exact issue
   "warnings": ["Available approval workflows: [my-workflow]"]
 }
 ```
+
+### Approve a tool once
+
+```yaml
+defaults:
+  unknown_tools: deny
+  require_approval_for_new_tools: true
+  default_approval_workflow: Review
+```
+
+Define `Review` in `approval_workflows` or configure it in the account. The first
+unmatched MCP call records a pending entry and one approval request in the same
+transaction. Concurrent calls reuse that request. Approving it authorizes this
+route for future unmatched calls; denying it refuses them. An expired or
+cancelled request leaves the entry pending, and the next call raises a fresh
+request. Policy changes do not erase decisions; disabling approve-once skips the
+registry. Explicit matching rules take precedence over registry decisions.
+
+The first observer sets the shared request's approval window using its flow,
+workflow and account cap. Later observers reuse that request and its expiry.
+After approval, each parked run retries its own original call under current
+policy. A refusal or expiry ends every run parked on that request; arguments
+from the first caller are not copied into another run's resume instructions.
+
+In **Policies → Tools seen**, filter pending/approved/denied tools and Approve or
+Deny a route. Deny also revokes a prior approval. A manual decision settles the
+route's open approval with the same outcome. Viewing requires `view_policies`;
+deciding requires `manage_policies`. The API is `GET /api/v1/tools/registry`
+(with `state`, `page`, `page_size`) and
+`POST /api/v1/tools/registry/{id}/decision` with `state: approved` or `denied`.
+
+Entries are isolated by account, selected MCP server and exposed tool name. A
+hook-observed server label with no Preloop server ID is a separate route.
+Changing a server prefix changes the exposed name and requires a new approval.
+The registry records first/last seen, count, first observed agent when known,
+and who decided. It authorizes a tool route, regardless of later argument
+values; use explicit conditional rules for argument-specific restrictions.

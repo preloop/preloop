@@ -15,6 +15,7 @@ and no way back into the session afterwards):
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -1338,3 +1339,40 @@ class TestReleaseParkedExecutions:
             SimpleNamespace(id=request_id, execution_id=None)
         )
         resumed.assert_awaited_once_with(request_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["approved", "declined", "expired"])
+async def test_shared_registry_gate_handles_every_parked_execution(
+    resume_env: Any,
+    status: str,
+) -> None:
+    """protects=shared route approvals resume or stop both observers safely;
+    fails_when=one observer receives another's command; no_claim=orchestrator mocked.
+    """
+    from copy import copy
+
+    other = copy(resume_env.parked)
+    other.id = uuid.uuid4()
+    resume_env.crud_exec.list_parked_for_request.return_value = [
+        resume_env.parked,
+        other,
+    ]
+    resume_env.request.status = status
+    resume_env.request.rule_context = {"source": "registry"}
+    resume_env.request.tool_name = "mcp__docs__fetch"
+    resume_env.request.tool_args = {"command": "first-observer-private-command"}
+    await approval_park.resume_parked_executions(resume_env.request.id)
+    if status == "approved":
+        assert resume_env.started.await_count == 2
+        for call in resume_env.started.await_args_list:
+            details = str(call.args[3])
+            assert "first-observer-private-command" not in details
+            assert "your own original tool call" in details
+    else:
+        resume_env.started.assert_not_awaited()
+        assert resume_env.crud_exec.fail_parked_for_request.call_count == 2
+        assert {
+            call.kwargs["execution_id"]
+            for call in resume_env.crud_exec.fail_parked_for_request.call_args_list
+        } == {resume_env.parked.id, other.id}

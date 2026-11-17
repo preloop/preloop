@@ -180,9 +180,17 @@ def answer_from_request(request: Any) -> Dict[str, Any]:
     }
     if isinstance(structured, dict) and structured:
         answer["structured_answer"] = structured
-    from preloop.services.native_flow_park import command_text, is_native_park
+    from preloop.services.native_flow_park import (
+        command_text,
+        is_native_park,
+        is_registry_gate,
+    )
 
-    if is_native_park(request):
+    if is_registry_gate(request):
+        answer["registry_route"] = True
+        for key in ("question", "selected_option", "structured_answer"):
+            answer.pop(key, None)
+    elif is_native_park(request):
         answer["native_command"] = command_text(tool_args)
     return answer
 
@@ -210,6 +218,11 @@ def answers_prompt_block(answer: Dict[str, Any]) -> str:
         header += (
             " The request was refused. Do not perform the action you asked "
             "about; record the refusal and continue with the rest of the task."
+        )
+    elif status == "approved" and answer.get("registry_route"):
+        header += (
+            " This MCP route is approved. Retry your own original tool call "
+            "with your own original arguments; current policy is checked again."
         )
     elif status == "approved" and answer.get("native_command") is not None:
         # A native command park: the hook denied the call so the run could
@@ -403,7 +416,7 @@ async def resume_parked_executions(
         )
         from preloop.services import native_flow_park
 
-        if native_flow_park.is_native_park(
+        if native_flow_park.is_execution_gate(
             request
         ) and native_flow_park.refused_or_expired(request):
             # An unattended run paused on a command a human refused, or that

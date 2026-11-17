@@ -62,7 +62,7 @@ When triggered (manually or via webhook), the flow will:
 
    - **Flow name:** `Contract Payment Processor`
    - **Description:** `Process contract payments with approval for large amounts`
-   - **Trigger type:** **Webhook** (the webhook URL is generated after creation)
+   - **Trigger type:** **Webhook** (save, then rotate the secret to obtain a URL shown once)
    - **AI model:** the model you just added
    - **Prompt template:**
 
@@ -143,8 +143,8 @@ The approver receives an email with a subject such as "Tool Approval Required: p
 Your flow has a unique webhook URL. You can trigger it from external services!
 
 1. Go back to your flow details page
-2. Find the **Webhook URL** section
-3. Copy the URL (looks like: `https://preloop.ai/api/v1/webhooks/flows/{flow_id}/{webhook_secret}`)
+2. Open the **Webhook** section
+3. Click **Rotate webhook secret** and copy the URL shown once (looks like: `https://preloop.ai/api/v1/webhooks/flows/{flow_id}/{webhook_secret}`)
 
 **Test with curl:**
 

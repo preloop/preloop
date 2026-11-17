@@ -69,7 +69,7 @@ graph LR
 | [MCP](docs/architecture/mcp.md) | FastMCP integration, dynamic tool filtering, and the HTTP MCP request path. |
 | [MCP protocol compatibility](docs/architecture/mcp-protocol-compatibility.md) | SDK 2 / FastMCP 4 APIs, modern and legacy transport matrix, validation and no-replay boundary. |
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, account-scoped pub/sub, execution snapshots and durable sequence cursors, and bounded flow lifecycle startup. |
-| [Security](docs/architecture/security.md) | Auth and tenancy, generation-based session revocation and live WebSocket teardown across replicas, account-scoped member sign-out, separate machine credentials, restricted CI identities, owned review execution admission, principal-bound callbacks, redaction, secret custody, audit integrity and `preloop.security`. |
+| [Security](docs/architecture/security.md) | Auth and tenancy, optional account sign-in strength hooks and enrollment-only sessions, generation-based session revocation and live WebSocket teardown across replicas, account-scoped member sign-out, separate machine credentials, restricted CI identities, owned review execution admission, principal-bound callbacks, redaction, secret custody, audit integrity and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
 | [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, durable review completion evidence, evidence packs, prompt `truncate(N)`, and the chunked agent launch-payload environment. |
 | [Callback receipts](docs/architecture/callback-receipts.md) | `complete_once` receipts for signed provider callbacks, without storing request content. |
@@ -92,3 +92,11 @@ single-use challenges and fresh-authentication checks for factor management.
 See [security architecture](docs/architecture/security.md) and the
 [operator guide](docs/operations/mfa.md). Account policy enforcement is an
 edition extension.
+
+Unmatched MCP tool calls read account policy defaults. With approve-once enabled,
+the account-owned `tool_registry_entry` records a decision per proxy server UUID
+or direct-hook server label and exposed tool name. CRUD serializes first sightings
+and approval attachment in one transaction; approval resolution updates the route
+decision, and async replays recheck the current policy before dispatch. Native
+agent tools retain their client-decision fallback. See
+[policy defaults](docs/guide/concepts/policy-as-code.md#unlisted-tools).

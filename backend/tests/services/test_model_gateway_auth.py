@@ -1,6 +1,9 @@
 """Tests for model gateway auth helpers."""
 
 import pytest
+from sqlalchemy.orm import Session
+
+from preloop.models import models
 
 from preloop.models.crud import crud_api_key
 from preloop.services.model_gateway_auth import (
@@ -142,3 +145,77 @@ def test_build_runtime_key_auth_context_requires_a_token(db_session, test_user):
         build_runtime_key_auth_context(db_session, token="", api_key_id=str(api_key.id))
         is None
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_scope,purpose,methods,refresh,allowed",
+    [
+        (
+            ("POST", "/openai/v1/chat/completions"),
+            "channel_action",
+            ["chat"],
+            False,
+            True,
+        ),
+        (None, "channel_action", ["chat"], False, False),
+        (
+            ("GET", "/openai/v1/chat/completions"),
+            "channel_action",
+            ["chat"],
+            False,
+            False,
+        ),
+        (("POST", "/openai/v1/responses"), "channel_action", ["chat"], False, False),
+        (
+            ("POST", "/openai/v1/chat/completions"),
+            "mfa_challenge",
+            ["chat"],
+            False,
+            False,
+        ),
+        (
+            ("POST", "/openai/v1/chat/completions"),
+            "channel_action",
+            ["password"],
+            False,
+            False,
+        ),
+        (
+            ("POST", "/openai/v1/chat/completions"),
+            "channel_action",
+            ["chat"],
+            True,
+            False,
+        ),
+    ],
+)
+async def test_channel_gateway_token_requires_its_exact_request(
+    db_session: "Session",
+    test_user: "models.User",
+    request_scope: tuple[str, str] | None,
+    purpose: str,
+    methods: list[str],
+    refresh: bool,
+    allowed: bool,
+) -> None:
+    """A paired chat token cannot become a general gateway or WebSocket session."""
+    from preloop.api.auth.jwt import create_access_token
+
+    token = create_access_token(
+        {
+            "sub": str(test_user.id),
+            "purpose": purpose,
+            "channel_method": "POST",
+            "channel_path": "/openai/v1/chat/completions",
+            "refresh": refresh,
+        },
+        auth_generation=test_user.auth_generation,
+        auth_context={"amr": methods},
+    )
+    context = await authenticate_bearer_token(
+        token, db_session, request_scope=request_scope
+    )
+    assert (context is not None) is allowed
+    if context is not None:
+        assert context.user.id == test_user.id

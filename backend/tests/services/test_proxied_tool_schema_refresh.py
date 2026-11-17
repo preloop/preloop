@@ -200,6 +200,7 @@ async def test_replay_after_schema_change_explains_instead_of_failing() -> None:
     }
     with (
         patch.object(mcp, "_halt_dispatch_denial", AsyncMock(return_value=None)),
+        patch.object(mcp, "_approval_replay_denial", AsyncMock(return_value=None)),
         patch.object(mcp, "_record_attributed_refusal") as refusal,
     ):
         result = await mcp.call_registered_tool_without_policy(
@@ -234,3 +235,31 @@ def test_unregister_keeps_wrapper_owned_by_another_server() -> None:
     assert removed == 0
     assert INTERNAL in mcp._registered_proxied_tools
     assert mcp._proxied_tool_servers["publish_release"] == "owner"
+
+
+async def test_replay_after_type_only_schema_change_explains() -> None:
+    """A changed argument type also yields the explicit refusal."""
+    schema_v3 = {
+        **SCHEMA_V2,
+        "properties": {
+            **SCHEMA_V2["properties"],
+            "version_number": {"type": "integer"},
+        },
+    }
+    mcp = DynamicFastMCP(name="test")
+    await _list(mcp, SCHEMA_V2)
+    await _list(mcp, schema_v3)  # same names, new type
+    approved = {"version_number": "two", "version_date": "d", "description": "x"}
+    assert mcp._replay_schema_error(INTERNAL, approved) is None
+    with (
+        patch.object(mcp, "_halt_dispatch_denial", AsyncMock(return_value=None)),
+        patch.object(mcp, "_approval_replay_denial", AsyncMock(return_value=None)),
+        patch.object(mcp, "_record_attributed_refusal") as refusal,
+    ):
+        result = await mcp.call_registered_tool_without_policy(
+            INTERNAL, approved, account_id=ACCOUNT_ID
+        )
+    text = " ".join(getattr(block, "text", "") for block in result.content)
+    assert "changed after this call was approved" in text
+    assert "rejects the approved arguments" in text
+    refusal.assert_called_once()

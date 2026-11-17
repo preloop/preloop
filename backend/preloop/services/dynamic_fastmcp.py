@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 import httpx
 import httpx2
 from fastmcp import FastMCP
+from fastmcp.exceptions import ValidationError as FastMCPValidationError
 from fastmcp.tools import Tool
 from fastmcp.tools import ToolResult
 from mcp.types import (
@@ -1330,6 +1331,28 @@ def _schema_fields(schema: Any) -> tuple[frozenset[str], frozenset[str]]:
     return declared, needed & declared if declared else needed
 
 
+def _schema_changed_after_approval(internal_name: str, problems: List[str]) -> str:
+    """Build the refusal for an approved call whose tool schema changed.
+
+    Args:
+        internal_name: Registered wrapper name (``account_<id>_<tool>``).
+        problems: Clauses describing the mismatch, joined with "and".
+
+    Returns:
+        The error text returned to the approval poller.
+    """
+    tool_name = internal_name
+    if internal_name.startswith("account_"):
+        # The account id contributes five underscore-separated groups.
+        tool_name = internal_name[len("account_") :].split("_", 5)[-1]
+    return (
+        f"Error: the input schema of tool '{tool_name}' changed after this "
+        f"call was approved: it {' and '.join(problems)}. The approved call "
+        "was not executed; call the tool again with arguments that match "
+        "the refreshed schema."
+    )
+
+
 def _stale_schema_error(
     name: str,
     arguments: Dict[str, Any],
@@ -2209,6 +2232,7 @@ async def {internal_name}({params_str}):
         correlation_id=corr_id,
         justification=justification,
         server_name=snapshot.server_name,
+        mcp_server_id=snapshot.client_config["server_id"],
     )
 
     if not approved:
@@ -2929,6 +2953,15 @@ async def {internal_name}({params_str}):
                     if user_context.user_id
                     else None,
                     server_name=scope_server_name,
+                    execution_id=getattr(user_context, "flow_execution_id", None),
+                    tool_source="mcp"
+                    if name in self._proxied_tool_servers
+                    else "builtin",
+                    mcp_server_id=(
+                        _grant_dispatch_var.get().client_config["server_id"]
+                        if name in self._proxied_tool_servers
+                        else None
+                    ),
                     extra_bindings=(
                         {**(sensitive_bindings or {}), "grant": grant_binding}
                         if grant_binding is not None
@@ -4305,21 +4338,128 @@ async def {internal_name}({params_str}):
         missing = sorted(required - given)
         if not unknown and not missing:
             return None
-        tool_name = internal_name
-        prefix = "account_"
-        if internal_name.startswith(prefix):
-            tool_name = internal_name[len(prefix) :].split("_", 5)[-1]
         problems = []
         if unknown:
             problems.append(f"no longer declares {', '.join(unknown)}")
         if missing:
             problems.append(f"now requires {', '.join(missing)}")
-        return (
-            f"Error: the input schema of tool '{tool_name}' changed after this "
-            f"call was approved: it {' and '.join(problems)}. The approved call "
-            "was not executed; call the tool again with arguments that match "
-            "the refreshed schema."
-        )
+        return _schema_changed_after_approval(internal_name, problems)
+
+    async def _approval_replay_denial(
+        self,
+        account_id: str,
+        name: str,
+        arguments: dict,
+    ) -> Optional[str]:
+        """Recheck MCP policy and bind an async grant to its original route."""
+        prefix = f"account_{account_id.replace('-', '_')}_"
+        client_name = name[len(prefix) :] if name.startswith(prefix) else name
+        if client_name not in self._proxied_tool_servers:
+            return None
+        try:
+            from preloop.models.db.session import get_async_db_session
+            from preloop.models.crud.approval_request import get_approval_request_async
+            from preloop.models.crud.tool_configuration import (
+                get_tool_config_by_id_async,
+            )
+            from preloop.services.policy_evaluator import evaluate_policy_async
+
+            async with get_async_db_session() as db:
+                request_id = _approved_id_var.get(None)
+                if request_id is None:
+                    return "Access denied: approval replay has no grant"
+                request = await get_approval_request_async(db, request_id=request_id)
+                if (
+                    request is None
+                    or str(request.account_id) != account_id
+                    or request.status != "approved"
+                    or request.tool_name != client_name
+                ):
+                    return "Access denied: approval replay grant is invalid"
+                config = await get_tool_config_by_id_async(
+                    db,
+                    id=request.tool_configuration_id,
+                    account_id=account_id,
+                )
+                server_id = self._proxied_tool_servers[client_name]
+                if config is None:
+                    return "Access denied: approved MCP route changed"
+                if config.mcp_server_id is None and config.tool_source == "mcp":
+                    from preloop.models.crud import crud_mcp_tool
+
+                    legacy_server_id = await db.run_sync(
+                        lambda session: crud_mcp_tool.unambiguous_legacy_route(
+                            session, account_id=account_id, exposed_name=client_name
+                        )
+                    )
+                    if str(legacy_server_id) != server_id:
+                        return "Access denied: approved MCP route changed (ambiguous legacy grant)"
+                elif str(config.mcp_server_id) != server_id:
+                    return "Access denied: approved MCP route changed"
+                from preloop.models.crud import crud_flow_execution
+
+                execution_id = getattr(request, "execution_id", None)
+                execution = (
+                    await db.run_sync(
+                        lambda session: crud_flow_execution.get(
+                            session, id=execution_id, account_id=account_id
+                        )
+                    )
+                    if execution_id
+                    else None
+                )
+                if execution_id and execution is None:
+                    return "Access denied: approval execution is unavailable"
+                subject_context = {
+                    "api_key_id": str(request.api_key_id)
+                    if getattr(request, "api_key_id", None)
+                    else None,
+                    "managed_agent_id": str(request.managed_agent_id)
+                    if getattr(request, "managed_agent_id", None)
+                    else None,
+                    "runtime_session_id": str(request.runtime_session_id)
+                    if getattr(request, "runtime_session_id", None)
+                    else None,
+                    "flow_id": str(execution.flow_id)
+                    if execution is not None
+                    else None,
+                    "tool_source": "mcp",
+                }
+                decision = await evaluate_policy_async(
+                    db,
+                    tool_name=client_name,
+                    tool_args=arguments,
+                    account_id=uuid.UUID(account_id),
+                    tool_source="mcp",
+                    mcp_server_id=uuid.UUID(server_id),
+                    subject_context=subject_context,
+                    execution_id=execution_id,
+                    record=False,
+                )
+                if outbox_enabled():
+                    await db.commit()
+                if (
+                    decision.action == "deny"
+                    or decision.source == "rule_evaluation_error"
+                ):
+                    return "Access denied: current policy blocks approval replay"
+                if (
+                    decision.action == "require_approval"
+                    and decision.source == "registry"
+                ):
+                    registry_request_id = (decision.rule_context or {}).get(
+                        "registry_approval_request_id"
+                    )
+                    if str(registry_request_id) != str(request.id):
+                        return "Access denied: current registry approval is pending"
+                if decision.action == "require_approval" and str(
+                    decision.approval_workflow_id
+                ) != str(request.approval_workflow_id):
+                    return "Access denied: approval workflow changed"
+        except Exception:
+            logger.exception("Unable to recheck policy for approval replay")
+            return "Access denied: approval replay policy check failed"
+        return None
 
     async def call_registered_tool_without_policy(
         self,
@@ -4352,6 +4492,9 @@ async def {internal_name}({params_str}):
                 account_id=account_id,
             )
             return _tool_error_result(denial)
+        denial = await self._approval_replay_denial(account_id, name, arguments or {})
+        if denial:
+            return _tool_error_result(denial)
         replay_error = self._replay_schema_error(name, arguments or {})
         if replay_error is not None:
             await asyncio.to_thread(
@@ -4369,6 +4512,24 @@ async def {internal_name}({params_str}):
             return await super().call_tool(
                 name, self._remap_wrapper_arguments(name, arguments or {})
             )
+        except FastMCPValidationError as exc:
+            # Argument validation fails before the wrapper body runs, so the
+            # upstream was not called. For a proxied tool this means the
+            # schema changed after approval in a way the name check above
+            # cannot see (for example an argument's type).
+            if name not in self._proxied_schema_fields:
+                raise
+            replay_error = _schema_changed_after_approval(
+                name, [f"rejects the approved arguments ({_short_reason(exc)})"]
+            )
+            await asyncio.to_thread(
+                self._record_attributed_refusal,
+                name,
+                arguments,
+                replay_error,
+                account_id=account_id,
+            )
+            return _tool_error_result(replay_error)
         finally:
             if translation_token is not None:
                 _is_proxy_translation_var.reset(translation_token)

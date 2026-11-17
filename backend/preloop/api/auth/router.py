@@ -359,6 +359,7 @@ def _build_auth_user_response(user: UserModel, db: Session) -> AuthUserResponse:
         plan_choice_made=user.plan_choice_made_at is not None,
         team_ids=_resolve_team_ids(user, db),
         runner_policy=_runner_policy_for(user, db),
+        enroll_only=getattr(user, "_auth_context", {}).get("enroll_only") is True,
     )
 
 
