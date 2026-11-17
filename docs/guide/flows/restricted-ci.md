@@ -1637,6 +1637,10 @@ repository (`https://api.github.com/repos/{owner}/{repo}/dispatches`, or
 `<host>/api/v3/...` for GitHub Enterprise Server) and cannot be edited.
 Replace the token with
 `PUT /api/v1/ci-identities/{principal_id}/github-dispatch-subscriptions/{endpoint_id}/token`.
+List an identity's dispatch subscriptions with
+`GET /api/v1/ci-identities/{principal_id}/github-dispatch-subscriptions`; the
+response never includes the token or signing secret, and `X-Total-Count` gives
+the number of subscriptions.
 
 **The dispatch token needs write access.** GitHub requires `contents: write`
 on the repository for `POST /repos/{owner}/{repo}/dispatches`. Use the

@@ -1,3 +1,4 @@
+import asyncio
 from preloop.sync.config import logger
 from preloop.models.db.session import get_db_session
 from preloop.models.crud import (
@@ -992,11 +993,16 @@ async def expire_stale_approvals() -> int:
     """
     from preloop.models.crud import crud_approval_request
 
-    db = next(get_db_session())
-    try:
-        return crud_approval_request.expire_stale_pending(db)
-    finally:
-        db.close()
+    def _sweep() -> int:
+        """Run the synchronous sweep with its own session."""
+        db = next(get_db_session())
+        try:
+            return crud_approval_request.expire_stale_pending(db)
+        finally:
+            db.close()
+
+    # The sweep is blocking database work; keep it off the worker event loop.
+    return await asyncio.to_thread(_sweep)
 
 
 async def reconcile_security_maintenance() -> dict[str, object]:

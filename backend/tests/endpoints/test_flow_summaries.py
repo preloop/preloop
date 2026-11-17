@@ -72,7 +72,7 @@ def test_issue_cost_selector_accepts_500_flows_without_stats(mocker: Any) -> Non
         db,
         account_id=user.account_id,
         skip=0,
-        limit=None,
+        limit=500,
         include_shared=True,
         lightweight=True,
     )
@@ -141,7 +141,7 @@ def test_summary_omits_heavy_fields_and_stats_queries(mocker: Any) -> None:
         db,
         account_id=user.account_id,
         skip=0,
-        limit=None,
+        limit=100,
         include_shared=True,
         lightweight=True,
     )
@@ -188,6 +188,8 @@ def test_summary_preserves_authorizer_visibility(mocker: Any) -> None:
     denied, allowed = summary_row(user.account_id), summary_row(user.account_id)
     mocker.patch.object(flows.crud_flow, "get_multi", return_value=[denied, allowed])
     visibility = mocker.patch.object(flows, "filter_viewable", return_value=[allowed])
+    # Per-row visibility applies only when an authorizer is registered.
+    mocker.patch.object(flows, "get_authorizer", return_value=object())
     db = MagicMock()
     result = flows.read_flow_summaries(
         response=Response(), db=db, skip=0, limit=100, current_user=user

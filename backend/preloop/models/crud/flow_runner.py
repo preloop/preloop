@@ -436,6 +436,24 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             .all()
         )
 
+    def count_for_account(self, db: Session, *, account_id: UUID) -> int:
+        """How many rows ``list_for_account`` pages over.
+
+        Args:
+            db: Database session.
+            account_id: Account whose own and shared runners are counted.
+
+        Returns:
+            The number of runners visible to the account before authorizer
+            filtering.
+        """
+        return int(
+            db.query(func.count(FlowRunner.id))
+            .filter(_runner_visibility_clause(db, account_id))
+            .scalar()
+            or 0
+        )
+
     def find_matching(
         self,
         db: Session,

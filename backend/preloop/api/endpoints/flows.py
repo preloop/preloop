@@ -40,7 +40,7 @@ from preloop.models.schemas.flow import (
     apply_flow_limit_fields,
     flow_schedule_state,
 )
-from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
+from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable, get_authorizer
 from preloop.schemas.ci_execution import (
     CiExecutionResponse,
     CiExecutionResultResponse,
@@ -617,6 +617,23 @@ def _page_viewable_flows(
     Returns:
         The requested page of visible flows, in creation order.
     """
+    if get_authorizer() is None:
+        # Nothing is hidden per row, so page and count in SQL.
+        response.headers["X-Total-Count"] = str(
+            crud_flow.count_multi(
+                db, account_id=current_user.account_id, include_shared=True
+            )
+        )
+        return list(
+            crud_flow.get_multi(
+                db,
+                account_id=current_user.account_id,
+                skip=max(skip, 0),
+                limit=max(limit, 0),
+                include_shared=True,
+                lightweight=lightweight,
+            )
+        )
     visible = filter_viewable(
         db,
         current_user,

@@ -88,7 +88,7 @@ async def perform_search(
     """
     # Validate the requested search before resolving scope, so an empty scope
     # never hides an unsupported request.
-    if query:
+    if query and query.strip():
         if search_type == "fulltext":
             raise HTTPException(
                 status_code=501,  # Not Implemented

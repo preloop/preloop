@@ -102,7 +102,7 @@ async def test_read_flows(mock_account: Account, mocker: MockerFixture):
         mocker.ANY,
         account_id=mock_account.account_id,
         skip=0,
-        limit=None,
+        limit=100,
         include_shared=True,
         lightweight=False,
     )

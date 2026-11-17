@@ -36,6 +36,10 @@ An empty `event_types` list means every v1 event. An unknown event type is
 rejected at create time rather than silently never firing. An account may
 register up to 20 endpoints.
 
+`GET /api/v1/event-webhooks/endpoints` lists the account's endpoints and
+`GET /api/v1/event-webhooks/endpoints/{endpoint_id}` reads one. Neither returns
+the signing secret.
+
 `GET /api/v1/event-webhooks/catalogue` returns the subscribable event types
 with one-line descriptions, plus the signature header name, the verification
 tolerance and the retry schedule this deployment is running. Read the contract
