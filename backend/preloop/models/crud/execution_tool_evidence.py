@@ -282,6 +282,50 @@ def _native_item_id(line: Any) -> str | None:
     return str(sanitize_for_jsonb(item_id))
 
 
+# Admission facts are immutable for a running execution. Cache only complete
+# review contexts, and negative non-review decisions, never ORM/session objects.
+_INSPECTION_CONTEXTS: dict[str, tuple[dict[str, Any], dict[str, Any], str] | None] = {}
+_INSPECTION_CONTEXT_CACHE_LIMIT = 256
+
+
+def _inspection_context(
+    db: Session, execution_id: str
+) -> tuple[dict[str, Any], dict[str, Any], str] | None:
+    """Resolve private inspection context once after its startup receipt arrives."""
+    from copy import deepcopy
+    from preloop.models.crud import crud_flow_execution
+    from preloop.services.review_diff import review_diff_identity
+    from preloop.services.review_integrity import applies, inspection_root
+
+    if execution_id in _INSPECTION_CONTEXTS:
+        return _INSPECTION_CONTEXTS[execution_id]
+    execution = crud_flow_execution.get(db, id=execution_id)
+    if execution is None:
+        return None
+    context = None
+    cacheable = True
+    if applies(execution.flow, execution):
+        binding = execution.ci_review_binding
+        diff = review_diff_identity(execution)
+        context = (
+            deepcopy(binding),
+            deepcopy(diff or {}),
+            inspection_root(execution.flow, binding),
+        )
+        # An early log can precede the startup receipt. Retry until it is known.
+        receipt = getattr(execution, "startup_receipt", None)
+        cacheable = diff is not None or (
+            isinstance(receipt, dict)
+            and receipt.get("checkout_verified") is True
+            and receipt.get("setup_completed") is True
+        )
+    if cacheable:
+        if len(_INSPECTION_CONTEXTS) >= _INSPECTION_CONTEXT_CACHE_LIMIT:
+            _INSPECTION_CONTEXTS.clear()
+        _INSPECTION_CONTEXTS[execution_id] = context
+    return context
+
+
 def _persist_native_command_evidence(
     db: Session, *, execution_id: str, line: Any
 ) -> None:
@@ -316,34 +360,6 @@ def _persist_native_command_evidence(
     if account_id is None:
         return
     raw = item.get("command")
-    # Classify before content redaction; retain only a binding-scoped receipt.
-    receipt = None
-    if (
-        event["type"] == "item.completed"
-        and type(item.get("exit_code")) is int
-        and item["exit_code"] == 0
-    ):
-        from preloop.models.crud import crud_flow_execution
-        from preloop.services.review_diff import review_diff_identity
-        from preloop.services.review_integrity import applies, inspection_root
-        from preloop.services.review_inspection import (
-            command_reads_change,
-            inspection_receipt,
-        )
-
-        execution = crud_flow_execution.get(db, id=execution_id)
-        if execution is not None and applies(execution.flow, execution):
-            binding = execution.ci_review_binding
-            diff = review_diff_identity(execution) or {}
-            root = inspection_root(execution.flow, binding)
-            if command_reads_change(
-                raw,
-                base=binding.get("base_sha", ""),
-                head=binding.get("head_sha", ""),
-                files=diff.get("files", []),
-                root=root,
-            ):
-                receipt = inspection_receipt(binding, diff, root)
     value = _redact_value(raw) if settings.model_gateway_capture_content else None
     bounded = len(canonical_bytes(value)) <= MAX_EVIDENCE_BYTES
     storage_redacted = sanitize_for_jsonb(raw) != raw
@@ -365,7 +381,6 @@ def _persist_native_command_evidence(
                 else None,
                 "redacted": raw != value,
                 "truncated": not bounded,
-                "inspection_receipt": receipt,
             }
         ],
     }
@@ -373,6 +388,31 @@ def _persist_native_command_evidence(
     sanitized["storage_redacted"] = (
         document.get("storage_redacted", False) or sanitized != document
     )
+    observation = sanitized["observations"][0]
+    if (
+        event["type"] == "item.completed"
+        and type(item.get("exit_code")) is int
+        and item["exit_code"] == 0
+        and (observation.get("value") != raw or observation.get("truncated"))
+    ):
+        from preloop.services.review_inspection import (
+            command_reads_change,
+            inspection_receipt,
+        )
+
+        context = _inspection_context(db, execution_id)
+        if context is not None:
+            binding, diff, root = context
+            if command_reads_change(
+                raw,
+                base=binding.get("base_sha", ""),
+                head=binding.get("head_sha", ""),
+                files=diff.get("files", []),
+                root=root,
+            ):
+                observation["inspection_receipt"] = inspection_receipt(
+                    binding, diff, root
+                )
     _persist_document(
         db,
         execution_id=UUID(str(execution_id)),
