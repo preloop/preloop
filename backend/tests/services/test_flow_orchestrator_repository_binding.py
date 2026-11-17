@@ -67,7 +67,8 @@ def _orchestrator(git_clone_config: Optional[Dict[str, Any]]):
     orch.flow.trigger_project_ids = None
     orch.flow.agent_type = "opencode"
     orch.execution_log = MagicMock(ci_principal_id=None)
-    orch.execution_log.id = "execution-id"
+    orch.execution_log.id = uuid4()
+    orch.db.execute.return_value.scalar_one.return_value = []
     orch.ai_model = None
     return orch
 

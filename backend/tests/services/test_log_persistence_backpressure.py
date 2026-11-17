@@ -36,6 +36,12 @@ def log_database(tmp_path, monkeypatch):
     with engine.begin() as connection:
         connection.execute(
             text(
+                "CREATE TABLE flow_execution (id CHAR(32) PRIMARY KEY, "
+                "credential_fingerprints JSON)"
+            )
+        )
+        connection.execute(
+            text(
                 "CREATE TABLE flow_execution_log (id CHAR(32) PRIMARY KEY, "
                 "execution_id CHAR(32), timestamp DATETIME, log_type VARCHAR(50), "
                 "message TEXT, metadata JSON, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, "

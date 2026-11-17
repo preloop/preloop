@@ -13,7 +13,16 @@ from fastapi import HTTPException, Response
 
 from preloop.api.endpoints import publication_credentials as endpoint
 from preloop.config import settings
+from preloop.models.crud import execution_credentials
 from preloop.services.trusted_publisher import PublicationError
+
+
+@pytest.fixture(autouse=True)
+def credential_registration(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Keep endpoint unit tests at the CRUD boundary, with registration asserted."""
+    register = Mock()
+    monkeypatch.setattr(execution_credentials, "register", register)
+    return register
 
 
 async def _refresh(*args: Any) -> dict[str, str]:
@@ -169,7 +178,7 @@ async def test_other_execution_rejected_before_lookup(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [False, True])
 async def test_exact_bound_repository_and_sanitized_issuance(
-    monkeypatch: pytest.MonkeyPatch, failure: bool
+    monkeypatch: pytest.MonkeyPatch, failure: bool, credential_registration: Mock
 ) -> None:
     context = claims()
     tracker = Mock()
@@ -188,12 +197,17 @@ async def test_exact_bound_repository_and_sanitized_issuance(
         mint.side_effect = PublicationError("sensitive-provider-response")
     monkeypatch.setattr(endpoint, "mint_repository_lease", mint)
     response = Response()
+    db = Mock()
     if failure:
         with pytest.raises(HTTPException) as error:
-            await _refresh(context["execution_id"], response, context, Mock())
+            await _refresh(context["execution_id"], response, context, db)
         assert error.value.detail == "publication_credential_unavailable"
+        credential_registration.assert_not_called()
     else:
-        result = await _refresh(context["execution_id"], response, context, Mock())
+        result = await _refresh(context["execution_id"], response, context, db)
+        credential_registration.assert_called_once_with(
+            db, context["execution_id"], ["fresh-secret"]
+        )
         assert result["token"] == "fresh-secret"
         assert response.headers["cache-control"] == "no-store"
     assert mint.call_args.args == (tracker, context["repository_url"])
@@ -229,12 +243,16 @@ async def test_stop_intent_blocks_new_authority(
 @pytest.mark.asyncio
 async def test_crud_runs_off_loop_and_async_provider_runs_on_loop(
     monkeypatch: pytest.MonkeyPatch,
+    credential_registration: Mock,
 ) -> None:
     import threading
 
     context = claims()
     loop_thread = threading.get_ident()
     query_threads: list[int] = []
+    credential_registration.side_effect = lambda *args: query_threads.append(
+        threading.get_ident()
+    )
 
     def execution_get(*args: Any, **kwargs: Any) -> SimpleNamespace:
         query_threads.append(threading.get_ident())
@@ -271,7 +289,7 @@ async def test_crud_runs_off_loop_and_async_provider_runs_on_loop(
     monkeypatch.setattr(endpoint.crud_tracker, "get", tracker_get)
     monkeypatch.setattr(endpoint, "mint_repository_lease", issue)
     await _refresh(context["execution_id"], Response(), context, Mock())
-    assert len(query_threads) == 3
+    assert len(query_threads) == 4
     assert all(thread != loop_thread for thread in query_threads)
     assert len(lazy_load_threads) == 1
     assert lazy_load_threads[0] != loop_thread
@@ -559,3 +577,33 @@ async def test_pasted_bitbucket_token_is_not_dispatched_to_resolver(
         await _refresh(context["execution_id"], Response(), context, Mock())
     assert error.value.status_code == 502
     assert bitbucket_resolver.calls == []
+
+
+@pytest.mark.asyncio
+async def test_registration_failure_does_not_return_credential(
+    monkeypatch: pytest.MonkeyPatch,
+    credential_registration: Mock,
+) -> None:
+    """Issuance fails closed if registration cannot be persisted."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    context = claims()
+    monkeypatch.setattr(
+        endpoint.crud_flow_execution,
+        "get_without_workspace",
+        Mock(return_value=SimpleNamespace(status="RUNNING")),
+    )
+    monkeypatch.setattr(endpoint.crud_tracker, "get", Mock(return_value=Mock()))
+    monkeypatch.setattr(
+        endpoint,
+        "mint_repository_lease",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                token="synthetic-token",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+        ),
+    )
+    credential_registration.side_effect = SQLAlchemyError("inventory unavailable")
+    with pytest.raises(SQLAlchemyError, match="inventory unavailable"):
+        await _refresh(context["execution_id"], Response(), context, Mock())
