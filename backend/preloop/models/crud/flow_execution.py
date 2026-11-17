@@ -1203,6 +1203,42 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         db.flush()
         return db_obj
 
+    def record_context_truncation(
+        self,
+        db: Session,
+        *,
+        execution_id: uuid.UUID | str,
+        signal: dict[str, Any],
+        message: str,
+        category: str,
+    ) -> None:
+        """Keep prompt-loss evidence and fail the run under its row lock.
+
+        A late usage record can correct a no-confirmation diagnosis or a
+        claimed success. An explicit human stop retains its status.
+        """
+        execution = (
+            db.query(models.FlowExecution)
+            .filter(models.FlowExecution.id == execution_id)
+            .populate_existing()
+            .with_for_update()
+            .one_or_none()
+        )
+        if execution is None:
+            return
+        receipt = dict(execution.startup_receipt or {})
+        receipt[category] = signal
+        changes: dict[str, Any] = {"startup_receipt": receipt}
+        if execution.status != "STOPPED":
+            changes.update(
+                status="FAILED",
+                failure_category=category,
+                error_message=message,
+                end_time=execution.end_time or datetime.now(timezone.utc),
+            )
+        self.update(db, db_obj=execution, obj_in=changes)
+        db.commit()
+
     def record_startup_receipt(
         self, db: Session, *, execution_id: uuid.UUID, receipt: dict[str, Any]
     ) -> None:
@@ -3600,6 +3636,28 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             .update({models.FlowExecution.status: status}, synchronize_session=False)
         )
         return bool(count)
+
+    def current_failure(
+        self, db: Session, *, execution_id: Any
+    ) -> dict[str, Any] | None:
+        """Read the stored failure without reusing a stale ORM snapshot."""
+        row = (
+            db.query(
+                models.FlowExecution.failure_category,
+                models.FlowExecution.error_message,
+            )
+            .filter(
+                models.FlowExecution.id == execution_id,
+                models.FlowExecution.status == "FAILED",
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        return {
+            "failure_category": row.failure_category,
+            "error_message": row.error_message,
+        }
 
     def current_status(
         self, db: Session, *, execution_id: Any, lock: bool = False

@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -120,6 +121,7 @@ from preloop.services.agent_session_headers import (
     runtime_principal_type,
 )
 from preloop.services import alibaba_pricing
+from preloop.services import context_truncation
 from preloop.services import kill_switch as kill_switch_service
 from preloop.services.context_optimization import (
     ContextOptimizationStats,
@@ -1458,6 +1460,7 @@ class OpenAIGatewayService:
         self._last_upstream_parameters = {}
         self._last_alibaba_cache_mode = None
         self._codex_transport_meta = None
+        self._context_input_estimate: Optional[int] = None
         self.last_usage_id = None
         # A fresh identity for every request, including one that never reaches
         # usage recording. Re-arming here (rather than minting at first use)
@@ -6319,7 +6322,7 @@ class OpenAIGatewayService:
                     maybe_usage = resp.get("usage")
                     if isinstance(maybe_usage, dict):
                         usage = maybe_usage
-                continue
+                break
 
             if event_type in {"response.failed", "response.error", "error"}:
                 resp = event.get("response") or event
@@ -8240,9 +8243,12 @@ class OpenAIGatewayService:
                             )
                         if isinstance(response_obj.get("output_text"), str):
                             state["snapshot_text"] = response_obj["output_text"]
+                        elif isinstance(response_obj.get("output"), list):
+                            state["snapshot_text"] = canonical_response_text(
+                                response_obj
+                            )
                         state["status"] = response_obj.get("status") or state["status"]
-                    if event_type == "response.completed":
-                        state["saw_terminal"] = True
+                    state["saw_terminal"] = True
                     continue
                 if event_type == "response.created":
                     response_obj = event.get("response")
@@ -8280,13 +8286,20 @@ class OpenAIGatewayService:
                     # Relay whole SSE frames: concatenating them reproduces the
                     # upstream bytes, and the policy wrapper needs complete
                     # ``data:`` events to assemble the response text.
-                    while "\n\n" in buffer:
-                        frame, buffer = buffer.split("\n\n", 1)
-                        frame = f"{frame}\n\n"
+                    while separator := re.search(r"\r?\n\r?\n", buffer):
+                        frame, buffer = (
+                            buffer[: separator.end()],
+                            buffer[separator.end() :],
+                        )
                         _consume_frame(frame, state)
                         if state["saw_terminal"]:
                             terminal_sent = True
                         yield frame
+                        if terminal_sent:
+                            break
+                    if terminal_sent:
+                        buffer = ""
+                        break
                 if buffer:
                     _consume_frame(buffer, state)
                     if state["saw_terminal"]:
@@ -8341,12 +8354,13 @@ class OpenAIGatewayService:
                         ai_model=ai_model,
                         requested_model=requested_model,
                         response_payload=None,
-                        upstream_response=None,
+                        upstream_response={"usage": state["usage"]},
                         endpoint_kind="responses_stream",
                         budget_result=budget_result,
                         error_detail=gateway_error.message,
                         error_class=gateway_error.error_class,
                         request_payload=payload,
+                        accumulated_output_text=_accumulated_text(),
                     )
                     recorded = True
                 logger.warning(
@@ -8799,6 +8813,7 @@ class OpenAIGatewayService:
 
     def _record_effective_request_parameters(self, body: Dict[str, Any]) -> None:
         """Keep only controls from the resolved outbound Responses body."""
+        self._context_input_estimate = context_truncation.estimate_request_input(body)
         parameters: Dict[str, Any] = {}
         if isinstance(body.get("model"), str):
             parameters["model"] = body["model"]
@@ -8977,6 +8992,9 @@ class OpenAIGatewayService:
             body.update(
                 model=ai_model.model_identifier, messages=messages, stream=stream
             )
+            self._context_input_estimate = context_truncation.estimate_request_input(
+                body
+            )
             if stream:
                 body["stream_options"] = {"include_usage": True}
             self.release_db_for_wait(ai_model)
@@ -8988,6 +9006,7 @@ class OpenAIGatewayService:
             stream=stream,
             provider=provider,
         )
+        self._context_input_estimate = context_truncation.estimate_request_input(kwargs)
 
         def _invoke() -> Any:
             self.release_db_for_wait(ai_model)
@@ -11470,7 +11489,11 @@ class OpenAIGatewayService:
             )
         token_details = self._extract_token_details(usage_details)
         usage_estimated = False
-        if not prompt_tokens and not completion_tokens and status_code in (200, 499):
+        if (
+            not prompt_tokens
+            and not completion_tokens
+            and (status_code in (200, 499) or accumulated_output_text)
+        ):
             fallback = self._estimate_usage_fallback(
                 ai_model=ai_model,
                 request_payload=request_payload,
@@ -11491,6 +11514,31 @@ class OpenAIGatewayService:
         )
         runtime_principal = runtime_context.get("runtime_principal") or {}
         runtime_session_id = self._resolve_runtime_session()
+
+        input_estimate = getattr(self, "_context_input_estimate", None)
+        if input_estimate is None:
+            input_estimate = context_truncation.estimate_request_input(
+                request_payload or {}
+            )
+        truncation_signal = None
+        if (
+            prompt_tokens
+            and input_estimate >= context_truncation.MIN_INPUT_ESTIMATE
+            and not usage_estimated
+            and usage_source != "estimated"
+        ):
+            previous_input = crud_api_usage.get_previous_gateway_input(
+                self.db,
+                account_id=str(self.auth_context.account_id),
+                ai_model_id=str(ai_model.id),
+                runtime_session_id=runtime_session_id,
+                execution_id=runtime_context.get("flow_execution_id"),
+            )
+            truncation_signal = context_truncation.detect_truncation(
+                estimated=input_estimate,
+                reported=int(prompt_tokens),
+                previous=previous_input,
+            )
 
         model_alias = runtime.model_gateway_model_alias or requested_model
         request_fingerprint = self._gateway_request_fingerprint(
@@ -11654,10 +11702,17 @@ class OpenAIGatewayService:
                 if upstream_response
                 else None,
                 "usage_details": usage_details or None,
+                "input_token_estimate": input_estimate,
+                context_truncation.CONTEXT_TRUNCATED_SUSPECTED: truncation_signal,
                 "upstream_parameters": dict(self._last_upstream_parameters) or None,
                 "first_response_at": self._first_model_response_at,
                 "usage_warnings": (
                     self._usage_warnings(usage_details)
+                    + (
+                        [context_truncation.CONTEXT_TRUNCATED_SUSPECTED]
+                        if truncation_signal
+                        else []
+                    )
                     + (
                         ["total_tokens_below_components"]
                         if total_below_components
@@ -11722,6 +11777,13 @@ class OpenAIGatewayService:
             str(usage_identity[0]) if usage_identity is not None else str(usage_row.id)
         )
         observed_at = usage_row.timestamp
+
+        if truncation_signal and runtime_context.get("flow_execution_id"):
+            context_truncation.record_execution_truncation(
+                self.db,
+                execution_id=runtime_context["flow_execution_id"],
+                signal=truncation_signal,
+            )
 
         self._record_credential_health(
             ai_model,
@@ -12473,6 +12535,7 @@ class OpenAIGatewayService:
         gateway_provider: GatewayProvider = "openai",
     ) -> Optional[BudgetCheckResult]:
         """Check configured gateway budgets before the upstream call."""
+        self._check_context_window(ai_model, payload, gateway_provider=gateway_provider)
         # The run's own per-execution ceiling is independent of the account
         # budget policies below: it applies even when no BudgetPolicy exists,
         # and it is refused before an extension enforcer can short-circuit.
@@ -12514,6 +12577,69 @@ class OpenAIGatewayService:
                     "Scheduling price lookup after denial failed", exc_info=True
                 )
         return result
+
+    def _check_context_window(
+        self,
+        ai_model: GatewayModel,
+        payload: Dict[str, Any],
+        *,
+        gateway_provider: GatewayProvider,
+    ) -> None:
+        """Refuse an oversized flow request before the model can discard input."""
+        from preloop.services.model_context_limits import resolve_model_context_limits
+        from preloop.models.crud import crud_flow_execution
+
+        context = (
+            self.auth_context.api_key.context_data if self.auth_context.api_key else {}
+        )
+        execution_id = (context or {}).get("flow_execution_id")
+        if not execution_id:
+            return
+        stored = crud_flow_execution.current_failure(self.db, execution_id=execution_id)
+        if (
+            stored
+            and stored.get("failure_category")
+            == context_truncation.CONTEXT_TRUNCATED_SUSPECTED
+        ):
+            if self._owns_db_session:
+                self.release_db_for_wait()
+            raise ModelGatewayAPIError(
+                provider=gateway_provider,
+                status_code=400,
+                code=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+                error_class=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+                message=stored["error_message"],
+                terminal=True,
+                origin="gateway",
+            )
+        limits = resolve_model_context_limits(
+            model_identifier=ai_model.model_identifier,
+            provider_name=ai_model.provider_name,
+            model_parameters=ai_model.model_parameters,
+        )
+        estimate = context_truncation.estimate_request_input(payload)
+        if limits.context_window is None or estimate <= limits.context_window:
+            return
+        signal = {
+            "signal": "registered_context_window_exceeded",
+            "estimated_input_tokens": estimate,
+            "context_window": limits.context_window,
+            "context_window_source": limits.context_window_source,
+        }
+        context_truncation.record_execution_truncation(
+            self.db, execution_id=execution_id, signal=signal
+        )
+        if self._owns_db_session:
+            self.release_db_for_wait()
+        raise ModelGatewayAPIError(
+            provider=gateway_provider,
+            status_code=400,
+            code=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+            error_class=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+            message=context_truncation.truncation_message(signal),
+            terminal=True,
+            origin="gateway",
+        )
 
     @staticmethod
     def _normalize_budget_gateway_error(
