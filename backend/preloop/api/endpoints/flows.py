@@ -3450,8 +3450,11 @@ async def trigger_flow_execution(
             ) from None
         try:
             return await trigger_ci_review(db, context=current_user, request=request)
-        except PermissionError:
-            raise HTTPException(403, "Restricted CI review denied") from None
+        except PermissionError as error:
+            from preloop.services.denial_audit import REASONS, reason_for_detail
+
+            code = reason_for_detail(str(error), "ci_review_denied")
+            raise HTTPException(403, {"code": code, "message": REASONS[code]}) from None
         except CiReviewUnavailableError as error:
             detail: dict[str, Any] = {
                 "message": "Restricted CI review verification unavailable"

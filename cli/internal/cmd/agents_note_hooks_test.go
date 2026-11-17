@@ -189,6 +189,18 @@ func TestSessionEndHookPostsOwnSession(t *testing.T) {
 	}
 }
 
+func TestSessionEndHookIgnoresTurnStopEvents(t *testing.T) {
+	stub, _ := newNoteHookStub(t)
+	for _, event := range []string{"Stop", "SubagentStop", "stop"} {
+		for i := 0; i < 5; i++ {
+			runNoteHook(t, runAgentsSessionEndHook, fmt.Sprintf(`{"session_id":"synthetic-session","hook_event_name":%q}`, event))
+		}
+	}
+	if len(stub.sessionEnd) != 0 {
+		t.Fatalf("turn completion ended the conversation: %#v", stub.sessionEnd)
+	}
+}
+
 func TestSessionHookDeliversNoteAsAdditionalContext(t *testing.T) {
 	stub, _ := newNoteHookStub(t)
 	stub.pendingText = "<operator-notes>deploy to eu-west-1</operator-notes>"

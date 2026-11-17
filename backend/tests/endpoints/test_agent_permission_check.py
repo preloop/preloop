@@ -7,6 +7,7 @@ permission service unchanged, and stamps it into ``tool_input`` as the
 ``_preloop_source`` marker approver surfaces read.
 """
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
@@ -672,3 +673,72 @@ def test_flow_execution_id_needs_an_execution_scoped_flow_token() -> None:
         )
         is None
     )
+
+
+def test_permission_refusals_are_counted_with_safe_reason(
+    client: TestClient, db_session: Session
+) -> None:
+    """A native retry storm records a reason without storing command arguments."""
+    from preloop.models import models
+
+    token = _issue_opencode_runtime_token(client)
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission",
+        new=AsyncMock(return_value=("deny", "Tool blocked in Preloop", None, False)),
+    ):
+        for _ in range(7):
+            response = client.post(
+                PERMISSION_CHECK_URL,
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "secret synthetic-command"},
+                },
+            )
+            assert response.status_code == 200
+            assert response.json()["decision"] == "deny"
+    rows = (
+        db_session.query(models.AuditLog)
+        .filter_by(action="agent_permission_denied")
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].details["count"] == 7
+    assert rows[0].details["reason_code"] == "tool_blocked"
+    assert rows[0].details["principal_type"] == "managed_agent"
+    assert rows[0].resource_id == "Bash"
+    assert "synthetic-command" not in str(rows[0].details)
+    assert token not in str(rows[0].details)
+
+
+def test_permission_auth_403_is_audited(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A known credential refused before a permission decision retains attribution."""
+    from fastapi import HTTPException
+    from preloop.api.endpoints import agent_permission
+    from preloop.models import models
+
+    token = _issue_opencode_runtime_token(client)
+
+    def refuse(*args: Any, **kwargs: Any) -> None:
+        raise HTTPException(
+            403, {"code": "api_key_scope_denied", "message": "synthetic-secret"}
+        )
+
+    monkeypatch.setattr(agent_permission, "_resolve_permission_identity", refuse)
+    for _ in range(3):
+        response = client.post(
+            PERMISSION_CHECK_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"tool_name": "Bash"},
+        )
+        assert response.status_code == 403
+    row = (
+        db_session.query(models.AuditLog)
+        .filter_by(action="agent_permission_denied")
+        .one()
+    )
+    assert row.details["count"] == 3
+    assert row.details["reason_code"] == "api_key_scope_denied"
+    assert "synthetic-secret" not in str(row.details)

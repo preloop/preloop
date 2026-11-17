@@ -762,6 +762,46 @@ class AgentPermissionCheckResponse(BaseModel):
     )
 
 
+def _audit_permission_denial(token: str, tool_name: str, reason_code: str) -> None:
+    """Recover stored attribution even when authentication refused the key."""
+    from preloop.services.denial_audit import write_denial
+
+    with get_session_factory()() as db:
+        key = crud_api_key.get_by_key(db, key=token, include_restricted=True)
+        if key is None:
+            # Unknown credentials have no trustworthy tenant or principal.
+            # Never use request-supplied account/session ids for attribution.
+            logger.info("Unattributed permission credential refused")
+            return
+        context = key.context_data if isinstance(key.context_data, dict) else {}
+        principal = context.get("runtime_principal")
+        principal = principal if isinstance(principal, dict) else {}
+        principal_id = key.id
+        principal_type = "api_key"
+        try:
+            if principal.get("type") in {"managed_agent", "flow_execution"}:
+                principal_id = UUID(str(principal.get("id")))
+                principal_type = principal["type"]
+        except ValueError:
+            pass
+        try:
+            agent = _managed_agent_for_api_key(db, key)
+        except HTTPException:
+            agent = None  # Invalid session bindings still have a stored key identity.
+        if agent is not None:
+            principal_id, principal_type = agent.id, "managed_agent"
+        write_denial(
+            db,
+            account_id=key.account_id,
+            principal_id=principal_id,
+            principal_type=principal_type,
+            user_id=key.user_id,
+            action="agent_permission_denied",
+            target=tool_name.replace(token, "[REDACTED]") if token else tool_name,
+            reason_code=reason_code,
+        )
+
+
 @router.post(
     "/agents/permission-check",
     response_model=AgentPermissionCheckResponse,
@@ -772,6 +812,47 @@ async def agent_permission_check(
     authorization: Optional[str] = Header(None),
 ) -> AgentPermissionCheckResponse:
     """Decide whether an onboarded agent's native tool call may proceed."""
+    from preloop.services.denial_audit import reason_for_detail
+
+    token = (
+        authorization.split(" ", 1)[1].strip()
+        if authorization and authorization.lower().startswith("bearer ")
+        else ""
+    )
+    try:
+        result = await _agent_permission_check(payload, authorization)
+    except HTTPException as exc:
+        if exc.status_code in {401, 403}:
+            code = reason_for_detail(exc.detail, "permission_auth_denied")
+            await run_db_off_loop(
+                lambda: _audit_permission_denial(token, payload.tool_name, code)
+            )
+        raise
+    if result.decision == "deny":
+        fallback = (
+            "approval_pending"
+            if result.parked
+            else "approval_expired"
+            if result.timed_out
+            else "approval_denied"
+            if result.request_id
+            else "permission_denied"
+        )
+        code = (
+            fallback
+            if result.request_id or result.timed_out or result.parked
+            else reason_for_detail(result.reason, fallback)
+        )
+        await run_db_off_loop(
+            lambda: _audit_permission_denial(token, payload.tool_name, code)
+        )
+    return result
+
+
+async def _agent_permission_check(
+    payload: AgentPermissionCheckRequest, authorization: Optional[str]
+) -> AgentPermissionCheckResponse:
+    """Authenticate and evaluate a native call; the public wrapper audits refusals."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

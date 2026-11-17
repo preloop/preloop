@@ -72,6 +72,7 @@ from sqlalchemy.orm import Session
 from preloop.config import settings
 from preloop.cra.evidence_pack import canonical_manifest_json
 from preloop.models.crud import audit_chain as crud_audit_chain
+from preloop.models.crud.denial_audit import closed_denial_windows
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.audit_chain import (
@@ -381,6 +382,7 @@ def seal_account(
                     AuditLog.account_id == account_id,
                     AuditLog.chain_seq.is_(None),
                     AuditLog.timestamp <= cutoff,
+                    closed_denial_windows(),
                 )
                 .order_by(AuditLog.timestamp, AuditLog.id)
                 .limit(size)

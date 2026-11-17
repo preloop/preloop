@@ -42,6 +42,7 @@ function contains(value: unknown, text: string): boolean {
 /** Claim at prompt build; acknowledge witnessed context only after a real model call. */
 export class OperatorNotes {
   private sessions = new Map<string, Session>();
+  private endedSessions = new Set<string>();
   private calls = new Map<string, Promise<unknown>>();
   constructor(
     private readonly permissionCheckUrl: string,
@@ -247,6 +248,7 @@ export class OperatorNotes {
     )
       return;
     await this.serial(event.sessionId, async () => {
+      if (this.endedSessions.has(event.sessionId!)) return;
       // Native terminal events remain authoritative after cache eviction.
       // The backend resolves external ids only within this bearer principal.
       try {
@@ -257,6 +259,9 @@ export class OperatorNotes {
           reason: event.reason,
         });
         this.sessions.delete(event.sessionId);
+        this.endedSessions.add(event.sessionId);
+        if (this.endedSessions.size > 256)
+          this.endedSessions.delete(this.endedSessions.values().next().value!);
       } catch {
         /* TTL or another authority may terminalize an unreachable run. */
       }

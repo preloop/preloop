@@ -10151,6 +10151,18 @@ paths:
           description: Exact external grant reference
           title: Grant Reference
         description: Exact external grant reference
+      - name: reason_code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 100
+          - type: 'null'
+          description: Exact refusal reason code
+          title: Reason Code
+        description: Exact refusal reason code
       - name: error_code
         in: query
         required: false
@@ -10348,6 +10360,18 @@ paths:
           description: Exact external grant reference
           title: Grant Reference
         description: Exact external grant reference
+      - name: reason_code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 100
+          - type: 'null'
+          description: Exact refusal reason code
+          title: Reason Code
+        description: Exact refusal reason code
       - name: error_code
         in: query
         required: false

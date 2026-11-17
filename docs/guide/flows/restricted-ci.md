@@ -1841,3 +1841,41 @@ material. A human owner can replace or rotate the API key for that model.
 Timeouts, network failures, rate limits and provider `5xx` responses allow the
 review to proceed. Billing rejection marks do not block reviews; unmarked models
 have no extra provider call. Probe calls appear in gateway usage and audit.
+
+## Find a refused trigger in the audit trail
+
+Restricted CI refusals are recorded as `restricted_ci_denied`, including
+credential and transport failures before the trigger handler, invalid request
+shapes, flow binding mismatches, and trusted provider admission failures.
+Each record has the stored CI principal (or key when no principal is bound),
+the requested flow UUID, `details.reason_code`, a plain `details.message`, and
+`details.count`. Other refused operations use a fixed operation label instead
+of retaining arbitrary request URLs.
+
+Use your console session or a human API credential with `view_audit_logs`:
+
+```http
+GET /api/v1/audit-logs?action=restricted_ci_denied&reason_code=ci_head_mismatch
+GET /api/v1/audit-logs/grouped?reason_code=ci_flow_denied
+```
+
+Common reasons are `ci_transport_denied` (use one bearer header),
+`ci_key_inactive`, `ci_key_expired`, `ci_principal_inactive`,
+`ci_action_denied`, `ci_credential_invalid` (check the credential binding), `ci_authorization_denied`
+(check the principal's current grant and binding), `ci_flow_denied` (wrong
+flow), `ci_input_invalid` (send only the PR number and exact head),
+`ci_pr_closed`, `ci_repository_mismatch`, and `ci_head_mismatch` (refresh the
+provider's PR state). Verification or dispatch unavailability is recorded as
+`ci_verification_unavailable` rather than inventing a provider diagnosis.
+
+Identical refusals from one principal to one target with one reason share a
+single record per UTC minute. `count` includes the first attempt; `window_start`
+and `window_end` identify the interval. The current minute is visible immediately
+but remains unsealed. After the minute closes, the normal audit sealer hashes the
+final counter. Later retries create a new row; sealed evidence is never changed.
+The list's `total` counts records, so sum `details.count` to count refused attempts.
+
+Bodies, credentials, provider response text and arbitrary URLs are excluded.
+Only credentials that resolve to a stored account can be attributed to that
+account's audit trail. Unknown or missing credentials cannot safely be assigned
+to an account from a caller-supplied account or session ID.

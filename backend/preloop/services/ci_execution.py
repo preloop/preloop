@@ -142,7 +142,8 @@ def _accepted_binding(source: _ProviderRead, pr: Any) -> CiReviewBinding:
             raise CiReviewDeniedError("Restricted CI pull request verification denied")
         repositories = [side.get("repo") for side in (head, base)]
         number, sha, branch = pr.get("number"), head.get("sha"), base.get("ref")
-        valid = pr.get("state") == "open" and all(
+        open_pr = pr.get("state") == "open"
+        valid = all(
             isinstance(repo, dict)
             and str(repo.get("id")) == context.repository_identifier
             and repo.get("full_name") == context.repository_slug
@@ -150,10 +151,17 @@ def _accepted_binding(source: _ProviderRead, pr: Any) -> CiReviewBinding:
         )
     else:
         number, sha, branch = pr.get("iid"), pr.get("sha"), pr.get("target_branch")
-        valid = pr.get("state") == "opened" and all(
+        open_pr = pr.get("state") == "opened"
+        valid = all(
             str(pr.get(name)) == context.repository_identifier
             for name in ("source_project_id", "target_project_id")
         )
+    if not open_pr:
+        raise CiReviewDeniedError("Restricted CI pull request is not open")
+    if not valid:
+        raise CiReviewDeniedError("Restricted CI repository binding does not match")
+    if sha != request.head_sha:
+        raise CiReviewDeniedError("Restricted CI pull request head changed")
     provider_id = pr.get("id")
     if (
         not valid

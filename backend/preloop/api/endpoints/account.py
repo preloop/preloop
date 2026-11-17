@@ -4082,18 +4082,23 @@ async def update_account_runtime_session(
             detail="Unsupported runtime session action",
         )
 
-    ended_at = session.ended_at or datetime.now(UTC)
-    updated = crud_runtime_session.update_operator_state(
+    updated, ended_now = crud_runtime_session.mark_ended_by_hook(
         db,
         account_id=str(account.id),
         runtime_session_id=runtime_session_id,
-        ended_at=ended_at,
-        commit=True,
+        ended_at=datetime.now(UTC),
+        commit=False,
     )
     if updated is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
         )
+
+    if not ended_now:
+        summary_row = crud_runtime_session.get_account_session_summary(
+            db, account_id=str(account.id), runtime_session_id=runtime_session_id
+        )
+        return RuntimeSessionExplorerService._summary_row_to_schema(summary_row)
 
     # A note addressed only to this session can no longer arrive (#1551).
     from preloop.services.operator_notes import undeliver_session_notes
@@ -4103,7 +4108,33 @@ async def update_account_runtime_session(
         account_id=str(account.id),
         runtime_session_id=updated.id,
         reason="session ended (operator)",
+        commit=False,
     )
+    # Persist the transition, audit row and webhook intent together. A retry
+    # observes ended_at only after all three have committed.
+    crud_audit_log.log_action(
+        db,
+        account_id=account.id,
+        user_id=current_user.id,
+        action="runtime_session_ended",
+        resource_type="runtime_session",
+        resource_id=str(updated.id),
+        status="ended",
+        details={
+            "runtime_session_id": str(updated.id),
+            "event": "ended",
+            "reason": "operator",
+            "session_source_type": updated.session_source_type,
+        },
+        commit=False,
+    )
+    crud_api_key.deactivate_runtime_keys_for_session(
+        db,
+        account_id=str(account.id),
+        runtime_session_id=runtime_session_id,
+        commit=False,
+    )
+
     emit_session_ended(db, updated, reason="operator")
     db.commit()
 
@@ -4112,13 +4143,6 @@ async def update_account_runtime_session(
         account_id=str(account.id),
         session=updated,
         actor_user_id=current_user.id,
-    )
-
-    crud_api_key.deactivate_runtime_keys_for_session(
-        db,
-        account_id=str(account.id),
-        runtime_session_id=runtime_session_id,
-        commit=True,
     )
 
     managed_agent_summary = None
@@ -4144,27 +4168,6 @@ async def update_account_runtime_session(
             status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
         )
     summary = RuntimeSessionExplorerService._summary_row_to_schema(summary_row)
-
-    try:
-        from preloop.plugins.base import get_plugin_manager
-
-        plugin_manager = get_plugin_manager()
-        audit_service = plugin_manager.get_service("audit_service")
-        if audit_service:
-            audit_service.log_runtime_session_event(
-                db=db,
-                account_id=account.id,
-                runtime_session_id=updated.id,
-                event="ended",
-                session_source_type=updated.session_source_type,
-                session_source_id=updated.session_source_id,
-                session_reference=updated.session_reference,
-                runtime_principal_type=updated.runtime_principal_type,
-                runtime_principal_id=updated.runtime_principal_id,
-                runtime_principal_name=updated.runtime_principal_name,
-            )
-    except Exception:
-        logger.debug("Failed to audit runtime session operator action", exc_info=True)
 
     emit_account_event(
         build_account_event(

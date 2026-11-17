@@ -358,6 +358,11 @@ def _get_db_factory():
         return None
 
 
+_record_policy_denials: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "record_policy_denials", default=True
+)
+
+
 def _log_policy_decision_async(
     account_id: uuid.UUID,
     tool_name: str,
@@ -420,6 +425,11 @@ def _log_policy_decision_async(
                 logger.debug("Failed to emit policy.denied webhook: %s", exc)
 
         submit_off_loop(_emit_policy_denied)
+
+    if action == "deny" and not _record_policy_denials.get():
+        # Native permission checks record their final refusal in a minute
+        # counter, including auth and approval refusals outside this evaluator.
+        return
 
     try:
         audit_service = _get_audit_service()
@@ -1742,6 +1752,7 @@ async def evaluate_policy_async(
     server_name: Optional[str] = None,
     resolve_tool_configuration: bool = True,
     record: bool = True,
+    record_denials: bool = True,
     trace: Optional[list[dict[str, Any]]] = None,
     defer_note_scope: bool = False,
     tool_source: Optional[str] = None,
@@ -1755,6 +1766,7 @@ async def evaluate_policy_async(
     ``pii.paths`` from the sensitive-data scan).
     """
     writes: list[Callable[[Session], None]] = []
+    denial_token = _record_policy_denials.set(record_denials)
     audit_token = _policy_audit_writes.set(writes)
     scope_token = _policy_storage_scope.set(
         _storage_scope_identity(subject_context, server_name or server_label)
@@ -1989,6 +2001,7 @@ async def evaluate_policy_async(
 
     finally:
         _policy_storage_scope.reset(scope_token)
+        _record_policy_denials.reset(denial_token)
         _policy_audit_writes.reset(audit_token)
         if writes:
             await db.run_sync(_flush_policy_audit, writes)

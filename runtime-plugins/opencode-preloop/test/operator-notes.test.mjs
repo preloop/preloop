@@ -160,3 +160,17 @@ test("concurrent transforms serialize acknowledgment before the next pull", asyn
     "notes/ack",
   ]);
 });
+
+test("duplicate terminal callbacks share one successful end", async () => {
+  const { plugin, calls } = setup();
+  await Promise.all(Array.from({ length: 10 }, () => plugin.endNoteSession("ses_synthetic")));
+  await plugin.endNoteSession("ses_synthetic");
+  assert.equal(calls.filter(call => call.url.endsWith("session-end")).length, 1);
+});
+
+test("failed terminal delivery remains retryable", async () => {
+  const { plugin, calls } = setup(true);
+  await plugin.endNoteSession("ses_synthetic");
+  await plugin.endNoteSession("ses_synthetic");
+  assert.equal(calls.filter(call => call.url.endsWith("session-end")).length, 2);
+});

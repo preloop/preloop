@@ -55,6 +55,7 @@ class OperatorNotes:
         self.token = token
         self.transport = transport or self._post
         self.sessions: dict[str, Session] = {}
+        self.ended_sessions: dict[str, None] = {}
         self.lock = threading.Lock()
 
     def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -206,6 +207,9 @@ class OperatorNotes:
         if not session_id or len(session_id) > 200:
             return
         with self._state(session_id, create=True) as state:
+            with self.lock:
+                if session_id in self.ended_sessions:
+                    return
             try:
                 if state is not None:
                     self._ack(session_id, state)
@@ -214,5 +218,9 @@ class OperatorNotes:
                 )
             except Exception:
                 return  # TTL or another authority may terminalize an unreachable run.
+            with self.lock:
+                self.ended_sessions[session_id] = None
+                if len(self.ended_sessions) > 256:
+                    self.ended_sessions.pop(next(iter(self.ended_sessions)))
             if state is not None:
                 state.closed = True

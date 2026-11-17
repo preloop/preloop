@@ -333,3 +333,10 @@ def test_registration_refusal_keeps_tool_approval_and_disables_partial_notes(
     plugin.register(Context())
     assert callable(hooks["pre_tool_call"])
     assert hooks["pre_llm_call"](session_id="synthetic", turn_id="synthetic") is None
+
+
+def test_repeated_finalize_posts_only_one_end() -> None:
+    notes, calls, _ = fixture()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda _: notes.finalized("session-1", "shutdown"), range(10)))
+    assert sum(path == "session-end" for path, _ in calls) == 1

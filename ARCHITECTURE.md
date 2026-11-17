@@ -9,6 +9,10 @@ environment before upload. API validation, application, and version restore
 preserve submitted values; the shared policy applier does no environment
 substitution. See [Policy-as-code](docs/guide/concepts/policy-as-code.md).
 
+Refused CI triggers and agent permission checks use durable minute counters;
+closed counters join the existing audit hash chain. Session-end lifecycle writes
+are idempotent. See [refusal counters and chain sealing](docs/architecture/security.md#refusal-counters-and-chain-sealing).
+
 ## High-Level Architecture
 
 ```mermaid
