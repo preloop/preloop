@@ -310,6 +310,9 @@ async def resume_existing_execution(
                 failure_category="verification_blocked",
                 end_time=datetime.now(timezone.utc),
             )
+            await orchestrator.settle_commit_status(
+                "FAILED", error_message=str(exc), result=saved_result
+            )
             await orchestrator._notify_terminal(
                 status="FAILED",
                 result=saved_result,
@@ -336,6 +339,7 @@ async def resume_existing_execution(
             await orchestrator._replay_persisted_runner_logs()
             await orchestrator._finish_isolated_publication(agent_result)
         final_status = agent_result.get("status", "FAILED")
+        agent_result = orchestrator._explain_schema_rejection(agent_result)
         resume_category = derive_failure_category(
             status=final_status,
             error_message=agent_result.get("error_message"),
@@ -345,7 +349,7 @@ async def resume_existing_execution(
             getattr(orchestrator.execution_log, "result", None),
             agent_result.get("result"),
         )
-        await orchestrator._update_execution_log(
+        stored_status = await orchestrator._update_execution_log(
             status=final_status,
             model_output_summary=agent_result.get("output_summary"),
             error_message=agent_result.get("error_message"),
@@ -356,6 +360,14 @@ async def resume_existing_execution(
             mcp_usage_logs=agent_result.get("mcp_usage_logs"),
             result=merged_result,
             end_time=datetime.now(timezone.utc),
+        )
+        # The worker that started the run set the pending commit status;
+        # the worker that finishes it replaces it (a stop that landed first
+        # keeps STOPPED, so the stored status decides).
+        await orchestrator.settle_commit_status(
+            str(stored_status or final_status),
+            error_message=agent_result.get("error_message"),
+            result=merged_result,
         )
         await orchestrator._notify_terminal(
             status=final_status,

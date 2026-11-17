@@ -6,6 +6,7 @@ from typing import Annotated, Any, Dict, List, Literal, NoReturn, Optional, cast
 
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     Header,
     HTTPException,
@@ -1906,11 +1907,28 @@ def get_execution_result_export(
     "/flows/executions/{execution_id}/platform-review",
     responses={
         404: {"description": "No such execution for this caller."},
+        400: {
+            "description": (
+                "A precondition value is malformed or the body names an "
+                "unknown member. ``detail.code`` is "
+                "``review_precondition_malformed`` and ``detail.precondition`` "
+                "names the member."
+            )
+        },
         409: {
             "description": (
                 "Nothing can be published for this execution: the flow has "
                 "not opted in, the execution has not finished, or it has no "
                 "restricted CI review binding. ``detail.code`` names which."
+            )
+        },
+        412: {
+            "description": (
+                "A caller precondition does not hold; nothing was posted. "
+                "``detail.code`` is ``review_precondition_failed``; "
+                "``detail.precondition``, ``detail.expected`` and "
+                "``detail.current`` describe the first failure and "
+                "``detail.failed`` lists every one."
             )
         },
     },
@@ -1920,6 +1938,22 @@ def publish_execution_platform_review(
     *,
     db: Session = Depends(get_db),
     execution_id: uuid.UUID,
+    body: Any = Body(
+        default=None,
+        description=(
+            "Optional preconditions, each optional: expected_head_sha, "
+            "expected_base_sha (full commit SHAs), expected_result_sha256 "
+            "(64 hex characters, as on GET .../result) and "
+            "expected_flow_revision (positive integer)."
+        ),
+        examples=[
+            {
+                "expected_head_sha": "0" * 40,
+                "expected_result_sha256": "0" * 64,
+                "expected_flow_revision": 3,
+            }
+        ],
+    ),
     current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
 ) -> Dict[str, Any]:
     """Publish, or publish again, a finished review without running the model.
@@ -1927,7 +1961,25 @@ def publish_execution_platform_review(
     Posts the stored, validated result of a finished read-only review as a
     pull request review and commit status on the commit the execution
     reviewed. The target comes from the execution's own binding; the request
-    has no body and cannot name a repository, pull request or commit.
+    cannot name a repository, pull request or commit.
+
+    This is the only way a flow in ``manual`` platform review mode posts; a
+    flow in ``automatic`` mode also posts when the execution finishes.
+
+    The optional body carries preconditions. Each supplied one is checked
+    before anything is posted, again after the flow and result are re-read
+    for posting, and, for the commit SHAs, against the live pull request
+    before the first write:
+
+    - ``expected_head_sha``: the execution's bound head and the live head.
+    - ``expected_base_sha``: the bound base (when the binding has one) and
+      the live base.
+    - ``expected_result_sha256``: ``result_sha256`` of the stored result, as
+      returned by ``GET /flows/executions/{id}/result``.
+    - ``expected_flow_revision``: the flow's current configuration revision.
+
+    A failed precondition returns 412, posts nothing and records nothing as
+    posted; the call can be repeated with corrected values.
 
     The call is idempotent. A review or status that was already posted for
     the execution is not posted again; the response is the current
@@ -1939,6 +1991,9 @@ def publish_execution_platform_review(
     """
     from preloop.services.platform_review import (
         PlatformReviewRefusedError,
+        PreconditionFailedError,
+        PreconditionMalformedError,
+        parse_preconditions,
         publish_platform_review,
     )
     from preloop.tools.utils import run_async
@@ -1953,13 +2008,48 @@ def publish_execution_platform_review(
         ensure_permission_in_oss(db, current_user, "edit_flows")
         account_id = current_user.account_id
     try:
+        preconditions = parse_preconditions(body)
+    except PreconditionMalformedError as exc:
+        raise HTTPException(
+            400,
+            detail={
+                "code": "review_precondition_malformed",
+                "message": str(exc),
+                "precondition": exc.field,
+            },
+        ) from None
+    try:
         projection = run_async(
             publish_platform_review(
-                db, account_id=account_id, execution_id=execution_id, explicit=True
+                db,
+                account_id=account_id,
+                execution_id=execution_id,
+                explicit=True,
+                preconditions=preconditions,
+                actor_user_id=None
+                if isinstance(current_user, CiAuthorizationContext)
+                else current_user.id,
             )
         )
     except LookupError:
         raise HTTPException(404, "Flow execution not found") from None
+    except PreconditionFailedError as exc:
+        first = exc.failures[0]
+        raise HTTPException(
+            412,
+            detail={
+                "code": "review_precondition_failed",
+                "message": (
+                    "Nothing was posted: "
+                    + ", ".join(item["precondition"] for item in exc.failures)
+                    + " did not match"
+                ),
+                "precondition": first["precondition"],
+                "expected": first["expected"],
+                "current": first["current"],
+                "failed": exc.failures,
+            },
+        ) from None
     except PlatformReviewRefusedError as exc:
         raise HTTPException(
             exc.status_code,
@@ -2086,12 +2176,18 @@ def get_flow_execution_result(
     A restricted CI credential (``execution:result:read``) reads only its own
     execution and gets the correlation fields of the status projection,
     including ``startup_receipt``, plus ``result`` (the captured document
-    without controller-private members), ``result_withheld_paths`` (JSON
+    without controller-private members), ``result_sha256`` (SHA-256 of that
+    ``result`` in canonical form: keys sorted, separators ``,`` and ``:``,
+    UTF-8 without ASCII escapes; the value the platform-review publish call
+    accepts as ``expected_result_sha256``), ``result_withheld_paths`` (JSON
     Pointers of any withheld members; empty means ``result`` is the complete
     captured document) and ``schema_validation`` (``valid``, ``error_count``
     and ``errors``; messages are omitted when a member was withheld).
     """
-    from preloop.services.review_completion_evidence import result_availability
+    from preloop.services.review_completion_evidence import (
+        result_availability,
+        result_sha256,
+    )
 
     if isinstance(current_user, CiAuthorizationContext):
         execution = _owned_ci_execution(
@@ -2117,6 +2213,7 @@ def get_flow_execution_result(
             # Pointers of members withheld as controller-private; empty means
             # the projected document is the complete captured document.
             "result_withheld_paths": withheld,
+            "result_sha256": result_sha256(execution.result),
             "schema_validation": _ci_schema_validation(
                 execution, messages=not withheld
             ),
@@ -2132,6 +2229,10 @@ def get_flow_execution_result(
         "execution_id": str(execution.id),
         "status": execution.status,
         "result": execution.result,
+        # Digest of the restricted projection of ``result`` (members a CI
+        # identity would not see are excluded), the value the publish call
+        # compares ``expected_result_sha256`` with.
+        "result_sha256": result_sha256(execution.result),
         "evidence": evidence_status(
             db, account_id=current_user.account_id, execution=execution
         ),

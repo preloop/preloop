@@ -1565,8 +1565,12 @@ def test_publish_request_cannot_name_a_target(
         headers={"Authorization": f"Bearer {who.token}"},
         json={"repository": other.slug, "pr_number": 99, "head_sha": OTHER_HEAD},
     )
-    assert posted.status_code == 200, posted.text
-    assert list(world.github.reviews) == [(project.slug, 7)]
+    # A member that is not a precondition is refused, not ignored: a
+    # misspelt precondition must never post unchecked.
+    assert posted.status_code == 400, posted.text
+    assert posted.json()["detail"]["code"] == "review_precondition_malformed"
+    assert world.github.reviews == {}
+    assert world.github.writes == []
 
 
 def test_account_user_republishes_and_unfinished_or_opted_out_is_refused(

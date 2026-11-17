@@ -204,7 +204,7 @@ class CRUDPlatformReviewPublication:
     def unclaimed_execution_ids(
         self, db: Session, *, finished_within: timedelta, limit: int = 20
     ) -> list[tuple[UUID, UUID]]:
-        """Finished executions of opted-in flows that no attempt has claimed.
+        """Finished executions of automatic-mode flows no attempt has claimed.
 
         Covers a run that reached a terminal status outside the worker that
         would have published it (an operator stop, a crashed worker). Only
@@ -229,6 +229,8 @@ class CRUDPlatformReviewPublication:
             ("platform_review", "enabled_at")
         ].as_string()
         since = func.coalesce(cast(stamp, DateTime), flow.updated_at)
+        # Manual mode posts only on the explicit call, never from a sweep.
+        mode: Any = flow.git_clone_config[("platform_review", "mode")].as_string()
         rows = (
             db.query(flow.account_id, execution.id)
             .join(flow, flow.id == execution.flow_id)
@@ -243,6 +245,7 @@ class CRUDPlatformReviewPublication:
                 # Leave the finishing worker time to publish first.
                 execution.end_time <= _now() - timedelta(minutes=2),
                 enabled.is_(True),
+                or_(mode.is_(None), mode != "manual"),
                 execution.end_time >= since,
             )
             .order_by(execution.end_time.asc())

@@ -489,7 +489,7 @@ Recover without rerunning:
    [result export grant](#explicit-export-of-a-completed-human-review) instead of widening
    the CI credential.
 3. For an opted-in flow, call the authorized
-   [`POST /api/v1/flows/executions/{id}/platform-review`](#publish-a-finished-review-again-without-a-model-run)
+   [`POST /api/v1/flows/executions/{id}/platform-review`](#publish-a-finished-review-manual-mode-or-again)
    to republish the stored document. Read `platform_review` to confirm the
    posting outcome. This does not rerun the model; current head, validity and
    permission checks still apply.
@@ -1341,6 +1341,20 @@ flow that has `publication_mode: "read_only"`, `validate_result: true` and a
 `result_schema`. It works with and without `ci_project_selection`. Enabling it
 needs no new CI identities.
 
+### Posting modes
+
+| Mode | Stored as | What is posted |
+| --- | --- | --- |
+| Off | `"enabled": false`, or no `platform_review` block | Nothing. The publish call answers 409 `platform_review_disabled`. |
+| Automatic | `"enabled": true` (with `"mode": "automatic"` or no `mode`) | The review and status are posted when each run finishes, and retried by Preloop after a transient failure. The publish call can also post. |
+| Manual | `"enabled": true, "mode": "manual"` | Nothing when a run finishes and no automatic retry. Only the [publish call](#publish-a-finished-review-manual-mode-or-again) posts, so your own controller decides, per run, whether the review goes out. |
+
+A block saved before the mode existed has no `mode` and stays automatic.
+Manual mode is the one to use when your CI validates each result itself and
+posts only what it approved: send the publish call with
+[preconditions](#preconditions) so Preloop posts exactly the result, commit
+and flow configuration your controller checked.
+
 ### Turn it on in the console
 
 Open the flow. Read-only review flows show a **Post review on the pull
@@ -1354,7 +1368,10 @@ request** card under the publication policy:
    GitHub App permissions (**Pull requests: Read and write**, **Commit
    statuses: Read and write**) cannot be read from Preloop, so the card asks
    you to confirm them in GitHub.
-2. Switch on **Post the review on the pull request**.
+2. Under **When to post**, choose **When the run finishes** (automatic) or
+   **Only when requested** (manual: nothing is posted until the publish call
+   is made). **Off** turns posting off. The badge on the card shows the saved
+   mode.
 3. To set a commit status, tick **Set a commit status for each verdict** and
    choose Success, Failure or Error for every verdict of your schema. Keep
    the status name (`preloop/review` by default) stable if a branch
@@ -1401,6 +1418,7 @@ Every command takes `--json`. The commands use your saved login or
 | Key | Meaning |
 | --- | --- |
 | `enabled` | Turns posting on. |
+| `mode` | `automatic` (default) or `manual`; see [Posting modes](#posting-modes). |
 | `enabled_at` | Read-only. Set by Preloop when posting is turned on; runs that finished before it are not published automatically (the publish call below still can). |
 | `verdict_actions` | Optional map from verdict to `comment`, `approve` or `request_changes`. Without an entry the review is a comment. An approval is never implied. |
 | `status` | Optional. Omit it to post the review only. |
@@ -1507,6 +1525,8 @@ not opted in):
 <!-- example: fragment -->
 ```json
 {
+  "mode": "manual",
+  "posted_by": "manual",
   "status": "posted",
   "reason": null,
   "head_sha": "<reviewed sha>",
@@ -1522,6 +1542,17 @@ not opted in):
   "retry_scheduled": false
 }
 ```
+
+`mode` is the flow's current posting mode. `posted_by` says how the review
+reached the pull request: `automatic` (when the run finished, or by an
+automatic retry), `manual` (the publish call) or `none` (nothing posted yet,
+or nothing will be). It is `null` for a review posted before this field
+existed. The `flow.execution.finished` event is sent once, when the run
+finishes, so for a manual-mode flow it carries `posted_by: "none"` and
+`status: "pending"`; read the execution afterwards for the posted record.
+Every publication attempt, automatic or manual, also writes an audit entry
+(`platform_review_publish`) with the mode, `posted_by` and, for a refused
+call, the failed preconditions.
 
 On `GET /api/v1/flows/executions/{id}` for an account user the record also
 carries `pull_request_url`, `review_url` and `commit_url` (the commit that
@@ -1564,10 +1595,19 @@ changes the execution's status or result. `reason` values include
 `review_unverified`, `admission_revoked`, `binding_changed`,
 `statuses_permission_missing`, `provider_unavailable`, `provider_denied`,
 `provider_rejected`, `lease_refused`, `lease_unavailable`,
-`attempt_interrupted`, `platform_review_disabled` and `readback_mismatch`. Preloop retries `provider_unavailable` and similar
-transient failures by itself, up to six attempts with growing delays.
+`attempt_interrupted`, `platform_review_disabled`, `precondition_failed`,
+`manual_mode` and `readback_mismatch`. In automatic mode Preloop retries
+`provider_unavailable` and similar transient failures by itself, up to six
+attempts with growing delays. In manual mode it never retries on its own: a
+failed attempt waits for your next publish call.
 
-### Publish a finished review again, without a model run
+### Publish a finished review (manual mode) or again
+
+`POST /api/v1/flows/executions/{id}/platform-review` posts the stored,
+validated result of a finished execution as the pull request review and
+commit status, on the commit the execution reviewed. No model runs. In
+manual mode it is the only way a review is posted; in automatic mode use it
+after a posting failure.
 
 ```sh
 curl -fsS -X POST \
@@ -1583,17 +1623,155 @@ something is left to post. From the CLI:
 preloop flow review-posting publish <execution-id>
 ```
 
-The call takes no body. It publishes the stored, validated result of that
-execution on the commit it reviewed, or does nothing if it is already there,
-and returns the record above. Use it after a posting failure. It is allowed
-for an account user who may edit flows and for the execution's own CI
-identity when its grant and key include `execution:review:publish` (the
-identity does not also need `flow:trigger` for this call). It
-answers 409 with `detail.code` `platform_review_disabled`,
-`execution_not_finished` or `no_review_binding` when nothing can be
+The request cannot name a repository, pull request or commit: they come from
+the execution's own binding. Without a body (or with `{}`) the call publishes
+what is stored. The response is `{"execution_id": ..., "platform_review":
+<the record above>}`.
+
+**Idempotent.** A review or status already posted for the execution is never
+posted again; a repeat call returns the existing record. A call that was
+refused (a failed precondition, 412) or failed can be repeated, with
+corrected values where that was the cause.
+
+**Who may call it.** An account user who may edit flows, and the execution's
+own restricted CI identity when its grant and key include
+`execution:review:publish` (the identity does not also need `flow:trigger`).
+A CI identity may publish only executions it triggered itself (another
+identity's execution answers 404), may send the preconditions below, and may
+read the record and the digest. It cannot change the posting mode or any
+other flow setting, cannot choose the target, and gains no GitHub
+credential: Preloop posts with a token it mints for that one post.
+
+#### Preconditions
+
+The optional JSON body names what your controller checked. Every member is
+optional; send the ones you want enforced:
+
+<!-- example: fragment -->
+```json
+{
+  "expected_head_sha": "<head_sha from GET .../result>",
+  "expected_base_sha": "<base_sha from GET .../result>",
+  "expected_result_sha256": "<result_sha256 from GET .../result>",
+  "expected_flow_revision": 3
+}
+```
+
+| Member | Holds when |
+| --- | --- |
+| `expected_head_sha` | Full commit SHA (40 or 64 hex characters, any case). Equals the head the execution is bound to **and** the live head of the pull request. |
+| `expected_base_sha` | Full commit SHA. Equals the bound base, when the binding records one, **and** the live base of the pull request. |
+| `expected_result_sha256` | 64 hex characters. Equals the digest of the stored result (below). |
+| `expected_flow_revision` | Positive integer. Equals the flow's current configuration `revision`. Send the execution's `flow_revision` to refuse posting if the flow was changed after this run started: posting reads the flow (verdict mapping, review actions, status) at post time. |
+
+Each supplied precondition is checked before anything is posted, again on
+the flow and execution as they are read for the post, and the commit SHAs
+once more against the live pull request just before the first write. If one
+does not hold, nothing is posted and the publication is not recorded as
+posted (the record shows `status: "failed"`, `reason:
+"precondition_failed"`, which a later call replaces). A body that is not an
+object, a member not listed above (for example a misspelt name) or a
+malformed value answers 400 with `detail.code`
+`review_precondition_malformed` and `detail.precondition` naming the member.
+
+A failed precondition answers **412**:
+
+<!-- example: fragment -->
+```json
+{
+  "detail": {
+    "code": "review_precondition_failed",
+    "message": "Nothing was posted: expected_head_sha did not match",
+    "precondition": "expected_head_sha",
+    "expected": "<sha you sent>",
+    "current": "<sha it is now>",
+    "failed": [
+      {
+        "precondition": "expected_head_sha",
+        "expected": "<sha you sent>",
+        "current": "<sha it is now>",
+        "source": "live"
+      }
+    ]
+  }
+}
+```
+
+`precondition`, `expected` and `current` describe the first failure;
+`failed` lists every one, in the order of the table above. `source` says what
+was compared: `binding` (the commit Preloop bound when it accepted the
+trigger), `live` (the pull request on GitHub now), `result` (the stored
+result) or `flow` (the flow's current revision).
+
+#### The result digest
+
+`GET /api/v1/flows/executions/{id}/result` returns `result_sha256`, the same
+value as `completion.result_captured.result_sha256` and the digest in the CI
+completion callback. It is SHA-256 over this canonical form of the result:
+
+1. Take `result` as `GET .../result` returns it to the execution's CI
+   identity: the stored document without controller-private members (keys
+   listed in `result_withheld_paths` are not in it). An account user's
+   `result` holds the whole document; the digest still covers only the
+   restricted form.
+2. Serialise it as JSON with object keys sorted, no whitespace (separators
+   `,` and `:`), non-ASCII characters written as UTF-8 rather than `\u`
+   escapes, and no `NaN` or `Infinity`.
+3. Hash the UTF-8 bytes with SHA-256 and write it as 64 lowercase hex
+   characters.
+
+Key order and whitespace in the document never change the digest. In Python:
+
+```sh
+python3 -c 'import hashlib, json, sys
+doc = json.load(sys.stdin)["result"]
+print(hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":"),
+      ensure_ascii=False).encode("utf-8")).hexdigest())' < result.json
+```
+
+Numbers are written the way Python's `json` module writes them, so compute
+the digest of a result with floating-point values in Python, or compare with
+the `result_sha256` Preloop returned for the document you validated.
+
+#### End to end: post only what your controller approved
+
+```sh
+API="$PRELOOP_URL/api/v1/flows/executions/$EXECUTION_ID"
+AUTH="Authorization: Bearer $PRELOOP_CI_KEY"
+
+# 1. After flow.execution.finished (or polling until the status is terminal),
+#    read the result together with its digest, commits and flow revision.
+curl -fsS -H "$AUTH" "$API/result" > result.json
+
+# 2. Your controller validates .result. Stop here if it does not approve.
+./validate-review result.json || exit 1
+
+# 3. Ask Preloop to post exactly what was validated.
+jq '{expected_head_sha: .head_sha,
+     expected_base_sha: .base_sha,
+     expected_result_sha256: .result_sha256,
+     expected_flow_revision: .flow_revision}' result.json > preconditions.json
+status=$(curl -sS -o posted.json -w '%{http_code}' -X POST -H "$AUTH" \
+  -H "Content-Type: application/json" --data @preconditions.json \
+  "$API/platform-review")
+
+# 4. 200: posted (or already posted). 412: something changed; nothing was
+#    posted. detail.failed says what, with the current value.
+case "$status" in
+  200) jq '.platform_review | {status, posted_by, review_id}' posted.json ;;
+  412) jq '.detail.failed' posted.json; exit 1 ;;
+  *) cat posted.json; exit 1 ;;
+esac
+```
+
+Other refusals: 409 with `detail.code` `platform_review_disabled` (posting
+is off), `execution_not_finished` or `no_review_binding` when nothing can be
 published, and 404 for an execution the caller does not own. An execution
-whose head has moved, whose result is not valid or whose identity was
-disabled is never published by this call either.
+whose result is not valid, whose binding or inspection check failed, or whose
+identity was disabled is never published by this call either. Without
+`expected_head_sha`, a head that moved while the review ran still gets the
+status on the reviewed commit and no review (`review_reason:
+"head_moved"`); with it, the call answers 412 and posts nothing.
 
 ### Worked example: one flow for an organisation, two repositories
 

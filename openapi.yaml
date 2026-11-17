@@ -19030,31 +19030,27 @@ paths:
       tags:
       - Flows
       summary: Publish Execution Platform Review
-      description: 'Publish, or publish again, a finished review without running the
-        model.
-
-
-        Posts the stored, validated result of a finished read-only review as a
-
-        pull request review and commit status on the commit the execution
-
-        reviewed. The target comes from the execution''s own binding; the request
-
-        has no body and cannot name a repository, pull request or commit.
-
-
-        The call is idempotent. A review or status that was already posted for
-
-        the execution is not posted again; the response is the current
-
-        ``platform_review`` record. Use it after a posting failure, or when a run
-
-        finished while posting was unavailable.
-
-
-        Allowed for an account user who may edit flows, and for the execution''s
-
-        own restricted CI identity when it holds ``execution:review:publish``.'
+      description: "Publish, or publish again, a finished review without running the\
+        \ model.\n\nPosts the stored, validated result of a finished read-only review\
+        \ as a\npull request review and commit status on the commit the execution\n\
+        reviewed. The target comes from the execution's own binding; the request\n\
+        cannot name a repository, pull request or commit.\n\nThis is the only way\
+        \ a flow in ``manual`` platform review mode posts; a\nflow in ``automatic``\
+        \ mode also posts when the execution finishes.\n\nThe optional body carries\
+        \ preconditions. Each supplied one is checked\nbefore anything is posted,\
+        \ again after the flow and result are re-read\nfor posting, and, for the commit\
+        \ SHAs, against the live pull request\nbefore the first write:\n\n- ``expected_head_sha``:\
+        \ the execution's bound head and the live head.\n- ``expected_base_sha``:\
+        \ the bound base (when the binding has one) and\n  the live base.\n- ``expected_result_sha256``:\
+        \ ``result_sha256`` of the stored result, as\n  returned by ``GET /flows/executions/{id}/result``.\n\
+        - ``expected_flow_revision``: the flow's current configuration revision.\n\
+        \nA failed precondition returns 412, posts nothing and records nothing as\n\
+        posted; the call can be repeated with corrected values.\n\nThe call is idempotent.\
+        \ A review or status that was already posted for\nthe execution is not posted\
+        \ again; the response is the current\n``platform_review`` record. Use it after\
+        \ a posting failure, or when a run\nfinished while posting was unavailable.\n\
+        \nAllowed for an account user who may edit flows, and for the execution's\n\
+        own restricted CI identity when it holds ``execution:review:publish``."
       operationId: publish_execution_platform_review_api_v1_flows_executions__execution_id__platform_review_post
       security:
       - bearerAuth: []
@@ -19066,6 +19062,19 @@ paths:
           type: string
           format: uuid
           title: Execution Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              description: 'Optional preconditions, each optional: expected_head_sha,
+                expected_base_sha (full commit SHAs), expected_result_sha256 (64 hex
+                characters, as on GET .../result) and expected_flow_revision (positive
+                integer).'
+              examples:
+              - expected_head_sha: '0000000000000000000000000000000000000000'
+                expected_result_sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+                expected_flow_revision: 3
+              title: Body
       responses:
         '200':
           description: Successful Response
@@ -19078,10 +19087,19 @@ paths:
                   Id  Platform Review Post
         '404':
           description: No such execution for this caller.
+        '400':
+          description: A precondition value is malformed or the body names an unknown
+            member. ``detail.code`` is ``review_precondition_malformed`` and ``detail.precondition``
+            names the member.
         '409':
           description: 'Nothing can be published for this execution: the flow has
             not opted in, the execution has not finished, or it has no restricted
             CI review binding. ``detail.code`` names which.'
+        '412':
+          description: A caller precondition does not hold; nothing was posted. ``detail.code``
+            is ``review_precondition_failed``; ``detail.precondition``, ``detail.expected``
+            and ``detail.current`` describe the first failure and ``detail.failed``
+            lists every one.
         '422':
           description: Validation Error
           content:
@@ -19185,10 +19203,12 @@ paths:
         \ CI credential (``execution:result:read``) reads only its own\nexecution\
         \ and gets the correlation fields of the status projection,\nincluding ``startup_receipt``,\
         \ plus ``result`` (the captured document\nwithout controller-private members),\
-        \ ``result_withheld_paths`` (JSON\nPointers of any withheld members; empty\
-        \ means ``result`` is the complete\ncaptured document) and ``schema_validation``\
-        \ (``valid``, ``error_count``\nand ``errors``; messages are omitted when a\
-        \ member was withheld)."
+        \ ``result_sha256`` (SHA-256 of that\n``result`` in canonical form: keys sorted,\
+        \ separators ``,`` and ``:``,\nUTF-8 without ASCII escapes; the value the\
+        \ platform-review publish call\naccepts as ``expected_result_sha256``), ``result_withheld_paths``\
+        \ (JSON\nPointers of any withheld members; empty means ``result`` is the complete\n\
+        captured document) and ``schema_validation`` (``valid``, ``error_count``\n\
+        and ``errors``; messages are omitted when a member was withheld)."
       operationId: get_flow_execution_result_api_v1_flows_executions__execution_id__result_get
       security:
       - bearerAuth: []
@@ -35177,6 +35197,12 @@ components:
             type: string
           type: array
           title: Result Withheld Paths
+        result_sha256:
+          type: string
+          title: Result Sha256
+          description: SHA-256 of ``result`` in canonical form (keys sorted, compact
+            separators, UTF-8). Send it as ``expected_result_sha256`` to the platform-review
+            publish call so only this document is posted.
         schema_validation:
           anyOf:
           - additionalProperties: true
@@ -35202,6 +35228,7 @@ components:
       - execution_id
       - result
       - result_withheld_paths
+      - result_sha256
       - schema_validation
       - completion
       title: CiExecutionResultResponse
@@ -49072,6 +49099,17 @@ components:
           title: Enabled
           description: Turn the posting on
           default: false
+        mode:
+          type: string
+          enum:
+          - automatic
+          - manual
+          title: Mode
+          description: 'When posting is on: automatic posts when the execution finishes;
+            manual posts only when the explicit publish call (POST /flows/executions/{id}/platform-review)
+            is made. A block stored without a mode is automatic. Posting is off when
+            enabled is false.'
+          default: automatic
         action:
           type: string
           const: comment

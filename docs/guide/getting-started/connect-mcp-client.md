@@ -357,7 +357,9 @@ Building your own MCP client or using a different MCP-compatible tool?
 
 ### Minimal curl Example
 
-Initialize the session:
+The endpoint is stateless: `initialize` returns no `Mcp-Session-Id` header, and later requests carry no session id.
+
+Initialize:
 
 ```bash
 curl -X POST https://preloop.ai/mcp/v1 \
@@ -367,14 +369,13 @@ curl -X POST https://preloop.ai/mcp/v1 \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"my-client","version":"1.0"}}}'
 ```
 
-Then call a tool (reuse the session ID returned in the `Mcp-Session-Id` response header):
+Then call a tool. Send the same headers, with no session header:
 
 ```bash
 curl -X POST https://preloop.ai/mcp/v1 \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "Mcp-Session-Id: SESSION_ID_FROM_INITIALIZE" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"request_approval","arguments":{"reason":"Testing my custom MCP client"}}}'
 ```
 
