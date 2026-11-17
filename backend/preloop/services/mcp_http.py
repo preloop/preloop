@@ -6,7 +6,7 @@ StreamableHTTP transport with JWT authentication.
 
 import json
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Request, HTTPException
 from fastapi.responses import Response
@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 # Global server instance
 _mcp_server_instance: Optional[DynamicMCPServer] = None
+
+# The DynamicFastMCP that serves /mcp in this process (set by setup_mcp_routes).
+# Endpoints that must drop its cached proxied-tool wrappers look it up here.
+_dynamic_fastmcp_instance: Optional[Any] = None
 
 
 class MCPPathRewriteMiddleware:
@@ -638,13 +642,14 @@ def setup_mcp_routes(app: FastAPI):
     Args:
         app: FastAPI application instance
     """
-    global _mcp_lifespan_manager
+    global _mcp_lifespan_manager, _dynamic_fastmcp_instance
 
     from preloop.services.initialize_mcp import initialize_mcp_with_tools
     from preloop.services.dynamic_fastmcp_http import setup_dynamic_mcp_http
 
     # Initialize DynamicFastMCP with all tools registered
     mcp = initialize_mcp_with_tools()
+    _dynamic_fastmcp_instance = mcp
     logger.info("DynamicFastMCP initialized with tools")
 
     # Set up StreamableHTTP transport with authentication

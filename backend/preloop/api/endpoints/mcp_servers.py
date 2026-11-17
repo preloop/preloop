@@ -375,7 +375,8 @@ def _unregister_proxied_tools(
         return
     from preloop.services import mcp_http
 
-    mcp = getattr(mcp_http, "_mcp_server_instance", None)
+    # The DynamicFastMCP serving /mcp, not the legacy JSON-RPC server.
+    mcp = getattr(mcp_http, "_dynamic_fastmcp_instance", None)
     if mcp is None or not hasattr(mcp, "unregister_proxied_tools"):
         return
     try:

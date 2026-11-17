@@ -220,8 +220,10 @@ def evaluate(
     if reasons:
         category = CATEGORY_BINDING_MISMATCH
     if inspection_required(flow) and not inspected:
+        # Not reading the change is the cause; ids that do not match the
+        # admitted revision follow from it, so this category wins.
         reasons.append("no_repository_inspection")
-        category = category or CATEGORY_NOT_INSPECTED
+        category = CATEGORY_NOT_INSPECTED
     return {
         "status": STATUS_REJECTED if category else STATUS_VERIFIED,
         "category": category,

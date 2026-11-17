@@ -487,8 +487,26 @@ on the pull request:
   `LS`. Any other tool, such as `apply_patch`, `request_user_input` or
   `view_image`, does not.
 
+**Inspection continuation.** With `agent_config.native_result: true`, the
+Codex CLI ends a session as soon as the model answers without a tool call,
+and that answer becomes the result. A model can therefore satisfy the result
+schema on its first turn ("starting by locating the checkout") without
+reading anything. When a Codex read-only review session ends with exit 0 and
+no command event, Preloop starts up to two fresh sessions in the same
+container, with the same result schema and the prompt followed by an
+instruction to inspect the checkout first and take commit ids from commands
+it ran. Each is marked `PRELOOP_REVIEW_CONTINUATION` in the agent log. They
+run inside the flow's existing timeout and model budget. Preloop never
+writes or repairs the result itself: if no session inspects, the last answer
+is stored as the model wrote it and the run fails `review_not_inspected`. The
+continuation is off when the flow sets `review_integrity.require_inspection:
+false` or uses `sandbox_type: read-only` (no shell).
+
 A run that fails either check ends `FAILED` with `failure_category`
-`review_binding_mismatch` or `review_not_inspected`. The document is still
+`review_binding_mismatch` or `review_not_inspected`. When a run made no
+repository inspection, the category is `review_not_inspected` even if its
+ids also mismatch: ids in a result that never read the change are a symptom,
+not the cause. The document is still
 stored, with a controller-owned `_review_integrity` member (withheld from the
 restricted `result`), and `/result` reports the outcome without values in
 `completion.review_integrity`. Platform posting additionally requires a
@@ -501,7 +519,7 @@ is not posted:
 ```json
 {
   "status": "rejected",
-  "category": "review_binding_mismatch",
+  "category": "review_not_inspected",
   "reasons": ["base_sha_mismatch", "head_sha_mismatch", "no_repository_inspection"],
   "bindings": [
     {"field": "base_sha", "fact": "base_sha", "outcome": "mismatch"},

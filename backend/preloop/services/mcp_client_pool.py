@@ -69,11 +69,23 @@ def _unwrap_exception_group(exc: BaseException) -> BaseException:
 class MCPAuthenticationError(PermissionError):
     """Sanitized upstream auth rejection retaining its HTTP status for audit."""
 
-    def __init__(self, status_code: int, *, insufficient_scope: bool = False) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        *,
+        insufficient_scope: bool = False,
+        required_scope: str | None = None,
+    ) -> None:
         self.status_code = status_code
         self.insufficient_scope = insufficient_scope
+        from preloop.services.audit.service import _safe_error_detail
+        from preloop.services.external_approval import ScopeRefusal
+
+        self.required_scope = _safe_error_detail(required_scope)
         super().__init__(
-            f"MCP server rejected authentication or authorization (HTTP {status_code}). "
+            ScopeRefusal(self.required_scope).reason
+            if status_code == 403 and insufficient_scope
+            else f"MCP server rejected authentication or authorization (HTTP {status_code}). "
             "Configure or reconnect authentication in Preloop, then rescan. "
             "Credentials cached by your local agent may require a separate sign-in."
         )
@@ -88,6 +100,11 @@ def describe_mcp_connection_error(exc: BaseException) -> str:
     if isinstance(cause, (OAuthError, OAuthContextError, MCPAuthenticationError)):
         return str(cause)
     if isinstance(cause, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)):
+        from preloop.services.external_approval import scope_refusal_detail
+
+        refusal = scope_refusal_detail(cause)
+        if refusal is not None:
+            return refusal.reason
         code = cause.response.status_code
         if code in {401, 403}:
             return (
@@ -673,11 +690,13 @@ class MCPClient:
                 if isinstance(
                     target_exc, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)
                 ) and target_exc.response.status_code in {401, 403}:
-                    from preloop.services.external_approval import scope_refusal
+                    from preloop.services.external_approval import scope_refusal_detail
 
+                    refusal = scope_refusal_detail(target_exc)
                     raise MCPAuthenticationError(
                         target_exc.response.status_code,
-                        insufficient_scope=scope_refusal(target_exc),
+                        insufficient_scope=refusal is not None,
+                        required_scope=refusal.required_scope if refusal else None,
                     ) from None
                 if self.auth_type == "oauth":
                     raise PermissionError(message) from None

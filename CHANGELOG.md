@@ -120,6 +120,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- flows: a Codex native-result read-only review whose session ends with an
+  answer but no command (the model satisfied the result schema on its first
+  turn) is continued in up to two fresh sessions that must inspect the
+  checkout first, inside the flow's existing timeout and budget. If none
+  inspects, the run fails `review_not_inspected`; that category now wins over
+  `review_binding_mismatch` when both apply (#2100).
+
 - models: mark deleted routing, label and enabled retry targets as missing in
   flow details and lists, including flows with a healthy default model. Repairing
   each reference clears its warning; routing policy is preserved so a missing

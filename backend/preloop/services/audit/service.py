@@ -76,6 +76,10 @@ def _safe_grant_metadata(grant: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
         value = grant.get(name)
         if value is None or isinstance(value, str):
             safe[name] = value if value is None or len(value) <= 512 else None
+    for name in ("last_known_consent_ref", "server_id", "server_revision"):
+        value = grant.get(name)
+        if isinstance(value, str) and len(value) <= 512:
+            safe[name] = value
     if type(grant.get("exp")) is int:
         safe["exp"] = grant["exp"]
     scope = grant.get("scope")

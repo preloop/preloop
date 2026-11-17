@@ -540,10 +540,12 @@ export class ToolsEditorComponent extends LitElement {
                           `
                         : ''
                     }
-                    <sl-tooltip content="Scan for new tools">
+                    <sl-tooltip
+                      content="Refresh tools: add new ones and update changed arguments"
+                    >
                       <sl-icon-button
                         name="arrow-clockwise"
-                        label="Scan for new tools"
+                        label="Refresh tools"
                         @click=${() =>
                           this.dispatchEvent(
                             new CustomEvent('scan-server', {

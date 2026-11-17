@@ -3,6 +3,7 @@
 import json
 import re
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -117,8 +118,25 @@ def parse_handoff(body: bytes, hosts: tuple[str, ...]) -> dict[str, str] | None:
     return {"external_reference": reference, "external_url": url}
 
 
-def scope_refusal(value: Any) -> bool:
-    """Recognize an actual HTTP 403 carrying RFC 6750 insufficient_scope."""
+@dataclass(frozen=True)
+class ScopeRefusal:
+    """Bounded, redacted evidence of an RFC 6750 scope refusal."""
+
+    required_scope: str | None = None
+
+    @property
+    def reason(self) -> str:
+        """Describe the missing permission without recommending authentication."""
+        from preloop.services.audit.service import _safe_error_detail
+
+        message = "The token does not cover this call."
+        if self.required_scope:
+            message += f" Required scope: {self.required_scope}"
+        return _safe_error_detail(message) or message
+
+
+def scope_refusal_detail(value: Any) -> ScopeRefusal | None:
+    """Parse the shared hand-off trigger and retain only safe scope evidence."""
     from preloop.services.mcp_client_pool import (
         _unwrap_exception_group,
         MCPAuthenticationError,
@@ -127,37 +145,65 @@ def scope_refusal(value: Any) -> bool:
     if isinstance(value, BaseException):
         value = _unwrap_exception_group(value)
         if isinstance(value, MCPAuthenticationError):
-            return value.status_code == 403 and value.insufficient_scope
+            return (
+                ScopeRefusal(value.required_scope)
+                if value.status_code == 403 and value.insufficient_scope
+                else None
+            )
         response = getattr(value, "response", None)
         if response is None or response.status_code != 403:
-            return False
+            return None
         challenge = response.headers.get("www-authenticate", "")
-        if re.search(r'\berror\s*=\s*"insufficient_scope"', challenge, re.IGNORECASE):
-            return True
+        header_match = re.search(
+            r'\berror\s*=\s*"insufficient_scope"', challenge, re.IGNORECASE
+        )
+        scope = re.search(r'\bscope\s*=\s*"([^"\r\n]*)"', challenge, re.IGNORECASE)
         try:
             body = response.json()
-        except (ValueError, RuntimeError):
-            return False
+        except (ValueError, RuntimeError, RecursionError):
+            body = None
     else:
+        header_match = None
+        scope = None
         if not getattr(value, "is_error", False):
-            return False
+            return None
         body = getattr(value, "structured_content", None)
         if not isinstance(body, dict):
-            return False
+            return None
         error = body.get("error")
         status = body.get("status", body.get("status_code"))
         if isinstance(error, dict):
             status = error.get("status", error.get("status_code", status))
         if status != 403:
-            return False
-    if not isinstance(body, dict):
-        return False
+            return None
+    body = body if isinstance(body, dict) else {}
     error = body.get("error")
-    return (
-        error == "insufficient_scope"
+    if not (
+        header_match
+        or error == "insufficient_scope"
         or (isinstance(error, dict) and error.get("code") == "insufficient_scope")
         or body.get("code") == "insufficient_scope"
+    ):
+        return None
+    required = (
+        scope.group(1)
+        if scope
+        else (
+            error.get("scope", body.get("scope"))
+            if isinstance(error, dict)
+            else body.get("scope")
+        )
     )
+    from preloop.services.audit.service import _safe_error_detail
+
+    return ScopeRefusal(
+        _safe_error_detail(required) if isinstance(required, str) else None
+    )
+
+
+def scope_refusal(value: Any) -> bool:
+    """Recognize the same scope refusal used for upstream error evidence."""
+    return scope_refusal_detail(value) is not None
 
 
 def outcome_error(outcome: str, reference: str | None = None) -> str:

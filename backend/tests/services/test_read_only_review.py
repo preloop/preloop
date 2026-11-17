@@ -458,7 +458,7 @@ async def test_native_result_persists_and_owned_callback_remains_available(
         from preloop.services.review_completion_evidence import completion_projection
 
         assert execution.status == "FAILED"
-        assert execution.failure_category == "review_binding_mismatch"
+        assert execution.failure_category == "review_not_inspected"
         assert "head_sha_mismatch" in execution.error_message
         assert "0000" not in execution.error_message
         # The document is kept for inspection and marked rejected.

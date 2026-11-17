@@ -631,4 +631,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
         joined_registry.revision,
         flow_policy.revision,
     }
-    assert script.get_heads() == [tool_policy.revision]
+    grant_evidence = script.get_revision("20261217_grant_evidence_idx")
+    assert grant_evidence.down_revision == tool_policy.revision
+    assert script.get_heads() == [grant_evidence.revision]

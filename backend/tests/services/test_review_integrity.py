@@ -66,7 +66,9 @@ def run(
 def test_reported_placeholder_pass_is_rejected_for_both_reasons() -> None:
     outcome = run(PLACEHOLDER, inspection=NOTHING)
     assert outcome["status"] == "rejected"
-    assert outcome["category"] == "review_binding_mismatch"
+    # A review that read nothing is reported as not inspected, not as a
+    # binding mismatch: the wrong ids follow from not reading the change.
+    assert outcome["category"] == "review_not_inspected"
     assert outcome["reasons"] == [
         "base_sha_mismatch",
         "head_sha_mismatch",

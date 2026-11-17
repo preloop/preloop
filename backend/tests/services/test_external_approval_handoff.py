@@ -49,7 +49,9 @@ async def test_scope_refusal_holds_call_and_retries_once(
         if not permitted:
             return httpx.Response(
                 403,
-                headers={"WWW-Authenticate": 'Bearer error="insufficient_scope"'},
+                headers={
+                    "WWW-Authenticate": 'Bearer error="insufficient_scope", scope="records:read"'
+                },
                 json={"error": "insufficient_scope"},
             )
         return httpx.Response(200, json={"value": "approved read"})
@@ -102,6 +104,8 @@ async def test_scope_refusal_holds_call_and_retries_once(
         assert "insufficient_scope" not in result.content[0].text
     rows = [call.kwargs for call in audit.log_tool_call_async.call_args_list]
     assert rows[0]["result"] == "upstream_error"
+    assert rows[0]["error_code"] == "insufficient_scope"
+    assert "records:read" in rows[0]["error_reason"]
     assert len({row["correlation_id"] for row in rows}) == 1
 
 
@@ -478,3 +482,57 @@ async def test_async_status_replays_once_and_withholds_comments(
         assert "approved but retry refused" in json.dumps(first["tool_result"])
     else:
         assert "approved read" in json.dumps(first["tool_result"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason", ["grant_inactive", "scope_not_granted", "introspection_unavailable"]
+)
+async def test_synchronous_post_approval_grant_refusal_is_attributed(
+    monkeypatch: pytest.MonkeyPatch,
+    user_context: UserContext,
+    reason: str,
+) -> None:
+    """A grant revoked during external approval leaves a denial before any retry."""
+    from unittest.mock import MagicMock
+    from preloop.services import dynamic_fastmcp as gateway
+    from preloop.services.grant_introspection import GrantResult
+
+    user_context.api_key_id = str(uuid4())
+    user_context.runtime_principal_type = "managed_agent"
+    user_context.runtime_principal_id = str(uuid4())
+    request = httpx.Request("POST", "https://upstream.example.com/mcp")
+    response = httpx.Response(
+        403, request=request, json={"error": "insufficient_scope"}
+    )
+    mcp, client, _, server = _setup(
+        monkeypatch,
+        user_context,
+        raises=httpx.HTTPStatusError("refused", request=request, response=response),
+    )
+    server.auth_config = {
+        "on_insufficient_scope": "request_approval",
+        "approval_workflow": str(uuid4()),
+    }
+    binding = {"available": True, "active": False, "scope": [], "consent_ref": None}
+
+    async def evaluate(snapshot: Any, *, force: bool = False) -> GrantResult | None:
+        return GrantResult(binding, reason) if force else None
+
+    monkeypatch.setattr(gateway, "_evaluate_snapshot_grant", evaluate)
+    denial = MagicMock()
+    monkeypatch.setattr(
+        "preloop.services.policy_evaluator._log_policy_decision_async", denial
+    )
+    result = await mcp.call_tool("safe_tool", {})
+    assert result.is_error and "approved but grant refused" in result.content[0].text
+    client.call_tool.assert_awaited_once()
+    denial.assert_called_once()
+    fields = denial.call_args.kwargs
+    assert fields["rule_description"] == reason
+    assert fields["extra_details"]["api_key_id"] == user_context.api_key_id
+    assert (
+        fields["extra_details"]["runtime_principal_id"]
+        == user_context.runtime_principal_id
+    )
+    assert fields["correlation_id"] is not None
