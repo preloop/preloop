@@ -1,6 +1,7 @@
 """Guard image-independent tools used by the documentation workflow."""
 
 import fnmatch
+import json
 import shutil
 import subprocess
 import sys
@@ -56,8 +57,10 @@ def test_docs_install_pinned_powershell_before_inventory_parse() -> None:
 def test_docs_runs_architecture_guard_for_documentation_changes() -> None:
     workflow = yaml.load(WORKFLOW.read_text(), Loader=yaml.BaseLoader)
     guard = "backend/tests/test_architecture_docs_map.py"
-    for event in ("push", "pull_request"):
-        paths = workflow["on"][event]["paths"]
+    assert "workflow_call" in workflow["on"]
+    for event in ("pull_request",):
+        policy = WORKFLOW.parents[1] / "ci-policy.json"
+        paths = json.loads(policy.read_text())["leaves"]["docs"]
         for changed in (
             "ARCHITECTURE.md",
             "mkdocs.yml",
@@ -108,6 +111,9 @@ def test_standalone_workflow_guard_rejects_missing_architecture_step(
     workflow = tmp_path / ".github/workflows/docs.yml"
     workflow.parent.mkdir(parents=True)
     shutil.copyfile(WORKFLOW, workflow)
+    shutil.copyfile(
+        WORKFLOW.parents[1] / "ci-policy.json", workflow.parents[1] / "ci-policy.json"
+    )
     command = [sys.executable, str(tmp_path / guard)]
     valid = subprocess.run(command, capture_output=True, text=True, check=False)
     assert valid.returncode == 0, valid.stderr

@@ -1,0 +1,67 @@
+name: CI follow-up
+
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  # Serialize issue upserts and approval reruns; unrelated work is retained.
+  group: ci-follow-up-${{ github.event.workflow_run.event == 'schedule' && 'nightly' || github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  approved:
+    if: >-
+      github.event_name == 'pull_request_review' ||
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+    steps:
+      # Trusted control code only; candidate source/artifacts are never executed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+          sparse-checkout: scripts/ci_control.py
+          sparse-checkout-cone-mode: false
+      - name: Validate current approval and fast result before full PR rerun
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRELOOP_DISABLE_TELEMETRY: 'true'
+        run: |
+          if [ -f scripts/ci_control.py ]; then
+            python3 scripts/ci_control.py approve
+          else
+            echo '::notice::Control workflow bootstraps after merge; this CI-changing PR already runs the full tier'
+          fi
+
+  nightly:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci_control.py
+          sparse-checkout-cone-mode: false
+      - name: Upsert one tracking issue per failed nightly job
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_NIGHTLY_ISSUE_LABEL: ${{ vars.CI_NIGHTLY_ISSUE_LABEL }}
+          PRELOOP_DISABLE_TELEMETRY: 'true'
+        run: python3 scripts/ci_control.py nightly

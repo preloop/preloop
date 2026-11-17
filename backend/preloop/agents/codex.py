@@ -63,6 +63,7 @@ from .stream_recovery import (
 from .container import (
     LIVE_NUDGE_LOG_PATH,
     LIVE_NUDGE_PROMPT_PATH,
+    RUN_DEADLINE_EPOCH_CONTEXT_KEY,
     ContainerAgentExecutor,
 )
 from .images import DEFAULT_AGENT_IMAGES, default_agent_image
@@ -87,7 +88,30 @@ REVIEW_INSPECTION_CONTINUATIONS = 2
 #: Written to the agent log before each continuation session.
 REVIEW_CONTINUATION_MARKER = "PRELOOP_REVIEW_CONTINUATION"
 
-REVIEW_CONTINUATION_PATH = "/tmp/preloop-review-continuation.txt"
+#: Continuation prompts are written by root, which also runs the checks, while
+#: the Codex session runs as the unprivileged agent user. They live in a
+#: private directory created by ``mktemp -d`` (owned by root, mode 0700) so
+#: the agent cannot plant a link at a predictable path for root to follow.
+CONTINUATION_DIR_SETUP = (
+    '_pl_cont_dir="${_pl_cont_dir:-$(mktemp -d /tmp/preloop-continuation.XXXXXX)}"'
+)
+REVIEW_CONTINUATION_PATH = "$_pl_cont_dir/review-continuation.txt"
+
+#: Extra sessions a native-result run gets when its final answer does not
+#: match the result schema (a missing required field, a value outside an
+#: enum, a wrong type, or no JSON). Upstreams that only offer JSON mode do
+#: not enforce the schema, so a substantive review can still omit a field.
+#: Like the inspection continuations, every session runs inside the flow's
+#: existing timeout and model budget.
+NATIVE_RESULT_REPAIR_CONTINUATIONS = 2
+
+#: A repair session is not started with less of the run's budget left than
+#: this, and each one is stopped this many seconds before the budget ends so
+#: the controller can still capture what the previous session wrote.
+NATIVE_RESULT_REPAIR_MIN_SECONDS = 30
+NATIVE_RESULT_REPAIR_MARGIN_SECONDS = 10
+
+NATIVE_RESULT_REPAIR_PATH = "$_pl_cont_dir/result-repair.txt"
 
 REVIEW_CONTINUATION_PROMPT = """
 
@@ -728,6 +752,12 @@ fi
             model=model,
             sandbox_flags=sandbox_flags,
         )
+        result_repair_block = self._native_result_repair_block(
+            execution_context,
+            event_filter=event_filter,
+            model=model,
+            sandbox_flags=sandbox_flags,
+        )
 
         script = f"""
 set -e
@@ -857,7 +887,7 @@ if [ {native_resume_guard} -eq 1 ] && [ "$CODEX_EXIT_CODE" -ne 0 ]; then
     {session_blocks["pack"]}
     exit "$CODEX_EXIT_CODE"
 fi
-{inspection_continuation_block}{completion_nudge_block}{reclaim_block}{self._native_result_capture_block(execution_context)}{session_blocks["pack"]}{post_exec_block}
+{inspection_continuation_block}{result_repair_block}{completion_nudge_block}{reclaim_block}{self._native_result_capture_block(execution_context)}{session_blocks["pack"]}{post_exec_block}
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
 """
@@ -1156,26 +1186,14 @@ exit $CODEX_EXIT_CODE
         Returns:
             The shell block, or an empty string when it does not apply.
         """
-        from preloop.services.read_only_review import read_only_review
-        from preloop.services.review_integrity import (
-            review_integrity_block,
-            result_binding_instruction,
-        )
+        from preloop.services.review_integrity import result_binding_instruction
         from types import SimpleNamespace
 
-        config = execution_context.get("agent_config") or {}
-        clone = execution_context.get("git_clone_config")
-        if (
-            not isinstance(config, dict)
-            or config.get("native_result") is not True
-            or not read_only_review(clone)
-            or self._shell_locked(execution_context)
-            or review_integrity_block(clone).get("require_inspection") is False
-        ):
+        check = self._review_inspection_check(execution_context)
+        if not check:
             return ""
+        clone = execution_context.get("git_clone_config")
         _, native_args = self._native_result_output(execution_context)
-        from preloop.services import review_inspection
-
         base = execution_context.get("read_only_base_sha") or ""
         head = execution_context.get("read_only_head_sha") or ""
         prompt = shlex.quote(
@@ -1192,35 +1210,10 @@ exit $CODEX_EXIT_CODE
                 ),
             )
         )
-        root = self._primary_workspace_path(execution_context, clone)
-        checker = (
-            inspect.getsource(review_inspection)
-            + """
-import subprocess, sys
-root, base, head, log = sys.argv[1:]
-try:
-    paths = subprocess.check_output(
-        ["git", "-C", root, "diff", "--name-only", "-z", base + "..." + head, "--"],
-        stderr=subprocess.DEVNULL,
-    ).decode().split("\\0")
-    with open(log) as lines:
-        inspected = log_reads_change(lines, base=base, head=head, files=paths, root=root)
-except (OSError, ValueError, subprocess.SubprocessError):
-    inspected = False
-sys.exit(0 if inspected else 1)
-"""
-        )
-        check = (
-            "python3 -c "
-            + shlex.quote(checker)
-            + " "
-            + " ".join(
-                shlex.quote(value) for value in (root, base, head, ATTEMPT_LOG_PATH)
-            )
-        )
         return f"""
 # A native-result review without a qualifying command did not read the
 # change. Start a bounded number of fresh sessions that must inspect first.
+{CONTINUATION_DIR_SETUP}
 _pl_review_continuation=0
 while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     && [ "$_pl_review_continuation" -lt {REVIEW_INSPECTION_CONTINUATIONS} ] \
@@ -1243,6 +1236,207 @@ while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     fi
 done
 """
+
+    def _native_result_repair_block(
+        self,
+        execution_context: Dict[str, Any],
+        *,
+        event_filter: str,
+        model: str,
+        sandbox_flags: str,
+    ) -> str:
+        """Ask again when a native final answer does not match the schema.
+
+        Upstreams that get JSON mode with the schema in the instructions do
+        not enforce it, so a substantive review can leave out a required
+        field and the controller would fail the run with
+        ``result_schema_invalid``. This block checks the answer in the
+        container (:mod:`preloop.services.native_result_repair`) and, at most
+        :data:`NATIVE_RESULT_REPAIR_CONTINUATIONS` times, starts a fresh
+        session with the same output schema that names the exact errors and
+        quotes the previous answer back, asking for the same review as one
+        complete object.
+
+        It runs after the inspection continuations and only while the latest
+        inspecting session still qualifies, so a repair never stands in for
+        reading the change; the controller's inspection evidence covers the
+        whole execution, so a repair session need not inspect again. No
+        session starts with less than
+        :data:`NATIVE_RESULT_REPAIR_MIN_SECONDS` of the run's budget left,
+        and each one stops before the budget ends. The controller still
+        validates the captured answer and applies every review check; if the
+        answer stays invalid the run fails as before.
+
+        Args:
+            execution_context: Execution context.
+            event_filter: The Codex event filter command.
+            model: The model the main session used.
+            sandbox_flags: The main session's sandbox flags.
+
+        Returns:
+            The shell block, or an empty string for runs without native results.
+        """
+        from preloop.services import native_result_repair
+
+        config = execution_context.get("agent_config") or {}
+        if not isinstance(config, dict) or config.get("native_result") is not True:
+            return ""
+        _, native_args = self._native_result_output(execution_context)
+        output_path = native_args.rsplit("--output-last-message ", 1)[-1].strip()
+        schema_path = "/tmp/preloop-native-result-schema.json"
+        inspected = self._review_inspection_check(execution_context) or "true"
+        checker = (
+            inspect.getsource(native_result_repair)
+            + """
+import sys
+answer_path, schema_path, prompt_path, out_path = sys.argv[1:]
+try:
+    import os, stat
+    def read(path, limit):
+        # Root reads files the agent may have replaced: never follow a link,
+        # never block on a FIFO, accept only a bounded regular file.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError("not a regular file")
+            data = handle.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError("too large")
+        return data.decode("utf-8", "replace")
+    schema = json.loads(read(schema_path, 64 * 1024))
+    prompt = read(prompt_path, 4 * 1024 * 1024)
+    try:
+        raw = read(answer_path, 256 * 1024)
+    except FileNotFoundError:
+        raw = None
+    text = repair_prompt(raw, schema, prompt)
+    if not text:
+        sys.exit(0)
+    fd = os.open(
+        out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+    )
+    with os.fdopen(fd, "w") as handle:
+        handle.write(text)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(0)
+print(json.dumps(repair_paths(raw, schema)))
+sys.exit(1)
+"""
+        )
+        check = (
+            "python3 -c "
+            + shlex.quote(checker)
+            + " "
+            + " ".join(
+                shlex.quote(value)
+                for value in (output_path, schema_path, PROMPT_FILE_PATH)
+            )
+            # Expanded by the shell: the private continuation directory.
+            + f' "{NATIVE_RESULT_REPAIR_PATH}"'
+        )
+        deadline = execution_context.get(RUN_DEADLINE_EPOCH_CONTEXT_KEY)
+        deadline = (
+            str(int(deadline))
+            if isinstance(deadline, (int, float)) and not isinstance(deadline, bool)
+            else ""
+        )
+        return f"""
+# A native final answer that does not match the result schema is asked for
+# again, naming the errors, a bounded number of times within the run budget.
+{CONTINUATION_DIR_SETUP}
+_pl_result_repair=0
+_pl_run_deadline={deadline}
+_pl_repair_left() {{
+    if [ -z "$_pl_run_deadline" ]; then echo 999999; return; fi
+    echo $(( _pl_run_deadline - $(date +%s) - {NATIVE_RESULT_REPAIR_MARGIN_SECONDS} ))
+}}
+while [ "$CODEX_EXIT_CODE" -eq 0 ] \
+    && [ "$_pl_result_repair" -lt {NATIVE_RESULT_REPAIR_CONTINUATIONS} ] \
+    && [ "$(_pl_repair_left)" -ge {NATIVE_RESULT_REPAIR_MIN_SECONDS - NATIVE_RESULT_REPAIR_MARGIN_SECONDS} ] \
+    && {inspected} \
+    && rm -f -- "{NATIVE_RESULT_REPAIR_PATH}" \
+    && ! _pl_repair_paths=$({check}); do
+    _pl_result_repair=$((_pl_result_repair + 1))
+    echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":'"$_pl_result_repair"',"reason":"result_schema_invalid","paths":'"$_pl_repair_paths"'}}' \
+        | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+    _pl_repair_limit=""
+    if [ -n "$_pl_run_deadline" ]; then
+        _pl_repair_limit="timeout -k 5 $(_pl_repair_left)"
+    fi
+    set +e
+    $_pl_repair_limit $PRELOOP_AS_AGENT codex exec {native_args} --json \
+        --skip-git-repo-check --model "{model}" {sandbox_flags} \
+        < "{NATIVE_RESULT_REPAIR_PATH}" 2>&1 \
+        | {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+    _pl_repair_codes=("${{PIPESTATUS[@]}}")
+    set -e
+    CODEX_EXIT_CODE=${{_pl_repair_codes[0]:-1}}
+    if [ "$CODEX_EXIT_CODE" -eq 0 ]; then
+        CODEX_EXIT_CODE=${{_pl_repair_codes[1]:-1}}
+    fi
+done
+"""
+
+    def _review_inspection_check(self, execution_context: Dict[str, Any]) -> str:
+        """Shell command that succeeds when the latest session read the change.
+
+        Shared by the inspection continuations and the result repair, so a
+        repair only runs on top of a session that the inspection floor
+        accepts.
+
+        Args:
+            execution_context: Execution context.
+
+        Returns:
+            The command, or an empty string when the inspection floor does
+            not apply to this run (no native result, not a read-only review,
+            no shell, or inspection turned off).
+        """
+        from preloop.services.read_only_review import read_only_review
+        from preloop.services.review_integrity import review_integrity_block
+
+        config = execution_context.get("agent_config") or {}
+        clone = execution_context.get("git_clone_config")
+        if (
+            not isinstance(config, dict)
+            or config.get("native_result") is not True
+            or not read_only_review(clone)
+            or self._shell_locked(execution_context)
+            or review_integrity_block(clone).get("require_inspection") is False
+        ):
+            return ""
+        from preloop.services import review_inspection
+
+        base = execution_context.get("read_only_base_sha") or ""
+        head = execution_context.get("read_only_head_sha") or ""
+        root = self._primary_workspace_path(execution_context, clone)
+        checker = (
+            inspect.getsource(review_inspection)
+            + """
+import subprocess, sys
+root, base, head, log = sys.argv[1:]
+try:
+    paths = subprocess.check_output(
+        ["git", "-C", root, "diff", "--name-only", "-z", base + "..." + head, "--"],
+        stderr=subprocess.DEVNULL,
+    ).decode().split("\\0")
+    with open(log) as lines:
+        inspected = log_reads_change(lines, base=base, head=head, files=paths, root=root)
+except (OSError, ValueError, subprocess.SubprocessError):
+    inspected = False
+sys.exit(0 if inspected else 1)
+"""
+        )
+        return (
+            "python3 -c "
+            + shlex.quote(checker)
+            + " "
+            + " ".join(
+                shlex.quote(value) for value in (root, base, head, ATTEMPT_LOG_PATH)
+            )
+        )
 
     def _codex_sandbox_flags(self, shell_locked: bool) -> str:
         """Preserve read-only restrictions across both exec and exec resume.

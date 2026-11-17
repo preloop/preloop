@@ -30,13 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GET /api/v1/approval-requests` no longer writes on every read. A periodic
   sweep marks requests past their deadline as expired; until it runs, the
   list already shows them as expired and filters them that way.
-
-### Added
-
-- `GET /api/v1/event-webhooks/endpoints/{id}` reads one webhook endpoint
-  (without its signing secret) instead of returning 405.
-- `GET /api/v1/ci-identities/{id}/github-dispatch-subscriptions` lists a CI
-  identity's GitHub dispatch subscriptions, without tokens or secrets.
+- Native-result reviews: a final answer that does not match the result schema
+  (a missing required field, a value outside an enum, a wrong type, or no
+  JSON) no longer fails the run at once. The hosted Codex runtime asks the
+  model again, at most twice and within the execution deadline, naming each
+  validation error by JSON path. Each attempt is logged as a
+  `PRELOOP_REVIEW_CONTINUATION` with reason `result_schema_invalid`. An answer
+  that is still invalid fails with `result_schema_invalid` as before.
+- Native-result reviews: a review that was already written when the execution
+  deadline expired is finalized when it passes the same schema, binding,
+  inspection and narrative checks as a review that survives a
+  repeated-tool-loop stop. The completion facts record
+  `time_limit_after_result: true`. Otherwise the run still ends with `timeout`.
 
 ### Changed
 
@@ -76,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `GET /api/v1/event-webhooks/endpoints/{id}` reads one webhook endpoint
+  (without its signing secret) instead of returning 405.
+- `GET /api/v1/ci-identities/{id}/github-dispatch-subscriptions` lists a CI
+  identity's GitHub dispatch subscriptions, without tokens or secrets.
 - flows: rotate webhook ingress secrets with
   `POST /api/v1/flows/{id}/webhook-secret/rotate`,
   `preloop flow webhook-secret rotate <flow-id-or-name>`, or the console
@@ -163,6 +172,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- flows: an agent container now exits when the agent script exits. Since
+  #2367 the output-masking wrapper waited for every process holding the
+  script's output, so the checkpoint loop's `sleep` kept the container alive
+  for up to one checkpoint interval (300 s by default). Runs finished late,
+  and flows with a limit near the interval failed as `timeout` although the
+  agent had finished. The wrapper now ends on the script's exit, still
+  delivers and masks its last output, and signals leftover background
+  processes; the checkpoint loop also stops its `sleep` on exit.
 - Projects: listing projects by organization now returns the matching projects.
 - Trackers: manual sync returns a task ID that also appears in worker logs,
   and reports a queue failure instead of claiming the sync was queued.

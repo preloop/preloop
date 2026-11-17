@@ -268,7 +268,14 @@ fi
 _CHECKPOINT_ARMED = """
 _preloop_checkpoint() { python3 /tmp/preloop-checkpoint-client.py capture; }
 _preloop_start_checkpoint_loop() {
-    (while sleep "$PRELOOP_CHECKPOINT_INTERVAL"; do _preloop_checkpoint || true; done) &
+    # The sleep runs as a waited-on job so the EXIT trap's kill ends it too;
+    # left behind, it would hold the output pipe open for a full interval.
+    (
+        trap 'kill "$!" 2>/dev/null; exit 0' TERM
+        while sleep "$PRELOOP_CHECKPOINT_INTERVAL" & wait "$!"; do
+            _preloop_checkpoint || true
+        done
+    ) &
     _preloop_checkpoint_pid=$!
 }
 """

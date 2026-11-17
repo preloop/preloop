@@ -1,13 +1,17 @@
 name: Windows Security Validation Tests
 
 on:
-  pull_request:
-  push:
-    branches: [main]
-
+  workflow_call:
+    inputs:
+      full:
+        type: boolean
+        default: false
+      checkout_ref:
+        type: string
+        default: ''
 concurrency:
   # Cancel superseded PR work; every main/release/manual run keeps its own slot.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: windows-security-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -16,10 +20,13 @@ permissions:
 
 jobs:
   changes:
+    permissions:
+      contents: read
+      pull-requests: read
     name: Detect Windows paths
     runs-on: ubuntu-24.04
     outputs:
-      windows: ${{ github.event_name != 'pull_request' || steps.paths.outputs.windows == 'true' }}
+      windows: ${{ inputs.full || github.event_name != 'pull_request' || steps.paths.outputs.windows == 'true' }}
     steps:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         if: github.event_name == 'pull_request'
@@ -32,6 +39,8 @@ jobs:
               - '.github/**'
 
   windows-first:
+    permissions:
+      contents: read
     name: Windows security first attempt
     needs: changes
     if: needs.changes.outputs.windows == 'true'
@@ -48,6 +57,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Install pinned Pester
         run: |
           Save-Module Pester -RequiredVersion 5.7.1 -Path "$env:RUNNER_TEMP/pester-modules" -Force
@@ -78,6 +88,8 @@ jobs:
           Invoke-DefenderFileScan -FilePath "$env:SystemRoot/System32/where.exe" -LogPath "$env:RUNNER_TEMP/defender-smoke.log"
 
   windows-retry:
+    permissions:
+      contents: read
     name: Windows infrastructure retry
     needs: windows-first
     if: needs.windows-first.result == 'success' && needs.windows-first.outputs.retryable == 'true'
@@ -91,6 +103,8 @@ jobs:
     steps: *windows-steps
 
   windows-security-tests:
+    permissions:
+      contents: read
     name: Windows security script tests
     runs-on: ubuntu-24.04
     needs: [changes, windows-first, windows-retry]
