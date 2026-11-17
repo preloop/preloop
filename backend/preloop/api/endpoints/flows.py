@@ -13,6 +13,7 @@ from preloop.plugins.account_hooks import AuthorizationContext
 from preloop.api.auth import get_current_active_user
 from preloop.api.auth.ci import get_current_actor
 from preloop.api.loop_safety import run_db_off_loop
+from preloop.api.traffic_attribution import set_reason_code
 from preloop.cra.evidence_pack import (
     EvidenceMemberError,
     list_evidence_members,
@@ -4119,6 +4120,10 @@ The delete is refused with 409 and nothing is changed when:
 """
 
 
+#: Response header naming why a delete was refused.
+DELETE_BLOCKER_HEADER = "X-Preloop-Delete-Blocker"
+
+
 def _describe_delete_blockers(blockers: FlowDeleteBlockers) -> str:
     """Build an actionable 409 detail for references that block a delete."""
     parts = ["Flow cannot be deleted because other records reference it."]
@@ -4165,7 +4170,12 @@ def _describe_delete_blockers(blockers: FlowDeleteBlockers) -> str:
     description=_FLOW_DELETE_DESCRIPTION,
     responses={
         409: {
-            "description": "Running executions or references block the delete; nothing was changed."
+            "description": (
+                "Running executions or references block the delete; nothing "
+                "was changed. The X-Preloop-Delete-Blocker header carries the "
+                "reason code: active_executions, references or "
+                "reference_race."
+            )
         }
     },
 )
@@ -4175,6 +4185,7 @@ def delete_flow(
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
+    request: Request = None,  # type: ignore[assignment]
 ):
     """Delete a flow and its execution history.
 
@@ -4223,8 +4234,12 @@ def delete_flow(
         )
     except FlowDeleteRefusedError as refused:
         logger.warning(f"Refusing to delete flow {flow_id}: {refused.status_code}")
+        if request is not None:
+            set_reason_code(request, refused.reason_code)
         raise HTTPException(
-            status_code=refused.status_code, detail=refused.detail
+            status_code=refused.status_code,
+            detail=refused.detail,
+            headers={DELETE_BLOCKER_HEADER: refused.reason_code},
         ) from None
 
     logger.info(f"Successfully deleted flow {flow_id}")

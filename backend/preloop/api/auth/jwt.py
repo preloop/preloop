@@ -22,6 +22,7 @@ from preloop.api.auth.key_scopes import (
 )
 
 # Configuration
+from preloop.api.traffic_attribution import attribute_api_key, attribute_principal
 from preloop.config import settings
 from preloop.models.crud import (
     crud_api_key,
@@ -845,6 +846,7 @@ def get_current_user(
                     f"API key found: {api_key.name}, user_id: {api_key.user_id}"
                 )
 
+                attribute_api_key(request, api_key)
                 user = _authenticate_with_api_key(db, api_key)
                 enforce_api_key_route_scope(api_key, request)
                 _enforce_triage_rest_scope(db, user, request)
@@ -912,6 +914,13 @@ def get_current_user(
         try:
             # Get user by ID
             user = crud_user.get(db, id=user_id)
+            if user is not None:
+                attribute_principal(
+                    request,
+                    kind="session",
+                    principal_id=user.id,
+                    account_id=user.account_id,
+                )
 
             if not user:
                 raise HTTPException(
@@ -979,6 +988,7 @@ def get_current_user(
                     f"API key found: {api_key.name}, user_id: {api_key.user_id}"
                 )
 
+                attribute_api_key(request, api_key)
                 user = _authenticate_with_api_key(db, api_key)
                 enforce_api_key_route_scope(api_key, request)
                 _enforce_triage_rest_scope(db, user, request)

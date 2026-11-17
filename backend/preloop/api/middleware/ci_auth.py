@@ -21,6 +21,7 @@ from preloop.api.auth.ci_policy import (
     validate_machine_policies,
 )
 from preloop.api.loop_safety import run_db_off_loop
+from preloop.api.traffic_attribution import attribute_principal
 from preloop.models import crud
 from preloop.models.crud.ci_principal import CiTokenInspection
 from preloop.models.db.session import get_auth_db_session
@@ -324,6 +325,13 @@ class RestrictedCiAuthMiddleware:
             PASS_THROUGH_CACHE.put(cache_key, inspection)
             await self.app(scope, receive, send)
             return
+        if inspection.account_id is not None or inspection.principal_id is not None:
+            attribute_principal(
+                scope,
+                kind="ci_identity",
+                principal_id=inspection.principal_id,
+                account_id=inspection.account_id,
+            )
         target = _denial_target(scope)
         if scope["type"] == "websocket":
             await _audit_denial_safely(inspection, "ci_route_denied", target)

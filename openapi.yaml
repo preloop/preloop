@@ -1841,6 +1841,72 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/operator/accounts/{account_id}/health:
+    get:
+      tags:
+      - Operator
+      summary: Get Account Health
+      description: "Failures and anomalies of one account, for platform operators.\n\
+        \nReturns failed executions per category with the first of each,\nsuccessful\
+        \ executions with zero tool calls or zero model requests, API\nroutes with\
+        \ repeated 4xx or 5xx, list responses that came back empty\nright after a\
+        \ create, and gateway upstream errors per provider. Only\ncategories, counts,\
+        \ ids, route templates and first-party codes are\nreturned. The window is\
+        \ at most 31 days.\n\nRaises:\n    HTTPException: 403 for non-operators, 404\
+        \ for an unknown account,\n        422 for an invalid window."
+      operationId: get_account_health_api_v1_operator_accounts__account_id__health_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: account_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Account Id
+      - name: since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: 'Window start (default: 24 hours before until).'
+          title: Since
+        description: 'Window start (default: 24 hours before until).'
+      - name: until
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: 'Window end (default: now).'
+          title: Until
+        description: 'Window end (default: now).'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountHealthResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/discovery-salt:
     get:
       tags:
@@ -11720,12 +11786,14 @@ paths:
       description: "List projects accessible to the current user.\n\nScope rules and\
         \ the optional organization filter are applied before\npaging. The ``X-Total-Count``\
         \ header carries how many projects matched, so\na caller can tell whether\
-        \ more pages exist.\n\nArgs:\n    response: Carries the ``X-Total-Count``\
-        \ header.\n    organization_id: Optional organization to filter by.\n    limit:\
-        \ Maximum number of projects to return.\n    offset: Number of matching projects\
-        \ to skip.\n    db: Database session.\n    current_user: Authenticated user.\n\
-        \nReturns:\n    One page of project payloads, in a stable creation order.\n\
-        \nRaises:\n    HTTPException: 404 when the organization is not in the account."
+        \ more pages exist.\n\nArgs:\n    request: The request, flagged when the list\
+        \ is empty right after a\n        create in its scope.\n    response: Carries\
+        \ the ``X-Total-Count`` header.\n    organization_id: Optional organization\
+        \ to filter by.\n    limit: Maximum number of projects to return.\n    offset:\
+        \ Number of matching projects to skip.\n    db: Database session.\n    current_user:\
+        \ Authenticated user.\n\nReturns:\n    One page of project payloads, in a\
+        \ stable creation order.\n\nRaises:\n    HTTPException: 404 when the organization\
+        \ is not in the account."
       operationId: list_projects_api_v1_projects_get
       security:
       - bearerAuth: []
@@ -20100,8 +20168,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/FlowResponse'
         '409':
-          description: Running executions or references block the delete; nothing
-            was changed.
+          description: 'Running executions or references block the delete; nothing
+            was changed. The X-Preloop-Delete-Blocker header carries the reason code:
+            active_executions, references or reference_race.'
         '422':
           description: Validation Error
           content:
@@ -28638,6 +28707,60 @@ components:
       required:
       - defaults
       title: AccountGovernanceDefaultsResponse
+    AccountHealthResponse:
+      properties:
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+        since:
+          type: string
+          format: date-time
+          title: Since
+        until:
+          type: string
+          format: date-time
+          title: Until
+        failed_executions:
+          items:
+            $ref: '#/components/schemas/FailedExecutionCategory'
+          type: array
+          title: Failed Executions
+        hollow_successes:
+          $ref: '#/components/schemas/HollowSuccesses'
+        route_problems:
+          items:
+            $ref: '#/components/schemas/RouteProblem'
+          type: array
+          title: Route Problems
+        error_responses:
+          items:
+            $ref: '#/components/schemas/ErrorResponseGroup'
+          type: array
+          title: Error Responses
+        empty_after_create:
+          items:
+            $ref: '#/components/schemas/EmptyAfterCreate'
+          type: array
+          title: Empty After Create
+        gateway_upstream_errors:
+          items:
+            $ref: '#/components/schemas/GatewayUpstreamError'
+          type: array
+          title: Gateway Upstream Errors
+      type: object
+      required:
+      - account_id
+      - since
+      - until
+      - failed_executions
+      - hollow_successes
+      - route_problems
+      - error_responses
+      - empty_after_create
+      - gateway_upstream_errors
+      title: AccountHealthResponse
+      description: Failures and anomalies of one account in a window (no content).
     AccountManagedAgentListResponse:
       properties:
         query:
@@ -37830,6 +37953,34 @@ components:
       - data
       title: EmbeddingRawResponse
       description: Response model for the raw embeddings endpoint.
+    EmptyAfterCreate:
+      properties:
+        method:
+          type: string
+          title: Method
+        route_template:
+          type: string
+          title: Route Template
+        count:
+          type: integer
+          title: Count
+        first_at:
+          type: string
+          format: date-time
+          title: First At
+        last_at:
+          type: string
+          format: date-time
+          title: Last At
+      type: object
+      required:
+      - method
+      - route_template
+      - count
+      - first_at
+      - last_at
+      title: EmptyAfterCreate
+      description: A list route that came back empty right after a create in its scope.
     Enrollment:
       properties:
         secret:
@@ -38007,6 +38158,47 @@ components:
       title: EnrollmentGrantResponse
       description: One-time token-file envelope, delivered separately from managed
         settings.
+    ErrorResponseGroup:
+      properties:
+        method:
+          type: string
+          title: Method
+        route_template:
+          type: string
+          title: Route Template
+        status_code:
+          type: integer
+          title: Status Code
+        principal_kind:
+          type: string
+          title: Principal Kind
+        reason_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason Code
+        count:
+          type: integer
+          title: Count
+        first_at:
+          type: string
+          format: date-time
+          title: First At
+        last_at:
+          type: string
+          format: date-time
+          title: Last At
+      type: object
+      required:
+      - method
+      - route_template
+      - status_code
+      - principal_kind
+      - count
+      - first_at
+      - last_at
+      title: ErrorResponseGroup
+      description: Individually recorded error responses with the same shape.
     ExecutionContinuationNavigation:
       properties:
         original_execution_id:
@@ -38883,6 +39075,32 @@ components:
       type: object
       title: ExternalApprovalResult
       description: References and flat string fields; never evidence or nested objects.
+    FailedExecutionCategory:
+      properties:
+        category:
+          type: string
+          title: Category
+        count:
+          type: integer
+          title: Count
+        first_execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: First Execution Id
+        first_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: First At
+      type: object
+      required:
+      - category
+      - count
+      title: FailedExecutionCategory
+      description: Failed executions of one failure category.
     FleetCodeActivityResponse:
       properties:
         active_within_minutes:
@@ -42314,6 +42532,34 @@ components:
       type: object
       title: GatewayToolUsageByAgent
       description: Tool activity attributed to one runtime principal (managed agent).
+    GatewayUpstreamError:
+      properties:
+        provider:
+          type: string
+          title: Provider
+        error_class:
+          type: string
+          title: Error Class
+        count:
+          type: integer
+          title: Count
+        first_at:
+          type: string
+          format: date-time
+          title: First At
+        last_at:
+          type: string
+          format: date-time
+          title: Last At
+      type: object
+      required:
+      - provider
+      - error_class
+      - count
+      - first_at
+      - last_at
+      title: GatewayUpstreamError
+      description: Gateway requests that failed upstream, per provider and error class.
     GatewayUsageByAgent:
       properties:
         agent_id:
@@ -43641,6 +43887,34 @@ components:
       - eligible
       title: HarnessRunnerOption
       description: One runner reporting the harness (for the ``runner_id`` pin).
+    HollowSuccessSignal:
+      properties:
+        count:
+          type: integer
+          title: Count
+        sample_execution_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Sample Execution Ids
+      type: object
+      required:
+      - count
+      title: HollowSuccessSignal
+      description: Successful executions that did no visible work of one kind.
+    HollowSuccesses:
+      properties:
+        zero_tool_calls:
+          $ref: '#/components/schemas/HollowSuccessSignal'
+        zero_model_requests:
+          $ref: '#/components/schemas/HollowSuccessSignal'
+      type: object
+      required:
+      - zero_tool_calls
+      - zero_model_requests
+      title: HollowSuccesses
+      description: Successful executions without tool calls or without model requests.
     HostExecProfileAdvertisement:
       properties:
         name:
@@ -51181,6 +51455,38 @@ components:
       - success
       title: RollbackResponse
       description: Response from a rollback operation.
+    RouteProblem:
+      properties:
+        method:
+          type: string
+          title: Method
+        route_template:
+          type: string
+          title: Route Template
+        status_class:
+          type: integer
+          title: Status Class
+        count:
+          type: integer
+          title: Count
+        first_at:
+          type: string
+          format: date-time
+          title: First At
+        last_at:
+          type: string
+          format: date-time
+          title: Last At
+      type: object
+      required:
+      - method
+      - route_template
+      - status_class
+      - count
+      - first_at
+      - last_at
+      title: RouteProblem
+      description: A route that answered 4xx or 5xx repeatedly.
     RuleCheck:
       properties:
         id:

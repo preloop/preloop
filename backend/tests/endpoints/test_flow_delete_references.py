@@ -251,3 +251,89 @@ async def test_release_using_flow_only_for_recheck_is_refused(
 
     assert exc.value.status_code == 409
     assert str(release.id) in exc.value.detail
+
+
+def _refusal_audits(db: Session, flow: models.Flow) -> list[models.AuditLog]:
+    return (
+        db.query(models.AuditLog)
+        .filter(
+            models.AuditLog.action == "flow_delete_refused",
+            models.AuditLog.resource_id == str(flow.id),
+        )
+        .all()
+    )
+
+
+@pytest.mark.asyncio
+async def test_active_execution_refusal_carries_and_audits_its_reason(
+    db_session: Session, ci_resources: Any
+) -> None:
+    owner, _, flow, _ = ci_resources
+    execution = crud.crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="RUNNING")
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await _delete(db_session, flow, owner)
+
+    assert exc.value.status_code == 409
+    assert exc.value.headers == {"X-Preloop-Delete-Blocker": "active_executions"}
+    [audit] = _refusal_audits(db_session, flow)
+    assert audit.status == "denied"
+    assert audit.account_id == owner.account_id
+    assert audit.details["reason_code"] == "active_executions"
+    assert audit.details["active_execution_count"] == 1
+    assert audit.details["active_execution_ids"] == [str(execution.id)]
+
+
+@pytest.mark.asyncio
+async def test_reference_refusal_audit_has_ids_but_no_names(
+    db_session: Session, ci_resources: Any
+) -> None:
+    owner, _, flow, _ = ci_resources
+    principal, _, _ = provision(db_session, ci_resources)
+    _disable(db_session, flow)
+
+    with pytest.raises(HTTPException) as exc:
+        await _delete(db_session, flow, owner)
+
+    assert exc.value.headers == {"X-Preloop-Delete-Blocker": "references"}
+    [audit] = _refusal_audits(db_session, flow)
+    assert audit.details["reason_code"] == "references"
+    assert audit.details["ci_identity_ids"] == [str(principal.id)]
+    assert "Synthetic CI" not in str(audit.details)
+
+
+@pytest.mark.asyncio
+async def test_reference_race_refusal_is_audited_after_rollback(
+    db_session: Session, ci_resources: Any, mocker: Any
+) -> None:
+    owner, _, flow, _ = ci_resources
+    _disable(db_session, flow)
+    flow_id = flow.id
+    from preloop.services import flow_deletion
+
+    mocker.patch.object(
+        flow_deletion.crud_flow,
+        "get_delete_blockers",
+        return_value=FlowDeleteBlockers(),
+    )
+    mocker.patch.object(
+        flow_deletion.crud_flow,
+        "remove",
+        side_effect=IntegrityError("DELETE", {}, Exception("fk")),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await _delete(db_session, flow, owner)
+
+    assert exc.value.headers == {"X-Preloop-Delete-Blocker": "reference_race"}
+    audits = (
+        db_session.query(models.AuditLog)
+        .filter(
+            models.AuditLog.action == "flow_delete_refused",
+            models.AuditLog.resource_id == str(flow_id),
+        )
+        .all()
+    )
+    assert [a.details["reason_code"] for a in audits] == ["reference_race"]

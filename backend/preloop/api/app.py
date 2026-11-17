@@ -38,7 +38,9 @@ from preloop.services.api_usage_recorder import (
     ApiUsageRecord,
     record_api_usage,
     shutdown_api_usage_recorder,
+    usage_logging_enabled,
 )
+from preloop.services.api_traffic_recorder import shutdown_api_traffic_recorder
 from preloop.services.litellm_cost_map import pin_local_litellm_cost_map
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.sync.services.event_bus import close_nats, connect_nats  # NATS integration
@@ -160,6 +162,47 @@ def api_usage_action_type(method: str, path: str) -> Optional[str]:
     return None
 
 
+def _route_template(request: Request) -> str:
+    """Return the matched route template, never the raw path."""
+    route = request.scope.get("route")
+    template = getattr(route, "path_format", None) or getattr(route, "path", None)
+    if isinstance(template, str) and template:
+        return template[:255]
+    from preloop.services.api_traffic_recorder import UNMATCHED_ROUTE
+
+    return UNMATCHED_ROUTE
+
+
+def _record_traffic(
+    request: Request, start_time: datetime, started: float, status_code: int
+) -> None:
+    """Count one finished request for every credential kind and status."""
+    if not usage_logging_enabled():
+        return
+    from preloop.api.traffic_attribution import (
+        is_empty_after_create,
+        reason_code,
+        traffic_principal,
+    )
+    from preloop.services.api_traffic_recorder import (
+        TrafficSample,
+        get_api_traffic_recorder,
+    )
+
+    get_api_traffic_recorder().record(
+        TrafficSample(
+            started_at=start_time,
+            principal=traffic_principal(request),
+            method=request.method,
+            route_template=_route_template(request),
+            status_code=status_code,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            reason_code=reason_code(request),
+            empty_after_create=is_empty_after_create(request),
+        )
+    )
+
+
 class ApiUsageMiddleware(BaseHTTPMiddleware):
     """Middleware to track API usage."""
 
@@ -187,7 +230,15 @@ class ApiUsageMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         start_time = datetime.now(timezone.utc)
-        response = await call_next(request)
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            # The exception still propagates to the server error handler;
+            # count it as the 500 the client receives.
+            _record_traffic(request, start_time, started, 500)
+            raise
+        _record_traffic(request, start_time, started, response.status_code)
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
 
         # Log slow requests (> 500ms) for performance monitoring
@@ -898,6 +949,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     stop_audit()
     shutdown_api_usage_recorder()
+    shutdown_api_traffic_recorder()
     # Restore the original jsonable_encoder
     import fastapi.encoders
 
@@ -1058,6 +1110,9 @@ def _register_control_plane_routes(
     from preloop.api.endpoints import managed_bundle
 
     app.include_router(managed_bundle.router, prefix="/api/v1")
+    from preloop.api.endpoints import account_health
+
+    app.include_router(account_health.router, prefix="/api/v1")
     # Before account.router: its "/agents/{agent_id}" routes would otherwise
     # capture "/agents/discovery-candidates".
     app.include_router(
@@ -1706,15 +1761,6 @@ def create_app() -> FastAPI:
     if is_api_role:
         app.add_middleware(PyinstrumentMiddleware)
 
-    # Add API usage tracking
-    # Can be disabled with DISABLE_API_USAGE_TRACKING=true for debugging
-    if (
-        is_api_role
-        and os.getenv("TESTING") != "true"
-        and os.getenv("DISABLE_API_USAGE_TRACKING", "false").lower() != "true"
-    ):
-        app.add_middleware(ApiUsageMiddleware)
-
     # Add WebSocket authentication middleware
     # Validates Bearer token during HTTP upgrade before WebSocket handshake
     if is_api_role:
@@ -1735,6 +1781,17 @@ def create_app() -> FastAPI:
     from preloop.api.middleware.ci_auth import RestrictedCiAuthMiddleware
 
     app.add_middleware(RestrictedCiAuthMiddleware)
+
+    # API usage and traffic recording is registered after (outside) the CI
+    # middleware so it also sees requests that middleware rejects. It only
+    # reads the outcome; authorization still happens before any handler.
+    # Can be disabled with DISABLE_API_USAGE_TRACKING=true for debugging
+    if (
+        is_api_role
+        and os.getenv("TESTING") != "true"
+        and os.getenv("DISABLE_API_USAGE_TRACKING", "false").lower() != "true"
+    ):
+        app.add_middleware(ApiUsageMiddleware)
 
     # HSTS settings are validated here so an invalid HSTS_PRELOAD combination
     # refuses to start the service (#2279). The middleware is registered after
