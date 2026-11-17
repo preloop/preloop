@@ -93,7 +93,10 @@ def command_reads_change(
                 ):
                     continue
                 revisions = args[: args.index("--")] if "--" in args else args
-                if f"{base}...{head}" in revisions:
+                paths = args[args.index("--") + 1 :] if "--" in args else []
+                if f"{base}...{head}" in revisions and (
+                    not paths or any(path == "." or changed(path) for path in paths)
+                ):
                     return True
             if operation == "show" and len(args) == 1:
                 revision, separator, path = args[0].partition(":")
@@ -103,7 +106,7 @@ def command_reads_change(
             if any(arg in {"--help", "--version"} for arg in args):
                 continue
             if program in {"head", "tail"} and any(
-                arg == "0" or re.fullmatch(r"(?:-n|-c|--lines=|--bytes=)0", arg)
+                arg == "0" or re.fullmatch(r"(?:-|\-n|\-c|--lines=|--bytes=)0+", arg)
                 for arg in args
             ):
                 continue
