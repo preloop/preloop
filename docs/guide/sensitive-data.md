@@ -165,6 +165,9 @@ your application verifies consent. The policy keeps argument/result
 birth dates/MRNs in other scoped logs, and blocks national IDs in model prompts.
 Record results containing those identifiers require `record-review` approval.
 This policy is not a replacement for application-level consent checks.
+For a source that checks consent itself, see
+[Consent-gated tool calls with LifeCare.ID](integrations/lifecare-id.md),
+which keeps the consent id and ledger hash with reference-only logging.
 
 Use synthetic text such as `DOB: 1990-02-03; MRN: EX-1042` in **Test it**.
 Use a synthetic consent such as `consent-example-001` as a kept field. This

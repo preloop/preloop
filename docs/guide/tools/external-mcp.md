@@ -306,6 +306,10 @@ send_instance_id: true        # add X-Preloop-Instance (off by default)
 The headers are self-asserted. They are not an attestation: any client can
 send them, so use them to correlate records, not to authenticate the caller.
 
+For a worked example that checks each call against a person's consent grant
+and joins the audit row with the source's ledger, see
+[Consent-gated tool calls with LifeCare.ID](../integrations/lifecare-id.md).
+
 ---
 
 ## Prelooping External Tools

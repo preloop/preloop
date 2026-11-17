@@ -185,6 +185,7 @@ nav:
       - Policy generation: guide/tools/policy-generation.md
       - Model content policies: guide/model-content-policies.md
       - Delegated grants: guide/grant-introspection.md
+      - Consent-gated tool calls with LifeCare.ID: guide/integrations/lifecare-id.md
       - Sensitive data: guide/sensitive-data.md
       - Account kill switch: guide/account-kill-switch.md
       - Weekly report settings: weekly-report-v3.md
