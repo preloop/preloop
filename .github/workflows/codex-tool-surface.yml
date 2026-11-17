@@ -48,8 +48,8 @@ jobs:
           node-version: '22'
       - name: Install the pinned hosted CLI
         run: |
-          npm install --prefix "$RUNNER_TEMP/codex-tool-surface" --no-audit --no-fund @openai/codex@0.153.4
-          echo "PRELOOP_TEST_CODEX_BINARY=$RUNNER_TEMP/codex-tool-surface/node_modules/.bin/codex" >> "$GITHUB_ENV"
+          npm ci --prefix environments/preloop/tools --ignore-scripts --no-audit --no-fund
+          echo "PRELOOP_TEST_CODEX_BINARY=$GITHUB_WORKSPACE/environments/preloop/tools/node_modules/.bin/codex" >> "$GITHUB_ENV"
       - name: Record requests without a model provider
         run: |
           test -x "$PRELOOP_TEST_CODEX_BINARY"

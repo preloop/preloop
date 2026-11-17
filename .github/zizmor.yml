@@ -33,6 +33,7 @@ rules:
     ignore:
       - ci.yml
       - browser-fixture.yml
+      - codex-tool-surface.yml
 
   # Trusted Publishing (OIDC) for PyPI and npm requires configuration on
   # the registry side (publisher registration per package), which cannot be
@@ -60,6 +61,11 @@ rules:
   dangerous-triggers:
     ignore:
       - preloop-flow-trigger.yml
+      # The opt-in route rejects forks and bots before reading its CI key.
+      # Selection runs default-branch code; completion and publication pin
+      # that exact trusted SHA, never PR code or executable artifacts. Only
+      # the publisher has write permissions. Tests assert these boundaries.
+      - preloop-ci-route.yml
       # Recovery must outlive cancellation of the CI run it monitors.
       # workflow_run executes only workflow_sha-pinned default-branch code,
       # never PR code/artifacts/logs. The job and script reject untrusted,
