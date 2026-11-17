@@ -19,6 +19,7 @@ import base64
 import json
 import socket
 import threading
+import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -57,6 +58,7 @@ from preloop.models.db.session import (
 )
 from preloop.models.models.user import User
 from preloop.services import grant_introspection
+from preloop.services.audit.async_writer import writer as audit_writer
 from preloop.services.mcp_http import get_mcp_lifespan_manager
 from preloop.services.upstream_identity import CORRELATION_ID_HEADER
 
@@ -259,7 +261,11 @@ class Flow:
         return result
 
     def audit(self) -> list[Any]:
-        """Audit rows of the account, oldest first."""
+        """Audit rows of the account, oldest first, once queued writes land."""
+        deadline = time.monotonic() + 10
+        while audit_writer.pending_count and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert audit_writer.pending_count == 0, "audit writes still pending"
         self.db.expire_all()
         rows = crud_audit_log.get_by_account(
             self.db, account_id=self.user.account_id, limit=500
@@ -414,18 +420,6 @@ def flow(owner: User, source: tuple[Source, str]) -> Iterator[Flow]:
             db.close()
 
 
-def _strings(value: Any) -> Iterator[str]:
-    if isinstance(value, dict):
-        for k, v in value.items():
-            yield str(k)
-            yield from _strings(v)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _strings(item)
-    elif value is not None:
-        yield str(value)
-
-
 def _assert_owner_absent(rows: list[Any]) -> None:
     for row in rows:
         text = json.dumps(row.details, default=str)
@@ -489,8 +483,31 @@ def test_revoked_grant_is_refused_before_the_source(flow: Flow) -> None:
     assert flow.source.tool_calls == []
     rows = flow.audit()
     assert [r for r in rows if r.action == "policy_deny"], [r.action for r in rows]
-    assert not [r for r in rows if r.action == "tool_call"]
+    # Nothing was executed. Whether a ``declined`` row exists is pinned
+    # separately below.
+    assert not [r for r in rows if r.action == "tool_call" and r.status != "declined"]
     _assert_owner_absent(rows)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Known gap: with the audit outbox off, the refused call's declined "
+        "tool_call row is handed to the async writer from an asyncio.to_thread "
+        "worker, which has no running loop, so the write is skipped. When "
+        "this passes, the refusal audit is deterministic; update the guide."
+    ),
+)
+def test_revoked_grant_leaves_a_declined_tool_call_row(flow: Flow) -> None:
+    flow.provider.revoked = True
+
+    flow.call("daily")
+
+    declined = [
+        r for r in flow.audit() if r.action == "tool_call" and r.status == "declined"
+    ]
+    assert len(declined) == 1
+    assert "grant_inactive" in json.dumps(declined[0].details, default=str)
 
 
 def test_unreachable_consent_provider_fails_closed(flow: Flow) -> None:
