@@ -132,6 +132,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- flows: an agent container now exits when the agent script exits. Since
+  #2367 the output-masking wrapper waited for every process holding the
+  script's output, so the checkpoint loop's `sleep` kept the container alive
+  for up to one checkpoint interval (300 s by default). Runs finished late,
+  and flows with a limit near the interval failed as `timeout` although the
+  agent had finished. The wrapper now ends on the script's exit, still
+  delivers and masks its last output, and signals leftover background
+  processes; the checkpoint loop also stops its `sleep` on exit.
 - Projects: listing projects by organization now returns the matching projects.
 - Trackers: manual sync returns a task ID that also appears in worker logs,
   and reports a queue failure instead of claiming the sync was queued.

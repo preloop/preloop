@@ -331,3 +331,33 @@ class CredentialStream:
         output = self.masker.mask_bytes(self.pending)
         self.pending = b""
         return output
+
+    def cut(self) -> bytes:
+        """Flush when the source is abandoned before EOF.
+
+        Unlike ``finish``, a trailing candidate that is still shorter than the
+        value it may belong to is replaced whole: the rest of that value will
+        never be read, so its beginning must not be released as plain text.
+
+        Returns:
+            The remaining output, with complete values and an unfinished
+            trailing candidate redacted.
+        """
+        pending, self.pending = self.pending, b""
+        pattern = self.masker._pattern
+        if pattern is None:
+            return pending
+        cursor = 0
+        for match in pattern.finditer(pending):
+            start = match.start()
+            if start < cursor:
+                continue
+            for length, digest in self.masker._matching_candidates(pending, start):
+                if start + length > len(pending):
+                    return self.masker.mask_bytes(pending[:start]) + REDACTED.encode()
+                if hashlib.sha256(pending[start : start + length]).hexdigest() == (
+                    digest
+                ):
+                    cursor = start + length
+                    break
+        return self.masker.mask_bytes(pending)
