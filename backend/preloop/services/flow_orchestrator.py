@@ -5209,6 +5209,12 @@ class FlowExecutionOrchestrator:
         if not isinstance(candidates, dict):
             return document
         native, file_result = candidates.get("native"), candidates.get("file")
+        # Why there is no usable native answer, for the failure wording.
+        self._native_answer_error = (
+            "not_object"
+            if native is not None and not isinstance(native, dict)
+            else candidates.get("native_error")
+        )
         schema = flow_result_schema(getattr(self, "flow", None))
         if (
             schema
@@ -5436,6 +5442,10 @@ class FlowExecutionOrchestrator:
         is exempt: that validator already ran and owns the outcome.
         """
         from preloop.services.flow_result_schema import (
+            NATIVE_ANSWER_NOT_JSON,
+            NATIVE_ANSWER_NOT_OBJECT,
+            NO_NATIVE_ANSWER,
+            NO_RESULT_CAPTURED,
             flow_result_schema,
             validate_result_document,
         )
@@ -5448,7 +5458,14 @@ class FlowExecutionOrchestrator:
         validation = getattr(decision, "validation", None)
         if validation is not None and not getattr(validation, "skipped", True):
             return
-        outcome = validate_result_document(document, schema)
+        missing = NO_RESULT_CAPTURED
+        if getattr(self, "_native_result_effective", False) is True:
+            # A native-result run is asked for a final answer, not a file.
+            missing = {
+                "not_json": NATIVE_ANSWER_NOT_JSON,
+                "not_object": NATIVE_ANSWER_NOT_OBJECT,
+            }.get(str(getattr(self, "_native_answer_error", None)), NO_NATIVE_ANSWER)
+        outcome = validate_result_document(document, schema, missing_message=missing)
         self._result_schema_validation = outcome
         logger_ = getattr(self, "execution_logger", None)
         if logger_ is not None:
@@ -5472,6 +5489,7 @@ class FlowExecutionOrchestrator:
         """
         from preloop.services.flow_result_schema import schema_failure_message
 
+        self._name_failed_model_request(final_status, agent_result)
         validation = getattr(self, "_result_schema_validation", None)
         if (
             final_status != "SUCCEEDED"
@@ -5492,6 +5510,62 @@ class FlowExecutionOrchestrator:
             "status": "FAILED",
             "error_message": message,
             "failure_category": FAILURE_CATEGORY_RESULT_SCHEMA_INVALID,
+        }
+
+    def _name_failed_model_request(
+        self, final_status: str, agent_result: Dict[str, Any]
+    ) -> None:
+        """Say that the model request failed when that is why no answer exists.
+
+        A native-result run whose provider rejected the request never gets a
+        final answer. The recorded validation then read "No result.json was
+        captured", which a user takes for a mistake in their flow. The
+        outcome stays invalid; only its message names the cause and points
+        at the provider error the execution already carries.
+
+        Args:
+            final_status: Status about to be written.
+            agent_result: The monitored attempt's result.
+        """
+        from preloop.services.flow_failure_category import (
+            FAILURE_CATEGORY_MODEL_AUTH,
+            FAILURE_CATEGORY_MODEL_CONFIG,
+            FAILURE_CATEGORY_MODEL_QUOTA,
+            FAILURE_CATEGORY_MODEL_TRANSIENT,
+            FAILURE_CATEGORY_PROVIDER_BILLING,
+            FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
+        )
+        from preloop.services.flow_result_schema import (
+            MODEL_REQUEST_FAILED,
+            NO_NATIVE_ANSWER,
+        )
+
+        validation = getattr(self, "_result_schema_validation", None)
+        if (
+            final_status != "FAILED"
+            or getattr(self, "_native_result_effective", False) is not True
+            or not isinstance(validation, dict)
+            or validation.get("errors") != [{"path": "$", "message": NO_NATIVE_ANSWER}]
+        ):
+            return
+        category = derive_failure_category(
+            status=final_status,
+            error_message=agent_result.get("error_message"),
+            explicit_category=agent_result.get("failure_category"),
+            failure_analysis=agent_result.get("failure_analysis"),
+        )
+        if category not in {
+            FAILURE_CATEGORY_MODEL_AUTH,
+            FAILURE_CATEGORY_MODEL_CONFIG,
+            FAILURE_CATEGORY_MODEL_QUOTA,
+            FAILURE_CATEGORY_MODEL_TRANSIENT,
+            FAILURE_CATEGORY_PROVIDER_BILLING,
+            FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
+        }:
+            return
+        self._result_schema_validation = {
+            **validation,
+            "errors": [{"path": "$", "message": MODEL_REQUEST_FAILED}],
         }
 
     def _apply_review_integrity_gate(
@@ -7958,8 +8032,20 @@ class FlowExecutionOrchestrator:
 
         A Codex review that exits 0 without a result document is the case
         native structured results exist for, so the message says whether the
-        flag was on for this run and where it is documented.
+        flag was on for this run and where it is documented. When it was on,
+        it also says what was observed: no final answer, an answer that is
+        not JSON (or not an object), or one that does not match the schema,
+        with the failing paths.
+
+        Returns:
+            The sentence to append, or an empty string for other agents.
         """
+        from preloop.services.flow_result_schema import (
+            NATIVE_ANSWER_NOT_JSON,
+            NATIVE_ANSWER_NOT_OBJECT,
+            NO_NATIVE_ANSWER,
+            RESULT_SCHEMA_MESSAGE_PATHS,
+        )
         from preloop.services.native_result import (
             NATIVE_RESULT_DOC,
             native_result_enabled,
@@ -7972,16 +8058,39 @@ class FlowExecutionOrchestrator:
             enabled = native_result_enabled(
                 getattr(getattr(self, "flow", None), "agent_config", None)
             )
-        if enabled:
+        if not enabled:
             return (
-                " agent_config.native_result was on for this run, so the "
-                "Codex CLI was asked to write result.json against the flow "
-                f"result schema and did not; see {NATIVE_RESULT_DOC}."
+                " agent_config.native_result was off for this run; set it to "
+                "true with an enabled result_schema so the Codex CLI writes "
+                f"result.json itself (see {NATIVE_RESULT_DOC})."
+            )
+        validation = getattr(self, "_result_schema_validation", None)
+        errors = validation.get("errors") if isinstance(validation, dict) else None
+        errors = errors if isinstance(errors, list) else []
+        first = str(errors[0].get("message")) if errors else ""
+        if isinstance(validation, dict) and validation.get("valid") is True:
+            observed = "its final answer did not report a completed review"
+        elif first == NATIVE_ANSWER_NOT_JSON:
+            observed = "the final answer it wrote was not valid JSON"
+        elif first == NATIVE_ANSWER_NOT_OBJECT:
+            observed = "the final answer it wrote was not a JSON object"
+        elif errors and first != NO_NATIVE_ANSWER:
+            paths = list(dict.fromkeys(str(error.get("path")) for error in errors))
+            named = ", ".join(paths[:RESULT_SCHEMA_MESSAGE_PATHS])
+            if len(paths) > RESULT_SCHEMA_MESSAGE_PATHS:
+                named += ", ..."
+            observed = (
+                f"its final answer did not match the flow result schema at {named}"
+            )
+        else:
+            observed = (
+                "no final answer was captured: the last session ended without "
+                "writing one"
             )
         return (
-            " agent_config.native_result was off for this run; set it to "
-            "true with an enabled result_schema so the Codex CLI writes "
-            f"result.json itself (see {NATIVE_RESULT_DOC})."
+            " agent_config.native_result was on for this run, so the Codex "
+            "CLI was asked for a final answer that matches the flow result "
+            f"schema; {observed}. See {NATIVE_RESULT_DOC}."
         )
 
     async def _run_confirmation_nudge(
@@ -9102,6 +9211,7 @@ class FlowExecutionOrchestrator:
                     # any output), the sentinel's absence is not meaningful.
                     final_status = result.status.value
                     error_message = result.error_message
+                    failure_category: Optional[str] = None
                     if (
                         native_valid
                         and artifact_confirmation == "success"
@@ -9152,6 +9262,38 @@ class FlowExecutionOrchestrator:
                         and self._agent_exec_started
                         and not self._success_sentinel_seen.is_set()
                         and artifact_confirmation != "success"
+                        and getattr(self, "_native_result_effective", False) is True
+                        and isinstance(result_artifact, dict)
+                        and isinstance(validation, dict)
+                        and validation.get("valid") is False
+                    ):
+                        # The native answer exists and fails the schema (a
+                        # progress note has none of the required fields, so
+                        # no status either). That is a schema failure, not a
+                        # missing confirmation: the ladder below would report
+                        # that no result was written. The schema gate only
+                        # looks at runs that are still SUCCEEDED, so name it
+                        # here; the review gates still run on this outcome.
+                        from preloop.services.flow_result_schema import (
+                            schema_failure_message,
+                        )
+
+                        final_status = "FAILED"
+                        error_message = schema_failure_message(validation)
+                        failure_category = FAILURE_CATEGORY_RESULT_SCHEMA_INVALID
+                        self.execution_logger.log_milestone(
+                            "result_schema_invalid",
+                            {
+                                "error_count": validation.get("error_count"),
+                                "errors": (validation.get("errors") or [])[:3],
+                                "confirmation": "none",
+                            },
+                        )
+                    elif (
+                        result.status == AgentStatus.SUCCEEDED
+                        and self._agent_exec_started
+                        and not self._success_sentinel_seen.is_set()
+                        and artifact_confirmation != "success"
                     ):
                         # Neither confirmation channel was used. Before
                         # failing closed, walk the recovery ladder:
@@ -9189,6 +9331,11 @@ class FlowExecutionOrchestrator:
                         final_status, error_message
                     )
                     return {
+                        **(
+                            {"failure_category": failure_category}
+                            if failure_category and final_status == "FAILED"
+                            else {}
+                        ),
                         "status": final_status,
                         "output_summary": result.output_summary,
                         "error_message": error_message,

@@ -216,3 +216,232 @@ async def test_time_limit_without_native_results_is_unchanged() -> None:
     )
     assert status == "FAILED"
     assert result["error_message"]
+
+
+# --- a review that ends on a progress note ---------------------------------
+
+#: Valid JSON, none of the schema's required properties, no ``status``.
+PROGRESS_NOTE: dict[str, Any] = {"": {"Content": "Fetching the diff before review."}}
+
+
+def codex(orch: FlowExecutionOrchestrator) -> FlowExecutionOrchestrator:
+    """Make ``orch`` a Codex run that called tools, so the hint applies."""
+    orch.agent_type = "codex"
+    orch.tool_calls_count = 3
+    return orch
+
+
+def bundle(native: Any, **extra: Any) -> dict[str, Any]:
+    """The capture transport for a native answer."""
+    return {
+        "_preloop_native_result_candidates_v1": {
+            "native": native,
+            "file": None,
+            **extra,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_combined_continuation_review_finalizes_as_a_review(
+    tmp_path: Path,
+) -> None:
+    calls, answer, _ = _run(
+        tmp_path,
+        _blocks(_context()),
+        [make_review(), make_review(), PROGRESS_NOTE, make_review()],
+        inspect_from=4,
+    )
+    assert calls == 4
+    document = json.loads(answer.read_text())
+    document.update(head_sha=HEAD, base_sha=BASE)
+    orch = orchestrator()
+    status, result = await finalize(orch, executor(document, AgentStatus.SUCCEEDED))
+    assert status == "SUCCEEDED", result.get("error_message")
+
+
+@pytest.mark.asyncio
+async def test_progress_note_is_schema_invalid_not_unconfirmed(
+    tmp_path: Path,
+) -> None:
+    calls, answer, _ = _run(
+        tmp_path, _blocks(_context()), [PROGRESS_NOTE], inspect_from=4
+    )
+    assert calls == 6
+    orch = codex(orchestrator())
+    status, result = await finalize(
+        orch, executor(json.loads(answer.read_text()), AgentStatus.SUCCEEDED)
+    )
+    assert status == "FAILED"
+    assert result["failure_category"] == "result_schema_invalid"
+    message = result["error_message"]
+    assert message.startswith("Result document does not match the flow result schema")
+    assert "did not confirm" not in message
+    assert "$.findings" in message and "$.verdict" in message
+    paths = {error["path"] for error in orch._result_schema_validation["errors"]}
+    assert {"$.findings", "$.verdict", "$.review"} <= paths
+    assert result["result"] == PROGRESS_NOTE
+
+
+@pytest.mark.asyncio
+async def test_uninspected_progress_note_fails_as_not_inspected(
+    tmp_path: Path,
+) -> None:
+    calls, answer, _ = _run(
+        tmp_path, _blocks(_context()), [PROGRESS_NOTE], inspect_from=99
+    )
+    assert calls == 4
+    orch = codex(orchestrator())
+    status, result = await finalize(
+        orch,
+        executor(json.loads(answer.read_text()), AgentStatus.SUCCEEDED),
+        inspected=False,
+    )
+    # The repaired classification does not bypass the inspection evidence.
+    assert status == "FAILED"
+    assert result["failure_category"] == "review_not_inspected"
+
+
+@pytest.mark.asyncio
+async def test_uninspected_valid_answer_still_fails_as_not_inspected() -> None:
+    orch = codex(orchestrator())
+    fake = executor(make_review(head_sha=HEAD, base_sha=BASE), AgentStatus.SUCCEEDED)
+    status, result = await finalize(orch, fake, inspected=False)
+    assert status == "FAILED"
+    assert result["failure_category"] == "review_not_inspected"
+
+
+@pytest.mark.parametrize(
+    "artifact,observed,recorded",
+    [
+        (None, "no final answer was captured", "No final answer was captured"),
+        (
+            bundle(None, native_error="not_json"),
+            "was not valid JSON",
+            "The final answer was not valid JSON",
+        ),
+        (
+            bundle(["a progress note"]),
+            "was not a JSON object",
+            "The final answer was not a JSON object",
+        ),
+    ],
+    ids=["none", "not-json", "not-object"],
+)
+@pytest.mark.asyncio
+async def test_unconfirmed_run_says_what_was_observed(
+    artifact: Any, observed: str, recorded: str
+) -> None:
+    orch = codex(orchestrator())
+    fake = executor(None, AgentStatus.SUCCEEDED)
+    fake.get_result_artifact = AsyncMock(return_value=artifact)
+    with (
+        patch.object(orch, "_refetch_exited_session_logs", AsyncMock(return_value=[])),
+        patch.object(
+            orch,
+            "_run_confirmation_nudge",
+            AsyncMock(return_value={"outcome": "skipped"}),
+        ),
+    ):
+        status, result = await finalize(orch, fake)
+    assert status == "FAILED"
+    message = result["error_message"]
+    assert "did not confirm success" in message
+    assert observed in message
+    assert "and did not" not in message
+    assert "result.json against" not in message
+    assert orch._result_schema_validation["errors"] == [
+        {"path": "$", "message": recorded}
+    ]
+
+
+def test_hint_names_the_failing_paths_of_a_schema_invalid_answer() -> None:
+    orch = codex(orchestrator())
+    orch._check_result_schema(PROGRESS_NOTE)
+    hint = orch._native_result_hint()
+    assert "native_result was on" in hint
+    assert "did not match the flow result schema" in hint
+    assert "$.findings" in hint
+
+
+@pytest.mark.parametrize(
+    "error,provider",
+    [
+        ("Provider returned HTTP 401: invalid api key", True),
+        (
+            "unexpected status 400 Bad Request: unsupported parameter: response_format",
+            True,
+        ),
+        ("Agent container was killed: out of memory", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_failed_model_request_is_not_reported_as_a_missing_file(
+    error: str, provider: bool
+) -> None:
+    orch = codex(orchestrator())
+    fake = executor(None, AgentStatus.FAILED)
+    fake.get_result_artifact = AsyncMock(return_value=None)
+    fake.get_result = AsyncMock(
+        return_value=AgentExecutionResult(
+            status=AgentStatus.FAILED,
+            session_reference="native-session",
+            output_summary="agent failed",
+            error_message=error,
+            exit_code=1,
+        )
+    )
+    status, result = await finalize(orch, fake)
+    assert status == "FAILED"
+    assert result["error_message"] == error
+    (recorded,) = orch._result_schema_validation["errors"]
+    assert "result.json" not in recorded["message"]
+    if provider:
+        assert "model request failed" in recorded["message"]
+        assert "provider error" in recorded["message"]
+    else:
+        assert recorded["message"] == "No final answer was captured"
+
+
+@pytest.mark.asyncio
+async def test_missing_file_wording_is_unchanged_without_native_results() -> None:
+    orch = orchestrator()
+    orch._native_result_effective = False
+    orch.flow.agent_config = {}
+    fake = executor(None, AgentStatus.FAILED)
+    fake.get_result_artifact = AsyncMock(return_value=None)
+    await finalize(orch, fake)
+    assert orch._result_schema_validation["errors"] == [
+        {"path": "$", "message": "No result.json was captured"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "answer,expected",
+    [
+        ("Fetching the full diff before review.", {"native": None, "file": None}),
+        ("  \n", None),
+        (None, None),
+    ],
+    ids=["text", "blank", "absent"],
+)
+def test_capture_reports_an_answer_that_is_not_json(
+    tmp_path: Path, answer: Any, expected: Any
+) -> None:
+    from preloop.services.native_result import (
+        NATIVE_CANDIDATES_KEY,
+        NATIVE_RESULT_BUNDLE_PATH,
+        NATIVE_RESULT_CAPTURE,
+    )
+
+    if answer is not None:
+        (tmp_path / ".preloop-native-result.json").write_text(answer)
+    exec(NATIVE_RESULT_CAPTURE.replace("/workspace", str(tmp_path)), {})
+    written = tmp_path / Path(NATIVE_RESULT_BUNDLE_PATH).name
+    if expected is None:
+        # Nothing to report: the capture stays as it was before.
+        assert not written.exists()
+        return
+    candidates = json.loads(written.read_text())[NATIVE_CANDIDATES_KEY]
+    # The reason travels, the text of the answer does not.
+    assert candidates == {**expected, "native_error": "not_json"}
