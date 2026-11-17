@@ -90,7 +90,7 @@ REVIEW_CONTINUATION_PROMPT = """
 ---
 Your previous attempt did not read the bound change. Before answering, run \
 `git diff {base}...{head}` and read the changed files. Bound head_sha: {head}; \
-bound base_sha: {base}; base ref: {base_ref}. Use these exact IDs. Return a \
+bound base_sha: {base}; base ref: {base_ref}. {result_bindings}Return a \
 substantive review: actionable findings with evidence and fixes, or a clear \
 no-issues conclusion. Directory listings and revision queries are not a review.
 """
@@ -840,7 +840,7 @@ if [ {native_resume_guard} -eq 1 ] && [ "$CODEX_EXIT_CODE" -ne 0 ]; then
     {session_blocks["pack"]}
     exit "$CODEX_EXIT_CODE"
 fi
-{inspection_continuation_block}{completion_nudge_block}{reclaim_block}{session_blocks["pack"]}{post_exec_block}
+{inspection_continuation_block}{completion_nudge_block}{self._native_result_capture_block(execution_context)}{reclaim_block}{session_blocks["pack"]}{post_exec_block}
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
 """
@@ -1051,13 +1051,22 @@ exit $CODEX_EXIT_CODE
         the round starts cold and says so in the agent log.
         """
         import base64
+        from preloop.services.read_only_review import read_only_review
         from preloop.services.flow_result_schema import check_result_schema
-        from preloop.services.native_result import COLD_START_MESSAGE
+        from preloop.services.native_result import (
+            COLD_START_MESSAGE,
+            NATIVE_RESULT_PATH,
+        )
 
         if (context.get("agent_config") or {}).get("native_result") is not True:
             return "", ""
         if context.get("validate_result") is False or not context.get("result_schema"):
             raise ValueError("native_result requires an enabled result_schema")
+        output_path = (
+            NATIVE_RESULT_PATH
+            if read_only_review(context.get("git_clone_config"))
+            else "/workspace/result.json"
+        )
         schema = check_result_schema(context["result_schema"])
         encoded = base64.b64encode(json.dumps(schema).encode()).decode("ascii")
         path = "/tmp/preloop-native-result-schema.json"
@@ -1067,12 +1076,24 @@ exit $CODEX_EXIT_CODE
             f'| tee -a "{AGENT_OUTPUT_LOG_PATH}" >&2; '
             'CODEX_RESUME_ARGS=""; PRELOOP_CLI_SESSION_RESTORED=0; fi\n'
             f"printf %s {shlex.quote(encoded)} | base64 -d > {path}\n"
-            "rm -f -- /workspace/result.json\n"
+            f"rm -f -- /workspace/result.json {NATIVE_RESULT_PATH}\n"
         )
         return (
             setup,
-            f"--output-schema {path} --output-last-message /workspace/result.json",
+            f"--output-schema {path} --output-last-message {output_path}",
         )
+
+    @staticmethod
+    def _native_result_capture_block(context: Dict[str, Any]) -> str:
+        """Preserve final-answer and file candidates for controller validation."""
+        from preloop.services.native_result import NATIVE_RESULT_CAPTURE
+        from preloop.services.read_only_review import read_only_review
+
+        if (context.get("agent_config") or {}).get(
+            "native_result"
+        ) is not True or not read_only_review(context.get("git_clone_config")):
+            return ""
+        return "python3 -c " + shlex.quote(NATIVE_RESULT_CAPTURE) + "\n"
 
     def _review_inspection_continuation_block(
         self,
@@ -1112,7 +1133,11 @@ exit $CODEX_EXIT_CODE
             The shell block, or an empty string when it does not apply.
         """
         from preloop.services.read_only_review import read_only_review
-        from preloop.services.review_integrity import review_integrity_block
+        from preloop.services.review_integrity import (
+            review_integrity_block,
+            result_binding_instruction,
+        )
+        from types import SimpleNamespace
 
         config = execution_context.get("agent_config") or {}
         clone = execution_context.get("git_clone_config")
@@ -1134,6 +1159,13 @@ exit $CODEX_EXIT_CODE
                 base=base,
                 head=head,
                 base_ref=execution_context.get("read_only_base_ref") or "unavailable",
+                result_bindings=result_binding_instruction(
+                    SimpleNamespace(
+                        git_clone_config=clone,
+                        result_schema=execution_context.get("result_schema"),
+                    ),
+                    {"base_sha": base, "head_sha": head},
+                ),
             )
         )
         root = self._primary_workspace_path(execution_context, clone)
@@ -1173,7 +1205,7 @@ while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":'"$_pl_review_continuation"',"reason":"no_repository_inspection"}}' \
         | tee -a "{AGENT_OUTPUT_LOG_PATH}"
     {{ cat "{PROMPT_FILE_PATH}"; printf %s {prompt}; }} > "{REVIEW_CONTINUATION_PATH}"
-    rm -f -- /workspace/result.json
+    rm -f -- /workspace/result.json /workspace/.preloop-native-result.json
     : > "{ATTEMPT_LOG_PATH}"
     set +e
     $PRELOOP_AS_AGENT codex exec {native_args} --json --skip-git-repo-check \

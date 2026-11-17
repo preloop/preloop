@@ -490,11 +490,18 @@ on the pull request:
   pipelines, redirections and arbitrary scripts do not qualify. This is a
   minimum evidence floor; it does not prove complete coverage or correctness.
 - **Usable narrative.** `review_degenerate` rejects results whose narrative
-  strings are all shorter than three characters, or which have no findings
+  strings are all below three letters/digits, any required free-text field has
+  fewer than three letters/digits (including `review: "..."` alongside useful
+  findings), or which have no findings
   and only single-word narrative strings (for example `review: "starting"`).
   Revision bindings, status/verdict/severity controls, schema enum/constant
   values and platform metadata are excluded. `No issues found` is accepted.
   Degenerate results are rejected before revision binding evaluation.
+
+When content capture is disabled, Preloop classifies the command before redaction
+and retains a receipt tied to the admitted revisions, diff and checkout. It does
+not retain the command text. Evidence scans use keyset batches and stop at the
+first qualifying read, without imposing a ceiling on review length.
 
 **Bound review context.** Preloop prepends the admitted head SHA, base SHA and
 base ref to the prompt for restricted-CI and tracker-triggered read-only reviews.
@@ -503,7 +510,9 @@ Hosted checkouts export `PRELOOP_REVIEW_HEAD_SHA`, `PRELOOP_REVIEW_BASE_SHA` and
 which template fields the flow uses. The hosted checkout fetches a missing
 admitted base before removing clone credentials and verifies that
 `git diff "$PRELOOP_REVIEW_BASE_SHA"..."$PRELOOP_REVIEW_HEAD_SHA"` works.
-Use the admitted base in `base_sha`; it is distinct from `merge_base_sha`.
+Result-field instructions follow the schema and configured bindings, including
+custom field names; they never request extra fields. Use the admitted base in
+`base_sha` when declared; it is distinct from `merge_base_sha`.
 
 **Inspection continuation.** With `agent_config.native_result: true`, the
 Codex CLI ends a session when the model answers without a tool call and captures
@@ -516,6 +525,17 @@ model budgets apply; no token, turn or cost ceiling is added. Preloop never
 repairs the model's result. The continuation is off with
 `review_integrity.require_inspection: false` or `sandbox_type: read-only`
 (no shell).
+
+**Native completion.** Native-result prompts ask for a final answer in the
+required format, which ends the run. They do not append file-writing or sentinel
+instructions. For read-only reviews the CLI captures the final answer separately from an agent-written
+`/workspace/result.json`. A schema-valid native answer that passes review integrity
+wins regardless of write order. If it is absent or unusable, Preloop accepts the
+file only when it passes the same schema, revision, narrative and inspection
+checks. An explicit schema-valid native failure remains authoritative. If neither
+candidate is usable, ordinary validation fails the run. A verified completed
+review in the file also survives a subsequent repeated-tool-loop stop; user stops
+and execution timeouts are unchanged.
 
 **Native format compatibility.** For Codex CLI requests identified by the
 `codex_exec/` or `codex_cli_rs/` user agent, with tools and an output format,
@@ -564,7 +584,7 @@ is not posted:
 }
 ```
 
-Both checks are on by default. To bind other field names, or to turn the
+Binding, inspection and narrative checks are on by default. To bind other field names, or to turn the
 inspection floor off for a flow, set `git_clone_config.review_integrity`:
 
 <!-- example: fragment -->
@@ -1429,12 +1449,12 @@ preloop flow review-posting status <execution-id>          # add --json for the 
 - `status_only`: a commit status was set and, by rule, no review: the run
   did not succeed or returned no valid verdict (`reason`
   `run_not_succeeded`, `result_not_valid`, `verdict_unmapped`), the result
-  failed the binding or inspection check (`review_binding_mismatch`,
-  `review_not_inspected`, `review_unverified`), the head moved
+  failed the binding, inspection or narrative check (`review_binding_mismatch`,
+  `review_not_inspected`, `review_degenerate`, `review_unverified`), the head moved
   (`head_moved`) or the pull request is closed. `review` is `"skipped"` and
   `commit_status` holds the state that was set. A result that fails the
-  binding or inspection check always sets `incomplete_state`, or `error`
-  when none is configured, never the verdict's state. Preloop recomputes both
+  binding, inspection or narrative check always sets `incomplete_state`, or `error`
+  when none is configured, never the verdict's state. Preloop recomputes these
   checks from stored evidence before every attempt, including an explicit
   publish of a run that finished before this check existed.
 - `skipped`: nothing was posted, for the same reasons, when no status applies.
@@ -1445,7 +1465,7 @@ preloop flow review-posting status <execution-id>          # add --json for the 
 A posting failure never
 changes the execution's status or result. `reason` values include
 `head_moved`, `pull_request_closed`, `run_not_succeeded`, `result_not_valid`,
-`verdict_unmapped`, `review_binding_mismatch`, `review_not_inspected`,
+`verdict_unmapped`, `review_binding_mismatch`, `review_not_inspected`, `review_degenerate`,
 `review_unverified`, `admission_revoked`, `binding_changed`,
 `statuses_permission_missing`, `provider_unavailable`, `provider_denied`,
 `provider_rejected`, `lease_refused`, `lease_unavailable`,

@@ -1,12 +1,11 @@
 """Scoped durable tool evidence and safe terminal-delivery diagnostics."""
 
 import logging
-from itertools import count
 from collections.abc import Callable
 from typing import Any
 from uuid import UUID, NAMESPACE_URL, uuid5
 
-from sqlalchemy import String, cast
+from sqlalchemy import String, cast, tuple_
 from sqlalchemy.dialects.postgresql import insert
 
 from sqlalchemy.orm import Session
@@ -317,6 +316,34 @@ def _persist_native_command_evidence(
     if account_id is None:
         return
     raw = item.get("command")
+    # Classify before content redaction; retain only a binding-scoped receipt.
+    receipt = None
+    if (
+        event["type"] == "item.completed"
+        and type(item.get("exit_code")) is int
+        and item["exit_code"] == 0
+    ):
+        from preloop.models.crud import crud_flow_execution
+        from preloop.services.review_diff import review_diff_identity
+        from preloop.services.review_integrity import applies, inspection_root
+        from preloop.services.review_inspection import (
+            command_reads_change,
+            inspection_receipt,
+        )
+
+        execution = crud_flow_execution.get(db, id=execution_id)
+        if execution is not None and applies(execution.flow, execution):
+            binding = execution.ci_review_binding
+            diff = review_diff_identity(execution) or {}
+            root = inspection_root(execution.flow, binding)
+            if command_reads_change(
+                raw,
+                base=binding.get("base_sha", ""),
+                head=binding.get("head_sha", ""),
+                files=diff.get("files", []),
+                root=root,
+            ):
+                receipt = inspection_receipt(binding, diff, root)
     value = _redact_value(raw) if settings.model_gateway_capture_content else None
     bounded = len(canonical_bytes(value)) <= MAX_EVIDENCE_BYTES
     storage_redacted = sanitize_for_jsonb(raw) != raw
@@ -338,6 +365,7 @@ def _persist_native_command_evidence(
                 else None,
                 "redacted": raw != value,
                 "truncated": not bounded,
+                "inspection_receipt": receipt,
             }
         ],
     }
@@ -384,30 +412,42 @@ def inspection_summary(
 
     from preloop.services.review_integrity import ObservationCounter
 
-    ordered = (
-        db.query(models.FlowExecutionLog.metadata_)
-        .filter(
-            models.FlowExecutionLog.execution_id == UUID(str(execution_id)),
-            models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
-        )
-        .order_by(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
+    query = db.query(
+        models.FlowExecutionLog.id,
+        models.FlowExecutionLog.timestamp,
+        models.FlowExecutionLog.metadata_,
+    ).filter(
+        models.FlowExecutionLog.execution_id == UUID(str(execution_id)),
+        models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
     )
     counter = ObservationCounter(binding=binding, diff=diff, root=root)
-    # One row per query bounds driver buffering to one document, as in
-    # ``evidence_page``; the scan stops at the first inspecting observation.
-    for index in count():
-        row = ordered.offset(index).limit(1).first()
-        if row is None:
+    cursor = None
+    while True:
+        page = query
+        if cursor is not None:
+            page = page.filter(
+                tuple_(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
+                > cursor
+            )
+        rows = (
+            page.order_by(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
+            .limit(32)
+            .all()
+        )
+        if not rows:
             break
-        stored = row[0] or {}
-        try:
-            document = json.loads("".join(stored["chunks"]))
-        except (KeyError, TypeError, ValueError):
-            continue
-        if digest(document) != stored.get("sha256"):
-            continue
-        counter.add(document)
-        if counter.inspected():
+        for row_id, timestamp, stored in rows:
+            cursor = (timestamp, row_id)
+            try:
+                document = json.loads("".join((stored or {})["chunks"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if digest(document) != stored.get("sha256"):
+                continue
+            counter.add(document)
+            if counter.inspected():
+                return counter.counts()
+        if len(rows) < 32:
             break
     return counter.counts()
 

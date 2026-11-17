@@ -99,7 +99,8 @@ def _run_block(tmp_path: Path, block: str, inspect_from: int) -> tuple[int, Path
     log = tmp_path / "attempt.log"
     out_log = tmp_path / "out.log"
     block = (
-        block.replace("/workspace/result.json", str(result))
+        block.replace("/workspace/.preloop-native-result.json", str(result))
+        .replace("/workspace/result.json", str(result))
         .replace("/tmp/preloop-native-result-schema.json", str(tmp_path / "schema"))
         .replace("/tmp/preloop-agent-attempt.log", str(log))
         .replace("/tmp/preloop-agent-output.log", str(out_log))
