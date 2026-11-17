@@ -29,9 +29,21 @@ export interface DeliveryReportRow {
   cost_usd: number | null;
 }
 
+/** A report flow whose latest scheduled runs failed in a row. */
+export interface DeliveryReportFailingFlow {
+  flow_id: string;
+  flow_name: string | null;
+  consecutive_failures: number;
+  latest_execution_id: string;
+  latest_failure_category: string | null;
+  reason: string;
+}
+
 export interface DeliveryReportList {
   items: DeliveryReportRow[];
   total: number;
+  /** Absent from servers that predate the flag. */
+  failing_flows?: DeliveryReportFailingFlow[];
 }
 
 export interface Criterion {

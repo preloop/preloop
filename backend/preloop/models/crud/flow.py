@@ -336,6 +336,27 @@ class CRUDFlow(CRUDBase[models.Flow]):
             query = query.filter(self.model.account_id == account_id)
         return int(query.scalar() or 0)
 
+    def get_system_created(
+        self, db: Session, *, account_id: Optional[Union[str, UUID]] = None
+    ) -> List[models.Flow]:
+        """Account flows no user created (``created_by_user_id`` is NULL).
+
+        Args:
+            db: Database session.
+            account_id: Limit to one account; all accounts when omitted.
+
+        Returns:
+            Matching account-owned, non-preset flows, oldest first.
+        """
+        query = db.query(self.model).filter(
+            self.model.account_id.isnot(None),
+            self.model.is_preset.is_(False),
+            self.model.created_by_user_id.is_(None),
+        )
+        if account_id is not None:
+            query = query.filter(cast(self.model.account_id, String) == str(account_id))
+        return query.order_by(self.model.created_at, self.model.id).all()
+
     def get_by_account(
         self,
         db: Session,

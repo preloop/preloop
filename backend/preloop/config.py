@@ -5,7 +5,7 @@ import os
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from urllib.parse import urlsplit
-from typing import Literal
+from typing import List, Literal
 
 from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -1808,6 +1808,13 @@ class Settings(BaseSettings):
         "",
         description="Mattermost webhook URL for admin notifications",
     )
+    operator_account_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Accounts the instance operator runs itself. Their scheduled "
+            "Delivery Report failures also reach the admin alert channels."
+        ),
+    )
     installer_audit_account_id: str = Field(
         "",
         description="Account ID used to store public installer download audit events",
@@ -2295,6 +2302,11 @@ class Settings(BaseSettings):
             billing_free_hosted_model_hard_cap_usd=float(
                 os.getenv("BILLING_FREE_HOSTED_MODEL_HARD_CAP_USD", "1.0")
             ),
+            operator_account_ids=[
+                value.strip()
+                for value in os.getenv("OPERATOR_ACCOUNT_IDS", "").split(",")
+                if value.strip()
+            ],
             installer_audit_account_id=os.getenv("INSTALLER_AUDIT_ACCOUNT_ID", ""),
             agent_control_command_ttl_seconds=int(
                 os.getenv("AGENT_CONTROL_COMMAND_TTL_SECONDS", "3600")

@@ -194,6 +194,7 @@ class OpenHandsAgent(ContainerAgentExecutor):
             container = await docker.containers.create(config=container_config)
             container_id = container.id
 
+            await self._seed_docker_repository_setup(container, execution_context)
             await container.start()
 
             self._containers[container_id] = container
@@ -408,6 +409,12 @@ class OpenHandsAgent(ContainerAgentExecutor):
         Returns:
             Git clone commands string (multiple commands joined with &&) or empty string
         """
+        if (execution_context.get("agent_config") or {}).get(
+            "report_kind"
+        ) == "delivery_report":
+            # Reports clone every active repository: use the shared builder,
+            # which delivers setup as a mounted file instead of arguments.
+            return super()._prepare_git_clone_command(execution_context)
         try:
             git_config = execution_context.get("git_clone_config", {})
             repositories = git_config.get("repositories", [])

@@ -24,12 +24,17 @@ from preloop.models.crud.issue_cost import crud_issue_cost
 from preloop.schemas.delivery_report import (
     DeliveryReportDetail,
     DeliveryReportAttention,
+    DeliveryReportFailingFlow,
     DeliveryReportPendingProposal,
     DeliveryReportRow,
     DeliveryReportWindow,
     ExecutionPullRequest,
 )
 from preloop.services.delivery_report import compute_summary
+from preloop.services.delivery_report_failure import (
+    failure_reason,
+    report_document,
+)
 from preloop.services.delivery_report_proposals import needs_confirmation
 from preloop.services.flow_pr_binding import normalize_pr_url
 
@@ -87,9 +92,23 @@ def report_projects(report: Mapping[str, Any]) -> List[str]:
     return sorted(names)
 
 
+def failing_report_flows(
+    db: Session, *, account_id: str
+) -> List[DeliveryReportFailingFlow]:
+    """Report flows to flag: two or more consecutive failed scheduled runs."""
+    return [
+        DeliveryReportFailingFlow(
+            **entry, reason=failure_reason(entry["latest_failure_category"])
+        )
+        for entry in crud_flow_execution.report_scheduled_failure_streaks(
+            db, account_id=account_id
+        )
+    ]
+
+
 def report_row(execution: Any) -> DeliveryReportRow:
     """The collection row for one Delivery Report run."""
-    report = execution.result if isinstance(execution.result, Mapping) else {}
+    report = report_document(execution)
     summary = _summary(report)
     raw_window = report.get("window")
     window: Mapping[str, Any] = raw_window if isinstance(raw_window, Mapping) else {}
@@ -193,7 +212,7 @@ def report_detail(
 ) -> DeliveryReportDetail:
     """The full report of one run, with stale reopen requests marked."""
     row = report_row(execution)
-    report = dict(execution.result) if isinstance(execution.result, Mapping) else {}
+    report = report_document(execution)
     # Project abandoned claims as unconfirmed without changing the persisted
     # claim: the action service still enforces its no-duplicate-write guard.
     report["proposal_actions"] = {

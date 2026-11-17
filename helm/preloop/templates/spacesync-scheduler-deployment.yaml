@@ -122,6 +122,24 @@ spec:
                   name: {{ include "preloop.secretName" $ }}
                   key: sentry-dsn
             {{- end }}
+            {{- /* Scheduled flows run here unless the flow worker is enabled;
+                   their failure alerts need the admin channels too. */}}
+            {{- with $.Values.notifications.operatorAccountIds }}
+            - name: OPERATOR_ACCOUNT_IDS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- if $.Values.notifications.productTeamEmail }}
+            - name: PRODUCT_TEAM_EMAIL
+              value: {{ $.Values.notifications.productTeamEmail | quote }}
+            {{- end }}
+            {{- if $.Values.notifications.slackWebhookUrl }}
+            - name: SLACK_WEBHOOK_URL
+              value: {{ $.Values.notifications.slackWebhookUrl | quote }}
+            {{- end }}
+            {{- if $.Values.notifications.mattermostWebhookUrl }}
+            - name: MATTERMOST_WEBHOOK_URL
+              value: {{ $.Values.notifications.mattermostWebhookUrl | quote }}
+            {{- end }}
             {{- include "preloop.extraEnv" . | nindent 12 }}
           {{- with .Values.extraEnvFrom }}
           envFrom:

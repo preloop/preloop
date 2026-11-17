@@ -15,6 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence
+from urllib.parse import urlsplit
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -166,6 +167,82 @@ def code_repositories(
             repositories.append((name, str(project_id), str(tracker_id), branch))
             seen.add(name)
     return repositories
+
+
+def active_report_projects(
+    db: Session, *, account_id: Any, start: datetime, end: datetime
+) -> set[str]:
+    """Select checkouts from synced push, issue and merge activity.
+
+    Missing push metadata is unknown, not inactivity: keep those repositories.
+    GitHub sync stores the provider's ``pushed_at`` as metadata ``updated_at``.
+    A push after the window also keeps the checkout, since it may hide earlier
+    activity. No row limit may truncate the report's repository selection.
+    """
+    account = _uuid(account_id)
+    rows = db.execute(
+        select(
+            models.Project.id,
+            models.Project.slug,
+            models.Project.meta_data,
+            models.Tracker.tracker_type,
+        )
+        .join(
+            models.Organization,
+            models.Organization.id == models.Project.organization_id,
+        )
+        .join(models.Tracker, models.Tracker.id == models.Organization.tracker_id)
+        .where(models.Tracker.account_id == account, models.Project.is_active.is_(True))
+    ).all()
+    issue = models.Issue
+    touched = set(
+        db.scalars(
+            select(issue.project_id)
+            .join(models.Tracker, models.Tracker.id == issue.tracker_id)
+            .where(
+                models.Tracker.account_id == account,
+                issue.last_updated_external
+                >= start.astimezone(timezone.utc).replace(tzinfo=None),
+                issue.last_updated_external
+                <= end.astimezone(timezone.utc).replace(tzinfo=None),
+            )
+            .distinct()
+        ).all()
+    )
+    pull = models.IssueCostPullRequest
+    merged_names = set()
+    for url in db.scalars(
+        select(pull.pr_key).where(
+            pull.account_id == account, pull.merged_at >= start, pull.merged_at <= end
+        )
+    ).all():
+        path = urlsplit(url).path.strip("/")
+        for marker in ("/pull/", "/-/merge_requests/", "/pull-requests/"):
+            if marker in path:
+                merged_names.add(path.split(marker, 1)[0].lower())
+                break
+    active = set()
+    for project_id, name, metadata, tracker_type in rows:
+        pushed = None
+        if isinstance(metadata, dict):
+            value = metadata.get("pushed_at")
+            if value is None and tracker_type == "github":
+                value = metadata.get("updated_at")
+            if isinstance(value, str):
+                try:
+                    pushed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    if pushed.tzinfo is None:
+                        pushed = pushed.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    pass
+        if (
+            pushed is None
+            or pushed >= start
+            or project_id in touched
+            or str(name or "").lower() in merged_names
+        ):
+            active.add(str(project_id))
+    return active
 
 
 def project_in_account(db: Session, *, account_id: Any, project_id: Any) -> bool:

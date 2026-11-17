@@ -41,21 +41,20 @@ STAGING_MESSAGES = [
         "runner_error",
     ),
     # The same failure caught by the pre-launch guard instead of by the
-    # kernel. It must not drift into its own bucket: it is a runner error,
-    # reported earlier and with the offending string named.
+    # kernel. Launch refusal has its own category and names the size limit.
     (
         "Cannot start agent Job agent-a8844f7a: launch payload exceeds the "
         "execve string limit. env[PRELOOP_INNER_SCRIPT_0] is 133000 bytes, "
         "which exceeds the 126976 byte per-string launch budget by 6024 "
         "bytes (Linux caps one execve string at MAX_ARG_STRLEN, 131072 "
         "bytes).",
-        "runner_error",
+        "launch_payload_too_large",
     ),
     (
         "Cannot start opencode container for a8844f7a: launch payload "
         "exceeds the total argument budget. The launch would pass 2097152 "
         "bytes of arguments and environment",
-        "runner_error",
+        "launch_payload_too_large",
     ),
     (
         "stream error: Upstream provider disconnected mid-stream after 41s",

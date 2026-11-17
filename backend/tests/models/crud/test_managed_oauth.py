@@ -173,24 +173,10 @@ def active(
     return binding, grant, config
 
 
-def test_managed_connection_installs_the_default_report_flow(storage: tuple) -> None:
-    crud, owners = storage
-    active(crud, owners[0])
-    with crud._session() as db:
-        flows = db.scalars(
-            select(models.Flow).where(models.Flow.account_id == owners[0][0])
-        ).all()
-        assert len(flows) == 1
-        assert flows[0].agent_config["report_kind"] == "delivery_report"
-        assert flows[0].schedule_config["type"] == "weekly"
-
-
-def test_reconnect_installs_a_missing_default_report_flow(storage: tuple) -> None:
-    """A reconnect repairs accounts connected before report activation."""
+def test_managed_connection_does_not_create_a_report_flow(storage: tuple) -> None:
+    """Connecting a tracker never provisions a Delivery Report on its own."""
     crud, owners = storage
     _, grant, config = active(crud, owners[0])
-    with crud._session() as db, db.begin():
-        db.execute(delete(models.Flow).where(models.Flow.account_id == owners[0][0]))
     binding, _, _ = pending(crud, owners[0], config)
     crud.complete_connection(
         **binding,
@@ -202,8 +188,7 @@ def test_reconnect_installs_a_missing_default_report_flow(storage: tuple) -> Non
         flows = db.scalars(
             select(models.Flow).where(models.Flow.account_id == owners[0][0])
         ).all()
-        assert len(flows) == 1
-        assert flows[0].agent_config["report_kind"] == "delivery_report"
+        assert flows == []
 
 
 def test_concurrent_report_activation_installs_one_flow(storage: tuple) -> None:

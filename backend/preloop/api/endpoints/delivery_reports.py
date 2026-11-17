@@ -49,7 +49,11 @@ def list_delivery_reports(
         db, account_id=str(account.id), skip=offset, limit=limit, since=since
     )
     return DeliveryReportList(
-        items=[delivery_report_views.report_row(row) for row in rows], total=total
+        items=[delivery_report_views.report_row(row) for row in rows],
+        total=total,
+        failing_flows=delivery_report_views.failing_report_flows(
+            db, account_id=str(account.id)
+        ),
     )
 
 
@@ -76,7 +80,10 @@ def get_delivery_report(
     execution = crud_flow_execution.get_delivery_report(
         db, execution_id=execution_id, account_id=str(account.id)
     )
-    if execution is None or not isinstance(execution.result, dict):
+    if execution is None or (
+        not isinstance(execution.result, dict)
+        and execution.status not in {"FAILED", "TIMEOUT", "TIMED_OUT"}
+    ):
         raise HTTPException(status_code=404, detail="Delivery report not found")
     return delivery_report_views.report_detail(
         db, account_id=account.id, execution=execution

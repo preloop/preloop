@@ -76,6 +76,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The runner could not start the agent at all, so nothing of this run ran.',
   },
+  launch_payload_too_large: {
+    label: 'setup too large',
+    tooltip:
+      'The run could not start because its setup exceeded a runner size limit. The execution shows the size and limit.',
+  },
   model_transient: {
     label: 'model transient',
     tooltip:

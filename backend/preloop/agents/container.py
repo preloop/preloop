@@ -13,6 +13,7 @@ import random
 import re
 import shlex
 import tarfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,7 @@ from preloop.services.native_result import (
 from preloop.config import settings
 from preloop.utils import pr_metadata
 from preloop.services.flow_failure_category import (
+    FAILURE_CATEGORY_LAUNCH_PAYLOAD_TOO_LARGE,
     FAILURE_CATEGORY_RUNNER_CONFLICT,
     FAILURE_CATEGORY_RUNNER_ERROR,
 )
@@ -75,6 +77,16 @@ from preloop.utils.execve_limits import (
     prompt_transport_env,
 )
 from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
+from preloop.utils.repository_setup import (
+    SETUP_CONTEXT_KEY,
+    SETUP_DIRECTORY,
+    SETUP_FILE_MODE,
+    SETUP_FILENAME,
+    encode_setup,
+    repository_count,
+    setup_archive,
+    setup_shell,
+)
 from preloop.utils.bitbucket import (
     payload_commit_hash as bitbucket_payload_commit_hash,
     pr_source_branch as bitbucket_pr_source_branch,
@@ -1644,6 +1656,8 @@ class ContainerAgentExecutor(AgentExecutor):
             # finds the repository already checked out and skips the clone.
             await self._restore_docker_workspace(container, execution_context)
 
+            await self._seed_docker_repository_setup(container, execution_context)
+
             await container.start()
 
             self._containers[container_id] = container
@@ -1658,6 +1672,18 @@ class ContainerAgentExecutor(AgentExecutor):
                 f"Failed to start container for execution {execution_id}: {type(e).__name__}"
             )
             raise RuntimeError(f"Failed to start agent container: {e}")
+
+    async def _seed_docker_repository_setup(
+        self, container: Any, execution_context: Dict[str, Any]
+    ) -> None:
+        """Upload the setup file before the container's entrypoint starts."""
+        if encoded := execution_context.get(SETUP_CONTEXT_KEY):
+            # Owned by the user that runs init commands; the harness user
+            # (setpriv in root containers) cannot read the credential store.
+            uid, gid = 0, 0
+            if container_user := execution_context.get("_container_user"):
+                uid, gid = (int(part) for part in str(container_user).split(":"))
+            await container.put_archive("/", setup_archive(encoded, uid=uid, gid=gid))
 
     @staticmethod
     def _workspace_restore_archive(
@@ -1918,6 +1944,26 @@ class ContainerAgentExecutor(AgentExecutor):
             ),
         ]
 
+        encoded_setup = execution_context.get(SETUP_CONTEXT_KEY)
+        # One Secret name per launch, so the agent manager only needs to create
+        # Secrets; it never reads or replaces another object in the namespace.
+        setup_secret_name = f"{job_name[:48]}-{uuid.uuid4().hex[:8]}-setup"
+        if encoded_setup:
+            volumes.append(
+                client.V1Volume(
+                    name="repository-setup",
+                    secret=client.V1SecretVolumeSource(
+                        secret_name=setup_secret_name,
+                        default_mode=SETUP_FILE_MODE,
+                    ),
+                )
+            )
+            volume_mounts.append(
+                client.V1VolumeMount(
+                    name="repository-setup", mount_path=SETUP_DIRECTORY, read_only=True
+                )
+            )
+
         if run_as_non_root:
             # Non-root needs a writable HOME via emptyDir (can't write to /root).
             volumes.append(
@@ -1944,7 +1990,7 @@ class ContainerAgentExecutor(AgentExecutor):
             command=list(command) if command else None,
             args=list(args) if args else None,
             env={var.name: var.value for var in env_vars},
-            what=f"agent Job {job_name}",
+            what=f"agent Job {job_name} ({repository_count(execution_context)} repositories)",
         )
 
         container = client.V1Container(
@@ -2043,8 +2089,64 @@ class ContainerAgentExecutor(AgentExecutor):
             ),
         )
 
-        return await self._create_kubernetes_job(
+        name = await self._create_kubernetes_job(
             job, job_name=job_name, execution_id=execution_id
+        )
+        if encoded_setup:
+            try:
+                await self._deliver_repository_setup(
+                    name, encoded_setup, secret_name=setup_secret_name
+                )
+            except Exception as exc:
+                try:
+                    await self._k8s_batch_api.delete_namespaced_job(
+                        name=name,
+                        namespace=self.agent_namespace,
+                        propagation_policy="Background",
+                    )
+                except Exception:
+                    self.logger.warning(
+                        "Could not remove Job after setup delivery failed"
+                    )
+                raise AgentStartError(
+                    "Could not deliver repository setup for "
+                    f"{repository_count(execution_context)} repositories; "
+                    "check the runner's setup-file permissions and retry.",
+                    category=FAILURE_CATEGORY_RUNNER_ERROR,
+                ) from exc
+        return name
+
+    async def _deliver_repository_setup(
+        self, name: str, encoded_setup: str, *, secret_name: str
+    ) -> None:
+        """Attach the compressed setup Secret to this Job's garbage collection.
+
+        Args:
+            name: The created Job's name.
+            encoded_setup: Base64 gzip setup document.
+            secret_name: The launch-unique Secret name the pod volume mounts.
+        """
+        # The pod waits for its Secret. Creating it after the Job lets the
+        # API server attach an owner, so TTL cleanup also removes credentials.
+        owner = await self._k8s_batch_api.read_namespaced_job(
+            name=name, namespace=self.agent_namespace
+        )
+        secret = client.V1Secret(
+            metadata=client.V1ObjectMeta(
+                name=secret_name,
+                owner_references=[
+                    client.V1OwnerReference(
+                        api_version="batch/v1",
+                        kind="Job",
+                        name=name,
+                        uid=owner.metadata.uid,
+                    )
+                ],
+            ),
+            data={SETUP_FILENAME: encoded_setup},
+        )
+        await self._k8s_core_api.create_namespaced_secret(
+            namespace=self.agent_namespace, body=secret
         )
 
     async def _create_kubernetes_job(
@@ -2789,7 +2891,7 @@ class ContainerAgentExecutor(AgentExecutor):
         container that never started rather than as an execution error a user
         can read. This runs the same arithmetic the kernel will run, a moment
         earlier, and turns it into an :class:`AgentStartError` carrying
-        ``runner_error`` and the offending item's name and size.
+        ``launch_payload_too_large`` and the offending item's name and size.
 
         Sizes are logged at WARNING whatever the outcome, because "the launch
         is at 92% of the limit" is the signal that precedes the failure and
@@ -2799,6 +2901,12 @@ class ContainerAgentExecutor(AgentExecutor):
             AgentStartError: When one string, or the total, is over budget.
         """
         try:
+            if (
+                env
+                and env.get("PRELOOP_REPOSITORY_COUNT")
+                and "repositories" not in what
+            ):
+                what += f" ({env['PRELOOP_REPOSITORY_COUNT']} repositories)"
             strings = check_launch_payload(
                 command=command, args=args, env=env, what=what
             )
@@ -2806,7 +2914,7 @@ class ContainerAgentExecutor(AgentExecutor):
             # This diagnostic is built from launch labels and byte counts.
             self.logger.warning("%s", str(exc))
             raise AgentStartError(
-                str(exc), category=FAILURE_CATEGORY_RUNNER_ERROR
+                str(exc), category=FAILURE_CATEGORY_LAUNCH_PAYLOAD_TOO_LARGE
             ) from exc
         if not strings:
             return
@@ -4125,6 +4233,8 @@ class ContainerAgentExecutor(AgentExecutor):
         Returns an empty dict when the flow clones nothing or has no token.
         """
 
+        if execution_context.get(SETUP_CONTEXT_KEY):
+            return {}
         credentials: Dict[int, GitCredential] = (
             execution_context.get(self.GIT_CREDENTIALS_CONTEXT_KEY) or {}
         )
@@ -4175,6 +4285,8 @@ class ContainerAgentExecutor(AgentExecutor):
                 profile_env(self.environment_profile, kubernetes=self.use_kubernetes)
             )
         env.update(self._git_credential_env(execution_context))
+        if execution_context.get(SETUP_CONTEXT_KEY):
+            env["PRELOOP_REPOSITORY_COUNT"] = str(repository_count(execution_context))
         from preloop.utils.execution_credentials import (
             CredentialMasker,
             credential_values,
@@ -5718,8 +5830,41 @@ true
 
             execution_context["_git_target_branch"] = target_branch
             execution_context["_git_source_branch"] = source_branch
-            return " && ".join(git_setup_commands + [credential_setup] + clone_commands)
+            script = " && ".join(
+                git_setup_commands + [credential_setup] + clone_commands
+            )
+            if (execution_context.get("agent_config") or {}).get(
+                "report_kind"
+            ) == "delivery_report":
+                from preloop.utils.git_credentials import (
+                    GIT_CREDENTIALS_FILE,
+                    build_credentials_file_content,
+                )
 
+                # The mounted seed already installed the credential store. Keep
+                # its contents out of argv/env even for distinct tracker tokens.
+                credential_setup = (
+                    "export GIT_TERMINAL_PROMPT=0; "
+                    "git config --global credential.helper "
+                    f"'store --file={GIT_CREDENTIALS_FILE}'"
+                )
+                if needs_http_path_scoping(credentials.values()):
+                    credential_setup += (
+                        " && git config --global credential.useHttpPath true"
+                    )
+                script = " && ".join(
+                    git_setup_commands + [credential_setup] + clone_commands
+                )
+                execution_context[SETUP_CONTEXT_KEY] = encode_setup(
+                    script,
+                    build_credentials_file_content(credentials.values()),
+                    len(repositories),
+                )
+                return setup_shell()
+            return script
+
+        except LaunchPayloadTooLargeError:
+            raise
         except Exception as e:
             self.logger.error(f"Error preparing git clone command: {type(e).__name__}")
             if (

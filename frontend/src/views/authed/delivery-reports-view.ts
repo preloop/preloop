@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import {
   listDeliveryReports,
+  type DeliveryReportFailingFlow,
   type DeliveryReportRow,
 } from '../../delivery-reports-api';
 import { PermissionError } from '../../permissions';
@@ -55,6 +56,32 @@ export class DeliveryReportsView extends LitElement {
   static styles = [
     unsafeCSS(consoleStyles),
     css`
+      /* A person has to act: one amber line per failing report flow,
+         same recipe as the Overview attention strip. */
+      .failing-strip {
+        align-items: center;
+        background: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 10%,
+          var(--console-surface)
+        );
+        border: 1px solid
+          color-mix(in srgb, var(--sl-color-warning-500) 35%, transparent);
+        border-radius: var(--sl-border-radius-medium);
+        display: flex;
+        gap: var(--sl-spacing-small);
+        margin-bottom: 12px;
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
+      }
+      .failing-strip sl-icon {
+        color: var(--sl-color-warning-600);
+        flex-shrink: 0;
+        font-size: 18px;
+      }
+      .failing-strip-text {
+        color: var(--sl-color-warning-800);
+        min-width: 0;
+      }
       .filter-bar {
         display: flex;
         flex-wrap: wrap;
@@ -167,6 +194,7 @@ export class DeliveryReportsView extends LitElement {
 
   @state() private rows: DeliveryReportRow[] = [];
   @state() private total = 0;
+  @state() private failing: DeliveryReportFailingFlow[] = [];
   @state() private offset = 0;
   @state() private range = '30';
   @state() private search = '';
@@ -214,6 +242,7 @@ export class DeliveryReportsView extends LitElement {
       });
       this.rows = page.items;
       this.total = page.total;
+      this.failing = page.failing_flows ?? [];
     } catch (error) {
       if (error instanceof PermissionError) {
         this.permissionError = error;
@@ -391,6 +420,25 @@ export class DeliveryReportsView extends LitElement {
     </div>`;
   }
 
+  /** Report flows whose last two or more scheduled runs failed. */
+  private renderFailing() {
+    if (this.failing.length === 0) return nothing;
+    return this.failing.map(
+      (flow) =>
+        html`<div class="failing-strip" role="status">
+          <sl-icon name="exclamation-triangle" aria-hidden="true"></sl-icon>
+          <span class="failing-strip-text">
+            <strong>${flow.flow_name || 'Delivery Report'}</strong> has not
+            succeeded in its last ${flow.consecutive_failures} scheduled runs.
+            ${flow.reason}
+          </span>
+          <a href="/console/delivery-reports/${flow.latest_execution_id}"
+            >View the latest run</a
+          >
+        </div>`
+    );
+  }
+
   render() {
     if (this.permissionError) {
       return html`<view-header
@@ -416,6 +464,7 @@ export class DeliveryReportsView extends LitElement {
       ></view-header>
       <div class="column-layout wide">
         <div class="main-column">
+          ${this.renderFailing()}
           <div class="filter-bar">
             <sl-input
               size="small"

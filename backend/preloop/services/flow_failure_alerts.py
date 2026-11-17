@@ -312,6 +312,7 @@ def deliver_failure_alert(
     flow: Any,
     streak: FailureStreak,
     threshold: int,
+    skip_email: bool = False,
 ) -> Dict[str, int]:
     """Send one failure-streak alert on every enabled channel.
 
@@ -324,6 +325,8 @@ def deliver_failure_alert(
         flow: The flow whose streak failed.
         streak: Computed streak.
         threshold: Resolved alert threshold (caps the named execution ids).
+        skip_email: Leave out the email channel because the run already
+            emailed the same recipients about this failure.
 
     Returns:
         ``recipients``, ``email`` and ``push`` counts, for logs and tests.
@@ -347,7 +350,8 @@ def deliver_failure_alert(
     result["recipients"] = len(owners)
 
     try:
-        result["email"] = _send_emails(db, owners, message)
+        if not skip_email:
+            result["email"] = _send_emails(db, owners, message)
     except Exception:  # noqa: BLE001 - one channel must not stop the others
         logger.warning("Flow failure alert email channel failed")
     try:
@@ -481,6 +485,7 @@ def evaluate_failure_streak(
     flow: Any,
     execution: Any = None,
     notifications: Any = None,
+    skip_email: bool = False,
 ) -> FailureAlertOutcome:
     """Count the flow's current failure streak and alert once when it is due.
 
@@ -494,6 +499,7 @@ def evaluate_failure_streak(
         flow: The flow that just finished a run.
         execution: The execution that just finished (context only).
         notifications: Override for ``flow.notifications``.
+        skip_email: Send push alerts only; the run already emailed about it.
 
     Returns:
         What was sent, or why nothing was.
@@ -566,7 +572,11 @@ def evaluate_failure_streak(
             return FailureAlertOutcome(skipped_reason="claim_failed")
 
         counts = deliver_failure_alert(
-            db, flow=flow, streak=streak, threshold=threshold
+            db,
+            flow=flow,
+            streak=streak,
+            threshold=threshold,
+            skip_email=skip_email,
         )
         logger.info(
             "Flow failure streak alert for flow %s: %s consecutive failures, "
