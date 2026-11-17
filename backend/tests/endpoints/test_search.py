@@ -253,11 +253,11 @@ class TestPerformSearch:
         # Mock accessible projects with different organizations
         mock_project1 = MagicMock()
         mock_project1.id = uuid4()
-        mock_project1.organization_id = "org-1"
+        mock_project1.organization_id = uuid4()
 
         mock_project2 = MagicMock()
         mock_project2.id = uuid4()
-        mock_project2.organization_id = "org-2"
+        mock_project2.organization_id = uuid4()
 
         mock_get_accessible.return_value = [mock_project1, mock_project2]
 
@@ -277,7 +277,7 @@ class TestPerformSearch:
             db=mock_db,
             current_user=mock_user,
             search_type="similarity",
-            organization_id="org-1",
+            organization_id=str(mock_project1.organization_id),
             limit=10,
             skip=0,
         )
