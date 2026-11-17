@@ -58,7 +58,7 @@ from preloop.models.db.session import (
 )
 from preloop.models.models.user import User
 from preloop.services import grant_introspection
-from preloop.services.audit.async_writer import writer as audit_writer
+from preloop.services.audit import async_writer
 from preloop.services.mcp_http import get_mcp_lifespan_manager
 from preloop.services.upstream_identity import CORRELATION_ID_HEADER
 
@@ -262,10 +262,11 @@ class Flow:
 
     def audit(self) -> list[Any]:
         """Audit rows of the account, oldest first, once queued writes land."""
+        # Read the module global each time: a lifespan restart replaces it.
         deadline = time.monotonic() + 10
-        while audit_writer.pending_count and time.monotonic() < deadline:
+        while async_writer.writer.pending_count and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert audit_writer.pending_count == 0, "audit writes still pending"
+        assert async_writer.writer.pending_count == 0, "audit writes still pending"
         self.db.expire_all()
         rows = crud_audit_log.get_by_account(
             self.db, account_id=self.user.account_id, limit=500
