@@ -383,14 +383,23 @@ def test_upstream_controls_do_not_leak_into_a_subsequent_request() -> None:
             provider="openai",
         )
         assert service._last_upstream_parameters == {
-            "model": first["model"],
+            "model": first["model"].removeprefix("openrouter/"),
             "max_tokens": 1024,
             "reasoning_effort": "low",
+            "reasoning": {"effort": "low"},
+            "output_format": {"type": "none"},
+            "schema_in_instructions": False,
+            "tool_count": 0,
         }
         second = service._build_completion_kwargs(
             _model(), messages=[], payload={}, stream=False, provider="openai"
         )
-        assert service._last_upstream_parameters == {"model": second["model"]}
+        assert service._last_upstream_parameters == {
+            "model": second["model"].removeprefix("openai/"),
+            "output_format": {"type": "none"},
+            "schema_in_instructions": False,
+            "tool_count": 0,
+        }
         service._last_upstream_parameters = {"max_tokens": 1024}
         service._begin_request_accounting()
         assert service._last_upstream_parameters == {}
@@ -559,6 +568,10 @@ def test_model_studio_effective_effort_is_recorded(effort: str, location: str) -
         )
     assert kwargs["extra_body"]["reasoning_effort"] == effort
     assert service._last_upstream_parameters == {
-        "model": kwargs["model"],
+        "model": kwargs["model"].removeprefix("openai/"),
         "reasoning_effort": effort,
+        "reasoning": {"effort": effort},
+        "output_format": {"type": "none"},
+        "schema_in_instructions": False,
+        "tool_count": 0,
     }

@@ -669,6 +669,20 @@ ${previewText}</pre>
               `
             : ''
         }
+        ${payload.upstream_provider ? this.renderGatewayField('Served by', payload.upstream_provider) : ''}
+        ${
+          payload.upstream_parameters
+            ? html`
+                <div class="payload-section-title">
+                  Effective upstream request
+                </div>
+                <div class="payload-block">
+                  <pre>
+${JSON.stringify(payload.upstream_parameters, null, 2)}</pre>
+                </div>
+              `
+            : ''
+        }
         ${this.renderGatewayCapturePolicy(payload)}
         ${this.renderGatewayConversationPreview(payload)}
 

@@ -213,6 +213,7 @@ class FlowExecution(Base):
     # the parsed contents of /workspace/result.json captured by the runner
     # after the agent finishes. First-class alternative to scraping logs.
     result = Column(JSONB, nullable=True)
+    credential_fingerprints = Column(JSONB, nullable=True)
     # Evidence pack (tar.gz of /workspace/evidence) captured by the runner for
     # audit-style flows. Size-capped at capture time
     # (MAX_EVIDENCE_ARCHIVE_BYTES); served by

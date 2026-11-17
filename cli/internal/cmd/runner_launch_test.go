@@ -432,7 +432,7 @@ func TestRunnerFailureReportsSurviveDockerOutcome(t *testing.T) {
 				if !reflect.DeepEqual(outcome.result, want) {
 					t.Fatalf("stream=%v exit=%d report lost: %+v", streaming, code, outcome)
 				}
-				if (outcome.status == "SUCCEEDED") != (code == 0 && want["status"] == "success") {
+				if (outcome.status == "SUCCEEDED") != (code == 0 && report == `{"status":"success","checks":["unit"]}`) {
 					t.Fatalf("failure promoted: %+v", outcome)
 				}
 			}

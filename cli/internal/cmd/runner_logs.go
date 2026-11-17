@@ -3,9 +3,12 @@ package cmd
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"sort"
 	"strings"
 	"sync"
 
@@ -110,11 +113,7 @@ func (b *runnerLogBuffer) appendDiagnosticLineLocked(line string) {
 	if b.governance != nil && b.governance.observe(line) {
 		return
 	}
-	for _, secret := range b.secrets {
-		if secret != "" {
-			line = strings.ReplaceAll(line, secret, "[REDACTED]")
-		}
-	}
+	line = maskRunnerCredentials(line, b.secrets)
 	b.queueLineLocked(line)
 }
 
@@ -122,11 +121,7 @@ func (b *runnerLogBuffer) appendLineLocked(line string) {
 	if b.governance != nil && b.governance.observe(line) {
 		return
 	}
-	for _, secret := range b.secrets {
-		if secret != "" {
-			line = strings.ReplaceAll(line, secret, "[REDACTED]")
-		}
-	}
+	line = maskRunnerCredentials(line, b.secrets)
 	if b.native && b.harness == hostExecHarnessCopilot {
 		if !applyCopilotLine(&b.copilotCapture, line) {
 			return
@@ -184,6 +179,7 @@ func (b *runnerLogBuffer) note(line string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	line = strings.TrimSpace(line)
+	line = maskRunnerCredentials(line, b.secrets)
 	if line == "" {
 		return
 	}
@@ -373,4 +369,39 @@ func nativeRunnerResult(b *runnerLogBuffer, waitErr error) (map[string]any, erro
 		result["model"] = b.nativeCapture.Model
 	}
 	return result, nil
+}
+
+// maskRunnerCredentials covers the forms commonly printed by command tools.
+func maskRunnerCredentials(text string, secrets []string) string {
+	var forms []string
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		quoted := strings.ReplaceAll(url.QueryEscape(secret), "+", "%20")
+		forms = append(forms, secret, url.QueryEscape(secret), url.PathEscape(secret), quoted, strings.ReplaceAll(quoted, "%2F", "/"),
+			base64.StdEncoding.EncodeToString([]byte(secret)),
+			base64.RawStdEncoding.EncodeToString([]byte(secret)),
+			base64.URLEncoding.EncodeToString([]byte(secret)),
+			base64.RawURLEncoding.EncodeToString([]byte(secret)))
+	}
+	for _, form := range append([]string(nil), forms...) {
+		lower := []byte(form)
+		for i := 0; i+2 < len(lower); i++ {
+			if lower[i] == '%' {
+				for j := i + 1; j <= i+2; j++ {
+					if lower[j] >= 'A' && lower[j] <= 'F' {
+						lower[j] += 'a' - 'A'
+					}
+				}
+				i += 2
+			}
+		}
+		forms = append(forms, string(lower))
+	}
+	sort.Slice(forms, func(i, j int) bool { return len(forms[i]) > len(forms[j]) })
+	for _, form := range forms {
+		text = strings.ReplaceAll(text, form, "[REDACTED]")
+	}
+	return text
 }

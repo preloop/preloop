@@ -206,6 +206,7 @@ export interface Flow {
 }
 
 export interface AIModel {
+  model_parameters?: Record<string, unknown> | null;
   /** Recipient projections are owned and edited by the sharing account. */
   is_shared?: boolean;
   read_only?: boolean;
@@ -354,6 +355,8 @@ export interface FlowGatewayEventPayload {
   gateway_provider?: string | null;
   requested_model?: string | null;
   upstream_request_id?: string | null;
+  upstream_provider?: string | null;
+  upstream_parameters?: Record<string, unknown> | null;
   request_fingerprint?: string | null;
   gateway_attempt?: number | null;
   is_retry?: boolean | null;
@@ -568,6 +571,7 @@ export interface GatewayUsageSearchResultItem {
   timestamp: string;
   status_code: number;
   outcome: 'success' | 'error';
+  error_class?: string | null;
   endpoint: string;
   method: string;
   provider_name: string | null;
@@ -1314,6 +1318,7 @@ export interface RuntimeSessionRequestItem {
   provider_name: string | null;
   status_code: number;
   is_error: boolean;
+  error_class?: string | null;
   finish_reason: string | null;
   is_retry: boolean;
   prompt_tokens: number;

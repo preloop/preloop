@@ -1,5 +1,6 @@
 """OpenAI Codex CLI agent implementation."""
 
+import inspect
 import json
 import logging
 import os
@@ -9,6 +10,10 @@ from typing import Any, Dict, Optional
 from aiodocker.exceptions import DockerError
 
 from preloop.agents.resources import docker_memory_bytes
+from preloop.services.codex_tool_profiles import (
+    codex_tools_config,
+    validate_codex_tools_config,
+)
 from preloop.utils.execve_limits import (
     PROMPT_FILE_PATH,
     build_prompt_materialization_shell,
@@ -72,7 +77,7 @@ CODEX_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 CODEX_MCP_STARTUP_TIMEOUT_SECONDS = 60
 
 #: Extra sessions a native-result read-only review gets when a session ends
-#: without running a single command. One covers a sporadic early stop; a
+#: without reading the bound change. One covers a sporadic early stop; a
 #: second tells a sporadic stop from a model that will not use its tools on
 #: this route. More would only spend the flow's timeout on the same answer.
 #: This is a behaviour, not a budget: every session runs inside the flow's
@@ -87,12 +92,11 @@ REVIEW_CONTINUATION_PATH = "/tmp/preloop-review-continuation.txt"
 REVIEW_CONTINUATION_PROMPT = """
 
 ---
-Your previous attempt at this review ended before you read the repository: \
-it ran no command, so its answer was discarded. Do not answer yet. First \
-inspect the checked-out change with your shell tool (for example \
-`git rev-parse HEAD`, `git log -1`, `git diff` against the base, and the \
-changed files). Give your final answer only after that, and take every \
-commit id in it from a command you ran.
+Your previous attempt did not read the bound change. Before answering, run \
+`git diff {base}...{head}` and read the changed files. Bound head_sha: {head}; \
+bound base_sha: {base}; base ref: {base_ref}. {result_bindings}Return a \
+substantive review: actionable findings with evidence and fixes, or a clear \
+no-issues conclusion. Directory listings and revision queries are not a review.
 """
 
 
@@ -329,6 +333,14 @@ class CodexAgent(ContainerAgentExecutor):
             },
         }
 
+        from preloop.agents.credential_bootstrap import bootstrap_source
+
+        container_config["Entrypoint"] = [
+            "python3",
+            "-c",
+            bootstrap_source(),
+            "/opt/entrypoint.sh",
+        ]
         self._guard_docker_launch_payload(
             container_config, what=f"{self.agent_type} container for {execution_id}"
         )
@@ -492,6 +504,9 @@ fi
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", cli_version):
             raise ValueError("codex_cli_version must be an exact release version")
         shell_locked = self._shell_locked(execution_context)
+        tool_profile = validate_codex_tools_config(
+            execution_context.get("agent_config") or {}
+        )
         sandbox_flags = self._codex_sandbox_flags(shell_locked)
         attach_mcp = self._attach_preloop_mcp(execution_context)
         stream_idle_timeout_seconds = resolve_stream_idle_timeout_seconds(
@@ -646,6 +661,7 @@ fi
             shell_locked=shell_locked,
             stream_idle_timeout_seconds=stream_idle_timeout_seconds,
             cli_version=cli_version,
+            codex_tools=tool_profile,
         )
         # Native OpenAI writes no provider block, so the bound is not ours
         # to report there.
@@ -841,7 +857,7 @@ if [ {native_resume_guard} -eq 1 ] && [ "$CODEX_EXIT_CODE" -ne 0 ]; then
     {session_blocks["pack"]}
     exit "$CODEX_EXIT_CODE"
 fi
-{inspection_continuation_block}{completion_nudge_block}{reclaim_block}{session_blocks["pack"]}{post_exec_block}
+{inspection_continuation_block}{completion_nudge_block}{reclaim_block}{self._native_result_capture_block(execution_context)}{session_blocks["pack"]}{post_exec_block}
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
 """
@@ -871,6 +887,7 @@ exit $CODEX_EXIT_CODE
         # The entrypoint sets up the environment and then executes: bash "$@"
         # So our args become: bash -c "script"
         execution_context["_container_args"] = ["-c", script]
+        execution_context["_credential_bootstrap_entrypoint"] = "/opt/entrypoint.sh"
         # Don't set _container_command - let the image's entrypoint run
 
         # Prepare Codex-specific environment variables and store in context
@@ -1052,13 +1069,27 @@ exit $CODEX_EXIT_CODE
         the round starts cold and says so in the agent log.
         """
         import base64
+        from preloop.services.read_only_review import read_only_review
         from preloop.services.flow_result_schema import check_result_schema
-        from preloop.services.native_result import COLD_START_MESSAGE
+        from preloop.services.native_result import (
+            COLD_START_MESSAGE,
+            NATIVE_RESULT_BUNDLE_PATH,
+            NATIVE_RESULT_PATH,
+        )
 
         if (context.get("agent_config") or {}).get("native_result") is not True:
             return "", ""
         if context.get("validate_result") is False or not context.get("result_schema"):
-            raise ValueError("native_result requires an enabled result_schema")
+            from preloop.services.flow_failure_messages import (
+                NATIVE_RESULT_SCHEMA_REQUIRED,
+            )
+
+            raise ValueError(NATIVE_RESULT_SCHEMA_REQUIRED)
+        output_path = (
+            NATIVE_RESULT_PATH
+            if read_only_review(context.get("git_clone_config"))
+            else "/workspace/result.json"
+        )
         schema = check_result_schema(context["result_schema"])
         encoded = base64.b64encode(json.dumps(schema).encode()).decode("ascii")
         path = "/tmp/preloop-native-result-schema.json"
@@ -1068,12 +1099,25 @@ exit $CODEX_EXIT_CODE
             f'| tee -a "{AGENT_OUTPUT_LOG_PATH}" >&2; '
             'CODEX_RESUME_ARGS=""; PRELOOP_CLI_SESSION_RESTORED=0; fi\n'
             f"printf %s {shlex.quote(encoded)} | base64 -d > {path}\n"
-            "rm -f -- /workspace/result.json\n"
+            f"rm -f -- /workspace/result.json {NATIVE_RESULT_PATH} "
+            f"{NATIVE_RESULT_BUNDLE_PATH}\n"
         )
         return (
             setup,
-            f"--output-schema {path} --output-last-message /workspace/result.json",
+            f"--output-schema {path} --output-last-message {output_path}",
         )
+
+    @staticmethod
+    def _native_result_capture_block(context: Dict[str, Any]) -> str:
+        """Preserve final-answer and file candidates for controller validation."""
+        from preloop.services.native_result import NATIVE_RESULT_CAPTURE
+        from preloop.services.read_only_review import read_only_review
+
+        if (context.get("agent_config") or {}).get(
+            "native_result"
+        ) is not True or not read_only_review(context.get("git_clone_config")):
+            return ""
+        return "python3 -c " + shlex.quote(NATIVE_RESULT_CAPTURE) + "\n"
 
     def _review_inspection_continuation_block(
         self,
@@ -1096,7 +1140,7 @@ exit $CODEX_EXIT_CODE
 
         Each continuation is a fresh ``codex exec`` with the same output
         schema, because the pinned CLI's ``exec resume`` cannot keep it; the
-        abandoned session ran no command, so it holds no inspection to lose.
+        abandoned session established no qualifying inspection.
         Nothing here writes a result: if no session inspects, the last
         answer stays as the model wrote it and the controller fails the run.
 
@@ -1113,7 +1157,11 @@ exit $CODEX_EXIT_CODE
             The shell block, or an empty string when it does not apply.
         """
         from preloop.services.read_only_review import read_only_review
-        from preloop.services.review_integrity import review_integrity_block
+        from preloop.services.review_integrity import (
+            review_integrity_block,
+            result_binding_instruction,
+        )
+        from types import SimpleNamespace
 
         config = execution_context.get("agent_config") or {}
         clone = execution_context.get("git_clone_config")
@@ -1126,19 +1174,62 @@ exit $CODEX_EXIT_CODE
         ):
             return ""
         _, native_args = self._native_result_output(execution_context)
-        prompt = shlex.quote(REVIEW_CONTINUATION_PROMPT)
+        from preloop.services import review_inspection
+
+        base = execution_context.get("read_only_base_sha") or ""
+        head = execution_context.get("read_only_head_sha") or ""
+        prompt = shlex.quote(
+            REVIEW_CONTINUATION_PROMPT.format(
+                base=base,
+                head=head,
+                base_ref=execution_context.get("read_only_base_ref") or "unavailable",
+                result_bindings=result_binding_instruction(
+                    SimpleNamespace(
+                        git_clone_config=clone,
+                        result_schema=execution_context.get("result_schema"),
+                    ),
+                    {"base_sha": base, "head_sha": head},
+                ),
+            )
+        )
+        root = self._primary_workspace_path(execution_context, clone)
+        checker = (
+            inspect.getsource(review_inspection)
+            + """
+import subprocess, sys
+root, base, head, log = sys.argv[1:]
+try:
+    paths = subprocess.check_output(
+        ["git", "-C", root, "diff", "--name-only", "-z", base + "..." + head, "--"],
+        stderr=subprocess.DEVNULL,
+    ).decode().split("\\0")
+    with open(log) as lines:
+        inspected = log_reads_change(lines, base=base, head=head, files=paths, root=root)
+except (OSError, ValueError, subprocess.SubprocessError):
+    inspected = False
+sys.exit(0 if inspected else 1)
+"""
+        )
+        check = (
+            "python3 -c "
+            + shlex.quote(checker)
+            + " "
+            + " ".join(
+                shlex.quote(value) for value in (root, base, head, ATTEMPT_LOG_PATH)
+            )
+        )
         return f"""
-# A native-result review whose session ran no command did not read the
+# A native-result review without a qualifying command did not read the
 # change. Start a bounded number of fresh sessions that must inspect first.
 _pl_review_continuation=0
 while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     && [ "$_pl_review_continuation" -lt {REVIEW_INSPECTION_CONTINUATIONS} ] \
-    && ! grep -Eq '"type": ?"command_execution"' "{ATTEMPT_LOG_PATH}"; do
+    && ! {check}; do
     _pl_review_continuation=$((_pl_review_continuation + 1))
     echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":'"$_pl_review_continuation"',"reason":"no_repository_inspection"}}' \
         | tee -a "{AGENT_OUTPUT_LOG_PATH}"
     {{ cat "{PROMPT_FILE_PATH}"; printf %s {prompt}; }} > "{REVIEW_CONTINUATION_PATH}"
-    rm -f -- /workspace/result.json
+    rm -f -- /workspace/result.json /workspace/.preloop-native-result.json
     : > "{ATTEMPT_LOG_PATH}"
     set +e
     $PRELOOP_AS_AGENT codex exec {native_args} --json --skip-git-repo-check \
@@ -1178,13 +1269,14 @@ done
         shell_locked: bool = False,
         stream_idle_timeout_seconds: int = STREAM_IDLE_TIMEOUT_DEFAULT_SECONDS,
         cli_version: str = CODEX_CATALOG_VERSION,
+        codex_tools: str = "default",
     ) -> str:
         """
         Build the auth.json and config.toml shell script block for Codex CLI.
 
         For OpenAI models, generates a standard config.
         For custom models, generates a custom_provider section with base_url,
-        env_key, and wire_api so Codex knows how to reach the provider.
+        file-backed headers, and wire_api so Codex can reach the provider.
         Preloop MCP is attached only when ``attach_mcp`` is true. An empty
         flow allowlist passes false so Codex does not open an HTTP session.
 
@@ -1209,11 +1301,13 @@ done
                 Native OpenAI keeps Codex's built-in value.
             cli_version: Exact hosted CLI version, used to select a validated
                 custom-model catalog schema and fallback profile.
+            codex_tools: Optional tool profile. Default preserves CLI behavior.
 
         Returns:
             Shell script block to write auth.json and config.toml
         """
         is_custom = model_provider and model_provider != "openai"
+        tool_lines = codex_tools_config(codex_tools, cli_version)
         limit_lines = self._build_codex_limit_lines(
             model, limits
         ) + self._build_codex_effort_line(model, reasoning_effort)
@@ -1226,7 +1320,7 @@ done
         mcp_server = (
             "[mcp_servers.preloop]\n"
             'url = "$PRELOOP_MCP_URL"\n'
-            'bearer_token_env_var = "PRELOOP_API_TOKEN"\n'
+            "http_headers = { Authorization = $PRELOOP_CODEX_MCP_AUTH }\n"
             # Optional MCP servers get only a short initial-catalog grace
             # period in Codex. A flow that requested tools must wait for them
             # or fail startup rather than silently run without those tools.
@@ -1245,7 +1339,7 @@ done
             catalog_line = (
                 'model_catalog_json = "$HOME/.codex/preloop-models.json"\n'
                 # Match the pinned default used to render catalog instructions.
-                "tools.update_plan.enabled = false\n"
+                + ("tools.update_plan.enabled = false\n" if not tool_lines else "")
                 if catalog
                 else ""
             )
@@ -1268,8 +1362,8 @@ done
             auth_block = f"""{catalog_block}# Create auth.json with provider API key
 cat > ~/.codex/auth.json << EOF
 {{
-  "{env_key}": "${env_key}",
-  "OPENAI_API_KEY": "$OPENAI_API_KEY"
+  "{env_key}": $PRELOOP_CODEX_PROVIDER_KEY,
+  "OPENAI_API_KEY": $PRELOOP_CODEX_OPENAI_KEY
 }}
 EOF
 
@@ -1277,10 +1371,10 @@ EOF
 cat > ~/.codex/config.toml << EOF
 model_provider = "{provider_key}"
 model = "{model}"
-{lock_lines}{limit_lines}{catalog_line}{rmcp_line}[model_providers.{provider_key}]
+{lock_lines}{limit_lines}{catalog_line}{tool_lines}{rmcp_line}[model_providers.{provider_key}]
 name = "{model_provider.title()}"
 {base_url_line}
-env_key = "{env_key}"
+http_headers = {{ Authorization = $PRELOOP_CODEX_PROVIDER_AUTH }}
 wire_api = "{wire_api}"
 request_max_retries = 4
 stream_max_retries = 5
@@ -1293,16 +1387,56 @@ stream_idle_timeout_ms = {stream_idle_timeout_seconds * 1000}
             auth_block = f"""# Create auth.json with OpenAI API key
 cat > ~/.codex/auth.json << EOF
 {{
-  "OPENAI_API_KEY": "$OPENAI_API_KEY"
+  "OPENAI_API_KEY": $PRELOOP_CODEX_OPENAI_KEY
 }}
 EOF
 
 # Create config.toml with model and MCP server configuration
 cat > ~/.codex/config.toml << EOF
 model = "{model}"
-{lock_lines}{limit_lines}{rmcp_line}{mcp_server}EOF"""
+{lock_lines}{limit_lines}{tool_lines}{rmcp_line}{mcp_server}EOF"""
 
-        return auth_block
+        shell_policy = """
+[shell_environment_policy]
+exclude = ["*TOKEN*", "*KEY*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*", "*CAPABILITY*", "MCP_CONFIG_JSON"]
+"""
+        encoded_credentials = ""
+        for variable, source, prefix in (
+            ("PRELOOP_CODEX_OPENAI_KEY", "OPENAI_API_KEY", ""),
+            (
+                "PRELOOP_CODEX_PROVIDER_KEY",
+                env_key if is_custom else "OPENAI_API_KEY",
+                "",
+            ),
+            (
+                "PRELOOP_CODEX_PROVIDER_AUTH",
+                env_key if is_custom else "OPENAI_API_KEY",
+                "Bearer ",
+            ),
+            ("PRELOOP_CODEX_MCP_AUTH", "PRELOOP_API_TOKEN", "Bearer "),
+        ):
+            encoder = (
+                "import json, os; print(json.dumps("
+                + repr(prefix)
+                + " + os.environ.get("
+                + repr(source)
+                + ", '')))"
+            )
+            encoded_credentials += f"{variable}=$(python3 -c {shlex.quote(encoder)})\n"
+        # This also applies to resumed sessions and runs without native hooks.
+        return (
+            "umask 077\n"
+            + encoded_credentials
+            + auth_block
+            + "\nprintf '%s\n' "
+            + shlex.quote(shell_policy)
+            + " >> ~/.codex/config.toml\n"
+            + "chmod 600 ~/.codex/auth.json ~/.codex/config.toml\n"
+            + "unset OPENAI_API_KEY PRELOOP_MODEL_GATEWAY_TOKEN "
+            + (env_key if is_custom else "")
+            + " PRELOOP_CODEX_OPENAI_KEY PRELOOP_CODEX_PROVIDER_KEY "
+            + "PRELOOP_CODEX_PROVIDER_AUTH PRELOOP_CODEX_MCP_AUTH\n"
+        )
 
     async def _prepare_environment(
         self, execution_context: Dict[str, Any]

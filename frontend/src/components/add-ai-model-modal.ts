@@ -213,6 +213,25 @@ export class AddAIModelModal extends LitElement {
   static styles = [
     consoleDialogStyles,
     css`
+      .provider-routing {
+        border: 0;
+        border-top: 1px solid var(--console-hairline);
+        padding: var(--sl-spacing-medium) 0 0;
+        margin: var(--sl-spacing-medium) 0 0;
+        display: grid;
+        gap: var(--sl-spacing-medium);
+        min-width: 0;
+      }
+      .provider-routing legend {
+        font-size: var(--console-text-card-title);
+        font-weight: 600;
+      }
+      .provider-routing p {
+        font-size: var(--console-text-meta);
+        color: var(--console-meta-color);
+        margin: 0;
+      }
+
       sl-dialog::part(panel) {
         width: 620px;
       }
@@ -983,6 +1002,7 @@ export class AddAIModelModal extends LitElement {
             credentials_secret_id: secretId,
             is_default: false,
             meta_data: this._buildMetaDataForSubmit(modelId),
+            model_parameters: this._buildModelParametersForSubmit(),
           })
         );
       } catch (error) {
@@ -995,6 +1015,108 @@ export class AddAIModelModal extends LitElement {
       this._formError = `Added ${primary.model_identifier}, but these could not be added: ${failed.join(', ')}. You can add them separately.`;
     }
     return created;
+  }
+
+  private get _isOpenRouter(): boolean {
+    if (this._currentModel.provider_name?.toLowerCase() === 'openrouter')
+      return true;
+    try {
+      const host = new URL(this._currentModel.api_endpoint || '').hostname;
+      return host === 'openrouter.ai' || host.endsWith('.openrouter.ai');
+    } catch {
+      return false;
+    }
+  }
+
+  private _buildModelParametersForSubmit():
+    Record<string, unknown> | undefined {
+    const parameters = this._currentModel.model_parameters;
+    if (!parameters) return undefined;
+    const result = { ...parameters };
+    if (!this._isOpenRouter) delete result.provider;
+    return result;
+  }
+
+  private _setRoutingPreference(key: string, value: unknown): void {
+    const parameters = this._currentModel.model_parameters || {};
+    const provider = {
+      ...((parameters.provider as Record<string, unknown>) || {}),
+    };
+    if (value === undefined) delete provider[key];
+    else provider[key] = value;
+    this._currentModel = {
+      ...this._currentModel,
+      model_parameters: { ...parameters, provider },
+    };
+  }
+
+  private _renderProviderRouting() {
+    if (!this._isOpenRouter) return '';
+    const provider = (this._currentModel.model_parameters?.provider ||
+      {}) as Record<string, unknown>;
+    return html`
+      <fieldset class="provider-routing">
+        <legend>Provider routing</legend>
+        <p>
+          Choose which hosts may serve this model. Saved preferences apply to
+          every request. OpenRouter account settings also apply.
+        </p>
+        ${[
+          ['only', 'Only these providers'],
+          ['ignore', 'Never these providers'],
+        ].map(
+          ([key, label]) => html`
+            <sl-input
+              label=${label}
+              data-routing=${key}
+              help-text="Provider slugs separated by commas. Leave empty for no restriction."
+              .value=${Array.isArray(provider[key]) ? (provider[key] as string[]).join(', ') : ''}
+              ?disabled=${this._isSubmitting}
+              @sl-input=${(event: Event) => {
+                const values = (event.target as HTMLInputElement).value
+                  .split(',')
+                  .map((value) => value.trim())
+                  .filter(Boolean);
+                this._setRoutingPreference(
+                  key,
+                  values.length ? values : undefined
+                );
+              }}
+            ></sl-input>
+          `
+        )}
+        ${[
+          ['data_collection', 'Deny data collection'],
+          ['zdr', 'Zero data retention only'],
+          ['allow_fallbacks', 'Allow fallbacks'],
+        ].map(
+          ([key, label]) => html`
+            <sl-checkbox
+              data-routing=${key}
+              ?disabled=${this._isSubmitting}
+              .checked=${key === 'data_collection' ? provider[key] === 'deny' : key === 'allow_fallbacks' ? provider[key] !== false : provider[key] === true}
+              @sl-change=${(event: Event) => {
+                const checked = (event.target as HTMLInputElement).checked;
+                this._setRoutingPreference(
+                  key,
+                  key === 'data_collection'
+                    ? checked
+                      ? 'deny'
+                      : 'allow'
+                    : checked
+                );
+              }}
+              >${label}</sl-checkbox
+            >
+          `
+        )}
+        <p>
+          Fallbacks stay within your provider restrictions. For strict zero
+          retention, also exclude Safety Retention in OpenRouter privacy
+          settings.
+        </p>
+      </fieldset>
+    `;
   }
 
   // ── submit ───────────────────────────────────────────
@@ -1062,6 +1184,7 @@ export class AddAIModelModal extends LitElement {
         api_endpoint: this._isBedrock ? null : this._currentModel.api_endpoint,
         is_default: this._currentModel.is_default,
         meta_data: this._buildMetaDataForSubmit(),
+        model_parameters: this._buildModelParametersForSubmit(),
         ...(typedApiKey ? { api_key: typedApiKey } : {}),
       };
       if (this._isEditing) {
@@ -1769,6 +1892,7 @@ export class AddAIModelModal extends LitElement {
                   `
                 : ''
           }
+          ${this._renderProviderRouting()}
         </div>
         <sl-button
           slot="footer"

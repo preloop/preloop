@@ -631,3 +631,32 @@ and rejected elsewhere. Only a verified channel token sets the server-side
 step-up exception; headers and user-agent strings cannot do so. Browser social
 MFA uses a one-time fragment handoff removed on load, and only validated loopback
 callbacks receive completed CLI sessions.
+
+## Refusal counters and chain sealing
+
+`models.crud.denial_audit` writes `restricted_ci_denied` and
+`agent_permission_denied` directly on an independent audit transaction. It locks
+the account's `AuditChainState`, then reads PostgreSQL wall time and selects a
+UUID derived from account, principal, target, reason code, sanitized explanation
+and UTC minute. Concurrent
+API workers increment the same persisted counter without an in-memory limiter.
+The audit API exposes the open row immediately and indexes exact reason filters.
+If audit persistence fails, the permission decision and its HTTP response or
+WebSocket close remain unchanged; the audit failure is logged without request
+content.
+
+The sealer holds the same account lock and excludes both denial action types
+until their minute has closed, even with a zero configured sealing lag. A writer
+waiting across the boundary reads the clock after acquiring the lock and enters
+the next bucket. Consequently `details.count` is final before hashing and cannot
+be incremented after sealing. The canonical chain format is unchanged. Ordinary
+native policy-deny audit emission is suppressed for permission checks because
+the final refusal is recorded by this counter; existing policy webhooks and
+approval lifecycle events retain their semantics.
+
+The operator session-end endpoint uses the same conditional `ended_at IS NULL`
+transition as native hooks. The transition, lifecycle audit and outbound webhook
+intent commit together. Only the winner emits live account events. This does not
+remove or rewrite historical audit records. Every end request retries idempotent
+runner-stop and managed-agent binding cleanup, including after a native hook
+ended the session or an earlier cleanup attempt failed.

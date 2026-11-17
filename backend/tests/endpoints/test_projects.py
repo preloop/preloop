@@ -63,7 +63,7 @@ def mock_user():
 def mock_organization():
     """Create a mock organization."""
     org = MagicMock()
-    org.id = str(uuid.uuid4())
+    org.id = uuid.uuid4()
     org.name = "Test Organization"
     org.identifier = "test-org"
     org.description = "A test organization"
@@ -115,7 +115,7 @@ class TestCreateProject:
             name="Test Project",
             identifier="test-project",
             description="A test project",
-            organization_id=mock_organization.id,
+            organization_id=str(mock_organization.id),
             settings={},
             tracker_configurations={"repo": "test/repo"},
         )
@@ -153,7 +153,7 @@ class TestCreateProject:
             name="Test Project",
             identifier="test-project",
             description="A test project",
-            organization_id=mock_organization.id,
+            organization_id=str(mock_organization.id),
             settings={},
             tracker_configurations={"repo": "test/repo"},
         )
@@ -206,7 +206,7 @@ class TestCreateProject:
         project_create = ProjectCreate(
             name="Test Project",
             identifier="test-project",
-            organization_id=mock_organization.id,
+            organization_id=str(mock_organization.id),
         )
 
         with patch.object(
@@ -296,7 +296,7 @@ class TestListProjects:
             ):
                 result = call_endpoint(
                     projects.list_projects,
-                    organization_id=mock_organization.id,
+                    organization_id=str(mock_organization.id),
                     limit=100,
                     offset=0,
                     db=mock_db_session,
@@ -357,7 +357,7 @@ class TestListOrganizationProjects:
             ):
                 result = call_endpoint(
                     projects.list_organization_projects,
-                    organization_id=mock_organization.id,
+                    organization_id=str(mock_organization.id),
                     limit=100,
                     offset=0,
                     db=mock_db_session,
@@ -433,7 +433,7 @@ class TestGetProjectByIdentifier:
             ):
                 result = call_endpoint(
                     projects.get_project_by_identifier,
-                    organization_id=mock_organization.id,
+                    organization_id=str(mock_organization.id),
                     identifier="test-project",
                     db=mock_db_session,
                     current_user=mock_user,
@@ -469,7 +469,7 @@ class TestGetProjectByIdentifier:
                 with pytest.raises(HTTPException) as exc_info:
                     call_endpoint(
                         projects.get_project_by_identifier,
-                        organization_id=mock_organization.id,
+                        organization_id=str(mock_organization.id),
                         identifier="non-existent",
                         db=mock_db_session,
                         current_user=mock_user,
@@ -613,7 +613,7 @@ class TestTestProjectConnection:
     ):
         """Test successful connection test."""
         request = TestConnectionRequest(
-            organization=mock_organization.id,
+            organization=str(mock_organization.id),
             project=mock_project.id,
         )
 
@@ -674,7 +674,7 @@ class TestTestProjectConnection:
         mock_organization.tracker = None
 
         request = TestConnectionRequest(
-            organization=mock_organization.id,
+            organization=str(mock_organization.id),
             project=mock_project.id,
         )
 
@@ -699,7 +699,7 @@ class TestTestProjectConnection:
     ):
         """Test 404 when project is not found."""
         request = TestConnectionRequest(
-            organization=mock_organization.id,
+            organization=str(mock_organization.id),
             project=str(uuid.uuid4()),
         )
 
@@ -726,7 +726,7 @@ class TestTestProjectConnection:
     ):
         """Test failure when tracker client creation fails."""
         request = TestConnectionRequest(
-            organization=mock_organization.id,
+            organization=str(mock_organization.id),
             project=mock_project.id,
         )
 

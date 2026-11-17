@@ -5473,6 +5473,8 @@ export class SessionReplayPanel extends LitElement {
       : [];
     return html`
       <div class="chat-turn-detail">
+        ${payload.upstream_provider || payload.upstream_request_id ? html`<div class="event-meta">Served by: ${payload.upstream_provider || 'Not reported'} · Generation: ${payload.upstream_request_id || 'Not reported'}</div>` : nothing}
+        ${payload.upstream_parameters ? html`<sl-details summary="Effective upstream request"><pre>${JSON.stringify(payload.upstream_parameters, null, 2)}</pre></sl-details>` : nothing}
         <div class="event-meta">
           Model: ${payload.model_alias || payload.requested_model || 'n/a'} ·
           Prompt ${formatNumber(Number(payload.prompt_tokens || 0))} ·

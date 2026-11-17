@@ -317,7 +317,7 @@ A flow run crosses two systems that fail independently and briefly: the Kubernet
 
 **Layer 3: whole-attempt retry (`_run_agent_with_retries`).** When the agent process itself dies, the run is retried from scratch only where that is provably safe; otherwise it fails with a category. The safety boundary is the container's post-execution block (git push, PR/MR creation), which the entrypoints run only on exit 0. So an attempt is retried only when *all* of: the agent exited non-zero (no push/PR happened), no actions were recorded on the timeline, and the failure was classified transient by the executor's analysis of the full logs. An unknown exit code counts as unsafe. Bounds: `FLOW_EXECUTION_MAX_ATTEMPTS` (default 2) and `FLOW_EXECUTION_RETRY_BACKOFF_SECONDS` (default 15, doubling). Retries are never silent: each one writes an `execution_retry_scheduled` milestone, a timeline warning, and an `execution_retry` update; exhaustion writes `execution_retries_exhausted`.
 
-**Failure categories.** Every terminal non-success execution stores a coarse `failure_category` (`flow_execution.failure_category`, indexed; exposed on the execution list and detail schemas) from a closed vocabulary: `runner_conflict`, `runner_error`, `model_transient`, `model_auth`, `provider_billing`, `budget_exceeded`, `model_quota`, `model_config`, `no_confirmation`, `agent_no_progress`, `publication_missing`, `result_schema_invalid` (the captured `result.json` does not match the flow result schema), `setup_failed`, `repository_access` (git refused the repository credential or the remote hides the repository), `verification_failed`, `verification_blocked`, `tool_error`, `agent_error`, `model_stream_idle`, `approval_denied`, `approval_timeout` (a native command park was refused or expired), `approval_unavailable` (a hosted run was refused because an approval-required native rule could not pause it), `hook_binding_invalid` (a hosted Codex run's native hook credential would be refused by permission-check, so it ended before launch), `resume_failed` (a parked run could not be continued; also written on the parked row when its resume execution fails), `gateway_bypassed` (a private-runner Codex or Claude Code host CLI produced model output with no request through the gateway), `timeout`, `cancelled`, `unknown`. It is derived once at failure time by `preloop.services.flow_failure_category.derive_failure_category` from the best evidence available, in order: a category named by the raising code (e.g. `AgentStartError`), structural message shapes that identify the failing layer regardless of provider noise (runner conflict, runner error, timeout, cancellation, missing completion confirmation, publication-gate denial), then the agent executor's failure analysis of the full logs (which shares the `upstream_errors` taxonomy with the gateway), then provider-message patterns. Anything unmatched is `unknown` rather than being folded into `agent_error`: a rising `unknown` share is the signal to extend the module. `error_message` remains the human-readable detail; the category is what you group by. Existing rows are not backfilled: categories are derived from live failure context, and guessing them from historical prose would launder a heuristic into stored data.
+**Failure categories.** Every terminal non-success execution stores a coarse `failure_category` (`flow_execution.failure_category`, indexed; exposed on the execution list and detail schemas) from a closed vocabulary: `runner_conflict`, `runner_error`, `model_transient`, `model_auth`, `provider_billing`, `budget_exceeded`, `model_quota`, `model_config`, `context_truncated_suspected` (a registered input limit was exceeded or the server appears to have discarded prompt context; see [model context limits](../guide/model-context-limits.md)), `no_confirmation`, `agent_no_progress`, `publication_missing`, `result_schema_invalid` (the captured `result.json` does not match the flow result schema), `setup_failed`, `repository_access` (git refused the repository credential or the remote hides the repository), `verification_failed`, `verification_blocked`, `tool_error`, `agent_error`, `model_stream_idle`, `approval_denied`, `approval_timeout` (a native command park was refused or expired), `approval_unavailable` (a hosted run was refused because an approval-required native rule could not pause it), `hook_binding_invalid` (a hosted Codex run's native hook credential would be refused by permission-check, so it ended before launch), `resume_failed` (a parked run could not be continued; also written on the parked row when its resume execution fails), `gateway_bypassed` (a private-runner Codex or Claude Code host CLI produced model output with no request through the gateway), `timeout`, `cancelled`, `runner_unavailable`, `flow_config`, `agent_tool_loop`, `agent_reported_failure`, `orchestrator_error`, `execution_error`, and `model_policy`. It is derived once at failure time by `preloop.services.flow_failure_category.derive_failure_category` from the best evidence available, in order: a category named by the raising code (e.g. `AgentStartError`), structural message shapes that identify the failing layer regardless of provider noise (runner conflict, runner error, timeout, cancellation, missing completion confirmation, publication-gate denial), then the agent executor's failure analysis of the full logs (which shares the `upstream_errors` taxonomy with the gateway), then provider-message patterns. Unmatched failures use the recording layer’s fallback (`execution_error` at persistence, or a more specific controller/runner category). `error_message` remains the human-readable detail; the category is what you group by. The migration backfills terminal rows whose category is null, empty or `unknown`, recognizing only unambiguous configuration, explicit-result and tool-loop messages; other failures receive `execution_error`. Timeout statuses receive `timeout`, and stopped/cancelled statuses receive `cancelled`. Existing specific categories remain intact. A database trigger applies the same fallback to legacy and bulk writers.
 
 
 The legacy verifier runs in the same sandbox as the agent. Its producer label,
@@ -755,3 +755,40 @@ with a stdin provider to keep prompts outside argv. Execution-scoped credentials
 can request native approvals only for their own active flow session. See the
 [adapter guide](https://github.com/preloop/preloop/blob/main/runtime-plugins/harness-preloop/README.md) for version pins,
 capability limits, and publication order.
+
+### Named failure outcomes
+
+Failed executions always carry a `failure_category`. The controller classifies
+known failures at their source; CRUD writers enforce the same result contract
+for private-runner completions and late result updates. An error in either
+`result.json.status` or `result.json.verdict` makes the execution fail even when
+schema validation passes or the success marker was printed. Completed review
+verdicts such as `fail` and `request_changes` still describe successful execution
+of the review.
+
+`agent_reported_failure` names an explicit result error. `flow_config` names an
+unusable flow configuration: in particular, `native_result: true` requires a
+result schema with validation enabled. Create/update reject that combination;
+existing flows display the problem and fail before launching an agent.
+`runner_unavailable` means no runner picked up the execution; its message names
+the pool and wait duration. A user cancellation remains `cancelled`.
+
+Unexpected failures retain their original message and name the boundary that
+caught them (`orchestrator_error`, `agent_error`, or `execution_error`). A database
+guard supplies `execution_error` for uncategorized terminal writes from older
+workers and bulk updates. The migration also replaces historical null/`unknown`
+categories, recognizing the native-result and explicit-result failure messages.
+It does not infer a historical root cause when the stored message cannot name one.
+Shared messages and categories live in `services/flow_failure_messages.py`;
+restricted-CI and permission-hook audit writers can reuse that vocabulary.
+
+### Read-only review completion
+
+Hosted native-result reviews receive the admitted head/base/ref in their prompt
+and checkout environment. A shared command-log matcher drives both the bounded
+Codex inspection continuation and the controller integrity gate: directory and
+revision queries do not establish that the change was read. Degenerate narrative
+results are rejected before revision binding. The monitor publishes only
+nonterminal agent status; terminal execution events follow final result,
+integrity and publication checks. See [restricted CI](../guide/flows/restricted-ci.md#result-binding-and-repository-inspection)
+for the supported command forms and gateway output-format compatibility scope.

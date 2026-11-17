@@ -92,10 +92,12 @@ async def test_approved_offline_request_resumes_queue_timeout(
         patch.object(module.crud_flow_execution, "update", side_effect=_update),
         patch.object(owner_consent, "poll_runner_execution", return_value="approved"),
         patch.object(module, "lease_job") as lease,
+        patch.object(executor, "fail_if_unleased", return_value=True) as expire,
     ):
         status = await executor.get_status(execution.agent_session_reference)
     assert status == AgentStatus.FAILED
-    assert "No matching self-hosted runner" in execution.error_message
+    expire.assert_called_once()
+    assert expire.call_args.args[1] >= 7200
     lease.assert_not_called()
 
 

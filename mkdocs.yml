@@ -226,6 +226,7 @@ nav:
       - Overview: guide/providers/index.md
       - Which gateway URL an agent calls: operations/model-gateway-url.md
       - Local and OpenAI-compatible models: guide/providers/local-models.md
+      - OpenRouter: guide/providers/openrouter.md
       - Amazon Bedrock: guide/providers/bedrock.md
       - Azure OpenAI: guide/providers/azure-openai.md
       - Alibaba Cloud Model Studio: guide/alibaba-model-studio.md

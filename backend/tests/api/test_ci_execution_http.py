@@ -498,3 +498,116 @@ def test_rejected_model_response_exposes_sanitized_provider_context(
     assert "Invalid API key" in detail["provider_message"]
     assert "replace" in detail["message"].lower()
     assert "sk-test-abcdefghijklmnopqrstuv" not in response.text
+
+
+def test_trigger_denials_are_audited_at_every_admission_boundary(
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transport, schema, binding and provider denials retain distinct reasons."""
+    from preloop.services.ci_execution import CiReviewDeniedError
+
+    principal, key, token = provision(db_session, ci_resources)
+    context = crud.crud_ci_principal.authenticate(db_session, token=token)
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"/api/v1/flows/{context.flow_id}/trigger"
+    for _ in range(5):
+        assert (
+            client.post(
+                url, headers=headers, json={"diff": "synthetic-private"}
+            ).status_code
+            == 422
+        )
+    assert (
+        client.post(
+            f"/api/v1/flows/{uuid4()}/trigger", headers=headers, json={}
+        ).status_code
+        == 403
+    )
+    assert client.post(url, headers={"X-API-Key": token}, json={}).status_code == 403
+    monkeypatch.setattr(
+        flows,
+        "trigger_ci_review",
+        AsyncMock(
+            side_effect=CiReviewDeniedError(
+                "Restricted CI pull request verification denied"
+            )
+        ),
+    )
+    assert (
+        client.post(
+            url, headers=headers, json={"pr_number": 1, "head_sha": "a" * 40}
+        ).status_code
+        == 403
+    )
+    rows = (
+        db_session.query(models.AuditLog).filter_by(action="restricted_ci_denied").all()
+    )
+    by_reason = {row.details["reason_code"]: row for row in rows}
+    assert set(by_reason) == {
+        "ci_input_invalid",
+        "ci_flow_denied",
+        "ci_transport_denied",
+        "ci_pr_verification_denied",
+    }
+    assert by_reason["ci_input_invalid"].details["count"] == 5
+    assert all(row.details["principal_id"] == str(principal.id) for row in rows)
+    assert "synthetic-private" not in str([row.details for row in rows])
+    assert token not in str([row.details for row in rows])
+
+
+def test_revoked_trigger_key_retains_audit_principal(
+    db_session: Session, ci_resources: tuple[Any, ...], client: TestClient
+) -> None:
+    """Invalid authentication still has trusted attribution from the stored key."""
+    principal, key, token = provision(db_session, ci_resources)
+    context = crud.crud_ci_principal.authenticate(db_session, token=token)
+    key.is_active = False
+    db_session.commit()
+    for _ in range(3):
+        response = client.post(
+            f"/api/v1/flows/{context.flow_id}/trigger",
+            headers={"Authorization": f"Bearer {token}"},
+            json={},
+        )
+        assert response.status_code == 401
+    row = (
+        db_session.query(models.AuditLog).filter_by(action="restricted_ci_denied").one()
+    )
+    assert row.details["reason_code"] == "ci_key_inactive"
+    assert row.details["principal_id"] == str(principal.id)
+    assert row.details["count"] == 3
+
+
+@pytest.mark.parametrize("boundary", ["route", "credential", "endpoint"])
+def test_audit_failure_preserves_ci_http_denial(
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    """Both middleware and endpoint refusals keep their complete HTTP response."""
+    from unittest.mock import Mock
+    from preloop.services import denial_audit
+
+    _, key, token = provision(db_session, ci_resources)
+    url = f"/api/v1/flows/{ci_resources[2].id}/trigger"
+    payload = {"diff": "invalid request"}
+    expected = 422
+    if boundary == "route":
+        url, expected = "/protected", 403
+    elif boundary == "credential":
+        key.is_active = False
+        db_session.commit()
+        expected = 401
+    write = Mock(side_effect=RuntimeError("Synthetic audit unavailable"))
+    monkeypatch.setattr(denial_audit, "write_denial", write)
+    response = client.post(
+        url, headers={"Authorization": f"Bearer {token}"}, json=payload
+    )
+    write.assert_called_once()
+    assert response.status_code == expected
+    assert response.json()["detail"]

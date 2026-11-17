@@ -105,6 +105,16 @@ spend reservations nor provider-effect/retry deduplication.
 
 ### Budget enforcement across editions
 
+Flow requests are also checked against registered model context windows before
+inference. Accounting compares cache-inclusive provider input with a text
+estimate of the outbound prompt and tool schemas. A substantial deficit or an
+unchanged token count on a growing conversation records
+`context_truncated_suspected` on the usage row and execution. The gateway's
+failure survives later agent completion messages. Native Responses accounting
+ends at the terminal event, without waiting for the upstream HTTP body to close.
+See [model context limits](../guide/model-context-limits.md) for thresholds and
+self-hosted server configuration.
+
 Basic BYOK spending policies run in the core gateway, including dedicated gateway
 processes. Enterprise extends the same enforcer for commercial controls and
 notifications; generic policies are evaluated once. A budget that cannot be
@@ -295,3 +305,29 @@ Claude/Codex subscription recovery preserves agent enrollment through
 `preloop agents reconnect`. Credential imports serialize with rotation and reject
 recently consumed refresh tokens; provider-declared invalid grants require fresh
 authorization. See [OAuth credential recovery](#gateway-database-ownership).
+
+### Provider policy refusals
+
+The shared upstream classifier recognizes provider safety and content-policy
+refusals before connection, authentication, and overload classification. It uses
+the supported SDK policy exception, structured provider codes, and specific
+provider messages; a generic mention of safety or policy is insufficient.
+These failures return a 4xx response, preserve the provider's error class and
+code when supplied, and carry `x-should-retry: false`. The gateway attempts a
+refused request once. Failures arising after response headers are sent use the
+existing terminal stream error envelope.
+
+Usage records carry `upstream_policy_refusal`, distinct from gateway policy
+denials and transient upstream failures. The usage search results and session
+request timeline display “Provider policy refusal”.
+
+## Effective upstream requests and OpenRouter routing
+
+Model routing preferences live in `model_parameters.provider`, validated on model
+save. The saved object replaces client routing preferences on OpenRouter requests.
+Other upstreams never receive it. Usage rows store a content-free effective request
+summary in `meta_data.upstream_parameters`, the reported OpenRouter serving host in
+`meta_data.upstream_provider`, and the generation ID in `upstream_request_id`. The
+gateway observes adapter transformations before sending, including structured output
+downgrades. Session and execution details, restricted timing projections, and the
+account usage CSV expose these controls. See the [OpenRouter guide](../guide/providers/openrouter.md).

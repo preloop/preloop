@@ -107,6 +107,7 @@ def test_a_second_stop_is_idempotent(client, db_session, flow, send_command):
     assert _stop(client, execution) == {"status": "stopped"}
     db_session.refresh(execution)
     assert execution.status == "STOPPED"
+    assert execution.failure_category == "cancelled"
     assert execution.error_message == "Manually stopped by user"
     # An operator's stop carries no automatic reason, but it is recorded as
     # a durable, manual stop request.

@@ -8,6 +8,8 @@ classification table itself.
 
 import pytest
 
+from preloop.services import flow_failure_messages
+
 from preloop.agents.errors import AgentStartError
 from preloop.agents.failure_analysis import analyze_agent_failure
 from preloop.services.flow_failure_category import (
@@ -156,18 +158,18 @@ class TestVocabulary:
                 in FAILURE_CATEGORIES
             )
 
-    def test_unclassifiable_failure_is_unknown_not_agent_error(self):
-        """A rising `unknown` share is the signal to extend the module.
-
-        Folding the unclassified into agent_error would hide exactly that.
-        """
+    def test_unclassifiable_failure_names_the_catching_layer(self):
+        """Unexpected failures name the write boundary and retain their message."""
         assert (
             derive_failure_category(status="FAILED", error_message="something odd")
-            == "unknown"
+            == "execution_error"
         )
 
     def test_missing_message_still_yields_a_category(self):
-        assert derive_failure_category(status="FAILED", error_message=None) == "unknown"
+        assert (
+            derive_failure_category(status="FAILED", error_message=None)
+            == "execution_error"
+        )
 
 
 class TestNonFailures:
@@ -512,4 +514,174 @@ def test_refused_resume_checkpoint_is_resume_failed(message: str) -> None:
     assert (
         derive_failure_category(status="FAILED", exception=ValueError(message))
         == "resume_failed"
+    )
+
+
+@pytest.mark.parametrize(
+    "message,category",
+    [
+        ("native_result requires an enabled result_schema", "flow_config"),
+        ("AI model is not available to this flow account", "model_config"),
+        (
+            "Recorded routing model model-1 is not available; refusing to start without a fallback.",
+            "model_config",
+        ),
+        (
+            "No runner can take this run on harness codex (offline) and fallback model 'model-1' is not available to the account",
+            "model_config",
+        ),
+        ("No model specified for OpenCode agent.", "model_config"),
+        ("A model endpoint is required for provider custom", "model_config"),
+        ("A model credential is required for codex", "model_config"),
+        ("codex_cli_version must be an exact release version", "flow_config"),
+        ("opencode_cli_version must be an exact release version", "flow_config"),
+        ("Invalid agent memory limit", "flow_config"),
+        ("Unsupported agent type: sample", "flow_config"),
+        ("Read-only review requires a restricted CI execution", "flow_config"),
+        ("Read-only review requires its admitted repository", "flow_config"),
+        ("Read-only review requires its admitted commit", "flow_config"),
+        ("Write API tokens cannot enter an isolated agent", "flow_config"),
+        ("host execution profiles cannot run on hosted compute", "flow_config"),
+        (
+            "Host profiles do not support remote workspace seeds or native resume",
+            "flow_config",
+        ),
+        ("Unsupported private Docker harness", "flow_config"),
+        ("kubernetes_asyncio is not installed", "runner_error"),
+        ("Invalid native host lease", "runner_error"),
+        ("Runner execution no longer exists", "runner_error"),
+        ("Invalid Agent Control session reference: example", "runner_error"),
+        ("Private runner launch has an empty bootstrap script", "runner_error"),
+        ("NATS client not available or not connected", "orchestrator_error"),
+        ("Completion event enqueue failed", "orchestrator_error"),
+        ("Unsupported post-result failure", "orchestrator_error"),
+        ("Flow with id missing-flow not found", "orchestrator_error"),
+        *[
+            (f"Failed to start {harness} container: launch failed", "runner_error")
+            for harness in (
+                "Codex CLI",
+                "OpenCode CLI",
+                "Gemini CLI",
+                "Aider",
+                "OpenHands",
+            )
+        ],
+    ],
+)
+def test_controller_and_adapter_failure_sites(message: str, category: str) -> None:
+    """Each refusal found in the controller/adapter sweep names its cause."""
+    assert derive_failure_category(status="FAILED", error_message=message) == category
+
+
+@pytest.mark.parametrize(
+    "message,category", flow_failure_messages.FAILURE_MESSAGE_CATEGORIES.items()
+)
+def test_every_failure_message_constant(message: str, category: str) -> None:
+    """Changing a shared message must not silently lose its classification."""
+    assert derive_failure_category(status="FAILED", error_message=message) == category
+
+
+def test_failure_message_catalog_is_complete() -> None:
+    """Every message constant must have a classification test row."""
+    messages = {
+        value
+        for name, value in vars(flow_failure_messages).items()
+        if name.isupper() and isinstance(value, str)
+    }
+    assert messages == set(flow_failure_messages.FAILURE_MESSAGE_CATEGORIES)
+
+
+@pytest.mark.parametrize("explicit", [None, "", "unknown", "invalid_category"])
+def test_fallback_names_the_catching_layer(explicit: str | None) -> None:
+    """Legacy and invalid categories cannot escape as new unknown failures."""
+    assert (
+        derive_failure_category(
+            status="FAILED",
+            explicit_category=explicit,
+            fallback_category="orchestrator_error",
+        )
+        == "orchestrator_error"
+    )
+
+
+@pytest.mark.parametrize(
+    "message,category",
+    [
+        ("invalid private runner bootstrap script", "runner_error"),
+        ("exit status 1", "agent_error"),
+        ("No runner can take this run on harness codex: offline", "runner_unavailable"),
+        (
+            "agent type cursor requires agent_config.host_exec_profile on a private runner",
+            "flow_config",
+        ),
+        (
+            "Read-only review does not resume sessions or run in an authorized host directory",
+            "flow_config",
+        ),
+        (
+            "Isolated agent clone requires a controller-issued read-only credential",
+            "flow_config",
+        ),
+        ("repo_index must be a non-negative int", "flow_config"),
+        ("Private publication requires a trusted policy snapshot", "flow_config"),
+        ("Isolated recovery has no publication policy", "flow_config"),
+        (
+            "verification gate requires a valid trusted test profile",
+            "verification_blocked",
+        ),
+        ("Missing trusted verifier runtime adapter", "verification_blocked"),
+        (
+            "Private publication execution is no longer authorized",
+            "publication_missing",
+        ),
+        (
+            "Private publication has no controller-accepted completion receipt",
+            "publication_missing",
+        ),
+        (
+            "Agent runtime cleanup was not confirmed; refusing to issue publication credentials",
+            "publication_missing",
+        ),
+        (
+            "The runner owner declined this run, or the approval request timed out.",
+            "approval_denied",
+        ),
+    ],
+)
+def test_remaining_prelaunch_and_publication_failures(
+    message: str, category: str
+) -> None:
+    """Own configuration, publication and queue refusals have specific categories."""
+    assert derive_failure_category(status="FAILED", error_message=message) == category
+
+
+@pytest.mark.parametrize(
+    "name,category",
+    [
+        ("WorkspaceSeedError", "flow_config"),
+        ("SessionRestoreError", "resume_failed"),
+        ("RunnerLaunchConfigurationChangedError", "flow_config"),
+        ("RunnerLaunchRejectedError", "runner_error"),
+        ("PublicationError", "publication_missing"),
+        ("ExecutionStoppedError", "cancelled"),
+        ("FlowHaltActiveError", "cancelled"),
+    ],
+)
+def test_typed_failure_uses_its_own_layer(name: str, category: str) -> None:
+    """Typed own failures retain their category when their message is dynamic."""
+    error_type = type(name, (ValueError,), {})
+    assert (
+        derive_failure_category(status="FAILED", exception=error_type("detail"))
+        == category
+    )
+
+
+def test_legacy_tool_loop_failure_is_named() -> None:
+    """Existing loop-stop messages retain their own cause after backfill."""
+    assert (
+        derive_failure_category(
+            status="FAILED",
+            error_message="Execution stopped after detecting a repeated tool loop: native/Bash repeated 20 times with identical arguments.",
+        )
+        == "agent_tool_loop"
     )

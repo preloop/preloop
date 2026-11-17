@@ -148,7 +148,9 @@ def _managed_agent_for_api_key(
     )
 
 
-def _reject_finished_flow_execution_key(session: Any, api_key: Any) -> None:
+def _reject_finished_flow_execution_key(
+    session: Any, api_key: Any, *, allow_flush: bool = False
+) -> None:
     """Reject a flow execution key once its execution has finished.
 
     The orchestrator revokes these keys when the run ends. This check keeps
@@ -170,6 +172,14 @@ def _reject_finished_flow_execution_key(session: Any, api_key: Any) -> None:
     if execution_status is None:
         return
     if str(execution_status).upper() in crud_flow_execution.TERMINAL_EXECUTION_STATUSES:
+        if allow_flush:
+            ended = crud_flow_execution.get_end_time(
+                session, execution_id=execution_id, account_id=api_key.account_id
+            )
+            if isinstance(ended, datetime):
+                ended = ended.replace(tzinfo=UTC) if ended.tzinfo is None else ended
+                if timedelta(0) <= datetime.now(UTC) - ended < timedelta(minutes=5):
+                    return
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Flow execution has ended",
@@ -309,8 +319,9 @@ def _authenticate_with_api_key(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not allow_stale_runtime_session and not allow_ended_runtime_session:
-        _reject_finished_flow_execution_key(session, api_key)
+    _reject_finished_flow_execution_key(
+        session, api_key, allow_flush=allow_ended_runtime_session
+    )
 
     if context_data.get("credential_kind") == "managed_agent_durable":
         if not allow_managed_agent:

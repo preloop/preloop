@@ -62,6 +62,9 @@ def orchestrator(trigger: Dict[str, Any]) -> FlowExecutionOrchestrator:
         name="Release Backport",
         account_id=uuid.uuid4(),
         git_clone_config=CONFIG,
+        agent_config={},
+        result_schema=None,
+        validate_result=False,
     )
     return instance
 

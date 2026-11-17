@@ -367,6 +367,7 @@ class ModelGatewayEventEmitter:
                 "gateway_provider": meta_data.get("gateway_provider"),
                 "requested_model": meta_data.get("requested_model"),
                 "upstream_request_id": usage.upstream_request_id,
+                "upstream_provider": meta_data.get("upstream_provider"),
                 "request_fingerprint": public_request_fingerprint(
                     meta_data.get("request_fingerprint")
                 ),

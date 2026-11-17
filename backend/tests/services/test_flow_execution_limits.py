@@ -521,7 +521,7 @@ async def test_prose_failure_on_a_spent_ceiling_is_categorised_by_the_ceiling(
 
 
 @pytest.mark.asyncio
-async def test_prose_failure_without_a_spent_ceiling_stays_unknown(
+async def test_prose_failure_without_a_spent_ceiling_names_controller(
     db_session: Session, test_user, monkeypatch
 ):
     from unittest.mock import AsyncMock
@@ -538,7 +538,7 @@ async def test_prose_failure_without_a_spent_ceiling_stays_unknown(
     orch._guard_status_write = lambda status, _kwargs: status
     await orch._update_execution_log(status="FAILED", error_message="some prose")
     db_session.refresh(execution)
-    assert execution.failure_category == "unknown"
+    assert execution.failure_category == "orchestrator_error"
 
 
 # --- repeated identical upstream failures (#1336) ---------------------------

@@ -108,8 +108,13 @@ def test_valid_forbidden_write_denies_before_handler(
     assert crud.crud_project.get(db_session, id=project.id).name == before
 
 
+@pytest.mark.parametrize("audit_unavailable", [False, True])
 def test_machine_websocket_is_denied_before_accept(
-    db_session: Session, ci_resources: tuple[Any, ...], ci_http: None
+    db_session: Session,
+    ci_resources: tuple[Any, ...],
+    ci_http: None,
+    monkeypatch: pytest.MonkeyPatch,
+    audit_unavailable: bool,
 ) -> None:
     from fastapi import FastAPI, WebSocket
     from fastapi.testclient import TestClient
@@ -127,10 +132,21 @@ def test_machine_websocket_is_denied_before_accept(
         await socket.accept()
 
     app.add_middleware(RestrictedCiAuthMiddleware)
+    from unittest.mock import Mock
+    from preloop.services import denial_audit
+
+    write = Mock(
+        wraps=denial_audit.write_denial,
+        side_effect=RuntimeError("Synthetic audit unavailable")
+        if audit_unavailable
+        else None,
+    )
+    monkeypatch.setattr(denial_audit, "write_denial", write)
     with pytest.raises(WebSocketDisconnect) as denied:
         with TestClient(app).websocket_connect(f"/custom-stream?token={token}"):
             pass
     assert denied.value.code == 1008
+    write.assert_called_once()
     assert not calls
 
 

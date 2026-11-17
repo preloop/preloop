@@ -103,6 +103,46 @@ async def test_on_demand_task_reuses_existing_scan_with_unchanged_options() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("raises", [False, True])
+async def test_on_demand_failure_logs_task_id(
+    caplog: pytest.LogCaptureFixture, raises: bool
+) -> None:
+    """Handled scan failures and raised errors retain the queue correlation."""
+    poll = AsyncMock(return_value=None)
+    if raises:
+        poll.side_effect = RuntimeError("Example scan failure")
+    with patch.object(tasks, "poll_tracker", poll), caplog.at_level("INFO"):
+        if raises:
+            with pytest.raises(RuntimeError, match="Example scan failure"):
+                await tasks.poll_tracker_on_demand("tracker-1", task_id="example-task")
+        else:
+            assert (
+                await tasks.poll_tracker_on_demand("tracker-1", task_id="example-task")
+                is None
+            )
+    assert (
+        "Tracker sync failed: task_id=example-task tracker_id=tracker-1" in caplog.text
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_demand_scan_errors_log_task_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Scanner error counts must not be reported as successful completion."""
+    result = {"projects": 1, "errors": 1}
+    with (
+        patch.object(tasks, "poll_tracker", AsyncMock(return_value=result)),
+        caplog.at_level("INFO"),
+    ):
+        actual = await tasks.poll_tracker_on_demand("tracker-1", task_id="example-task")
+    assert actual is result
+    assert (
+        "Tracker sync failed: task_id=example-task tracker_id=tracker-1" in caplog.text
+    )
+
+
+@pytest.mark.asyncio
 async def test_scheduler_keeps_periodic_polls_in_scheduled_lane() -> None:
     from preloop.sync.services import manager
 

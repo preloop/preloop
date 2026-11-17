@@ -518,6 +518,25 @@ fi
         )
         opencode_model_arg = shlex.quote(str(opencode_config["model"]))
         opencode_config_json = json.dumps(opencode_config, indent=2)
+        file_auth_env = {"PRELOOP_API_TOKEN", "PRELOOP_API_KEY", "MCP_CONFIG_JSON"}
+        for provider in opencode_config.get("provider", {}).values():
+            api_key = provider.get("options", {}).get("apiKey", "")
+            if isinstance(api_key, str) and api_key.startswith("$"):
+                file_auth_env.add(api_key[1:])
+                if execution_context.get("model_gateway_enabled"):
+                    file_auth_env.update(
+                        ("PRELOOP_MODEL_GATEWAY_TOKEN", "PRELOOP_MODEL_TOKEN")
+                    )
+                    provider_name = execution_context.get(
+                        "model_gateway_provider"
+                    ) or execution_context.get("model_provider")
+                    if provider_name:
+                        file_auth_env.add(
+                            str(provider_name).upper().replace("-", "_") + "_API_KEY"
+                        )
+        file_auth_unset = "unset " + " ".join(
+            shlex.quote(name) for name in sorted(file_auth_env)
+        )
         # For the unquoted heredoc, escape "$schema" so the shell doesn't
         # try to expand it as a variable.  All other $-prefixed strings
         # ($PRELOOP_MCP_URL, $PRELOOP_API_TOKEN) are intentionally left
@@ -647,9 +666,13 @@ printf '%s\n' {shlex.quote("Agent image reference: " + self.image)}
 # The dollar-sign in schema key is escaped so it stays literal; env vars
 # PRELOOP_MCP_URL and PRELOOP_API_TOKEN are expanded by the shell directly.
 mkdir -p /workspace
+(umask 077
 cat > /workspace/opencode.json << OPENCODE_CONFIG_EOF
 {opencode_config_shell}
 OPENCODE_CONFIG_EOF
+)
+chmod 600 /workspace/opencode.json
+{file_auth_unset}
 # Project discovery stops at the Git root. Load the generated runtime config
 # explicitly when the primary checkout is nested beneath /workspace.
 # Export once so normal, resumed and completion-nudge invocations inherit it.

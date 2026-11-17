@@ -787,6 +787,7 @@ def plan_publication(
     from preloop.services.review_integrity import (
         CATEGORY_BINDING_MISMATCH,
         CATEGORY_NOT_INSPECTED,
+        CATEGORY_DEGENERATE,
         STATUS_VERIFIED,
     )
 
@@ -801,6 +802,7 @@ def plan_publication(
     rejected = getattr(execution, "failure_category", None) in {
         CATEGORY_BINDING_MISMATCH,
         CATEGORY_NOT_INSPECTED,
+        CATEGORY_DEGENERATE,
     }
     if rejected:
         reason = str(execution.failure_category)
@@ -831,7 +833,12 @@ def plan_publication(
             )
             reason = (
                 category
-                if category in {CATEGORY_BINDING_MISMATCH, CATEGORY_NOT_INSPECTED}
+                if category
+                in {
+                    CATEGORY_BINDING_MISMATCH,
+                    CATEGORY_NOT_INSPECTED,
+                    CATEGORY_DEGENERATE,
+                }
                 else "review_unverified"
             )
             rejected = True

@@ -866,7 +866,14 @@ def test_tool_evidence_capture_survives_execution_sequence_stamping() -> None:
         patch("preloop.services.model_gateway_events.crud_flow_execution.append_log"),
         patch("preloop.services.model_gateway_events.emit_account_event"),
         patch("preloop.services.model_gateway_events.publish_realtime") as publish,
-        patch("preloop.services.execution_realtime.run_db_sync", return_value=(17, 3)),
+        patch(
+            "preloop.services.execution_realtime.run_db_sync",
+            side_effect=lambda operation: operation(db),
+        ),
+        patch(
+            "preloop.services.execution_realtime.crud_realtime.allocate_sequence",
+            return_value=(17, 3),
+        ),
     ):
         emitter.emit_for_usage(
             usage=usage, request_payload={}, response_payload=response

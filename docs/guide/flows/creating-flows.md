@@ -295,6 +295,56 @@ login and seat; Copilot, Cursor and Devin runs are not gateway metered. See
 [Your machine as a Preloop runner](../runners/your-machine.md#flows-on-your-machine)
 and [Model routing](model-routing.md).
 
+#### Codex tool profiles
+
+Hosted Codex flows can set `agent_config.codex_tools` to `default` or `lean`.
+Omitting it is identical to `default`: existing flows and every shipped preset
+keep their current behavior. Unknown values are rejected when saving a flow.
+
+For a flow that needs shell commands and its MCP allow-list, opt in with:
+
+```json
+{
+  "agent_config": {
+    "sandbox_type": "exec",
+    "codex_tools": "lean"
+  }
+}
+```
+
+When updating an existing flow through the API, preserve its other
+`agent_config` fields; this object replaces the stored configuration.
+
+`lean` disables Codex web search, subagents, goals, image viewing, sleep,
+interactive user input and the plan tool. It preserves the flow's shell policy
+and MCP allow-list. It does not disable MCP tools such as `ask_user` or
+`run_flow`. This profile is verified for hosted Codex **0.153.4**; selecting it
+with another `codex_cli_version` is rejected until that version is supported.
+The configuration also applies to resumed sessions and recovery attempts.
+It does not configure Codex sessions launched by a private runner.
+
+Codex still includes three MCP resource helpers whenever MCP is attached.
+Some models also keep `apply_patch` and defer MCP definitions behind
+`tool_search`. These have no independent off switch in this CLI version.
+Flows with no MCP tools or servers do not attach MCP at all. A native structured
+result is an output contract and adds no tool definition. `lean` never enables
+the shell on a flow whose `sandbox_type` disables it.
+
+Under `lean`, Preloop omits its additional `get_approval_status` helper when
+the flow has no possible approval path. It retains it for existing approval
+results, human-checkpoint tools, applicable tool or sensitive-data policies,
+and external tools whose owner or grant policies may require approval.
+Incomplete policy metadata retains the helper. The `default` profile continues
+to include it whenever the MCP allow-list is nonempty. This changes discovery
+only; approval enforcement and replay authorization remain in force.
+
+Canary a clone before changing a working reviewer: verify repository inspection,
+review quality, publication, structured results, and approval park/resume/replay.
+Repository instructions may need tools that `lean` removes. Revert to `default`
+to restore those tools. Smaller definitions recover context space on every
+request; monetary savings depend on cached-input pricing and actual cache hits.
+They do not make the unchanged Pull Request Reviewer prompt fit an 8K context.
+
 #### Configure AI Model
 
 Each flow needs an AI model (LLM) to power the agent.

@@ -542,6 +542,12 @@ describe('SessionReplayPanel', () => {
               { role: 'user', content: 'EXPAND_ME' },
             ],
           },
+          upstream_request_id: 'gen-example',
+          upstream_parameters: {
+            model: 'example/model',
+            output_format: { type: 'json_object' },
+            schema_in_instructions: true,
+          },
         },
       },
     };
@@ -554,6 +560,15 @@ describe('SessionReplayPanel', () => {
     expect(element.shadowRoot?.textContent || '').to.include(
       'FULL_CONTEXT_SYSTEM_PROMPT'
     );
+    expect(element.shadowRoot?.textContent || '').to.include('gen-example');
+    expect(element.shadowRoot?.textContent || '').to.include(
+      'Served by: Not reported'
+    );
+    expect(
+      element.shadowRoot?.querySelector(
+        'sl-details[summary="Effective upstream request"]'
+      )?.textContent
+    ).to.include('json_object');
   });
 
   it('says what a request did in words, not the stored enum', async () => {

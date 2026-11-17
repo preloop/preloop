@@ -14,8 +14,10 @@ from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
 
 @pytest.mark.parametrize("flow_bound", [True, False])
+@pytest.mark.parametrize("command_name", ["printf", "[redacted]"])
 def test_native_calls_are_attributed_from_authenticated_identity(
     flow_bound: bool,
+    command_name: str,
 ) -> None:
     """Execution-bound hooks reach the existing loop detector; local ones do not."""
     execution_id = uuid4() if flow_bound else None
@@ -41,6 +43,10 @@ def test_native_calls_are_attributed_from_authenticated_identity(
         patch.object(crud_runtime_session_activity, "_touch_runtime_session_and_agent"),
         patch.object(crud_runtime_session_activity, "_index_tool_call_chunks"),
         patch("preloop.services.account_realtime.emit_account_event"),
+        patch(
+            "preloop.services.sensitive_data.storage.apply_storage_redaction",
+            return_value=command_name,
+        ) as redact_command,
     ):
         for _ in range(4):
             endpoint._record_native_tool_call(
@@ -63,6 +69,10 @@ def test_native_calls_are_attributed_from_authenticated_identity(
     assert all(row.flow_execution_id == execution_id for row in rows)
     assert all(row.runtime_session_id == session_id for row in rows)
     assert all("printf done" not in str(row.metadata_) for row in rows)
+    assert all(row.metadata_["command_name"] == command_name for row in rows)
+    assert redact_command.call_count == 4
+    assert redact_command.call_args.args == (identity.account_id, "printf")
+    assert redact_command.call_args.kwargs["scope"].target == "tool.args"
     if not flow_bound:
         return
     for index, row in enumerate(rows):
@@ -77,5 +87,22 @@ def test_native_calls_are_attributed_from_authenticated_identity(
         return_value=list(reversed(rows)),
     ) as recent:
         signatures = orchestrator._get_recent_runtime_tool_activity_signatures()
-    recent.assert_called_once_with(db, flow_execution_id=execution_id, limit=12)
+    recent.assert_called_once_with(db, flow_execution_id=execution_id, limit=32)
     assert orchestrator._detect_repeated_tool_cycle(signatures) is not None
+
+
+@pytest.mark.parametrize(
+    "arguments,expected",
+    [
+        ({"command": "true"}, "true"),
+        ({"cmd": "/bin/echo private-value"}, "echo"),
+        ({"command": "TOKEN=private-value true"}, "true"),
+        ({"command": "echo 'unterminated"}, None),
+        ({"command": "$(cat private-file)"}, None),
+        ({"command": ["true"]}, None),
+        ({"path": "/tmp/private-file"}, None),
+    ],
+)
+def test_command_name_excludes_arguments(arguments: dict, expected: str | None) -> None:
+    """Loop diagnostics identify the executable without retaining its payload."""
+    assert endpoint._native_command_name(arguments) == expected

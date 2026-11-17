@@ -254,6 +254,9 @@ async def build_runner_launch(context: dict[str, Any]) -> dict[str, Any]:
     # script aborts with PRELOOP_LAUNCH_PAYLOAD_MISSING.
     env.update(prompt_transport_env(context["prompt"]))
     agent._apply_git_credential_env(env, context)
+    from preloop.agents.credential_bootstrap import bootstrap_source
+
+    env["PRELOOP_OUTPUT_BOOTSTRAP"] = bootstrap_source()
     check_launch_payload(
         env={**env, "PRELOOP_RUNNER_SCRIPT": script},
         what=(
@@ -313,6 +316,8 @@ def validate_runner_completion(
     """Exit zero and an explicit structured verdict are both required for success."""
     from preloop.services.flow_orchestrator import _result_artifact_confirmation
     from preloop.services.flow_artifacts import sanitize_captured_result
+    from preloop.services.flow_execution_outcome import result_failure_signal
+    from preloop.services.flow_failure_messages import AGENT_REPORTED_FAILURE
 
     status = str(message.get("status") or "FAILED").upper()
     error = str(message["error"]) if message.get("error") else None
@@ -326,6 +331,12 @@ def validate_runner_completion(
         result = sanitize_captured_result(result)
     if status not in {"SUCCEEDED", "FAILED", "STOPPED"}:
         return "FAILED", "Invalid runner completion status", result
+    signal = result_failure_signal(result)
+    if signal is not None and (
+        status == "SUCCEEDED" or (status == "FAILED" and not error)
+    ):
+        field, value = signal
+        return "FAILED", AGENT_REPORTED_FAILURE.format(field=field, value=value), result
     if status == "SUCCEEDED" and (
         leased_job.get("launch_version") != LAUNCH_VERSION
         or leased_job.get("agent_type") not in {"codex", "opencode", "pi", "deepseek"}

@@ -2893,6 +2893,57 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/account/gateway-usage/export:
+    get:
+      tags:
+      - Account
+      summary: Export Account Gateway Usage
+      description: Download usage and effective upstream controls as a content-free
+        CSV.
+      operationId: export_account_gateway_usage_api_v1_account_gateway_usage_export_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            text/csv:
+              schema:
+                type: string
+        '413':
+          description: Choose a shorter date range; export exceeds 10,000 rows
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/gateway-usage/search:
     get:
       tags:
@@ -5695,10 +5746,9 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties:
-                  type: string
-                title: Response Sync Tracker Api V1 Trackers  Tracker Id  Sync Post
+                $ref: '#/components/schemas/TrackerSyncResponse'
+        '503':
+          description: Sync could not be queued
         '422':
           description: Validation Error
           content:
@@ -5709,8 +5759,6 @@ paths:
           description: Invalid or expired credential
         '403':
           description: Operation or resource denied for restricted CI credentials
-        '503':
-          description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/trackers/test-and-list-orgs:
     post:
@@ -10151,6 +10199,18 @@ paths:
           description: Exact external grant reference
           title: Grant Reference
         description: Exact external grant reference
+      - name: reason_code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 100
+          - type: 'null'
+          description: Exact refusal reason code
+          title: Reason Code
+        description: Exact refusal reason code
       - name: error_code
         in: query
         required: false
@@ -10348,6 +10408,18 @@ paths:
           description: Exact external grant reference
           title: Grant Reference
         description: Exact external grant reference
+      - name: reason_code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 100
+          - type: 'null'
+          description: Exact refusal reason code
+          title: Reason Code
+        description: Exact refusal reason code
       - name: error_code
         in: query
         required: false
@@ -26943,7 +27015,9 @@ components:
             type: object
           - type: 'null'
           title: Model Parameters
-          description: Optional, for model-specific parameters like temperature, max_tokens
+          description: Model-specific parameters such as temperature and max_tokens.
+            For OpenRouter, provider is a validated routing preferences object; saved
+            preferences override client routing and unknown fields are rejected.
         meta_data:
           anyOf:
           - additionalProperties: true
@@ -40378,20 +40452,22 @@ components:
             by provider_billing), budget_exceeded, default_limit_reached (a default
             per-execution ceiling the flow did not set), repeated_upstream_failure
             (the gateway stopped a run whose model calls kept failing identically),
-            model_config, no_confirmation, agent_no_progress, publication_missing,
-            result_schema_invalid (result.json does not match the flow result schema),
-            review_binding_mismatch (a read-only review result names another revision
-            than the admitted one), review_not_inspected (a read-only review made
-            no repository tool call or command), setup_failed, repository_access (git
-            refused the repository credential), verification_failed, verification_blocked,
-            tool_error, agent_error, model_stream_idle (timed out while the model
-            stream was silent), approval_denied, approval_timeout, approval_unavailable
-            (an approval-required rule could not pause the run), hook_binding_invalid
-            (the native hook credential was refused before launch), resume_failed
-            (a parked run could not be continued), gateway_bypassed (a private-runner
-            host CLI made no request through the Preloop gateway), timeout, cancelled,
-            unknown. Null for successful or still-running executions, and for executions
-            that predate this field.'
+            model_config, context_truncated_suspected, no_confirmation, agent_no_progress,
+            publication_missing, result_schema_invalid (result.json does not match
+            the flow result schema), review_binding_mismatch (a read-only review result
+            names another revision than the admitted one), review_degenerate (a review
+            has no usable narrative), review_not_inspected (no command read the bound
+            change), setup_failed, repository_access (git refused the repository credential),
+            verification_failed, verification_blocked, tool_error, agent_error, model_stream_idle
+            (timed out while the model stream was silent), approval_denied, approval_timeout,
+            approval_unavailable (an approval-required rule could not pause the run),
+            hook_binding_invalid (the native hook credential was refused before launch),
+            resume_failed (a parked run could not be continued), gateway_bypassed
+            (a private-runner host CLI made no request through the Preloop gateway),
+            timeout, cancelled, flow_config, agent_reported_failure, agent_tool_loop,
+            orchestrator_error, execution_error, model_policy, runner_unavailable,
+            ci_authorization; unknown is a legacy value. Null for successful or still-running
+            executions, and for executions that predate this field.'
         result_schema_validation:
           anyOf:
           - additionalProperties: true
@@ -42497,6 +42573,11 @@ components:
         outcome:
           type: string
           title: Outcome
+        error_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Class
         endpoint:
           type: string
           title: Endpoint
@@ -50694,6 +50775,17 @@ components:
         request_count:
           type: integer
           title: Request Count
+        upstream_parameters:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Upstream Parameters
+        upstream_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Upstream Provider
       type: object
       required:
       - model
@@ -50723,8 +50815,8 @@ components:
         require_inspection:
           type: boolean
           title: Require Inspection
-          description: Fail a review that made no repository tool call and ran no
-            command, counted from Preloop's own tool evidence
+          description: Fail a review without a successful command reading the bound
+            diff or a changed file, determined from Preloop's captured evidence
           default: true
       additionalProperties: false
       type: object
@@ -50732,7 +50824,8 @@ components:
       description: 'Controller checks on a read-only review result (#2100).
 
 
-        Both checks are on by default for every read-only review. Result fields
+        Binding, inspection and narrative checks apply to every read-only review.
+        Result fields
 
         named ``head_sha``, ``base_sha``, ``merge_base_sha`` or ``diff_sha256``
 
@@ -50740,9 +50833,11 @@ components:
 
         admitted head and base, the computed merge base or the computed diff
 
-        digest. A review that made no repository tool call and ran no command
+        digest. A review without a successful command reading the bound diff or
 
-        fails with ``review_not_inspected``.'
+        a changed file fails with ``review_not_inspected``. Degenerate required
+
+        narrative fields fail with ``review_degenerate``.'
     ReviewIntegrityBinding:
       properties:
         field:
@@ -50789,6 +50884,10 @@ components:
         native_commands:
           type: integer
           title: Native Commands
+        diff_commands:
+          type: integer
+          title: Diff Commands
+          default: 0
       type: object
       required:
       - required
@@ -57881,6 +57980,28 @@ components:
       - id
       title: TrackerScopeRuleResponse
       description: Schema for responding with tracker scope rule details.
+    TrackerSyncResponse:
+      properties:
+        status:
+          type: string
+          const: queued
+          title: Status
+          default: queued
+        tracker_id:
+          type: string
+          format: uuid
+          title: Tracker Id
+        task_id:
+          type: string
+          format: uuid
+          title: Task Id
+          description: Correlation ID included in sync worker logs
+      type: object
+      required:
+      - tracker_id
+      - task_id
+      title: TrackerSyncResponse
+      description: Receipt for a queued tracker sync.
     TrackerTestRequest:
       properties:
         tracker_id:
@@ -59803,8 +59924,8 @@ components:
         require_inspection:
           type: boolean
           title: Require Inspection
-          description: Fail a review that made no repository tool call and ran no
-            command, counted from Preloop's own tool evidence
+          description: Fail a review without a successful command reading the bound
+            diff or a changed file, determined from Preloop's captured evidence
           default: true
       additionalProperties: false
       type: object
@@ -59812,7 +59933,8 @@ components:
       description: 'Controller checks on a read-only review result (#2100).
 
 
-        Both checks are on by default for every read-only review. Result fields
+        Binding, inspection and narrative checks apply to every read-only review.
+        Result fields
 
         named ``head_sha``, ``base_sha``, ``merge_base_sha`` or ``diff_sha256``
 
@@ -59820,9 +59942,11 @@ components:
 
         admitted head and base, the computed merge base or the computed diff
 
-        digest. A review that made no repository tool call and ran no command
+        digest. A review without a successful command reading the bound diff or
 
-        fails with ``review_not_inspected``.'
+        a changed file fails with ``review_not_inspected``. Degenerate required
+
+        narrative fields fail with ``review_degenerate``.'
     preloop__schemas__ci_execution__ReviewIntegrity:
       properties:
         status:
@@ -59837,6 +59961,7 @@ components:
             enum:
             - review_binding_mismatch
             - review_not_inspected
+            - review_degenerate
           - type: 'null'
           title: Category
         reasons:

@@ -182,7 +182,7 @@ def test_launcher_keeps_codex_credentials_and_drops_the_rest(tmp_path):
     assert env["HOME"] == "/home/preloop-agent"
     assert env["CODEX_HOME"] == "/root/.codex"
     assert env["USER"] == AGENT_USER
-    assert env["PRELOOP_API_TOKEN"] == "flow"
+    assert "PRELOOP_API_TOKEN" not in env
     assert env["OPENAI_API_KEY"] == "model"
     assert env["PRELOOP_FLOW_API_URL"] == "https://preloop.example.com"
     for dropped in (

@@ -191,3 +191,36 @@ Called by the agent to poll approval status.
 
 !!! tip "Native tool calls too"
     Approvals are not limited to MCP tools. Onboarded agents can route their native tool calls (shell commands, file edits) through Preloop approvals, see [Native Tool Approvals](ai-approvals.md#native-tool-approvals).
+
+## Investigate a refused native tool call
+
+The agent permission-check endpoint records refusals as
+`agent_permission_denied`, including known credentials rejected with 401/403
+before policy evaluation. Audit details contain the principal, tool target,
+`reason_code`, a plain `message`, and an attempt `count`. For example:
+
+```http
+GET /api/v1/audit-logs?action=agent_permission_denied&reason_code=api_key_scope_denied
+GET /api/v1/audit-logs/grouped?reason_code=tool_blocked
+```
+
+Use a human credential with `view_audit_logs`. Useful reasons include
+`key_inactive`, `key_expired`, `api_key_scope_denied`, `runtime_binding_invalid`,
+`session_ended`, `execution_ended`, `agent_inactive`, `client_policy_denied`,
+`tool_blocked`, `approval_unavailable`, `approval_denied`, `approval_expired`,
+and `approval_pending`. `permission_denied` identifies a refusal from an access
+rule and retains its bounded, redacted explanation. Different explanations have
+separate counters. Approver comments are excluded; approval lifecycle records
+remain available separately.
+
+Identical refusals share one row per principal, tool, reason, and UTC minute.
+`details.count` counts all attempts, while the API's `total` counts rows. The row
+is visible immediately, and its final count joins the hash chain after the minute
+closes. Retries in later minutes cannot edit sealed evidence. Tool names are
+bounded and redacted; tool arguments and credentials are never copied into the
+refusal record. Unknown credentials have no trusted account attribution.
+
+Ending an already-ended runtime session returns its existing summary without
+another lifecycle audit row or session-ended event. A turn's Stop event does not
+end the conversation. Native terminal hooks suppress successful repeat delivery;
+failed delivery can be retried safely.

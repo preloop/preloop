@@ -163,6 +163,7 @@ export class PreloopOpenCodePlugin {
   private socket?: WebSocket;
   private client?: OpenCodeClient;
   private stopped = false;
+  private noteSessionEnds = new Map<string, Promise<void>>();
   private noteSessions = new Map<string, Promise<void>>();
   private pendingNoteAcks = new Map<string, string[]>();
   private noteTransforms = new Map<string, Promise<void>>();
@@ -1140,19 +1141,23 @@ export class PreloopOpenCodePlugin {
 
   /** Idle is resumable; only deletion is an authoritative native session end. */
   async endNoteSession(sessionID: string): Promise<void> {
-    try {
-      await this.postNoteLifecycle("session-end", {
-        external_session_id: sessionID,
-        reason: "session_deleted",
-      });
-    } catch (error) {
-      this.log(
-        `operator note session end unavailable: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    } finally {
+    const previous = this.noteSessionEnds.get(sessionID);
+    if (previous) return previous;
+    const ending = this.postNoteLifecycle("session-end", {
+      external_session_id: sessionID,
+      reason: "session_deleted",
+    }).then(() => {
       this.noteSessions.delete(sessionID);
       this.pendingNoteAcks.delete(sessionID);
-    }
+      // Remember successful terminal events; a failed HTTP call remains retryable.
+      if (this.noteSessionEnds.size > 256)
+        this.noteSessionEnds.delete(this.noteSessionEnds.keys().next().value!);
+    }).catch((error) => {
+      this.noteSessionEnds.delete(sessionID);
+      this.log(`operator note session end unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    this.noteSessionEnds.set(sessionID, ending);
+    return ending;
   }
 
   /** Shared round trip for both the ask bridge and the tool gate. */

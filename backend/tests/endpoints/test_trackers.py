@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, Mock, patch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from nats.aio.errors import ErrConnectionClosed, ErrTimeout
 from sqlalchemy import event, inspect as sa_inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -939,8 +940,12 @@ async def test_update_tracker_success(
 @pytest.mark.asyncio
 @patch("preloop.api.endpoints.trackers.event_bus_service.publish_task")
 async def test_sync_tracker_success(
-    mock_publish_task, client: TestClient, db_session, test_user
-):
+    mock_publish_task: AsyncMock,
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test queuing a tracker sync."""
     tracker = Tracker(
         name="Tracker to Sync",
@@ -954,8 +959,43 @@ async def test_sync_tracker_success(
 
     response = client.post(f"/api/v1/trackers/{tracker.id}/sync")
     assert response.status_code == 202
-    assert response.json()["status"] == "queued"
-    mock_publish_task.assert_called_once_with("poll_tracker_on_demand", str(tracker.id))
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["tracker_id"] == str(tracker.id)
+    assert UUID(body["task_id"])
+    mock_publish_task.assert_awaited_once_with(
+        "poll_tracker_on_demand", str(tracker.id), task_id=body["task_id"]
+    )
+
+    from preloop.sync import tasks
+
+    with patch.object(tasks, "poll_tracker", AsyncMock(return_value={"projects": 1})):
+        with caplog.at_level("INFO"):
+            await tasks.poll_tracker_on_demand(
+                *mock_publish_task.call_args.args[1:],
+                **mock_publish_task.call_args.kwargs,
+            )
+    assert body["task_id"] in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error", [None, ErrTimeout(), ErrConnectionClosed(), RuntimeError()]
+)
+@patch(
+    "preloop.api.endpoints.trackers.event_bus_service.publish_task", return_value=None
+)
+def test_sync_tracker_queue_failure(
+    mock_publish_task: AsyncMock,
+    client: TestClient,
+    test_tracker: models.Tracker,
+    error: Exception | None,
+) -> None:
+    """A failed publish must not return a successful queue receipt."""
+    mock_publish_task.side_effect = error
+    response = client.post(f"/api/v1/trackers/{test_tracker.id}/sync")
+    assert response.status_code == 503
+    assert "could not be queued" in response.json()["detail"]
+    mock_publish_task.assert_awaited_once()
 
 
 def test_unique_tracker_name_appends_suffix(db_session, test_user):

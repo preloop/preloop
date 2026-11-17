@@ -132,12 +132,12 @@ async def test_blocked_credential_query_keeps_event_loop_responsive(
     real_get = crud_api_key.get_by_key
     worker_threads = []
 
-    def blocked_get(db: Session, *, key: str) -> models.ApiKey | None:
+    def blocked_get(db: Session, *, key: str, **kwargs: Any) -> models.ApiKey | None:
         worker_threads.append(threading.get_ident())
         loop.call_soon_threadsafe(entered.set)
         # Bounded even if the regression accidentally executes on the event loop.
         release.wait(timeout=2)
-        return real_get(db, key=key)
+        return real_get(db, key=key, **kwargs)
 
     monkeypatch.setattr(crud_api_key, "get_by_key", blocked_get)
     monkeypatch.setattr(

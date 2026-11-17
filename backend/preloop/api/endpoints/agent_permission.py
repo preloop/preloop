@@ -8,6 +8,8 @@ decision (or timeout) and returns a simple allow/deny.
 """
 
 import logging
+import re
+import shlex
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Dict, Literal, Optional
@@ -346,6 +348,23 @@ def _native_tool_status(
     return "allowed" if decision == "allow" else "denied"
 
 
+def _native_command_name(arguments: dict[str, Any]) -> str | None:
+    """Identify the executable for loop diagnostics without retaining arguments."""
+    command = arguments.get("command") or arguments.get("cmd")
+    if not isinstance(command, str):
+        return None
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return None
+    for word in words:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", word):
+            continue
+        name = word.rsplit("/", 1)[-1]
+        return name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name) else None
+    return None
+
+
 def _record_native_tool_call(
     identity: PermissionIdentity,
     *,
@@ -363,7 +382,9 @@ def _record_native_tool_call(
     call decided by a hook was neither, so a watcher saw approvals but not
     the calls around them. The row has the same shape as an MCP tool call:
     tool name, outcome, and an arguments summary of key names and sizes only,
-    never the values. The live event is the ``runtime_session_updated`` event
+    never the values. A bounded executable name identifies repeated commands;
+    command arguments and paths are not retained. The live event is the
+    ``runtime_session_updated`` event
     MCP calls already emit, with the decision fields added.
 
     Never raises: the decision has been made and must reach the agent.
@@ -392,6 +413,26 @@ def _record_native_tool_call(
         "arguments_summary": _summarize_arguments(arguments),
         "arguments_hash": _hash_arguments(arguments),
     }
+    command_name = _native_command_name(arguments)
+    if command_name:
+        from preloop.services.sensitive_data.storage import (
+            StorageScope,
+            apply_storage_redaction,
+        )
+        from preloop.utils.secret_scrubbing import scrub_secrets
+
+        metadata["command_name"] = apply_storage_redaction(
+            identity.account_id,
+            scrub_secrets(command_name),
+            scope=StorageScope(
+                target="tool.args",
+                tool_name=payload.tool_name,
+                server_name=source,
+                managed_agent_id=str(identity.managed_agent_id)
+                if identity.managed_agent_id
+                else None,
+            ),
+        )
     if approval_request_id:
         metadata["approval_request_id"] = approval_request_id
     work_ref = _native_work_ref(payload)
@@ -762,6 +803,51 @@ class AgentPermissionCheckResponse(BaseModel):
     )
 
 
+def _audit_permission_denial(
+    token: str, tool_name: str, reason_code: str, rule_message: str | None = None
+) -> None:
+    """Recover stored attribution even when authentication refused the key."""
+    from preloop.services.denial_audit import write_denial
+
+    with get_session_factory()() as db:
+        key = crud_api_key.get_by_key(db, key=token, include_restricted=True)
+        if key is None:
+            # Unknown credentials have no trustworthy tenant or principal.
+            # Never use request-supplied account/session ids for attribution.
+            logger.info("Unattributed permission credential refused")
+            return
+        context = key.context_data if isinstance(key.context_data, dict) else {}
+        principal = context.get("runtime_principal")
+        principal = principal if isinstance(principal, dict) else {}
+        principal_id = key.id
+        principal_type = "api_key"
+        try:
+            if principal.get("type") in {"managed_agent", "flow_execution"}:
+                principal_id = UUID(str(principal.get("id")))
+                principal_type = principal["type"]
+        except ValueError:
+            pass
+        try:
+            agent = _managed_agent_for_api_key(db, key)
+        except HTTPException:
+            agent = None  # Invalid session bindings still have a stored key identity.
+        if agent is not None:
+            principal_id, principal_type = agent.id, "managed_agent"
+        write_denial(
+            db,
+            account_id=key.account_id,
+            principal_id=principal_id,
+            principal_type=principal_type,
+            user_id=key.user_id,
+            action="agent_permission_denied",
+            target=tool_name.replace(token, "[REDACTED]") if token else tool_name,
+            reason_code=reason_code,
+            rule_message=rule_message.replace(token, "[REDACTED]")
+            if rule_message and token
+            else rule_message,
+        )
+
+
 @router.post(
     "/agents/permission-check",
     response_model=AgentPermissionCheckResponse,
@@ -772,6 +858,62 @@ async def agent_permission_check(
     authorization: Optional[str] = Header(None),
 ) -> AgentPermissionCheckResponse:
     """Decide whether an onboarded agent's native tool call may proceed."""
+    from preloop.services.denial_audit import reason_for_detail
+
+    token = (
+        authorization.split(" ", 1)[1].strip()
+        if authorization and authorization.lower().startswith("bearer ")
+        else ""
+    )
+    try:
+        result = await _agent_permission_check(payload, authorization)
+    except HTTPException as exc:
+        if exc.status_code in {401, 403}:
+            code = reason_for_detail(exc.detail, "permission_auth_denied")
+            await _audit_permission_denial_safely(token, payload.tool_name, code)
+        raise
+    if result.decision == "deny":
+        fallback = (
+            "approval_pending"
+            if result.parked
+            else "approval_expired"
+            if result.timed_out
+            else "approval_denied"
+            if result.request_id
+            else "permission_denied"
+        )
+        code = (
+            fallback
+            if result.request_id or result.timed_out or result.parked
+            else reason_for_detail(result.reason, fallback)
+        )
+        await _audit_permission_denial_safely(
+            token,
+            payload.tool_name,
+            code,
+            rule_message=result.reason if code == "permission_denied" else None,
+        )
+    return result
+
+
+async def _audit_permission_denial_safely(
+    token: str, tool_name: str, reason_code: str, rule_message: str | None = None
+) -> None:
+    """Keep an audit outage from replacing the original permission decision."""
+    try:
+        await run_db_off_loop(
+            lambda: _audit_permission_denial(
+                token, tool_name, reason_code, rule_message=rule_message
+            )
+        )
+    except Exception as exc:
+        logger.warning("Permission denial audit unavailable: %s", type(exc).__name__)
+
+
+async def _agent_permission_check(
+    payload: AgentPermissionCheckRequest, authorization: Optional[str]
+) -> AgentPermissionCheckResponse:
+    """Authenticate and evaluate a native call; the public wrapper audits refusals."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

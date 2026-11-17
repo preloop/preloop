@@ -378,8 +378,14 @@ under `_native_result` (`{"value": true, "source": "default"}`). A Codex run
 that exits 0 without confirming success says in its failure message whether
 `agent_config.native_result` was on and points to this section. The adapter passes the schema to the
 pinned CLI's `--output-schema` and captures its final answer with
-`--output-last-message /workspace/result.json`. The normal capture-time schema
-and completion-status gates still decide success. A schema-valid native verdict
+`--output-last-message`. Native completion instructions ask for that final answer
+in the required format. In read-only reviews, capture preserves the final answer
+separately from an agent-written `/workspace/result.json`: a usable native answer
+wins, otherwise the file must pass schema and review integrity checks. An explicit
+native failure remains authoritative. Other native flows retain the existing
+`/workspace/result.json` capture path. The normal capture-time schema and
+completion-status gates still decide success. See the
+[read-only review contract](restricted-ci.md) for details. A schema-valid native verdict
 confirms completion without an additional `status` field or printed success
 marker: `approve` and `request-changes` both describe a finished review. Explicit
 failure/incomplete statuses and required publication gates still apply.

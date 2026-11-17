@@ -340,6 +340,11 @@ def sanitize_captured_result(result: Any) -> dict[str, Any] | None:
 
 def extract_result_json(archive: bytes) -> dict[str, Any] | None:
     """Read result.json packed next to evidence members, if present."""
+    from preloop.services.native_result import (
+        RESULT_TRANSPORT_MAX_BYTES,
+        result_transport_within_limit,
+    )
+
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
             for name in ("result.json", "workspace/result.json"):
@@ -347,12 +352,14 @@ def extract_result_json(archive: bytes) -> dict[str, Any] | None:
                     member = tar.getmember(name)
                 except KeyError:
                     continue
-                if not member.isfile() or member.size > 256 * 1024:
+                if not member.isfile() or member.size > RESULT_TRANSPORT_MAX_BYTES:
                     continue
                 source = tar.extractfile(member)
                 if source is None:
                     continue
                 parsed = json.loads(source.read())
+                if not result_transport_within_limit(parsed):
+                    continue
                 cleaned = sanitize_captured_result(parsed)
                 if cleaned is not None:
                     return cleaned
@@ -869,6 +876,14 @@ def put_artifact(
     Capability PUTs keep ``require_execution_open=True``. Controller-owned
     retention after a failed run passes False.
     """
+    expanded = validate_archive(
+        archive,
+        max_bytes=artifact_max_bytes(kind),
+        max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
+    )
+    from preloop.models.crud.execution_credentials import for_execution
+
+    archive = for_execution(db, execution_id).mask_archive(archive)
     expanded = validate_archive(
         archive,
         max_bytes=artifact_max_bytes(kind),
