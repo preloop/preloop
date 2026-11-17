@@ -41,6 +41,27 @@ declared types). The repository inspection from your previous answer still \
 counts; run a command only if a value you must fill in needs it.
 """
 
+#: Used once per run, when the latest session neither read the change nor
+#: gave a usable answer (see ``CodexAgent._native_result_repair_block``).
+UNINSPECTED_REPAIR_INSTRUCTIONS = """
+
+---
+This review is not complete, for two reasons.
+
+1. The repository has not been inspected as required. {inspection}
+
+2. Your previous final answer does not match the required result schema, so \
+it cannot be accepted. Validation errors (JSON path: message):
+{errors}
+Your previous final answer, verbatim:
+{previous}
+
+Do both now, in this order. First inspect the change with commands. Then \
+return the review as one complete JSON object that satisfies the schema: every \
+required field, only allowed values, the declared types. A progress note or a \
+plan is not an answer; the final answer must be the finished review.
+"""
+
 _TYPES: dict[str, Any] = {
     "object": lambda value: isinstance(value, dict),
     "array": lambda value: isinstance(value, list),
@@ -303,7 +324,7 @@ def _equal(left: Any, right: Any) -> bool:
     return bool(left == right)
 
 
-def repair_prompt(raw: Any, schema: Any, prompt: str) -> str:
+def repair_prompt(raw: Any, schema: Any, prompt: str, inspection: str = "") -> str:
     """The continuation prompt for an invalid final answer, or "" when valid.
 
     Args:
@@ -311,6 +332,10 @@ def repair_prompt(raw: Any, schema: Any, prompt: str) -> str:
         schema: The flow's result schema.
         prompt: The run's original prompt, repeated first so the fresh
             session has the task and the schema text it already had.
+        inspection: What the inspection check requires, in plain words. When
+            given, the prompt is the combined one for a session that neither
+            read the change nor answered usably: it asks for the inspection
+            and the answer. Empty for a plain schema repair.
 
     Returns:
         An empty string when the answer is a JSON document with no error this
@@ -336,6 +361,10 @@ def repair_prompt(raw: Any, schema: Any, prompt: str) -> str:
             *lines[:MAX_REPAIR_ERRORS],
             f"- (+{len(errors) - MAX_REPAIR_ERRORS} more)",
         ]
+    if inspection:
+        return prompt + UNINSPECTED_REPAIR_INSTRUCTIONS.format(
+            inspection=inspection, errors="\n".join(lines), previous=previous
+        )
     return prompt + REPAIR_INSTRUCTIONS.format(
         errors="\n".join(lines), previous=previous
     )

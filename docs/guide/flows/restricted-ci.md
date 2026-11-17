@@ -579,6 +579,39 @@ whatever the last session wrote and applies every check above. If it is still
 invalid, the run fails with `result_schema_invalid` and the validation errors,
 as before. Flows without `agent_config.native_result: true` are unchanged.
 
+One run is not covered by either rule above: the inspection continuations are
+used up, the last session still did not read the change, and its final answer
+is not usable either, because it is missing, not JSON or does not match the
+schema. The usual case is a session that stops on a progress note such as
+"fetching the diff before review". Such a run gets one combined continuation,
+at most once per run. Its prompt is the original prompt plus three things in
+plain words: the review is not complete; the repository has not been inspected,
+with what the check requires (a successful command in that session that reads
+the bound change, `git diff <base>...<head>` and the changed files); and the
+validation errors with the previous answer. The session has to inspect and
+answer. The log records it as
+`PRELOOP_REVIEW_CONTINUATION {"attempt":1,"reason":"uninspected_invalid_result","paths":[...]}`.
+The same deadline rules apply: it does not start with less than 30 seconds
+left and is stopped 10 seconds before the deadline. After it the normal order
+applies again. If that session inspected and its answer is still invalid, the
+repairs above run; if it did not inspect, nothing more is started. A session
+that did not inspect but answered in the schema's shape gets no combined
+continuation. A run therefore starts at most five sessions after its first:
+two inspection continuations, one combined continuation and two repairs.
+
+None of this changes what the controller decides. A review without inspection
+evidence fails with `review_not_inspected`, whatever its answer looks like. An
+inspected run whose last answer fails the schema fails with
+`result_schema_invalid`; the message names the first error and the other
+failing paths. This also holds when that answer carries no completion status,
+as a progress note does: such a run used to be reported as `no_confirmation`
+with a message saying that no result had been written. A run that does end as
+`no_confirmation` now says what was observed: no final answer was captured, the
+answer was not valid JSON, or the answer did not match the schema (with the
+paths). When the model provider rejects the request before any answer exists,
+the recorded validation says that the model request failed and points to the
+provider error, instead of `No result.json was captured`.
+
 **Result ready when the time limit fires.** If the execution deadline expires
 after the agent has already written its native answer (for example because the
 container did not exit in time), Preloop captures that answer and applies the
