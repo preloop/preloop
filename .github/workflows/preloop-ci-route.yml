@@ -1,0 +1,105 @@
+name: Restricted CI review route
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# Queue runs so the authenticated polling step can stop obsolete owned work.
+concurrency:
+  group: preloop-ci-route-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  PRELOOP_DISABLE_TELEMETRY: 'true'
+  CI_PR: ${{ github.event.pull_request.number }}
+  CI_HEAD: ${{ github.event.pull_request.head.sha }}
+  CI_BASE: ${{ github.event.pull_request.base.sha }}
+  CI_URL: ${{ vars.PRELOOP_CI_ROUTE_URL }}
+  CI_FLOW: ${{ vars.PRELOOP_CI_ROUTE_FLOW_ID }}
+  CI_PROJECT: ${{ vars.PRELOOP_CI_ROUTE_PROJECT_ID }}
+
+jobs:
+  select:
+    # Never even load the CI secret for a fork or Dependabot event.
+    if: >-
+      vars.PRELOOP_CI_ROUTE_ENABLED == 'enabled' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      eligible: ${{ steps.paths.outputs.eligible }}
+      trusted_sha: ${{ steps.paths.outputs.trusted_sha }}
+    steps:
+      - name: Check operator configuration
+        id: config
+        env:
+          CI_KEY: ${{ secrets.PRELOOP_CI_ROUTE_TOKEN }}
+        run: |
+          if [ -n "$CI_KEY" ] && [ -n "$CI_URL" ] && [ -n "$CI_FLOW" ] && [ -n "$CI_PROJECT" ]; then
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Restricted CI review skipped: operator configuration is incomplete.'
+          fi
+      # Pin downstream jobs to the reviewed default-branch copy selected here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.config.outputs.configured == 'true'
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Require every changed path inside the subset
+        id: paths
+        if: steps.config.outputs.configured == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_PATHS: ${{ vars.PRELOOP_CI_ROUTE_PATHS }}
+        run: |
+          echo "trusted_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          python scripts/ci_review_route.py gate
+
+  complete:
+    needs: select
+    if: needs.select.outputs.eligible == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    outputs:
+      execution: ${{ steps.complete.outputs.execution }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.select.outputs.trusted_sha }}
+          persist-credentials: false
+      - name: Trigger and wait for authenticated completion
+        id: complete
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PRELOOP_CI_TOKEN: ${{ secrets.PRELOOP_CI_ROUTE_TOKEN }}
+        run: python scripts/ci_review_route.py trigger
+
+  publish:
+    needs: [select, complete]
+    if: always() && needs.select.outputs.eligible == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.select.outputs.trusted_sha }}
+          persist-credentials: false
+      - name: Verify persisted result and publish shadow status
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PRELOOP_CI_TOKEN: ${{ secrets.PRELOOP_CI_ROUTE_TOKEN }}
+          CI_EXECUTION: ${{ needs.complete.outputs.execution }}
+          CI_POST_REVIEW: ${{ vars.PRELOOP_CI_ROUTE_POST_REVIEW }}
+        run: python scripts/ci_review_route.py publish
