@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path and the keyword and says what to use instead. Flows saved earlier keep
   loading and running; if the provider refuses their schema, the run's error
   says the same thing the save would have said.
+- Execution recovery: a run that had already stopped, failed or finished, but
+  whose stop was never confirmed, was picked up by the recovery pass every
+  30 seconds without end. Each time its end time and error were overwritten
+  with a timeout message, a session-ended audit entry was written and its
+  end-of-run notifications ran again. Recovery now only checks such a run's
+  runtime: when the runtime is gone (or once it has been stopped) the stop
+  is confirmed and the run leaves recovery in that pass. Its stored outcome is
+  not touched and nothing is notified a second time. This also covers runs
+  whose flow settings changed after launch in a way that made recovery fail
+  each time (for example a run stopped when its pull request merged).
+  As a backstop, a finished run whose stop still cannot be confirmed after
+  five attempts leaves recovery with one error log line instead of being
+  retried forever. Its stop stays unconfirmed and its stop reason says that
+  termination was not verified and needs an operator.
 - Native-result reviews: a run whose sessions never read the change and whose
   last answer is a progress note (or is missing, not JSON, or otherwise does
   not match the result schema) gets one more session instead of ending there.
