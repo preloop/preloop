@@ -24,8 +24,10 @@ from typing import BinaryIO
 WORKSPACE_ROOT = Path("/workspace")
 EVIDENCE_REFERENCE_PATH = Path("/tmp/preloop-evidence-reference.json")
 MAX_EVIDENCE_MEMBERS = 100_000
-# A native review transport can contain two 256 KiB result candidates.
-RESULT_JSON_MAX_BYTES = 2 * 256 * 1024 + 1024
+RESULT_JSON_MAX_BYTES = 256 * 1024
+# Only the separate native transport can contain two bounded result candidates.
+RESULT_TRANSPORT_MAX_BYTES = 2 * RESULT_JSON_MAX_BYTES + 1024
+NATIVE_RESULT_BUNDLE_NAME = ".preloop-native-result-bundle.json"
 _READ_CHUNK = 65536
 
 # Self-description member written into every evidence pack. Kept in sync
@@ -672,6 +674,11 @@ def pack_evidence(root: Path, *, max_bytes: int, max_expanded_bytes: int) -> byt
     root = root.resolve()
     evidence_dir = root / "evidence"
     result_path = root / "result.json"
+    result_limit = RESULT_JSON_MAX_BYTES
+    bundle_path = root / NATIVE_RESULT_BUNDLE_NAME
+    if bundle_path.exists() or bundle_path.is_symlink():
+        result_path = bundle_path
+        result_limit = RESULT_TRANSPORT_MAX_BYTES
     if evidence_dir.is_symlink() or (
         evidence_dir.exists() and not evidence_dir.is_dir()
     ):
@@ -731,7 +738,7 @@ def pack_evidence(root: Path, *, max_bytes: int, max_expanded_bytes: int) -> byt
         _queue(
             result_path,
             "result.json",
-            limit=RESULT_JSON_MAX_BYTES,
+            limit=result_limit,
             oversized="evidence_result_oversized",
         )
     if not pending:

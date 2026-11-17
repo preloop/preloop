@@ -1,6 +1,7 @@
 """Native answers and legacy file results have deterministic, checked precedence."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,12 +9,14 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiodocker.exceptions import DockerError
 
 from preloop.agents.codex import CodexAgent
 from preloop.services.flow_orchestrator import (
     FlowExecutionOrchestrator,
     _success_instruction_for_prompt,
 )
+from preloop.services.native_result import NATIVE_RESULT_BUNDLE_PATH
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -84,11 +87,14 @@ def test_native_capture_preserves_both_write_orders(
             "git_clone_config": {"publication_mode": "read_only"},
         }
     )
-    script = script.replace(NATIVE_RESULT_PATH, str(native_path)).replace(
-        "/workspace/result.json", str(file_path)
+    script = (
+        script.replace(NATIVE_RESULT_PATH, str(native_path))
+        .replace("/workspace/result.json", str(file_path))
+        .replace("/workspace", str(tmp_path))
     )
     subprocess.run(["bash", "-c", script], check=True, capture_output=True)
-    bundle = json.loads(file_path.read_text())[NATIVE_CANDIDATES_KEY]
+    bundle_path = tmp_path / Path(NATIVE_RESULT_BUNDLE_PATH).name
+    bundle = json.loads(bundle_path.read_text())[NATIVE_CANDIDATES_KEY]
     assert bundle["native"] == candidates[0][1]
     assert bundle["file"] == candidates[1][1]
 
@@ -216,8 +222,7 @@ def test_candidate_transport_preserves_each_existing_artifact_allowance(
 ) -> None:
     from preloop.services.native_result import NATIVE_RESULT_PATH, NATIVE_CANDIDATES_KEY
     from preloop.services.flow_artifacts import extract_result_json
-    import io
-    import tarfile
+    from preloop.agents.checkpoint_client import pack_evidence
 
     result = tmp_path / "result.json"
     native = tmp_path / "native.json"
@@ -229,21 +234,21 @@ def test_candidate_transport_preserves_each_existing_artifact_allowance(
             "git_clone_config": {"publication_mode": "read_only"},
         }
     )
-    script = script.replace(NATIVE_RESULT_PATH, str(native)).replace(
-        "/workspace/result.json", str(result)
+    script = (
+        script.replace(NATIVE_RESULT_PATH, str(native))
+        .replace("/workspace/result.json", str(result))
+        .replace("/workspace", str(tmp_path))
     )
     subprocess.run(["bash", "-c", script], check=True, capture_output=True)
-    raw = result.read_bytes()
+    raw = (tmp_path / Path(NATIVE_RESULT_BUNDLE_PATH).name).read_bytes()
     assert len(raw) > 256 * 1024
     executor = CodexAgent({})
     captured = executor._interpret_result_artifact_bytes(raw, "session")
     assert set(captured[NATIVE_CANDIDATES_KEY]) == {"native", "file"}
-    stream = io.BytesIO()
-    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
-        member = tarfile.TarInfo("result.json")
-        member.size = len(raw)
-        archive.addfile(member, io.BytesIO(raw))
-    assert extract_result_json(stream.getvalue()) == captured
+    archive = pack_evidence(
+        tmp_path, max_bytes=1024 * 1024, max_expanded_bytes=1024 * 1024
+    )
+    assert extract_result_json(archive) == captured
     assert (
         executor._interpret_result_artifact_bytes(
             json.dumps(document("x" * 300000)).encode(), "session"
@@ -252,11 +257,105 @@ def test_candidate_transport_preserves_each_existing_artifact_allowance(
     )
 
 
-@pytest.mark.parametrize("link", ["temporary", "native", "file"])
+@pytest.mark.parametrize("oversized", ["native", "file"])
+def test_native_capture_rejects_oversized_candidate_without_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oversized: str
+) -> None:
+    """Neither native answers nor fallback files may bypass the document cap."""
+    from preloop.services.native_result import (
+        NATIVE_CANDIDATES_KEY,
+        NATIVE_RESULT_CAPTURE,
+        RESULT_DOCUMENT_MAX_BYTES,
+    )
+
+    native = tmp_path / ".preloop-native-result.json"
+    result = tmp_path / "result.json"
+    native.write_text(json.dumps(document("...")))
+    result.write_text(json.dumps(document()))
+    path = native if oversized == "native" else result
+    path.write_text(json.dumps(document("x" * RESULT_DOCUMENT_MAX_BYTES)))
+    fdopen = os.fdopen
+
+    def guarded_fdopen(fd: int, mode: str, *args: Any, **kwargs: Any) -> Any:
+        """Fail on any attempt to read a known oversized input."""
+        source = fdopen(fd, mode, *args, **kwargs)
+        if "r" not in mode or os.fstat(fd).st_size <= RESULT_DOCUMENT_MAX_BYTES:
+            return source
+        guarded = MagicMock(wraps=source)
+        guarded.__enter__.return_value = guarded
+        guarded.__exit__.side_effect = source.__exit__
+        guarded.read.side_effect = AssertionError(
+            "must not read an oversized candidate"
+        )
+        return guarded
+
+    monkeypatch.setattr(os, "fdopen", guarded_fdopen)
+    exec(NATIVE_RESULT_CAPTURE.replace("/workspace", str(tmp_path)), {})
+    bundle = json.loads((tmp_path / Path(NATIVE_RESULT_BUNDLE_PATH).name).read_text())
+    assert bundle[NATIVE_CANDIDATES_KEY][oversized] == {
+        "error": "result_artifact_too_large"
+    }
+    orch = orchestrator()
+    with patch(
+        "preloop.models.crud.execution_tool_evidence.inspection_summary",
+        return_value={"diff_commands": 1},
+    ):
+        selected = orch._select_native_result_candidate(bundle)
+        assert orch._usable_native_review(selected) is (oversized == "native")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bundle_available", [True, False])
+async def test_docker_native_capture_selects_bounded_transport(
+    bundle_available: bool,
+) -> None:
+    """Docker prefers the bundle and retains the file cap when it is absent."""
+    from preloop.services.native_result import (
+        NATIVE_CANDIDATES_KEY,
+        RESULT_DOCUMENT_MAX_BYTES,
+    )
+    from backend.tests.agents.test_agent_container import _result_artifact_tar
+
+    bundle = {
+        NATIVE_CANDIDATES_KEY: {
+            "native": document("Native " + "x" * 200000),
+            "file": document("File " + "x" * 200000),
+        }
+    }
+    raw = json.dumps(bundle if bundle_available else document("x" * 300000)).encode()
+    archive = _result_artifact_tar(raw)
+    container = AsyncMock()
+    container.get_archive.side_effect = (
+        [archive]
+        if bundle_available
+        else [DockerError(404, {"message": "missing bundle"}), archive]
+    )
+    docker = AsyncMock()
+    docker.containers.get.return_value = container
+    executor = CodexAgent({})
+    executor.use_kubernetes = False
+    executor._get_docker_client = AsyncMock(return_value=docker)
+    with patch.object(archive, "extractfile", wraps=archive.extractfile) as extract:
+        captured = await executor.get_result_artifact("session")
+        if bundle_available:
+            assert captured == bundle
+            container.get_archive.assert_awaited_once_with(NATIVE_RESULT_BUNDLE_PATH)
+        else:
+            assert captured["error"] == "result_artifact_too_large"
+            assert captured["limit_bytes"] == RESULT_DOCUMENT_MAX_BYTES
+            extract.assert_not_called()
+            assert [call.args[0] for call in container.get_archive.await_args_list] == [
+                NATIVE_RESULT_BUNDLE_PATH,
+                "/workspace/result.json",
+            ]
+
+
+@pytest.mark.parametrize("link", ["temporary", "native", "file", "bundle"])
 def test_capture_never_follows_agent_planted_links(tmp_path: Path, link: str) -> None:
     from preloop.services.native_result import NATIVE_RESULT_PATH
 
     native, result = tmp_path / "native.json", tmp_path / "result.json"
+    bundle_path = tmp_path / Path(NATIVE_RESULT_BUNDLE_PATH).name
     secret = tmp_path / "protected.json"
     protected = json.dumps(document("Private unrelated contents"))
     secret.write_text(protected)
@@ -266,6 +365,7 @@ def test_capture_never_follows_agent_planted_links(tmp_path: Path, link: str) ->
         "temporary": result.with_suffix(".capture.tmp"),
         "native": native,
         "file": result,
+        "bundle": bundle_path,
     }[link]
     target.unlink(missing_ok=True)
     target.symlink_to(secret)
@@ -275,12 +375,17 @@ def test_capture_never_follows_agent_planted_links(tmp_path: Path, link: str) ->
             "git_clone_config": {"publication_mode": "read_only"},
         }
     )
-    script = script.replace(NATIVE_RESULT_PATH, str(native)).replace(
-        "/workspace/result.json", str(result)
+    script = (
+        script.replace(NATIVE_RESULT_PATH, str(native))
+        .replace("/workspace/result.json", str(result))
+        .replace("/workspace", str(tmp_path))
     )
     subprocess.run(["bash", "-c", script], check=True, capture_output=True)
     assert secret.read_text() == protected
-    assert "Private unrelated contents" not in result.read_text()
+    if link == "native":
+        assert not bundle_path.exists()
+    else:
+        assert "Private unrelated contents" not in bundle_path.read_text()
 
 
 def test_capture_runs_only_after_workspace_reclamation() -> None:

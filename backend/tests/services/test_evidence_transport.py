@@ -219,6 +219,59 @@ def test_kubernetes_wrapper_legacy_still_emits_base64(tmp_path: Path) -> None:
     assert "PRELOOP_ARTIFACT_BEGIN evidence present" in proc.stdout
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bundled", [True, False])
+@pytest.mark.parametrize("linked", [True, False])
+async def test_kubernetes_wrapper_applies_distinct_result_caps(
+    tmp_path: Path, bundled: bool, linked: bool
+) -> None:
+    """Only a two-candidate transport may use more than one document allowance."""
+    from preloop.services.native_result import (
+        NATIVE_CANDIDATES_KEY,
+        NATIVE_RESULT_BUNDLE_PATH,
+    )
+
+    result = {"review": "x" * 200000}
+    payload = (
+        {NATIVE_CANDIDATES_KEY: {"native": result, "file": result}}
+        if bundled
+        else {"review": "x" * 300000}
+    )
+    path = tmp_path / (
+        Path(NATIVE_RESULT_BUNDLE_PATH).name if bundled else "result.json"
+    )
+    path.write_text(json.dumps(payload))
+    if linked:
+        target = path.with_suffix(".source.json")
+        path.rename(target)
+        path.symlink_to(target)
+    script = K8S_ARTIFACT_WRAPPER_SCRIPT.replace("/workspace", str(tmp_path))
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        env=_interpreter_shell_env(
+            PRELOOP_INNER_SCRIPT="true",
+            PRELOOP_WORKSPACE_SNAPSHOTS="never",
+            PRELOOP_DISABLE_TELEMETRY="true",
+        ),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    executor = ContainerAgentExecutor("codex", {}, "test-image", use_kubernetes=True)
+    executor._get_kubernetes_logs = AsyncMock(return_value=proc.stdout.splitlines())
+    captured = await executor.get_result_artifact("job")
+    if linked:
+        assert captured["error"] == "result_artifact_fetch_failed"
+        result_output = proc.stdout.split("PRELOOP_ARTIFACT_END result", 1)[0]
+        assert "PRELOOP_ARTIFACT_B64 " not in result_output
+    elif bundled:
+        assert captured == payload
+    else:
+        result_output = proc.stdout.split("PRELOOP_ARTIFACT_END result", 1)[0]
+        assert "PRELOOP_ARTIFACT_B64 " not in result_output
+        assert captured["error"] == "result_artifact_too_large"
+
+
 def test_kubernetes_plaintext_off_emits_markers_not_bytes(tmp_path: Path) -> None:
     import shutil
 
@@ -565,6 +618,35 @@ def test_pack_evidence_rejects_symlinked_evidence_root(tmp_path: Path) -> None:
     (workspace / "evidence").symlink_to(outside)
     with pytest.raises(ValueError, match="evidence_unsafe_member"):
         pack_evidence(workspace, max_bytes=64 * 1024, max_expanded_bytes=64 * 1024)
+
+
+def test_pack_evidence_rejects_native_bundle_cap_without_reading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The separate transport allowance is bounded before reading any member."""
+    from preloop.agents import checkpoint_client as cc
+
+    bundle = tmp_path / cc.NATIVE_RESULT_BUNDLE_NAME
+    with bundle.open("wb") as output:
+        output.truncate(cc.RESULT_TRANSPORT_MAX_BYTES + 1)
+
+    def boom(*args: object, **kwargs: object) -> bytes:
+        raise AssertionError("must not read an oversized native bundle")
+
+    monkeypatch.setattr(cc, "_read_bounded", boom)
+    with pytest.raises(ValueError, match="evidence_result_oversized"):
+        pack_evidence(tmp_path, max_bytes=64 * 1024, max_expanded_bytes=1024 * 1024)
+
+
+def test_pack_evidence_rejects_symlinked_native_bundle(tmp_path: Path) -> None:
+    """A bundle path must not bypass the ordinary no-follow checks."""
+    from preloop.agents import checkpoint_client as cc
+
+    result = tmp_path / "result.json"
+    result.write_text("{}")
+    (tmp_path / cc.NATIVE_RESULT_BUNDLE_NAME).symlink_to(result)
+    with pytest.raises(ValueError, match="evidence_unsafe_member"):
+        pack_evidence(tmp_path, max_bytes=64 * 1024, max_expanded_bytes=1024 * 1024)
 
 
 def test_pack_evidence_enforces_member_limit_before_read(

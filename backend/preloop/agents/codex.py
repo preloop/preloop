@@ -1055,6 +1055,7 @@ exit $CODEX_EXIT_CODE
         from preloop.services.flow_result_schema import check_result_schema
         from preloop.services.native_result import (
             COLD_START_MESSAGE,
+            NATIVE_RESULT_BUNDLE_PATH,
             NATIVE_RESULT_PATH,
         )
 
@@ -1076,7 +1077,8 @@ exit $CODEX_EXIT_CODE
             f'| tee -a "{AGENT_OUTPUT_LOG_PATH}" >&2; '
             'CODEX_RESUME_ARGS=""; PRELOOP_CLI_SESSION_RESTORED=0; fi\n'
             f"printf %s {shlex.quote(encoded)} | base64 -d > {path}\n"
-            f"rm -f -- /workspace/result.json {NATIVE_RESULT_PATH}\n"
+            f"rm -f -- /workspace/result.json {NATIVE_RESULT_PATH} "
+            f"{NATIVE_RESULT_BUNDLE_PATH}\n"
         )
         return (
             setup,

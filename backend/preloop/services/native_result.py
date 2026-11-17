@@ -171,23 +171,28 @@ RESULT_DOCUMENT_MAX_BYTES = 256 * 1024
 RESULT_TRANSPORT_MAX_BYTES = 2 * RESULT_DOCUMENT_MAX_BYTES + 1024
 
 NATIVE_RESULT_PATH = "/workspace/.preloop-native-result.json"
+NATIVE_RESULT_BUNDLE_PATH = "/workspace/.preloop-native-result-bundle.json"
 NATIVE_CANDIDATES_KEY = "_preloop_native_result_candidates_v1"
 
 # Stdlib-only transport packaging. Neither candidate is trusted here; schema
 # and integrity validation remain controller responsibilities. File writes are
-# atomic so a concurrent capture sees either the original file or both candidates.
+# atomic; readers prefer the bundle while each input keeps its document cap.
 NATIVE_RESULT_CAPTURE = r"""
 import json, os, stat, tempfile
 from pathlib import Path
 from typing import Any
 native_path = Path("/workspace/.preloop-native-result.json")
 result_path = Path("/workspace/result.json")
+bundle_path = Path("/workspace/.preloop-native-result-bundle.json")
 def read(path: Path) -> Any:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as source:
-            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            metadata = os.fstat(source.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
                 return None
+            if metadata.st_size > 256 * 1024:
+                return {"error": "result_artifact_too_large"}
             raw = source.read(256 * 1024 + 1)
         if len(raw) > 256 * 1024:
             return {"error": "result_artifact_too_large"}
@@ -207,7 +212,7 @@ if native is not None:
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as destination:
             json.dump({key: {"native": native, "file": file_result}}, destination, ensure_ascii=False, separators=(",", ":"))
-        os.replace(temporary, result_path)
+        os.replace(temporary, bundle_path)
 """
 
 
