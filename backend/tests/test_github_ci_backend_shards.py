@@ -55,7 +55,8 @@ def test_backend_shards_partition_before_collection() -> None:
     assert any(step.get("id") == "setup-python" for step in backend["steps"])
     assert "scripts/ci_postgres.py drop" in drop["run"]
     assert "services" not in backend
-    assert backend["timeout-minutes"] <= 15
+    # A hang bound sized for the slower self-hosted pool, not a speed target.
+    assert backend["timeout-minutes"] <= 25
     coverage_upload = next(
         step for step in backend["steps"] if step.get("name") == "Upload coverage data"
     )
@@ -144,8 +145,12 @@ def _filter_patterns(filters: str, name: str) -> list[str]:
     return patterns
 
 
-def test_docs_lock_does_not_select_backend_shards() -> None:
-    """The mkdocs lock must not schedule the backend shards.
+def test_docs_lock_exclusion_kept_for_comparison_and_full_override() -> None:
+    """The legacy filter still excludes the mkdocs lock; the override wins.
+
+    The legacy backend filter keeps its docs-lock exclusion so the comparison
+    decision is unchanged, but ``requirements/**`` is a full-suite path, so a
+    docs-lock change now runs the full tier (approved dependency override).
 
     ``requirements/docs.txt`` is the docs build lock. Backend shards install
     ``.github/requirements/app-dev.txt``. Requirements Resolve still sees the

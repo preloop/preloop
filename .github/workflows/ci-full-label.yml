@@ -21,7 +21,10 @@ concurrency:
 jobs:
   rerun:
     name: Rerun CI in full
-    if: github.event.label.name == 'ci:full'
+    # Fork PRs get a read-only token; skip rather than fail (see header).
+    if: >-
+      github.event.label.name == 'ci:full' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

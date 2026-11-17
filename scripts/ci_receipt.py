@@ -41,7 +41,7 @@ SCANNERS = {"full-codeql", "full-secret-scan", "full-zizmor"}
 ALWAYS = {"changes", "pick-runner", "fast", "lint", "cli-vuln-scan"}
 
 
-def validate(needs: dict[str, Any], event: str) -> None:
+def validate(needs: dict[str, Any], event: str, *, fork: bool = False) -> None:
     """Reject missing results and unexplained skips as well as explicit reds."""
     expected_jobs = set(JOB_PATHS) | SCANNERS | ALWAYS
     if set(needs) != expected_jobs:
@@ -56,6 +56,8 @@ def validate(needs: dict[str, Any], event: str) -> None:
             expected = "success" if selected == "true" else "skipped"
         if job in SCANNERS and event in {"pull_request", "push"}:
             expected = "skipped"  # independent every-PR and main/tag scanner workflows
+        if job == "leaf-claude" and fork and value["result"] in {"success", "skipped"}:
+            continue  # the live-SDK job needs secrets, so it skips for forks
         if value["result"] != expected:
             raise ValueError(f"{job}: expected {expected}, got {value['result']}")
 
@@ -125,7 +127,11 @@ def timings(jobs: list[dict[str, Any]]) -> dict[str, Any]:
 def main() -> None:
     """Fail closed and upload an immutable candidate/timing receipt."""
     needs = json.loads(os.environ["CI_NEEDS"])
-    validate(needs, os.environ["GITHUB_EVENT_NAME"])
+    validate(
+        needs,
+        os.environ["GITHUB_EVENT_NAME"],
+        fork=os.environ.get("CI_FORK") == "true",
+    )
     api = GitHub(os.environ["GITHUB_REPOSITORY"])
     selection = json.loads(Path("ci-selection.json").read_text())
     jobs = api.pages(f"actions/runs/{os.environ['GITHUB_RUN_ID']}/jobs", "jobs")

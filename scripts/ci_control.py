@@ -74,20 +74,32 @@ def read_selection(api: GitHub, run_id: int) -> dict[str, Any] | None:
     matches = [a for a in artifacts if a["name"] == "ci-selection" and not a["expired"]]
     if len(matches) != 1:
         return None
-    result = subprocess.run(
+    limit = 4 * 1024 * 1024
+    # Stream with a hard bound: the artifact comes from the candidate's own
+    # job, so never buffer more than the limit before rejecting it.
+    with subprocess.Popen(
         [
             "gh",
             "api",
             f"repos/{api.repository}/actions/artifacts/{matches[0]['id']}/zip",
         ],
-        capture_output=True,
-        timeout=45,
-        check=False,
-    )
-    if result.returncode or len(result.stdout) > 4 * 1024 * 1024:
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    ) as proc:
+        assert proc.stdout is not None
+        payload = proc.stdout.read(limit + 1)
+        if len(payload) > limit:
+            proc.kill()
+            return None
+        try:
+            code = proc.wait(timeout=45)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return None
+    if code:
         return None
     try:
-        with zipfile.ZipFile(io.BytesIO(result.stdout)) as archive:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             entry = archive.getinfo("ci-selection.json")
             if entry.file_size > 2 * 1024 * 1024:
                 return None

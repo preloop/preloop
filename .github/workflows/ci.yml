@@ -613,7 +613,10 @@ jobs:
     runs-on: ${{ github.run_attempt > 1 && 'ubuntu-24.04' || fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
     needs: [changes, pick-runner, fast]
     if: needs.changes.outputs.backend == 'true'
-    timeout-minutes: 15
+    # Hang bound, not a speed target: hosted shards take 5-12 min, but the
+    # self-hosted pool (6-CPU slice shared by three runners) measured 11-15+,
+    # and 15 cancelled healthy shards there.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -1459,6 +1462,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CI_NEEDS: ${{ toJSON(needs) }}
+          CI_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: python3 scripts/ci_receipt.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

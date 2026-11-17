@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-hosted-recovery-${{ github.event.workflow_run.id }}
+  group: ci-hosted-recovery-${{ github.event.workflow_run.id || inputs.run_id }}
   cancel-in-progress: false
 
 jobs:

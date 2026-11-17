@@ -3,7 +3,6 @@
 import io
 import json
 from pathlib import Path
-import subprocess
 import sys
 from typing import Any
 import zipfile
@@ -35,11 +34,33 @@ def _zip(entries: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def _serve(monkeypatch: pytest.MonkeyPatch, payload: bytes, code: int = 0) -> None:
-    def run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(args, code, payload, b"")
+class FakeProc:
+    """Stand in for a streamed `gh api` download."""
 
-    monkeypatch.setattr(ci_control.subprocess, "run", run)
+    def __init__(self, payload: bytes, code: int) -> None:
+        self.stdout = io.BytesIO(payload)
+        self.code = code
+        self.killed = False
+
+    def __enter__(self) -> "FakeProc":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def kill(self) -> None:
+        """Record that the oversized download was stopped."""
+        self.killed = True
+
+    def wait(self, timeout: float) -> int:
+        """Return the synthetic exit code."""
+        return self.code
+
+
+def _serve(monkeypatch: pytest.MonkeyPatch, payload: bytes, code: int = 0) -> None:
+    monkeypatch.setattr(
+        ci_control.subprocess, "Popen", lambda *a, **k: FakeProc(payload, code)
+    )
 
 
 ONE = [{"id": 7, "name": "ci-selection", "expired": False}]

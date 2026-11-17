@@ -100,3 +100,14 @@ def test_refreshed_measured_weights_meet_the_balance_target() -> None:
     assert len(receipt["group_seconds"]) == 18
     assert receipt["max_over_median"] <= 1.25
     assert receipt["test_cases"] == 30045
+
+
+def test_fork_prs_may_skip_the_secret_bound_claude_leaf() -> None:
+    """The live-SDK leaf needs secrets and skips on forks; only forks may skip."""
+    result = needs()
+    for scanner in SCANNERS:
+        result[scanner]["result"] = "skipped"  # separate every-PR workflows
+    result["leaf-claude"]["result"] = "skipped"
+    validate(result, "pull_request", fork=True)
+    with pytest.raises(ValueError):
+        validate(result, "pull_request")
