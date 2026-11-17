@@ -437,3 +437,46 @@ def test_existing_control_connection_rechecks_execution_lifetime() -> None:
     query.first.side_effect = [object(), agent, key, user]
     with patch.object(crud_flow_execution, "get_status", return_value="FAILED"):
         assert agent_control_connection.authorize(db, connection) is None
+
+
+@pytest.mark.asyncio
+async def test_large_live_event_truncates_normalized_payload() -> None:
+    """Payload size limiting preserves the normalization applied before delivery."""
+    import json
+
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    db = MagicMock()
+    nats = AsyncMock()
+    subject = FlowExecutionOrchestrator(
+        db=db, flow_id=uuid4(), trigger_event_data={}, nats_client=nats
+    )
+    subject.flow = SimpleNamespace(account_id=uuid4())
+    subject.execution_log = SimpleNamespace(id=uuid4())
+    subject.NATS_MAX_PAYLOAD_BYTES = 4096
+
+    async def run_db(operation: Callable[[Any], Any]) -> Any:
+        return operation(db)
+
+    with (
+        patch(
+            "preloop.models.crud.execution_credentials.for_execution",
+            return_value=CredentialMasker.from_values([TOKEN]),
+        ),
+        patch("preloop.services.execution_realtime.run_db_async", side_effect=run_db),
+        patch(
+            "preloop.services.execution_realtime.crud_realtime.allocate_sequence",
+            return_value=(1, 0),
+        ),
+    ):
+        await subject._publish_update(
+            "agent_log_line", {"line": TOKEN + " " + "x" * 10000, "label": TOKEN}
+        )
+    nats.publish.assert_awaited_once()
+    encoded = nats.publish.await_args.args[1]
+    event = json.loads(encoded)
+    assert len(encoded) <= subject.NATS_MAX_PAYLOAD_BYTES
+    assert event["payload"]["truncated"] is True
+    assert event["payload"]["line"].startswith("[REDACTED]")
+    assert event["payload"]["label"] == "[REDACTED]"
+    assert TOKEN not in encoded.decode()
