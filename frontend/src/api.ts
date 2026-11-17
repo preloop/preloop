@@ -5261,6 +5261,8 @@ export async function rotateFlowWebhookSecret(flowId: string): Promise<{
   webhook_secret_set: boolean;
   webhook_secret_hint: string | null;
   webhook_secret_rotated_at: string | null;
+  /** The flow's configuration revision after the rotation. */
+  revision?: number;
 }> {
   const response = await fetchWithAuth(
     `${REST_API_PREFIX}/flows/${flowId}/webhook-secret/rotate`,

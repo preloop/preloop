@@ -93,6 +93,12 @@ with your disposable resources:
 Do not supply an arbitrary repository URL, a second repository or another
 runner pool.
 
+The server verifies the actual project, tracker and flow rather than trusting
+the selector. If the repository identity changes, provision a new principal;
+its stored project/flow/repository snapshot is immutable. Configure the flow
+to return a structured result with a `review` string when using the publication
+example below.
+
 ### Changing a flow safely
 
 A review flow is often configured by automation while a person may also edit
@@ -121,11 +127,6 @@ revision returns `412` and no execution is created. The execution's status
 projection reports the revision it was created with as `flow_revision`. See
 [Changing a flow safely through the API](creating-flows.md#changing-a-flow-safely-through-the-api)
 for the full contract.
-The server verifies the actual project, tracker and flow rather than trusting
-the selector. If the repository identity changes, provision a new principal;
-its stored project/flow/repository snapshot is immutable. Configure the flow
-to return a structured result with a `review` string when using the publication
-example below.
 
 ## Model eligibility
 

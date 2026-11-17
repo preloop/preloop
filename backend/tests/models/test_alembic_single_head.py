@@ -663,4 +663,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
         denial_index.revision,
         credentials.revision,
     }
-    assert script.get_heads() == [records.revision]
+    revisions = script.get_revision("20261222_flow_config_revision")
+    assert revisions.down_revision == records.revision
+    assert script.get_heads() == [revisions.revision]

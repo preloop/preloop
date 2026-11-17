@@ -243,6 +243,28 @@ def test_resending_the_stored_values_keeps_the_revision(
     assert response.headers["ETag"] == '"1"'
 
 
+def test_resending_trigger_project_ids_keeps_the_revision(
+    client: TestClient, db_session: Session, flow: Any
+) -> None:
+    """Ids sent as UUIDs equal the strings stored for them (no spurious 412)."""
+    project_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    flow.trigger_project_ids = project_ids
+    db_session.flush()
+    db_session.refresh(flow)
+    revision = flow.config_revision
+    read = client.get(f"{FLOWS}/{flow.id}")
+    assert read.json()["trigger_project_ids"] == project_ids
+
+    response = client.put(
+        f"{FLOWS}/{flow.id}",
+        json={"trigger_project_ids": read.json()["trigger_project_ids"]},
+        headers={"If-Match": read.headers["ETag"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["revision"] == revision
+    assert response.headers["ETag"] == read.headers["ETag"]
+
+
 def test_enable_disable_is_a_configuration_change(
     client: TestClient, db_session: Session, flow: Any
 ) -> None:

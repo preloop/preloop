@@ -12,7 +12,12 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import consoleStyles from '../styles/console-styles.css?inline';
-import { getTrackers, updateFlow } from '../api';
+import {
+  FlowRevisionConflictError,
+  getFlow,
+  getTrackers,
+  updateFlow,
+} from '../api';
 import {
   COMMIT_STATES,
   DEFAULT_STATUS_CONTEXT,
@@ -299,10 +304,41 @@ export class FlowPlatformReviewCard extends LitElement {
         })
       );
     } catch (error) {
+      if (error instanceof FlowRevisionConflictError && this.flow?.id) {
+        await this.adoptLatestAfterConflict(this.flow.id);
+        return;
+      }
       this.error =
         error instanceof Error ? error.message : 'Failed to save the flow';
     } finally {
       this.saving = false;
+    }
+  }
+
+  /**
+   * After a 412, load the flow as it is now and keep the draft, so Save
+   * applies the same change on top of the latest version instead of
+   * failing again on the stale revision.
+   */
+  private async adoptLatestAfterConflict(flowId: string): Promise<void> {
+    try {
+      const latest = await getFlow(flowId);
+      this.flow = latest;
+      this.dispatchEvent(
+        new CustomEvent('flow-updated', {
+          detail: { flow: latest },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      this.error =
+        'This flow was changed after this card loaded, so nothing was ' +
+        'saved. The card now uses the latest saved flow and keeps your ' +
+        'changes here: check them and select Save again.';
+    } catch {
+      this.error =
+        'This flow was changed after this card loaded, so nothing was ' +
+        'saved. Reload the page to see the latest version.';
     }
   }
 

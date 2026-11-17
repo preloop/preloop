@@ -2045,6 +2045,11 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
         webhook_secret_set: response.webhook_secret_set,
         webhook_secret_hint: response.webhook_secret_hint,
         webhook_secret_rotated_at: response.webhook_secret_rotated_at,
+        // Rotation is a configuration change: keep the revision current so
+        // the next save from this page is not refused as stale.
+        ...(typeof response.revision === 'number'
+          ? { revision: response.revision }
+          : {}),
       };
     } catch (error) {
       showToast(

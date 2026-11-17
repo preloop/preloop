@@ -1029,6 +1029,7 @@ describe('FlowView webhook URL', () => {
               webhook_secret_set: true,
               webhook_secret_rotated_at: '2026-11-16T12:00:00Z',
               execution_stats: null,
+              revision: 8,
             }),
             { status: 200 }
           );
@@ -1052,6 +1053,7 @@ describe('FlowView webhook URL', () => {
         webhook_secret_hint: 'abcd',
         webhook_config: {},
         execution_stats: { total_execs: 7 },
+        revision: 7,
       },
     });
     document.body.appendChild(element);
@@ -1139,6 +1141,8 @@ describe('FlowView webhook URL', () => {
     expect(call?.args[1]?.method).to.equal('POST');
     expect(element.flow.webhook_secret).to.be.undefined;
     expect(element.flow.execution_stats).to.deep.equal({ total_execs: 7 });
+    // Rotation moved the revision; the next save must not send the old one.
+    expect(element.flow.revision).to.equal(8);
     expect(element.shadowRoot.textContent).to.contain('shown once');
     element.disconnectedCallback();
     expect(element.newWebhookSecret).to.equal(null);

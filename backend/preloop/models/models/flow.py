@@ -346,8 +346,19 @@ def configuration_changed(flow: Flow) -> bool:
 
 
 def _comparable(value: Any) -> Any:
-    """Compare ids by value: writers assign UUID columns as str or UUID."""
-    return str(value) if isinstance(value, uuid.UUID) else value
+    """Compare ids by value, also inside lists and dicts.
+
+    Writers assign ids as str or UUID (for example ``trigger_project_ids``
+    arrives as UUIDs and is stored as strings), so both spellings of the
+    same id are the same value.
+    """
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_comparable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _comparable(item) for key, item in value.items()}
+    return value
 
 
 @event.listens_for(Session, "before_flush")
