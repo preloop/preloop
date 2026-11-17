@@ -290,7 +290,8 @@ async def test_bound_settles_a_terminal_run_that_never_confirms(
 
     assert attempts == MAX_TERMINAL_REDISPATCHES
     db_session.refresh(execution)
-    assert execution.stop_confirmed_at is not None
+    # Nobody saw the runtime end, so the stop stays unconfirmed.
+    assert execution.stop_confirmed_at is None
     assert execution.end_time == STOPPED_AT
     assert execution.error_message == ORIGINAL_ERROR
     assert execution.id not in _candidate_ids(db_session)
@@ -423,7 +424,8 @@ async def test_failed_dispatch_of_a_terminal_run_still_counts_towards_the_bound(
             )
     db_session.refresh(execution)
     assert execution.redispatch_count == MAX_TERMINAL_REDISPATCHES
-    assert execution.stop_confirmed_at is not None
+    assert execution.stop_confirmed_at is None
+    assert "termination not verified" in execution.stop_reason
     assert execution.id not in _candidate_ids(db_session)
 
 
@@ -472,9 +474,35 @@ async def test_bound_retires_credentials_and_keeps_the_marker_of_a_long_reason(
             create_executor_for_execution=MagicMock(return_value=GoneRuntime(False)),
         )
     db_session.refresh(execution)
-    assert execution.stop_confirmed_at is not None
+    assert execution.stop_confirmed_at is None
+    assert execution.id not in _candidate_ids(db_session)
     assert len(execution.stop_reason) <= 500
     assert execution.stop_reason.endswith("operator inspection required")
     assert "termination not verified" in execution.stop_reason
     assert end_session.call_args.kwargs["execution_id"] == execution.id
     assert revoke.call_count == 1
+
+
+def test_marker_only_takes_terminal_runs_out_of_recovery(
+    db_session: Session, flow: models.Flow
+) -> None:
+    """A live run with the marker text is still recovered; claims agree."""
+    stopped = _stopped_run(db_session, flow.id)
+    crud_flow_execution.abandon_unverified_stop(
+        db_session, execution_id=stopped.id, attempts=5
+    )
+    running = _stopped_run(db_session, flow.id)
+    running.status = "RUNNING"
+    running.stop_reason = stopped.stop_reason
+    db_session.commit()
+    db_session.refresh(stopped)
+    assert stopped.stop_confirmed_at is None
+    candidates = _candidate_ids(db_session)
+    assert stopped.id not in candidates
+    assert running.id in candidates
+    assert (
+        crud_flow_execution.claim_execution(
+            db_session, execution_id=stopped.id, worker_id="worker-a"
+        )
+        is None
+    )

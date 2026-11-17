@@ -3303,6 +3303,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if commit:
             db.commit()
 
+    #: Written to ``stop_reason`` by :meth:`abandon_unverified_stop`. A
+    #: terminal row carrying it is out of recovery with its stop unconfirmed.
+    RECOVERY_EXHAUSTED_MARKER = "recovery exhausted, termination not verified"
+
     ACTIVE_ORCHESTRATOR_STATUSES = (
         "PENDING",
         "INITIALIZING",
@@ -4397,29 +4401,33 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if commit:
             db.commit()
 
-    def settle_unverified_stop(
+    def abandon_unverified_stop(
         self,
         db: Session,
         *,
         execution_id: Any,
-        reason: str,
+        attempts: int,
     ) -> None:
-        """Take a terminal run out of recovery without termination evidence.
+        """Take a terminal run out of recovery without claiming termination.
 
         Only the recovery bound calls this, after repeated attempts could not
-        confirm the stop. ``stop_confirmed_at`` is what removes the row from
-        the recovery set, so it is written, but ``reason`` is appended to
-        ``stop_reason`` so the row says that nobody saw the runtime end.
+        confirm the stop. ``stop_confirmed_at`` stays NULL, because nobody saw
+        the runtime end. :data:`RECOVERY_EXHAUSTED_MARKER` is appended to
+        ``stop_reason`` instead, and the recovery predicate skips a terminal
+        row that carries it, so the row leaves recovery while still reading
+        as unconfirmed.
         """
-        from datetime import timezone
-
+        reason = (
+            f"{self.RECOVERY_EXHAUSTED_MARKER} after {int(attempts)} attempts; "
+            "operator inspection required"
+        )
         reason_value = case(
             (
                 func.coalesce(models.FlowExecution.stop_reason, "") == "",
                 reason,
             ),
-            # Trim the earlier reason, never the marker: the marker is the
-            # only record that nobody saw the runtime end.
+            # Trim the earlier reason, never the marker: the predicate and
+            # the operator both read it.
             else_=func.left(
                 models.FlowExecution.stop_reason, max(0, 500 - len(reason) - 2)
             )
@@ -4431,11 +4439,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             models.FlowExecution.stop_requested_at.isnot(None),
             models.FlowExecution.stop_confirmed_at.is_(None),
             models.FlowExecution.status.in_(self.TERMINAL_EXECUTION_STATUSES),
+            ~func.coalesce(models.FlowExecution.stop_reason, "").contains(
+                self.RECOVERY_EXHAUSTED_MARKER
+            ),
         ).update(
-            {
-                models.FlowExecution.stop_confirmed_at: datetime.now(timezone.utc),
-                models.FlowExecution.stop_reason: reason_value,
-            },
+            {models.FlowExecution.stop_reason: reason_value},
             synchronize_session=False,
         )
         db.commit()
@@ -4573,6 +4581,14 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 models.FlowExecution.stop_requested_at.isnot(None),
                 models.FlowExecution.stop_confirmed_at.is_(None),
                 models.FlowExecution.agent_session_reference.isnot(None),
+                # A terminal run the recovery bound gave up on stays
+                # unconfirmed but is no longer recovered.
+                or_(
+                    ~models.FlowExecution.status.in_(cls.TERMINAL_EXECUTION_STATUSES),
+                    ~func.coalesce(models.FlowExecution.stop_reason, "").contains(
+                        cls.RECOVERY_EXHAUSTED_MARKER
+                    ),
+                ),
             ),
         )
 

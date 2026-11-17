@@ -68,14 +68,6 @@ def _retire_runtime_credentials(db: Session, execution: models.FlowExecution) ->
     )
 
 
-#: Written to ``stop_reason`` when the bound settles a stop. The row leaves
-#: recovery, but the reason says plainly that termination was not observed.
-RECOVERY_EXHAUSTED_REASON = (
-    "termination not verified: recovery gave up after {attempts} attempts; "
-    "operator inspection required"
-)
-
-
 class ExecutionRecoveryService:
     """Recovers and resumes monitoring for orphaned flow executions."""
 
@@ -316,8 +308,9 @@ class ExecutionRecoveryService:
         A terminal run is only a candidate because its stop was never
         confirmed. Its claim does not reset the re-dispatch counter, so the
         counter measures attempts that ended without confirming the stop.
-        Past the bound the stop is confirmed here, with one ERROR line naming
-        the execution, so a case the resume path does not handle costs a few
+        Past the bound the row is taken out of recovery with its stop still
+        unconfirmed and marked as abandoned, with one ERROR line naming the
+        execution, so a case the resume path does not handle costs a few
         attempts instead of a publish every pass forever.
 
         Returns:
@@ -335,10 +328,8 @@ class ExecutionRecoveryService:
                 keep.append(execution)
                 continue
             try:
-                crud_flow_execution.settle_unverified_stop(
-                    db,
-                    execution_id=execution.id,
-                    reason=RECOVERY_EXHAUSTED_REASON.format(attempts=attempts),
+                crud_flow_execution.abandon_unverified_stop(
+                    db, execution_id=execution.id, attempts=attempts
                 )
                 # Recovery gives up on the runtime, not on its credentials:
                 # a runtime that may still be alive must not keep a valid
