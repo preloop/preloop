@@ -10,7 +10,14 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
-from ci_receipt import ALWAYS, JOB_PATHS, SCANNERS, timings, validate  # noqa: E402
+from ci_receipt import (  # noqa: E402
+    ALWAYS,
+    JOB_PATHS,
+    SCANNERS,
+    fetch_jobs,
+    timings,
+    validate,
+)
 from ci_refresh_durations import read_durations  # noqa: E402
 
 
@@ -111,3 +118,16 @@ def test_fork_prs_may_skip_the_secret_bound_claude_leaf() -> None:
     validate(result, "pull_request", fork=True)
     with pytest.raises(ValueError):
         validate(result, "pull_request")
+
+
+def test_timing_fetch_failure_does_not_gate_the_aggregate() -> None:
+    """An unreadable jobs API leaves an incomplete receipt, not a red CI check."""
+
+    class Failing:
+        def pages(self, path: str, key: str = "") -> list:
+            raise RuntimeError(f"GitHub GET {path} failed (403)")
+
+    jobs, error = fetch_jobs(Failing(), "1")  # type: ignore[arg-type]
+    assert jobs == []
+    assert error and "403" in error
+    assert timings(jobs)["jobs"] == []

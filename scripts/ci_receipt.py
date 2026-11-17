@@ -124,6 +124,27 @@ def timings(jobs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def fetch_jobs(api: GitHub, run_id: str) -> tuple[list[dict[str, Any]], str | None]:
+    """Read this run's jobs for the timing receipt, without gating on it.
+
+    The pass/fail decision is made by ``validate`` from ``needs``; timings are
+    evidence only, so an API failure is recorded and warned about instead of
+    failing the aggregate check.
+
+    Args:
+        api: Repository API client.
+        run_id: Workflow run id.
+
+    Returns:
+        The job rows (empty on failure) and the error text, if any.
+    """
+    try:
+        return api.pages(f"actions/runs/{run_id}/jobs", "jobs"), None
+    except RuntimeError as exc:
+        print(f"::warning::timing receipt incomplete: {exc}")
+        return [], str(exc)
+
+
 def main() -> None:
     """Fail closed and upload an immutable candidate/timing receipt."""
     needs = json.loads(os.environ["CI_NEEDS"])
@@ -134,9 +155,10 @@ def main() -> None:
     )
     api = GitHub(os.environ["GITHUB_REPOSITORY"])
     selection = json.loads(Path("ci-selection.json").read_text())
-    jobs = api.pages(f"actions/runs/{os.environ['GITHUB_RUN_ID']}/jobs", "jobs")
+    jobs, timings_error = fetch_jobs(api, os.environ["GITHUB_RUN_ID"])
     receipt = {
         **selection,
+        "timings_error": timings_error,
         **timings(jobs),
         "validated_at": datetime.now(timezone.utc).isoformat(),
         "fast_green_at": next(

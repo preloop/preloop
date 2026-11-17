@@ -42,7 +42,9 @@ class GitHub:
             check=False,
         )
         if result.returncode:
-            raise RuntimeError(f"GitHub {method} failed; no raw response logged")
+            status = re.search(r"HTTP (\d{3})", result.stderr)
+            code = status.group(1) if status else f"exit {result.returncode}"
+            raise RuntimeError(f"GitHub {method} {path} failed ({code})")
         return json.loads(result.stdout) if result.stdout.strip() else None
 
     def pages(self, path: str, key: str = "") -> list[dict[str, Any]]:
