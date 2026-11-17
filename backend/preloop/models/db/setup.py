@@ -2,15 +2,54 @@
 
 import logging
 import os
+import re
 import subprocess
 from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from preloop.models.migration_runtime import sqlstate_of
+
 from .session import get_engine, redact_secrets_in_text
 
 logger = logging.getLogger(__name__)
+
+
+def _migration_error_type(stderr: str) -> str:
+    """Recognize fixed exception names without returning diagnostic text.
+
+    Args:
+        stderr: Captured Alembic diagnostics.
+
+    Returns:
+        A known driver or SQLAlchemy exception name, or ``unknown``.
+    """
+    for error_type in (
+        "InvalidPassword",
+        "InvalidAuthorizationSpecification",
+        "InvalidCatalogName",
+        "UndefinedTable",
+        "UndefinedColumn",
+        "DuplicateTable",
+        "DuplicateColumn",
+        "InsufficientPrivilege",
+        "UniqueViolation",
+        "ForeignKeyViolation",
+        "NotNullViolation",
+        "CheckViolation",
+        "LockNotAvailable",
+        "QueryCanceled",
+        "ConnectionException",
+        "OperationalError",
+        "ProgrammingError",
+        "IntegrityError",
+        "DataError",
+        "SQLAlchemyError",
+    ):
+        if re.search(rf"\b{error_type}\b", stderr):
+            return error_type
+    return "unknown"
 
 
 def setup_database(database_url: Optional[str] = None) -> None:
@@ -31,7 +70,9 @@ def setup_database(database_url: Optional[str] = None) -> None:
                 logger.info("PGVector extension created successfully")
             except Exception as e:
                 logger.warning(
-                    f"Failed to create vector extension: {redact_secrets_in_text(type(e).__name__, database_url)}"
+                    "Failed to create vector extension: error_type=%s sqlstate=%s",
+                    type(e).__name__,
+                    sqlstate_of(e) or "unknown",
                 )
 
         # Get the models directory (one level up from db/)
@@ -51,13 +92,20 @@ def setup_database(database_url: Optional[str] = None) -> None:
             stderr = redact_secrets_in_text(
                 result.stderr, database_url or os.getenv("DATABASE_URL")
             )
-            logger.error("Alembic migration failed: stderr_bytes=%s", len(stderr))
+            logger.error(
+                "Alembic migration failed: exit_code=%s error_type=%s stderr_bytes=%s",
+                result.returncode,
+                _migration_error_type(stderr),
+                len(stderr.encode("utf-8")),
+            )
             raise RuntimeError(f"Alembic migration failed: {stderr}")
 
         logger.info("Database schema created successfully via Alembic")
     except SQLAlchemyError as e:
         logger.error(
-            f"Error setting up database: {redact_secrets_in_text(type(e).__name__, database_url or os.getenv('DATABASE_URL'))}"
+            "Error setting up database: error_type=%s sqlstate=%s",
+            type(e).__name__,
+            sqlstate_of(e) or "unknown",
         )
         raise
 
@@ -84,7 +132,12 @@ def reset_database(database_url: Optional[str] = None) -> None:
             stderr = redact_secrets_in_text(
                 result.stderr, database_url or os.getenv("DATABASE_URL")
             )
-            logger.error("Alembic downgrade failed: stderr_bytes=%s", len(stderr))
+            logger.error(
+                "Alembic downgrade failed: exit_code=%s error_type=%s stderr_bytes=%s",
+                result.returncode,
+                _migration_error_type(stderr),
+                len(stderr.encode("utf-8")),
+            )
             raise RuntimeError(f"Alembic downgrade failed: {stderr}")
 
         logger.info("Database schema dropped successfully")
@@ -93,7 +146,9 @@ def reset_database(database_url: Optional[str] = None) -> None:
         setup_database(database_url)
     except SQLAlchemyError as e:
         logger.error(
-            f"Error resetting database: {redact_secrets_in_text(type(e).__name__, database_url or os.getenv('DATABASE_URL'))}"
+            "Error resetting database: error_type=%s sqlstate=%s",
+            type(e).__name__,
+            sqlstate_of(e) or "unknown",
         )
         raise
 

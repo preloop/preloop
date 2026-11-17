@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import Session, sessionmaker
 
+from preloop.models.migration_runtime import sqlstate_of
+
 from .pool_diagnostics import install_pool_hold_diagnostics
 from .vector_types import check_pgvector_extension, install_pgvector_extension
 
@@ -283,7 +285,11 @@ def get_engine(database_url: Optional[str] = None):
         return _engine
     except (ImportError, SQLAlchemyError) as e:
         safe_error = redact_secrets_in_text(e, url)
-        logger.error("Database connection failed: error_type={}", type(e).__name__)
+        logger.error(
+            "Database connection failed: error_type={} sqlstate={}",
+            type(e).__name__,
+            sqlstate_of(e) or "unknown",
+        )
     # Raised outside the except block so the original error, whose message
     # may quote the URL, is neither the cause nor the context of this one.
     raise Exception(f"Database connection failed: {safe_error}")
@@ -469,7 +475,9 @@ def get_async_engine(database_url: Optional[str] = None) -> AsyncEngine:
     except (ImportError, SQLAlchemyError) as e:
         safe_error = redact_secrets_in_text(e, url)
         logger.error(
-            "Async database connection failed: error_type={}", type(e).__name__
+            "Async database connection failed: error_type={} sqlstate={}",
+            type(e).__name__,
+            sqlstate_of(e) or "unknown",
         )
     # Raised outside the except block so the original error, whose message
     # may quote the URL, is neither the cause nor the context of this one.

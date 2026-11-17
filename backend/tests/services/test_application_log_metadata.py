@@ -538,8 +538,15 @@ def test_unscoped_authentication_drops_unrecognized_codes(
 
 
 @pytest.mark.parametrize("operation", ["setup_database", "reset_database"])
+@pytest.mark.parametrize(
+    "error_type",
+    ["InvalidPassword", "InvalidCatalogName", "ProgrammingError", "unknown"],
+)
 def test_migration_failure_omits_redacted_stderr_content(
-    caplog: pytest.LogCaptureFixture, mocker: MockerFixture, operation: str
+    caplog: pytest.LogCaptureFixture,
+    mocker: MockerFixture,
+    operation: str,
+    error_type: str,
 ) -> None:
     """Migration stderr remains outside logs after URL credential redaction."""
     from preloop.models.db import setup
@@ -549,11 +556,13 @@ def test_migration_failure_omits_redacted_stderr_content(
     mocker.patch.object(
         setup.subprocess,
         "run",
-        return_value=SimpleNamespace(returncode=1, stderr=f"Invalid value: {MARKER}"),
+        return_value=SimpleNamespace(returncode=1, stderr=f"{error_type}: {MARKER}"),
     )
     with pytest.raises(RuntimeError, match=MARKER):
         getattr(setup, operation)("postgresql://example:password@example.com/example")
     assert_metadata_only(caplog)
+    assert f"error_type={error_type}" in caplog.text
+    assert "exit_code=1" in caplog.text
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -561,14 +570,19 @@ def test_connection_failure_omits_redacted_exception_content(
     mocker: MockerFixture, asynchronous: bool
 ) -> None:
     """Connection diagnostics preserve the raised error outside log records."""
-    from sqlalchemy.exc import SQLAlchemyError
+    from sqlalchemy.exc import OperationalError
     from preloop.models.db import session
+
+    class DriverError(RuntimeError):
+        """Synthetic authentication error with a structured driver code."""
+
+        sqlstate = "28P01"
 
     mocker.patch.object(session, "_async_engine" if asynchronous else "_engine", None)
     mocker.patch.object(
         session,
         "create_async_engine" if asynchronous else "create_engine",
-        side_effect=SQLAlchemyError(MARKER),
+        side_effect=OperationalError("CONNECT", {"note": MARKER}, DriverError(MARKER)),
     )
     messages: list = []
     sink = session.logger.add(messages.append, format="{message}", level="INFO")
@@ -581,7 +595,8 @@ def test_connection_failure_omits_redacted_exception_content(
     assert messages
     assert all(MARKER not in str(message) for message in messages)
     assert all(message.record["exception"] is None for message in messages)
-    assert "SQLAlchemyError" in str(messages[-1])
+    assert "OperationalError" in str(messages[-1])
+    assert "sqlstate=28P01" in str(messages[-1])
 
 
 def test_migration_retry_logs_sqlstate_without_error_text(
