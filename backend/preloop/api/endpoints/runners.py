@@ -852,6 +852,10 @@ async def persist_runner_logs(
         or sum(len(line.encode("utf-8")) for line in lines) > 4 * 1024 * 1024
     ):
         raise ValueError("Invalid runner log batch")
+    from preloop.models.crud.execution_credentials import for_execution
+
+    masker = await run_in_threadpool(for_execution, db, execution_id)
+    lines = masker.mask(lines)
     identity = UUID(batch_id) if batch_id else uuid4()
     entries = [
         (

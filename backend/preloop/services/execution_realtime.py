@@ -2,6 +2,8 @@
 
 import logging
 
+from sqlalchemy.orm import Session
+
 from preloop.models.crud import execution_realtime as crud_realtime
 from preloop.services.db_executor import run_db_async, run_db_sync
 
@@ -48,44 +50,49 @@ LIFECYCLE_FIELDS = (
 MAX_LIFECYCLE_BYTES = 8192
 
 
-def stamp_execution_event(event: dict) -> dict:
-    """Allocate an authoritative cursor for a synchronous publisher."""
-    try:
-        seq, lifecycle_seq = run_db_sync(
-            lambda db: crud_realtime.allocate_sequence(
-                db,
-                event["execution_id"],
-                lifecycle=event.get("type") in LIFECYCLE_TYPES,
-            )
-        )
-    except Exception:
-        return _unsequenced(event)
+def _stamp(db: Session, event: dict) -> dict:
+    """Mask an event before allocating its delivery cursor."""
+    from preloop.models.crud.execution_credentials import for_execution
+
+    event = for_execution(db, event["execution_id"]).mask(event)
+    seq, lifecycle_seq = crud_realtime.allocate_sequence(
+        db,
+        event["execution_id"],
+        lifecycle=event.get("type") in LIFECYCLE_TYPES,
+    )
     return {
         **event,
         "seq": seq,
         "lifecycle_seq": lifecycle_seq,
         "sequence_domain": "execution",
     }
+
+
+def _resync_without_output(event: dict) -> dict:
+    """Request resync without forwarding output when masking cannot be checked."""
+    return _unsequenced(
+        {
+            key: event[key]
+            for key in ("execution_id", "flow_id", "account_id", "type", "timestamp")
+            if key in event
+        }
+    )
+
+
+def stamp_execution_event(event: dict) -> dict:
+    """Mask and allocate an authoritative cursor for a synchronous publisher."""
+    try:
+        return run_db_sync(lambda db: _stamp(db, event))
+    except Exception:
+        return _resync_without_output(event)
 
 
 async def stamp_execution_event_async(event: dict) -> dict:
-    """Allocate without blocking an async publisher's event loop."""
+    """Mask and allocate without blocking an async publisher's event loop."""
     try:
-        seq, lifecycle_seq = await run_db_async(
-            lambda db: crud_realtime.allocate_sequence(
-                db,
-                event["execution_id"],
-                lifecycle=event.get("type") in LIFECYCLE_TYPES,
-            )
-        )
+        return await run_db_async(lambda db: _stamp(db, event))
     except Exception:
-        return _unsequenced(event)
-    return {
-        **event,
-        "seq": seq,
-        "lifecycle_seq": lifecycle_seq,
-        "sequence_domain": "execution",
-    }
+        return _resync_without_output(event)
 
 
 def lifecycle_event(event: dict) -> dict | None:

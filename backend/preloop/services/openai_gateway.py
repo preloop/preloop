@@ -1205,10 +1205,29 @@ def gateway_database_scope(operation: Callable[..., Any]) -> Callable[..., Any]:
     @wraps(operation)
     def scoped(self: OpenAIGatewayService, *args: Any, **kwargs: Any) -> Any:
         self._live_request_id = None
+        masker = None
         try:
+            from preloop.models.crud.execution_credentials import for_execution
+
+            key = getattr(self.auth_context, "api_key", None)
+            context = getattr(key, "context_data", None)
+            execution_id = (
+                context.get("flow_execution_id") if isinstance(context, dict) else None
+            )
+            if execution_id:
+                masker = for_execution(self.db, execution_id)
+                self._execution_credential_masker = masker
+                args = masker.mask(args)
+                kwargs = masker.mask(kwargs)
             result = operation(self, *args, **kwargs)
             self.release_db_for_wait()
             return result
+        except ModelGatewayAPIError as exc:
+            if masker is not None:
+                for name, value in vars(exc).items():
+                    setattr(exc, name, masker.mask(value))
+                exc.args = masker.mask(exc.args)
+            raise
         finally:
             self._close_owned_db()
 
@@ -11416,6 +11435,13 @@ class OpenAIGatewayService:
         accumulated_output_text: Optional[str] = None,
     ) -> None:
         """Persist one usage fact for a gateway request."""
+        masker = getattr(self, "_execution_credential_masker", None)
+        if masker is not None:
+            error_detail = masker.mask(error_detail)
+            request_payload = masker.mask(request_payload)
+            response_payload = masker.mask(response_payload)
+            upstream_response = masker.mask(upstream_response)
+            accumulated_output_text = masker.mask(accumulated_output_text)
         if error_class is None and status_code >= 400:
             error_class = classify_recorded_error(status_code, error_detail)
         runtime = resolve_ai_model_runtime(ai_model)

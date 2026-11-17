@@ -225,6 +225,9 @@ def refresh_publication_credential(
         or getattr(execution, "stop_requested_at", None)
     ):
         raise HTTPException(409, "publication_execution_closed")
+    from preloop.models.crud.execution_credentials import register
+
+    register(db, execution_id, [lease.token])
     response.headers["Cache-Control"] = "no-store"
     return {
         "token": lease.token,

@@ -99,7 +99,10 @@ func dockerRunArgs(image string, env map[string]string, opts runnerDockerOpts) [
 		// prove removal. SIGKILL leftovers are reaped at runner startup.
 		args = []string{"run", "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=2", "--name", p.agentName, "--label", "preloop.publication_execution=" + p.executionID, "--label", "preloop.publication_nonce=" + p.spec.Nonce, "--mount", "type=volume,src=" + p.exportVolume + ",dst=/preloop-publication-output", "--cap-drop=ALL", "--security-opt=no-new-privileges"}
 	}
-	if opts.Launch && !opts.PreserveEntrypoint {
+	bootstrap := env["PRELOOP_OUTPUT_BOOTSTRAP"]
+	if opts.Launch && bootstrap != "" {
+		args = append(args, "--entrypoint", "python3")
+	} else if opts.Launch && !opts.PreserveEntrypoint {
 		args = append(args, "--entrypoint", "/bin/bash")
 	}
 	if opts.MountDockerSocket {
@@ -133,6 +136,13 @@ func dockerRunArgs(image string, env map[string]string, opts runnerDockerOpts) [
 	}
 	args = append(args, image)
 	if opts.Launch {
+		if bootstrap != "" {
+			entrypoint := "/bin/bash"
+			if opts.PreserveEntrypoint {
+				entrypoint = "/opt/entrypoint.sh"
+			}
+			args = append(args, "-c", bootstrap, entrypoint)
+		}
 		args = append(args, "-c", runnerBootstrap)
 	}
 	return args

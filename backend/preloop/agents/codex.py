@@ -329,6 +329,14 @@ class CodexAgent(ContainerAgentExecutor):
             },
         }
 
+        from preloop.agents.credential_bootstrap import bootstrap_source
+
+        container_config["Entrypoint"] = [
+            "python3",
+            "-c",
+            bootstrap_source(),
+            "/opt/entrypoint.sh",
+        ]
         self._guard_docker_launch_payload(
             container_config, what=f"{self.agent_type} container for {execution_id}"
         )
@@ -870,6 +878,7 @@ exit $CODEX_EXIT_CODE
         # The entrypoint sets up the environment and then executes: bash "$@"
         # So our args become: bash -c "script"
         execution_context["_container_args"] = ["-c", script]
+        execution_context["_credential_bootstrap_entrypoint"] = "/opt/entrypoint.sh"
         # Don't set _container_command - let the image's entrypoint run
 
         # Prepare Codex-specific environment variables and store in context
@@ -1183,7 +1192,7 @@ done
 
         For OpenAI models, generates a standard config.
         For custom models, generates a custom_provider section with base_url,
-        env_key, and wire_api so Codex knows how to reach the provider.
+        file-backed headers, and wire_api so Codex can reach the provider.
         Preloop MCP is attached only when ``attach_mcp`` is true. An empty
         flow allowlist passes false so Codex does not open an HTTP session.
 
@@ -1225,7 +1234,7 @@ done
         mcp_server = (
             "[mcp_servers.preloop]\n"
             'url = "$PRELOOP_MCP_URL"\n'
-            'bearer_token_env_var = "PRELOOP_API_TOKEN"\n'
+            "http_headers = { Authorization = $PRELOOP_CODEX_MCP_AUTH }\n"
             # Optional MCP servers get only a short initial-catalog grace
             # period in Codex. A flow that requested tools must wait for them
             # or fail startup rather than silently run without those tools.
@@ -1267,8 +1276,8 @@ done
             auth_block = f"""{catalog_block}# Create auth.json with provider API key
 cat > ~/.codex/auth.json << EOF
 {{
-  "{env_key}": "${env_key}",
-  "OPENAI_API_KEY": "$OPENAI_API_KEY"
+  "{env_key}": $PRELOOP_CODEX_PROVIDER_KEY,
+  "OPENAI_API_KEY": $PRELOOP_CODEX_OPENAI_KEY
 }}
 EOF
 
@@ -1279,7 +1288,7 @@ model = "{model}"
 {lock_lines}{limit_lines}{catalog_line}{rmcp_line}[model_providers.{provider_key}]
 name = "{model_provider.title()}"
 {base_url_line}
-env_key = "{env_key}"
+http_headers = {{ Authorization = $PRELOOP_CODEX_PROVIDER_AUTH }}
 wire_api = "{wire_api}"
 request_max_retries = 4
 stream_max_retries = 5
@@ -1292,7 +1301,7 @@ stream_idle_timeout_ms = {stream_idle_timeout_seconds * 1000}
             auth_block = f"""# Create auth.json with OpenAI API key
 cat > ~/.codex/auth.json << EOF
 {{
-  "OPENAI_API_KEY": "$OPENAI_API_KEY"
+  "OPENAI_API_KEY": $PRELOOP_CODEX_OPENAI_KEY
 }}
 EOF
 
@@ -1301,7 +1310,47 @@ cat > ~/.codex/config.toml << EOF
 model = "{model}"
 {lock_lines}{limit_lines}{rmcp_line}{mcp_server}EOF"""
 
-        return auth_block
+        shell_policy = """
+[shell_environment_policy]
+exclude = ["*TOKEN*", "*KEY*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*", "*CAPABILITY*", "MCP_CONFIG_JSON"]
+"""
+        encoded_credentials = ""
+        for variable, source, prefix in (
+            ("PRELOOP_CODEX_OPENAI_KEY", "OPENAI_API_KEY", ""),
+            (
+                "PRELOOP_CODEX_PROVIDER_KEY",
+                env_key if is_custom else "OPENAI_API_KEY",
+                "",
+            ),
+            (
+                "PRELOOP_CODEX_PROVIDER_AUTH",
+                env_key if is_custom else "OPENAI_API_KEY",
+                "Bearer ",
+            ),
+            ("PRELOOP_CODEX_MCP_AUTH", "PRELOOP_API_TOKEN", "Bearer "),
+        ):
+            encoder = (
+                "import json, os; print(json.dumps("
+                + repr(prefix)
+                + " + os.environ.get("
+                + repr(source)
+                + ", '')))"
+            )
+            encoded_credentials += f"{variable}=$(python3 -c {shlex.quote(encoder)})\n"
+        # This also applies to resumed sessions and runs without native hooks.
+        return (
+            "umask 077\n"
+            + encoded_credentials
+            + auth_block
+            + "\nprintf '%s\n' "
+            + shlex.quote(shell_policy)
+            + " >> ~/.codex/config.toml\n"
+            + "chmod 600 ~/.codex/auth.json ~/.codex/config.toml\n"
+            + "unset OPENAI_API_KEY PRELOOP_MODEL_GATEWAY_TOKEN "
+            + (env_key if is_custom else "")
+            + " PRELOOP_CODEX_OPENAI_KEY PRELOOP_CODEX_PROVIDER_KEY "
+            + "PRELOOP_CODEX_PROVIDER_AUTH PRELOOP_CODEX_MCP_AUTH\n"
+        )
 
     async def _prepare_environment(
         self, execution_context: Dict[str, Any]

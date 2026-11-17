@@ -1858,6 +1858,22 @@ class ContainerAgentExecutor(AgentExecutor):
                 ).items()
             )
 
+        bootstrap_entrypoint = execution_context.get("_credential_bootstrap_entrypoint")
+        if bootstrap_entrypoint:
+            from preloop.agents.credential_bootstrap import bootstrap_source
+
+            command = ["python3", "-c", bootstrap_source(), bootstrap_entrypoint]
+        elif command and args:
+            from preloop.agents.credential_bootstrap import bootstrap_source
+
+            invocation = list(command) + list(args)
+            command = ["python3", "-c", bootstrap_source(), "/bin/bash"]
+            args = (
+                invocation[1:]
+                if invocation[0] in ("bash", "/bin/bash")
+                else ["-c", shlex.join(invocation)]
+            )
+
         # Run as root by default — codex-universal installs runtimes (nvm, pyenv,
         # cargo, phpenv) under /root and hardcodes /root/.nvm/nvm.sh in /etc/profile.
         # Set AGENT_RUN_AS_NON_ROOT=true to use UID 1000 (for images that support it).
@@ -2409,7 +2425,10 @@ class ContainerAgentExecutor(AgentExecutor):
                 container_id=info.get("Id") or session_reference,
                 exit_code=exit_code,
                 reason="OOMKilled" if state.get("OOMKilled") is True else None,
-                message=scrub_secrets(str(state.get("Error") or ""))[:400] or None,
+                message=self._mask_execution_output(
+                    scrub_secrets(str(state.get("Error") or ""))
+                )[:400]
+                or None,
                 started_at=_termination_timestamp(state.get("StartedAt")),
                 finished_at=_termination_timestamp(state.get("FinishedAt")),
                 oom_killed=state.get("OOMKilled") is True,
@@ -2561,7 +2580,9 @@ class ContainerAgentExecutor(AgentExecutor):
                                 pod_name=pod.metadata.name,
                                 exit_code=exit_code,
                                 reason=terminated.reason,
-                                message=scrub_secrets(terminated.message or "")[:400]
+                                message=self._mask_execution_output(
+                                    scrub_secrets(terminated.message or "")
+                                )[:400]
                                 or None,
                                 signal=terminated.signal,
                                 started_at=_termination_timestamp(
@@ -2814,6 +2835,19 @@ class ContainerAgentExecutor(AgentExecutor):
             env[name] = value
         command = list(container_config.get("Entrypoint") or [])
         args = list(container_config.get("Cmd") or [])
+        if hasattr(self, "_credential_masker") and command[:2] != ["python3", "-c"]:
+            from preloop.agents.credential_bootstrap import bootstrap_source
+
+            invocation = command + args
+            if invocation:
+                command = ["python3", "-c", bootstrap_source(), "/bin/bash"]
+                args = (
+                    invocation[1:]
+                    if invocation[0] in ("bash", "/bin/bash")
+                    else ["-c", shlex.join(invocation)]
+                )
+                container_config["Entrypoint"] = command
+                container_config["Cmd"] = args
         self._guard_launch_payload(
             command=command or None, args=args or None, env=env, what=what
         )
@@ -3732,8 +3766,10 @@ class ContainerAgentExecutor(AgentExecutor):
             List of log lines, with secrets redacted
         """
         if self.use_kubernetes:
-            return scrub_secret_lines(
-                await self._get_kubernetes_logs(session_reference, tail)
+            return self._mask_execution_output(
+                scrub_secret_lines(
+                    await self._get_kubernetes_logs(session_reference, tail)
+                )
             )
 
         try:
@@ -3751,13 +3787,19 @@ class ContainerAgentExecutor(AgentExecutor):
                     decoded_logs.append(line.decode("utf-8", errors="replace"))
                 else:
                     decoded_logs.append(line)
-            return scrub_secret_lines(decoded_logs)
+            return self._mask_execution_output(scrub_secret_lines(decoded_logs))
 
         except DockerError as e:
             self.logger.error(
                 f"Failed to get logs for container {session_reference}: {type(e).__name__}"
             )
             return []
+
+    def _mask_execution_output(self, value: Any) -> Any:
+        """Mask this adapter's captured text before parsing or forwarding."""
+        from preloop.utils.execution_credentials import CredentialMasker
+
+        return getattr(self, "_credential_masker", CredentialMasker()).mask(value)
 
     async def stream_logs(self, session_reference: str):
         """
@@ -3775,10 +3817,10 @@ class ContainerAgentExecutor(AgentExecutor):
         """
         if self.use_kubernetes:
             async for line in self._stream_kubernetes_logs(session_reference):
-                yield scrub_secrets(line)
+                yield self._mask_execution_output(scrub_secrets(line))
         else:
             async for line in self._stream_docker_logs(session_reference):
-                yield scrub_secrets(line)
+                yield self._mask_execution_output(scrub_secrets(line))
 
     async def _stream_docker_logs(self, container_id: str):
         """
@@ -4102,6 +4144,15 @@ class ContainerAgentExecutor(AgentExecutor):
                 profile_env(self.environment_profile, kubernetes=self.use_kubernetes)
             )
         env.update(self._git_credential_env(execution_context))
+        from preloop.utils.execution_credentials import (
+            CredentialMasker,
+            credential_values,
+        )
+
+        self._credential_masker = CredentialMasker.from_values(credential_values(env))
+        register = execution_context.get("_register_credentials")
+        if register is not None:
+            register(env)
         return env
 
     def _prepare_init_commands(self, execution_context: Dict[str, Any]) -> str:

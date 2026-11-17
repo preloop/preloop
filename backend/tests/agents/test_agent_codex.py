@@ -343,6 +343,8 @@ class TestCodexAuthConfig:
         config_text = script.split("cat > ~/.codex/config.toml << EOF\n", 1)[1]
         config_text = config_text.split("\nEOF", 1)[0]
         config_text = config_text.replace("$MCP_TOOL_TIMEOUT_SEC", "600")
+        for variable in ("PRELOOP_CODEX_MCP_AUTH", "PRELOOP_CODEX_PROVIDER_AUTH"):
+            config_text = config_text.replace("$" + variable, '"Bearer synthetic-key"')
         server = tomllib.loads(config_text)["mcp_servers"]["preloop"]
         assert server.get("required") is True
         assert server["startup_timeout_sec"] == CODEX_MCP_STARTUP_TIMEOUT_SECONDS

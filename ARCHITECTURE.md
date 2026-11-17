@@ -4,6 +4,11 @@ Preloop is an open-source, responsible AI automation platform. It can proxy tool
 
 ARCHITECTURE.md is the map. Read one chapter under `docs/architecture/` for the subsystem you are changing. Do not load every chapter for context.
 
+Execution credential fingerprints are shared by output persistence and the model
+gateway. Container and runner capture mask the same issued values before delivery;
+see [agent isolation](docs/security/agent-isolation.md) for credential visibility
+and lifetime limits.
+
 Policy variable references are resolved by the CLI from the operator's local
 environment before upload. API validation, application, and version restore
 preserve submitted values; the shared policy applier does no environment

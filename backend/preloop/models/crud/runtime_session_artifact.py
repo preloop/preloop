@@ -216,6 +216,16 @@ def store(
             ``storage_budget_exhausted`` to HTTP 507 for recordings and to a
             rejected row for screenshots.
     """
+    from preloop.models.crud.execution_credentials import for_session
+
+    masker = for_session(db, runtime_session_id)
+    plaintext = masker.mask(plaintext)
+    manifest = masker.mask(manifest)
+    name = masker.mask(name)
+    labels = masker.mask(labels)
+    source_ref = masker.mask(source_ref)
+    tool_name = masker.mask(tool_name)
+
     if media_timing is not None:
         from preloop.schemas.media_timing import MediaTiming
 

@@ -203,6 +203,18 @@ execution, named `Flow Execution <execution id>`:
 The key reaches the pod as `PRELOOP_API_TOKEN` (and inside `MCP_CONFIG_JSON`)
 only when the flow allows MCP servers or tools.
 
+An agent can read credentials needed by its harness and configured repository
+access. Hosted Codex reads its model and MCP authorization from private config
+files; shell commands exclude credential variables on new and resumed runs.
+The native permission hook retains its runtime token in the harness environment,
+and other harnesses may require environment-based authentication. Image setup
+runs without credential variables. Preloop masks issued credential values and
+their base64 and URL encodings in captured output, execution and session records,
+artifacts, and gateway request content bound to the same execution, using
+`[REDACTED]`. Moving a credential to a file reduces accidental output; an agent
+that can read that file can still use it. Runtime keys and artifact capabilities
+are rejected when their execution ends.
+
 The limits worth knowing:
 
 - **The key is limited to MCP scopes.** A key whose scopes are all
@@ -227,11 +239,10 @@ The limits worth knowing:
   revocation above, the generic REST dependency, the MCP endpoint and the
   model gateway refuse a flow execution key once its execution has reached
   a terminal status, so a missed revocation does not leave a live key there.
-  Parked executions keep their key. Two surfaces skip this check by design
-  and accept the key until revocation or expiry: the browser-step flush
-  (adapters finish flushing after the run ends) and the runtime routes that
-  also serve durable managed-agent credentials (agent control WebSocket and
-  operator note pull).
+  Parked executions keep their key. Browser adapters may finish flushing
+  for up to five minutes after the run ends, provided the key has not been
+  revoked or expired. Durable managed-agent session exceptions do not extend
+  execution keys on agent control or operator-note routes.
 - **The tool allow list is checked on every call.** `allowed_mcp_tools`
   limits both the tools the MCP layer lists and the tools it will run for
   the key (`backend/preloop/services/dynamic_fastmcp.py`).

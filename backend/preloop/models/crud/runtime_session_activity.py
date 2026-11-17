@@ -112,6 +112,19 @@ def _browser_step_metadata(step: BrowserStepIn) -> dict[str, Any]:
     return metadata
 
 
+def _mask_activity(db: Session, activity: models.RuntimeSessionActivity) -> None:
+    """Mask every captured field before persistence and search indexing."""
+    from preloop.models.crud.execution_credentials import for_execution, for_session
+
+    masker = (
+        for_execution(db, activity.flow_execution_id)
+        if activity.flow_execution_id
+        else for_session(db, activity.runtime_session_id)
+    )
+    for field in ("summary", "metadata_", "server_name", "tool_name"):
+        setattr(activity, field, masker.mask(getattr(activity, field)))
+
+
 class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
     """CRUD helpers for normalized runtime-session activity."""
 
@@ -185,6 +198,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             metadata_=sanitize_for_jsonb(metadata),
             timestamp=activity_timestamp,
         )
+        _mask_activity(db, db_obj)
         db.add(db_obj)
         self._touch_runtime_session_and_agent(
             db,
@@ -225,6 +239,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             metadata_=sanitize_for_jsonb({"code": code}),
             timestamp=datetime.now(timezone.utc),
         )
+        _mask_activity(db, db_obj)
         db.add(db_obj)
         if commit:
             db.commit()
@@ -271,6 +286,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             ),
             timestamp=activity_timestamp,
         )
+        _mask_activity(db, db_obj)
         db.add(db_obj)
         self._touch_runtime_session_and_agent(
             db,
@@ -375,6 +391,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             metadata_=sanitize_for_jsonb(metadata),
             timestamp=now,
         )
+        _mask_activity(db, db_obj)
         db.add(db_obj)
         db.flush()
         self._touch_runtime_session_and_agent(
@@ -458,6 +475,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         )
         savepoint = db.begin_nested()
         try:
+            _mask_activity(db, db_obj)
             db.add(db_obj)
             # Flush the insert before touching the session. A conflicting
             # key fails here, instead of as an autoflush inside the touch
@@ -621,6 +639,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             metadata_=sanitize_for_jsonb(metadata),
             timestamp=activity_timestamp,
         )
+        _mask_activity(db, db_obj)
         db.add(db_obj)
         self._touch_runtime_session_and_agent(
             db,
@@ -702,6 +721,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             metadata_=sanitize_for_jsonb(metadata),
             timestamp=activity_timestamp,
         )
+        _mask_activity(db, db_obj)
         db.add(db_obj)
         session = db.get(RuntimeSession, runtime_session_id)
         if session is not None and activity_type != "session_end":
@@ -754,7 +774,11 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             if author_auth_method is not None:
                 metadata["author_auth_method"] = author_auth_method
         activity_timestamp = timestamp or datetime.now(timezone.utc)
-        summary = message[:MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN]
+        from preloop.models.crud.execution_credentials import for_session
+
+        summary = for_session(db, runtime_session_id).mask(message)[
+            :MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN
+        ]
         db_obj = RuntimeSessionActivity(
             account_id=account_id,
             runtime_session_id=runtime_session_id,
@@ -764,6 +788,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             metadata_=sanitize_for_jsonb(metadata),
             timestamp=activity_timestamp,
         )
+        _mask_activity(db, db_obj)
         db.add(db_obj)
         self._touch_runtime_session_and_agent(
             db,
