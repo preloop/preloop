@@ -221,7 +221,10 @@ def _async_close_done(cleanup: asyncio.Future[None]) -> None:
     if not cleanup.cancelled():
         error = cleanup.exception()
         if error is not None:
-            logger.opt(exception=error).error("Async database session cleanup failed")
+            logger.error(
+                "Async database session cleanup failed: error_type={}",
+                type(error).__name__,
+            )
 
 
 async def _close_async_db_session(session: AsyncSession) -> None:
@@ -280,7 +283,7 @@ def get_engine(database_url: Optional[str] = None):
         return _engine
     except (ImportError, SQLAlchemyError) as e:
         safe_error = redact_secrets_in_text(e, url)
-        logger.error("Database connection failed: error_type=%s", type(e).__name__)
+        logger.error("Database connection failed: error_type={}", type(e).__name__)
     # Raised outside the except block so the original error, whose message
     # may quote the URL, is neither the cause nor the context of this one.
     raise Exception(f"Database connection failed: {safe_error}")
@@ -466,7 +469,7 @@ def get_async_engine(database_url: Optional[str] = None) -> AsyncEngine:
     except (ImportError, SQLAlchemyError) as e:
         safe_error = redact_secrets_in_text(e, url)
         logger.error(
-            "Async database connection failed: error_type=%s", type(e).__name__
+            "Async database connection failed: error_type={}", type(e).__name__
         )
     # Raised outside the except block so the original error, whose message
     # may quote the URL, is neither the cause nor the context of this one.

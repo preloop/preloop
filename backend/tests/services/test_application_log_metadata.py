@@ -311,10 +311,43 @@ def test_application_errors_do_not_attach_exception_payloads() -> None:
                 for name in ("log", "logging")
             ):
                 continue
+            loguru_options = [
+                keyword
+                for call in ast.walk(node.func.value)
+                if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "opt"
+                for keyword in call.keywords
+            ]
             if node.func.attr == "exception" or any(
-                k.arg == "exc_info"
+                k.arg in {"exc_info", "exception"}
                 and not (isinstance(k.value, ast.Constant) and k.value.value is False)
-                for k in node.keywords
+                for k in [*node.keywords, *loguru_options]
             ):
                 violations.append(f"{path.relative_to(source_root)}:{node.lineno}")
     assert not violations
+
+
+@pytest.mark.asyncio
+async def test_async_database_cleanup_logs_metadata() -> None:
+    """Loguru cleanup callbacks omit SQL parameters and exception payloads."""
+    import asyncio
+
+    from sqlalchemy.exc import StatementError
+
+    from preloop.models.db import session
+
+    messages: list = []
+    sink = session.logger.add(messages.append, format="{message}", level="DEBUG")
+    try:
+        future = asyncio.get_running_loop().create_future()
+        future.set_exception(
+            StatementError(MARKER, "INSERT", {"note": MARKER}, ValueError(MARKER))
+        )
+        session._async_close_done(future)
+    finally:
+        session.logger.remove(sink)
+    assert messages
+    assert all(MARKER not in str(message) for message in messages)
+    assert all(message.record["exception"] is None for message in messages)
+    assert "StatementError" in str(messages[-1])
