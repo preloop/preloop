@@ -580,7 +580,7 @@ def test_delete_mcp_server_evicts_client_and_unregisters_tools(
             "preloop.services.mcp_client_pool.get_mcp_client_pool",
             return_value=pool,
         ),
-        patch.object(mcp_http, "_mcp_server_instance", fake_mcp),
+        patch.object(mcp_http, "_dynamic_fastmcp_instance", fake_mcp),
     ):
         response = client.delete(f"/api/v1/mcp-servers/{server.id}")
     assert response.status_code == 200

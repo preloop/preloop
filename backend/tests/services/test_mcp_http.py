@@ -766,3 +766,23 @@ class TestGetMCPLifespanManager:
         manager = get_mcp_lifespan_manager()
 
         assert manager is None
+
+
+def test_setup_mcp_routes_exposes_live_fastmcp_instance(monkeypatch) -> None:
+    """Endpoints that drop wrappers must reach the instance serving /mcp."""
+    from fastapi import FastAPI
+
+    from preloop.services import mcp_http
+
+    sentinel = MagicMock()
+    monkeypatch.setattr(mcp_http, "_dynamic_fastmcp_instance", None)
+    monkeypatch.setattr(
+        "preloop.services.initialize_mcp.initialize_mcp_with_tools",
+        lambda: sentinel,
+    )
+    monkeypatch.setattr(
+        "preloop.services.dynamic_fastmcp_http.setup_dynamic_mcp_http",
+        lambda mcp: MagicMock(spec=[]),
+    )
+    mcp_http.setup_mcp_routes(FastAPI())
+    assert mcp_http._dynamic_fastmcp_instance is sentinel
