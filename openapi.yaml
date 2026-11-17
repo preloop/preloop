@@ -10095,6 +10095,27 @@ paths:
           description: Exact external grant reference
           title: Grant Reference
         description: Exact external grant reference
+      - name: error_code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 200
+          - type: 'null'
+          description: Exact upstream error code
+          title: Error Code
+        description: Exact upstream error code
+      - name: include_last_known_consent
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include last-known consent matches when consent_ref is set
+          default: false
+          title: Include Last Known Consent
+        description: Include last-known consent matches when consent_ref is set
       - name: consent_ref
         in: query
         required: false
@@ -10271,6 +10292,27 @@ paths:
           description: Exact external grant reference
           title: Grant Reference
         description: Exact external grant reference
+      - name: error_code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 200
+          - type: 'null'
+          description: Exact upstream error code
+          title: Error Code
+        description: Exact upstream error code
+      - name: include_last_known_consent
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include last-known consent matches when consent_ref is set
+          default: false
+          title: Include Last Known Consent
+        description: Include last-known consent matches when consent_ref is set
       - name: consent_ref
         in: query
         required: false
@@ -33071,7 +33113,8 @@ components:
         resolve_env:
           type: boolean
           title: Resolve Env
-          description: If true, resolve ${VAR} environment variable references
+          description: Accepted for compatibility and ignored. Variable references
+            remain literal; 'preloop policy apply' resolves them locally before upload.
           default: true
         skip_missing_servers:
           type: boolean

@@ -701,3 +701,26 @@ def test_an_older_core_total_above_count_limit_stays_exact(
         current_user=user,
     )
     assert (result.total, result.total_capped) == (50, False)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("error_code", "insufficient_scope"),
+        ("include_last_known_consent", True),
+    ],
+)
+def test_requested_evidence_filter_requires_core_support(
+    field: str, value: object
+) -> None:
+    """A rolling upgrade must not silently return unfiltered evidence."""
+
+    def legacy(*, consent_ref: str | None = None) -> None:
+        pass
+
+    with pytest.raises(HTTPException) as raised:
+        endpoints._audit_query_kwargs(legacy, consent_ref=None, **{field: value})
+    assert raised.value.status_code == 400
+    assert endpoints._audit_query_kwargs(
+        legacy, consent_ref=None, error_code=None, include_last_known_consent=False
+    ) == {"consent_ref": None}

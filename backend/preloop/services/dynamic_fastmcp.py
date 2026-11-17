@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 import httpx
 import httpx2
 from fastmcp import FastMCP
+from fastmcp.exceptions import ValidationError as FastMCPValidationError
 from fastmcp.tools import Tool
 from fastmcp.tools import ToolResult
 from mcp.types import (
@@ -584,6 +585,7 @@ class GrantDispatchSnapshot:
     upstream_name: str
     client_config: dict[str, Any]
     registry_revision: Optional[str] = None
+    grant_revision: Optional[str] = None
 
 
 _grant_dispatch_var: ContextVar[Optional[GrantDispatchSnapshot]] = ContextVar(
@@ -603,6 +605,7 @@ async def _evaluate_snapshot_grant(
 ) -> Optional[GrantResult]:
     """Check grant state for the token on the copied dispatch configuration."""
     auth = snapshot.client_config["auth_config"]
+    revision = snapshot.grant_revision
     if not isinstance(auth, dict) or auth.get("introspection") is None:
         return None
     if snapshot.client_config["auth_type"] == "oauth":
@@ -612,18 +615,31 @@ async def _evaluate_snapshot_grant(
             uuid.UUID(snapshot.client_config["server_id"])
         )
         auth = current.config
+        if revision and type(getattr(current, "version", None)) is int:
+            revision = f"{revision}:oauth:{current.version}"
         snapshot.client_config["auth_config"] = auth
     config = IntrospectionConfig.model_validate(auth["introspection"])
     auth_type = snapshot.client_config["auth_type"]
     if auth_type not in {"bearer", "oauth"}:
         raise ValueError("introspection requires bearer or OAuth authentication")
     token = auth.get("token" if auth_type == "bearer" else "access_token")
-    return await grant_introspector.evaluate(
+    result = await grant_introspector.evaluate(
         token if isinstance(token, str) else None,
         config,
         server_id=snapshot.client_config["server_id"],
         **({"force": True} if force else {}),
     )
+
+    if revision:
+        return GrantResult(
+            {
+                **result.binding,
+                "server_id": snapshot.client_config["server_id"],
+                "server_revision": revision,
+            },
+            result.deny_reason,
+        )
+    return result
 
 
 async def _prepare_grant_dispatch(
@@ -644,6 +660,11 @@ async def _prepare_grant_dispatch(
                 registry_revision=(
                     server.updated_at.isoformat()
                     if isinstance(getattr(server, "updated_at", None), datetime)
+                    else None
+                ),
+                grant_revision=(
+                    str(server.grant_revision)
+                    if isinstance(getattr(server, "grant_revision", None), uuid.UUID)
                     else None
                 ),
                 upstream_name=_upstream_tool_name(
@@ -691,10 +712,68 @@ async def _record_grant_denial(
     *,
     user_id: Optional[str] = None,
     correlation_id: Optional[str] = None,
+    user_context: Optional[UserContext] = None,
+    snapshot: Optional[GrantDispatchSnapshot] = None,
 ) -> None:
     """Record the hard grant gate through the existing policy-denial audit path."""
     from preloop.services.policy_evaluator import _log_policy_decision_async
 
+    from preloop.models.crud import crud_audit_log
+
+    if (
+        grant.deny_reason == "grant_inactive"
+        and not grant.binding.get("consent_ref")
+        and grant.binding.get("server_id")
+        and grant.binding.get("server_revision")
+    ):
+
+        def last_consent() -> Optional[str]:
+            """Read stored consent only when the call permits clear-text evidence."""
+            if _reference_only_in_scope(
+                account_id,
+                tool_name=tool_name,
+                server_name=snapshot.server_name if snapshot else None,
+                managed_agent_id=getattr(user_context, "managed_agent_id", None),
+            ):
+                return None
+            db = next(get_db())
+            try:
+                return crud_audit_log.get_last_grant_consent(
+                    db,
+                    account_id=account_id,
+                    server_id=grant.binding["server_id"],
+                    server_revision=grant.binding["server_revision"],
+                )
+            finally:
+                db.close()
+
+        try:
+            reference = await asyncio.to_thread(last_consent)
+        except Exception:
+            # Evidence lookup failure must never replace the grant refusal.
+            logger.warning("Could not read last-known consent evidence", exc_info=True)
+            reference = None
+        if reference is not None:
+            grant.binding["last_known_consent_ref"] = reference
+            bound = _grant_binding_var.get()
+            if bound is not None:
+                bound["last_known_consent_ref"] = reference
+
+    principal = (
+        {
+            name: getattr(user_context, name, None)
+            for name in (
+                "runtime_session_id",
+                "runtime_principal_type",
+                "runtime_principal_id",
+                "runtime_principal_name",
+                "api_key_id",
+                "api_key_name",
+            )
+        }
+        if user_context is not None
+        else {}
+    )
     fields = dict(
         account_id=uuid.UUID(account_id),
         tool_name=tool_name,
@@ -704,7 +783,7 @@ async def _record_grant_denial(
         tool_args={},
         user_id=uuid.UUID(user_id) if user_id else None,
         correlation_id=correlation_id,
-        extra_details={"grant": grant.binding},
+        extra_details={**principal, "grant": grant.binding},
     )
 
     if outbox_enabled():
@@ -729,6 +808,7 @@ def _proxied_exception_outcome(
     failures are written to the MCP server's ``last_error``.
     """
     from preloop.services.mcp_client_pool import MCPAuthenticationError
+    from preloop.services.external_approval import scope_refusal_detail
 
     status_code = (
         cause.status_code
@@ -741,6 +821,9 @@ def _proxied_exception_outcome(
     ) and isinstance(status_code, int):
         outcome = _WRAPPER_OUTCOME_UPSTREAM_ERROR
         code = f"http_{status_code}"
+        refusal = scope_refusal_detail(cause)
+        if refusal is not None:
+            code, reason = "insufficient_scope", refusal.reason
     else:
         outcome = TOOL_CALL_STATUS_FAILED
         code = "unavailable" if unavailable else type(cause).__name__
@@ -1235,6 +1318,8 @@ _WRAPPER_NAMESPACE_KEYS = (
     "deepcopy",
     "_prepare_grant_dispatch",
     "_record_grant_denial",
+    "GrantResult",
+    "grant_introspector",
     "param_names",
     "logger",
     "get_db",
@@ -1293,6 +1378,105 @@ _RESERVED_WRAPPER_LOCALS = (
     | _RESERVED_WRAPPER_BODY_LOCALS
     | frozenset(_WRAPPER_BODY_BUILTINS)
 )
+
+
+def _schema_fingerprint(schema: Any) -> str:
+    """Return a stable digest of a stored upstream input schema.
+
+    Args:
+        schema: The tool's ``input_schema`` (JSON-compatible, possibly None).
+
+    Returns:
+        A hex SHA-256 of the canonical JSON form.
+    """
+    canonical = json.dumps(schema or {}, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _schema_fields(schema: Any) -> tuple[frozenset[str], frozenset[str]]:
+    """Return the declared and required argument names of an input schema.
+
+    Args:
+        schema: The tool's stored ``input_schema``.
+
+    Returns:
+        ``(declared, required)`` name sets; empty when the schema has none.
+    """
+    if not isinstance(schema, dict):
+        return frozenset(), frozenset()
+    properties = schema.get("properties")
+    declared = frozenset(properties) if isinstance(properties, dict) else frozenset()
+    required = schema.get("required")
+    needed = (
+        frozenset(r for r in required if isinstance(r, str))
+        if isinstance(required, list)
+        else frozenset()
+    )
+    return declared, needed & declared if declared else needed
+
+
+def _schema_changed_after_approval(internal_name: str, problems: List[str]) -> str:
+    """Build the refusal for an approved call whose tool schema changed.
+
+    Args:
+        internal_name: Registered wrapper name (``account_<id>_<tool>``).
+        problems: Clauses describing the mismatch, joined with "and".
+
+    Returns:
+        The error text returned to the approval poller.
+    """
+    tool_name = internal_name
+    if internal_name.startswith("account_"):
+        # The account id contributes five underscore-separated groups.
+        tool_name = internal_name[len("account_") :].split("_", 5)[-1]
+    return (
+        f"Error: the input schema of tool '{tool_name}' changed after this "
+        f"call was approved: it {' and '.join(problems)}. The approved call "
+        "was not executed; call the tool again with arguments that match "
+        "the refreshed schema."
+    )
+
+
+def _stale_schema_error(
+    name: str,
+    arguments: Dict[str, Any],
+    available_tools: List[Tool],
+    server_name: Optional[str],
+) -> Optional[str]:
+    """Explain a proxied call whose arguments the stored schema lacks.
+
+    The wrapper's signature mirrors the schema stored at the last scan, so
+    such a call would fail with FastMCP's bare "Unexpected keyword argument".
+    The usual cause is an upstream tool that changed after that scan.
+
+    Args:
+        name: Client-facing tool name.
+        arguments: Call arguments (justification already removed).
+        available_tools: The caller's tool list from ``list_tools``.
+        server_name: Upstream MCP server name, or None for a builtin tool.
+
+    Returns:
+        An error message, or None when the call fits the stored schema or
+        the tool is not proxied.
+    """
+    if server_name is None or not arguments:
+        return None
+    listed = next((tool for tool in available_tools if tool.name == name), None)
+    properties = (getattr(listed, "parameters", None) or {}).get("properties")
+    if not isinstance(properties, dict):
+        return None
+    unknown = sorted(set(arguments) - set(properties) - {"justification"})
+    if not unknown:
+        return None
+    accepted = ", ".join(sorted(set(properties) - {"justification"})) or "none"
+    return (
+        f"Error: tool '{name}' was called with arguments its stored input "
+        f"schema does not declare: {', '.join(unknown)}. Accepted arguments: "
+        f"{accepted}. If MCP server '{server_name}' changed this tool, its "
+        "schema in Preloop is stale: refresh the server's tools (console: "
+        f"Tools > Refresh tools, CLI: preloop mcp-servers scan {server_name}) "
+        "and call again."
+    )
 
 
 def _is_safe_tool_identifier(name: str) -> bool:
@@ -1371,6 +1555,14 @@ class DynamicFastMCP(FastMCP):
         self._registered_proxied_tools: set = set()
         # original schema key -> generated wrapper parameter name
         self._proxied_param_aliases: Dict[str, Dict[str, str]] = {}
+        # internal name -> fingerprint of the input schema its wrapper was
+        # built from; a rescan that changes the schema rebuilds the wrapper.
+        self._proxied_schema_fingerprints: Dict[str, str] = {}
+        # internal name -> (declared, required) argument names of that schema,
+        # used to explain persisted arguments that no longer fit on replay.
+        self._proxied_schema_fields: Dict[
+            str, tuple[frozenset[str], frozenset[str]]
+        ] = {}
         logger.info("DynamicFastMCP initialized")
 
     def unregister_proxied_tools(
@@ -1388,9 +1580,16 @@ class DynamicFastMCP(FastMCP):
         removed = 0
         for tool_name in tool_names:
             internal_name = f"account_{safe_account_id}_{tool_name}"
+            owner = self._proxied_tool_servers.get(tool_name)
+            if owner is not None and owner != str(server_id):
+                # Another (owning) server still serves this name; a shadowed
+                # server's removal must not drop the owner's wrapper.
+                continue
             if internal_name in self._registered_proxied_tools:
                 self._registered_proxied_tools.discard(internal_name)
                 self._proxied_param_aliases.pop(internal_name, None)
+                self._proxied_schema_fingerprints.pop(internal_name, None)
+                self._proxied_schema_fields.pop(internal_name, None)
                 try:
                     self.local_provider.remove_tool(internal_name)
                 except Exception:
@@ -1688,11 +1887,22 @@ class DynamicFastMCP(FastMCP):
                     mcp_server,
                 )
 
-                # Only register if not already registered
-                if internal_name not in self._registered_proxied_tools:
+                # Register on first sight, and again when a rescan stored a
+                # different input schema: the wrapper's signature is what
+                # FastMCP validates calls against, so a stale one rejects the
+                # fields ``tools/list`` now advertises.
+                fingerprint = _schema_fingerprint(mcp_tool.input_schema)
+                stale = (
+                    internal_name in self._registered_proxied_tools
+                    and self._proxied_schema_fingerprints.get(internal_name)
+                    != fingerprint
+                )
+                if internal_name not in self._registered_proxied_tools or stale:
                     logger.info(
-                        f"Dynamically registering proxied tool: {exposed_name} "
-                        f"(internal: {internal_name})"
+                        "%s proxied tool: %s (internal: %s)",
+                        "Rebuilding stale" if stale else "Dynamically registering",
+                        exposed_name,
+                        internal_name,
                     )
 
                     # Create wrapper function with approval and streaming
@@ -1713,11 +1923,16 @@ class DynamicFastMCP(FastMCP):
                     if wrapper is None:
                         continue
 
-                    # Register with FastMCP using @mcp.tool() decorator
+                    # Register with FastMCP using @mcp.tool() decorator. A
+                    # rebuild replaces the entry under the same key in place.
                     self.tool()(wrapper)
 
                     # Track as registered
                     self._registered_proxied_tools.add(internal_name)
+                    self._proxied_schema_fingerprints[internal_name] = fingerprint
+                    self._proxied_schema_fields[internal_name] = _schema_fields(
+                        mcp_tool.input_schema
+                    )
 
                 # Always track the mapping for name translation
                 self._proxied_tool_servers[exposed_name] = str(mcp_server.id)
@@ -2068,12 +2283,16 @@ async def {internal_name}({params_str}):
             else:
                 snapshot, grant = await _prepare_grant_dispatch(account_id, tool_name)
         except Exception:
+            await _record_grant_denial(account_id, tool_name,
+                GrantResult(grant_introspector._unavailable(), "introspection_unavailable"),
+                user_id=user_context.user_id, user_context=user_context,
+                correlation_id=_correlation_id_var.get(None))
             return _wrapper_tool_error("Access denied: introspection_unavailable", status="refused")
         if grant is not None:
             _grant_binding_var.set(deepcopy(grant.binding))
         if grant is not None and grant.deny_reason:
             await _record_grant_denial(account_id, tool_name, grant, user_id=user_context.user_id,
-                                correlation_id=_correlation_id_var.get(None))
+                                user_context=user_context, snapshot=snapshot, correlation_id=_correlation_id_var.get(None))
             return _wrapper_tool_error(f"Access denied: {{grant.deny_reason}}", status="refused")
     if snapshot is None:
         return _wrapper_tool_error("Access denied: no active MCP server provides this tool", status="refused")
@@ -2198,6 +2417,10 @@ async def {internal_name}({params_str}):
         )
         if isinstance(cause, MCPToolOutcomeUnknownError):
             return _wrapper_tool_error(str(cause), status=outcome)
+        from preloop.services.external_approval import scope_refusal_detail
+        refusal = scope_refusal_detail(cause)
+        if refusal is not None:
+            return _wrapper_tool_error(refusal.reason, status=outcome)
         if unavailable:
             return _wrapper_tool_error(
                 f"The '{{server_label}}' MCP server is temporarily unavailable, so the "
@@ -2225,6 +2448,8 @@ async def {internal_name}({params_str}):
             "deepcopy": deepcopy,
             "_prepare_grant_dispatch": _prepare_grant_dispatch,
             "_record_grant_denial": _record_grant_denial,
+            "GrantResult": GrantResult,
+            "grant_introspector": grant_introspector,
             "param_names": param_names,
             "logger": logger,
             "get_db": get_db,
@@ -2658,6 +2883,17 @@ async def {internal_name}({params_str}):
             )
             return await _refuse(f"Access denied: Tool '{name}' is not available")
 
+        stale_schema_error = _stale_schema_error(
+            name,
+            arguments,
+            available_tools,
+            self._proxied_tool_server_names.get(name)
+            if name in self._proxied_tool_servers
+            else None,
+        )
+        if stale_schema_error is not None:
+            return await _refuse(stale_schema_error)
+
         # Resolve the same prefix/first-wins owner used by dispatch once.
         # Keep its copied credentials in memory through any synchronous wait.
         if name in self._proxied_tool_servers:
@@ -2679,6 +2915,7 @@ async def {internal_name}({params_str}):
                     user_context.account_id,
                     name,
                     GrantResult(grant_binding, "introspection_unavailable"),
+                    user_context=user_context,
                     user_id=user_context.user_id,
                     correlation_id=correlation_id,
                 )
@@ -2696,6 +2933,8 @@ async def {internal_name}({params_str}):
                         user_context.account_id,
                         name,
                         grant,
+                        user_context=user_context,
+                        snapshot=snapshot,
                         user_id=user_context.user_id,
                         correlation_id=correlation_id,
                     )
@@ -3315,6 +3554,7 @@ async def {internal_name}({params_str}):
             handoff_reference,
             outcome_error,
             scope_refusal,
+            scope_refusal_detail,
             scope_replay,
         )
 
@@ -3337,6 +3577,15 @@ async def {internal_name}({params_str}):
                 else:
                     _grant_binding_var.set(deepcopy(grant.binding))
                 if grant.deny_reason:
+                    await _record_grant_denial(
+                        snapshot.account_id,
+                        snapshot.tool_name,
+                        grant,
+                        user_id=user_context.user_id,
+                        user_context=user_context,
+                        snapshot=snapshot,
+                        correlation_id=correlation_id,
+                    )
                     return _wrapper_tool_error(
                         outcome_error(
                             "approved but grant refused",
@@ -3386,6 +3635,8 @@ async def {internal_name}({params_str}):
                 raise refusal
             return refusal
 
+        refusal_detail = scope_refusal_detail(refusal)
+        assert refusal_detail is not None
         # Record the refused attempt before approval_created, using the same
         # redaction and durable-outbox handling as every governed refusal.
         fields = await asyncio.to_thread(
@@ -3393,7 +3644,7 @@ async def {internal_name}({params_str}):
             user_context,
             client_tool_name=snapshot.tool_name,
             arguments=arguments,
-            reason="Upstream refused the call: insufficient_scope",
+            reason=refusal_detail.reason,
             correlation_id=correlation_id,
             audit_result="upstream_error",
             error_code="insufficient_scope",
@@ -3459,6 +3710,15 @@ async def {internal_name}({params_str}):
                 else:
                     _grant_binding_var.set(deepcopy(grant.binding))
                 if grant.deny_reason:
+                    await _record_grant_denial(
+                        fresh.account_id,
+                        fresh.tool_name,
+                        grant,
+                        user_id=user_context.user_id,
+                        user_context=user_context,
+                        snapshot=fresh,
+                        correlation_id=correlation_id,
+                    )
                     return _wrapper_tool_error(
                         outcome_error("approved but grant refused", reference),
                         status="refused",
@@ -4145,6 +4405,8 @@ async def {internal_name}({params_str}):
                 snapshot.account_id,
                 snapshot.tool_name,
                 grant,
+                user_context=user_context,
+                snapshot=snapshot,
                 user_id=user_context.user_id,
                 correlation_id=_correlation_id_var.get(None),
             )
@@ -4169,6 +4431,39 @@ async def {internal_name}({params_str}):
             logger.exception("Unable to verify halt state before tool dispatch")
             return "Access denied: unable to verify account halt state"
         return kill_switch_service.TOOL_DENIAL_MESSAGE if halted else None
+
+    def _replay_schema_error(
+        self, internal_name: str, arguments: Dict[str, Any]
+    ) -> Optional[str]:
+        """Explain approved arguments that no longer fit the tool's schema.
+
+        An approval stores the call's arguments. If the upstream tool was
+        rescanned with a different schema before the approval was resolved,
+        the rebuilt wrapper would reject them with a bare validation error.
+
+        Args:
+            internal_name: Registered wrapper name.
+            arguments: Arguments persisted with the approval.
+
+        Returns:
+            An error message, or None when the arguments still fit or the
+            tool is not a proxied tool with a recorded schema.
+        """
+        fields = self._proxied_schema_fields.get(internal_name)
+        if fields is None:
+            return None
+        declared, required = fields
+        given = set(arguments) - {"justification"}
+        unknown = sorted(given - declared)
+        missing = sorted(required - given)
+        if not unknown and not missing:
+            return None
+        problems = []
+        if unknown:
+            problems.append(f"no longer declares {', '.join(unknown)}")
+        if missing:
+            problems.append(f"now requires {', '.join(missing)}")
+        return _schema_changed_after_approval(internal_name, problems)
 
     async def _approval_replay_denial(
         self,
@@ -4320,6 +4615,16 @@ async def {internal_name}({params_str}):
         denial = await self._approval_replay_denial(account_id, name, arguments or {})
         if denial:
             return _tool_error_result(denial)
+        replay_error = self._replay_schema_error(name, arguments or {})
+        if replay_error is not None:
+            await asyncio.to_thread(
+                self._record_attributed_refusal,
+                name,
+                arguments,
+                replay_error,
+                account_id=account_id,
+            )
+            return _tool_error_result(replay_error)
         translation_token = None
         if name in self._registered_proxied_tools:
             translation_token = _is_proxy_translation_var.set(True)
@@ -4327,6 +4632,24 @@ async def {internal_name}({params_str}):
             return await super().call_tool(
                 name, self._remap_wrapper_arguments(name, arguments or {})
             )
+        except FastMCPValidationError as exc:
+            # Argument validation fails before the wrapper body runs, so the
+            # upstream was not called. For a proxied tool this means the
+            # schema changed after approval in a way the name check above
+            # cannot see (for example an argument's type).
+            if name not in self._proxied_schema_fields:
+                raise
+            replay_error = _schema_changed_after_approval(
+                name, [f"rejects the approved arguments ({_short_reason(exc)})"]
+            )
+            await asyncio.to_thread(
+                self._record_attributed_refusal,
+                name,
+                arguments,
+                replay_error,
+                account_id=account_id,
+            )
+            return _tool_error_result(replay_error)
         finally:
             if translation_token is not None:
                 _is_proxy_translation_var.reset(translation_token)

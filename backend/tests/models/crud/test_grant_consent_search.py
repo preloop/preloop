@@ -47,3 +47,53 @@ def test_consent_search_is_exact_account_scoped_and_paginated(
     assert groups[0]["primary_event"].id in wanted
     next_rows = crud_audit_log.get_by_account(db_session, **args, skip=1, limit=1)
     assert next_rows[0].id != rows[0].id
+
+
+def test_last_consent_does_not_cross_account_server_or_credential_revision(
+    db_session: Session,
+    test_user: models.User,
+) -> None:
+    """Only the newest real claim on the same server configuration can be reused."""
+    other = crud_account.create(
+        db_session, obj_in={"organization_name": "Other example"}
+    )
+    for account, server, revision, current, previous in [
+        (test_user.account_id, "server-a", "revision-a", "older", None),
+        (test_user.account_id, "server-a", "revision-a", "newest", None),
+        (other.id, "server-a", "revision-a", "other-account", None),
+        (test_user.account_id, "server-b", "revision-a", "other-server", None),
+        (test_user.account_id, "server-a", "revision-b", "other-credential", None),
+        (test_user.account_id, "server-a", "revision-a", None, "stale-fallback"),
+    ]:
+        crud_audit_log.log_action(
+            db_session,
+            account_id=account,
+            action="tool_call",
+            status="executed",
+            details={
+                "grant": {
+                    "server_id": server,
+                    "server_revision": revision,
+                    "consent_ref": current,
+                    "last_known_consent_ref": previous,
+                }
+            },
+        )
+    assert (
+        crud_audit_log.get_last_grant_consent(
+            db_session,
+            account_id=test_user.account_id,
+            server_id="server-a",
+            server_revision="revision-a",
+        )
+        == "newest"
+    )
+    assert (
+        crud_audit_log.get_last_grant_consent(
+            db_session,
+            account_id=test_user.account_id,
+            server_id="server-a",
+            server_revision="new-revision",
+        )
+        is None
+    )

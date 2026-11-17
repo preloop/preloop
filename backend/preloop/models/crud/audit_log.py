@@ -273,6 +273,18 @@ def _audit_ip_address(value: Optional[str]) -> Optional[str]:
         return None
 
 
+def _consent_filter(reference: str, include_last_known: bool) -> Any:
+    """Use the indexed JSON expressions for current and opt-in historical evidence."""
+    current = AuditLog.details.op("->")("grant").op("->>")("consent_ref") == reference
+    if not include_last_known:
+        return current
+    return or_(
+        current,
+        AuditLog.details.op("->")("grant").op("->>")("last_known_consent_ref")
+        == reference,
+    )
+
+
 class CRUDAuditLog(CRUDBase[AuditLog]):
     """CRUD operations for audit logging."""
 
@@ -333,6 +345,36 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             db.flush()
         return db_obj
 
+    def get_last_grant_consent(
+        self,
+        db: Session,
+        *,
+        account_id: Union[UUID, str],
+        server_id: str,
+        server_revision: str,
+    ) -> Optional[str]:
+        """Read the latest stored claim for this account and server configuration.
+
+        Configuration revisions conservatively separate credential rotations.
+        Historical fallback fields never seed another fallback.
+        """
+        grant = AuditLog.details.op("->")("grant")
+        reference = grant.op("->>")("consent_ref")
+        row = (
+            db.query(reference)
+            .filter(
+                AuditLog.account_id == str(account_id),
+                grant.op("->>")("server_id") == server_id,
+                grant.op("->>")("server_revision") == server_revision,
+                reference.isnot(None),
+                reference != "",
+            )
+            .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+            .first()
+        )
+        value = row[0] if row else None
+        return value if isinstance(value, str) and len(value) <= 512 else None
+
     def get_by_account(
         self,
         db: Session,
@@ -347,6 +389,8 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         consent_ref: Optional[str] = None,
+        include_last_known_consent: bool = False,
+        error_code: Optional[str] = None,
         grant_reference: Optional[str] = None,
     ) -> List[AuditLog]:
         """Get audit logs for an account with optional filters.
@@ -362,6 +406,8 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             resource_id: Filter by the affected resource id
             start_date: Filter by start date
             consent_ref: Exact delegated grant consent reference
+            include_last_known_consent: Also match historical consent evidence
+            error_code: Exact upstream error classification
             end_date: Filter by end date
 
         Returns:
@@ -385,10 +431,11 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
                 )
                 == grant_reference
             )
+        if error_code is not None:
+            query = query.filter(AuditLog.details.op("->>")("error_code") == error_code)
         if consent_ref is not None:
             query = query.filter(
-                AuditLog.details.op("->")("grant").op("->>")("consent_ref")
-                == consent_ref
+                _consent_filter(consent_ref, include_last_known_consent)
             )
         if start_date:
             query = query.filter(AuditLog.timestamp >= start_date)
@@ -615,6 +662,8 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         consent_ref: Optional[str] = None,
+        include_last_known_consent: bool = False,
+        error_code: Optional[str] = None,
         grant_reference: Optional[str] = None,
         min_cost: Optional[float] = None,
         max_cost: Optional[float] = None,
@@ -642,6 +691,8 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             tool_name_filter: Filter by tool name (substring match)
             start_date: Filter by start date
             consent_ref: Exact delegated grant consent reference
+            include_last_known_consent: Also match historical consent evidence
+            error_code: Exact upstream error classification
             end_date: Filter by end date
             count_limit: Stop counting the total past this many groups. The
                 exact count reads every matching row of the trail, which is
@@ -691,10 +742,11 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
                     matching_decision,
                 )
             )
+        if error_code is not None:
+            scope_filters.append(AuditLog.details.op("->>")("error_code") == error_code)
         if consent_ref is not None:
             scope_filters.append(
-                AuditLog.details.op("->")("grant").op("->>")("consent_ref")
-                == consent_ref
+                _consent_filter(consent_ref, include_last_known_consent)
             )
         if start_date:
             scope_filters.append(AuditLog.timestamp >= start_date)
@@ -1101,6 +1153,8 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         consent_ref: Optional[str] = None,
+        include_last_known_consent: bool = False,
+        error_code: Optional[str] = None,
         grant_reference: Optional[str] = None,
     ) -> int:
         """Count audit logs for an account with optional filters.
@@ -1114,6 +1168,8 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             user_id: Filter by actor user
             start_date: Filter by start date
             consent_ref: Exact delegated grant consent reference
+            include_last_known_consent: Also match historical consent evidence
+            error_code: Exact upstream error classification
             end_date: Filter by end date
 
         Returns:
@@ -1139,10 +1195,11 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
                 )
                 == grant_reference
             )
+        if error_code is not None:
+            query = query.filter(AuditLog.details.op("->>")("error_code") == error_code)
         if consent_ref is not None:
             query = query.filter(
-                AuditLog.details.op("->")("grant").op("->>")("consent_ref")
-                == consent_ref
+                _consent_filter(consent_ref, include_last_known_consent)
             )
         if start_date:
             query = query.filter(AuditLog.timestamp >= start_date)

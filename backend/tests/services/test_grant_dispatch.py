@@ -221,6 +221,10 @@ async def test_central_hard_denial_before_policy_approval_or_upstream(
     runtime: Runtime, monkeypatch: pytest.MonkeyPatch, reason: str
 ) -> None:
     mcp, user, policy, deny_audit, audit, _ = runtime
+    user.api_key_id = "00000000-0000-4000-8000-000000000111"
+    user.runtime_principal_type = "managed_agent"
+    user.runtime_principal_id = "00000000-0000-4000-8000-000000000112"
+    user.runtime_principal_name = "Example agent"
     row = server()
     monkeypatch.setattr(gateway, "_resolve_proxied_tool_server", lambda *a: row)
     monkeypatch.setattr(
@@ -239,6 +243,16 @@ async def test_central_hard_denial_before_policy_approval_or_upstream(
     pool.get_client.assert_not_awaited()
     assert deny_audit.call_args.kwargs["extra_details"]["grant"] == BINDING
     assert deny_audit.call_args.kwargs["rule_description"] == reason
+    for field in (
+        "api_key_id",
+        "runtime_principal_type",
+        "runtime_principal_id",
+        "runtime_principal_name",
+    ):
+        assert deny_audit.call_args.kwargs["extra_details"][field] == getattr(
+            user, field
+        )
+
     assert audit.log_tool_call_async.call_args.kwargs["grant"] == BINDING
     assert gateway._grant_dispatch_var.get() is None
 
@@ -696,3 +710,106 @@ async def test_restricted_listing_batches_resources_and_denies_stale_cache(
     assert opened.call_count == 2
     assert batch.call_count == 2
     discovery.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_direct_wrapper_preparation_failure_keeps_principal_evidence(
+    runtime: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unavailable introspector cannot make a direct-call denial anonymous."""
+    _, user, _, deny_audit, _, wrapper = runtime
+    user.api_key_id = "00000000-0000-4000-8000-000000000111"
+    user.runtime_principal_id = "00000000-0000-4000-8000-000000000112"
+    monkeypatch.setitem(
+        wrapper.__globals__,
+        "_prepare_grant_dispatch",
+        AsyncMock(side_effect=RuntimeError("unavailable")),
+    )
+    result = await wrapper()
+    assert result.is_error
+    fields = deny_audit.call_args.kwargs
+    assert fields["rule_description"] == "introspection_unavailable"
+    assert fields["extra_details"]["api_key_id"] == user.api_key_id
+    assert fields["extra_details"]["runtime_principal_id"] == user.runtime_principal_id
+
+
+@pytest.mark.asyncio
+async def test_oauth_grant_evidence_separates_credential_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refresh cannot inherit evidence from the preceding OAuth credential."""
+    from uuid import uuid4
+
+    snapshot = gateway.GrantDispatchSnapshot(
+        "account",
+        "read",
+        "Example",
+        "read",
+        {
+            "server_id": str(uuid4()),
+            "auth_type": "oauth",
+            "auth_config": {"introspection": CONFIG},
+        },
+        registry_revision="2026-11-17T00:00:00",
+        grant_revision="example-credential-generation",
+    )
+    current = SimpleNamespace(
+        version=1,
+        config={
+            "access_token": "synthetic-token",
+            "introspection": CONFIG,
+        },
+    )
+    monkeypatch.setattr(
+        "preloop.services.upstream_mcp_oauth.UpstreamMCPOAuthService.credentials",
+        AsyncMock(return_value=current),
+    )
+    monkeypatch.setattr(
+        gateway.grant_introspector,
+        "evaluate",
+        AsyncMock(return_value=GrantResult(deepcopy(BINDING))),
+    )
+    first = await gateway._evaluate_snapshot_grant(snapshot)
+    current.version = 2
+    second = await gateway._evaluate_snapshot_grant(snapshot)
+    assert first.binding["server_revision"] != second.binding["server_revision"]
+    assert "server_revision" not in BINDING
+
+
+@pytest.mark.asyncio
+async def test_failed_consent_lookup_does_not_replace_grant_refusal(
+    runtime: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Historical evidence is optional even when its database lookup fails."""
+    from preloop.models.crud import crud_audit_log
+
+    mcp, user, policy, denial, _, wrapper = runtime
+    monkeypatch.setattr(gateway, "_resolve_proxied_tool_server", lambda *a: server())
+    binding = {
+        **BINDING,
+        "active": False,
+        "consent_ref": None,
+        "server_id": "server-a",
+        "server_revision": "revision-a",
+    }
+    monkeypatch.setattr(
+        gateway.grant_introspector,
+        "evaluate",
+        AsyncMock(return_value=GrantResult(binding, "grant_inactive")),
+    )
+    monkeypatch.setattr(gateway, "_reference_only_in_scope", lambda *a, **kw: False)
+    lookup = MagicMock(side_effect=RuntimeError("lookup unavailable"))
+    monkeypatch.setattr(crud_audit_log, "get_last_grant_consent", lookup)
+    pool = MagicMock(get_client=AsyncMock())
+    monkeypatch.setitem(wrapper.__globals__, "get_mcp_client_pool", lambda: pool)
+    result = await mcp.call_tool("first_read", {})
+    assert result.is_error and "grant_inactive" in result.content[0].text
+    lookup.assert_called_once()
+    assert (
+        "last_known_consent_ref"
+        not in denial.call_args.kwargs["extra_details"]["grant"]
+    )
+    pool.get_client.assert_not_awaited()
+    policy.assert_not_awaited()

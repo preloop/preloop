@@ -602,7 +602,11 @@ async def upload_policy(
         False, description="If true, validate only without making changes"
     ),
     resolve_env: bool = Form(
-        True, description="If true, resolve ${VAR} environment variable references"
+        True,
+        description=(
+            "Accepted for compatibility and ignored. Variable references remain "
+            "literal; 'preloop policy apply' resolves them locally before upload."
+        ),
     ),
     skip_missing_servers: bool = Form(
         False,
@@ -639,7 +643,7 @@ async def upload_policy(
     Args:
         file: The policy file to apply (YAML or JSON).
         dry_run: If True, validate without applying changes.
-        resolve_env: If True, resolve environment variable references.
+        resolve_env: Accepted for compatibility and ignored.
         skip_missing_servers: If True, skip tools with missing servers
             instead of failing.
         account: Current user's account.
@@ -689,6 +693,7 @@ async def upload_policy(
             detail={
                 "message": "Policy validation failed",
                 "errors": [e.model_dump() for e in validation_result.errors],
+                "warnings": validation_result.warnings,
             },
         )
 
@@ -698,9 +703,10 @@ async def upload_policy(
         applier.apply,
         policy,
         dry_run=dry_run,
-        resolve_env=resolve_env,
+        resolve_env=False,
         skip_missing_servers=skip_missing_servers,
     )
+    result.warnings = validation_result.warnings + result.warnings
 
     if not result.success:
         logger.warning(

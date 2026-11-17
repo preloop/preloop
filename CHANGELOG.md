@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Policies: the CLI now resolves variable references; the server no longer does.
+  `policy apply --dry-run` and `policy diff` use the same local resolution.
+  Unset variables stop the upload; `--no-resolve-env` preserves references.
+  The upload API accepts and ignores `resolve_env` and warns about unresolved
+  references.
+
 - **API compatibility:** flow responses (including reads, lists, creates,
   updates and presets) no longer include `webhook_config.webhook_secret`.
   Integrations that extracted the secret from those responses must retain
@@ -113,6 +119,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`docs/architecture/shared-ci-review-flows.md`) (#2103).
 
 ### Fixed
+
+- flows: a Codex native-result read-only review whose session ends with an
+  answer but no command (the model satisfied the result schema on its first
+  turn) is continued in up to two fresh sessions that must inspect the
+  checkout first, inside the flow's existing timeout and budget. If none
+  inspects, the run fails `review_not_inspected`; that category now wins over
+  `review_binding_mismatch` when both apply (#2100).
 
 - models: mark deleted routing, label and enabled retry targets as missing in
   flow details and lists, including flows with a healthy default model. Repairing

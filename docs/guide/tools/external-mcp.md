@@ -421,7 +421,8 @@ curl -X POST https://preloop.ai/api/v1/tool-configurations/{config_id}/access-ru
 
 ### Automatic Discovery
 
-When you click **Scan for tools**, Preloop:
+When you click **Scan for tools** (or **Refresh tools** on a server that
+already has tools), Preloop:
 
 1. Connects to MCP server
 2. Calls `tools/list` method
@@ -435,10 +436,16 @@ Tools don't update automatically. To refresh:
 
 1. Go to **Tools**
 2. Find your MCP server
-3. Click **Scan for tools** again
-4. New tools appear, removed tools disappear
+3. Click **Refresh tools** (the circular-arrow button), or run
+   `preloop mcp-servers scan <server>`
+4. New tools appear, and tools that changed get their new description and
+   arguments
 
-**Recommended:** Scan after updating your MCP server.
+**Recommended:** Refresh after changing your MCP server's tools, especially
+their arguments. The next call through Preloop uses the refreshed arguments,
+with no restart. A call that still uses arguments the stored schema does not
+declare is refused with a message naming the unknown arguments and pointing
+at this refresh.
 
 ### Tool Filtering
 
@@ -693,6 +700,27 @@ Monitor all external tool calls:
 - Result or error
 
 Tool calls are recorded in each runtime session's timeline (**Audit > Sessions**). **Audit > All events** lists them account-wide in every edition.
+
+#### Upstream errors
+
+A refused upstream call is recorded as a `tool_call` with status
+`upstream_error`. The audit details distinguish these cases:
+
+| Upstream response | `details.error_code` | Agent and audit reason |
+| --- | --- | --- |
+| HTTP 403 with `insufficient_scope` in `WWW-Authenticate` or the JSON body | `insufficient_scope` | The token does not cover this call. Includes `Required scope: ...` when the challenge or body supplies `scope`. |
+| Other HTTP 401 or 403 | `http_401` or `http_403` | Authentication or authorization was rejected; configure or reconnect authentication, then rescan. |
+| Other HTTP failure | `http_<status>` | The existing bounded upstream failure reason. |
+
+Scope evidence is redacted for labelled credentials and bounded to the same
+200-character audit reason limit. An insufficient-scope error does not advise
+reconnecting or rescanning. Search it with
+`GET /api/v1/audit-logs?error_code=insufficient_scope`; the grouped endpoint also
+accepts `error_code`. The filter is exact and account-scoped.
+
+The opt-in [external approval hand-off](../grant-introspection.md#approval-after-an-upstream-scope-refusal)
+uses the same scope-refusal parser. Its initial refused-attempt audit row keeps
+the missing-scope reason before approval begins.
 
 ### 5. Rotate Credentials
 
