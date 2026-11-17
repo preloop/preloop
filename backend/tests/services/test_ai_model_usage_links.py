@@ -11,6 +11,15 @@ from preloop.services.ai_model_usage_links import configured_model_consumers
 MODULE = "preloop.services.ai_model_usage_links"
 
 
+def one_page(agents: list) -> object:
+    """Serve ``agents`` as the only batch of every keyset scan."""
+
+    def _batch(*_: object, after_id: object = None, **__: object) -> list:
+        return [] if after_id is not None else list(agents)
+
+    return _batch
+
+
 def binding(model_id: str, **changes: object) -> Row:
     """Return a synthetic model slot."""
     return Row(
@@ -35,7 +44,7 @@ def test_explicit_config_deduplicates_and_excludes_observed_and_inactive() -> No
     ]
     flow = Row(id=uuid4(), name="Example flow", is_enabled=False)
     with patch(f"{MODULE}.crud") as crud:
-        crud.crud_managed_agent.get_multi.return_value = agents
+        crud.crud_managed_agent.list_batch_after.side_effect = one_page(agents)
         crud.crud_managed_agent_ai_model_binding.list_for_agents.return_value = {
             agents[0].id: [binding(model_id), binding(model_id)],
             agents[1].id: [binding(model_id, status="inactive")],
@@ -48,9 +57,9 @@ def test_explicit_config_deduplicates_and_excludes_observed_and_inactive() -> No
         result = configured_model_consumers(MagicMock(), user=user, model_id=model_id)
         assert [item.id for item in result.agents] == [agents[0].id]
         assert [item.id for item in result.flows] == [str(flow.id)]
-        assert crud.crud_managed_agent.get_multi.call_args.kwargs["account_id"] == str(
-            user.account_id
-        )
+        assert crud.crud_managed_agent.list_batch_after.call_args.kwargs[
+            "account_id"
+        ] == str(user.account_id)
         assert crud.crud_flow.list_configured_for_model.call_args.kwargs[
             "account_id"
         ] == str(user.account_id)
@@ -73,7 +82,7 @@ def test_legacy_enrollment_config_is_used_without_observed_alias_fallback() -> N
         model_identifier="example-model",
     )
     with patch(f"{MODULE}.crud") as crud:
-        crud.crud_managed_agent.get_multi.return_value = [agent]
+        crud.crud_managed_agent.list_batch_after.side_effect = one_page([agent])
         crud.crud_managed_agent_ai_model_binding.list_for_agents.return_value = {}
         crud.crud_managed_agent_enrollment.list_latest_by_agents.return_value = {
             agent.id: {"cli_managed_config": Row()}
@@ -112,7 +121,9 @@ def test_hidden_resources_are_omitted_and_truncation_is_reported() -> None:
         patch(f"{MODULE}.filter_viewable", return_value=[]),
         patch(f"{MODULE}.MAX_CONSUMERS", 1),
     ):
-        crud.crud_managed_agent.get_multi.return_value = [Row(), Row()]
+        crud.crud_managed_agent.list_batch_after.side_effect = one_page(
+            [Row(id=uuid4()), Row(id=uuid4())]
+        )
         crud.crud_managed_agent_ai_model_binding.list_for_agents.return_value = {}
         crud.crud_flow.list_configured_for_model.return_value = [Row(), Row()]
         result = configured_model_consumers(
@@ -132,7 +143,7 @@ def test_consumer_permissions_are_checked_before_reads() -> None:
             MagicMock(), user=user, model_id=str(uuid4())
         )
         assert result.agents == result.flows == []
-        crud.crud_managed_agent.get_multi.assert_not_called()
+        crud.crud_managed_agent.list_batch_after.assert_not_called()
         crud.crud_flow.list_configured_for_model.assert_not_called()
 
 
@@ -146,5 +157,5 @@ def test_account_authorizer_can_deny_a_consumer_kind_even_for_superuser() -> Non
             MagicMock(), user=user, model_id=str(uuid4())
         )
         assert result.agents == result.flows == []
-        crud.crud_managed_agent.get_multi.assert_not_called()
+        crud.crud_managed_agent.list_batch_after.assert_not_called()
         crud.crud_flow.list_configured_for_model.assert_not_called()
