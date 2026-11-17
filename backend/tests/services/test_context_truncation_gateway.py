@@ -21,6 +21,7 @@ from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.openai_gateway import OpenAIGatewayService
+from preloop.services.context_truncation import record_execution_truncation
 
 
 @pytest.fixture
@@ -302,12 +303,14 @@ def test_preflight_known_window_never_calls_upstream(
         execution.startup_receipt["context_truncated_suspected"]["context_window"]
         == 8192
     )
-    assert (
-        crud_api_usage.get_gateway_usage_for_execution(db_session, str(execution.id))[
-            "api_requests"
-        ]
-        == 0
+    row = (
+        db_session.query(models.ApiUsage)
+        .filter_by(flow_execution_id=execution.id)
+        .one()
     )
+    assert row.status_code == 400
+    assert (row.prompt_tokens or 0) == (row.completion_tokens or 0) == 0
+    assert row.meta_data["context_truncated_suspected"]["context_window"] == 8192
 
 
 def test_estimated_previous_call_is_not_a_plateau(
@@ -357,3 +360,179 @@ def test_detection_uses_outbound_estimate_after_context_optimization(
     )
     db_session.refresh(execution)
     assert execution.status == "RUNNING"
+
+
+@pytest.mark.parametrize(
+    "status,category",
+    [
+        ("TIMEOUT", "timeout"),
+        ("TIMED_OUT", "timeout"),
+        ("CANCELLED", "cancelled"),
+        ("CANCELED", "cancelled"),
+        ("ABORTED", "cancelled"),
+        ("STOPPED", "cancelled"),
+        ("FAILED", "budget_exceeded"),
+        ("FAILED", "model_auth"),
+    ],
+)
+def test_late_evidence_preserves_unrelated_terminal_outcome(
+    db_session: Session,
+    flow_gateway: tuple[OpenAIGatewayService, models.FlowExecution, models.AIModel],
+    status: str,
+    category: str,
+) -> None:
+    """A late usage flush annotates evidence without rewriting a different stop."""
+    _, execution, _ = flow_gateway
+    crud_flow_execution.update(
+        db_session,
+        db_obj=execution,
+        obj_in={
+            "status": status,
+            "failure_category": category,
+            "error_message": "Original outcome",
+        },
+    )
+    record_execution_truncation(
+        db_session,
+        execution_id=execution.id,
+        signal={
+            "signal": "input_token_deficit",
+            "estimated_input_tokens": 26000,
+            "reported_input_tokens": 8194,
+        },
+    )
+    db_session.refresh(execution)
+    assert execution.status == status
+    assert execution.failure_category == category
+    assert execution.error_message == "Original outcome"
+    assert (
+        execution.startup_receipt["context_truncated_suspected"][
+            "reported_input_tokens"
+        ]
+        == 8194
+    )
+
+
+@pytest.mark.parametrize("fits", [True, False])
+def test_preflight_checks_optimized_outbound_request(
+    db_session: Session,
+    flow_gateway: tuple[OpenAIGatewayService, models.FlowExecution, models.AIModel],
+    fits: bool,
+) -> None:
+    """Tool-result compaction can make an otherwise oversized request fit."""
+    service, execution, model = flow_gateway
+    metadata = {
+        **model.meta_data,
+        "gateway": {**model.meta_data["gateway"], "responses_api": "transcode"},
+    }
+    crud_ai_model.update(
+        db_session,
+        db_obj=model,
+        obj_in={
+            "model_parameters": {"context_window": 8192},
+            "meta_data": metadata,
+        },
+    )
+    payload = {"model": "example-coder", "input": "Review this change. " * 6000}
+    optimized_text = "Review the compacted change" if fits else payload["input"]
+    with (
+        patch.object(
+            service,
+            "_optimize_request_context",
+            return_value=(
+                [{"role": "user", "content": optimized_text}],
+                payload,
+            ),
+        ),
+        patch.object(
+            service.upstream_backend,
+            "completion",
+            return_value=iter(
+                [
+                    {
+                        "choices": [
+                            {"delta": {"content": "Reviewed"}, "finish_reason": "stop"}
+                        ],
+                        "usage": {"prompt_tokens": 20, "completion_tokens": 2},
+                    }
+                ]
+            ),
+        ) as upstream,
+    ):
+        if fits:
+            assert list(service.stream_response(payload))
+        else:
+            with pytest.raises(ModelGatewayAPIError, match="registered context window"):
+                list(service.stream_response(payload))
+        service.flush_deferred_stream_record()
+    if fits:
+        upstream.assert_called_once()
+    else:
+        upstream.assert_not_called()
+    db_session.refresh(execution)
+    assert execution.status == ("RUNNING" if fits else "FAILED")
+
+
+def test_annotation_failure_preserves_preflight_error(
+    db_session: Session,
+    flow_gateway: tuple[OpenAIGatewayService, models.FlowExecution, models.AIModel],
+) -> None:
+    """An execution row-lock failure cannot replace the capacity diagnosis."""
+    from sqlalchemy.exc import OperationalError
+
+    service, execution, model = flow_gateway
+    crud_ai_model.update(
+        db_session, db_obj=model, obj_in={"model_parameters": {"context_window": 8192}}
+    )
+    with (
+        patch.object(
+            crud_flow_execution,
+            "record_context_truncation",
+            side_effect=OperationalError("", {}, RuntimeError("lock timeout")),
+        ),
+        pytest.raises(ModelGatewayAPIError, match="registered context window"),
+    ):
+        service._check_context_window(
+            model, {"input": "Review this change. " * 6000}, gateway_provider="openai"
+        )
+
+
+def test_annotation_failure_preserves_usage_and_subsequent_bookkeeping(
+    db_session: Session,
+    flow_gateway: tuple[OpenAIGatewayService, models.FlowExecution, models.AIModel],
+) -> None:
+    """A failed execution annotation cannot stop the committed usage audit."""
+    from sqlalchemy.exc import OperationalError
+
+    service, execution, model = flow_gateway
+    service._begin_request_accounting()
+    service._context_input_estimate = 26000
+    with (
+        patch.object(
+            crud_flow_execution,
+            "record_context_truncation",
+            side_effect=OperationalError("", {}, RuntimeError("lock timeout")),
+        ),
+        patch("preloop.services.openai_gateway.log_model_gateway_request") as audit,
+    ):
+        service._record_gateway_request(
+            endpoint="/openai/v1/responses",
+            method="POST",
+            status_code=200,
+            duration=1,
+            ai_model=model,
+            requested_model="example-coder",
+            response_payload=None,
+            upstream_response={"usage": {"input_tokens": 8194, "output_tokens": 49}},
+            endpoint_kind="responses_stream",
+        )
+    row = (
+        db_session.query(models.ApiUsage)
+        .filter_by(flow_execution_id=execution.id)
+        .one()
+    )
+    assert row.status_code == 200
+    assert row.prompt_tokens == 8194
+    assert row.completion_tokens == 49
+    assert row.meta_data["context_truncated_suspected"]["reported_input_tokens"] == 8194
+    audit.assert_called_once()

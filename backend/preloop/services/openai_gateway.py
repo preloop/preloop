@@ -1461,6 +1461,7 @@ class OpenAIGatewayService:
         self._last_alibaba_cache_mode = None
         self._codex_transport_meta = None
         self._context_input_estimate: Optional[int] = None
+        self._context_preflight_signal: Optional[Dict[str, Any]] = None
         self.last_usage_id = None
         # A fresh identity for every request, including one that never reaches
         # usage recording. Re-arming here (rather than minting at first use)
@@ -5515,6 +5516,9 @@ class OpenAIGatewayService:
         if stream:
             upstream_payload["stream"] = True
         self._record_effective_request_parameters(upstream_payload)
+        self._check_context_window(
+            ai_model, upstream_payload, gateway_provider="openai"
+        )
         return upstream_payload
 
     # Default ``instructions`` used when a chat-completions request targets a
@@ -7306,6 +7310,8 @@ class OpenAIGatewayService:
             ai_model, payload.get("model")
         )
         body["stream"] = bool(stream)
+        self._context_input_estimate = context_truncation.estimate_request_input(body)
+        self._check_context_window(ai_model, body, gateway_provider="anthropic")
 
         base_url = (
             str(ai_model.api_endpoint).rstrip("/")
@@ -7936,6 +7942,7 @@ class OpenAIGatewayService:
         governed_payload = rewrite_crosschat_responses_input(governed_payload)
         body = build_passthrough_body(ai_model, governed_payload, stream=stream)
         self._record_effective_request_parameters(body)
+        self._check_context_window(ai_model, body, gateway_provider="openai")
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -8241,12 +8248,8 @@ class OpenAIGatewayService:
                             state["usage"] = self._merge_usage_dicts(
                                 state["usage"], response_obj["usage"]
                             )
-                        if isinstance(response_obj.get("output_text"), str):
-                            state["snapshot_text"] = response_obj["output_text"]
-                        elif isinstance(response_obj.get("output"), list):
-                            state["snapshot_text"] = canonical_response_text(
-                                response_obj
-                            )
+                        if snapshot := canonical_response_text(response_obj):
+                            state["snapshot_text"] = snapshot
                         state["status"] = response_obj.get("status") or state["status"]
                     state["saw_terminal"] = True
                     continue
@@ -8995,6 +8998,7 @@ class OpenAIGatewayService:
             self._context_input_estimate = context_truncation.estimate_request_input(
                 body
             )
+            self._check_context_window(ai_model, body, gateway_provider=provider)
             if stream:
                 body["stream_options"] = {"include_usage": True}
             self.release_db_for_wait(ai_model)
@@ -9007,6 +9011,7 @@ class OpenAIGatewayService:
             provider=provider,
         )
         self._context_input_estimate = context_truncation.estimate_request_input(kwargs)
+        self._check_context_window(ai_model, kwargs, gateway_provider=provider)
 
         def _invoke() -> Any:
             self.release_db_for_wait(ai_model)
@@ -11520,7 +11525,7 @@ class OpenAIGatewayService:
             input_estimate = context_truncation.estimate_request_input(
                 request_payload or {}
             )
-        truncation_signal = None
+        truncation_signal = getattr(self, "_context_preflight_signal", None)
         if (
             prompt_tokens
             and input_estimate >= context_truncation.MIN_INPUT_ESTIMATE
@@ -12535,7 +12540,7 @@ class OpenAIGatewayService:
         gateway_provider: GatewayProvider = "openai",
     ) -> Optional[BudgetCheckResult]:
         """Check configured gateway budgets before the upstream call."""
-        self._check_context_window(ai_model, payload, gateway_provider=gateway_provider)
+        self._check_context_failure(gateway_provider=gateway_provider)
         # The run's own per-execution ceiling is independent of the account
         # budget policies below: it applies even when no BudgetPolicy exists,
         # and it is refused before an extension enforcer can short-circuit.
@@ -12578,15 +12583,10 @@ class OpenAIGatewayService:
                 )
         return result
 
-    def _check_context_window(
-        self,
-        ai_model: GatewayModel,
-        payload: Dict[str, Any],
-        *,
-        gateway_provider: GatewayProvider,
-    ) -> None:
-        """Refuse an oversized flow request before the model can discard input."""
-        from preloop.services.model_context_limits import resolve_model_context_limits
+    def _check_context_failure(
+        self, *, gateway_provider: GatewayProvider
+    ) -> Optional[str]:
+        """Refuse further model work for an execution already stopped for input loss."""
         from preloop.models.crud import crud_flow_execution
 
         context = (
@@ -12594,7 +12594,7 @@ class OpenAIGatewayService:
         )
         execution_id = (context or {}).get("flow_execution_id")
         if not execution_id:
-            return
+            return None
         stored = crud_flow_execution.current_failure(self.db, execution_id=execution_id)
         if (
             stored
@@ -12612,6 +12612,21 @@ class OpenAIGatewayService:
                 terminal=True,
                 origin="gateway",
             )
+        return str(execution_id)
+
+    def _check_context_window(
+        self,
+        ai_model: GatewayModel,
+        payload: Dict[str, Any],
+        *,
+        gateway_provider: GatewayProvider,
+    ) -> None:
+        """Check the final outbound body after optimization and tool stripping."""
+        from preloop.services.model_context_limits import resolve_model_context_limits
+
+        execution_id = self._check_context_failure(gateway_provider=gateway_provider)
+        if not execution_id:
+            return
         limits = resolve_model_context_limits(
             model_identifier=ai_model.model_identifier,
             provider_name=ai_model.provider_name,
@@ -12626,6 +12641,7 @@ class OpenAIGatewayService:
             "context_window": limits.context_window,
             "context_window_source": limits.context_window_source,
         }
+        self._context_preflight_signal = signal
         context_truncation.record_execution_truncation(
             self.db, execution_id=execution_id, signal=signal
         )

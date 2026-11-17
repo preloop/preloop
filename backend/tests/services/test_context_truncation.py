@@ -113,21 +113,13 @@ def test_flow_preflight_refuses_before_upstream() -> None:
         model_gateway_model_alias=None,
     )
     with (
-        patch.object(service, "_resolve_requested_model", return_value=model),
-        patch.object(
-            service,
-            "_responses_output_budget",
-            side_effect=lambda model, payload: payload,
-        ),
-        patch.object(service, "_reject_if_gateway_halted"),
-        patch.object(service, "_check_per_execution_limits"),
-        patch.object(service, "_open_openai_responses_passthrough_stream") as upstream,
         patch.object(truncation, "record_execution_truncation") as record,
         pytest.raises(Exception, match="registered context window") as error,
     ):
-        service.stream_response(
-            {"model": "example-coder", "input": "Review this change. " * 6000}
+        service._check_context_window(
+            model,
+            {"model": "example-coder", "input": "Review this change. " * 6000},
+            gateway_provider="openai",
         )
     assert error.value.code == "context_truncated_suspected"
-    upstream.assert_not_called()
     assert record.call_args.kwargs["signal"]["estimated_input_tokens"] > 8192

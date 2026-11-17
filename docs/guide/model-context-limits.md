@@ -109,7 +109,8 @@ resize the server's window. For unknown custom models, the execution's model
 metadata warning names the missing limit and where to set it.
 
 Preloop refuses a flow request before calling the model when its estimated
-input exceeds the registered window. It also records
+outbound input exceeds the registered window, after context optimization and tool
+stripping. It also records
 `context_truncated_suspected` when provider-reported input is far smaller than
 the request estimate, or stays exactly constant while the conversation grows.
 The usage row and execution retain both counts; the run fails with a message

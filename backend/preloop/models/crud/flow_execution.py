@@ -1215,7 +1215,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         """Keep prompt-loss evidence and fail the run under its row lock.
 
         A late usage record can correct a no-confirmation diagnosis or a
-        claimed success. An explicit human stop retains its status.
+        claimed success. Unrelated terminal outcomes retain their diagnosis.
         """
         execution = (
             db.query(models.FlowExecution)
@@ -1229,7 +1229,15 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         receipt = dict(execution.startup_receipt or {})
         receipt[category] = signal
         changes: dict[str, Any] = {"startup_receipt": receipt}
-        if execution.status != "STOPPED":
+        replace_outcome = execution.status in self.LIVE_LAUNCH_STATUSES | {
+            "PENDING",
+            "SUCCEEDED",
+        } or (
+            execution.status == "FAILED"
+            and execution.failure_category
+            in {None, "unknown", "no_confirmation", category}
+        )
+        if replace_outcome:
             changes.update(
                 status="FAILED",
                 failure_category=category,

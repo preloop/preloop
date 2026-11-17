@@ -99,3 +99,45 @@ def test_codex_aggregator_stops_at_completed() -> None:
         raise httpx.ReadTimeout("The upstream never closes its body")
 
     assert service()._aggregate_codex_events(events())["usage"]["input_tokens"] == 8194
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [{"output": []}, {"output": [{"type": "reasoning"}]}, {"output_text": ""}],
+)
+def test_empty_terminal_snapshot_retains_streamed_text(
+    snapshot: dict[str, Any],
+) -> None:
+    """An empty terminal summary cannot erase deltas already received."""
+    gateway = service()
+    upstream = MagicMock()
+    upstream.hosted_call = None
+    upstream.iter_text.return_value = iter(
+        [
+            "data: "
+            + json.dumps(
+                {"type": "response.output_text.delta", "delta": "Reviewed the change"}
+            )
+            + "\n\n",
+            "data: "
+            + json.dumps(
+                {
+                    "type": "response.completed",
+                    "response": {"status": "completed", **snapshot},
+                }
+            )
+            + "\n\n",
+        ]
+    )
+    with patch.object(gateway, "_record_gateway_request") as record:
+        list(
+            gateway._openai_responses_passthrough_event_stream(
+                upstream,
+                ai_model=SimpleNamespace(provider_name="openai-compatible"),
+                payload={"input": "Review"},
+                budget_result=None,
+                started_at=time.perf_counter(),
+            )
+        )
+        gateway.flush_deferred_stream_record()
+    assert record.call_args.kwargs["accumulated_output_text"] == "Reviewed the change"

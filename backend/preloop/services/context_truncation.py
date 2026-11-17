@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -17,6 +18,7 @@ MIN_INPUT_ESTIMATE = 8192
 MIN_TOKEN_DEFICIT = 8192
 MAX_REPORTED_RATIO = 0.4
 MIN_HISTORY_GROWTH = 128
+logger = logging.getLogger(__name__)
 
 
 def estimate_request_input(payload: dict[str, Any]) -> int:
@@ -143,10 +145,21 @@ def record_execution_truncation(
     db: Session, *, execution_id: Any, signal: dict[str, Any]
 ) -> None:
     """Persist the gateway diagnosis independently of the agent's final result."""
-    crud_flow_execution.record_context_truncation(
-        db,
-        execution_id=execution_id,
-        signal=signal,
-        message=truncation_message(signal),
-        category=CONTEXT_TRUNCATED_SUSPECTED,
-    )
+    try:
+        crud_flow_execution.record_context_truncation(
+            db,
+            execution_id=execution_id,
+            signal=signal,
+            message=truncation_message(signal),
+            category=CONTEXT_TRUNCATED_SUSPECTED,
+        )
+    except Exception as exc:  # noqa: BLE001 - annotation cannot mask the outcome
+        logger.warning(
+            "Could not annotate context truncation for execution %s (%s)",
+            execution_id,
+            type(exc).__name__,
+        )
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001 - preserve the original gateway outcome
+            logger.warning("Rollback after context truncation annotation failed")
