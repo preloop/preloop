@@ -453,3 +453,53 @@ def test_result_prompt_uses_only_schema_fields(
     assert expected in prompt
     assert "base_sha =" not in prompt
     assert "additional fields" in prompt
+
+
+@pytest.mark.parametrize("text,degenerate", [("...", True), ("No issues found", False)])
+def test_required_narrative_and_enum_follow_local_schema_references(
+    text: str, degenerate: bool
+) -> None:
+    review = flow()
+    review.result_schema = {
+        "$ref": "#/$defs/result",
+        "$defs": {
+            "result": {
+                "type": "object",
+                "required": ["review", "risk", "evidence"],
+                "properties": {
+                    "review": {"type": "string"},
+                    "risk": {"$ref": "#/$defs/risk"},
+                    "evidence": {"type": "string"},
+                },
+            },
+            "risk": {"type": "string", "enum": ["L", "H"]},
+        },
+    }
+    assert (
+        review_integrity.degenerate_review(
+            review,
+            {
+                "review": text,
+                "risk": "L",
+                "evidence": "The changed paths were reviewed",
+            },
+        )
+        is degenerate
+    )
+
+
+@pytest.mark.parametrize(
+    "control,value", [("result", "ok"), ("confidence", "ok"), ("priority", "P0")]
+)
+def test_short_non_enum_controls_are_not_review_narrative(
+    control: str, value: str
+) -> None:
+    review = flow()
+    review.result_schema = {
+        "type": "object",
+        "required": [control, "review"],
+        "properties": {control: {"type": "string"}, "review": {"type": "string"}},
+    }
+    assert not review_integrity.degenerate_review(
+        review, {control: value, "review": "No issues found"}
+    )

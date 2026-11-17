@@ -840,7 +840,7 @@ if [ {native_resume_guard} -eq 1 ] && [ "$CODEX_EXIT_CODE" -ne 0 ]; then
     {session_blocks["pack"]}
     exit "$CODEX_EXIT_CODE"
 fi
-{inspection_continuation_block}{completion_nudge_block}{self._native_result_capture_block(execution_context)}{reclaim_block}{session_blocks["pack"]}{post_exec_block}
+{inspection_continuation_block}{completion_nudge_block}{reclaim_block}{self._native_result_capture_block(execution_context)}{session_blocks["pack"]}{post_exec_block}
 # Exit with codex's exit code
 exit $CODEX_EXIT_CODE
 """
