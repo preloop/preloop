@@ -4907,12 +4907,15 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         row.orchestrator_claimed_at = now
         row.orchestrator_heartbeat_at = now
         row.queued_reason = None
-        # A claim is progress, so the reaper's backoff for this execution
+        # Claiming an unfinished run is progress, so the reaper's backoff for it
         # starts again from zero. Without this, a run that queued for an hour
         # and then died on its new owner would wait out a fifteen minute gap
-        # before anyone adopted it.
-        row.redispatch_count = 0
-        row.last_redispatch_at = None
+        # before anyone adopted it. A run that is already terminal is only
+        # claimed to finish its stop; that claim proves nothing, and resetting
+        # here is what let such a row be re-dispatched forever.
+        if row.status not in self.TERMINAL_EXECUTION_STATUSES:
+            row.redispatch_count = 0
+            row.last_redispatch_at = None
         db.add(row)
         db.commit()
         db.refresh(row)

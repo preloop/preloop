@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Execution recovery: a run that had already stopped, failed or finished, but
+  whose stop was never confirmed, was picked up by the recovery pass every
+  30 seconds without end. Each time its end time and error were overwritten
+  with a timeout message, a session-ended audit entry was written and its
+  end-of-run notifications ran again. Recovery now only checks such a run's
+  runtime: when the runtime is gone (or once it has been stopped) the stop
+  is confirmed and the run leaves recovery in that pass. Its stored outcome is
+  not touched and nothing is notified a second time. This also covers runs
+  whose flow settings changed after launch in a way that made recovery fail
+  each time (for example a run stopped when its pull request merged).
+  As a backstop, a finished run whose stop still cannot be confirmed after
+  five attempts is settled with one error log line, instead of being retried
+  forever.
 - Native-result reviews: a final answer that does not match the result schema
   (a missing required field, a value outside an enum, a wrong type, or no
   JSON) no longer fails the run at once. The hosted Codex runtime asks the

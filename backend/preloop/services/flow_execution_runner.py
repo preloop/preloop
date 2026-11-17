@@ -46,6 +46,122 @@ def get_active_claimed_execution_ids() -> Set[str]:
     return set(_active_claimed_execution_ids)
 
 
+async def _close_executor(agent_executor: Any) -> None:
+    """Release an executor's clients; best effort, never raises."""
+    for name in ("aclose", "cleanup"):
+        method = getattr(agent_executor, name, None)
+        if not callable(method):
+            continue
+        try:
+            await method()
+        except Exception as close_error:  # noqa: BLE001 - best-effort close
+            logger.warning(
+                "Error during agent %s after settling a stop: %s",
+                name,
+                type(close_error).__name__,
+            )
+
+
+def _executor_for_stop(
+    db: Any,
+    flow: Any,
+    execution: Any,
+    session_reference: str,
+) -> Any:
+    """Build an executor that can inspect and stop an existing runtime.
+
+    Admission checks that guard a launch (read-only review routing, host
+    profiles) raise ``ValueError`` for a configuration that changed after
+    the run started. Inspecting and stopping a runtime launches nothing, so
+    a hosted reference falls back to the plain hosted executor.
+    """
+    from preloop.agents import create_agent_executor, create_executor_for_execution
+
+    agent_config = getattr(flow, "agent_config", None) or {}
+    try:
+        return create_executor_for_execution(
+            flow.agent_type,
+            agent_config,
+            flow=flow,
+            execution=execution,
+            db=db,
+        )
+    except ValueError as exc:
+        if session_reference.startswith("runner:"):
+            raise
+        logger.warning(
+            "Executor for stopped execution %s refused (%s); inspecting its "
+            "hosted runtime with the plain container executor",
+            getattr(execution, "id", None),
+            type(exc).__name__,
+        )
+    try:
+        return create_agent_executor(flow.agent_type, agent_config)
+    except ValueError:
+        # A host agent type has no hosted executor of its own. Inspection and
+        # stop of a hosted Job or container do not depend on the harness, and
+        # every hosted executor detects Docker or Kubernetes the same way.
+        return create_agent_executor("codex", {})
+
+
+async def settle_terminal_stop(
+    db: Any,
+    *,
+    flow: Any,
+    execution: Any,
+    session_reference: str,
+) -> bool:
+    """Finish the stop of a run that already has its terminal outcome.
+
+    A terminal run is recovered only because its stop was never confirmed.
+    All that is left is the runtime: confirm the stop when it is gone, or
+    stop it and confirm once it reports gone. The stored outcome (status,
+    end time, error, result) is never rewritten and nothing is notified;
+    that happened once, when the run ended.
+
+    Returns:
+        True when the stop is now confirmed.
+    """
+    execution_id = execution.id
+    try:
+        agent_executor = _executor_for_stop(db, flow, execution, session_reference)
+    except Exception as exc:  # noqa: BLE001 - the reaper's bound settles it
+        logger.warning(
+            "Cannot inspect the runtime of stopped execution %s: %s",
+            execution_id,
+            type(exc).__name__,
+        )
+        return False
+    stopped = False
+    try:
+        stopped = await agent_executor.is_stopped(session_reference) is True
+        if not stopped:
+            await agent_executor.stop(session_reference)
+            stopped = await agent_executor.is_stopped(session_reference) is True
+    except Exception as exc:  # noqa: BLE001 - the reaper's bound settles it
+        logger.warning(
+            "Could not confirm the stop of execution %s: %s",
+            execution_id,
+            type(exc).__name__,
+        )
+    finally:
+        await _close_executor(agent_executor)
+    if stopped:
+        crud_flow_execution.confirm_stop(db, execution_id=execution_id)
+        logger.info(
+            "Confirmed the stop of %s execution %s: its runtime is gone",
+            execution.status,
+            execution_id,
+        )
+    return stopped
+
+
+def _is_terminal(execution: Any) -> bool:
+    """Whether the run already has its outcome and only a stop may be left."""
+    status = getattr(execution, "status", None)
+    return status in crud_flow_execution.TERMINAL_EXECUTION_STATUSES
+
+
 async def run_existing_execution(
     orchestrator: FlowExecutionOrchestrator,
 ) -> None:
@@ -101,6 +217,22 @@ async def resume_existing_execution(
 
     if orchestrator.execution_log is None:
         raise ValueError("execution_log must be set before resume_existing_execution")
+
+    if _is_terminal(orchestrator.execution_log):
+        # The outcome is stored and was notified when the run ended. Writing
+        # it again would overwrite end_time and error and notify again.
+        if orchestrator.flow is None:
+            orchestrator.flow = crud_flow.get(
+                orchestrator.db, id=orchestrator.execution_log.flow_id
+            )
+        if orchestrator.flow is not None:
+            await settle_terminal_stop(
+                orchestrator.db,
+                flow=orchestrator.flow,
+                execution=orchestrator.execution_log,
+                session_reference=session_reference,
+            )
+        return
 
     orchestrator._is_recovered = True
     orchestrator._get_flow_details()
@@ -344,6 +476,10 @@ async def claim_and_run_execution(
         # an existing runtime. Fresh admission is serialized again at dispatch.
         flow_row = crud_flow.get(db, id=execution.flow_id)
         if flow_row is None:
+            if _is_terminal(execution):
+                # Keep the stored outcome. With no flow there is no runtime
+                # to inspect; the reaper's bound settles the stop.
+                return {"status": "missing_flow", "execution_id": execution_id_str}
             crud_flow_execution.update(
                 db,
                 db_obj=execution,
@@ -356,6 +492,21 @@ async def claim_and_run_execution(
             )
             db.commit()
             return {"status": "missing_flow", "execution_id": execution_id_str}
+        if session_reference and _is_terminal(execution):
+            # Only an unconfirmed stop makes a terminal run claimable. Finish
+            # that stop without an orchestrator, which would write and
+            # notify the terminal outcome a second time.
+            confirmed = await settle_terminal_stop(
+                db,
+                flow=flow_row,
+                execution=execution,
+                session_reference=session_reference,
+            )
+            return {
+                "status": "stop_confirmed" if confirmed else "stop_unconfirmed",
+                "execution_id": execution_id_str,
+                "final_status": execution.status,
+            }
         if not session_reference:
             if crud_flow_execution.cancel_unstarted_stop(db, execution_id=execution_id):
                 return {"status": "stopped", "execution_id": execution_id_str}
