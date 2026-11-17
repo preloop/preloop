@@ -524,10 +524,39 @@ read, Preloop starts up to two fresh sessions in the same container. Each gets
 the same prompt/schema and a short instruction naming the bound revisions,
 requesting the diff and changed files, and describing a usable review. The
 `PRELOOP_REVIEW_CONTINUATION` log records each attempt. Existing timeout and
-model budgets apply; no token, turn or cost ceiling is added. Preloop never
-repairs the model's result. The continuation is off with
-`review_integrity.require_inspection: false` or `sandbox_type: read-only`
-(no shell).
+model budgets apply; no token, turn or cost ceiling is added. The continuation
+is off with `review_integrity.require_inspection: false` or
+`sandbox_type: read-only` (no shell).
+
+**Result repair continuation.** Some upstreams get JSON mode with the schema
+written into the instructions instead of an enforced schema, so a model can
+finish a real review and still leave out a required field, use a value outside
+an enum, use the wrong type, or answer with something that is not JSON. When
+the final native answer does not match the result schema, Preloop asks again
+instead of failing at once. It starts up to two more fresh sessions in the same
+container. Each gets the same prompt and schema, the list of validation errors
+(JSON path and message, for example `$.findings: 'findings' is a required
+property`) and the previous answer, and is asked for the same review again as
+one complete object. The inspection already done still counts, so a repair
+session does not have to read the change again. A repair only runs when the
+session before it passed the inspection check; it never replaces an inspection
+continuation. No repair starts with less than 30 seconds of the execution
+deadline left, and a repair session is stopped before the deadline. The
+`PRELOOP_REVIEW_CONTINUATION` log records each repair with
+`"reason":"result_schema_invalid"`, its attempt number and the failing paths
+(no values). Preloop never edits the answer itself: the controller validates
+whatever the last session wrote and applies every check above. If it is still
+invalid, the run fails with `result_schema_invalid` and the validation errors,
+as before. Flows without `agent_config.native_result: true` are unchanged.
+
+**Result ready when the time limit fires.** If the execution deadline expires
+after the agent has already written its native answer (for example because the
+container did not exit in time), Preloop captures that answer and applies the
+same checks it applies to a review that survives a repeated-tool-loop stop: the
+result schema, result binding, repository inspection and usable narrative, then
+the normal finalization gates. If all of them pass, the review is finalized as
+usual and the completion facts record `time_limit_after_result: true`. If any
+check fails, or there is no answer, the run still ends with `timeout`.
 
 **Native completion.** Native-result prompts ask for a final answer in the
 required format, which ends the run. They do not append file-writing or sentinel
@@ -537,8 +566,8 @@ wins regardless of write order. If it is absent or unusable, Preloop accepts the
 file only when it passes the same schema, revision, narrative and inspection
 checks. An explicit schema-valid native failure remains authoritative. If neither
 candidate is usable, ordinary validation fails the run. A verified completed
-review in the file also survives a subsequent repeated-tool-loop stop; user stops
-and execution timeouts are unchanged.
+review in the file also survives a subsequent repeated-tool-loop stop or an
+execution timeout (see above); user stops are unchanged.
 
 **Native format compatibility.** For Codex CLI requests identified by the
 `codex_exec/` or `codex_cli_rs/` user agent, with tools and an output format,
