@@ -462,6 +462,10 @@ async def test_resume_terminal_merges_pr_binding_into_notify() -> None:
     from preloop.services.flow_execution_runner import resume_existing_execution
 
     orchestrator = MagicMock()
+
+    orchestrator.settle_commit_status = AsyncMock()
+
+    orchestrator._explain_schema_rejection = lambda result: result
     orchestrator.execution_log = SimpleNamespace(
         id=uuid.uuid4(),
         result={"pr_url": "https://github.com/acme/app/pull/7"},

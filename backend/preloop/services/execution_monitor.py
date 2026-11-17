@@ -108,6 +108,15 @@ class ExecutionMonitor:
             except Exception as e:
                 logger.error("Error sweeping platform reviews: %s", type(e).__name__)
 
+            try:
+                from preloop.services.commit_status_settlement import (
+                    settle_commit_statuses,
+                )
+
+                await settle_commit_statuses()
+            except Exception as e:
+                logger.error("Error settling commit statuses: %s", type(e).__name__)
+
             # Wait before next check
             try:
                 await asyncio.sleep(self.check_interval)

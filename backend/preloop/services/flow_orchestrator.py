@@ -1101,6 +1101,8 @@ class FlowExecutionOrchestrator:
         self._commit_sha: Optional[str] = None
         self._status_context: str = "preloop"
         self._is_recovered: bool = False  # Set to True during execution recovery
+        # Settlement sweep only: take over a final-status claim this old.
+        self._final_status_stale_after: Optional[timedelta] = None
         # Warning messages already surfaced on the execution timeline, so a
         # repeated condition (e.g. status posted at pending and again at
         # success) does not spam the same line.
@@ -1708,11 +1710,22 @@ class FlowExecutionOrchestrator:
             f"[CommitStatus] Checking if status update needed (state='{state}')"
         )
 
-        # Skip commit status updates during execution recovery
-        # to avoid making external API calls for old/stale executions
-        if self._is_recovered:
+        terminal = state != "pending"
+        pending = self._recorded_pending_status() if terminal else None
+        # Skip commit status updates during execution recovery to avoid
+        # external API calls for old/stale executions, unless this run set a
+        # pending status that must not be left pending.
+        if self._is_recovered and pending is None:
             logger.info("[CommitStatus] Skipping - execution is recovered")
             return
+        status_context = self._status_context
+        refname: Optional[str] = None
+        if pending is not None:
+            # The final status replaces the pending one: same commit, same
+            # context, even if the trigger data would now resolve another.
+            self._commit_sha = str(pending["sha"])
+            status_context = str(pending.get("context") or status_context)
+            refname = pending.get("refname")
 
         if not self._commit_sha:
             self._commit_sha = self._extract_commit_sha()
@@ -1738,6 +1751,7 @@ class FlowExecutionOrchestrator:
             return
 
         status_target = "the triggering repository"
+        claimed_final = False
         try:
             logger.info(
                 f"[CommitStatus] Getting tracker client. "
@@ -1789,30 +1803,45 @@ class FlowExecutionOrchestrator:
                     )
                     target_url = f"/console/flows/executions/{self.execution_log.id}"
 
+            if pending is None:
+                refname = self._extract_pr_branch_from_trigger()
+            if terminal and not self._claim_final_commit_status(state):
+                logger.info(
+                    "[CommitStatus] Final status already set for this execution"
+                )
+                return
+            claimed_final = terminal
+
             # Log the API call we're about to make
             logger.info(
                 "[CommitStatus] Calling create_commit_status: sha=%s state=%s context=%s",
                 self._commit_sha[:8],
                 state,
-                self._status_context,
+                status_context,
             )
 
             await tracker_client.create_commit_status(
                 sha=self._commit_sha,
                 state=state,
-                context=self._status_context,
+                context=status_context,
                 description=description,
                 target_url=target_url,
                 # Bitbucket attaches a build status to a pull request only
                 # when refname names its source branch.
-                refname=self._extract_pr_branch_from_trigger(),
+                refname=refname,
             )
 
             logger.info(
                 f"[CommitStatus] SUCCESS - Updated to '{state}' on {self._commit_sha[:8]}"
             )
+            if terminal:
+                self._record_final_commit_status(posted=True)
+            else:
+                self._record_pending_commit_status(status_context, refname)
 
         except Exception as e:
+            if claimed_final:
+                self._record_final_commit_status(posted=False)
             # Don't fail the execution if status update fails, but do not hide
             # it either: a swallowed 422 used to leave the flow looking green
             # while GitHub showed no check at all (issue #175).
@@ -1827,6 +1856,135 @@ class FlowExecutionOrchestrator:
                     "target": status_target,
                 },
             )
+
+    def _recorded_pending_status(self) -> Optional[Dict[str, Any]]:
+        """The pending commit status this execution recorded, read fresh."""
+        execution = getattr(self, "execution_log", None)
+        if execution is None or getattr(execution, "id", None) is None:
+            return None
+        try:
+            fresh = crud_flow_execution.get(self.db, id=execution.id)
+            record = crud_flow_execution.commit_status_record(fresh)
+        except Exception:
+            logger.debug("Could not read the commit status record", exc_info=True)
+            return None
+        pending = record.get("pending")
+        if not isinstance(pending, dict) or not isinstance(pending.get("sha"), str):
+            return None
+        return pending
+
+    def _record_pending_commit_status(
+        self, context: str, refname: Optional[str]
+    ) -> None:
+        """Remember the pending status so a terminal path can replace it."""
+        execution = getattr(self, "execution_log", None)
+        if execution is None or not self._commit_sha:
+            return
+        try:
+            crud_flow_execution.record_pending_commit_status(
+                self.db,
+                execution_id=execution.id,
+                sha=self._commit_sha,
+                context=context,
+                refname=refname,
+            )
+        except Exception:
+            self.db.rollback()
+            logger.warning("[CommitStatus] Could not record the pending status")
+
+    def _claim_final_commit_status(self, state: str) -> bool:
+        """Take the single right to set the final status; True to post.
+
+        A storage error does not stop the post: a repeated final status is
+        better than a pending one left forever.
+        """
+        execution = getattr(self, "execution_log", None)
+        if execution is None:
+            return True
+        try:
+            return crud_flow_execution.claim_final_commit_status(
+                self.db,
+                execution_id=execution.id,
+                state=state,
+                stale_after=getattr(self, "_final_status_stale_after", None),
+            )
+        except Exception:
+            self.db.rollback()
+            logger.warning("[CommitStatus] Could not claim the final status")
+            return True
+
+    def _record_final_commit_status(self, *, posted: bool) -> None:
+        """Record whether the claimed final status reached the provider."""
+        execution = getattr(self, "execution_log", None)
+        if execution is None:
+            return
+        try:
+            crud_flow_execution.record_final_commit_status(
+                self.db, execution_id=execution.id, posted=posted
+            )
+        except Exception:
+            self.db.rollback()
+            logger.warning("[CommitStatus] Could not record the final status")
+
+    def _explain_schema_rejection(self, agent_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Word a provider's result schema refusal like the save-time check.
+
+        Args:
+            agent_result: The monitored attempt's result.
+
+        Returns:
+            The result, with ``error_message`` replaced when the provider
+            refused the flow's result schema for a reason the save-time check
+            names.
+        """
+        from preloop.services.flow_result_schema import (
+            explain_provider_schema_rejection,
+        )
+
+        try:
+            explained = explain_provider_schema_rejection(
+                agent_result.get("error_message"),
+                getattr(self.flow, "result_schema", None),
+            )
+        except Exception:
+            return agent_result
+        if explained is None:
+            return agent_result
+        return {**agent_result, "error_message": explained}
+
+    async def settle_commit_status(
+        self,
+        stored_status: str,
+        *,
+        error_message: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Set the final commit status for a terminal execution.
+
+        Used by every terminal path that is not the main run (resume after a
+        worker restart, the settlement sweep), with the same wording as the
+        main run. Posts at most once per execution.
+
+        Args:
+            stored_status: The execution's stored terminal status.
+            error_message: Why a failed run failed, for the description.
+            result: The stored result, to describe an incomplete review.
+        """
+        state = "success" if stored_status == "SUCCEEDED" else "failure"
+        description = (
+            f"Preloop review completed: {self.flow.name}"
+            if self.flow
+            else "Preloop review completed"
+        )
+        if stored_status == "STOPPED":
+            description = "Preloop execution was stopped"
+        elif stored_status != "SUCCEEDED":
+            detail = error_message or "Unknown error"
+            description = f"Preloop review failed: {str(detail)[:80]}"
+            incomplete = self._describe_incomplete_review(stored_status, result)
+            if incomplete:
+                description = incomplete
+        await self._update_commit_status(state=state, description=description)
 
     @staticmethod
     async def send_command(
@@ -10049,7 +10207,10 @@ class FlowExecutionOrchestrator:
             )
 
     async def _publish_platform_review(self) -> None:
-        """Post the validated read-only review and commit status (opt-in).
+        """Post the validated read-only review and commit status (automatic).
+
+        Only a flow whose platform review mode is ``automatic`` posts here.
+        In ``manual`` mode the explicit publish call is the only poster.
 
         The work happens in ``preloop.services.platform_review`` on its own
         database session with a GitHub App token minted there; the
@@ -10059,7 +10220,8 @@ class FlowExecutionOrchestrator:
         """
         try:
             from preloop.services.platform_review import (
-                platform_review_block,
+                MODE_AUTOMATIC,
+                platform_review_mode,
                 publish_finished_execution,
             )
 
@@ -10069,8 +10231,8 @@ class FlowExecutionOrchestrator:
                 flow is None
                 or execution is None
                 or getattr(execution, "ci_review_binding", None) is None
-                or platform_review_block(getattr(flow, "git_clone_config", None))
-                is None
+                or platform_review_mode(getattr(flow, "git_clone_config", None))
+                != MODE_AUTOMATIC
             ):
                 return
             # Bounded so a slow provider cannot hold back the finished
@@ -10297,6 +10459,12 @@ class FlowExecutionOrchestrator:
             # say what was posted. Never raises and never touches the status
             # or result that were just stored.
             await self._publish_platform_review()
+            # The publication wrote on its own session (who posted, the
+            # record); read it back so the finished event reports it.
+            try:
+                self.db.refresh(self.execution_log)
+            except Exception:
+                logger.debug("Could not refresh the execution after posting")
             self._emit_execution_finished_webhook(
                 status, getattr(self.execution_log, "failure_category", None)
             )
@@ -11930,6 +12098,7 @@ class FlowExecutionOrchestrator:
                 )
                 return
 
+            agent_result = self._explain_schema_rejection(agent_result)
             terminal_failure_category = self._terminal_failure_category(
                 final_status, agent_result
             )

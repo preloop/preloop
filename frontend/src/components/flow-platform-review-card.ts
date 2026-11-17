@@ -8,9 +8,10 @@ import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
+import '@shoelace-style/shoelace/dist/components/radio/radio.js';
+import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
-import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import consoleStyles from '../styles/console-styles.css?inline';
 import {
   FlowRevisionConflictError,
@@ -22,14 +23,29 @@ import {
   COMMIT_STATES,
   DEFAULT_STATUS_CONTEXT,
   STATUS_CONTEXT_PATTERN,
+  platformReviewMode,
   platformReviewPrerequisites,
   prerequisitesMet,
   suggestedState,
   verdictEnum,
   type CommitState,
   type PlatformReviewConfig,
+  type PlatformReviewMode,
   type PrerequisiteCheck,
 } from '../utils/platform-review';
+
+const MODE_LABELS: Record<PlatformReviewMode, string> = {
+  off: 'Off',
+  automatic: 'Automatic',
+  manual: 'Manual',
+};
+
+const MODE_HELP: Record<PlatformReviewMode, string> = {
+  off: 'Nothing is posted.',
+  automatic: 'Posted when each run finishes.',
+  manual:
+    "Posted only when someone, or the run's own CI identity, calls the publish endpoint for a finished run.",
+};
 
 const STATE_LABELS: Record<CommitState, string> = {
   success: 'Success (passes)',
@@ -227,9 +243,15 @@ export class FlowPlatformReviewCard extends LitElement {
     return '';
   }
 
-  private setEnabled(enabled: boolean): void {
+  private setMode(mode: PlatformReviewMode): void {
     this.saved = false;
-    this.draft = { ...this.draft, enabled };
+    const { mode: _mode, ...rest } = this.draft;
+    this.draft =
+      mode === 'off'
+        ? { ...rest, enabled: false }
+        : mode === 'manual'
+          ? { ...rest, enabled: true, mode: 'manual' }
+          : { ...rest, enabled: true };
   }
 
   private setStatusOn(on: boolean): void {
@@ -470,21 +492,27 @@ export class FlowPlatformReviewCard extends LitElement {
     if (!this.flow) return nothing;
     const checks = this.checks;
     const enabled = this.draft.enabled;
-    const storedOn = this.storedBlock().enabled;
+    const mode = platformReviewMode(this.draft);
+    const storedMode = platformReviewMode(this.storedBlock());
+    const storedOn = storedMode !== 'off';
     return html`
       <sl-card data-platform-review>
         <div slot="header" class="card-header">
           <span>Post review on the pull request</span>
           ${
             storedOn
-              ? html`<sl-badge pill variant="success">On</sl-badge>`
-              : html`<sl-badge pill variant="neutral">Off</sl-badge>`
+              ? html`<sl-badge pill variant="success" data-mode-badge
+                  >${MODE_LABELS[storedMode]}</sl-badge
+                >`
+              : html`<sl-badge pill variant="neutral" data-mode-badge
+                  >Off</sl-badge
+                >`
           }
         </div>
         <p>
-          After a run finishes and its result passes the result schema, Preloop
-          posts one pull request review and, if you set one, a commit status on
-          the reviewed commit. The run itself never holds a token that can write
+          Preloop posts one pull request review and, if you set one, a commit
+          status on the reviewed commit, from a finished run whose result passes
+          the result schema. The run itself never holds a token that can write
           to GitHub. Turning this on needs no new CI identities.
         </p>
         <div class="section-title">What it needs</div>
@@ -499,14 +527,21 @@ export class FlowPlatformReviewCard extends LitElement {
         }
         ${
           this.editable
-            ? html`<sl-switch
-                data-field="enabled"
-                .checked=${enabled}
+            ? html`<sl-radio-group
+                label="When to post"
+                data-field="mode"
+                .value=${mode}
+                help-text=${MODE_HELP[mode]}
                 @sl-change=${(e: Event) =>
-                  this.setEnabled((e.target as HTMLInputElement).checked)}
-                >Post the review on the pull request</sl-switch
-              >`
-            : nothing
+                  this.setMode(
+                    (e.target as HTMLInputElement).value as PlatformReviewMode
+                  )}
+              >
+                <sl-radio value="off">Off</sl-radio>
+                <sl-radio value="automatic">When the run finishes</sl-radio>
+                <sl-radio value="manual">Only when requested</sl-radio>
+              </sl-radio-group>`
+            : html`<p class="meta" data-mode>${MODE_HELP[storedMode]}</p>`
         }
         ${
           enabled
@@ -590,6 +625,8 @@ export class FlowPlatformReviewCard extends LitElement {
 /** The block as the server stores it: no empty optional keys. */
 function normalise(block: PlatformReviewConfig): PlatformReviewConfig {
   const out: PlatformReviewConfig = { enabled: Boolean(block.enabled) };
+  // Automatic is what a block without a mode means; only manual is stored.
+  if (block.enabled && block.mode === 'manual') out.mode = 'manual';
   if (block.action && block.action !== 'comment') out.action = block.action;
   if (block.verdict_actions && Object.keys(block.verdict_actions).length) {
     out.verdict_actions = block.verdict_actions;

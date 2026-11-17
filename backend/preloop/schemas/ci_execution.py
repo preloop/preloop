@@ -352,5 +352,12 @@ class CiExecutionResultResponse(CiExecutionResponse):
     execution_id: str
     result: dict[str, Any]
     result_withheld_paths: list[str]
+    result_sha256: str = Field(
+        description=(
+            "SHA-256 of ``result`` in canonical form (keys sorted, compact "
+            "separators, UTF-8). Send it as ``expected_result_sha256`` to the "
+            "platform-review publish call so only this document is posted."
+        )
+    )
     schema_validation: dict[str, Any] | None
     completion: ReviewCompletion

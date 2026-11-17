@@ -220,6 +220,30 @@ App bot), target (commit, context) and content (body digest, state). A
 mismatch is recorded as `readback_mismatch` and is never cleared by a retry:
 a person has to look at the pull request.
 
+## Posting modes and caller preconditions
+
+`platform_review.mode` is `automatic` (the default, and what a block without
+`mode` means) or `manual`; `enabled: false` is off. Only automatic posts from
+the completion path (`FlowExecutionOrchestrator._publish_platform_review`)
+and from the sweep (`unclaimed_execution_ids` excludes manual flows, and a
+retry left over from automatic mode is closed with `manual_mode`). A failed
+manual attempt is never retried automatically.
+
+The explicit publish call takes optional caller preconditions
+(`expected_head_sha`, `expected_base_sha`, `expected_result_sha256`,
+`expected_flow_revision`). They are compared three times: against the stored
+binding, result digest and flow revision before the row is claimed; against
+the flow and execution re-read inside the claimed attempt; and, for the
+commits, against the live pull request after the lease is minted and before
+the first write. A mismatch raises `PreconditionFailedError` before any
+provider write, the row ends `failed` / `precondition_failed` (not
+retryable, reclaimable by the next explicit call) and the API answers 412.
+The digest is the existing `result_sha256` over the restricted result
+projection (`review_completion_evidence.result_sha256`), so a CI identity
+compares exactly the document it read. Who posted (`automatic` or `manual`)
+is recorded as a completion fact on the execution and projected as
+`posted_by`; every attempt writes an audit entry `platform_review_publish`.
+
 ## The record
 
 `platform_review.status` on the execution says what is on the provider:
@@ -311,6 +335,8 @@ reading.
 | 19 | A cancelled attempt or dead worker leaves a review unposted forever | interrupted attempts are recorded retryable; stale claims are taken over | `test_attempt_cancelled_after_the_claim_is_completed_by_the_next_sweep`, `test_claim_abandoned_by_a_dead_worker_is_due_and_completed` |
 | 20 | Stale retries of opted-out flows crowd out real ones; the sweep reaches back before the opt-in | retry closed on opt-out; sweep limited to runs that finished after posting was enabled | `test_retry_of_a_flow_that_opted_out_leaves_the_queue`, `test_sweep_is_bounded_by_when_posting_was_enabled_not_by_later_saves`, `test_enabled_at_is_set_by_the_server_and_kept_across_saves` |
 | 18 | With the opt-in off anything changes | no claim, no lease, no call | `test_opt_in_off_mints_no_lease_and_makes_no_call`, `test_completion_path_does_nothing_without_the_opt_in_or_a_ci_binding` |
+| 21 | A manual-mode flow posts without the caller asking | completion path and sweep post only in automatic mode; manual failures are not retried | `test_platform_review_manual.py`: `test_execution_finish_posts_only_in_automatic_mode`, `test_sweep_never_posts_for_a_manual_flow`, `test_failed_manual_attempt_is_not_retried_automatically` |
+| 22 | A review is posted for a result, commit or flow configuration other than the one the caller validated | caller preconditions checked before the claim, inside the attempt and against the live pull request before any write | `test_platform_review_manual.py`: `test_each_mismatching_precondition_refuses_with_412_and_can_be_corrected`, `test_commit_moved_between_the_check_and_the_post_writes_nothing`, `test_result_changed_after_the_first_check_is_caught_at_post_time`, `test_flow_changed_after_the_caller_reviewed_it_refuses` |
 
 ## GitHub App permissions
 

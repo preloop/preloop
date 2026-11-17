@@ -20,6 +20,8 @@ async def test_resumed_run_persists_result_before_completion_is_queued() -> None
 
     order: list[tuple[str, Any]] = []
     orchestrator = MagicMock()
+    orchestrator.settle_commit_status = AsyncMock()
+    orchestrator._explain_schema_rejection = lambda result: result
     orchestrator.execution_log = SimpleNamespace(id=uuid.uuid4(), result=None)
     orchestrator.flow = SimpleNamespace(agent_type="codex", agent_config={})
     orchestrator.agent_type = "codex"

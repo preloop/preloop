@@ -358,6 +358,16 @@ class PlatformReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = Field(default=False, description="Turn the posting on")
+    mode: Literal["automatic", "manual"] = Field(
+        default="automatic",
+        description=(
+            "When posting is on: automatic posts when the execution finishes; "
+            "manual posts only when the explicit publish call "
+            "(POST /flows/executions/{id}/platform-review) is made. A block "
+            "stored without a mode is automatic. Posting is off when enabled "
+            "is false."
+        ),
+    )
     action: Literal["comment"] = Field(
         default="comment",
         description="Review action used unless verdict_actions maps the verdict",

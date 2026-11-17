@@ -53,6 +53,19 @@ logger = logging.getLogger(__name__)
 
 #: Key of the opt-in block inside ``git_clone_config``.
 CONFIG_KEY = "platform_review"
+#: Posting modes. Automatic posts when the execution finishes; manual posts
+#: only on the explicit publish call.
+MODE_OFF = "off"
+MODE_AUTOMATIC = "automatic"
+MODE_MANUAL = "manual"
+#: Stored values of ``platform_review.mode``; off is ``enabled: false``.
+STORED_MODES: frozenset[str] = frozenset({MODE_AUTOMATIC, MODE_MANUAL})
+#: How the review of an execution reached the pull request.
+POSTED_AUTOMATICALLY = "automatic"
+POSTED_MANUALLY = "manual"
+NOT_POSTED = "none"
+#: Completion fact on the execution recording who posted its review.
+POSTED_BY_FACT = "platform_review_posted_by"
 #: Flow value to GitHub review event.
 REVIEW_EVENTS: dict[str, str] = {
     "comment": "COMMENT",
@@ -141,6 +154,224 @@ class PlatformReviewError(Exception):
         self.retryable = retryable
 
 
+# --- caller preconditions --------------------------------------------------
+
+#: Request members of the explicit publish call, in the order they are checked.
+PRECONDITION_FIELDS: tuple[str, ...] = (
+    "expected_head_sha",
+    "expected_base_sha",
+    "expected_result_sha256",
+    "expected_flow_revision",
+)
+_RESULT_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class PreconditionMalformedError(ValueError):
+    """A precondition value that is not well formed (HTTP 400).
+
+    Attributes:
+        field: The request member that is malformed.
+    """
+
+    def __init__(self, field: str, message: str) -> None:
+        super().__init__(message)
+        self.field = field
+
+
+class PreconditionFailedError(Exception):
+    """One or more caller preconditions do not hold (HTTP 412).
+
+    Attributes:
+        failures: One entry per failed precondition, in
+            :data:`PRECONDITION_FIELDS` order, each with ``precondition``,
+            ``expected``, ``current`` and ``source``.
+    """
+
+    def __init__(self, failures: list[dict[str, Any]]) -> None:
+        super().__init__("review_precondition_failed")
+        self.failures = failures
+
+
+@dataclass(frozen=True)
+class ReviewPreconditions:
+    """What the caller validated; each member is optional."""
+
+    head_sha: str | None = None
+    base_sha: str | None = None
+    result_sha256: str | None = None
+    flow_revision: int | None = None
+
+    @property
+    def any(self) -> bool:
+        """Whether the caller supplied at least one precondition."""
+        return any(
+            value is not None
+            for value in (
+                self.head_sha,
+                self.base_sha,
+                self.result_sha256,
+                self.flow_revision,
+            )
+        )
+
+
+def parse_preconditions(body: Any) -> ReviewPreconditions:
+    """Read the optional request body of the explicit publish call.
+
+    Args:
+        body: Decoded JSON body; None or ``{}`` means no preconditions.
+
+    Returns:
+        The preconditions. Commit SHAs are compared lowercase.
+
+    Raises:
+        PreconditionMalformedError: The body is not an object, names an
+            unknown member, or a value has the wrong form.
+    """
+    if body is None:
+        return ReviewPreconditions()
+    if not isinstance(body, Mapping):
+        raise PreconditionMalformedError("body", "The request body must be an object")
+    unknown = sorted(str(key) for key in body if key not in PRECONDITION_FIELDS)
+    if unknown:
+        raise PreconditionMalformedError(
+            unknown[0], f"Unknown request member: {unknown[0]}"
+        )
+    values: dict[str, Any] = {}
+    for field in ("expected_head_sha", "expected_base_sha"):
+        value = body.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not _SHA_RE.fullmatch(value.lower()):
+            raise PreconditionMalformedError(
+                field, f"{field} must be a full 40 or 64 character commit SHA"
+            )
+        values[field] = value.lower()
+    digest_value = body.get("expected_result_sha256")
+    if digest_value is not None:
+        if not isinstance(digest_value, str) or not _RESULT_DIGEST_RE.fullmatch(
+            digest_value.lower()
+        ):
+            raise PreconditionMalformedError(
+                "expected_result_sha256",
+                "expected_result_sha256 must be 64 hexadecimal characters",
+            )
+        values["expected_result_sha256"] = digest_value.lower()
+    revision = body.get("expected_flow_revision")
+    if revision is not None:
+        if type(revision) is not int or revision < 1:
+            raise PreconditionMalformedError(
+                "expected_flow_revision",
+                "expected_flow_revision must be a positive integer",
+            )
+        values["expected_flow_revision"] = revision
+    return ReviewPreconditions(
+        head_sha=values.get("expected_head_sha"),
+        base_sha=values.get("expected_base_sha"),
+        result_sha256=values.get("expected_result_sha256"),
+        flow_revision=values.get("expected_flow_revision"),
+    )
+
+
+def stored_result_sha256(execution: Any) -> str:
+    """The published digest of an execution's stored result.
+
+    The same value as ``completion.result_captured.result_sha256`` and the CI
+    callback: SHA-256 over the canonical JSON of the restricted result
+    projection. See :func:`preloop.services.review_completion_evidence.
+    result_sha256` for the canonical form.
+    """
+    from preloop.services.review_completion_evidence import result_sha256
+
+    return result_sha256(getattr(execution, "result", None))
+
+
+def _failure(field: str, expected: Any, current: Any, source: str) -> dict[str, Any]:
+    return {
+        "precondition": field,
+        "expected": expected,
+        "current": current,
+        "source": source,
+    }
+
+
+def check_stored_preconditions(
+    pre: ReviewPreconditions,
+    *,
+    flow: Any,
+    execution: Any,
+    binding: CiReviewBinding,
+) -> list[dict[str, Any]]:
+    """Compare the preconditions with what Preloop stores.
+
+    Args:
+        pre: Caller preconditions.
+        flow: The execution's flow, as it will be read for posting.
+        execution: The execution, as it will be read for posting.
+        binding: The execution's review binding.
+
+    Returns:
+        Failures, empty when every supplied precondition holds.
+    """
+    failures: list[dict[str, Any]] = []
+    if pre.head_sha is not None and pre.head_sha != binding.head_sha.lower():
+        failures.append(
+            _failure("expected_head_sha", pre.head_sha, binding.head_sha, "binding")
+        )
+    if pre.base_sha is not None:
+        bound_base = (binding.base_sha or "").lower() or None
+        if bound_base is not None and pre.base_sha != bound_base:
+            failures.append(
+                _failure("expected_base_sha", pre.base_sha, bound_base, "binding")
+            )
+    if pre.result_sha256 is not None:
+        current = stored_result_sha256(execution)
+        if pre.result_sha256 != current:
+            failures.append(
+                _failure("expected_result_sha256", pre.result_sha256, current, "result")
+            )
+    if pre.flow_revision is not None:
+        current_revision = getattr(flow, "config_revision", None)
+        if pre.flow_revision != current_revision:
+            failures.append(
+                _failure(
+                    "expected_flow_revision",
+                    pre.flow_revision,
+                    current_revision,
+                    "flow",
+                )
+            )
+    return failures
+
+
+def check_live_preconditions(
+    pre: ReviewPreconditions, pull: Any
+) -> list[dict[str, Any]]:
+    """Compare the commit preconditions with the live pull request.
+
+    Args:
+        pre: Caller preconditions.
+        pull: The pull request as the provider returns it now.
+
+    Returns:
+        Failures, empty when every supplied commit precondition holds.
+    """
+    failures: list[dict[str, Any]] = []
+    head = pull.get("head") if isinstance(pull, Mapping) else None
+    base = pull.get("base") if isinstance(pull, Mapping) else None
+    live_head = head.get("sha") if isinstance(head, Mapping) else None
+    live_base = base.get("sha") if isinstance(base, Mapping) else None
+    if pre.head_sha is not None and (
+        not isinstance(live_head, str) or live_head.lower() != pre.head_sha
+    ):
+        failures.append(_failure("expected_head_sha", pre.head_sha, live_head, "live"))
+    if pre.base_sha is not None and (
+        not isinstance(live_base, str) or live_base.lower() != pre.base_sha
+    ):
+        failures.append(_failure("expected_base_sha", pre.base_sha, live_base, "live"))
+    return failures
+
+
 # --- configuration ---------------------------------------------------------
 
 
@@ -150,6 +381,26 @@ def platform_review_block(config: Any) -> dict[str, Any] | None:
     if not isinstance(block, Mapping) or block.get("enabled") is not True:
         return None
     return dict(block)
+
+
+def platform_review_mode(config: Any) -> str:
+    """When Preloop posts the review of a flow: off, automatic or manual.
+
+    Stored shape (``git_clone_config.platform_review``): ``enabled: false`` or
+    no block is off; ``enabled: true`` is automatic unless ``mode`` is
+    ``"manual"``. Blocks saved before the mode existed have no ``mode`` and
+    keep meaning automatic.
+
+    Args:
+        config: The flow's ``git_clone_config``.
+
+    Returns:
+        One of :data:`MODE_OFF`, :data:`MODE_AUTOMATIC`, :data:`MODE_MANUAL`.
+    """
+    block = platform_review_block(config)
+    if block is None:
+        return MODE_OFF
+    return MODE_MANUAL if block.get("mode") == MODE_MANUAL else MODE_AUTOMATIC
 
 
 def _status_block(block: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -176,6 +427,7 @@ def validate_platform_review_block(block: Any) -> None:
         raise ValueError("platform_review must be an object with a boolean enabled")
     unknown = set(block) - {
         "enabled",
+        "mode",
         "action",
         "verdict_actions",
         "status",
@@ -183,6 +435,8 @@ def validate_platform_review_block(block: Any) -> None:
     }
     if unknown:
         raise ValueError("platform_review has unsupported keys")
+    if block.get("mode", MODE_AUTOMATIC) not in STORED_MODES:
+        raise ValueError("platform_review.mode must be automatic or manual")
     if block.get("action", "comment") != "comment":
         raise ValueError(
             "platform_review.action must be comment; other review actions "
@@ -1206,9 +1460,18 @@ async def _publish_claimed(
     *,
     flow: models.Flow,
     execution: models.FlowExecution,
+    preconditions: ReviewPreconditions | None = None,
 ) -> None:
-    """Run one attempt for a claimed row and record its outcome."""
+    """Run one attempt for a claimed row and record its outcome.
+
+    Raises:
+        PreconditionFailedError: A caller precondition no longer holds on
+            the re-read flow and execution, or on the live pull request.
+            Raised before the first write to the provider.
+    """
     from preloop.services.read_only_review import validate_read_only_flow
+
+    pre = preconditions or ReviewPreconditions()
 
     record = crud.crud_platform_review_publication.record
     # The execution's own identity must still be admitted: active, its
@@ -1234,6 +1497,16 @@ async def _publish_claimed(
         != (binding.repository_slug.lower(), str(binding.pr_number), binding.head_sha)
     ):
         raise PlatformReviewError("binding_changed")
+    if pre.any:
+        # Posting re-reads the flow and the result: check against what is
+        # stored now, not what the caller's earlier check saw.
+        db.refresh(flow)
+        db.refresh(execution)
+        failures = check_stored_preconditions(
+            pre, flow=flow, execution=execution, binding=binding
+        )
+        if failures:
+            raise PreconditionFailedError(failures)
     try:
         validate_read_only_flow(flow)
         validate_platform_review_flow(flow)
@@ -1324,6 +1597,10 @@ async def _publish_claimed(
                     number=binding.pr_number,
                     sha=binding.head_sha,
                 )
+                if pre.any:
+                    failures = check_live_preconditions(pre, await github.pull())
+                    if failures:
+                        raise PreconditionFailedError(failures)
                 if want_review:
                     try:
                         values = await _post_review(
@@ -1426,12 +1703,19 @@ async def publish_platform_review(
     account_id: Any,
     execution_id: Any,
     explicit: bool = False,
+    preconditions: ReviewPreconditions | None = None,
+    actor_user_id: Any = None,
 ) -> dict[str, Any] | None:
     """Publish, or publish again, the stored result of a finished execution.
 
     No model runs. The call is idempotent: a write the publication row
     already records is never repeated, and a concurrent caller gets the
     current state instead of a second attempt.
+
+    An automatic call (``explicit=False``) does nothing for a flow in manual
+    mode. Caller preconditions are checked against stored state before the
+    attempt is claimed, again after the flow and execution are re-read for
+    the attempt, and against the live pull request before the first write.
 
     Args:
         db: Database session.
@@ -1440,16 +1724,22 @@ async def publish_platform_review(
         explicit: A person or the execution's own CI identity asked for it.
             Explicit calls also retry attempts that ended ``skipped`` or
             failed for a reason automatic retries do not repeat.
+        preconditions: What the caller validated (explicit calls only).
+        actor_user_id: Account user who made an explicit call, for the audit
+            entry; None for a CI identity or the completion path.
 
     Returns:
         The public projection of the publication, or None when the flow has
-        not opted in and the call is not explicit.
+        not opted in (or posts manually) and the call is not explicit.
 
     Raises:
         LookupError: The execution does not exist in the account.
         PlatformReviewRefusedError: An explicit call for an execution that cannot
             be published at all (opt-in off, not finished, no binding).
+        PreconditionFailedError: A caller precondition does not hold. Nothing
+            was posted and the publication is not recorded as posted.
     """
+    pre = preconditions or ReviewPreconditions()
     execution = crud.crud_flow_execution.get_without_workspace(
         db, execution_id, account_id=account_id, refresh=True
     )
@@ -1462,11 +1752,17 @@ async def publish_platform_review(
     )
     if execution is None or flow is None:
         raise LookupError("Flow execution not found")
-    if platform_review_block(flow.git_clone_config) is None:
+    mode = platform_review_mode(flow.git_clone_config)
+    if mode == MODE_OFF:
         # A pending retry of a flow that opted out must not stay due forever.
         _stop_retrying(db, execution.id, "platform_review_disabled")
         if explicit:
             raise PlatformReviewRefusedError("platform_review_disabled")
+        return None
+    if mode == MODE_MANUAL and not explicit:
+        # Manual mode: only the explicit call posts. A retry left over from
+        # automatic mode stops here instead of posting unrequested.
+        _stop_retrying(db, execution.id, "manual_mode")
         return None
     try:
         binding = CiReviewBinding.model_validate(execution.ci_review_binding)
@@ -1478,6 +1774,22 @@ async def publish_platform_review(
         if explicit:
             raise PlatformReviewRefusedError("execution_not_finished")
         return None
+    if pre.any:
+        failures = check_stored_preconditions(
+            pre, flow=flow, execution=execution, binding=binding
+        )
+        if failures:
+            _audit_attempt(
+                db,
+                account_id=account_id,
+                execution=execution,
+                actor_user_id=actor_user_id,
+                mode=mode,
+                posted_by=NOT_POSTED,
+                status="denied",
+                details={"preconditions_failed": failures},
+            )
+            raise PreconditionFailedError(failures)
     store = crud.crud_platform_review_publication
     row = store.claim(
         db,
@@ -1491,20 +1803,118 @@ async def publish_platform_review(
     )
     if row is None:
         return platform_review_projection(db, execution, flow=flow)
+    # Manual mode never retries on its own: a failed explicit attempt waits
+    # for the caller, who may want to check again before posting.
+    automatic_retry = mode == MODE_AUTOMATIC
+    was_posted = row.review_state == STATE_POSTED
+    outcome = "success"
+    details: dict[str, Any] = {}
     try:
-        await _publish_claimed(db, row, flow=flow, execution=execution)
+        await _publish_claimed(
+            db, row, flow=flow, execution=execution, preconditions=pre
+        )
     except asyncio.CancelledError:
         # Cut short by the caller's time limit: hand the row to the monitor
         # instead of leaving it claimed.
-        _fail(db, execution.id, "attempt_interrupted", True)
+        _fail(db, execution.id, "attempt_interrupted", automatic_retry)
+        raise
+    except PreconditionFailedError as error:
+        # Nothing was written to the provider. The row records the refusal,
+        # not a post, and an explicit call with corrected values may retry.
+        _fail(db, execution.id, "precondition_failed", False)
+        _audit_attempt(
+            db,
+            account_id=account_id,
+            execution=execution,
+            actor_user_id=actor_user_id,
+            mode=mode,
+            posted_by=NOT_POSTED,
+            status="denied",
+            details={"preconditions_failed": error.failures},
+        )
         raise
     except PlatformReviewError as error:
-        _fail(db, execution.id, error.reason, error.retryable)
+        _fail(db, execution.id, error.reason, error.retryable and automatic_retry)
+        outcome, details = "failure", {"reason": error.reason}
     except Exception:
         # A posting failure never reaches the execution's status or result.
         logger.error("Platform review publication failed for %s", execution.id)
-        _fail(db, execution.id, "internal_error", True)
+        _fail(db, execution.id, "internal_error", automatic_retry)
+        outcome, details = "failure", {"reason": "internal_error"}
+    posted_now = False
+    if not was_posted:
+        current = store.get_for_execution(db, execution_id=str(execution.id))
+        posted_now = current is not None and current.review_state == STATE_POSTED
+    posted_by = (
+        (POSTED_MANUALLY if explicit else POSTED_AUTOMATICALLY)
+        if posted_now
+        else NOT_POSTED
+    )
+    if posted_now:
+        _record_posted_by(db, execution.id, posted_by)
+    _audit_attempt(
+        db,
+        account_id=account_id,
+        execution=execution,
+        actor_user_id=actor_user_id,
+        mode=mode,
+        posted_by=posted_by,
+        status=outcome,
+        details=details,
+    )
     return platform_review_projection(db, execution, flow=flow)
+
+
+def _record_posted_by(db: Session, execution_id: Any, posted_by: str) -> None:
+    """Record on the execution how its review reached the pull request."""
+    try:
+        crud.crud_flow_execution.record_completion_evidence(
+            db, execution_id=execution_id, facts={POSTED_BY_FACT: posted_by}
+        )
+    except Exception:
+        db.rollback()
+        logger.warning("Could not record who posted the review of %s", execution_id)
+
+
+def posted_by(execution: Any) -> str | None:
+    """How the posted review of an execution got there: automatic or manual.
+
+    Returns:
+        The recorded value, or None when nothing is recorded (no review was
+        posted, or it was posted before the record existed).
+    """
+    from preloop.services.review_completion_evidence import completion_facts
+
+    value = completion_facts(execution).get(POSTED_BY_FACT)
+    return value if value in {POSTED_AUTOMATICALLY, POSTED_MANUALLY} else None
+
+
+def _audit_attempt(
+    db: Session,
+    *,
+    account_id: Any,
+    execution: Any,
+    actor_user_id: Any,
+    mode: str,
+    posted_by: str,
+    status: str,
+    details: dict[str, Any],
+) -> None:
+    """Write one audit entry for a publication attempt. Never raises."""
+    try:
+        crud.crud_audit_log.log_action(
+            db,
+            account_id=account_id,
+            user_id=actor_user_id,
+            action="platform_review_publish",
+            resource_type="flow_execution",
+            resource_id=str(execution.id),
+            status=status,
+            details={"mode": mode, "posted_by": posted_by, **details},
+        )
+    except Exception:
+        db.rollback()
+        logger.warning("Could not audit the review publication of %s", execution.id)
 
 
 def _stop_retrying(db: Session, execution_id: Any, reason: str) -> None:
@@ -1575,18 +1985,27 @@ def platform_review_projection(
     Returns:
         None when the flow has not opted in and nothing was ever claimed;
         ``{"status": "pending", ...}`` before the first attempt; otherwise
-        the recorded state. Contains no credential and no provider response.
+        the recorded state. ``mode`` is the flow's current posting mode and
+        ``posted_by`` says how the review reached the pull request:
+        ``automatic`` (when the execution finished, or by an automatic
+        retry), ``manual`` (the explicit publish call) or ``none``; null for
+        a review posted before the record existed. Contains
+        no credential and no provider response.
     """
     row = crud.crud_platform_review_publication.get_for_execution(
         db, execution_id=execution.id
     )
+    if flow is None:
+        flow = getattr(execution, "flow", None)
+    mode = platform_review_mode(getattr(flow, "git_clone_config", None))
+    how = posted_by(execution)
     if row is None:
-        if flow is None:
-            flow = getattr(execution, "flow", None)
-        if platform_review_block(getattr(flow, "git_clone_config", None)) is None:
+        if mode == MODE_OFF:
             return None
         binding = getattr(execution, "ci_review_binding", None)
         return {
+            "mode": mode,
+            "posted_by": NOT_POSTED,
             "status": "pending",
             "reason": None,
             "head_sha": binding.get("head_sha")
@@ -1604,6 +2023,8 @@ def platform_review_projection(
             "retry_scheduled": False,
         }
     return {
+        "mode": mode,
+        "posted_by": how if row.review_state == STATE_POSTED else NOT_POSTED,
         "status": row.state,
         "reason": row.reason,
         "head_sha": row.head_sha,
