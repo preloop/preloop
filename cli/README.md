@@ -151,6 +151,14 @@ has the same control as **Sign out everywhere**.
 
 ### Policy Management
 
+`preloop policy apply` resolves `${NAME}` in YAML/JSON string values from your
+local environment before upload, including with `--dry-run`. Unset variables
+stop the command; empty values are allowed. Use `--no-resolve-env` to keep
+references literal. The server preserves unresolved references and returns a
+warning. `policy diff` uses the same resolution and `--no-resolve-env` option;
+`validate` uses the file as written. Dry runs retain the validation endpoint's
+read permission and structured diagnostics.
+
 ```bash
 preloop policy list                    # List policy versions, newest first
 preloop policy validate <file>         # Validate a policy file

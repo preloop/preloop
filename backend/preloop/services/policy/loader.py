@@ -11,6 +11,7 @@ This module provides functionality to:
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
 from uuid import UUID, uuid4
 
@@ -263,6 +264,11 @@ def load_policy_from_string(
     """
     errors: List[PolicyValidationError] = []
     warnings: List[str] = []
+    if re.search(r"\$\{[^{}]+\}", content):
+        warnings.append(
+            "Unresolved ${...} variable references are preserved literally. "
+            "Use 'preloop policy apply' to resolve them from your local environment."
+        )
 
     # Parse the content
     try:
@@ -278,7 +284,9 @@ def load_policy_from_string(
                 value=None,
             )
         )
-        return None, PolicyValidationResult(is_valid=False, errors=errors)
+        return None, PolicyValidationResult(
+            is_valid=False, errors=errors, warnings=warnings
+        )
     except yaml.YAMLError as e:
         error_msg = str(e)
         if hasattr(e, "problem_mark"):
@@ -294,7 +302,9 @@ def load_policy_from_string(
                 value=None,
             )
         )
-        return None, PolicyValidationResult(is_valid=False, errors=errors)
+        return None, PolicyValidationResult(
+            is_valid=False, errors=errors, warnings=warnings
+        )
 
     if data is None:
         errors.append(
@@ -304,22 +314,25 @@ def load_policy_from_string(
                 value=None,
             )
         )
-        return None, PolicyValidationResult(is_valid=False, errors=errors)
+        return None, PolicyValidationResult(
+            is_valid=False, errors=errors, warnings=warnings
+        )
 
     # Validate against schema
     try:
         policy = PolicyDocument.model_validate(data)
     except ValidationError as e:
-        for error in e.errors():
+        for error in e.errors(include_input=False, include_url=False):
             path = ".".join(str(loc) for loc in error["loc"])
             errors.append(
                 PolicyValidationError(
                     path=f"$.{path}" if path else "$",
                     message=error["msg"],
-                    value=error.get("input"),
                 )
             )
-        return None, PolicyValidationResult(is_valid=False, errors=errors)
+        return None, PolicyValidationResult(
+            is_valid=False, errors=errors, warnings=warnings
+        )
 
     # Add warnings for deprecated or unusual configurations
     if policy.tools:
@@ -752,36 +765,6 @@ def compute_policy_diff(
     )
 
 
-def resolve_env_vars(value: Any) -> Any:
-    """Recursively resolve environment variable references in values.
-
-    Supports ${VAR_NAME} syntax for environment variable substitution.
-
-    Args:
-        value: The value to process (can be dict, list, or scalar).
-
-    Returns:
-        The value with environment variables resolved.
-    """
-    if isinstance(value, str):
-        # Match ${VAR_NAME} pattern
-        import re
-
-        pattern = r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}"
-
-        def replacer(match: re.Match) -> str:
-            var_name = match.group(1)
-            return os.environ.get(var_name, match.group(0))
-
-        return re.sub(pattern, replacer, value)
-    elif isinstance(value, dict):
-        return {k: resolve_env_vars(v) for k, v in value.items()}
-    elif isinstance(value, list):
-        return [resolve_env_vars(item) for item in value]
-    else:
-        return value
-
-
 class MissingServerError:
     """Details about a missing MCP server reference."""
 
@@ -887,7 +870,7 @@ class PolicyApplier:
         self,
         policy: PolicyDocument,
         dry_run: bool = False,
-        resolve_env: bool = True,
+        resolve_env: bool = False,
         skip_missing_servers: bool = False,
     ) -> PolicyImportResult:
         """Apply a policy document to the database.
@@ -895,7 +878,7 @@ class PolicyApplier:
         Args:
             policy: The policy document to apply.
             dry_run: If True, validate only without making changes.
-            resolve_env: If True, resolve environment variable references.
+            resolve_env: Accepted for compatibility; references remain literal.
             skip_missing_servers: If True, skip tools that reference missing
                 MCP servers instead of failing. Skipped tools are reported
                 in warnings.
@@ -907,11 +890,6 @@ class PolicyApplier:
         self._skipped_tools = []
 
         try:
-            # Resolve environment variables if requested
-            if resolve_env:
-                policy_dict = resolve_env_vars(policy.model_dump())
-                policy = PolicyDocument.model_validate(policy_dict)
-
             # Pre-validation phase: check all references before making changes
             validation_errors = self._validate_references(policy, skip_missing_servers)
             if validation_errors:

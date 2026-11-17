@@ -133,6 +133,9 @@ var policyApplyCmd = &cobra.Command{
 	Long: `Apply a policy file to your Preloop organization.
 
 This will upload and activate the policy on the server.
+Variable references such as ${NAME} are resolved from your local environment.
+Unset variables stop the upload. Use --no-resolve-env to keep references literal.
+The same resolution applies with --dry-run.
 
 Examples:
   preloop policy apply my-policy.yaml
@@ -148,6 +151,8 @@ var policyDiffCmd = &cobra.Command{
 	Long: `Compare a local policy file with the version currently on the server.
 
 This shows what would change if you applied the local policy.
+Variable references are resolved locally as with apply. Use --no-resolve-env
+to compare the references literally.
 
 Examples:
   preloop policy diff my-policy.yaml`,
@@ -227,7 +232,9 @@ func init() {
 
 	// Flags for apply
 	policyApplyCmd.Flags().Bool("dry-run", false, "validate and show what would be applied without making changes")
+	policyApplyCmd.Flags().Bool("no-resolve-env", false, "upload variable references literally without local resolution")
 	policyApplyCmd.Flags().BoolP("recursive", "r", false, "recursively apply policies from directory")
+	policyDiffCmd.Flags().Bool("no-resolve-env", false, "compare variable references literally without local resolution")
 
 	// Flags for export
 	policyExportCmd.Flags().StringP("output", "o", "", "output file (default: stdout)")
@@ -262,7 +269,8 @@ func validatePolicyContent(client *api.Client, fileName string, content []byte) 
 
 func applyPolicyContent(client *api.Client, fileName string, content []byte, dryRun bool) (*PolicyImportResult, error) {
 	fields := map[string]string{
-		"dry_run": fmt.Sprintf("%t", dryRun),
+		"dry_run":     fmt.Sprintf("%t", dryRun),
+		"resolve_env": "false",
 	}
 
 	var result PolicyImportResult
@@ -505,6 +513,13 @@ func runPolicyApply(cmd *cobra.Command, args []string) error {
 	if err := yaml.Unmarshal(content, &parsed); err != nil {
 		return fmt.Errorf("invalid YAML syntax: %w", err)
 	}
+	noResolveEnv, _ := cmd.Flags().GetBool("no-resolve-env")
+	if !noResolveEnv {
+		content, err = resolvePolicyVariables(content, filePath)
+		if err != nil {
+			return err
+		}
+	}
 
 	client, err := api.NewClient(FlagToken, FlagURL)
 	if err != nil {
@@ -515,7 +530,7 @@ func runPolicyApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not authenticated - run 'preloop login' first")
 	}
 
-	// If dry-run, just validate
+	// Validate the resolved content without requiring permission to apply it.
 	if dryRun {
 		fmt.Printf("Dry run - validating policy: %s\n\n", filePath)
 
@@ -567,6 +582,13 @@ func runPolicyDiff(cmd *cobra.Command, args []string) error {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
+	}
+	noResolveEnv, _ := cmd.Flags().GetBool("no-resolve-env")
+	if !noResolveEnv {
+		content, err = resolvePolicyVariables(content, filePath)
+		if err != nil {
+			return err
+		}
 	}
 
 	client, err := api.NewClient(FlagToken, FlagURL)

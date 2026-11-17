@@ -32859,7 +32859,8 @@ components:
         resolve_env:
           type: boolean
           title: Resolve Env
-          description: If true, resolve ${VAR} environment variable references
+          description: Accepted for compatibility and ignored. Variable references
+            remain literal; 'preloop policy apply' resolves them locally before upload.
           default: true
         skip_missing_servers:
           type: boolean

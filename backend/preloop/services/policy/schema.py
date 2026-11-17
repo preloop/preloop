@@ -152,7 +152,7 @@ class MCPServerDefinition(BaseModel):
         url: Server URL endpoint.
         transport: Transport protocol to use.
         auth_type: Authentication type.
-        auth_config: Authentication configuration (secrets should use env var refs).
+        auth_config: Authentication configuration; the CLI resolves variable references.
     """
 
     name: str = Field(..., description="Unique name for this MCP server")
@@ -165,7 +165,7 @@ class MCPServerDefinition(BaseModel):
     )
     auth_config: Optional[Dict[str, Any]] = Field(
         None,
-        description="Auth configuration. Use ${ENV_VAR} for secrets.",
+        description="Auth configuration. The CLI resolves ${ENV_VAR} locally.",
     )
 
     model_config = ConfigDict(use_enum_values=True)

@@ -188,7 +188,8 @@ class TestRollbackAndDiff:
         # PolicyApplier must not be used in preview mode
         mock_applier.assert_not_called()
 
-    def test_rollback_applies_snapshot(self, service):
+    def test_rollback_applies_snapshot(self, service: PolicyVersionService) -> None:
+        """Restore explicitly preserves the values recorded in the snapshot."""
         snap = service.create_snapshot(set_active=False)
         with patch(
             "preloop.services.policy_version_service.PolicyApplier"
@@ -201,6 +202,10 @@ class TestRollbackAndDiff:
         assert err is None
         # Snapshot should now be active
         assert service.get_snapshot(snap.id).is_active is True
+        assert mock_applier.return_value.apply.call_args.kwargs == {
+            "dry_run": False,
+            "resolve_env": False,
+        }
 
     def test_rollback_apply_failure(self, service):
         snap = service.create_snapshot(set_active=False)
