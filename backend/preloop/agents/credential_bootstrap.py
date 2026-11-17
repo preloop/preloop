@@ -48,6 +48,7 @@ try:
     descriptor = process.stdout.fileno()
     os.set_blocking(descriptor, False)
     drain_until = None
+    at_eof = False
     while True:
         exited = process.poll() is not None
         if exited and drain_until is None:
@@ -61,12 +62,15 @@ try:
         except BlockingIOError:
             continue
         if not chunk:
+            at_eof = True
             break
         sys.stdout.buffer.write(stream.feed(chunk))
         sys.stdout.buffer.flush()
         if exited and time.monotonic() > drain_until:
             break
-    sys.stdout.buffer.write(stream.finish())
+    # Short of EOF a leftover process may be part-way through a credential;
+    # its beginning must not be released once the rest will never be read.
+    sys.stdout.buffer.write(stream.finish() if at_eof else stream.cut())
     sys.stdout.buffer.flush()
     code = process.wait()
     try:

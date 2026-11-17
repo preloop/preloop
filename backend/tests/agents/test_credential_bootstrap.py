@@ -40,12 +40,20 @@ def _run_bootstrap(script: str, **extra_env: str) -> tuple[int, str, float]:
 
 
 def _gone(pid: int) -> bool:
-    """Report whether ``pid`` stops existing within two seconds."""
+    """Report whether ``pid`` ends within two seconds.
+
+    A signalled process that its new parent has not reaped yet still exists
+    as a zombie, so the state is checked rather than mere existence.
+    """
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        state = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            text=True,
+            capture_output=True,
+            check=False,
+        ).stdout.strip()
+        if not state or state.startswith("Z"):
             return True
         time.sleep(0.05)
     return False
@@ -263,3 +271,38 @@ def test_opencode_file_auth_reduces_tool_environment(tmp_path: Path) -> None:
         json.loads(config.read_text())["provider"]["openai"]["options"]["apiKey"]
         == "synthetic-gateway-credential"
     )
+
+
+def test_bootstrap_withholds_unfinished_credential_from_leftover_writer() -> None:
+    """A credential a leftover process was still writing is not shown in part."""
+    code, output, elapsed = _run_bootstrap(
+        '(printf "a %s" "${OPENAI_API_KEY:0:17}"; sleep 30) &\nsleep 0.5\nexit 0\n'
+    )
+    assert elapsed < 5
+    assert code == 0
+    assert output == "a [REDACTED]"
+
+
+def test_stream_cut_matches_finish_without_an_unfinished_candidate() -> None:
+    """Abandoning the source changes nothing unless a candidate is unfinished."""
+    from preloop.utils.execution_credentials import (
+        CredentialMasker,
+        CredentialStream,
+    )
+
+    masker = CredentialMasker.from_values([_TOKEN])
+    for text in (
+        b"tests pass",
+        b"ends with s",
+        b"sy",
+        b"key=" + _TOKEN.encode(),
+        _TOKEN.encode() + b" then " + _TOKEN.encode(),
+        b"synt" + b"x" * 60,
+    ):
+        finished, cut = CredentialStream(masker), CredentialStream(masker)
+        expected = finished.feed(text) + finished.finish()
+        assert cut.feed(text) + cut.cut() == expected, text
+    stream = CredentialStream(masker)
+    head = stream.feed(b"log " + _TOKEN.encode() + b" and " + _TOKEN.encode()[:20])
+    assert head + stream.cut() == b"log [REDACTED] and [REDACTED]"
+    assert stream.pending == b""
