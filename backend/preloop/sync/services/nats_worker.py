@@ -230,18 +230,14 @@ class PreloopSyncNatsWorker:
             logger.info("NATS client already connected.")
             return
 
-        logger.info(
-            f"Worker '{self.connection_name}' connecting to NATS server at {self.nats_url}"
-        )
+        logger.info("Worker connecting to NATS: name=%s", self.connection_name)
         try:
             self.nc = await nats.connect(
                 self.nats_url,
                 name=self.connection_name,
             )
             self.js = self.nc.jetstream()
-            logger.info(
-                f"Worker '{self.connection_name}' successfully connected to NATS server: {self.nats_url}"
-            )
+            logger.info("Worker connected to NATS: name=%s", self.connection_name)
 
             # Ensure the 'tasks' stream exists
             config = StreamConfig(
@@ -262,13 +258,17 @@ class PreloopSyncNatsWorker:
 
         except ErrNoServers as e:
             logger.error(
-                f"Worker '{self.connection_name}' could not connect to NATS: No servers available at {self.nats_url}. Error: {type(e).__name__}"
+                "Worker could not connect to NATS: name=%s error_type=%s",
+                self.connection_name,
+                type(e).__name__,
             )
             self.nc = None
             raise
         except Exception as e:
             logger.error(
-                f"Worker '{self.connection_name}' error connecting to NATS at {self.nats_url}: {type(e).__name__}"
+                "Worker connection error: name=%s error_type=%s",
+                self.connection_name,
+                type(e).__name__,
             )
             self.nc = None
             raise
@@ -871,7 +871,7 @@ async def main(
         logger.info("Worker task cancelled.")
     except ErrNoServers:
         logger.error(
-            f"NATS Worker could not connect to {nats_server_url}. Ensure NATS is running and accessible."
+            "NATS worker could not connect. Ensure NATS is running and accessible."
         )
     except Exception as e:
         logger.error(f"NATS Worker encountered an unhandled error: {type(e).__name__}")

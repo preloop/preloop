@@ -449,7 +449,9 @@ class PluginManager:
                     config = RouterConfig(router=router, prefix=prefix)
                 else:
                     logger.warning(
-                        f"Invalid router config from plugin '{plugin.metadata.name}': {item}"
+                        "Invalid router config from plugin %s: config_type=%s",
+                        plugin.metadata.name,
+                        type(item).__name__,
                     )
                     continue
 

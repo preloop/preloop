@@ -948,7 +948,8 @@ class GitLabTracker(BaseTracker):
         except TrackerResponseError as e:
             if str(HTTP_STATUS_CONFLICT) in str(e):  # Conflict
                 logger.warning(
-                    f"Project webhook for GitLab project '{project.identifier}' (URL: {webhook_url}) already exists ({HTTP_STATUS_CONFLICT} Conflict)."
+                    "GitLab project webhook already exists: project_id=%s",
+                    project.identifier,
                 )
                 return True
             logger.error(
@@ -979,7 +980,7 @@ class GitLabTracker(BaseTracker):
             False for other errors.
         """
         logger.info(
-            f"Attempting to register group webhook for GitLab group ID '{organization.identifier}' pointing to {webhook_url}"
+            "Registering GitLab group webhook: org_id=%s", organization.identifier
         )
 
         hook_attrs = {
@@ -997,7 +998,8 @@ class GitLabTracker(BaseTracker):
 
         try:
             logger.info(
-                f"GitLabTracker: Attempting self.gl.groups.get() for group webhook. org_identifier='{organization.identifier}', client API URL='{self.url}'"
+                "Retrieving GitLab group for webhook: org_id=%s",
+                organization.identifier,
             )
             group = await self._make_request(
                 self.gl.groups.get, organization.identifier
@@ -1011,7 +1013,8 @@ class GitLabTracker(BaseTracker):
                 for h in existing_hooks:
                     if h.url == webhook_url:
                         logger.warning(
-                            f"Group webhook for GitLab group '{organization.identifier}' (URL: {webhook_url}) already exists (ID: {h.id})."
+                            "GitLab group webhook already exists: org_id=%s",
+                            organization.identifier,
                         )
                         return True
             except Exception as e:
@@ -1028,7 +1031,7 @@ class GitLabTracker(BaseTracker):
 
             # If list succeeded and hook doesn't exist, try to create it.
             logger.info(
-                f"Attempting to create group hook for GitLab group '{organization.identifier}' (URL: {webhook_url})."
+                "Creating GitLab group webhook: org_id=%s", organization.identifier
             )
             try:
                 hook = await self._make_request_no_retry(group.hooks.create, hook_attrs)
@@ -1058,7 +1061,8 @@ class GitLabTracker(BaseTracker):
                 # Check for various error conditions
                 if is_conflict_error(e):  # Conflict
                     logger.warning(
-                        f"Group webhook for GitLab group '{organization.identifier}' (URL: {webhook_url}) already exists (409 on create)."
+                        "GitLab group webhook already exists: org_id=%s",
+                        organization.identifier,
                     )
                     return True
                 elif is_not_found_error(e):  # Not Found on create
@@ -1379,8 +1383,9 @@ class GitLabTracker(BaseTracker):
 
                             # Webhook points to our Preloop but is NOT in database - it's stale
                             logger.info(
-                                f"Found stale group webhook {hook.id} for group {group.id} pointing to {hook.url}. "
-                                f"This webhook is not in our database. Deleting..."
+                                "Deleting stale GitLab group webhook: id=%s group_id=%s",
+                                hook.id,
+                                group.id,
                             )
                             try:
                                 await self._make_request(hook.delete)
@@ -1442,8 +1447,9 @@ class GitLabTracker(BaseTracker):
 
                         # Webhook points to our Preloop but is NOT in database - it's stale
                         logger.info(
-                            f"Found stale project webhook {hook.id} for project {project.id} pointing to {hook.url}. "
-                            f"This webhook is not in our database. Deleting..."
+                            "Deleting stale GitLab project webhook: id=%s project_id=%s",
+                            hook.id,
+                            project.id,
                         )
                         try:
                             await self._make_request(hook.delete)

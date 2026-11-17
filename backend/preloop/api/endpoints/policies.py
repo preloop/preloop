@@ -1253,7 +1253,7 @@ async def diff_policy(
     # Compute diff
     diff_result = compute_policy_diff(current_policy, incoming_policy)
 
-    logger.info(f"Computed policy diff for account {account.id}: {diff_result.summary}")
+    logger.info("Computed policy diff for account %s", account.id)
 
     return diff_result
 

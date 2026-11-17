@@ -755,7 +755,9 @@ async def cleanup_tracker_webhooks(tracker_id: str) -> None:
             return
 
         logger.info(
-            f"Cleaning up webhooks for tracker {tracker.name} (type: {tracker.tracker_type}, url: {tracker.url})"
+            "Cleaning up webhooks: tracker_id=%s type=%s",
+            tracker.id,
+            tracker.tracker_type,
         )
 
         # The CRUD query handles organization-only, project-only and empty

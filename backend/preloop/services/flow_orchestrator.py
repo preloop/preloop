@@ -1771,9 +1771,10 @@ class FlowExecutionOrchestrator:
 
             # Log the API call we're about to make
             logger.info(
-                f"[CommitStatus] Calling create_commit_status: "
-                f"sha={self._commit_sha[:8]}, state={state}, context={self._status_context}, "
-                f"target_url={target_url[:50] if target_url else None}..."
+                "[CommitStatus] Calling create_commit_status: sha=%s state=%s context=%s",
+                self._commit_sha[:8],
+                state,
+                self._status_context,
             )
 
             await tracker_client.create_commit_status(

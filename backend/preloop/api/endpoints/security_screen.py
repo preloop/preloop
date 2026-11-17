@@ -104,16 +104,15 @@ async def score_screened_content(
     threshold = get_screen_threshold()
     if verdict.score >= threshold:
         metadata = payload.metadata or {}
-        # Log chunk coordinates and rule names only -- never the text.
+        # Log rule names and metadata keys without the screened content.
         logger.info(
-            "Security screen flagged chunk: outcome=%s score=%.2f rules=%s "
-            "hook=%s account=%s coordinates=%s",
+            "Security screen flagged chunk: outcome=%s score=%.2f rules=%s hook=%s account=%s metadata_keys=%s",
             verdict.primary_outcome,
             verdict.score,
             ",".join(verdict.matched_rules),
             payload.hook,
             auth_context.account_id,
-            metadata.get("qm"),
+            sorted(metadata),
         )
     return SecurityScreenResponse(
         score=verdict.score,

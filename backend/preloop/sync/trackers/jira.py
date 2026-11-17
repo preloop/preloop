@@ -2221,9 +2221,8 @@ class JiraTracker(BaseTracker):
 
             if not status_name:
                 logger.warning(
-                    f"Could not extract status for Jira issue {issue_data.get('key', 'unknown')}. "
-                    f"Top-level status: {issue_data.get('status')}, "
-                    f"Fields status: {fields_status}"
+                    "Could not extract Jira issue status: issue_key=%s",
+                    issue_data.get("key", "unknown"),
                 )
 
         # Extract timestamps. REST search results nest them under ``fields``;
@@ -2535,11 +2534,7 @@ class JiraTracker(BaseTracker):
         jql_filter = f"project = {project.identifier.upper()}"
 
         try:
-            logger.info(
-                f"Registering webhook for project {project.identifier} in Jira. "
-                f"Webhook name: {webhook_name}, URL: {url_with_secret_and_project}, "
-                f"JQL: {jql_filter}"
-            )
+            logger.info("Registering Jira webhook: project_id=%s", project.id)
 
             # Prepare the webhook payload
             # Jira Cloud supports HMAC-SHA256 webhook signing with the 'secret' field
@@ -2834,7 +2829,7 @@ class JiraTracker(BaseTracker):
             logger.error("Jira client not initialized. Cannot clean up webhooks.")
             return {"unregistered": 0, "failed": 0}
 
-        logger.info(f"Starting cleanup of stale webhooks for URL: {preloop_url}")
+        logger.info("Starting cleanup of stale Jira webhooks")
         results = {"unregistered": 0, "failed": 0}
 
         try:
@@ -2888,10 +2883,7 @@ class JiraTracker(BaseTracker):
                     continue
 
                 # Webhook points to our Preloop but is NOT in database - it's stale
-                logger.info(
-                    f"Found stale webhook {webhook_id} pointing to {webhook_url}. "
-                    f"This webhook is not in our database. Deleting..."
-                )
+                logger.info("Deleting stale Jira webhook: id=%s", webhook_id)
                 try:
                     url = f"{self.jira_url}/rest/webhooks/1.0/webhook/{webhook_id}"
                     response = self.jira_client._session.delete(url)

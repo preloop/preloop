@@ -2772,10 +2772,9 @@ class FlowTriggerService:
                                 )
                                 continue
                             logger.info(
-                                "Resuming flow '%s' from execution %s on %s",
-                                flow.name,
+                                "Resuming flow %s from execution %s",
+                                flow.id,
                                 resume.get("execution_id"),
-                                resume.get("pr_url"),
                             )
                     if (
                         event_type in GITHUB_CI_EVENT_TYPES
@@ -2808,10 +2807,9 @@ class FlowTriggerService:
                             )
                             continue
                         logger.info(
-                            "Resuming flow '%s' from execution %s after CI failure on %s",
-                            flow.name,
+                            "Resuming flow %s from execution %s after CI failure",
+                            flow.id,
                             ci_resume.get("execution_id"),
-                            ci_resume.get("pr_url"),
                         )
                     await self._start_flow_execution(
                         flow=flow,

@@ -124,12 +124,11 @@ async def create_mcp_server(
     validation_error = None
     if server_data.auth_type == "oauth":
         logger.info(
-            f"Skipping connection validation for OAuth MCP server at {server_data.url} "
-            "(credentials will be obtained after OAuth flow)"
+            "Skipping connection validation for OAuth MCP server until credentials are available"
         )
     else:
         try:
-            logger.info(f"Validating connection to MCP server at {server_data.url}")
+            logger.info("Validating MCP server connection")
             test_client = MCPClient(
                 url=server_data.url,
                 auth_type=server_data.auth_type or "none",
@@ -139,7 +138,7 @@ async def create_mcp_server(
 
             # Try to connect and initialize
             await test_client.connect()
-            logger.info(f"✓ Successfully validated MCP server at {server_data.url}")
+            logger.info("Successfully validated MCP server connection")
             await test_client.close()
 
         except Exception as e:

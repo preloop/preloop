@@ -1536,7 +1536,8 @@ class GitHubTracker(BaseTracker):
                     for e in response_data["errors"]
                 ):
                     logger.warning(
-                        f"Webhook for GitHub org '{org_identifier}' pointing to {webhook_url} already exists."
+                        "GitHub organization webhook already exists: org_id=%s",
+                        org_identifier,
                     )
                     return True
                 else:
@@ -1699,7 +1700,8 @@ class GitHubTracker(BaseTracker):
         """
         results = {"unregistered": 0, "failed": 0}
         logger.info(
-            f"Starting cleanup of stale webhooks for URL: {preloop_url} (cleanup_projects={cleanup_projects})"
+            "Starting cleanup of stale GitHub webhooks: cleanup_projects=%s",
+            cleanup_projects,
         )
 
         if cleanup_projects:
@@ -1824,10 +1826,7 @@ class GitHubTracker(BaseTracker):
                 return
 
             # Webhook points to our Preloop but is NOT in database - it's stale
-            logger.info(
-                f"Found stale webhook {hook_id} in {base_endpoint} pointing to {hook_url}. "
-                f"This webhook is not in our database. Deleting..."
-            )
+            logger.info("Deleting stale GitHub webhook: id=%s", hook_id)
             try:
                 delete_endpoint = f"{base_endpoint}/{hook_id}"
                 if await self._make_request_delete(delete_endpoint):

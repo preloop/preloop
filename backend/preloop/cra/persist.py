@@ -412,7 +412,11 @@ def apply_cra_persist_boundary(
         error = INVALID_ERROR
     wrapped = wrap_invalid_cra_result(payload, reported.failures, error=error)
     copy_measurement(candidate, wrapped)
-    logger.warning("CRA persist failed closed: %s", wrapped.get("detail"))
+    logger.warning(
+        "CRA persist failed closed: schema_id=%s failure_count=%s",
+        reported.schema_id,
+        len(reported.failures),
+    )
     return CraPersistDecision(artifact=wrapped, validation=reported)
 
 

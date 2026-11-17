@@ -37,7 +37,8 @@ class SSRService:
                 rendered_component = response.json()["html"]
         except httpx.RequestError as e:
             logger.error(
-                f"Could not connect to the SSR render server at {self.render_server_url}. Please ensure it is running. Error: {type(e).__name__}"
+                "Could not connect to SSR render server: error_type=%s",
+                type(e).__name__,
             )
             # Fallback to client-side rendering
             return template

@@ -1034,9 +1034,7 @@ def bind_resume_or_skip(
     marker_flow_id = parse_review_marker(extract_comment_body(event_data))
     if marker_flow_id and marker_flow_id_matches(flow, marker_flow_id):
         logger.info(
-            "Skipping comment on %s: its review marker names the receiving "
-            "flow %s (self-loop guard)",
-            pr_url,
+            "Skipping comment: review marker names receiving flow %s (self-loop guard)",
             marker_flow_id,
         )
         return None
@@ -1051,20 +1049,14 @@ def bind_resume_or_skip(
     if running:
         target = running[0]
         queue_pending_followup(db, target, extract_comment_url(event_data))
-        logger.info(
-            "Queued one follow-up on running execution %s for %s",
-            target.id,
-            pr_url,
-        )
+        logger.info("Queued one follow-up on running execution %s", target.id)
         return None
 
     cap = max_resumes_per_pr(flow)
     started = resume_count(execution)
     if started >= cap:
         logger.info(
-            "Skipping comment on %s: flow %s already started %s/%s resumes "
-            "for this PR (max_resumes_per_pr)",
-            pr_url,
+            "Skipping comment: flow %s already started %s/%s resumes for this PR",
             flow.id,
             started,
             cap,

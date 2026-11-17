@@ -7142,14 +7142,20 @@ trap _preloop_publication_cleanup EXIT
                 if isinstance(repo, dict):
                     url = repo.get("clone_url") or repo.get("html_url") or ""
                     if url:
-                        self.logger.info(f"Found GitHub repo URL in trigger: {url}")
+                        self.logger.info(
+                            "Found GitHub repository in trigger: %s",
+                            repo_url_log_location(url),
+                        )
                         return url
                     # Bitbucket Cloud: repository.links.html.href
                     html = (repo.get("links") or {}).get("html") or {}
                     href = html.get("href") if isinstance(html, dict) else None
                     if href:
                         url = f"{href.rstrip('/')}.git"
-                        self.logger.info(f"Found Bitbucket repo URL in trigger: {url}")
+                        self.logger.info(
+                            "Found Bitbucket repository in trigger: %s",
+                            repo_url_log_location(url),
+                        )
                     return url
 
             # GitLab structure
@@ -7160,7 +7166,10 @@ trap _preloop_publication_cleanup EXIT
                         project.get("http_url_to_repo") or project.get("web_url") or ""
                     )
                     if url:
-                        self.logger.info(f"Found GitLab repo URL in trigger: {url}")
+                        self.logger.info(
+                            "Found GitLab repository in trigger: %s",
+                            repo_url_log_location(url),
+                        )
                     return url
 
             self.logger.debug(
