@@ -730,6 +730,10 @@ async def test_recovery_without_replay_authority_fails_closed(reference, diagnos
     from preloop.services.flow_execution_runner import resume_existing_execution
 
     orchestrator = MagicMock()
+
+    orchestrator.settle_commit_status = AsyncMock()
+
+    orchestrator._explain_schema_rejection = lambda result: result
     orchestrator.flow = SimpleNamespace(
         agent_type="codex",
         agent_config={},
@@ -756,6 +760,10 @@ async def test_private_recovered_monitor_restores_policy_and_finalizes_before_st
     from preloop.services.flow_execution_runner import resume_existing_execution
 
     orchestrator = MagicMock()
+
+    orchestrator.settle_commit_status = AsyncMock()
+
+    orchestrator._explain_schema_rejection = lambda result: result
     orchestrator.flow = SimpleNamespace(
         account_id=uuid4(),
         agent_type="codex",

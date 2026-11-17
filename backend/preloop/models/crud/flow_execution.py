@@ -1469,11 +1469,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 never takes one over.
 
         Returns:
-            True when the caller should post the final status now.
+            True when the caller should post the final status now. An
+            execution without a row has nothing to record against, so its
+            status is posted as before.
         """
         execution = self._locked(db, execution_id)
         if execution is None:
-            return False
+            return True
         record: dict[str, Any] = self.commit_status_record(execution)
         final: Any = record.get("final")
         now = datetime.now(timezone.utc)
