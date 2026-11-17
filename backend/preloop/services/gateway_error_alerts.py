@@ -198,9 +198,7 @@ class _SharedAlertStore:
             try:
                 await asyncio.wait_for(connection.close(), timeout=0.25)
             except Exception:
-                logger.warning(
-                    "Could not close gateway alert connection", exc_info=True
-                )
+                logger.warning("Could not close gateway alert connection")
 
     async def reserve(self, incident_key: str, interval: float) -> bool:
         """Serialize reservation and shutdown on the owning event loop."""
@@ -334,7 +332,7 @@ class _SharedAlertWorker:
         try:
             cleanup.result(timeout=1.0)
         except Exception:
-            logger.warning("Gateway alert worker cleanup failed", exc_info=True)
+            logger.warning("Gateway alert worker cleanup failed")
         finally:
             if thread is not None:
                 thread.join(timeout=0.5)
@@ -352,8 +350,7 @@ def _reserve_shared_or_fallback(incident_key: str) -> bool:
         return _SHARED_WORKER.reserve(incident_key, _alert_interval_seconds())
     except Exception:
         logger.warning(
-            "Shared gateway alert reservation unavailable; using local cooldown",
-            exc_info=True,
+            "Shared gateway alert reservation unavailable; using local cooldown"
         )
         return True
 
@@ -423,9 +420,7 @@ def reserve_gateway_5xx_alert(
         # A bug in the throttle must not silently silence outage alerts: fall
         # back to the pre-throttle behavior (send now) and log a breadcrumb.
         logger.warning(
-            "Gateway 5xx alert throttle failed for %s; sending unsuppressed",
-            provider,
-            exc_info=True,
+            "Gateway 5xx alert throttle failed for %s; sending unsuppressed", provider
         )
         return True, 0
 
@@ -468,7 +463,7 @@ def enqueue_gateway_5xx_alert(
                 return
             notify_admins(subject=subject, message=message)
         except Exception:
-            logger.warning("Gateway admin notification failed", exc_info=True)
+            logger.warning("Gateway admin notification failed")
         finally:
             _ALERT_PENDING.release()
 
@@ -476,4 +471,4 @@ def enqueue_gateway_5xx_alert(
         _ALERT_EXECUTOR.submit(_deliver)
     except Exception:
         _ALERT_PENDING.release()
-        logger.warning("Could not schedule gateway admin notification", exc_info=True)
+        logger.warning("Could not schedule gateway admin notification")

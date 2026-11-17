@@ -398,9 +398,7 @@ def record_search(
         # asked for is not worth less because the row behind it did not land,
         # and a log line is the second place that string should not appear.
         logger.warning(
-            "Session search audit row could not be written for account %s",
-            account_id,
-            exc_info=True,
+            "Session search audit row could not be written for account %s", account_id
         )
         return False
 
@@ -412,9 +410,7 @@ def account_meta_data(db: Session, *, account_id: Any) -> Optional[Dict[str, Any
 
         account = crud_account.get(db, id=account_id)
     except Exception:  # noqa: BLE001 - an unreadable account is not an opt in
-        logger.warning(
-            "Session search audit could not read account %s", account_id, exc_info=True
-        )
+        logger.warning("Session search audit could not read account %s", account_id)
         return None
     meta_data = getattr(account, "meta_data", None) if account is not None else None
     return meta_data if isinstance(meta_data, dict) else None
@@ -476,7 +472,7 @@ def record_denied_endpoint_search(
             reason=f"permission:{permission}",
         )
     except Exception:  # noqa: BLE001 - refusal must survive a failed audit write
-        logger.warning("Could not audit a refused session search", exc_info=True)
+        logger.warning("Could not audit a refused session search")
 
 
 def audited_search(

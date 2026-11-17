@@ -509,7 +509,7 @@ def read_execution(
             api_key_id=api_key_id,
             api_key_name=api_key_name,
         )
-        logger.info("Execution read refused for execution %s: %s", caller.id, message)
+        logger.info("Execution read refused: execution_id=%s", caller.id)
         return refusal_record(
             reason=NOT_VISIBLE_REASON,
             message=message,

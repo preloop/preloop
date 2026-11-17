@@ -471,7 +471,7 @@ def _run_on_stored(db: Session, artifact: models.RuntimeSessionArtifact) -> None
         try:
             callback(db, artifact)
         except Exception:
-            logger.exception("on_stored callback failed for artifact %s", artifact.id)
+            logger.error("on_stored callback failed for artifact %s", artifact.id)
             db.rollback()
 
 
@@ -504,7 +504,7 @@ def _emit_session_updated(
             )
         )
     except Exception:
-        logger.exception("Failed to emit runtime_session_updated for %s", session.id)
+        logger.error("Failed to emit runtime_session_updated for %s", session.id)
 
 
 def _uuid_or_none(value: Any) -> UUID | None:

@@ -152,11 +152,7 @@ def record_host_exec_completion_usage(
                     commit=False,
                 )
     except SQLAlchemyError:
-        logger.warning(
-            "Host execution usage bookkeeping failed for %s",
-            execution.id,
-            exc_info=True,
-        )
+        logger.warning("Host execution usage bookkeeping failed for %s", execution.id)
 
 
 def _link_hook_session(

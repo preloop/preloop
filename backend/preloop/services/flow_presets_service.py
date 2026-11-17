@@ -101,8 +101,7 @@ def ensure_global_presets_exist(db: Session) -> List[schemas.FlowResponse]:
 
         except Exception as e:
             logger.error(
-                f"Failed to create global preset '{preset_name}': {e}",
-                exc_info=True,
+                f"Failed to create global preset '{preset_name}': {type(e).__name__}"
             )
             # Continue with other presets even if one fails
             continue
@@ -267,8 +266,7 @@ def ensure_global_presets_exist_background() -> None:
         logger.info("Background task: Successfully ensured global presets exist")
     except Exception as e:
         logger.error(
-            f"Background task: Failed to ensure global presets: {e}",
-            exc_info=True,
+            f"Background task: Failed to ensure global presets: {type(e).__name__}"
         )
         db.rollback()
     finally:
@@ -515,18 +513,18 @@ def sync_preset_to_derived_flows(db: Session, preset_id: UUID) -> PresetSyncResu
         except Exception as e:
             result.errors += 1
             logger.error(
-                f"Failed to sync flow {flow.id} from preset {preset_id}: {e}",
-                exc_info=True,
+                f"Failed to sync flow {flow.id} from preset {preset_id}: {type(e).__name__}"
             )
 
     db.commit()
 
     logger.info(
-        f"Synced preset '{preset.name}': "
-        f"{result.auto_updated} auto-updated, "
-        f"{result.notified} notified, "
-        f"{result.skipped} skipped, "
-        f"{result.errors} errors"
+        "Preset synchronized: id=%s updated=%s notified=%s skipped=%s error_count=%s",
+        preset.id,
+        result.auto_updated,
+        result.notified,
+        result.skipped,
+        result.errors,
     )
 
     return result
@@ -562,8 +560,7 @@ def sync_all_presets(db: Session) -> List[PresetSyncResult]:
             results.append(result)
         except Exception as e:
             logger.error(
-                f"Failed to sync preset {preset.name} ({preset.id}): {e}",
-                exc_info=True,
+                f"Failed to sync preset {preset.name} ({preset.id}): {type(e).__name__}"
             )
 
     return results
@@ -582,10 +579,7 @@ def sync_all_presets_background() -> List[PresetSyncResult]:
         logger.info(f"Background task: Synced {len(results)} presets")
         return results
     except Exception as e:
-        logger.error(
-            f"Background task: Failed to sync presets: {e}",
-            exc_info=True,
-        )
+        logger.error(f"Background task: Failed to sync presets: {type(e).__name__}")
         db.rollback()
         return []
     finally:

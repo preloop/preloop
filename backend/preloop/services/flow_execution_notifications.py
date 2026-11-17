@@ -293,7 +293,6 @@ async def _post_trigger_comment(
             "Failed to comment on trigger issue %s for execution %s",
             target,
             execution_id,
-            exc_info=True,
         )
         return False
 

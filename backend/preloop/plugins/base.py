@@ -397,7 +397,7 @@ class PluginManager:
                 try:
                     await plugin.on_gateway_shutdown()
                 except BaseException:
-                    logger.exception(
+                    logger.error(
                         "Error cleaning up failed gateway startup for '%s'",
                         plugin.metadata.name,
                     )
@@ -409,7 +409,7 @@ class PluginManager:
             try:
                 await plugin.on_gateway_shutdown()
             except Exception:
-                logger.exception(
+                logger.error(
                     "Error shutting down gateway plugin '%s'", plugin.metadata.name
                 )
 
@@ -420,8 +420,7 @@ class PluginManager:
                 await plugin.on_startup()
             except Exception as e:
                 logger.error(
-                    f"Error starting plugin '{plugin.metadata.name}': {e}",
-                    exc_info=True,
+                    f"Error starting plugin '{plugin.metadata.name}': {type(e).__name__}"
                 )
 
     async def shutdown_all(self):
@@ -431,8 +430,7 @@ class PluginManager:
                 await plugin.on_shutdown()
             except Exception as e:
                 logger.error(
-                    f"Error shutting down plugin '{plugin.metadata.name}': {e}",
-                    exc_info=True,
+                    f"Error shutting down plugin '{plugin.metadata.name}': {type(e).__name__}"
                 )
 
     def register_routes(self, app):
@@ -451,7 +449,9 @@ class PluginManager:
                     config = RouterConfig(router=router, prefix=prefix)
                 else:
                     logger.warning(
-                        f"Invalid router config from plugin '{plugin.metadata.name}': {item}"
+                        "Invalid router config from plugin %s: config_type=%s",
+                        plugin.metadata.name,
+                        type(item).__name__,
                     )
                     continue
 
@@ -519,12 +519,13 @@ class PluginManager:
                         self.discover_plugins(full_module_name)
                 except Exception as e:
                     logger.error(
-                        f"Failed to load plugin '{full_module_name}': {e}",
-                        exc_info=True,
+                        f"Failed to load plugin '{full_module_name}': {type(e).__name__}"
                     )
                     raise
         except ImportError as e:
-            logger.error("Failed to load plugin '%s': %s", plugin_module, e)
+            logger.error(
+                "Failed to load plugin '%s': %s", plugin_module, type(e).__name__
+            )
             raise
 
 
@@ -563,10 +564,10 @@ def _initialize_plugins(manager: PluginManager, disable_rbac: bool) -> None:
         if exc.name == package:
             logger.info("No proprietary plugin package installed")
             return
-        logger.error("Failed to load plugin '%s': %s", package, exc)
+        logger.error("Failed to load plugin '%s': %s", package, type(exc).__name__)
         raise
     except Exception as exc:
-        logger.error("Failed to load plugin '%s': %s", package, exc)
+        logger.error("Failed to load plugin '%s': %s", package, type(exc).__name__)
         raise
     manager.proprietary_enabled = True
     manager.discover_plugins(package)

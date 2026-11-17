@@ -298,7 +298,7 @@ class ModelGatewayEventEmitter:
                 context=f"execution {execution_id}",
             )
         except Exception:  # noqa: BLE001 - realtime is best-effort
-            logger.exception("Failed to encode gateway activity event")
+            logger.error("Failed to encode gateway activity event")
             return
         if payload_bytes is None:
             return

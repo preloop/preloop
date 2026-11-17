@@ -53,7 +53,7 @@ def run_tracker_credential_encryption_backfill() -> dict[str, int]:
             logger.warning(
                 "Tracker credential backfill failed for tracker %s: %s",
                 tracker_id,
-                inner_exc,
+                type(inner_exc).__name__,
             )
         finally:
             db.close()

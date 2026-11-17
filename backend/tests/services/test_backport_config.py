@@ -228,7 +228,7 @@ class TestGate:
         with caplog.at_level("WARNING", logger="preloop.services.backport"):
             assert not backport_event_matches(stored, github_event(base="main"))
         assert "Backport flow not started" in caplog.text
-        assert "git_clone_config.backport is invalid" in caplog.text
+        assert "BackportConfigError" in caplog.text
 
     def test_trigger_service_applies_the_gate(self) -> None:
         from preloop.services.flow_trigger_service import FlowTriggerService

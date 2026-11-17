@@ -1599,7 +1599,7 @@ class OpenAIGatewayService:
             self.db.flush()
         except SQLAlchemyError:
             self.db.rollback()
-            logger.warning("Failed to close idle runtime session", exc_info=True)
+            logger.warning("Failed to close idle runtime session")
             # Fall through: we still roll to a new generation. A stale row left
             # open is a cosmetic defect; continuing to append a brand-new
             # conversation onto it is the bug this closer exists to prevent.
@@ -1662,8 +1662,7 @@ class OpenAIGatewayService:
         except SQLAlchemyError:
             self.db.rollback()
             logger.warning(
-                "Failed to resolve parent runtime session for gateway request",
-                exc_info=True,
+                "Failed to resolve parent runtime session for gateway request"
             )
         except Exception:
             logger.debug(
@@ -1809,8 +1808,7 @@ class OpenAIGatewayService:
                 except SQLAlchemyError as e:
                     self.db.rollback()
                     logger.warning(
-                        "Failed to resolve runtime session for gateway request",
-                        exc_info=True,
+                        "Failed to resolve runtime session for gateway request"
                     )
                 except Exception as e:
                     logger.debug(
@@ -1878,22 +1876,19 @@ class OpenAIGatewayService:
                 except SQLAlchemyError:
                     self.db.rollback()
                     logger.warning(
-                        "Failed to resolve runtime session for plain gateway key",
-                        exc_info=True,
+                        "Failed to resolve runtime session for plain gateway key"
                     )
                 else:
                     if rs is not None and rs.ended_at is None:
                         runtime_session_id = str(rs.id)
                     else:
                         logger.warning(
-                            "Failed to resolve runtime session for plain gateway key",
-                            exc_info=True,
+                            "Failed to resolve runtime session for plain gateway key"
                         )
             except SQLAlchemyError:
                 self.db.rollback()
                 logger.warning(
-                    "Failed to resolve runtime session for plain gateway key",
-                    exc_info=True,
+                    "Failed to resolve runtime session for plain gateway key"
                 )
             except Exception:
                 logger.debug(
@@ -4926,13 +4921,11 @@ class OpenAIGatewayService:
             self.db.commit()
         except (SQLAlchemyError, ValueError):
             logger.warning(
-                "gateway_sibling_rebind_failed account=%s agent=%s model=%s "
-                "requested=%r",
+                "gateway_sibling_rebind_failed account=%s agent=%s model=%s requested=%r",
                 self.auth_context.account_id,
                 managed_agent_id,
                 candidate.id,
                 requested_model,
-                exc_info=True,
             )
             return None
         logger.info(
@@ -5089,10 +5082,8 @@ class OpenAIGatewayService:
             )
         except Exception:  # noqa: BLE001 - a probe must never fail the request
             logger.warning(
-                "Claude family upstream verification could not resolve "
-                "credentials for %s; registering without verification",
+                "Claude family upstream verification could not resolve credentials for %s; registering without verification",
                 identifier,
-                exc_info=True,
             )
             return "unknown"
         if (
@@ -5302,10 +5293,7 @@ class OpenAIGatewayService:
                     self.db.commit()
                 except (SQLAlchemyError, ValueError):
                     logger.warning(
-                        "%s sibling binding failed for %s",
-                        log_label,
-                        identifier,
-                        exc_info=True,
+                        "%s sibling binding failed for %s", log_label, identifier
                     )
                 self._authorized_model_ids_cache = None
                 return model
@@ -5372,12 +5360,7 @@ class OpenAIGatewayService:
         except (SQLAlchemyError, ValueError):
             # begin_nested already rolled back to the savepoint; unrelated
             # pending session state from earlier in the pipeline survives.
-            logger.warning(
-                "%s auto-registration failed for %s",
-                log_label,
-                identifier,
-                exc_info=True,
-            )
+            logger.warning("%s auto-registration failed for %s", log_label, identifier)
             return None
         # The memoized authorized-id set predates the new row and binding.
         self._authorized_model_ids_cache = None
@@ -7177,9 +7160,7 @@ class OpenAIGatewayService:
             return optimized
         except Exception:
             logger.warning(
-                "Anthropic passthrough governance strip failed; "
-                "forwarding request unchanged",
-                exc_info=True,
+                "Anthropic passthrough governance strip failed; forwarding request unchanged"
             )
             self._last_context_optimization = None
             return payload
@@ -7574,13 +7555,11 @@ class OpenAIGatewayService:
                     retry_after_seconds=_upstream_retry_after_hint_seconds(rejection),
                 )
                 logger.warning(
-                    "Retrying Anthropic OAuth passthrough after transient upstream "
-                    "rejection (attempt %s/%s, status=%s, error_type=%s, "
-                    "delay=%.2fs)",
+                    "Retrying Anthropic OAuth passthrough after transient upstream rejection (attempt %s/%s, status=%s, error_type=%s, delay=%.2fs)",
                     attempt_index + 1,
                     max_attempts,
                     rejection.status_code,
-                    rejection.error_type,
+                    type(rejection).__name__,
                     delay,
                 )
                 self.release_db_for_wait(ai_model)
@@ -7923,9 +7902,7 @@ class OpenAIGatewayService:
             return optimized
         except Exception:
             logger.warning(
-                "OpenAI Responses passthrough governance strip failed; "
-                "forwarding request unchanged",
-                exc_info=True,
+                "OpenAI Responses passthrough governance strip failed; forwarding request unchanged"
             )
             self._last_context_optimization = None
             return payload
@@ -9566,8 +9543,7 @@ class OpenAIGatewayService:
         except Exception:
             self._last_tools_meta = None
             logger.warning(
-                "Failed to compute tools_meta attribution; forwarding without it",
-                exc_info=True,
+                "Failed to compute tools_meta attribution; forwarding without it"
             )
 
     def _optimize_request_context(
@@ -9642,8 +9618,7 @@ class OpenAIGatewayService:
             return optimized_messages, optimized_payload
         except Exception:
             logger.warning(
-                "Context optimization pass failed; forwarding request unchanged",
-                exc_info=True,
+                "Context optimization pass failed; forwarding request unchanged"
             )
             return messages, payload
 
@@ -10163,13 +10138,11 @@ class OpenAIGatewayService:
             # not page admins about the provider; log with the traceback so
             # the bug is visible, and tell the client it is a gateway fault.
             logger.error(
-                "Gateway request translation failed before the upstream call: "
-                "protocol=%s provider=%s model=%s error=%s",
+                "Gateway request translation failed before the upstream call: protocol=%s provider=%s model=%s error=%s",
                 provider,
                 getattr(ai_model, "provider_name", None),
                 getattr(ai_model, "model_identifier", None),
-                exc,
-                exc_info=exc,
+                type(exc).__name__,
             )
             # Same scrub and length cap as every other client-facing
             # message in this function. The raw exception stays in the log
@@ -11773,9 +11746,7 @@ class OpenAIGatewayService:
                 )
             except Exception:
                 logger.warning(
-                    "Could not refresh cost rollup for execution %s",
-                    late_execution_id,
-                    exc_info=True,
+                    "Could not refresh cost rollup for execution %s", late_execution_id
                 )
                 self.db.rollback()
 
@@ -11919,7 +11890,7 @@ class OpenAIGatewayService:
                 if index_document is not None:
                     get_gateway_usage_index_queue().submit(index_document)
             except Exception:
-                logger.exception(
+                logger.error(
                     "Automatic gateway interaction indexing failed for usage %s",
                     usage_row.id,
                 )
@@ -12037,7 +12008,6 @@ class OpenAIGatewayService:
             logger.warning(
                 "Skipping gateway activity touch after usage %s was recorded",
                 usage_row.id,
-                exc_info=True,
             )
 
     def _maybe_refresh_runtime_session_summary(
@@ -12102,14 +12072,9 @@ class OpenAIGatewayService:
             )
         except Exception as exc:
             logger.info(
-                "Optional runtime session summary refresh failed: session=%s "
-                "provider=%s model=%s error_class=%s status=%s",
+                "Optional runtime session summary refresh failed: session_id=%s error_type=%s",
                 runtime_session.id,
-                getattr(default_model, "provider_name", None),
-                getattr(default_model, "model_identifier", None),
-                getattr(exc, "error_class", None),
-                getattr(exc, "status_code", None),
-                exc_info=True,
+                type(exc).__name__,
             )
             return
 
@@ -12157,9 +12122,7 @@ class OpenAIGatewayService:
             )
         except Exception:  # noqa: BLE001 - a summary is never lost over search
             logger.warning(
-                "Session summary indexing failed for session %s",
-                runtime_session.id,
-                exc_info=True,
+                "Session summary indexing failed for session %s", runtime_session.id
             )
 
     def _runtime_session_summary_state(

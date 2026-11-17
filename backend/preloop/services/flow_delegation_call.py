@@ -790,9 +790,9 @@ async def delegate_flow(
         )
         logger.info(
             "Delegation refused (%s) for execution %s: %s",
-            refusal.reason,
+            type(refusal).__name__,
             parent_execution.id,
-            refusal.message,
+            type(refusal).__name__,
         )
         target = None
         if refusal.reason != "flow_not_found":

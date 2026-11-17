@@ -234,7 +234,7 @@ def ensure_key(
             db.refresh(record)
         return record
     except Exception:
-        logger.error("Failed to mint an account signing key", exc_info=True)
+        logger.error("Failed to mint an account signing key")
         return get_active_key(db, account_id=account_id)
 
 
@@ -338,7 +338,7 @@ def sign_manifest(
     try:
         material = load_material(record)
     except SigningError:
-        logger.error("Signing key is unusable; serving unsigned", exc_info=True)
+        logger.error("Signing key is unusable; serving unsigned")
         return None
     return sign_digest(
         material,
@@ -500,7 +500,7 @@ def sign_record(
     try:
         material = load_material(key)
     except SigningError:
-        logger.error("Signing key is unusable; storing no signature", exc_info=True)
+        logger.error("Signing key is unusable; storing no signature")
         return None
     document = sign_digest(
         material,
@@ -578,5 +578,5 @@ def sign_evidence_pack(
             db.commit()
         return document
     except Exception:
-        logger.error("Failed to sign evidence pack %s", artifact_id, exc_info=True)
+        logger.error("Failed to sign evidence pack %s", artifact_id)
         return None

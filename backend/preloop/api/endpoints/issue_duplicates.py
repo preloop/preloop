@@ -290,7 +290,10 @@ def _classify_and_store(
         )
         llm_response_text = response.choices[0].message.content.strip()
         logger.info(
-            f"AI model response for issues {issue1_id}, {issue2_id}: '{llm_response_text}'"
+            "AI model response for issues %s, %s: chars=%s",
+            issue1_id,
+            issue2_id,
+            len(llm_response_text),
         )
 
         response_obj = json.loads(llm_response_text)
@@ -331,8 +334,8 @@ def _classify_and_store(
         return new_duplicate_entry
 
     except openai.APIError as e:
-        logger.exception(
-            f"OpenAI API call for model '{default_model.model_identifier}' failed: {e}"
+        logger.error(
+            f"OpenAI API call for model '{default_model.model_identifier}' failed: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=500,
@@ -340,7 +343,8 @@ def _classify_and_store(
         )
     except ModelGatewayAPIError as exc:
         logger.warning(
-            "AI model call for issue duplicate check did not recover: %s", exc
+            "AI model call for issue duplicate check did not recover: %s",
+            type(exc).__name__,
         )
         raise HTTPException(
             status_code=exc.status_code,
@@ -348,8 +352,8 @@ def _classify_and_store(
             headers=exc.response_headers(),
         )
     except Exception as e:
-        logger.exception(
-            f"An unexpected error occurred during AI model invocation for model '{default_model.model_identifier}': {e}"
+        logger.error(
+            f"An unexpected error occurred during AI model invocation for model '{default_model.model_identifier}': {type(e).__name__}"
         )
         raise HTTPException(
             status_code=500,
@@ -444,7 +448,9 @@ def _run_verdict_check(
             # Not claimed: another API process is checking this pair. Its
             # verdict is stored and returned on a later poll.
     except Exception as exc:  # the claim itself failed (database unavailable)
-        logger.warning("Could not claim duplicate verdict %s: %s", key, exc)
+        logger.warning(
+            "Could not claim duplicate verdict %s: %s", key, type(exc).__name__
+        )
         _remember_failure(key, "ai_model_error")
     finally:
         with _verdict_lock:
@@ -507,7 +513,9 @@ def _check_claimed_pair(
             db, issue1=issue1, issue2=issue2, default_model=model, settings=settings
         )
     except Exception as exc:  # recorded for the next poll, never raised
-        logger.warning("Background duplicate verdict for %s failed: %s", key, exc)
+        logger.warning(
+            "Background duplicate verdict for %s failed: %s", key, type(exc).__name__
+        )
         _remember_failure(key, _failure_code(exc))
     finally:
         try:
@@ -1009,7 +1017,9 @@ def _find_issue_duplicates_logic(
                     )
                 )
             except Exception as e:
-                logger.error(f"Similarity search failed for issue {issue.id}: {e}")
+                logger.error(
+                    f"Similarity search failed for issue {issue.id}: {type(e).__name__}"
+                )
                 continue
 
             for similar_issue_obj, score in similar_issue_score_tuples:
@@ -1033,7 +1043,9 @@ def _find_issue_duplicates_logic(
                             account_id=current_user.account_id,
                         )
                     except Exception as e:
-                        logger.error(f"Failed to get duplicate record: {e}")
+                        logger.error(
+                            f"Failed to get duplicate record: {type(e).__name__}"
+                        )
                         continue
 
                     record_resolution = (
@@ -1096,7 +1108,7 @@ def _find_issue_duplicates_logic(
                         reported_pairs.add(pair_key)
                     except Exception as e:
                         logger.error(
-                            f"Error creating issue response for duplicate pair: {e}"
+                            f"Error creating issue response for duplicate pair: {type(e).__name__}"
                         )
                         continue
 
@@ -1384,7 +1396,7 @@ def get_resolution_suggestion(
             explanation=explanation, **suggestion_data
         )
     except openai.APIError as e:
-        logger.error(f"OpenAI API call failed: {e}")
+        logger.error(f"OpenAI API call failed: {type(e).__name__}")
         raise HTTPException(
             status_code=500,
             detail={
@@ -1393,7 +1405,7 @@ def get_resolution_suggestion(
             },
         )
     except ModelGatewayAPIError as exc:
-        logger.warning("AI suggestion call did not recover: %s", exc)
+        logger.warning("AI suggestion call did not recover: %s", type(exc).__name__)
         raise HTTPException(
             status_code=exc.status_code,
             detail="AI model is rate limited; retry later.",

@@ -75,9 +75,11 @@ async def purge_expired_docker_volumes(*, cutoff: datetime) -> int:
                 await docker.volumes.get(name).delete()
                 removed += 1
             except Exception as e:
-                logger.info("Could not remove workspace volume %s: %s", name, e)
+                logger.info(
+                    "Could not remove workspace volume %s: %s", name, type(e).__name__
+                )
     except Exception as e:
-        logger.info("Workspace volume cleanup skipped: %s", e)
+        logger.info("Workspace volume cleanup skipped: %s", type(e).__name__)
     finally:
         if docker is not None:
             try:

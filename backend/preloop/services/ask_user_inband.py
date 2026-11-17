@@ -218,9 +218,7 @@ async def deliver_question_to_session(
         )
     except Exception:
         logger.warning(
-            "In-session question delivery failed for approval %s",
-            approval_request_id,
-            exc_info=True,
+            "In-session question delivery failed for approval %s", approval_request_id
         )
         return False
 

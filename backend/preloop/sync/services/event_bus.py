@@ -57,7 +57,7 @@ class EventBus:
             logger.info("NATS client already connected.")
             return
 
-        logger.info(f"Connecting to NATS server at {self.nats_url}")
+        logger.info("Connecting to NATS server")
         try:
             self.nc = await nats.connect(
                 self.nats_url,
@@ -103,23 +103,21 @@ class EventBus:
                 else:
                     raise e
 
-            logger.info(f"Successfully connected to NATS server: {self.nats_url}")
+            logger.info("Successfully connected to NATS server")
         except ErrNoServers as e:
-            logger.error(
-                f"Could not connect to NATS: No servers available at {self.nats_url}. Error: {e}"
-            )
+            logger.error("Could not connect to NATS: error_type=%s", type(e).__name__)
             self.nc = None
             self.js = None
         except Exception as e:
-            logger.error(f"Error connecting to NATS at {self.nats_url}: {e}")
+            logger.error("Error connecting to NATS: error_type=%s", type(e).__name__)
             self.nc = None
             self.js = None
 
     async def _error_cb(self, e: Exception):
-        logger.error(f"NATS client error: {e}")
+        logger.error(f"NATS client error: {type(e).__name__}")
 
     async def _reconnected_cb(self):
-        logger.info(f"NATS client reconnected to {self.nats_url}")
+        logger.info("NATS client reconnected")
 
     async def _disconnected_cb(self):
         logger.warning("NATS client disconnected.")
@@ -170,13 +168,13 @@ class EventBus:
             return ack
         except (ErrTimeout, ErrConnectionClosed) as e:
             logger.error(
-                f"Failed to publish task '{function_name}' to NATS subject '{subject}': {e}"
+                f"Failed to publish task '{function_name}' to NATS subject '{subject}': {type(e).__name__}"
             )
             # Let the bounded retry decorator actually retry transient failures.
             raise
         except Exception as e:
             logger.error(
-                f"An unexpected error occurred while publishing task '{function_name}' to NATS subject '{subject}': {e}"
+                f"An unexpected error occurred while publishing task '{function_name}' to NATS subject '{subject}': {type(e).__name__}"
             )
         return None
 
@@ -190,7 +188,9 @@ class EventBus:
                 await self.nc.drain()
                 logger.info("NATS client connection drained and closed.")
             except Exception as e:
-                logger.error(f"Error closing NATS client connection: {e}")
+                logger.error(
+                    f"Error closing NATS client connection: {type(e).__name__}"
+                )
         else:
             logger.info("NATS client connection already closed or not established.")
         self.nc = None

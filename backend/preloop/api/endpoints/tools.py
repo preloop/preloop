@@ -1036,7 +1036,7 @@ async def create_tool_configuration(
         )
     except Exception as e:
         db.rollback()
-        logger.error(f"Error creating tool configuration: {e}", exc_info=True)
+        logger.error(f"Error creating tool configuration: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating tool configuration: {str(e)}",
@@ -1156,7 +1156,7 @@ async def update_tool_configuration(
     except Exception as e:
         db.rollback()
         logger.error(
-            f"Error updating tool configuration {config_id}: {e}", exc_info=True
+            f"Error updating tool configuration {config_id}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1261,7 +1261,7 @@ async def update_tool_approval_condition(
     except Exception as e:
         db.rollback()
         logger.error(
-            f"Error updating approval condition for {config_id}: {e}", exc_info=True
+            f"Error updating approval condition for {config_id}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1315,7 +1315,7 @@ async def delete_tool_configuration(
     except Exception as e:
         db.rollback()
         logger.error(
-            f"Error deleting tool configuration {config_id}: {e}", exc_info=True
+            f"Error deleting tool configuration {config_id}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1490,7 +1490,7 @@ async def create_approval_workflow(
 
     except Exception as e:
         db.rollback()
-        logger.error(f"Error creating approval workflow: {e}", exc_info=True)
+        logger.error(f"Error creating approval workflow: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating approval workflow: {str(e)}",
@@ -1658,7 +1658,7 @@ async def update_approval_workflow(
     except Exception as e:
         db.rollback()
         logger.error(
-            f"Error updating approval workflow {workflow_id}: {e}", exc_info=True
+            f"Error updating approval workflow {workflow_id}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1810,7 +1810,7 @@ async def delete_approval_workflow(
     except Exception as e:
         db.rollback()
         logger.error(
-            f"Error deleting approval workflow {workflow_id}: {e}", exc_info=True
+            f"Error deleting approval workflow {workflow_id}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1997,8 +1997,7 @@ async def create_or_update_tool_approval_condition(
     except Exception as e:
         db.rollback()
         logger.error(
-            f"Error creating/updating approval condition for tool config {config_id}: {e}",
-            exc_info=True,
+            f"Error creating/updating approval condition for tool config {config_id}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -2074,8 +2073,7 @@ async def delete_tool_approval_condition(
     except Exception as e:
         db.rollback()
         logger.error(
-            f"Error deleting approval condition for tool config {config_id}: {e}",
-            exc_info=True,
+            f"Error deleting approval condition for tool config {config_id}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -2141,7 +2139,7 @@ async def test_approval_condition(
 
     except Exception as e:
         logger.warning(
-            f"CEL expression evaluation failed for tool config {config_id}: {e}"
+            f"CEL expression evaluation failed for tool config {config_id}: {type(e).__name__}"
         )
 
         return ConditionTestResponse(
@@ -2340,7 +2338,7 @@ async def create_access_rule(
         )
     except Exception as e:
         db.rollback()
-        logger.error(f"Failed to create access rule: {e}")
+        logger.error(f"Failed to create access rule: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create access rule: {str(e)}",
@@ -2432,7 +2430,7 @@ async def update_access_rule(
         )
     except Exception as e:
         db.rollback()
-        logger.error(f"Failed to update access rule: {e}")
+        logger.error(f"Failed to update access rule: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update access rule: {str(e)}",
@@ -2482,7 +2480,7 @@ async def delete_access_rule(
         logger.info(f"Deleted access rule {rule_id} (account: {account.id})")
     except Exception as e:
         db.rollback()
-        logger.error(f"Failed to delete access rule: {e}")
+        logger.error(f"Failed to delete access rule: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete access rule: {str(e)}",

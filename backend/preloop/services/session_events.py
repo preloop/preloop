@@ -72,4 +72,4 @@ def notify_first_session_recorded(
     try:
         _first_session_hook(db, account_id=account_id, occurred_at=occurred_at)
     except Exception:
-        logger.warning("First-session hook failed", exc_info=True)
+        logger.warning("First-session hook failed")

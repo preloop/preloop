@@ -283,7 +283,7 @@ def embed_query(
         logger.warning(
             "Session search query embedding misconfigured for account %s: %s",
             account_id,
-            exc,
+            type(exc).__name__,
         )
         return QueryEmbeddingOutcome(reason=DEGRADED_SEMANTIC_MISCONFIGURED)
 
@@ -293,13 +293,13 @@ def embed_query(
     except EmbeddingProviderError as exc:
         # The message names the endpoint and the model, never the query.
         logger.warning(
-            "Session search query embedding failed for account %s: %s", account_id, exc
+            "Session search query embedding failed for account %s: %s",
+            account_id,
+            type(exc).__name__,
         )
         return QueryEmbeddingOutcome(reason=DEGRADED_SEMANTIC_PROVIDER_ERROR)
     except Exception:
-        logger.exception(
-            "Session search query embedding failed for account %s", account_id
-        )
+        logger.error("Session search query embedding failed for account %s", account_id)
         return QueryEmbeddingOutcome(reason=DEGRADED_SEMANTIC_PROVIDER_ERROR)
     duration = clock.perf_counter() - started
 
@@ -394,5 +394,4 @@ def _record_usage(
         logger.warning(
             "Session search could not record query embedding usage for account %s",
             account_id,
-            exc_info=True,
         )

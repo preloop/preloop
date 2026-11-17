@@ -176,7 +176,6 @@ async def write_pull_request_to_jira(
             "Could not comment the pull request on Jira issue %s (execution %s)",
             issue_key,
             execution_id,
-            exc_info=True,
         )
 
     _, repository, number = split_pull_request_url(pr_url)
@@ -193,10 +192,8 @@ async def write_pull_request_to_jira(
         outcome.remote_link_written = True
     except Exception:
         logger.warning(
-            "Could not link the pull request on Jira issue %s (execution %s). "
-            "Issue linking must be enabled on the Jira site.",
+            "Could not link the pull request on Jira issue %s (execution %s). Issue linking must be enabled on the Jira site.",
             issue_key,
             execution_id,
-            exc_info=True,
         )
     return outcome

@@ -94,7 +94,7 @@ class DiscoveryCandidatePurgeSweeper:
             try:
                 await asyncio.to_thread(run_discovery_candidate_purge_once)
             except Exception:
-                logger.error("Error in discovery candidate purge pass", exc_info=True)
+                logger.error("Error in discovery candidate purge pass")
 
 
 _sweeper: Optional[DiscoveryCandidatePurgeSweeper] = None

@@ -90,7 +90,7 @@ async def poll_tracker(
         logger.info("Scan for tracker %s completed. Stats: %s", tracker_id, stats)
         return stats
     except Exception as e:
-        logger.error("Error scanning tracker %s: %s", tracker_id, e, exc_info=True)
+        logger.error("Error scanning tracker %s: %s", tracker_id, type(e).__name__)
         crud_tracker.validate(db, id=tracker_id, is_valid=False, message=str(e))
         return None
     finally:
@@ -118,10 +118,10 @@ def notify_admins(
 
     # Skip notifications during testing
     if os.getenv("TESTING") == "true":
-        logger.info(f"Skipping admin notification (TESTING mode): {subject}")
+        logger.info("Skipping admin notification (TESTING mode)")
         return
 
-    logger.info(f"Notifying admins: {subject} - {message}")
+    logger.info("Sending admin notifications")
 
     # Get instance URL for context in notifications
     instance_url = settings.preloop_url or "unknown instance"
@@ -147,7 +147,7 @@ def notify_admins(
             response.raise_for_status()
             logger.info("Slack notification sent successfully")
         except Exception as e:
-            logger.error(f"Failed to send Slack notification: {e}")
+            logger.error(f"Failed to send Slack notification: {type(e).__name__}")
 
     # Send Mattermost notification if webhook is configured
     mattermost_webhook = settings.mattermost_webhook_url
@@ -162,7 +162,7 @@ def notify_admins(
             response.raise_for_status()
             logger.info("Mattermost notification sent successfully")
         except Exception as e:
-            logger.error(f"Failed to send Mattermost notification: {e}")
+            logger.error(f"Failed to send Mattermost notification: {type(e).__name__}")
 
 
 def serialize_uuids(obj: Any) -> Any:
@@ -227,7 +227,7 @@ async def process_webhook_event(
         except Exception:
             # Webhook events have always continued to flow triggers after an
             # inline embedding failure. Keep that behavior in the worker.
-            logger.exception("Webhook embedding generation failed; forwarding event")
+            logger.error("Webhook embedding generation failed; forwarding event")
 
     db = next(get_db_session())
     try:
@@ -402,7 +402,7 @@ def reprice_gateway_usage_task(
                 attempt=attempt,
                 error="Repricing failed. Some usage may already have been repriced. Retry repricing.",
             )
-        logger.exception("Error repricing usage for account %s", account_id)
+        logger.error("Error repricing usage for account %s", account_id)
         raise
     finally:
         db.close()
@@ -427,7 +427,7 @@ def ingest_provider_billing(account_id: str | None = None) -> object | None:
     try:
         return service.ingest(db, account_id=account_id)
     except Exception as e:
-        logger.error("Provider billing ingestion failed: %s", e, exc_info=True)
+        logger.error("Provider billing ingestion failed: %s", type(e).__name__)
         return None
     finally:
         db.close()
@@ -469,7 +469,7 @@ async def ingest_copilot_usage(account_id: str | None = None) -> object | None:
     try:
         return await run_db_off_loop(run)
     except Exception as e:
-        logger.error("Copilot usage import failed: %s", e, exc_info=True)
+        logger.error("Copilot usage import failed: %s", type(e).__name__)
         return None
 
 
@@ -505,7 +505,7 @@ async def ingest_anthropic_usage(account_id: str | None = None) -> object | None
     try:
         return await run_db_off_loop(run)
     except Exception as e:
-        logger.error("Anthropic usage import failed: %s", e, exc_info=True)
+        logger.error("Anthropic usage import failed: %s", type(e).__name__)
         return None
 
 
@@ -541,7 +541,7 @@ async def sync_model_catalog(account_id: str | None = None) -> dict[str, int] | 
             return {account_id: total} if total else {}
         return await sync_all_account_model_catalogs(db)
     except Exception as e:
-        logger.error("Scheduled model catalog sync failed: %s", e, exc_info=True)
+        logger.error("Scheduled model catalog sync failed: %s", type(e).__name__)
         return None
     finally:
         db.close()
@@ -562,7 +562,7 @@ async def cleanup_flow_workspaces() -> dict[str, int] | None:
     try:
         return await cleanup_workspace_artifacts(db)
     except Exception as e:
-        logger.error("Workspace retention pass failed: %s", e, exc_info=True)
+        logger.error("Workspace retention pass failed: %s", type(e).__name__)
         return None
     finally:
         db.close()
@@ -586,7 +586,7 @@ async def maintain_gateway_activity() -> dict[str, Any] | None:
         # so acks and other tasks are not held up for the whole pass.
         return await run_db_off_loop(lambda: run_gateway_activity_maintenance(db))
     except Exception as e:
-        logger.error("Gateway activity maintenance failed: %s", e, exc_info=True)
+        logger.error("Gateway activity maintenance failed: %s", type(e).__name__)
         return None
     finally:
         db.close()
@@ -610,7 +610,7 @@ def send_optimization_digest(account_id: str | None = None) -> object | None:
     try:
         return service(db, account_id=account_id)
     except Exception as e:
-        logger.error("Optimization digest failed: %s", e, exc_info=True)
+        logger.error("Optimization digest failed: %s", type(e).__name__)
         return None
     finally:
         db.close()
@@ -636,7 +636,7 @@ def reconcile_stripe_subscriptions(account_id: str | None = None) -> object | No
     try:
         return service(db, account_id=account_id)
     except Exception as e:
-        logger.error("Subscription reconciliation failed: %s", e, exc_info=True)
+        logger.error("Subscription reconciliation failed: %s", type(e).__name__)
         return None
     finally:
         db.close()
@@ -664,7 +664,7 @@ def evaluate_spend_outliers() -> dict[str, int] | None:
     try:
         return run_daily_pass(db)
     except Exception as e:
-        logger.error("Spend outlier daily pass failed: %s", e, exc_info=True)
+        logger.error("Spend outlier daily pass failed: %s", type(e).__name__)
         return None
     finally:
         db.close()
@@ -683,7 +683,7 @@ def _run_governance_handler(service_name: str) -> object | None:
         result: object | None = service(db)
         return result
     except Exception as e:
-        logger.error("%s failed: %s", service_name, e, exc_info=True)
+        logger.error("%s failed: %s", service_name, type(e).__name__)
         return None
     finally:
         db.close()
@@ -723,7 +723,7 @@ def evaluate_spend_outlier_sessions() -> dict[str, int] | None:
     try:
         return run_session_pass(db)
     except Exception as e:
-        logger.error("Spend outlier session check failed: %s", e, exc_info=True)
+        logger.error("Spend outlier session check failed: %s", type(e).__name__)
         return None
     finally:
         db.close()
@@ -755,7 +755,9 @@ async def cleanup_tracker_webhooks(tracker_id: str) -> None:
             return
 
         logger.info(
-            f"Cleaning up webhooks for tracker {tracker.name} (type: {tracker.tracker_type}, url: {tracker.url})"
+            "Cleaning up webhooks: tracker_id=%s type=%s",
+            tracker.id,
+            tracker.tracker_type,
         )
 
         # The CRUD query handles organization-only, project-only and empty
@@ -832,13 +834,11 @@ async def cleanup_tracker_webhooks(tracker_id: str) -> None:
                             )
                     except Exception as e:
                         logger.error(
-                            f"Failed to delete webhook {webhook.external_id} from external tracker: {e}",
-                            exc_info=True,
+                            f"Failed to delete webhook {webhook.external_id} from external tracker: {type(e).__name__}"
                         )
             except Exception as e:
                 logger.error(
-                    f"Failed to create tracker client for webhook cleanup: {e}",
-                    exc_info=True,
+                    f"Failed to create tracker client for webhook cleanup: {type(e).__name__}"
                 )
 
         # Delete webhook records from our database
@@ -859,7 +859,7 @@ async def cleanup_tracker_webhooks(tracker_id: str) -> None:
                     )
             except Exception as e:
                 logger.error(
-                    f"Failed to delete webhook record {webhook.id}: {e}", exc_info=True
+                    f"Failed to delete webhook record {webhook.id}: {type(e).__name__}"
                 )
 
         db.commit()
@@ -870,8 +870,7 @@ async def cleanup_tracker_webhooks(tracker_id: str) -> None:
     except Exception as e:
         db.rollback()
         logger.error(
-            f"Error during webhook cleanup for tracker {tracker_id}: {e}",
-            exc_info=True,
+            f"Error during webhook cleanup for tracker {tracker_id}: {type(e).__name__}"
         )
     finally:
         db.close()

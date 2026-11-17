@@ -146,9 +146,7 @@ async def require_owner_consent(
         try:
             await asyncio.wait_for(notify_owner_consent(result.approval_id), timeout=25)
         except Exception:
-            logger.exception(
-                "Owner notification pending retry for %s", result.approval_id
-            )
+            logger.error("Owner notification pending retry for %s", result.approval_id)
     consumed = result.status == "approved" and await run_db_off_loop(
         lambda: crud.consume(db, approval_id=result.approval_id)
     )
@@ -193,9 +191,7 @@ async def retry_owner_notifications() -> None:
                         notify_owner_consent(approval_id), timeout=25
                     )
                 except Exception:
-                    logger.exception(
-                        "Owner notification retry failed for %s", approval_id
-                    )
+                    logger.error("Owner notification retry failed for %s", approval_id)
         except Exception:
-            logger.exception("Owner notification retry sweep failed")
+            logger.error("Owner notification retry sweep failed")
         await asyncio.sleep(15)

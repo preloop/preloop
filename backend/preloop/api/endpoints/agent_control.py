@@ -352,9 +352,8 @@ class AgentControlConnectionManager:
         try:
             payload = envelope.model_dump(mode="json")
         except _SERIALIZATION_ERRORS:
-            logger.exception(
-                "Failed to serialize Agent Control envelope for agent %s; "
-                "sending minimal fallback",
+            logger.error(
+                "Failed to serialize Agent Control envelope for agent %s; sending minimal fallback",
                 managed_agent_id,
             )
             payload = {
@@ -369,9 +368,8 @@ class AgentControlConnectionManager:
                 return bool(await sender(payload))
             await websocket.send_json(payload)
         except _WS_DELIVERY_ERRORS:
-            logger.exception(
-                "Failed to send Agent Control envelope to agent %s",
-                managed_agent_id,
+            logger.error(
+                "Failed to send Agent Control envelope to agent %s", managed_agent_id
             )
             return False
         return True
@@ -592,7 +590,7 @@ async def _publish_command(
         )
         return subject
     except _NATS_DELIVERY_ERRORS:
-        logger.exception("Failed to publish managed-agent command")
+        logger.error("Failed to publish managed-agent command")
         return None
 
 
@@ -622,9 +620,7 @@ def _safe_mark_command_delivered(
         if commit:
             db.commit()
     except _DB_DELIVERY_ERRORS:
-        logger.exception(
-            "Failed to mark Agent Control command %s delivered", command_id
-        )
+        logger.error("Failed to mark Agent Control command %s delivered", command_id)
 
 
 async def _send_control_command(
@@ -683,7 +679,7 @@ async def _send_control_command(
         await database.run(mark)
         return True
     except _DB_DELIVERY_ERRORS + _WS_DELIVERY_ERRORS:
-        logger.warning("Control command delivery unavailable", exc_info=True)
+        logger.warning("Control command delivery unavailable")
         return False
 
 
@@ -705,7 +701,7 @@ async def _subscribe_to_commands(
             try:
                 payload = json.loads(msg.data.decode())
             except _WS_DELIVERY_ERRORS:
-                logger.exception("Invalid managed-agent command notification")
+                logger.error("Invalid managed-agent command notification")
                 return
             if not isinstance(payload, dict) or database is None or connection is None:
                 return
@@ -751,7 +747,7 @@ async def _redeliver_pending_commands(
     try:
         pending = await database.run(load)
     except _DB_DELIVERY_ERRORS:
-        logger.exception(
+        logger.error(
             "Failed to load undelivered Agent Control commands for agent %s",
             connection.managed_agent_id,
         )
@@ -812,7 +808,7 @@ def _handle_command_ack(
     except _DB_DELIVERY_ERRORS:
         if not commit:
             raise
-        logger.exception("Failed to mark Agent Control command %s acked", command_id)
+        logger.error("Failed to mark Agent Control command %s acked", command_id)
 
 
 _AGENT_CONTROL_TRUNCATE_KEYS = frozenset(
@@ -1190,7 +1186,7 @@ def _broadcast_command_progress(
             )
         )
     except Exception:
-        logger.warning("Failed to emit command progress", exc_info=True)
+        logger.warning("Failed to emit command progress")
 
 
 #: Live events a sidecar forwards for a session it can drive but did not
@@ -1471,7 +1467,7 @@ async def _emit_session_progress(
                 )
         except _DB_DELIVERY_ERRORS:
             # Live progress is best effort; never drop the control socket.
-            logger.warning("Could not scope session progress", exc_info=True)
+            logger.warning("Could not scope session progress")
             return
         _remember_session_progress_target(connection, cache_key, target)
     if target is None:
@@ -1602,9 +1598,7 @@ async def managed_agent_control_websocket(
         # the operator has no way to tell an expired credential from a revoked
         # one.
         logger.warning(
-            "Agent control websocket rejected: %s (token prefix=%s)",
-            exc.detail,
-            token[:12],
+            "Agent control websocket rejected: error_type=%s", type(exc).__name__
         )
         await websocket.close(code=1008, reason=str(exc.detail))
         return
@@ -1737,7 +1731,6 @@ async def managed_agent_control_websocket(
                 logger.warning(
                     "Managed agent %s DB update failed; closing control websocket",
                     connection.managed_agent_id,
-                    exc_info=True,
                 )
                 await websocket.close(code=1013, reason="Database busy; reconnect")
                 break
@@ -1756,7 +1749,7 @@ async def managed_agent_control_websocket(
     except _WS_DELIVERY_ERRORS:
         logger.info("Managed-agent control WebSocket disconnected")
     except _DB_DELIVERY_ERRORS:
-        logger.warning("Control database phase failed", exc_info=True)
+        logger.warning("Control database phase failed")
         await websocket.close(code=1013, reason="Database busy; reconnect")
     finally:
         if command_subscription is not None:
@@ -1782,7 +1775,6 @@ async def managed_agent_control_websocket(
                 logger.warning(
                     "Failed to retire control presence for managed agent %s",
                     connection.managed_agent_id,
-                    exc_info=True,
                 )
             if retired:
                 emit_account_event(

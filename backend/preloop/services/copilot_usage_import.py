@@ -1269,9 +1269,7 @@ def sync_connection(
         db.rollback()
         error = str(exc)
         logger.warning(
-            "Copilot usage import failed for account %s: %s",
-            connection.account_id,
-            error,
+            "Copilot usage import failed: account_id=%s", connection.account_id
         )
     if synced:
         # Imported days are closed windows: expire cached cost reads (the

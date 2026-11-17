@@ -650,7 +650,7 @@ def _consult_policy(
             ),
         )
     except Exception as exc:  # noqa: BLE001 - a broken read must not widen scope
-        logger.error("send_note scope grant evaluation failed: %s", exc, exc_info=True)
+        logger.error("send_note scope grant evaluation failed: %s", type(exc).__name__)
         return "unavailable", f"policy evaluation failed: {exc}", False
 
     action = decision[0]
@@ -779,4 +779,6 @@ def audit_refusal(
             commit=commit,
         )
     except Exception as exc:  # noqa: BLE001 - the refusal still stands
-        logger.error("Failed to record a send_note scope refusal: %s", exc)
+        logger.error(
+            "Failed to record a send_note scope refusal: %s", type(exc).__name__
+        )

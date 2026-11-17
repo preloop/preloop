@@ -256,7 +256,6 @@ def record_artifact_rejection(
             "flow_artifact_rejected audit write failed execution_id=%s status=%s",
             execution_id,
             status_code,
-            exc_info=True,
         )
         try:
             flow_artifact.rollback(db)

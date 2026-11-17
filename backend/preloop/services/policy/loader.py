@@ -981,7 +981,7 @@ class PolicyApplier:
             self._result.tools_skipped = len(self._skipped_tools)
 
         except Exception as e:
-            logger.error(f"Failed to apply policy: {e}", exc_info=True)
+            logger.error(f"Failed to apply policy: {type(e).__name__}")
             self._result.errors.append(str(e))
             if not dry_run:
                 self.db.rollback()
@@ -1745,8 +1745,7 @@ class PolicyApplier:
                 # Detection suggests CEL - upgrade to prevent policy bypass
                 if explicit_type == "simple":
                     logger.warning(
-                        f"Condition expression appears to be CEL but was marked as 'simple': "
-                        f"{condition.expression[:50]}... Upgrading to 'cel' to prevent policy bypass."
+                        "Condition appears to be CEL but was marked simple; upgrading to CEL"
                     )
                 condition_type = "cel"
             else:
@@ -1867,9 +1866,7 @@ def _export_item(model_cls: Type[_ExportModel], **fields: Any) -> _ExportModel:
             "Exported %s %r does not validate: %s",
             model_cls.__name__,
             fields.get("name"),
-            # Field paths and messages only: the inputs can hold credentials
-            # (auth_config), webhook config or AI context.
-            exc.errors(include_input=False, include_url=False),
+            exc.error_count(),
         )
         return model_cls.model_construct(**fields)
 
@@ -2115,6 +2112,6 @@ def export_current_policy(
         # must still show the operator what is stored so it can be fixed.
         logger.warning(
             "Exported policy does not validate as a whole: %s",
-            exc.errors(include_input=False, include_url=False),
+            exc.error_count(),
         )
         return PolicyDocument.model_construct(**document_fields)

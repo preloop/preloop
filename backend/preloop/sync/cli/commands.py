@@ -314,8 +314,7 @@ def unregister_webhooks_command(
         except Exception as e:
             click.echo(f"Error processing tracker {tracker_orm_instance.id}: {e}")
             logger.error(
-                f"CLI unregister-webhooks: Error processing tracker {tracker_orm_instance.id}",
-                exc_info=True,
+                f"CLI unregister-webhooks: Error processing tracker {tracker_orm_instance.id}"
             )
             total_failed += 1
 

@@ -2634,7 +2634,7 @@ def finalize_for_execution(
             if row is not None and isinstance(row.result, Mapping):
                 previous = row.result
         except Exception:  # noqa: BLE001 - a missing delta never fails a run
-            log.warning("Could not read the previous delivery report", exc_info=True)
+            log.warning("Could not read the previous delivery report")
     audits: List[Dict[str, Any]] = []
     if account_id:
         try:
@@ -2643,14 +2643,14 @@ def finalize_for_execution(
                 "audits"
             ]
         except Exception:  # noqa: BLE001 - without audits the run's own pass stands
-            log.warning("Could not read merge audits for the report", exc_info=True)
+            log.warning("Could not read merge audits for the report")
     cost: Optional[float] = None
     tokens: Optional[int] = None
     try:
         usage = get_execution_usage(db, execution.id)
         cost, tokens = usage.cost_usd, usage.total_tokens
     except Exception:  # noqa: BLE001 - unknown spend is reported as unknown
-        log.warning("Could not read delivery report spend", exc_info=True)
+        log.warning("Could not read delivery report spend")
     limits = parse_execution_limits(getattr(flow, "agent_config", None))
     return finalize_delivery_report(
         result,
@@ -2805,12 +2805,12 @@ def plan_policy_run(
             since=_month_start(now or datetime.now(timezone.utc)),
         )
     except Exception:  # noqa: BLE001 - unknown spend: the run ceiling still caps
-        log.warning("Could not read this month's report spend", exc_info=True)
+        log.warning("Could not read this month's report spend")
     credit: Optional[float] = None
     try:
         credit = crud_delivery_report_policy.credit_available(db, account_id=account_id)
     except Exception:  # noqa: BLE001 - no readable wallet: not on hosted credit
-        log.warning("Could not read hosted credit for the report", exc_info=True)
+        log.warning("Could not read hosted credit for the report")
     previous_result = getattr(previous, "result", None)
     previous_assessment = (
         previous_result.get("assessment")

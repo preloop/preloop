@@ -301,7 +301,7 @@ class TrackerClient:
             proj_data_list = await self.client.get_projects(organization_identifier)
         except Exception as e:
             logger.error(
-                f"Failed to get projects from tracker for org {organization.name}: {e}"
+                f"Failed to get projects from tracker for org {organization.name}: {type(e).__name__}"
             )
             return []
 
@@ -451,8 +451,7 @@ class TrackerClient:
                 )
             except Exception as e:
                 logger.error(
-                    f"Error processing project data for {proj_data.get('name', 'N/A')}: {e}",
-                    exc_info=True,
+                    f"Error processing project data for {proj_data.get('name', 'N/A')}: {type(e).__name__}"
                 )
 
         return processed_projects
@@ -709,7 +708,7 @@ async def _process_organization(
                     logger.error(
                         "Error syncing Jira dynamic webhook for tracker %s: %s",
                         client.tracker.id,
-                        e,
+                        type(e).__name__,
                     )
                     org_stats["organizations"]["errors"] += 1
                     org_stats["errors"] += 1
@@ -748,9 +747,8 @@ async def _process_organization(
                                     secret=current_secret_to_use,
                                 )
                                 logger.info(
-                                    "Webhook registration result for %s: %s",
+                                    "Webhook registration completed for %s",
                                     project.identifier,
-                                    result,
                                 )
                                 if (
                                     getattr(client.client, "webhook_status", None)
@@ -766,8 +764,7 @@ async def _process_organization(
                             logger.error(
                                 "Error registering webhook for Jira project %s: %s",
                                 project.identifier,
-                                e,
-                                exc_info=True,
+                                type(e).__name__,
                             )
                             org_stats["organizations"]["errors"] += 1
                             org_stats["errors"] += 1
@@ -784,8 +781,7 @@ async def _process_organization(
                         )
                 except Exception as e:
                     logger.error(
-                        f"Error registering webhook for GitHub organization {org.identifier}: {e}",
-                        exc_info=True,
+                        f"Error registering webhook for GitHub organization {org.identifier}: {type(e).__name__}"
                     )
                     org_stats["organizations"]["errors"] += 1
                     org_stats["errors"] += 1
@@ -847,15 +843,13 @@ async def _process_organization(
                                     )
                             except Exception as e:
                                 logger.error(
-                                    f"Error registering webhook for GitLab project {project.identifier}: {e}",
-                                    exc_info=True,
+                                    f"Error registering webhook for GitLab project {project.identifier}: {type(e).__name__}"
                                 )
                                 org_stats["organizations"]["errors"] += 1
                                 org_stats["errors"] += 1
                 except Exception as e:
                     logger.error(
-                        f"Error registering webhook for GitLab organization {org.identifier}: {e}",
-                        exc_info=True,
+                        f"Error registering webhook for GitLab organization {org.identifier}: {type(e).__name__}"
                     )
                     org_stats["organizations"]["errors"] += 1
                     org_stats["errors"] += 1
@@ -875,8 +869,7 @@ async def _process_organization(
                         )
                     except Exception as e:
                         logger.error(
-                            f"Error registering webhook for Bitbucket repository {project.identifier}: {e}",
-                            exc_info=True,
+                            f"Error registering webhook for Bitbucket repository {project.identifier}: {type(e).__name__}"
                         )
                         org_stats["organizations"]["errors"] += 1
                         org_stats["errors"] += 1
@@ -886,8 +879,7 @@ async def _process_organization(
 
         except Exception as e:
             logger.error(
-                f"Error during webhook registration for org {org.id}: {e}",
-                exc_info=True,
+                f"Error during webhook registration for org {org.id}: {type(e).__name__}"
             )
             org_stats["organizations"]["errors"] += 1
             org_stats["errors"] += 1
@@ -969,7 +961,7 @@ async def scan_tracker(
     except Exception as e:
         # Rollback the session to clear any pending transactions
         db.rollback()
-        logger.error(f"Failed to scan tracker {tracker_id}: {e}", exc_info=True)
+        logger.error(f"Failed to scan tracker {tracker_id}: {type(e).__name__}")
         stats["errors"] += 1
 
     if verbose:

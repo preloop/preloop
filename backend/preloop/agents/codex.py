@@ -356,7 +356,7 @@ class CodexAgent(ContainerAgentExecutor):
 
         except DockerError as e:
             self.logger.error(
-                f"Failed to start Codex CLI container for execution {execution_id}: {e}"
+                f"Failed to start Codex CLI container for execution {execution_id}: {type(e).__name__}"
             )
             raise RuntimeError(f"Failed to start Codex CLI container: {e}")
 
@@ -1406,8 +1406,7 @@ model = "{model}"
                         )
             except Exception as e:
                 self.logger.warning(
-                    f"Failed to query approval workflows for MCP timeout calculation: {e}. "
-                    f"Using default timeout of {mcp_timeout}s"
+                    f"Failed to query approval workflows for MCP timeout calculation: {type(e).__name__}. Using default timeout of {mcp_timeout}s"
                 )
 
         env["MCP_TOOL_TIMEOUT"] = str(mcp_timeout)

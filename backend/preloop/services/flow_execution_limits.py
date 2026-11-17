@@ -567,7 +567,7 @@ def mark_execution_budget_exceeded(
         )
         crud_flow_execution.update(db, db_obj=execution, obj_in=update)
     except Exception:  # noqa: BLE001 - annotation never fails the refusal
-        logger.exception(
+        logger.error(
             "Failed to mark execution %s as budget_exceeded",
             getattr(execution, "id", None),
         )
@@ -611,9 +611,7 @@ def enforce_execution_limits_for_id(db: Session, *, execution_id: Any) -> None:
         execution = crud_flow_execution.get(db, id=str(execution_uuid))
     except Exception:  # noqa: BLE001 - a limits read never breaks a request
         logger.warning(
-            "Could not resolve execution %s for per-execution limits",
-            execution_uuid,
-            exc_info=True,
+            "Could not resolve execution %s for per-execution limits", execution_uuid
         )
         return
     if execution is None:
@@ -625,11 +623,7 @@ def enforce_execution_limits_for_id(db: Session, *, execution_id: Any) -> None:
         usage = get_execution_usage(db, execution.id)
         violation = evaluate_execution_limits(limits, usage)
     except Exception:  # noqa: BLE001 - a limits read never breaks a request
-        logger.warning(
-            "Could not evaluate per-execution limits for %s",
-            execution_uuid,
-            exc_info=True,
-        )
+        logger.warning("Could not evaluate per-execution limits for %s", execution_uuid)
         try:
             db.rollback()
         except Exception:  # pragma: no cover - rollback is best effort
@@ -966,11 +960,7 @@ def _read_first_failure_cause(
             excluded_error_classes=sorted(_NOT_UPSTREAM_ERROR_CLASSES),
         )
     except Exception:  # noqa: BLE001 - the refusal matters more than the cause
-        logger.warning(
-            "Could not read the first failure cause for %s",
-            execution_id,
-            exc_info=True,
-        )
+        logger.warning("Could not read the first failure cause for %s", execution_id)
         try:
             db.rollback()
         except Exception:  # pragma: no cover - rollback is best effort
@@ -1026,7 +1016,7 @@ def _append_breaker_milestone(
             },
         )
     except Exception:  # noqa: BLE001 - the refusal matters more than the log
-        logger.exception(
+        logger.error(
             "Could not log the repeated-upstream-failure milestone for %s",
             getattr(execution, "id", None),
         )
@@ -1085,9 +1075,7 @@ def enforce_failure_streak_for_id(db: Session, *, execution_id: Any) -> None:
         )
     except Exception:  # noqa: BLE001 - a breaker read never breaks a request
         logger.warning(
-            "Could not evaluate the upstream failure streak for %s",
-            execution_uuid,
-            exc_info=True,
+            "Could not evaluate the upstream failure streak for %s", execution_uuid
         )
         try:
             db.rollback()
@@ -1131,7 +1119,7 @@ def _fail_once_with_milestone(
         _append_breaker_milestone(db, execution, streak, message, first_cause)
         db.refresh(execution)
     except Exception:  # noqa: BLE001 - annotation never fails the refusal
-        logger.exception(
+        logger.error(
             "Failed to mark execution %s as repeated_upstream_failure",
             getattr(execution, "id", None),
         )

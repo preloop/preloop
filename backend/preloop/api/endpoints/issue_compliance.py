@@ -184,13 +184,13 @@ def _calculate_issue_compliance(
 
     except openai.APIError as e:
         # Upstream model failure: a bad gateway, not a server bug.
-        logger.warning("AI compliance check failed upstream: %s", e)
+        logger.warning("AI compliance check failed upstream: %s", type(e).__name__)
         raise HTTPException(
             status_code=502,
             detail={"code": "ai_model_error", "message": "AI model API error"},
         )
     except ModelGatewayAPIError as exc:
-        logger.warning("AI compliance check did not recover: %s", exc)
+        logger.warning("AI compliance check did not recover: %s", type(exc).__name__)
         raise HTTPException(
             status_code=exc.status_code,
             detail="AI model is rate limited; retry later.",
@@ -339,7 +339,9 @@ def get_compliance_improvement_suggestion(
     try:
         prompt_template = ComplianceWorkflow(**prompt_data)
     except Exception as e:
-        logger.error(f"Error parsing prompt template '{prompt_name}': {e}")
+        logger.error(
+            f"Error parsing prompt template '{prompt_name}': {type(e).__name__}"
+        )
         raise HTTPException(
             status_code=500, detail=f"Invalid prompt configuration for '{prompt_name}'."
         )
@@ -401,12 +403,14 @@ def get_compliance_improvement_suggestion(
         return ComplianceSuggestionResponse(**suggestion_data)
 
     except openai.APIError as e:
-        logger.error(f"OpenAI API call failed: {e}")
+        logger.error(f"OpenAI API call failed: {type(e).__name__}")
         raise HTTPException(
             status_code=500, detail="Failed to get compliance suggestion from AI model."
         )
     except ModelGatewayAPIError as exc:
-        logger.warning("AI compliance suggestion did not recover: %s", exc)
+        logger.warning(
+            "AI compliance suggestion did not recover: %s", type(exc).__name__
+        )
         raise HTTPException(
             status_code=exc.status_code,
             detail="AI model is rate limited; retry later.",

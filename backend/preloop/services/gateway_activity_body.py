@@ -675,9 +675,9 @@ def _fit(
     stats = {}
     keep = _cut_harder(
         result,
-        lambda: _request_context_slots(result)
-        + _other_slots(result)
-        + _delta_slots(result),
+        lambda: (
+            _request_context_slots(result) + _other_slots(result) + _delta_slots(result)
+        ),
         max_bytes=max_bytes,
         keep=keep,
         stats=stats,

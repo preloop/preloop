@@ -872,9 +872,8 @@ class TestAdminAlertSupervision:
 
         assert task not in wsm._admin_alert_tasks
         mock_logger.warning.assert_called_once()
-        logged_exc = mock_logger.warning.call_args.kwargs["exc_info"]
-        assert isinstance(logged_exc, RuntimeError)
-        assert str(logged_exc) == "smtp unreachable"
+        assert "exc_info" not in mock_logger.warning.call_args.kwargs
+        assert "smtp unreachable" not in repr(mock_logger.warning.call_args)
 
     @patch("preloop.services.websocket_manager.logger")
     async def test_scheduling_failure_is_logged_and_swallowed(self, mock_logger):

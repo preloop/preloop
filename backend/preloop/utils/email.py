@@ -117,7 +117,7 @@ def send_email(
             logger.info("Email sent to %s", to_email)
         return True
     except Exception as e:
-        logger.error(f"Failed to send email: {str(e)}")
+        logger.error(f"Failed to send email: {type(e).__name__}")
         raise EmailError(f"Failed to send email: {str(e)}")
 
 
@@ -446,10 +446,10 @@ async def send_product_notification_email(
         logger.info(f"Product notification email sent to {recipient_email}")
     except EmailError as e:
         # Log error but don't raise to avoid breaking the flow in dev/CI environments
-        logger.warning(f"Failed to send product notification email: {str(e)}")
+        logger.warning(f"Failed to send product notification email: {type(e).__name__}")
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred while sending product notification email: {str(e)}"
+            f"An unexpected error occurred while sending product notification email: {type(e).__name__}"
         )
         # Log unexpected errors but don't raise
 
@@ -668,10 +668,10 @@ async def send_approval_request_email(
         )
     except EmailError as e:
         # Log error but don't raise to avoid breaking the flow in dev/CI environments
-        logger.warning(f"Failed to send approval request email: {str(e)}")
+        logger.warning(f"Failed to send approval request email: {type(e).__name__}")
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred while sending approval request email: {str(e)}"
+            f"An unexpected error occurred while sending approval request email: {type(e).__name__}"
         )
         # Log unexpected errors but don't raise
 
@@ -771,8 +771,8 @@ Best regards,
         send_email(user_email, subject, body_text, body_html)
         logger.info(f"Escalation email sent to {user_email} for tool '{tool_name}'")
     except EmailError as e:
-        logger.warning(f"Failed to send escalation email: {str(e)}")
+        logger.warning(f"Failed to send escalation email: {type(e).__name__}")
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred while sending escalation email: {str(e)}"
+            f"An unexpected error occurred while sending escalation email: {type(e).__name__}"
         )

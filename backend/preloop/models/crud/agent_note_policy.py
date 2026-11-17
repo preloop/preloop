@@ -122,7 +122,7 @@ def seed_all_note_policies(db: Session) -> int:
             count += int(seeded)
         except SQLAlchemyError:
             db.rollback()
-            logger.exception("Failed to seed note policy for account %s", account_id)
+            logger.error("Failed to seed note policy for account %s", account_id)
     return count
 
 

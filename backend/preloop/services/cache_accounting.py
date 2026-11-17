@@ -59,10 +59,8 @@ def _price_catalog() -> dict[str, Any]:
         # A missing or corrupted catalog silently disables the savings figure
         # for every model, so make the degradation visible to operators.
         logger.warning(
-            "Failed to load model price catalog from %s; cache savings will "
-            "be omitted for all models.",
+            "Failed to load model price catalog from %s; cache savings will be omitted for all models.",
             _PRICE_CATALOG_PATH,
-            exc_info=True,
         )
         return {}
     if not isinstance(loaded, dict):

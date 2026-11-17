@@ -183,7 +183,6 @@ from preloop.utils.workspace_seed import (
     parse_workspace_files,
     workspace_seed_payload,
 )
-from preloop.utils.secret_scrubbing import scrub_secrets
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AUDIT,
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
@@ -1270,7 +1269,11 @@ class FlowExecutionOrchestrator:
             return
         self._emitted_warnings.add(message)
 
-        logger.warning(message)
+        logger.warning(
+            "Execution warning: execution_id=%s message_chars=%s",
+            getattr(self.execution_log, "id", None),
+            len(message),
+        )
         payload: Dict[str, Any] = {"message": message, "level": "warning"}
         if details:
             payload["details"] = _make_json_serializable(details)
@@ -1278,7 +1281,7 @@ class FlowExecutionOrchestrator:
             await self._publish_update("execution_warning", payload)
         except Exception as publish_error:
             logger.warning(
-                f"Failed to publish execution warning: {publish_error}",
+                f"Failed to publish execution warning: {type(publish_error).__name__}"
             )
 
     def _note_read_only_startup_line(self, line: str) -> None:
@@ -1489,7 +1492,6 @@ class FlowExecutionOrchestrator:
                     logger.warning(
                         "Could not record native_result on execution %s",
                         getattr(execution, "id", None),
-                        exc_info=True,
                     )
         return enabled
 
@@ -1597,8 +1599,7 @@ class FlowExecutionOrchestrator:
 
         except Exception as e:
             logger.error(
-                f"[CommitStatus] Exception getting tracker client: {e}",
-                exc_info=True,
+                f"[CommitStatus] Exception getting tracker client: {type(e).__name__}"
             )
             return None
 
@@ -1658,7 +1659,6 @@ class FlowExecutionOrchestrator:
             logger.warning(
                 "Could not read the review progress of execution %s",
                 self.execution_log.id,
-                exc_info=True,
             )
             return None
         if progress is None:
@@ -1771,9 +1771,10 @@ class FlowExecutionOrchestrator:
 
             # Log the API call we're about to make
             logger.info(
-                f"[CommitStatus] Calling create_commit_status: "
-                f"sha={self._commit_sha[:8]}, state={state}, context={self._status_context}, "
-                f"target_url={target_url[:50] if target_url else None}..."
+                "[CommitStatus] Calling create_commit_status: sha=%s state=%s context=%s",
+                self._commit_sha[:8],
+                state,
+                self._status_context,
             )
 
             await tracker_client.create_commit_status(
@@ -1795,10 +1796,7 @@ class FlowExecutionOrchestrator:
             # Don't fail the execution if status update fails, but do not hide
             # it either: a swallowed 422 used to leave the flow looking green
             # while GitHub showed no check at all (issue #175).
-            logger.error(
-                f"[CommitStatus] FAILED to update: {e}",
-                exc_info=True,
-            )
+            logger.error(f"[CommitStatus] FAILED to update: {type(e).__name__}")
             sha_label = self._commit_sha[:8] if self._commit_sha else "unknown"
             await self._emit_execution_warning(
                 f"Commit status '{state}' could not be posted to {status_target} "
@@ -1860,7 +1858,7 @@ class FlowExecutionOrchestrator:
                 f"Sent command '{command}' to execution {execution_id} via NATS"
             )
         except Exception as e:
-            logger.error(f"Failed to send command via NATS: {e}", exc_info=True)
+            logger.error(f"Failed to send command via NATS: {type(e).__name__}")
             raise
 
     # NATS max payload is typically 1MB; use 900KB to leave headroom
@@ -1944,7 +1942,7 @@ class FlowExecutionOrchestrator:
             await self.nats_client.publish(subject, encoded_message)
             logger.debug(f"Published {message_type} to NATS subject '{subject}'")
         except Exception as e:
-            logger.error(f"Failed to publish update to NATS: {e}", exc_info=True)
+            logger.error(f"Failed to publish update to NATS: {type(e).__name__}")
 
     def _get_flow_details(self, *, refresh: bool = False):
         """Retrieve the Flow definition and associated AIModel."""
@@ -2231,8 +2229,7 @@ class FlowExecutionOrchestrator:
                         )
                 except Exception as e:
                     logger.error(
-                        f"Error resolving placeholder {item.raw}: {e}",
-                        exc_info=True,
+                        f"Error resolving placeholder {item.raw}: {type(e).__name__}"
                     )
             else:
                 # Try simple replacement from trigger_event_data for backwards compatibility
@@ -2464,9 +2461,7 @@ class FlowExecutionOrchestrator:
             )
         except Exception as exc:
             logger.error(
-                "Failed to create temporary API key record: %s",
-                type(exc).__name__,
-                exc_info=True,
+                "Failed to create temporary API key record: %s", type(exc).__name__
             )
             self.db.rollback()
             return None, None
@@ -2515,9 +2510,7 @@ class FlowExecutionOrchestrator:
                     revoked = 1
             except Exception as exc:
                 logger.error(
-                    "Failed to cleanup temporary API key record: %s",
-                    type(exc).__name__,
-                    exc_info=True,
+                    "Failed to cleanup temporary API key record: %s", type(exc).__name__
                 )
                 self.db.rollback()
         return revoked
@@ -2664,13 +2657,13 @@ class FlowExecutionOrchestrator:
 
             if process.returncode != 0:
                 logger.error(
-                    "Git clone failed with code %s: %s",
+                    "Git clone failed: exit_code=%s stderr_bytes=%s",
                     process.returncode,
-                    scrub_secrets(stderr.decode()),
+                    len(stderr),
                 )
                 return None
 
-            logger.info(f"Git clone successful: {scrub_secrets(stdout.decode())}")
+            logger.info("Git clone succeeded: stdout_bytes=%s", len(stdout))
 
             # Checkout the specific commit SHA from trigger event if available
             # This ensures we're reviewing the exact code from the PR/push event
@@ -2738,7 +2731,7 @@ class FlowExecutionOrchestrator:
             return full_clone_path
 
         except Exception as e:
-            logger.error(f"Error during git clone: {e}", exc_info=True)
+            logger.error(f"Error during git clone: {type(e).__name__}")
             return None
 
     def _extract_merge_request_ref_from_trigger(self) -> Optional[str]:
@@ -3261,7 +3254,9 @@ class FlowExecutionOrchestrator:
 
             return None
         except Exception as e:
-            logger.error(f"Error extracting repository URL from trigger: {e}")
+            logger.error(
+                f"Error extracting repository URL from trigger: {type(e).__name__}"
+            )
             return None
 
     async def _get_tracker_credentials(self) -> Optional[Dict[str, str]]:
@@ -3276,7 +3271,7 @@ class FlowExecutionOrchestrator:
             return await self._get_tracker_credentials_by_id(tracker_id)
 
         except Exception as e:
-            logger.error(f"Error getting tracker credentials: {e}", exc_info=True)
+            logger.error(f"Error getting tracker credentials: {type(e).__name__}")
             return None
 
     async def _get_tracker_credentials_by_id(
@@ -3343,8 +3338,7 @@ class FlowExecutionOrchestrator:
             raise
         except Exception as e:
             logger.error(
-                f"Error getting tracker credentials for {tracker_id}: {e}",
-                exc_info=True,
+                f"Error getting tracker credentials for {tracker_id}: {type(e).__name__}"
             )
             return None
 
@@ -3377,7 +3371,9 @@ class FlowExecutionOrchestrator:
             return str(tracker_id) if tracker_id else None
         except Exception as e:
             logger.warning(
-                "Could not resolve the tracker for project %s: %s", project_id, e
+                "Could not resolve the tracker for project %s: %s",
+                project_id,
+                type(e).__name__,
             )
             return None
 
@@ -3465,11 +3461,7 @@ class FlowExecutionOrchestrator:
             )
 
         except Exception as e:
-            logger.error(
-                "Error building git credential: %s",
-                type(e).__name__,
-                exc_info=True,
-            )
+            logger.error("Error building git credential: %s", type(e).__name__)
             return None
 
     async def _execute_custom_commands(self, work_dir: str) -> bool:
@@ -3510,7 +3502,7 @@ class FlowExecutionOrchestrator:
                 return False
 
         except Exception as e:
-            logger.error(f"Error verifying admin status: {e}", exc_info=True)
+            logger.error(f"Error verifying admin status: {type(e).__name__}")
             return False
 
         commands = custom_cmds.get("commands", [])
@@ -3537,17 +3529,19 @@ class FlowExecutionOrchestrator:
 
                 if process.returncode != 0:
                     logger.error(
-                        f"Custom command failed with code {process.returncode}: {stderr.decode()}"
+                        "Custom command failed: exit_code=%s stderr_bytes=%s",
+                        process.returncode,
+                        len(stderr),
                     )
                     return False
 
-                logger.info(f"Custom command output: {stdout.decode()}")
+                logger.info("Custom command completed: stdout_bytes=%s", len(stdout))
 
             logger.info("All custom commands executed successfully")
             return True
 
         except Exception as e:
-            logger.error(f"Error executing custom commands: {e}", exc_info=True)
+            logger.error(f"Error executing custom commands: {type(e).__name__}")
             return False
 
     async def _attach_git_credentials(
@@ -4245,11 +4239,8 @@ class FlowExecutionOrchestrator:
                     ]
                 except Exception:
                     logger.warning(
-                        "Could not resolve authorized gateway models for flow "
-                        "%s; the agent config falls back to the primary model "
-                        "only",
+                        "Could not resolve authorized gateway models for flow %s; the agent config falls back to the primary model only",
                         self.flow.id,
-                        exc_info=True,
                     )
         else:
             logger.warning(
@@ -4309,7 +4300,7 @@ class FlowExecutionOrchestrator:
             logger.info(f"Log streaming cancelled for {session_reference}")
         except Exception as e:
             logger.error(
-                f"Error streaming logs for {session_reference}: {e}", exc_info=True
+                f"Error streaming logs for {session_reference}: {type(e).__name__}"
             )
             await self._publish_update(
                 "agent_log_error", {"error": f"Log streaming error: {str(e)}"}
@@ -4729,7 +4720,7 @@ class FlowExecutionOrchestrator:
                         self._stop_requested.set()
                     elif command_type == "send_message":
                         message = command_data.get("message", "")
-                        logger.info(f"User sent message: {message}")
+                        logger.info("User message received: chars=%s", len(message))
                         await self._user_messages.put(message)
                     elif command_type == "pause":
                         logger.info("User requested pause (not yet implemented)")
@@ -4738,7 +4729,7 @@ class FlowExecutionOrchestrator:
                         logger.warning(f"Unknown command type: {command_type}")
 
                 except Exception as e:
-                    logger.error(f"Error handling command: {e}", exc_info=True)
+                    logger.error(f"Error handling command: {type(e).__name__}")
 
             # Subscribe to commands
             self._command_subscription = await self.nats_client.subscribe(
@@ -4747,7 +4738,7 @@ class FlowExecutionOrchestrator:
             logger.info(f"Listening for commands on {command_subject}")
 
         except Exception as e:
-            logger.error(f"Failed to setup command subscription: {e}", exc_info=True)
+            logger.error(f"Failed to setup command subscription: {type(e).__name__}")
 
     async def _cleanup_monitoring(self):
         """Cleanup monitoring resources (log streaming, command subscription)."""
@@ -4773,14 +4764,16 @@ class FlowExecutionOrchestrator:
                 # Task was cancelled while awaiting completion during cleanup.
                 pass
             except Exception as e:
-                logger.warning(f"Error waiting for log streaming task: {e}")
+                logger.warning(
+                    f"Error waiting for log streaming task: {type(e).__name__}"
+                )
 
         # Unsubscribe from commands
         if self._command_subscription:
             try:
                 await self._command_subscription.unsubscribe()
             except Exception as e:
-                logger.error(f"Error unsubscribing from commands: {e}")
+                logger.error(f"Error unsubscribing from commands: {type(e).__name__}")
 
     async def _start_agent_session(
         self, execution_context: Dict[str, Any]
@@ -4897,10 +4890,7 @@ class FlowExecutionOrchestrator:
                     )
                 execution_context[RUNTIME_DEADLINE_CONTEXT_KEY] = backstop
             except Exception:
-                logger.warning(
-                    "Could not compute the runtime deadline backstop",
-                    exc_info=True,
-                )
+                logger.warning("Could not compute the runtime deadline backstop")
 
             if not isinstance(
                 agent_executor, (RemoteRunnerExecutor, AgentControlExecutor)
@@ -4916,14 +4906,14 @@ class FlowExecutionOrchestrator:
             return session_reference, agent_executor
 
         except Exception as e:
-            logger.error(f"Failed to start {agent_type} agent: {e}", exc_info=True)
+            logger.error(f"Failed to start {agent_type} agent: {type(e).__name__}")
             # Cleanup agent executor on failure
             if agent_executor:
                 try:
                     await agent_executor.cleanup()
                 except Exception as cleanup_error:
                     logger.warning(
-                        f"Error during agent cleanup after failure: {cleanup_error}"
+                        f"Error during agent cleanup after failure: {type(cleanup_error).__name__}"
                     )
             raise
 
@@ -4945,7 +4935,7 @@ class FlowExecutionOrchestrator:
             prior = crud_flow_execution.get(db=self.db, id=prior_id)
         except Exception as e:
             logger.warning(
-                f"Could not load prior execution {prior_id} for workspace restore: {e}"
+                f"Could not load prior execution {prior_id} for workspace restore: {type(e).__name__}"
             )
             return None
         if prior is None:
@@ -5004,8 +4994,7 @@ class FlowExecutionOrchestrator:
             prior = crud_flow_execution.get(db=self.db, id=prior_id)
         except Exception as e:
             logger.warning(
-                f"Could not load prior execution {prior_id} for CLI session "
-                f"restore: {e}"
+                f"Could not load prior execution {prior_id} for CLI session restore: {type(e).__name__}"
             )
             return None
         if prior is None:
@@ -5651,9 +5640,7 @@ class FlowExecutionOrchestrator:
             )
             return ensure_pack_manifest(archive, context=context)
         except Exception:
-            logger.warning(
-                "Could not add manifest.json to the evidence pack", exc_info=True
-            )
+            logger.warning("Could not add manifest.json to the evidence pack")
             return archive
 
     def _ingest_legacy_evidence(self, flow: Any, execution: Any, archive: bytes) -> Any:
@@ -5688,7 +5675,8 @@ class FlowExecutionOrchestrator:
         except ValueError as exc:
             # Rejected before any write (size, shape, quota): nothing to undo.
             logger.warning(
-                "Legacy evidence pack kept unsigned in the execution row: %s", exc
+                "Legacy evidence pack kept unsigned in the execution row: %s",
+                type(exc).__name__,
             )
             return None
         except Exception as exc:
@@ -5743,7 +5731,9 @@ class FlowExecutionOrchestrator:
             try:
                 captured = await getter(session_reference)
             except Exception as e:
-                logger.warning(f"Failed to capture evidence archive: {e}")
+                logger.warning(
+                    f"Failed to capture evidence archive: {type(e).__name__}"
+                )
                 captured = None
             if isinstance(captured, (bytes, bytearray)) and captured:
                 archive = self._describe_evidence_pack(bytes(captured))
@@ -5908,7 +5898,7 @@ class FlowExecutionOrchestrator:
         try:
             snapshot = await getter(session_reference)
         except Exception as e:
-            logger.warning(f"Failed to capture workspace snapshot: {e}")
+            logger.warning(f"Failed to capture workspace snapshot: {type(e).__name__}")
             self._record_post_result_failure("checkpoint_upload")
             return
         if not isinstance(snapshot, (bytes, bytearray)) or not snapshot:
@@ -5936,7 +5926,7 @@ class FlowExecutionOrchestrator:
         try:
             logs = await getter(session_reference, tail=None)
         except Exception as e:
-            logger.warning(f"Post-exit log refetch failed: {_exception_message(e)}")
+            logger.warning(f"Post-exit log refetch failed: {type(e).__name__}")
             self._record_post_result_failure("log_shipping")
             return []
         if not isinstance(logs, list):
@@ -6259,7 +6249,7 @@ class FlowExecutionOrchestrator:
                 self.db, execution_id=execution_id, limit=100
             )
         except Exception:
-            logger.exception(
+            logger.error(
                 "Could not read approval requests for follow up filing on %s",
                 execution_id,
             )
@@ -6389,7 +6379,7 @@ class FlowExecutionOrchestrator:
         except Exception:
             # Filing is the last thing a successful review does. It never
             # turns that review into a failed execution.
-            logger.exception("Filing the approved follow ups failed")
+            logger.error("Filing the approved follow ups failed")
 
     def _delivery_report_inputs(
         self, trigger_event_data: Optional[Dict[str, Any]]
@@ -6430,7 +6420,7 @@ class FlowExecutionOrchestrator:
                 max_bytes=MAX_SINGLE_SEED_ENCODED_BYTES * 3 // 4 - 1024,
             )
         except Exception:
-            logger.warning("Could not read merge audits for the report", exc_info=True)
+            logger.warning("Could not read merge audits for the report")
             return trigger_event_data
         return with_merge_audits_seed(trigger_event_data, document)
 
@@ -6461,7 +6451,7 @@ class FlowExecutionOrchestrator:
             # A scoped manual run must never fall back to an account-wide run.
             if project is not None:
                 raise
-            logger.warning("Could not read the delivery report policy", exc_info=True)
+            logger.warning("Could not read the delivery report policy")
             return None
         self._delivery_report_run = run
         return run
@@ -6483,7 +6473,7 @@ class FlowExecutionOrchestrator:
                 window=report_window(payload),
             )
         except Exception as exc:
-            logger.exception("Building the deterministic delivery report failed")
+            logger.error("Building the deterministic delivery report failed")
             return {
                 "status": "FAILED",
                 "output_summary": "The deterministic Delivery Report failed.",
@@ -6520,7 +6510,7 @@ class FlowExecutionOrchestrator:
                 assessment=run.decision if run is not None else None,
             )
         except Exception:
-            logger.exception("Finalizing the delivery report failed")
+            logger.error("Finalizing the delivery report failed")
             return merged_result
         self._delivery_report_finalized = True
         return merged_result
@@ -6549,7 +6539,7 @@ class FlowExecutionOrchestrator:
                 )
                 merged_result = {**merged_result, "engagement": engagement}
             except Exception:
-                logger.warning("Could not read report engagement", exc_info=True)
+                logger.warning("Could not read report engagement")
         run = getattr(self, "_delivery_report_run", None)
         return await self._distribute_delivery_report(merged_result, run)
 
@@ -6591,7 +6581,7 @@ class FlowExecutionOrchestrator:
                     policy=run.policy if run is not None else None,
                 )
         except Exception:
-            logger.exception("Emailing the delivery report failed")
+            logger.error("Emailing the delivery report failed")
             return merged_result
         if record is not None:
             merged_result = {**merged_result, DISTRIBUTION_KEY: record}
@@ -6619,7 +6609,7 @@ class FlowExecutionOrchestrator:
                 end=end,
             )
         except Exception:
-            logger.warning("Could not refresh PR details for the report", exc_info=True)
+            logger.warning("Could not refresh PR details for the report")
             self.db.rollback()
 
     def _resolve_verification_evidence(self) -> Optional[Dict[str, Any]]:
@@ -6792,7 +6782,7 @@ class FlowExecutionOrchestrator:
                 logger.warning(
                     "PR lookup: no tracker client for project %s: %s",
                     project_id,
-                    _exception_message(error),
+                    type(error).__name__,
                 )
                 continue
             if client is not None:
@@ -6891,7 +6881,7 @@ class FlowExecutionOrchestrator:
                 description=body,
             )
         except Exception as error:
-            logger.warning("Host publication PR failed: %s", _exception_message(error))
+            logger.warning("Host publication PR failed: %s", type(error).__name__)
             return (
                 f"{failed}; the branch is kept, retry the run's publication or "
                 "open the pull request from the branch"
@@ -6958,16 +6948,14 @@ class FlowExecutionOrchestrator:
         try:
             clients = await self._publication_tracker_clients()
         except Exception as error:
-            logger.warning("PR lookup by branch skipped: %s", _exception_message(error))
+            logger.warning("PR lookup by branch skipped: %s", type(error).__name__)
             return None
         for client in clients:
             try:
                 found = await self._lookup_published_pr(client, branch)
             except Exception as error:
                 logger.warning(
-                    "PR lookup by branch %s failed: %s",
-                    branch,
-                    _exception_message(error),
+                    "PR lookup by branch %s failed: %s", branch, type(error).__name__
                 )
                 continue
             if found is None:
@@ -7020,7 +7008,7 @@ class FlowExecutionOrchestrator:
                 logger.warning(
                     "Remote branch probe for %s failed: %s",
                     branch,
-                    _exception_message(error),
+                    type(error).__name__,
                 )
 
     def _review_publication_required(self) -> bool:
@@ -7100,7 +7088,6 @@ class FlowExecutionOrchestrator:
                 "Could not verify review publication for execution %s: %s",
                 getattr(self.execution_log, "id", None),
                 lookup_failure_reason,
-                exc_info=True,
             )
             try:
                 self.db.rollback()
@@ -7273,7 +7260,6 @@ class FlowExecutionOrchestrator:
             logger.warning(
                 "Failed to start the queued follow-up resume for execution %s",
                 getattr(self.execution_log, "id", None),
-                exc_info=True,
             )
 
     def _note_inplace_nudge(self, *, source: str) -> None:
@@ -7351,7 +7337,7 @@ class FlowExecutionOrchestrator:
             logger.warning(
                 "Workspace progress probe failed for %s: %s",
                 session_reference,
-                _exception_message(probe_error),
+                type(probe_error).__name__,
             )
             return None
         return answer if isinstance(answer, bool) else None
@@ -7472,9 +7458,7 @@ class FlowExecutionOrchestrator:
             except Exception as nudge_error:
                 detail = _exception_message(nudge_error)
                 logger.warning(
-                    "Live no-progress nudge failed for %s: %s",
-                    session_reference,
-                    detail,
+                    "Live no-progress nudge failed: session_id=%s", session_reference
                 )
         elif not supported:
             detail = "runtime cannot resume its session in place"
@@ -7903,7 +7887,7 @@ class FlowExecutionOrchestrator:
                     status = await nudge_executor.get_status(nudge_reference)
                 except Exception as status_error:
                     logger.warning(
-                        f"Nudge status check failed: {_exception_message(status_error)}"
+                        f"Nudge status check failed: {type(status_error).__name__}"
                     )
                 if status in terminal:
                     break
@@ -7918,8 +7902,7 @@ class FlowExecutionOrchestrator:
                     # finally block still runs cleanup, and we fail closed
                     # with the timeout outcome either way.
                     logger.warning(
-                        "Failed to stop timed-out nudge session: "
-                        f"{_exception_message(stop_error)}"
+                        f"Failed to stop timed-out nudge session: {type(stop_error).__name__}"
                     )
                 return _finish(
                     "timeout",
@@ -7936,7 +7919,7 @@ class FlowExecutionOrchestrator:
                     nudge_logs = [line for line in fetched if isinstance(line, str)]
             except Exception as log_error:
                 logger.warning(
-                    f"Failed to fetch nudge logs: {_exception_message(log_error)}"
+                    f"Failed to fetch nudge logs: {type(log_error).__name__}"
                 )
 
             artifact = await self._capture_result_artifact(
@@ -7993,7 +7976,9 @@ class FlowExecutionOrchestrator:
             try:
                 await nudge_executor.cleanup()
             except Exception as cleanup_error:
-                logger.warning(f"Error during nudge executor cleanup: {cleanup_error}")
+                logger.warning(
+                    f"Error during nudge executor cleanup: {type(cleanup_error).__name__}"
+                )
 
     def _execution_timeout_budget(self) -> TimeoutBudget:
         """Resolve the wall-clock budget for this execution.
@@ -8303,9 +8288,7 @@ class FlowExecutionOrchestrator:
                 self.db, id=str(parked_id), account_id=str(self.flow.account_id)
             )
         except Exception:
-            logger.warning(
-                "Could not verify the park link of resume %s", parked_id, exc_info=True
-            )
+            logger.warning("Could not verify the park link of resume %s", parked_id)
             return False
         if parked is None or str(getattr(parked, "flow_id", "")) != str(self.flow.id):
             return False
@@ -8401,9 +8384,7 @@ class FlowExecutionOrchestrator:
             await agent_executor.stop(session_reference)
         except Exception:
             logger.warning(
-                "Could not stop the runtime for parked execution %s",
-                execution_id,
-                exc_info=True,
+                "Could not stop the runtime for parked execution %s", execution_id
             )
         await self._publish_update(
             "execution_parked",
@@ -8519,7 +8500,7 @@ class FlowExecutionOrchestrator:
                         logger.warning(
                             "Failed to touch orchestrator heartbeat for %s: %s",
                             self.execution_log.id,
-                            heartbeat_error,
+                            type(heartbeat_error).__name__,
                         )
 
                 stop_request = crud_flow_execution.get_stop_request(
@@ -8566,7 +8547,7 @@ class FlowExecutionOrchestrator:
                                     ),
                                 }
                     except Exception:
-                        logger.exception(
+                        logger.error(
                             "Stop requested but not confirmed for %s",
                             self.execution_log.id,
                         )
@@ -8647,8 +8628,7 @@ class FlowExecutionOrchestrator:
                 except Exception as status_error:
                     status_error_message = _exception_message(status_error)
                     logger.error(
-                        f"Error getting agent status at {elapsed}s: {status_error_message}",
-                        exc_info=True,
+                        f"Error getting agent status at {elapsed}s: {type(status_error).__name__}"
                     )
                     # Retry once after a short delay
                     await asyncio.sleep(2)
@@ -8659,8 +8639,7 @@ class FlowExecutionOrchestrator:
                     except Exception as retry_error:
                         retry_error_message = _exception_message(retry_error)
                         logger.error(
-                            f"Status check retry failed: {retry_error_message}",
-                            exc_info=True,
+                            f"Status check retry failed: {type(retry_error).__name__}"
                         )
                         consecutive_failures += 1
 
@@ -8710,7 +8689,9 @@ class FlowExecutionOrchestrator:
                         "agent_status", {"status": status.value, "elapsed": elapsed}
                     )
                 except Exception as publish_error:
-                    logger.warning(f"Failed to publish status update: {publish_error}")
+                    logger.warning(
+                        f"Failed to publish status update: {type(publish_error).__name__}"
+                    )
 
                 # A run that has changed nothing at all after the configured
                 # deadline is reminded once and, if still unchanged after the
@@ -8892,10 +8873,8 @@ class FlowExecutionOrchestrator:
                             result_artifact
                         )
                         logger.warning(
-                            "Agent exited with SUCCEEDED status but result.json "
-                            "reports an explicit failure "
-                            f"({signal_field}={signal_value!r}). "
-                            "Overriding status to FAILED."
+                            "Agent result reports failure: field=%s; overriding status to FAILED",
+                            signal_field,
                         )
                         self.execution_logger.log_milestone(
                             "result_artifact_failure_override",
@@ -9111,8 +9090,7 @@ class FlowExecutionOrchestrator:
         except Exception as e:
             error_message = _exception_message(e)
             logger.error(
-                f"Error monitoring agent execution {session_reference}: {error_message}",
-                exc_info=True,
+                f"Error monitoring agent execution {session_reference}: {type(e).__name__}"
             )
             self.execution_logger.log_milestone(
                 "agent_execution_error", {"error": error_message}
@@ -9149,13 +9127,17 @@ class FlowExecutionOrchestrator:
                     self._publication_runtime_stopped = True
             except Exception as cleanup_error:
                 self._publication_runtime_stopped = False
-                logger.warning(f"Error during agent removal: {cleanup_error}")
+                logger.warning(
+                    f"Error during agent removal: {type(cleanup_error).__name__}"
+                )
             finally:
                 try:
                     await agent_executor.cleanup()
                 except Exception as cleanup_error:
                     self._publication_runtime_stopped = False
-                    logger.warning(f"Error during agent cleanup: {cleanup_error}")
+                    logger.warning(
+                        f"Error during agent cleanup: {type(cleanup_error).__name__}"
+                    )
 
     def _create_execution_log(self):
         """Create an initial record in FlowExecutions.
@@ -9476,7 +9458,7 @@ class FlowExecutionOrchestrator:
                     session_reference=session_reference,
                 )
             except Exception:
-                logger.exception(
+                logger.error(
                     "Could not record runtime %s of stopped execution %s",
                     session_reference,
                     execution_id,
@@ -9492,7 +9474,7 @@ class FlowExecutionOrchestrator:
                     if attempt + 1 < LAUNCH_RACE_STOP_CONFIRM_ATTEMPTS:
                         await asyncio.sleep(LAUNCH_RACE_STOP_CONFIRM_INTERVAL_SECONDS)
             except Exception:
-                logger.exception(
+                logger.error(
                     "Failed to stop runtime %s created for stopped execution %s",
                     session_reference,
                     execution_id,
@@ -9520,7 +9502,8 @@ class FlowExecutionOrchestrator:
             await agent_executor.cleanup()
         except Exception as cleanup_error:
             logger.warning(
-                "Error during agent cleanup after a stopped launch: %s", cleanup_error
+                "Error during agent cleanup after a stopped launch: %s",
+                type(cleanup_error).__name__,
             )
 
     async def _finish_stopped_launch(self) -> None:
@@ -9577,7 +9560,7 @@ class FlowExecutionOrchestrator:
                 ),
             )
         except Exception:
-            logger.exception(
+            logger.error(
                 "Could not cancel pending approvals for terminal execution %s",
                 getattr(self.execution_log, "id", "unknown"),
             )
@@ -9625,7 +9608,7 @@ class FlowExecutionOrchestrator:
             )
         except Exception:
             self._record_post_result_failure("publication")
-            logger.exception(
+            logger.error(
                 "Platform review publication failed for execution %s",
                 getattr(self.execution_log, "id", "unknown"),
             )
@@ -9672,7 +9655,6 @@ class FlowExecutionOrchestrator:
             logger.error(
                 "Failed to queue flow.execution.finished webhook for %s",
                 getattr(self.execution_log, "id", "unknown"),
-                exc_info=True,
             )
 
     async def _finalize_park(
@@ -9719,7 +9701,7 @@ class FlowExecutionOrchestrator:
                 kind=park_kind,
             )
         except Exception:
-            logger.exception(
+            logger.error(
                 "Could not confirm the park of execution %s; the sweep will retry",
                 self.execution_log.id,
             )
@@ -9800,7 +9782,6 @@ class FlowExecutionOrchestrator:
             logger.warning(
                 "Jira pull request write-back failed for execution %s",
                 getattr(self.execution_log, "id", "unknown"),
-                exc_info=True,
             )
             return False
 
@@ -9844,7 +9825,7 @@ class FlowExecutionOrchestrator:
                     self.db, self.execution_log, self.flow
                 )
             except Exception:
-                logger.exception("Issue lifecycle completion needs reconciliation")
+                logger.error("Issue lifecycle completion needs reconciliation")
             try:
                 from preloop.services.issue_cost_rollup import (
                     record_execution_finished_safely,
@@ -9852,7 +9833,7 @@ class FlowExecutionOrchestrator:
 
                 record_execution_finished_safely(self.db, self.execution_log.id)
             except Exception:
-                logger.exception("Issue cost rollup needs a rebuild")
+                logger.error("Issue cost rollup needs a rebuild")
             try:
                 from preloop.services.security_maintenance_runtime import (
                     maintenance_execution_finished,
@@ -9862,7 +9843,7 @@ class FlowExecutionOrchestrator:
                     self.db, self.execution_log, self.flow
                 )
             except Exception:
-                logger.exception("Security maintenance completion needs reconciliation")
+                logger.error("Security maintenance completion needs reconciliation")
             # A parent parked on this run is waiting for exactly this moment.
             # Best effort on purpose: the sweep in execution_monitor.py covers
             # the parent whose resume never landed, so a failure here delays a
@@ -9874,7 +9855,7 @@ class FlowExecutionOrchestrator:
 
                 await notify_parent_child_finished(str(self.execution_log.id))
             except Exception:
-                logger.exception(
+                logger.error(
                     "Could not resume the parent of execution %s; the sweep will retry",
                     self.execution_log.id,
                 )
@@ -9921,7 +9902,6 @@ class FlowExecutionOrchestrator:
             logger.warning(
                 "Flow terminal notification failed for execution %s",
                 getattr(self.execution_log, "id", "unknown"),
-                exc_info=True,
             )
 
     async def _notify_failure_streak(self, status: str) -> None:
@@ -9978,9 +9958,7 @@ class FlowExecutionOrchestrator:
                 )
         except Exception:
             logger.warning(
-                "Flow failure streak notification failed for execution %s",
-                execution_id,
-                exc_info=True,
+                "Flow failure streak notification failed for execution %s", execution_id
             )
 
     def _terminal_failure_category(
@@ -10081,7 +10059,7 @@ class FlowExecutionOrchestrator:
             logger.warning(
                 "Could not start a no-progress retry of execution %s: %s",
                 original_id,
-                _exception_message(retry_error),
+                type(retry_error).__name__,
             )
             self.execution_logger.log_milestone(
                 "no_progress_retry_failed",
@@ -10708,8 +10686,7 @@ class FlowExecutionOrchestrator:
             # evidence block beats failing an execution that has already
             # finished its work.
             logger.warning(
-                "Could not refresh the dossier manifest after evidence persistence",
-                exc_info=True,
+                "Could not refresh the dossier manifest after evidence persistence"
             )
 
     async def _finish_isolated_publication(self, agent_result: Dict[str, Any]) -> None:
@@ -11220,10 +11197,11 @@ class FlowExecutionOrchestrator:
                         logger.warning(
                             "Could not price sidecar token usage for %s",
                             self.execution_log.id,
-                            exc_info=True,
                         )
             except Exception as e:
-                logger.error(f"Failed to calculate final metrics for execution: {e}")
+                logger.error(
+                    f"Failed to calculate final metrics for execution: {type(e).__name__}"
+                )
 
             # Persist the evidence pack (if one was captured before executor
             # cleanup) in the same transaction as the terminal status update.
@@ -11262,8 +11240,7 @@ class FlowExecutionOrchestrator:
                         )
                 except Exception as evidence_error:
                     logger.warning(
-                        "Failed to persist evidence archive / workspace "
-                        f"snapshot: {evidence_error}"
+                        f"Failed to persist evidence archive / workspace snapshot: {type(evidence_error).__name__}"
                     )
                     self._evidence_receipt = {
                         "version": 1,
@@ -11549,7 +11526,9 @@ class FlowExecutionOrchestrator:
         except ExecutionStoppedError as stopped_error:
             # An operator stopped the run while it was being launched. The
             # stop already wrote the row; do not turn it into FAILED.
-            logger.info("Flow execution launch abandoned: %s", stopped_error)
+            logger.info(
+                "Flow execution launch abandoned: %s", type(stopped_error).__name__
+            )
             await self._finish_stopped_launch()
         except asyncio.CancelledError:
             # Deploy drain: the worker cancels in-flight handlers, releases the
@@ -11565,8 +11544,7 @@ class FlowExecutionOrchestrator:
             raise
         except Exception as e:
             logger.error(
-                f"Flow execution {self.execution_log.id if self.execution_log else 'unknown'} failed: {e}",
-                exc_info=True,
+                f"Flow execution {(self.execution_log.id if self.execution_log else 'unknown')} failed: {type(e).__name__}"
             )
             self.db.rollback()
             self._record_post_result_failure(
@@ -11602,7 +11580,7 @@ class FlowExecutionOrchestrator:
                         )
                     except Exception as metrics_error:
                         logger.error(
-                            f"Failed to calculate final metrics for failed execution: {metrics_error}"
+                            f"Failed to calculate final metrics for failed execution: {type(metrics_error).__name__}"
                         )
 
                     exception_category = derive_failure_category(
@@ -11629,8 +11607,7 @@ class FlowExecutionOrchestrator:
                     await self._notify_terminal(status="FAILED")
                 except Exception as update_error:
                     logger.error(
-                        f"Failed to update execution log after error: {update_error}",
-                        exc_info=True,
+                        f"Failed to update execution log after error: {type(update_error).__name__}"
                     )
                 # A failed run is still terminal: release the queued
                 # follow-up so a review comment is not lost with it.

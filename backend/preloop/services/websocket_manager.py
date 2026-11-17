@@ -126,9 +126,7 @@ def _write_log_batch(batch: List[Tuple[str, dict]]) -> None:
             try:
                 db.rollback()
             except Exception:  # pragma: no cover - rollback is best-effort
-                logger.warning(
-                    "Rollback failed while aborting log batch", exc_info=True
-                )
+                logger.warning("Rollback failed while aborting log batch")
             raise
         finally:
             db.close()
@@ -190,13 +188,12 @@ def _sync_batch_insert_logs(batch: list) -> bool:
                     break
                 backoff = LOG_PERSIST_BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
                 logger.warning(
-                    "Transient DB error persisting %d logs "
-                    "(attempt %d/%d), retrying in %.1fs: %s",
+                    "Transient DB error persisting %d logs (attempt %d/%d), retrying in %.1fs: %s",
                     len(batch),
                     attempt,
                     LOG_PERSIST_MAX_ATTEMPTS,
                     backoff,
-                    exc,
+                    type(exc).__name__,
                 )
                 time.sleep(backoff)
             except IntegrityError as exc:
@@ -236,8 +233,7 @@ def _sync_batch_insert_logs(batch: list) -> bool:
                 logger.error(
                     "Non-retryable error persisting batch of %d logs: %s",
                     len(batch),
-                    exc,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
                 break
 
@@ -246,11 +242,10 @@ def _sync_batch_insert_logs(batch: list) -> bool:
 
     # Non-retryable errors are dropped and reported.
     logger.error(
-        "Dropping batch of %d logs after %d attempt(s): %s",
+        "Dropping batch of %d logs after %d attempts: error_type=%s",
         len(batch),
         attempts_made,
-        last_error,
-        exc_info=last_error,
+        type(last_error).__name__,
     )
     try:
         notify_admins(
@@ -262,7 +257,9 @@ def _sync_batch_insert_logs(batch: list) -> bool:
             ),
         )
     except Exception as alert_err:
-        logger.error(f"Failed to send admin notification for dropped logs: {alert_err}")
+        logger.error(
+            f"Failed to send admin notification for dropped logs: {type(alert_err).__name__}"
+        )
     return False
 
 
@@ -323,12 +320,11 @@ async def _log_writer_worker() -> None:
                     break
                 except _RETRYABLE_DB_ERRORS as exc:
                     logger.warning(
-                        "Log persistence delayed; retaining %d logs (%d queued), "
-                        "retrying in %.1fs: %s",
+                        "Log persistence delayed; retaining %d logs (%d queued), retrying in %.1fs: %s",
                         len(batch),
                         queue.qsize(),
                         LOG_PERSIST_RETRY_SECONDS,
-                        exc,
+                        type(exc).__name__,
                     )
                     # No worker thread or database connection is held while waiting.
                     await asyncio.sleep(LOG_PERSIST_RETRY_SECONDS)
@@ -714,7 +710,7 @@ class WebSocketManager:
                 logger.debug(f"Sent message to connection {connection_id}")
             except Exception as e:
                 logger.warning(
-                    f"Failed to send message to connection {connection_id}: {e}"
+                    f"Failed to send message to connection {connection_id}: {type(e).__name__}"
                 )
 
         # Only log broadcast completion at debug level to avoid log spam
@@ -814,7 +810,7 @@ class WebSocketManager:
                 sent_count += 1
             except Exception as e:
                 logger.warning(
-                    f"Failed to send message to connection {connection_id}: {e}"
+                    f"Failed to send message to connection {connection_id}: {type(e).__name__}"
                 )
 
         if account_id and sent_count > 0:
@@ -843,7 +839,9 @@ def _log_admin_alert_outcome(task: "asyncio.Task[None]") -> None:
         return
     exc = task.exception()
     if exc is not None:
-        logger.warning("Admin alert could not be sent: %s", exc, exc_info=exc)
+        logger.warning(
+            "Admin alert could not be sent: error_type=%s", type(exc).__name__
+        )
 
 
 def _spawn_admin_alert(*, subject: str, message: str) -> Optional["asyncio.Task[None]"]:
@@ -864,7 +862,7 @@ def _spawn_admin_alert(*, subject: str, message: str) -> Optional["asyncio.Task[
             asyncio.to_thread(notify_admins, subject=subject, message=message)
         )
     except Exception:
-        logger.warning("Admin alert could not be scheduled", exc_info=True)
+        logger.warning("Admin alert could not be scheduled")
         return None
     _admin_alert_tasks.add(task)
     task.add_done_callback(_log_admin_alert_outcome)
@@ -906,13 +904,13 @@ async def nats_consumer(manager: "WebSocketManager"):
 
         except json.JSONDecodeError:
             error_msg = f"Received non-JSON message from NATS: {msg.data.decode()}"
-            logger.warning(error_msg)
+            logger.warning("Received non-JSON NATS message: bytes=%s", len(msg.data))
             _spawn_admin_alert(
                 subject="[Preloop Alert] Malformed NATS Message Dropped",
                 message=error_msg,
             )
         except Exception as e:
-            logger.error(f"Error processing NATS message: {e}")
+            logger.error(f"Error processing NATS message: {type(e).__name__}")
             _spawn_admin_alert(
                 subject="[Preloop Alert] NATS Message Processing Failed",
                 message=f"An exception occurred while processing a NATS message: {str(e)}",
@@ -922,7 +920,7 @@ async def nats_consumer(manager: "WebSocketManager"):
         try:
             await persist_flow_update(json.loads(msg.data.decode()))
         except Exception as e:
-            logger.error(f"Error persisting log: {e}")
+            logger.error(f"Error persisting log: {type(e).__name__}")
 
     async def revocation_handler(msg: Msg) -> None:
         """Recheck a bounded, explicitly targeted notification on every replica."""
@@ -957,7 +955,7 @@ async def nats_consumer(manager: "WebSocketManager"):
         while True:
             await asyncio.sleep(1)
     except Exception as exc:
-        logger.error("NATS consumer failed: %s", exc)
+        logger.error("NATS consumer failed: %s", type(exc).__name__)
     finally:
         # Stop accepting messages before draining already accepted logs.
         for subscription in subscriptions:
@@ -965,7 +963,7 @@ async def nats_consumer(manager: "WebSocketManager"):
                 try:
                     await subscription.unsubscribe()
                 except Exception:
-                    logger.warning("Failed to unsubscribe NATS consumer", exc_info=True)
+                    logger.warning("Failed to unsubscribe NATS consumer")
         queue = get_log_queue()
         try:
             await asyncio.wait_for(queue.join(), LOG_SHUTDOWN_DRAIN_SECONDS)

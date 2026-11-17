@@ -227,7 +227,7 @@ def stream_reads(request: Request, paths: list[str]) -> StreamingResponse:
                 except (httpx.HTTPError, TimeoutError):
                     return unavailable(path)
                 except Exception:
-                    logger.exception("Overview input failed")
+                    logger.error("Overview input failed")
                     return unavailable(path)
                 finally:
                     request.app.state.overview_pending_reads -= 1

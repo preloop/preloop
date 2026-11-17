@@ -132,7 +132,7 @@ def request_park(
             expires_at=expires_at,
         )
     except Exception:
-        logger.exception("Could not record park request for execution %s", execution_id)
+        logger.error("Could not record park request for execution %s", execution_id)
         return False
     if parked:
         logger.info(
@@ -400,9 +400,7 @@ async def resume_parked_executions(
         try:
             request = _load_request(db, request_id)
         except Exception:
-            logger.exception(
-                "Could not load approval request %s for resume", request_id
-            )
+            logger.error("Could not load approval request %s for resume", request_id)
             return started
         if request is None:
             return started
@@ -426,9 +424,7 @@ async def resume_parked_executions(
                 try:
                     native_flow_park.fail_closed(db, parked, request)
                 except Exception:
-                    logger.exception(
-                        "Could not fail closed parked execution %s", parked.id
-                    )
+                    logger.error("Could not fail closed parked execution %s", parked.id)
                     db.rollback()
             return started
         for parked in parked_rows:
@@ -450,7 +446,7 @@ async def resume_parked_executions(
             try:
                 new_id = await _start_resume_execution(db, flow, parked, details)
             except Exception:
-                logger.exception(
+                logger.error(
                     "Failed to start the resume of parked execution %s", execution_id
                 )
                 _release_claim(db, execution_id)
@@ -484,7 +480,7 @@ def _release_claim(db: Any, execution_id: Any) -> None:
         )
         db.commit()
     except Exception:
-        logger.exception("Could not release the resume claim on %s", execution_id)
+        logger.error("Could not release the resume claim on %s", execution_id)
 
 
 async def _start_resume_execution(
@@ -565,7 +561,7 @@ async def _start_resume_execution(
             },
         )
     except Exception:
-        logger.exception(
+        logger.error(
             "Could not log the resume of parked execution %s as %s",
             parked.id,
             execution.id,
@@ -580,9 +576,8 @@ async def _start_resume_execution(
                 flow, details, None, precreated_execution=execution
             )
     except Exception:
-        logger.exception(
-            "Failed to dispatch the resume of parked execution %s as %s; "
-            "the PENDING execution is committed and will not be created again",
+        logger.error(
+            "Failed to dispatch the resume of parked execution %s as %s; the PENDING execution is committed and will not be created again",
             parked.id,
             execution.id,
         )
@@ -671,7 +666,7 @@ def _load_request(db: Any, request_id: Any) -> Any:
     try:
         return db.get(ApprovalRequest, uuid.UUID(str(request_id)))
     except Exception:
-        logger.exception("Could not load approval request %s", request_id)
+        logger.error("Could not load approval request %s", request_id)
         return None
 
 
@@ -709,7 +704,7 @@ def _mark_expired(db: Any, request_ids: List[uuid.UUID], moment: datetime) -> No
             )
         db.commit()
     except Exception:
-        logger.exception("Could not expire parked approval requests")
+        logger.error("Could not expire parked approval requests")
         db.rollback()
 
 
@@ -729,7 +724,7 @@ def _reminder_recorded(db: Any, request_id: Any, percent: int) -> bool:
             is not None
         )
     except Exception:
-        logger.exception("Could not read reminder history for %s", request_id)
+        logger.error("Could not read reminder history for %s", request_id)
         return True
 
 
@@ -754,7 +749,7 @@ async def _send_reminder(request_id: Any, percent: int) -> bool:
             )
             return await service.send_window_reminder(request, workflow, percent)
     except Exception:
-        logger.exception("Could not send the %s%% reminder for %s", percent, request_id)
+        logger.error("Could not send the %s%% reminder for %s", percent, request_id)
         return False
 
 

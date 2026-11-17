@@ -4375,10 +4375,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 try:
                     db.rollback()
                 except Exception:  # noqa: BLE001 - must not skip the unlock below
-                    logger.warning(
-                        "Rollback after the stale-claim reaper pass failed",
-                        exc_info=True,
-                    )
+                    logger.warning("Rollback after the stale-claim reaper pass failed")
                 try:
                     released = bool(
                         lock_conn.execute(
@@ -4390,10 +4387,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     )
                     lock_conn.commit()
                 except Exception:  # noqa: BLE001
-                    logger.warning(
-                        "Failed to release the stale-claim reaper lease",
-                        exc_info=True,
-                    )
+                    logger.warning("Failed to release the stale-claim reaper lease")
                 if not released:
                     logger.error(
                         "Stale-claim reaper lease was not released; closing the "

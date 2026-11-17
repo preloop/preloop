@@ -724,11 +724,11 @@ def deliver_gateway_notes(
         return notes
     except SQLAlchemyError:
         db.rollback()
-        logger.warning("Operator note delivery failed (store)", exc_info=True)
+        logger.warning("Operator note delivery failed (store)")
         return []
     except Exception:
         db.rollback()
-        logger.warning("Operator note delivery failed", exc_info=True)
+        logger.warning("Operator note delivery failed")
         return []
 
 

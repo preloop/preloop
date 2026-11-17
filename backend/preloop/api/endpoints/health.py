@@ -139,7 +139,7 @@ def health_check() -> Dict[str, Any]:
             conn.execute(text("SELECT 1"))
         health_status["database"] = "connected"
     except Exception as e:
-        logger.error("Database health check failed", exc_info=True)
+        logger.error("Database health check failed")
         health_status["database"] = f"error: {type(e).__name__}"
         health_status["status"] = "unhealthy"
 
@@ -167,7 +167,7 @@ def health_check() -> Dict[str, Any]:
         else:
             health_status["mcp_server"] = "not_initialized"
     except Exception as e:
-        logger.error("MCP server health check failed", exc_info=True)
+        logger.error("MCP server health check failed")
         health_status["mcp_server"] = f"error: {type(e).__name__}"
 
     # Check upstream MCP connections
@@ -180,7 +180,7 @@ def health_check() -> Dict[str, Any]:
         if active_servers:
             health_status["upstream_servers"] = active_servers
     except Exception as e:
-        logger.error("Upstream MCP health check failed", exc_info=True)
+        logger.error("Upstream MCP health check failed")
         health_status["upstream_connections"] = f"error: {type(e).__name__}"
 
     return health_status
@@ -208,7 +208,7 @@ async def plugin_health(
     try:
         return await read_status()
     except Exception:
-        logger.exception("Plugin status unavailable")
+        logger.error("Plugin status unavailable")
         raise HTTPException(
             status_code=503, detail="Plugin status unavailable"
         ) from None

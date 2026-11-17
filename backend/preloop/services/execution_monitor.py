@@ -78,17 +78,17 @@ class ExecutionMonitor:
             try:
                 await self._check_stale_executions()
             except Exception as e:
-                logger.error(f"Error in execution monitor loop: {e}", exc_info=True)
+                logger.error(f"Error in execution monitor loop: {type(e).__name__}")
 
             try:
                 await self._sweep_parked_executions()
             except Exception as e:
-                logger.error(f"Error sweeping parked executions: {e}", exc_info=True)
+                logger.error(f"Error sweeping parked executions: {type(e).__name__}")
 
             try:
                 await self._sweep_child_parks()
             except Exception as e:
-                logger.error(f"Error sweeping child parks: {e}", exc_info=True)
+                logger.error(f"Error sweeping child parks: {type(e).__name__}")
 
             try:
                 from preloop.services.issue_lifecycle_runtime import (
@@ -98,7 +98,7 @@ class ExecutionMonitor:
                 await sweep_deferred_merge_audits()
             except Exception as e:
                 logger.error(
-                    "Error sweeping deferred merge audits: %s", e, exc_info=True
+                    "Error sweeping deferred merge audits: %s", type(e).__name__
                 )
 
             try:
@@ -106,7 +106,7 @@ class ExecutionMonitor:
 
                 await sweep_platform_reviews()
             except Exception as e:
-                logger.error("Error sweeping platform reviews: %s", e, exc_info=True)
+                logger.error("Error sweeping platform reviews: %s", type(e).__name__)
 
             # Wait before next check
             try:
@@ -194,7 +194,7 @@ class ExecutionMonitor:
             self._record_issue_costs(db, finished)
 
         except Exception as e:
-            logger.error(f"Error checking stale executions: {e}", exc_info=True)
+            logger.error(f"Error checking stale executions: {type(e).__name__}")
             db.rollback()
         finally:
             db.close()
@@ -278,8 +278,7 @@ class ExecutionMonitor:
                 )
             except Exception as e:
                 logger.error(
-                    f"Failed to create agent executor for checking execution "
-                    f"{execution.id}: {e}"
+                    f"Failed to create agent executor for checking execution {execution.id}: {type(e).__name__}"
                 )
                 return
 
@@ -333,9 +332,7 @@ class ExecutionMonitor:
             except Exception as e:
                 # If we can't get status, container might be gone
                 logger.warning(
-                    f"Failed to get status for execution {execution.id} "
-                    f"(session {execution.agent_session_reference}): {e}. "
-                    f"Marking as FAILED."
+                    f"Failed to get status for execution {execution.id} (session {execution.agent_session_reference}): {type(e).__name__}. Marking as FAILED."
                 )
                 execution.status = "FAILED"
                 execution.error_message = (
@@ -349,7 +346,7 @@ class ExecutionMonitor:
                     await agent_executor.cleanup()
 
         except Exception as e:
-            logger.error(f"Error checking execution {execution.id}: {e}", exc_info=True)
+            logger.error(f"Error checking execution {execution.id}: {type(e).__name__}")
 
 
 # Global instance

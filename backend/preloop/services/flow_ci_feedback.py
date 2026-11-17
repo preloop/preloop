@@ -248,11 +248,7 @@ def extract_ci_failure(
         if event_type in GITLAB_CI_EVENT_TYPES:
             return _gitlab_failure(event_type, payload)
     except Exception:
-        logger.warning(
-            "Could not read CI failure details from a %s event",
-            event_type,
-            exc_info=True,
-        )
+        logger.warning("Could not read CI failure details from a %s event", event_type)
     return None
 
 
@@ -407,8 +403,7 @@ def bind_ci_failure_resume_or_skip(
 
     if has_running_execution_for_pr(db, flow, pr_url):
         logger.info(
-            "Skipping CI failure on %s for flow %s: an execution is still running",
-            pr_url,
+            "Skipping CI failure for flow %s: an execution is still running",
             getattr(flow, "id", None),
         )
         return None
@@ -417,8 +412,7 @@ def bind_ci_failure_resume_or_skip(
     already = count_ci_resumes_for_pr(db, flow, pr_url)
     if already >= cap:
         logger.info(
-            "Skipping CI failure on %s for flow %s: per-PR cap of %s reached",
-            pr_url,
+            "Skipping CI failure for flow %s: per-PR cap of %s reached",
             getattr(flow, "id", None),
             cap,
         )

@@ -899,7 +899,7 @@ def run_daily_pass(db: Session, now: Optional[datetime] = None) -> Dict[str, int
             result = evaluate_days(db, account_id, days, moment)
         except Exception:
             db.rollback()
-            logger.exception("Spend outlier daily rules failed for %s", account_id)
+            logger.error("Spend outlier daily rules failed for %s", account_id)
             continue
         counts["findings"] += len(result.new)
         counts["updated"] += len(result.updated)
@@ -917,7 +917,7 @@ def run_daily_pass(db: Session, now: Optional[datetime] = None) -> Dict[str, int
             )
         except Exception:
             db.rollback()
-            logger.exception("Spend outlier session rule failed for %s", account_id)
+            logger.error("Spend outlier session rule failed for %s", account_id)
     return counts
 
 
@@ -933,7 +933,7 @@ def run_session_pass(db: Session, now: Optional[datetime] = None) -> Dict[str, i
             recorded += len(evaluate_session_rule(db, account_id, moment))
         except Exception:
             db.rollback()
-            logger.exception("Spend outlier session rule failed for %s", account_id)
+            logger.error("Spend outlier session rule failed for %s", account_id)
     return {"accounts": len(account_ids), "findings": recorded}
 
 

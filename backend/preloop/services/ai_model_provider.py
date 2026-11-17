@@ -616,13 +616,13 @@ async def _get_openai_compatible_models(
         # Do not log the key or the full request URL: a key passed as a query
         # param would otherwise land in logs (see the api_key handling in the
         # endpoint layer).
-        logger.warning("Authentication failed listing models from %s", base_url)
+        logger.warning("Authentication failed listing models")
         raise ProviderAuthError(
             "Invalid API key for this endpoint. Please check your API key and "
             "try again."
         ) from e
     except Exception as e:
-        logger.warning("Failed to list models from %s: %s", base_url, type(e).__name__)
+        logger.warning("Failed to list models: error_type=%s", type(e).__name__)
         return _fallback([], _classify_fetch_error(e))
     finally:
         if http_client is not None:

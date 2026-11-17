@@ -195,7 +195,7 @@ async def emit_approval_event_async(db: Any, request: Any, event_type: str) -> N
         if result.delivery_ids:
             await db.commit()
     except Exception:  # noqa: BLE001 - approvals must not fail on webhooks
-        logger.warning("Failed to emit %s webhook event", event_type, exc_info=True)
+        logger.warning("Failed to emit %s webhook event", event_type)
 
 
 # --- policy ----------------------------------------------------------------

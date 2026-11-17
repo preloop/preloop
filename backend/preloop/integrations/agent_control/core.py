@@ -259,7 +259,7 @@ class AgentControlClient:
                 if _is_permanent_control_connection_error(exc):
                     logger.warning(
                         "Agent control connection failed with non-retryable error: %s",
-                        exc,
+                        type(exc).__name__,
                     )
                     raise
                 # Transient disconnects are retried on the next loop iteration.
@@ -494,11 +494,13 @@ async def run_desktop_enable(
             [executable, "desktop", "enable", "--agent", str(agent_id)]
         )
     except OSError as exc:
-        logger.warning("preloop desktop enable could not start: %s", exc)
+        logger.warning("preloop desktop enable could not start: %s", type(exc).__name__)
         return {"ok": False, "error": "desktop_failed"}
     if code == 0:
         return {"ok": True}
-    logger.warning("preloop desktop enable failed: %s", output[-2000:])
+    logger.warning(
+        "Desktop enable failed: exit_code=%s output_chars=%s", code, len(output)
+    )
     for error in DESKTOP_INSTALL_ERRORS:
         if error in output:
             return {"ok": False, "error": error}
@@ -524,7 +526,7 @@ async def _dispatch_desktop_install(
     try:
         result = await installer.install(str(agent_id))
     except Exception as exc:  # noqa: BLE001 - report, never crash the loop
-        logger.warning("desktop.install failed: %s", exc)
+        logger.warning("desktop.install failed: %s", type(exc).__name__)
         result = {"ok": False, "error": "desktop_failed"}
     return [
         {
@@ -652,7 +654,7 @@ def _parse_inbound_message(message: Any) -> dict[str, Any] | None:
     try:
         parsed = message.json()
     except json.JSONDecodeError:
-        logger.warning("Ignoring malformed agent-control JSON message", exc_info=True)
+        logger.warning("Ignoring malformed agent-control JSON message")
         return None
     if not isinstance(parsed, dict):
         logger.warning(

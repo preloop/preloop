@@ -353,9 +353,11 @@ class TestPublicApprovalDecideDoesNotLeakInternals:
         assert secret not in response.text
         assert "approval_service.py" not in response.text
 
-        logged = [record for record in records if record.exc_info]
-        assert logged, "the failure must be logged with its traceback"
-        assert str(logged[-1].exc_info[1]) == secret
+        logged = [record for record in records if record.levelno >= logging.ERROR]
+        assert logged, "the failure must be logged"
+        assert all(record.exc_info is None for record in logged)
+        assert all(secret not in record.getMessage() for record in records)
+        assert all(secret not in repr(record.args) for record in records)
 
     def test_missing_updated_request_yields_the_same_sentence(
         self, client: TestClient, db_session, test_user

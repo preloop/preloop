@@ -280,7 +280,7 @@ class LocalDesktopBus:
                 try:
                     await handler(item)
                 except Exception:  # noqa: BLE001 - keep the subscription alive
-                    logger.exception("desktop bus handler failed on %s", subject)
+                    logger.error("desktop bus handler failed on %s", subject)
 
         task = asyncio.create_task(pump())
 

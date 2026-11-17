@@ -222,7 +222,9 @@ async def create_issue(
             ).model_dump()
 
         except Exception as e:
-            logger.exception(f"Error creating issue in {tracker_to_use}: {e}")
+            logger.error(
+                f"Error creating issue in {tracker_to_use}: {type(e).__name__}"
+            )
             return ErrorResponse(
                 error="creation_failed", message=f"Error creating issue: {str(e)}"
             ).model_dump()

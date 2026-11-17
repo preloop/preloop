@@ -109,9 +109,7 @@ class ObservedGatewayStream:
             try:
                 self._on_abandoned()
             except Exception:  # noqa: BLE001 - teardown must never raise
-                logger.warning(
-                    "Recording an abandoned gateway stream failed", exc_info=True
-                )
+                logger.warning("Recording an abandoned gateway stream failed")
 
         # ``_closes`` are owned by the wrapped generator's ``finally`` once it
         # has started; closing them again here would double-close an upstream
@@ -124,9 +122,7 @@ class ObservedGatewayStream:
             try:
                 closer()
             except Exception:  # noqa: BLE001 - teardown must never raise
-                logger.warning(
-                    "Closing a gateway stream resource failed", exc_info=True
-                )
+                logger.warning("Closing a gateway stream resource failed")
 
     def __del__(self) -> None:
         # The ASGI server does not always close the iterator explicitly; it

@@ -248,7 +248,7 @@ class PolicyVersionService:
             return diff, True, None
 
         except Exception as e:
-            logger.error(f"Failed to rollback to snapshot: {e}", exc_info=True)
+            logger.error(f"Failed to rollback to snapshot: {type(e).__name__}")
             return diff, False, str(e)
 
     def update_tag(

@@ -610,7 +610,7 @@ def build_fleet_map(
         try:
             projection = service.read(db, account_id=user.account_id)
         except Exception:
-            logger.exception("Optional device projection unavailable for fleet map")
+            logger.error("Optional device projection unavailable for fleet map")
     if projection is None:
         result.unavailable.append("devices")
     else:

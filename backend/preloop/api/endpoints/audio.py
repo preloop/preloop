@@ -62,7 +62,7 @@ def _audio_model_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         )
-    logger.warning("Audio provider call failed", exc_info=True)
+    logger.warning("Audio provider call failed")
     return HTTPException(
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail="Audio provider request failed",

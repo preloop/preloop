@@ -710,7 +710,9 @@ def accept_invitation(
 
         sync_subscription_quantity(db, str(invitation.account_id))
     except Exception as e:
-        logger.warning(f"Failed to update Stripe subscription quantity: {e}")
+        logger.warning(
+            f"Failed to update Stripe subscription quantity: {type(e).__name__}"
+        )
         # Don't fail user creation if billing update fails
 
     # Notify admins about new user joining organization
@@ -735,7 +737,7 @@ def accept_invitation(
             invited_by=invited_by_str,
         )
     except Exception as e:
-        logger.warning(f"Failed to notify admins about new user: {e}")
+        logger.warning(f"Failed to notify admins about new user: {type(e).__name__}")
         # Don't fail user creation if notification fails
 
     if person is not None:

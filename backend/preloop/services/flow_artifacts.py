@@ -1026,7 +1026,7 @@ def evidence_signature(
             subject_id=artifact_id,
         )
     except Exception:
-        logger.warning("Could not read the evidence signature", exc_info=True)
+        logger.warning("Could not read the evidence signature")
         return None
     if record is None:
         return None

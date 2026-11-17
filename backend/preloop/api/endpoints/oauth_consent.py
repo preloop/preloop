@@ -105,7 +105,7 @@ def _validate_client_and_redirect(client_id: str, redirect_uri: str) -> dict:
 
         return {"error": None, "client_name": client_name}
     except Exception as e:
-        logger.error(f"OAuth consent validation error: {e}", exc_info=True)
+        logger.error(f"OAuth consent validation error: {type(e).__name__}")
         return {"error": "Internal error validating client", "client_name": ""}
     finally:
         db.close()

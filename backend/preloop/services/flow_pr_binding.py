@@ -295,9 +295,7 @@ def record_decision(
             )
         return True
     except Exception:
-        logger.warning(
-            "Failed to record decision on execution %s", execution_id, exc_info=True
-        )
+        logger.warning("Failed to record decision on execution %s", execution_id)
         db.rollback()
         if raise_errors:
             raise
@@ -515,9 +513,7 @@ def _write_result(db: Session, execution: Any, updates: Dict[str, Any]) -> bool:
         return True
     except Exception:
         logger.warning(
-            "Failed to update result on execution %s",
-            getattr(execution, "id", None),
-            exc_info=True,
+            "Failed to update result on execution %s", getattr(execution, "id", None)
         )
         try:
             db.rollback()
@@ -553,9 +549,7 @@ def find_running_executions_for_pr(
             db, flow_id=flow.id, running_statuses=list(_RUNNING_STATUSES)
         )
     except Exception:
-        logger.warning(
-            "Could not list running executions for PR follow-up", exc_info=True
-        )
+        logger.warning("Could not list running executions for PR follow-up")
         return []
     matches: List[FlowExecution] = []
     for execution in executions:
@@ -715,9 +709,7 @@ def record_published_pr(
                 db, execution_id=execution_id, publication=output
             )
     except Exception:
-        logger.warning(
-            "Failed to record published PR on execution %s", execution_id, exc_info=True
-        )
+        logger.warning("Failed to record published PR on execution %s", execution_id)
         db.rollback()
         if raise_errors:
             raise
@@ -767,11 +759,7 @@ def record_cli_session(
         db.commit()
         logger.info("Recorded CLI session on execution %s", execution_id)
     except Exception:
-        logger.warning(
-            "Failed to record CLI session on execution %s",
-            execution_id,
-            exc_info=True,
-        )
+        logger.warning("Failed to record CLI session on execution %s", execution_id)
         try:
             db.rollback()
         except Exception:
@@ -855,11 +843,7 @@ def record_opened_pr(
 
             register_thread(db, execution, stored_url, source_branch)
     except Exception:
-        logger.warning(
-            "Failed to record opened PR on execution %s",
-            execution_id,
-            exc_info=True,
-        )
+        logger.warning("Failed to record opened PR on execution %s", execution_id)
         try:
             db.rollback()
         except Exception:
@@ -1050,9 +1034,7 @@ def bind_resume_or_skip(
     marker_flow_id = parse_review_marker(extract_comment_body(event_data))
     if marker_flow_id and marker_flow_id_matches(flow, marker_flow_id):
         logger.info(
-            "Skipping comment on %s: its review marker names the receiving "
-            "flow %s (self-loop guard)",
-            pr_url,
+            "Skipping comment: review marker names receiving flow %s (self-loop guard)",
             marker_flow_id,
         )
         return None
@@ -1067,20 +1049,14 @@ def bind_resume_or_skip(
     if running:
         target = running[0]
         queue_pending_followup(db, target, extract_comment_url(event_data))
-        logger.info(
-            "Queued one follow-up on running execution %s for %s",
-            target.id,
-            pr_url,
-        )
+        logger.info("Queued one follow-up on running execution %s", target.id)
         return None
 
     cap = max_resumes_per_pr(flow)
     started = resume_count(execution)
     if started >= cap:
         logger.info(
-            "Skipping comment on %s: flow %s already started %s/%s resumes "
-            "for this PR (max_resumes_per_pr)",
-            pr_url,
+            "Skipping comment: flow %s already started %s/%s resumes for this PR",
             flow.id,
             started,
             cap,

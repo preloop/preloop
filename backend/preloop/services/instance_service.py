@@ -204,7 +204,7 @@ def get_or_create_instance() -> Optional["Instance"]:
             db.close()
 
     except Exception as e:
-        logger.warning(f"Could not get/create instance record: {e}")
+        logger.warning(f"Could not get/create instance record: {type(e).__name__}")
         return None
 
 
@@ -498,7 +498,7 @@ async def _periodic_version_check_loop() -> None:
             if success:
                 logger.debug("Periodic version check completed")
         except Exception as e:
-            logger.warning(f"Periodic version check failed: {e}")
+            logger.warning(f"Periodic version check failed: {type(e).__name__}")
 
 
 def _start_periodic_checker() -> None:

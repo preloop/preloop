@@ -136,7 +136,7 @@ class TestLocalDispatchFailure:
         assert stored.end_time is not None
         logged = logger.error.call_args
         assert logged.args[1] == execution.id
-        assert isinstance(logged.kwargs["exc_info"], RuntimeError)
+        assert "exc_info" not in logged.kwargs
         assert not (fts._LOCAL_RUN_TASKS - before)
         assert not fts._LOCAL_RUN_FAILURE_WRITES
 
@@ -272,7 +272,7 @@ class TestSuperviseLocalRun:
         session.close.assert_called_once()
         assert (
             "Could not record the local dispatch failure"
-            in logger.exception.call_args.args[0]
+            in logger.error.call_args.args[0]
         )
 
     async def test_status_write_runs_off_the_event_loop_thread(self) -> None:
@@ -337,7 +337,7 @@ class TestSuperviseLocalRun:
         ]
         assert len(logged) == 1
         assert logged[0].args[1] == execution_id
-        assert str(logged[0].kwargs["exc_info"]) == "write crashed"
+        assert "exc_info" not in logged[0].kwargs
         assert not fts._LOCAL_RUN_FAILURE_WRITES
 
     async def test_unschedulable_write_is_left_for_recovery(self) -> None:

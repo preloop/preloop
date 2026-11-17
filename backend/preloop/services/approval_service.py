@@ -491,18 +491,16 @@ async def _send_delayed_approval_email(
             )
             await db.commit()
             logger.info(
-                "Delayed email for approval %s: %s",
+                "Delayed email for approval %s: sent=%s failed=%s",
                 request_id,
-                result,
+                sent_count,
+                failed_count,
             )
     except asyncio.CancelledError:
         logger.info("Delayed email task cancelled for approval %s", request_id)
     except Exception as exc:
         logger.error(
-            "Failed delayed email for approval %s: %s",
-            request_id,
-            exc,
-            exc_info=True,
+            "Failed delayed email for approval %s: %s", request_id, type(exc).__name__
         )
 
 
@@ -599,7 +597,6 @@ class ApprovalService:
             logger.warning(
                 "Failed to enqueue approval webhook for %s",
                 getattr(approval_request, "id", "unknown"),
-                exc_info=True,
             )
 
     async def _broadcast_approval_update(
@@ -693,7 +690,7 @@ class ApprovalService:
             )
 
         except Exception as e:
-            logger.error(f"Failed to broadcast approval update: {e}", exc_info=True)
+            logger.error(f"Failed to broadcast approval update: {type(e).__name__}")
 
     async def create_approval_request(
         self,
@@ -1125,9 +1122,8 @@ class ApprovalService:
                 account_id=str(approval_request.account_id),
             )
         except Exception:  # noqa: BLE001 - the decision itself is committed
-            logger.exception(
-                "Desktop control decision %s could not be applied",
-                approval_request.id,
+            logger.error(
+                "Desktop control decision %s could not be applied", approval_request.id
             )
 
     async def _enqueue_lifecycle(self, **fields: Any) -> None:
@@ -1160,9 +1156,8 @@ class ApprovalService:
 
             started = await resume_parked_executions(approval_request.id)
         except Exception:
-            logger.exception(
-                "Could not resume executions parked on approval %s",
-                approval_request.id,
+            logger.error(
+                "Could not resume executions parked on approval %s", approval_request.id
             )
             return
         if started:
@@ -1196,7 +1191,7 @@ class ApprovalService:
             self.db.add(event)
             await self.db.flush()
         except Exception as e:
-            logger.warning(f"Failed to record approval event: {e}")
+            logger.warning(f"Failed to record approval event: {type(e).__name__}")
 
     _TERMINAL_STATUSES = frozenset({"approved", "declined", "cancelled", "expired"})
 
@@ -1226,7 +1221,7 @@ class ApprovalService:
                 )
             )
         except Exception:
-            logger.exception(
+            logger.error(
                 "Unable to verify approval freeze; preserving pending decision"
             )
             return True
@@ -1929,10 +1924,9 @@ class ApprovalService:
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(
-                "Could not resolve approvers for bypass check on workflow %s: %s; "
-                "failing closed (no bypass applied)",
+                "Could not resolve approvers for bypass check on workflow %s: %s; failing closed (no bypass applied)",
                 approval_workflow.id,
-                exc,
+                type(exc).__name__,
             )
             return None
 
@@ -2054,7 +2048,9 @@ class ApprovalService:
                 await record_bypass_use_async(self.db, bypass_id=bypass.id)
             except Exception as exc:  # pragma: no cover - counter is advisory
                 logger.warning(
-                    "Failed to increment bypass %s usage counter: %s", bypass.id, exc
+                    "Failed to increment bypass %s usage counter: %s",
+                    bypass.id,
+                    type(exc).__name__,
                 )
 
         await self._broadcast_approval_update(updated_request, "approved")
@@ -2489,7 +2485,7 @@ class ApprovalService:
         try:
             return await run_db_off_loop(_stored)
         except Exception:  # noqa: BLE001 - never block an approval on this
-            logger.warning("Approval storage redaction failed", exc_info=True)
+            logger.warning("Approval storage redaction failed")
             return tool_args
 
     async def create_and_notify(
@@ -2633,11 +2629,9 @@ class ApprovalService:
                 )
         except Exception as summary_error:
             logger.warning(
-                "Failed to generate approval summary for %s: %s; storing "
-                "deterministic fallback",
+                "Failed to generate approval summary for %s: %s; storing deterministic fallback",
                 approval_request.id,
-                summary_error,
-                exc_info=True,
+                type(summary_error).__name__,
             )
 
         # Persist the summary outside the generation try/except so a failure
@@ -2651,8 +2645,7 @@ class ApprovalService:
             logger.warning(
                 "Failed to persist approval summary for %s: %s",
                 approval_request.id,
-                persist_error,
-                exc_info=True,
+                type(persist_error).__name__,
             )
 
         # A note's caller-bound workflow requires this human even when a
@@ -2699,8 +2692,7 @@ class ApprovalService:
             logger.error(
                 "Bypass resolution failed for %s: %s; enforcing approval",
                 approval_request.id,
-                bypass_error,
-                exc_info=True,
+                type(bypass_error).__name__,
             )
             bypass = None
 
@@ -2991,7 +2983,7 @@ class ApprovalService:
             logger.warning(
                 "Mute resolution failed for %s: %s; notifying normally",
                 approval_request.id,
-                mute_error,
+                type(mute_error).__name__,
             )
             mute = None
 
@@ -3039,9 +3031,7 @@ class ApprovalService:
                 )
             }
         except Exception:
-            logger.warning(
-                "Failed to enqueue private chat approval notifications", exc_info=True
-            )
+            logger.warning("Failed to enqueue private chat approval notifications")
             results["chat"] = {
                 "success": False,
                 "error": "Chat notification queue unavailable",
@@ -3056,7 +3046,7 @@ class ApprovalService:
             )
             results["mobile_push"] = push_result
         except Exception as e:
-            logger.error(f"Failed to send push notifications: {str(e)}")
+            logger.error(f"Failed to send push notifications: {type(e).__name__}")
             results["mobile_push"] = {"success": False, "error": str(e)}
 
         notification_audits.append(
@@ -3102,7 +3092,7 @@ class ApprovalService:
                 )
                 results["email"] = email_result
             except Exception as e:
-                logger.error(f"Failed to send email notifications: {str(e)}")
+                logger.error(f"Failed to send email notifications: {type(e).__name__}")
                 results["email"] = {"success": False, "error": str(e)}
 
             notification_audits.append(
@@ -3161,7 +3151,9 @@ class ApprovalService:
                     )
                     results[channel] = {"success": result}
                 except Exception as e:
-                    logger.error(f"Failed to send {channel} notification: {str(e)}")
+                    logger.error(
+                        f"Failed to send {channel} notification: {type(e).__name__}"
+                    )
                     results[channel] = {"success": False, "error": str(e)}
 
                 notification_audits.append(
@@ -3422,7 +3414,7 @@ class ApprovalService:
             await self.db.commit()
             recorded = True
         except Exception:
-            logger.exception(
+            logger.error(
                 "Could not record the %s%% reminder for approval %s",
                 percent,
                 approval_request.id,
@@ -3596,7 +3588,7 @@ class ApprovalService:
 
             except Exception as e:
                 logger.error(
-                    f"Failed to send email to user {user_id}: {str(e)}", exc_info=True
+                    f"Failed to send email to user {user_id}: {type(e).__name__}"
                 )
                 failed_count += 1
 
@@ -3887,11 +3879,9 @@ class ApprovalService:
                         # server-side environment or topic mismatch, not a
                         # dead token. Keep it and log instead of pruning.
                         logger.warning(
-                            "APNs rejected labeled iOS token %s... "
-                            "(environment=%s, reason=%s); token kept",
-                            token[:8],
+                            "APNs rejected labeled token: environment=%s status=%s; token kept",
                             apns_env,
-                            error_reason,
+                            status_code,
                         )
                         _record_failure(
                             platform="ios",
@@ -3916,7 +3906,7 @@ class ApprovalService:
                         )
                     else:
                         logger.warning(
-                            f"APNs notification failed: status={status_code}, reason={error_reason}"
+                            "APNs notification failed: status=%s", status_code
                         )
                         _record_failure(
                             platform="ios",
@@ -3940,7 +3930,7 @@ class ApprovalService:
                     if result.get("success"):
                         sent_count += 1
                     else:
-                        logger.warning(f"iOS push proxy failed: {result.get('error')}")
+                        logger.warning("iOS push proxy failed")
                         _record_failure(
                             platform="ios",
                             token=token,
@@ -3950,7 +3940,7 @@ class ApprovalService:
 
             except Exception as e:
                 logger.error(
-                    f"iOS push notification error for token {token[:8]}...: {e}"
+                    "iOS push notification error: error_type=%s", type(e).__name__
                 )
                 _record_failure(platform="ios", token=token, reason=str(e))
                 failed_count += 1
@@ -3992,13 +3982,7 @@ class ApprovalService:
                     # a different Firebase project). Drop it instead of
                     # retrying it on every future approval forever.
                     invalid_tokens.append((user_id, token, "android"))
-                    logger.warning(
-                        "Pruning dead Android push token: reason=%s "
-                        "project_id=%s remediation=%s",
-                        result.get("error_reason"),
-                        result.get("project_id"),
-                        result.get("remediation"),
-                    )
+                    logger.warning("Pruning dead Android push token")
                     _record_failure(
                         platform="android",
                         token=token,
@@ -4009,13 +3993,7 @@ class ApprovalService:
                     )
                 elif fcm_available:
                     # Server-side or transient fault: keep the token.
-                    logger.warning(
-                        "FCM notification failed (token kept): reason=%s "
-                        "retryable=%s error=%s",
-                        result.get("error_reason"),
-                        result.get("retryable"),
-                        result.get("error"),
-                    )
+                    logger.warning("FCM notification failed; token kept")
                     _record_failure(
                         platform="android",
                         token=token,
@@ -4025,7 +4003,7 @@ class ApprovalService:
                     )
                     failed_count += 1
                 else:
-                    logger.warning(f"Android push proxy failed: {result.get('error')}")
+                    logger.warning("Android push proxy failed")
                     _record_failure(
                         platform="android",
                         token=token,
@@ -4035,7 +4013,7 @@ class ApprovalService:
 
             except Exception as e:
                 logger.error(
-                    f"Android push notification error for token {token[:8]}...: {e}"
+                    "Android push notification error: error_type=%s", type(e).__name__
                 )
                 _record_failure(platform="android", token=token, reason=str(e))
                 failed_count += 1
@@ -4065,10 +4043,9 @@ class ApprovalService:
                             sync_db.rollback()
                             failed += 1
                             logger.error(
-                                "Failed to remove invalid token %s... (user=%s): %s",
-                                token[:8],
+                                "Failed to remove invalid token: user_id=%s error_type=%s",
                                 user_id,
-                                e,
+                                type(e).__name__,
                             )
                 finally:
                     sync_db.close()
@@ -4092,8 +4069,8 @@ class ApprovalService:
                 exc = fut.exception()
                 if exc is not None:
                     logger.error(
-                        "Invalid-token pruning crashed before completing: %s",
-                        exc,
+                        "Invalid-token pruning crashed: error_type=%s",
+                        type(exc).__name__,
                     )
 
             # Run token cleanup in background
@@ -4139,7 +4116,9 @@ class ApprovalService:
                         ),
                     )
             except Exception as e:
-                logger.error(f"Failed to notify admins about push failure: {e}")
+                logger.error(
+                    f"Failed to notify admins about push failure: {type(e).__name__}"
+                )
 
         error_summary = None
         if failed_count > 0:
@@ -4225,12 +4204,9 @@ class ApprovalService:
 
                     # Debug logging for escalation check
                     logger.info(
-                        f"Checking escalation for request {request_id}: "
-                        f"approval_workflow={approval_workflow}, "
-                        f"approval_workflow_id={approval_request.approval_workflow_id}, "
-                        f"escalation_user_ids={getattr(approval_workflow, 'escalation_user_ids', None) if approval_workflow else None}, "
-                        f"escalation_team_ids={getattr(approval_workflow, 'escalation_team_ids', None) if approval_workflow else None}, "
-                        f"escalation_triggered_at={approval_request.escalation_triggered_at}"
+                        "Checking escalation: request_id=%s workflow_id=%s",
+                        request_id,
+                        approval_request.approval_workflow_id,
                     )
 
                     # Check if escalation is configured and hasn't been triggered yet
@@ -4414,7 +4390,7 @@ class ApprovalService:
                             emails_sent += 1
                         except Exception as e:
                             logger.error(
-                                f"Failed to send escalation email to {user.email}: {e}"
+                                f"Failed to send escalation email to {user.email}: {type(e).__name__}"
                             )
 
                     # Get device tokens
@@ -4508,9 +4484,7 @@ class ApprovalService:
                     if success:
                         sent_count += 1
                     else:
-                        logger.warning(
-                            f"Escalation APNs failed: status={status_code}, reason={error_reason}"
-                        )
+                        logger.warning("Escalation APNs failed: status=%s", status_code)
                         failed_count += 1
                 elif use_proxy:
                     result = await send_push_via_proxy(
@@ -4526,7 +4500,7 @@ class ApprovalService:
                     else:
                         failed_count += 1
             except Exception as e:
-                logger.error(f"Escalation iOS push error: {e}")
+                logger.error(f"Escalation iOS push error: {type(e).__name__}")
                 failed_count += 1
 
         # Send to Android devices. Transport dispatch is shared with the main
@@ -4553,7 +4527,7 @@ class ApprovalService:
                 else:
                     failed_count += 1
             except Exception as e:
-                logger.error(f"Escalation Android push error: {e}")
+                logger.error(f"Escalation Android push error: {type(e).__name__}")
                 failed_count += 1
 
         logger.info(

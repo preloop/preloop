@@ -257,19 +257,19 @@ def detect_issue_dependencies(
         return DependencyResponse(dependencies=dependencies_from_ai)
 
     except openai.APIError as e:
-        logger.error(f"OpenAI API call failed: {e}")
+        logger.error(f"OpenAI API call failed: {type(e).__name__}")
         raise HTTPException(
             status_code=502, detail="Failed to get dependency analysis from AI model."
         )
     except ModelGatewayAPIError as exc:
-        logger.warning("AI dependency analysis did not recover: %s", exc)
+        logger.warning("AI dependency analysis did not recover: %s", type(exc).__name__)
         raise HTTPException(
             status_code=exc.status_code,
             detail="AI model is rate limited; retry later.",
             headers=exc.response_headers(),
         )
     except (json.JSONDecodeError, KeyError, TypeError) as e:
-        logger.error(f"Error parsing AI model response: {e}")
+        logger.error(f"Error parsing AI model response: {type(e).__name__}")
         raise HTTPException(
             status_code=500, detail=f"Error processing AI model response: {e}"
         )
@@ -346,7 +346,7 @@ async def commit_issue_dependencies(
 
         except Exception as e:
             logger.error(
-                f"Failed to create client or relation for dependency {dep.issue_key} -> {dep.dependency_key}: {e}"
+                f"Failed to create client or relation for dependency {dep.issue_key} -> {dep.dependency_key}: {type(e).__name__}"
             )
 
     # Run all API calls concurrently
@@ -356,7 +356,9 @@ async def commit_issue_dependencies(
             if isinstance(result, Exception):
                 dep = dependencies_to_commit[i]
                 logger.error(
-                    f"Failed to create dependency {dep.issue_key} -> {dep.dependency_key} in external tracker: {result}"
+                    "Failed to create dependency %s -> %s in external tracker",
+                    dep.issue_key,
+                    dep.dependency_key,
                 )
 
     # Commit all dependencies that were attempted, regardless of API call success
@@ -578,19 +580,19 @@ def extend_dependency_scan(
         return DependencyResponse(dependencies=new_dependencies)
 
     except openai.APIError as e:
-        logger.error(f"OpenAI API call failed: {e}")
+        logger.error(f"OpenAI API call failed: {type(e).__name__}")
         raise HTTPException(
             status_code=502, detail="Failed to get dependency analysis from AI model."
         )
     except ModelGatewayAPIError as exc:
-        logger.warning("AI dependency analysis did not recover: %s", exc)
+        logger.warning("AI dependency analysis did not recover: %s", type(exc).__name__)
         raise HTTPException(
             status_code=exc.status_code,
             detail="AI model is rate limited; retry later.",
             headers=exc.response_headers(),
         )
     except (json.JSONDecodeError, KeyError, TypeError) as e:
-        logger.error(f"Error parsing AI model response: {e}")
+        logger.error(f"Error parsing AI model response: {type(e).__name__}")
         raise HTTPException(
             status_code=500, detail=f"Error processing AI model response: {e}"
         )

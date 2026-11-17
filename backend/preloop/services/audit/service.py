@@ -458,7 +458,7 @@ class AuditService:
                 details=details,
             )
         except Exception as e:
-            logger.error(f"Failed to log permission check: {e}", exc_info=True)
+            logger.error(f"Failed to log permission check: {type(e).__name__}")
 
     def log_authentication(
         self,
@@ -507,7 +507,7 @@ class AuditService:
                 details=details,
             )
         except Exception as e:
-            logger.error(f"Failed to log authentication: {e}", exc_info=True)
+            logger.error(f"Failed to log authentication: {type(e).__name__}")
 
     def log_role_assignment(
         self,
@@ -553,7 +553,7 @@ class AuditService:
                 details=details,
             )
         except Exception as e:
-            logger.error(f"Failed to log role assignment: {e}", exc_info=True)
+            logger.error(f"Failed to log role assignment: {type(e).__name__}")
 
     def log_resource_access(
         self,
@@ -597,7 +597,7 @@ class AuditService:
                 details=details or {},
             )
         except Exception as e:
-            logger.error(f"Failed to log resource access: {e}", exc_info=True)
+            logger.error(f"Failed to log resource access: {type(e).__name__}")
 
     def log_configuration_change(
         self,
@@ -652,7 +652,7 @@ class AuditService:
                 details=details,
             )
         except Exception as e:
-            logger.error(f"Failed to log configuration change: {e}", exc_info=True)
+            logger.error(f"Failed to log configuration change: {type(e).__name__}")
 
     def log_tool_call(
         self,
@@ -762,7 +762,7 @@ class AuditService:
                 audit_log_id=audit_log.id if audit_log else None,
             )
         except Exception as e:
-            logger.error(f"Failed to log tool call: {e}", exc_info=True)
+            logger.error(f"Failed to log tool call: {type(e).__name__}")
 
     def log_policy_decision(
         self,
@@ -846,7 +846,7 @@ class AuditService:
                 audit_log_id=audit_log.id if audit_log else None,
             )
         except Exception as e:
-            logger.error(f"Failed to log policy decision: {e}", exc_info=True)
+            logger.error(f"Failed to log policy decision: {type(e).__name__}")
 
     def log_approval_lifecycle(
         self,
@@ -932,7 +932,6 @@ class AuditService:
                 logger,
                 exc,
                 summary="Failed to log approval lifecycle",
-                diagnostic=f"Failed to log approval lifecycle: {exc}",
             )
 
     def log_approval_notification(
@@ -1020,7 +1019,7 @@ class AuditService:
                 audit_log_id=audit_log.id if audit_log else None,
             )
         except Exception as e:
-            logger.error(f"Failed to log approval notification: {e}", exc_info=True)
+            logger.error(f"Failed to log approval notification: {type(e).__name__}")
 
     def log_approval_notification_async(
         self,
@@ -1141,7 +1140,7 @@ class AuditService:
                 audit_log_id=audit_log.id if audit_log else None,
             )
         except Exception as e:
-            logger.error(f"Failed to log approval tool execution: {e}", exc_info=True)
+            logger.error(f"Failed to log approval tool execution: {type(e).__name__}")
 
     def log_approval_tool_executed_async(
         self,
@@ -1245,7 +1244,7 @@ class AuditService:
                 details=details,
             )
         except Exception as e:
-            logger.error(f"Failed to log runtime session event: {e}", exc_info=True)
+            logger.error(f"Failed to log runtime session event: {type(e).__name__}")
 
     def log_model_gateway_request(
         self,
@@ -1346,7 +1345,7 @@ class AuditService:
                 details={k: v for k, v in details.items() if v is not None},
             )
         except Exception as e:
-            logger.error(f"Failed to log model gateway request: {e}", exc_info=True)
+            logger.error(f"Failed to log model gateway request: {type(e).__name__}")
 
     def log_session_search(
         self,
@@ -1499,7 +1498,7 @@ class AuditService:
                 audit_log_id=audit_log.id if audit_log else None,
             )
         except Exception as e:
-            logger.error(f"Failed to log session content search: {e}", exc_info=True)
+            logger.error(f"Failed to log session content search: {type(e).__name__}")
 
     def log_ai_approval(
         self,
@@ -1573,7 +1572,7 @@ class AuditService:
                 details=details,
             )
         except Exception as e:
-            logger.error(f"Failed to log AI approval: {e}", exc_info=True)
+            logger.error(f"Failed to log AI approval: {type(e).__name__}")
 
     def _sanitize_tool_args(self, tool_args: Dict[str, Any]) -> Dict[str, Any]:
         """Sanitize tool arguments to remove sensitive data.

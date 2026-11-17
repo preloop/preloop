@@ -726,10 +726,13 @@ def _evaluate_loaded_access_rules(
 
     for index, rule in enumerate(rules):
         try:
-            logger.info(
-                f"Evaluating rule {rule.id} (priority={rule.priority}, "
-                f"action={rule.action}): condition_type={rule.condition_type}, "
-                f"expression={rule.condition_expression!r}, args={tool_args}"
+            logger.debug(
+                "Evaluating rule %s (priority=%s, action=%s): condition_type=%s, arg_keys=%s",
+                rule.id,
+                rule.priority,
+                rule.action,
+                rule.condition_type,
+                sorted(tool_args),
             )
             matches = _evaluate_rule_condition(
                 expression=rule.condition_expression,
@@ -749,10 +752,7 @@ def _evaluate_loaded_access_rules(
             logger.info(f"Rule {rule.id} evaluated: matches={matches}")
 
             if matches:
-                logger.info(
-                    f"Rule matched: {rule.description or rule.condition_expression} "
-                    f"-> action={rule.action}"
-                )
+                logger.info("Rule matched: id=%s action=%s", rule.id, rule.action)
 
                 approval_workflow_id = None
                 if rule.action == "require_approval":
@@ -816,8 +816,7 @@ def _evaluate_loaded_access_rules(
                     }
                 )
             logger.error(
-                f"Error evaluating rule {rule.id}: {e}. "
-                f"Failing closed with require_approval for security."
+                f"Error evaluating rule {rule.id}: {type(e).__name__}. Failing closed with require_approval for security."
             )
             error_desc = f"Rule evaluation error: {e} (failing closed)"
             if record:
@@ -1645,7 +1644,7 @@ def _evaluate_cel_condition_on_bindings(
         result = program.evaluate(activation)
         return bool(result)
     except Exception as e:
-        logger.error(f"CEL evaluation error for expression '{expression}': {e}")
+        logger.error("CEL evaluation failed: error_type=%s", type(e).__name__)
         raise ValueError(f"CEL evaluation failed: {str(e)}")
 
 
@@ -1684,7 +1683,7 @@ def _evaluate_cel_condition(
         return bool(result)
 
     except Exception as e:
-        logger.error(f"CEL evaluation error for expression '{expression}': {e}")
+        logger.error("CEL evaluation failed: error_type=%s", type(e).__name__)
         raise ValueError(f"CEL evaluation failed: {str(e)}")
 
 

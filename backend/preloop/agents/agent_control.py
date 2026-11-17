@@ -342,10 +342,7 @@ def _flow_dispatch_metadata(
             trigger_event_data=execution_context.get("trigger_event_data"),
         )
     except Exception:
-        logger.warning(
-            "workspace metadata failed; sending clone_less",
-            exc_info=True,
-        )
+        logger.warning("workspace metadata failed; sending clone_less")
         metadata["workspace"] = {"mode": "clone_less"}
     return {key: value for key, value in metadata.items() if value is not None}
 
@@ -522,7 +519,7 @@ class AgentControlExecutor(AgentExecutor):
                     notify_owner_consent(consent.approval_id), timeout=25
                 )
             except Exception:
-                logger.warning("Agent flow owner notification deferred", exc_info=True)
+                logger.warning("Agent flow owner notification deferred")
         if consent.status == "pending":
             return False
         if consent.status != "approved" or (
@@ -798,9 +795,8 @@ class AgentControlExecutor(AgentExecutor):
                     commit=True,
                 )
         except Exception:
-            logger.exception(
-                "Failed to bind persistent flow command %s after delivery; "
-                "the execution remains observable via %s",
+            logger.error(
+                "Failed to bind persistent flow command %s after delivery; the execution remains observable via %s",
                 dispatched.command_id,
                 reference,
             )
@@ -1101,10 +1097,8 @@ class AgentControlExecutor(AgentExecutor):
                 interrupted = True
             except AgentControlDispatchError:
                 logger.warning(
-                    "Failed to interrupt persistent flow command %s; "
-                    "leaving the command non-terminal",
+                    "Failed to interrupt persistent flow command %s; leaving the command non-terminal",
                     session_reference,
-                    exc_info=True,
                 )
         if interrupted and record is not None:
             crud_agent_control_command.mark_terminal_result(

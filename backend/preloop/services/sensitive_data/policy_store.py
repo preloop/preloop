@@ -62,7 +62,9 @@ def parse_sensitive_data_config(
             raise SensitiveDataPolicyError(
                 f"stored sensitive_data block is invalid: {exc}"
             ) from exc
-        logger.warning("Ignoring invalid sensitive_data policy block: %s", exc)
+        logger.warning(
+            "Ignoring invalid sensitive_data policy block: %s", type(exc).__name__
+        )
         return SensitiveDataConfig()
 
 

@@ -285,5 +285,5 @@ def limits_for_execution(execution_context: Mapping[str, Any]) -> ModelContextLi
             model_parameters=execution_context.get("model_parameters"),
         )
     except Exception:  # noqa: BLE001 - never block a run on a lookup
-        logger.exception("Could not resolve model context limits")
+        logger.error("Could not resolve model context limits")
         return ModelContextLimits()

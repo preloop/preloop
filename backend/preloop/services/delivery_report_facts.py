@@ -552,7 +552,7 @@ async def refresh_pull_request_details(
         try:
             pr = await _read_forge(db, row=row, owner=owner)
         except Exception:  # noqa: BLE001 - one unreadable PR keeps the rest
-            logger.info("Could not read PR details for %s", row.pr_key, exc_info=True)
+            logger.info("Could not read PR details for %s", row.pr_key)
             pr = None
         details = details_from_forge(pr) if isinstance(pr, Mapping) else {}
         crud_delivery_report_policy.store_pull_request_details(

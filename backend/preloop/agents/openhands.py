@@ -205,7 +205,7 @@ class OpenHandsAgent(ContainerAgentExecutor):
 
         except DockerError as e:
             self.logger.error(
-                f"Failed to start OpenHands container for execution {execution_id}: {e}"
+                f"Failed to start OpenHands container for execution {execution_id}: {type(e).__name__}"
             )
             raise RuntimeError(f"Failed to start OpenHands container: {e}")
 
@@ -341,7 +341,9 @@ class OpenHandsAgent(ContainerAgentExecutor):
 
         # Prepare git clone command if enabled
         git_clone_config = execution_context.get("git_clone_config")
-        self.logger.info(f"Git clone config: {git_clone_config}")
+        self.logger.info(
+            "Git clone configuration: keys=%s", sorted(git_clone_config or {})
+        )
 
         if git_clone_config:
             is_enabled = git_clone_config.get("enabled", False)
@@ -506,7 +508,7 @@ class OpenHandsAgent(ContainerAgentExecutor):
             return " && ".join(all_commands)
 
         except Exception as e:
-            self.logger.error(f"Error preparing git clone command: {e}", exc_info=True)
+            self.logger.error(f"Error preparing git clone command: {type(e).__name__}")
             return ""
 
     # Note: _extract_repo_url_from_trigger and _get_token_from_project are

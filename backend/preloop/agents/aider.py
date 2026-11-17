@@ -376,7 +376,7 @@ exit $AIDER_EXIT_CODE
 
         except DockerError as e:
             self.logger.error(
-                f"Failed to start Aider container for execution {execution_id}: {e}"
+                f"Failed to start Aider container for execution {execution_id}: {type(e).__name__}"
             )
             raise RuntimeError(f"Failed to start Aider container: {e}")
 

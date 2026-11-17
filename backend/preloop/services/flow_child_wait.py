@@ -555,7 +555,7 @@ def refusal_outcomes(db: Any, parent: Any) -> List[ChildOutcome]:
             db, execution_id=parent.id, log_type=DELEGATION_REFUSAL_LOG_TYPE
         )
     except Exception:
-        logger.exception("Could not read the refused delegations of %s", parent.id)
+        logger.error("Could not read the refused delegations of %s", parent.id)
         return outcomes
     for row in rows:
         metadata = getattr(row, "metadata_", None)
@@ -739,7 +739,7 @@ def _request_child_park(db: Any, *, parent: Any, children: Sequence[Any]) -> str
             kind=PARK_KIND,
         )
     except Exception:
-        logger.exception("Could not record the child park request for %s", parent.id)
+        logger.error("Could not record the child park request for %s", parent.id)
         parked = False
     if not parked:
         logger.info(
@@ -796,16 +796,15 @@ async def notify_parent_child_finished(
             if parent_id is None:
                 return None
     except Exception:
-        logger.exception(
+        logger.error(
             "Could not read the parent of finished execution %s", child_execution_id
         )
         return None
     try:
         return await resume_parent_if_ready(parent_id)
     except Exception:
-        logger.exception(
-            "Could not resume the parent of finished execution %s; the sweep "
-            "will retry",
+        logger.error(
+            "Could not resume the parent of finished execution %s; the sweep will retry",
             child_execution_id,
         )
         return None
@@ -874,7 +873,7 @@ async def resume_parent_if_ready(
         try:
             resume_id = await _start_resume_execution(db, flow, parent, details)
         except Exception:
-            logger.exception(
+            logger.error(
                 "Failed to start the resume of parent %s; releasing the claim",
                 parent.id,
             )
@@ -892,7 +891,7 @@ def _release_claim(db: Any, execution_id: Any) -> None:
     try:
         crud_flow_execution.release_children_claim(db, execution_id=execution_id)
     except Exception:
-        logger.exception("Could not release the resume claim on %s", execution_id)
+        logger.error("Could not release the resume claim on %s", execution_id)
 
 
 async def _start_resume_execution(
@@ -970,7 +969,7 @@ async def _start_resume_execution(
             },
         )
     except Exception:
-        logger.exception(
+        logger.error(
             "Could not log the resume of parent %s as %s", parked.id, execution.id
         )
     try:
@@ -983,9 +982,8 @@ async def _start_resume_execution(
                 flow, details, None, precreated_execution=execution
             )
     except Exception:
-        logger.exception(
-            "Failed to dispatch the resume of parent %s as %s; the PENDING "
-            "execution is committed and will not be created again",
+        logger.error(
+            "Failed to dispatch the resume of parent %s as %s; the PENDING execution is committed and will not be created again",
             parked.id,
             execution.id,
         )
@@ -1019,19 +1017,19 @@ async def sweep_child_parks(now: Optional[datetime] = None) -> Dict[str, int]:
                 db, now=moment
             )
         except Exception:
-            logger.exception("Could not reclaim stale child park claims")
+            logger.error("Could not reclaim stale child park claims")
         try:
             parked_ids = [
                 row.id for row in crud_flow_execution.list_parked_on_children(db)
             ]
         except Exception:
-            logger.exception("Could not list executions parked on children")
+            logger.error("Could not list executions parked on children")
             return counts
     for parent_id in parked_ids:
         try:
             resumed = await resume_parent_if_ready(parent_id, now=moment)
         except Exception:
-            logger.exception("Could not resume parent %s from the sweep", parent_id)
+            logger.error("Could not resume parent %s from the sweep", parent_id)
             continue
         if resumed is None:
             continue

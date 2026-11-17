@@ -143,7 +143,6 @@ class RemoteRunnerExecutor(AgentExecutor):
                 logger.warning(
                     "Runner owner notification deferred for approval %s",
                     consent.approval_id,
-                    exc_info=True,
                 )
         status = outcome.get("consent_status")
         if status in {"declined", "expired", "cancelled", "consumed"}:
@@ -968,7 +967,6 @@ class RemoteRunnerExecutor(AgentExecutor):
             logger.warning(
                 "Could not resolve the owning runner for execution %s",
                 getattr(execution, "id", None),
-                exc_info=True,
             )
             return None, False
         return owner, True

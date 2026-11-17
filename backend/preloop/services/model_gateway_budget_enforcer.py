@@ -604,7 +604,7 @@ class ModelGatewayBudgetEnforcer:
                 ai_model=ai_model,
             )
         except Exception:  # noqa: BLE001 - alerting never fails a request
-            logger.exception(
+            logger.error(
                 "Unpriced-budget alert failed for provider %s alias %s",
                 provider,
                 model_alias,

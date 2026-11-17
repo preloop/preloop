@@ -1060,11 +1060,7 @@ class SecretService:
         except urllib_error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "ignore")
             code = self._extract_oauth_error_code(detail)
-            logger.warning(
-                "Anthropic Claude Code OAuth refresh HTTP %s (code=%s)",
-                exc.code,
-                code,
-            )
+            logger.warning("Anthropic OAuth refresh failed: status=%s", exc.code)
             raise CredentialRefreshError(
                 f"Anthropic Claude Code OAuth token refresh failed with status "
                 f"{exc.code}",
@@ -1131,11 +1127,7 @@ class SecretService:
         except urllib_error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "ignore")
             code = self._extract_oauth_error_code(detail)
-            logger.warning(
-                "OpenAI Codex OAuth refresh HTTP %s (code=%s)",
-                exc.code,
-                code,
-            )
+            logger.warning("OpenAI OAuth refresh failed: status=%s", exc.code)
             raise CredentialRefreshError(
                 f"OpenAI Codex token refresh failed with status {exc.code}",
                 provider="openai",

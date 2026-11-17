@@ -498,11 +498,7 @@ def run_session_search_backfill(
         except Exception as exc:  # noqa: BLE001 - one account must not stop the pass
             db.rollback()
             summary.accounts_failed += 1
-            logger.error(
-                "Session search backfill failed for account %s",
-                account_id,
-                exc_info=True,
-            )
+            logger.error("Session search backfill failed for account %s", account_id)
             try:
                 crud_session_search_backfill_state.record_error(
                     db,
@@ -514,10 +510,8 @@ def run_session_search_backfill(
             except Exception:
                 db.rollback()
                 logger.error(
-                    "Session search backfill could not record the failure for "
-                    "account %s",
+                    "Session search backfill could not record the failure for account %s",
                     account_id,
-                    exc_info=True,
                 )
             continue
         if result is None:
@@ -605,7 +599,7 @@ class SessionSearchBackfillSweeper:
             try:
                 await asyncio.to_thread(self._sweep_once)
             except Exception:
-                logger.error("Error in session search backfill pass", exc_info=True)
+                logger.error("Error in session search backfill pass")
 
     @staticmethod
     def _sweep_once() -> None:

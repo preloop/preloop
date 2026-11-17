@@ -63,7 +63,7 @@ class TestSubmitOffLoop:
         logged = []
         monkeypatch.setattr(
             db_executor.logger,
-            "exception",
+            "error",
             lambda msg, *a, **k: logged.append(msg),
         )
         submit_off_loop(lambda: (_ for _ in ()).throw(ValueError("boom")))

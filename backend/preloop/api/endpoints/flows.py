@@ -2637,7 +2637,7 @@ async def get_flow_execution_logs(
 
             logger = logging.getLogger(__name__)
             logger.error(
-                f"Failed to fetch container logs for execution {execution_id}: {e}"
+                f"Failed to fetch container logs for execution {execution_id}: {type(e).__name__}"
             )
             # Fall back to database logs if container logs fail
         finally:
@@ -3005,7 +3005,9 @@ def get_flow_execution_metrics(
         import logging
 
         logger = logging.getLogger(__name__)
-        logger.error(f"Failed to calculate metrics for execution {execution_id}: {e}")
+        logger.error(
+            f"Failed to calculate metrics for execution {execution_id}: {type(e).__name__}"
+        )
         return {
             "tool_calls": 0,
             "api_requests": 0,
@@ -3134,7 +3136,7 @@ async def send_execution_command(
     try:
         nats_client = await get_nats_client()
     except Exception as e:
-        logger.error(f"Failed to get NATS client: {e}")
+        logger.error(f"Failed to get NATS client: {type(e).__name__}")
         nats_client = None
 
     # Verify execution exists and user has access
@@ -3171,7 +3173,7 @@ async def send_execution_command(
         )
         return {"status": "command_sent"}
     except Exception as e:
-        logger.error(f"Failed to send command via NATS: {e}")
+        logger.error(f"Failed to send command via NATS: {type(e).__name__}")
         raise HTTPException(status_code=500, detail=f"Failed to send command: {str(e)}")
 
 
@@ -4184,9 +4186,7 @@ def delete_flow(
         # A reference created after the check above, or one this endpoint
         # does not know about. Nothing was deleted; report it as a conflict.
         db.rollback()
-        logger.warning(
-            f"Flow {flow_id} delete hit a foreign key restriction", exc_info=True
-        )
+        logger.warning(f"Flow {flow_id} delete hit a foreign key restriction")
         raise HTTPException(
             status_code=409,
             detail=(
@@ -4473,9 +4473,7 @@ async def trigger_flow_via_webhook(
         # execution was created (a blind retry would duplicate it — though
         # commit-SHA dedup above also guards redelivery).
         logger.error(
-            f"Webhook trigger for flow {flow_id} created execution "
-            f"{e.execution_id} but dispatch failed: {e.original}",
-            exc_info=True,
+            f"Webhook trigger for flow {flow_id} created execution {e.execution_id} but dispatch failed: {type(e).__name__}"
         )
         body = _response_body(e.execution_id, e.execution_status, status="accepted")
         body["detail"] = (
@@ -4486,8 +4484,7 @@ async def trigger_flow_via_webhook(
         return JSONResponse(status_code=202, content=body)
     except Exception as e:
         logger.error(
-            f"Webhook trigger failed to create execution for flow {flow_id}: {e}",
-            exc_info=True,
+            f"Webhook trigger failed to create execution for flow {flow_id}: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=500,

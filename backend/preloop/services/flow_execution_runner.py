@@ -213,7 +213,8 @@ async def resume_existing_execution(
                 await close_client()
             except Exception as close_error:  # noqa: BLE001 - best-effort close
                 logger.warning(
-                    "Error during agent aclose after resume: %s", close_error
+                    "Error during agent aclose after resume: %s",
+                    type(close_error).__name__,
                 )
         cleanup = getattr(agent_executor, "cleanup", None)
         if callable(cleanup):
@@ -221,7 +222,8 @@ async def resume_existing_execution(
                 await cleanup()
             except Exception as cleanup_error:  # noqa: BLE001 - best-effort cleanup
                 logger.warning(
-                    "Error during agent cleanup after resume: %s", cleanup_error
+                    "Error during agent cleanup after resume: %s",
+                    type(cleanup_error).__name__,
                 )
 
 
@@ -248,8 +250,7 @@ async def _redispatch_after_interrupt(
         logger.error(
             "Failed to re-dispatch interrupted execution %s: %s",
             execution_id,
-            exc,
-            exc_info=True,
+            type(exc).__name__,
         )
 
 
@@ -376,7 +377,7 @@ async def claim_and_run_execution(
                 if flows_halted(db, flow_row.account_id):
                     return {"status": "halted", "execution_id": execution_id_str}
             except Exception:
-                logger.exception(
+                logger.error(
                     "Halt state unavailable for execution %s", execution_id_str
                 )
                 return {"status": "halt_lookup_error", "execution_id": execution_id_str}
@@ -438,8 +439,7 @@ async def claim_and_run_execution(
         logger.error(
             "claim_and_run_execution failed for %s: %s",
             execution_id_str,
-            exc,
-            exc_info=True,
+            type(exc).__name__,
         )
         raise
     finally:
@@ -453,7 +453,7 @@ async def claim_and_run_execution(
                 logger.warning(
                     "Failed to release claim for %s: %s",
                     execution_id_str,
-                    release_error,
+                    type(release_error).__name__,
                 )
             if interrupted:
                 await _redispatch_after_interrupt(
@@ -490,7 +490,7 @@ async def evacuate_owned_claims(*, worker_id: Optional[str] = None) -> int:
                 logger.warning(
                     "Evacuate: failed to release claim %s: %s",
                     execution_id,
-                    release_error,
+                    type(release_error).__name__,
                 )
                 continue
             await _redispatch_after_interrupt(

@@ -1495,7 +1495,7 @@ async def publish_platform_review(
         _fail(db, execution.id, error.reason, error.retryable)
     except Exception:
         # A posting failure never reaches the execution's status or result.
-        logger.exception("Platform review publication failed for %s", execution.id)
+        logger.error("Platform review publication failed for %s", execution.id)
         _fail(db, execution.id, "internal_error", True)
     return platform_review_projection(db, execution, flow=flow)
 
@@ -1525,7 +1525,7 @@ def _stop_retrying(db: Session, execution_id: Any, reason: str) -> None:
         )
     except Exception:
         db.rollback()
-        logger.exception("Could not close the publication retry of %s", execution_id)
+        logger.error("Could not close the publication retry of %s", execution_id)
 
 
 def _fail(db: Session, execution_id: Any, reason: str, retryable: bool) -> None:
@@ -1546,7 +1546,7 @@ def _fail(db: Session, execution_id: Any, reason: str, retryable: bool) -> None:
         )
     except Exception:
         db.rollback()
-        logger.exception("Could not record the publication failure of %s", execution_id)
+        logger.error("Could not record the publication failure of %s", execution_id)
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -1658,7 +1658,7 @@ async def sweep_platform_reviews(limit: int = 20) -> int:
                 attempted += 1
             except Exception:
                 session.rollback()
-                logger.exception("Platform review sweep failed for %s", execution_id)
+                logger.error("Platform review sweep failed for %s", execution_id)
     finally:
         session.close()
     return attempted

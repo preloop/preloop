@@ -186,5 +186,5 @@ async def create_tracker_client(
     except Exception as e:
         if raise_on_error:
             raise
-        logger.exception(f"Failed to create tracker client: {e}")
+        logger.error(f"Failed to create tracker client: {type(e).__name__}")
         return None

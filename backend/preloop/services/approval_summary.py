@@ -219,7 +219,10 @@ async def generate_approval_summary(
             )
         )
     except Exception as exc:
-        logger.warning("Could not resolve default model for approval summary: %s", exc)
+        logger.warning(
+            "Could not resolve default model for approval summary: %s",
+            type(exc).__name__,
+        )
         return None
 
     if model is None:
@@ -267,8 +270,7 @@ async def generate_approval_summary(
         logger.warning(
             "Approval summary generation failed for tool %s: %s",
             tool_name,
-            exc,
-            exc_info=True,
+            type(exc).__name__,
         )
         return None
 

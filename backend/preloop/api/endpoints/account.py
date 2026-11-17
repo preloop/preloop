@@ -1833,7 +1833,7 @@ async def extract_agent_name(
     try:
         name = await asyncio.to_thread(_call)
     except Exception as exc:
-        logger.warning(f"Failed to extract agent name via LLM: {exc}")
+        logger.warning(f"Failed to extract agent name via LLM: {type(exc).__name__}")
         name = "Unknown Agent"
 
     # Remove any markdown wrapping if the LLM added it
@@ -2742,9 +2742,7 @@ def _link_discovery_candidates(
         db.commit()
     except Exception:
         db.rollback()
-        logger.warning(
-            "Linking discovery candidates failed for agent %s", agent_id, exc_info=True
-        )
+        logger.warning("Linking discovery candidates failed for agent %s", agent_id)
         return
     if linked:
         evaluate_fleet_findings(db, account_id=account.id)
@@ -3632,7 +3630,7 @@ def get_account_session_artifact(
     try:
         content = crud_runtime_session_artifact.decrypt(artifact)
     except ValueError:
-        logger.exception("Could not decrypt session artifact %s", artifact.id)
+        logger.error("Could not decrypt session artifact %s", artifact.id)
         raise HTTPException(
             status_code=500, detail="Artifact could not be read"
         ) from None
@@ -4280,7 +4278,7 @@ async def request_account_deletion(
         return {"status": "success", "message": "Deletion request received"}
     except Exception as e:
         logger.error(
-            f"Failed to send account deletion notification: {e}", exc_info=True
+            f"Failed to send account deletion notification: {type(e).__name__}"
         )
         raise HTTPException(
             status_code=500, detail="Failed to process deletion request"
@@ -4527,7 +4525,7 @@ async def _list_extension_attention_items(
                 items[(item.source, item.id)] = item
         except Exception:
             await run_db_off_loop(db.rollback)
-            logger.exception("Delivery report attention source failed")
+            logger.error("Delivery report attention source failed")
     for plugin_name, source in sources:
         if not await run_db_off_loop(
             lambda permission=source.permission: permitted(permission)
@@ -4545,7 +4543,7 @@ async def _list_extension_attention_items(
                 items.setdefault((namespace, item.id), item)
         except Exception:
             await run_db_off_loop(db.rollback)
-            logger.exception("Attention source failed: %s:%s", plugin_name, source.id)
+            logger.error("Attention source failed: %s:%s", plugin_name, source.id)
     return sorted(
         items.values(),
         key=lambda item: (item.opened_at, item.source, item.id),

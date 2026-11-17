@@ -155,10 +155,9 @@ def _record_create_failure(
 ) -> None:
     """Keep the first create failure on the provider result; keep syncing."""
     logger.warning(
-        "Catalog sync could not create model %s for provider %s: %s",
+        "Catalog sync could not create model: identifier=%s provider=%s",
         identifier,
         result.provider,
-        note,
     )
     if result.error is None:
         result.error = "create"
@@ -487,9 +486,8 @@ async def sync_all_account_model_catalogs(db: Session) -> dict[str, int]:
                     actor=CatalogSyncActor.system(account.id),
                 )
             except Exception:
-                logger.exception(
-                    "Scheduled model catalog sync failed for account %s",
-                    account.id,
+                logger.error(
+                    "Scheduled model catalog sync failed for account %s", account.id
                 )
                 continue
             total = sum(len(result.added) for result in summary.providers)

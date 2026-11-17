@@ -164,9 +164,8 @@ class SessionEmbeddingQueue:
             db = next(get_db_session())
         except Exception:  # noqa: BLE001 - a dead pool must not kill the worker
             self.failed += 1
-            logger.exception(
-                "Session embedding could not open a session for account %s",
-                account_id,
+            logger.error(
+                "Session embedding could not open a session for account %s", account_id
             )
             return None
         try:
@@ -178,9 +177,7 @@ class SessionEmbeddingQueue:
             db.rollback()
             # The message carries the account id and nothing else: the chunks
             # are customer session content.
-            logger.exception(
-                "Session embedding batch failed for account %s", account_id
-            )
+            logger.error("Session embedding batch failed for account %s", account_id)
             return None
         finally:
             db.close()
@@ -218,9 +215,5 @@ def submit_account_for_embedding(account_id: Any) -> bool:
     try:
         return get_session_embedding_queue().submit(account_id)
     except Exception:  # noqa: BLE001 - indexing never fails over embedding
-        logger.warning(
-            "Session embedding submission failed for account %s",
-            account_id,
-            exc_info=True,
-        )
+        logger.warning("Session embedding submission failed for account %s", account_id)
         return False

@@ -162,7 +162,7 @@ class APNsService:
                 status_code = response.status_code
 
                 if status_code == 200:
-                    logger.info(f"APNs notification sent to {device_token[:10]}...")
+                    logger.info("APNs notification sent")
                     return True, status_code, None
 
                 # Parse error response
@@ -174,13 +174,10 @@ class APNsService:
                     # APNs error body may be non-JSON; status code is still logged.
                     pass
 
-                logger.warning(
-                    f"APNs failed: {status_code} {error_reason} "
-                    f"for token {device_token[:10]}..."
-                )
+                logger.warning("APNs notification failed: status=%s", status_code)
 
                 return False, status_code, error_reason
 
             except Exception as e:
-                logger.error(f"APNs exception: {e}")
+                logger.error(f"APNs exception: {type(e).__name__}")
                 return False, 0, str(e)

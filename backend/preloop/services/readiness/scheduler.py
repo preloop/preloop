@@ -162,7 +162,7 @@ class ReadinessSweeper:
                     retry = True
                 except Exception:
                     retry = True
-                    logger.warning("Readiness observation unavailable", exc_info=True)
+                    logger.warning("Readiness observation unavailable")
                 await asyncio.to_thread(
                     _transaction,
                     lambda db, job_id=job_id, token=token, closed=closed, retry=retry: (
@@ -179,7 +179,7 @@ class ReadinessSweeper:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.warning("Readiness sweep unavailable", exc_info=True)
+                logger.warning("Readiness sweep unavailable")
                 await asyncio.sleep(30)
 
 

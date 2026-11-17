@@ -111,7 +111,7 @@ def get_apns_service(environment: Optional[str] = None) -> Optional[APNsService]
             auth_key_path=auth_key_path,
         )
     except Exception as e:
-        logger.error(f"Failed to initialize APNs service: {e}")
+        logger.error(f"Failed to initialize APNs service: {type(e).__name__}")
         return None
     _apns_services[env] = service
     logger.info("APNs service initialized (environment=%s)", env)

@@ -65,6 +65,13 @@ Each rule has `detector_timeout_ms` (default 500) and
 notify-only rules are skipped. Setting the timeout mode to `allow` permits that
 rule to be skipped, so review it deliberately.
 
+Application logs at INFO and above contain operational metadata such as
+identifiers, argument key names, sizes, status codes, and exception classes;
+they do not contain tool argument or result values, model content, approval
+comments, header values, or tokens. Rule evaluation details are logged at DEBUG
+using rule metadata and sorted argument keys. This is independent of sensitive-data
+redaction and reference-only settings; audit storage follows the policies below.
+
 ## What is stored
 
 The following applies to **new records** covered by the configured scope.

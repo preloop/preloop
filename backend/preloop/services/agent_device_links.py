@@ -34,7 +34,7 @@ def agent_device_links(
     except Exception:
         # This optional extension must not take down the agent's primary read,
         # including when a plugin returns a response from an incompatible schema.
-        logger.exception("Failed to load optional device links for agent %s", agent_id)
+        logger.error("Failed to load optional device links for agent %s", agent_id)
         return []
 
 

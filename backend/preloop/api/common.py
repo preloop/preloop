@@ -308,12 +308,14 @@ async def get_tracker_client(
 
         return tracker_client
     except ValueError as ve:  # Catch config errors from factory
-        logger.error(f"Configuration error creating tracker client: {ve}")
+        logger.error(
+            f"Configuration error creating tracker client: {type(ve).__name__}"
+        )
         raise HTTPException(
             status_code=500, detail=f"Configuration error for tracker: {str(ve)}"
         )
     except Exception as e:
-        logger.error(f"Error creating tracker client: {e}", exc_info=True)
+        logger.error(f"Error creating tracker client: {type(e).__name__}")
         raise HTTPException(
             status_code=500, detail=f"Error creating tracker client: {str(e)}"
         )
@@ -331,7 +333,7 @@ def get_compliance_prompts_from_config(
         with open(config_path, "r") as f:
             config_data = yaml.safe_load(f)
     except yaml.YAMLError as e:
-        logger.error(f"Error parsing YAML file {config_path}: {e}")
+        logger.error(f"Error parsing YAML file {config_path}: {type(e).__name__}")
         return []
 
     compliance_section = config_data.get("compliance", {})
@@ -361,7 +363,7 @@ def load_compliance_prompts_config(config_path: str) -> Dict[str, Any]:
         with open(config_path, "r") as f:
             config_data = yaml.safe_load(f)
     except yaml.YAMLError as e:
-        logger.error(f"Error parsing YAML file {config_path}: {e}")
+        logger.error(f"Error parsing YAML file {config_path}: {type(e).__name__}")
         return {}
 
     return config_data.get("compliance", {})
@@ -377,7 +379,7 @@ def load_dependencies_prompts_config(config_path: str) -> Dict[str, Any]:
         with open(config_path, "r") as f:
             config_data = yaml.safe_load(f)
     except yaml.YAMLError as e:
-        logger.error(f"Error parsing YAML file {config_path}: {e}")
+        logger.error(f"Error parsing YAML file {config_path}: {type(e).__name__}")
         return {}
 
     return config_data.get("dependencies", {})
@@ -393,7 +395,7 @@ def load_duplicates_prompts_config(config_path: str) -> Dict[str, Any]:
         with open(config_path, "r") as f:
             config_data = yaml.safe_load(f)
     except yaml.YAMLError as e:
-        logger.error(f"Error parsing YAML file {config_path}: {e}")
+        logger.error(f"Error parsing YAML file {config_path}: {type(e).__name__}")
         return {}
 
     return config_data.get("duplicates", {})

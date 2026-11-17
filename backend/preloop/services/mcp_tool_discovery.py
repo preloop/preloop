@@ -75,7 +75,7 @@ async def scan_mcp_server_tools(
     if not mcp_server:
         raise ValueError(f"MCP server not found: {mcp_server_id}")
 
-    logger.info(f"Scanning MCP server: {mcp_server.name} ({mcp_server.url})")
+    logger.info("Scanning MCP server: id=%s", mcp_server_id)
 
     try:
         # Get client from pool

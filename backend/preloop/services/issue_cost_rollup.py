@@ -1443,9 +1443,7 @@ def _savepoint(db: Session, label: str, operation: Any) -> None:
         with db.begin_nested():
             operation()
     except Exception:
-        logger.warning(
-            "Issue cost rollup %s failed; rebuild recovers it", label, exc_info=True
-        )
+        logger.warning("Issue cost rollup %s failed; rebuild recovers it", label)
 
 
 def record_execution_finished_safely(db: Session, execution_id: Any) -> None:
@@ -1469,7 +1467,7 @@ def record_execution_finished_safely(db: Session, execution_id: Any) -> None:
     try:
         db.commit()
     except Exception:
-        logger.warning("Could not commit the issue cost rollup", exc_info=True)
+        logger.warning("Could not commit the issue cost rollup")
         db.rollback()
 
 
@@ -1498,7 +1496,7 @@ def record_publication_safely(
     try:
         db.commit()
     except Exception:
-        logger.warning("Could not commit the issue cost rollup", exc_info=True)
+        logger.warning("Could not commit the issue cost rollup")
         db.rollback()
 
 
@@ -1532,7 +1530,7 @@ def record_pull_request_event_safely(db: Session, event_data: dict[str, Any]) ->
             try:
                 db.commit()
             except Exception:
-                logger.warning("Could not commit the issue cost rollup", exc_info=True)
+                logger.warning("Could not commit the issue cost rollup")
                 db.rollback()
         return
     if settings.ticket_readiness_enabled:
@@ -1559,7 +1557,7 @@ def record_pull_request_event_safely(db: Session, event_data: dict[str, Any]) ->
     try:
         db.commit()
     except Exception:
-        logger.warning("Could not commit the issue cost rollup", exc_info=True)
+        logger.warning("Could not commit the issue cost rollup")
         db.rollback()
 
 
@@ -1622,11 +1620,7 @@ def rebuild(
                     recorded += 1
         except Exception:
             failed += 1
-            logger.warning(
-                "Issue cost rebuild skipped execution %s",
-                execution_id,
-                exc_info=True,
-            )
+            logger.warning("Issue cost rebuild skipped execution %s", execution_id)
     return len(executions), recorded, failed
 
 
@@ -1749,9 +1743,7 @@ def _scheduled_rebuild(
             db.commit()
         except Exception:
             logger.warning(
-                "Scheduled issue cost rebuild failed for account %s",
-                account_id,
-                exc_info=True,
+                "Scheduled issue cost rebuild failed for account %s", account_id
             )
             db.rollback()
             summary.accounts_failed += 1
@@ -1773,11 +1765,7 @@ def _scheduled_rebuild(
                 if observe_estimate(db, rollup=rollup):
                     summary.estimates_changed += 1
         except Exception:
-            logger.warning(
-                "Could not refresh the estimate of issue row %s",
-                rollup_id,
-                exc_info=True,
-            )
+            logger.warning("Could not refresh the estimate of issue row %s", rollup_id)
     db.commit()
     if (
         summary.recorded

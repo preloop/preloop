@@ -318,7 +318,7 @@ def _current_agent_session_id(identity: PermissionIdentity) -> Optional[UUID]:
                 return None
             return session.id
     except Exception:
-        logger.warning("Agent session lookup failed on permission check", exc_info=True)
+        logger.warning("Agent session lookup failed on permission check")
         return None
 
 
@@ -416,7 +416,7 @@ def _record_native_tool_call(
             timestamp = activity.timestamp.isoformat() if activity.timestamp else None
             activity_id = str(activity.id)
     except Exception:
-        logger.warning("Recording the native tool call failed", exc_info=True)
+        logger.warning("Recording the native tool call failed")
         return
     emit_account_event(
         build_account_event(
@@ -525,7 +525,7 @@ def _record_session_cwd(
             ).update({models.RuntimeSession.cwd: value}, synchronize_session=False)
             db.commit()
     except Exception:
-        logger.warning("Recording the session cwd failed", exc_info=True)
+        logger.warning("Recording the session cwd failed")
 
 
 def _claim_operator_note(
@@ -580,9 +580,7 @@ def _claim_operator_note(
                     # on close.
                     notes.append(operator_notes.render_notes_block(claimed))
         except Exception:
-            logger.warning(
-                "Operator note claim failed on permission check", exc_info=True
-            )
+            logger.warning("Operator note claim failed on permission check")
     return "\n".join(notes) if notes else None
 
 
@@ -996,7 +994,7 @@ def _approval_decided_by(
                 return getattr(user, "username", None) if user else None
             return None
     except Exception:
-        logger.warning("Could not resolve the approval decider", exc_info=True)
+        logger.warning("Could not resolve the approval decider")
         return None
 
 
@@ -1105,7 +1103,7 @@ def _flow_approval_grant(
                 cwd=payload.cwd,
             )
     except Exception:
-        logger.warning("Flow approval grant lookup failed", exc_info=True)
+        logger.warning("Flow approval grant lookup failed")
         return None
 
 
@@ -1205,7 +1203,7 @@ def _register_session_start(
                 # The prompt timestamp is analytics; registration already
                 # succeeded and the hook must not fail on it.
                 db.rollback()
-                logger.warning("Could not record the prompt event", exc_info=True)
+                logger.warning("Could not record the prompt event")
         return result
 
 
@@ -1387,5 +1385,5 @@ async def agent_session_event(
     try:
         await run_db_off_loop(lambda: _record_session_event(identity, payload))
     except Exception:
-        logger.warning("Could not record the session event", exc_info=True)
+        logger.warning("Could not record the session event")
     return Response(status_code=status.HTTP_204_NO_CONTENT)

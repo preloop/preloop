@@ -3788,7 +3788,7 @@ class TestPlaywrightBrowserStepDerivation:
         mocks["log_browser_step"].side_effect = RuntimeError("database is away")
         log_exception = MagicMock()
         monkeypatch.setattr(
-            "preloop.services.dynamic_fastmcp.logger.exception", log_exception
+            "preloop.services.dynamic_fastmcp.logger.error", log_exception
         )
 
         result = await dynamic_mcp.call_tool(

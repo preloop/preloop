@@ -213,7 +213,7 @@ def sync_anthropic_usage(
     try:
         ack = from_thread.run(publish)
     except Exception as exc:
-        logger.exception("Failed to queue Anthropic usage import")
+        logger.error("Failed to queue Anthropic usage import")
         raise HTTPException(
             status_code=503, detail="Could not queue the Anthropic import"
         ) from exc

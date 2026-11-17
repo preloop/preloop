@@ -594,7 +594,7 @@ async def register_tracker(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error parsing request data: {str(e)}")
+        logger.error(f"Error parsing request data: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid request format: {str(e)}",
@@ -676,8 +676,8 @@ async def register_tracker(
                     try:
                         db.rollback()
                     except SQLAlchemyError:
-                        logger.exception("Failed to roll back installation lookup")
-                    logger.exception(
+                        logger.error("Failed to roll back installation lookup")
+                    logger.error(
                         "Failed to look up the GitHub App installation for account %s",
                         installation_account_id,
                     )
@@ -803,7 +803,7 @@ async def register_tracker(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error testing tracker connection: {str(e)}")
+        logger.error(f"Error testing tracker connection: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to connect to tracker: {str(e)}",
@@ -992,7 +992,7 @@ async def register_tracker(
                 constraint_info = (
                     "A duplicate entry exists (e.g., identifier conflict)."
                 )
-        logger.error(f"IntegrityError during tracker registration: {error_msg}")
+        logger.error("IntegrityError during tracker registration")
         detail_msg = f"Database constraint violation: {constraint_info or error_msg}"
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1000,8 +1000,8 @@ async def register_tracker(
         )
     except Exception as e:
         db.rollback()
-        logger.exception(
-            f"Error registering tracker: {str(e)}"
+        logger.error(
+            f"Error registering tracker: {type(e).__name__}"
         )  # Use logger.exception for stack trace
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1325,14 +1325,16 @@ async def update_tracker(
         return tracker
     except IntegrityError as e:
         db.rollback()
-        logger.error(f"IntegrityError updating tracker {tracker_id}: {e}")
+        logger.error(
+            f"IntegrityError updating tracker {tracker_id}: {type(e).__name__}"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Update failed due to database constraint.",
         )
     except Exception as e:
         db.rollback()
-        logger.exception(f"Error updating tracker {tracker_id}: {e}")
+        logger.error(f"Error updating tracker {tracker_id}: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error updating tracker.",
@@ -1440,8 +1442,8 @@ async def delete_tracker(
         return {"message": message}
     except Exception as e:
         db.rollback()
-        logger.exception(
-            f"Error during tracker deletion (ID: {tracker_id}): {e}"
+        logger.error(
+            f"Error during tracker deletion (ID: {tracker_id}): {type(e).__name__}"
         )  # Use logger.exception for stack trace
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1514,7 +1516,7 @@ async def test_connection_and_list_orgs(
         connection_result = await client.test_connection()
         if not connection_result.connected:
             logger.warning(
-                f"Connection test failed for user {current_user.username}: {connection_result.message}"
+                "Tracker connection test failed: user_id=%s", current_user.id
             )
             return TrackerTestResponse(
                 success=False, message=connection_result.message, orgs=[]
@@ -1574,8 +1576,8 @@ async def test_connection_and_list_orgs(
             message = "Could not connect to the tracker. Check the URL and try again."
         return TrackerTestResponse(success=False, message=message, orgs=[])
     except Exception as e:
-        logger.exception(
-            f"Error during tracker org list for user {current_user.username}: {e}"
+        logger.error(
+            f"Error during tracker org list for user {current_user.username}: {type(e).__name__}"
         )
         return TrackerTestResponse(
             success=False, message=f"An unexpected error occurred: {e}", orgs=[]
@@ -1652,7 +1654,9 @@ async def list_projects_for_org(
         raise
     except Exception as e:
         # Only the provider round trip maps to a gateway failure.
-        logger.exception(f"Error listing projects for org for user {username}: {e}")
+        logger.error(
+            f"Error listing projects for org for user {username}: {type(e).__name__}"
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"The tracker could not list projects: {_first_line(e)}",

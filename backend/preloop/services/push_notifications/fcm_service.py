@@ -286,7 +286,9 @@ def _initialize_fcm_unlocked() -> bool:
                 )
                 return True
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse FCM_CREDENTIALS_JSON: {e}")
+                logger.error(
+                    f"Failed to parse FCM_CREDENTIALS_JSON: {type(e).__name__}"
+                )
 
         # Fallback to file path
         creds_path = os.getenv("FCM_CREDENTIALS_PATH")
@@ -313,7 +315,7 @@ def _initialize_fcm_unlocked() -> bool:
         logger.warning("firebase-admin package not installed")
         return False
     except Exception as e:
-        logger.error(f"Failed to initialize FCM: {e}")
+        logger.error(f"Failed to initialize FCM: {type(e).__name__}")
         return False
 
 
@@ -336,16 +338,6 @@ def get_fcm_project_id() -> Optional[str]:
     return _fcm_project_id
 
 
-def _mask_token(token: str) -> str:
-    """Return a short, non-sensitive identifier for a device token."""
-    cleaned = (token or "").strip()
-    if not cleaned:
-        return "<blank>"
-    if len(cleaned) <= 12:
-        return cleaned
-    return f"{cleaned[:8]}...{cleaned[-4:]}"
-
-
 def _send_fcm_sync(
     token: str,
     title: str,
@@ -358,15 +350,7 @@ def _send_fcm_sync(
 
     # Reject structurally impossible tokens before spending a network call.
     if not looks_like_fcm_token(token):
-        logger.warning(
-            "Refusing FCM send: stored token is not an FCM registration token "
-            "(token=%s, length=%d, reason=%s). It was never usable — most "
-            "likely an app-side placeholder or an APNs token stored under "
-            "platform='android'.",
-            _mask_token(token),
-            len(token),
-            FCM_REASON_MALFORMED_TOKEN,
-        )
+        logger.warning("Refusing FCM send: invalid token length=%s", len(token))
         return {
             "success": False,
             "error": (
@@ -416,7 +400,7 @@ def _send_fcm_sync(
 
         # Send message (blocking HTTP call)
         response = messaging.send(message)
-        logger.info(f"FCM notification sent: {response}")
+        logger.info("FCM notification sent")
 
         return {
             "success": True,
@@ -429,15 +413,10 @@ def _send_fcm_sync(
         classification = classify_fcm_error(e)
 
         logger.error(
-            "FCM send failed: reason=%s token=%s project_id=%s prune=%s "
-            "retryable=%s error=%s | %s",
+            "FCM send failed: reason=%s prune=%s retryable=%s",
             classification.reason,
-            _mask_token(token),
-            _fcm_project_id,
             classification.should_prune,
             classification.retryable,
-            error_str,
-            classification.remediation,
         )
 
         return {

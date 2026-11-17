@@ -1129,7 +1129,7 @@ class SecurityMaintenanceService:
                 try:
                     await self.reconcile_item(item.id)
                 except Exception:
-                    logger.exception(
+                    logger.error(
                         "Security-maintenance reconcile failed for item %s", item.id
                     )
             baseline_after = (
@@ -1157,7 +1157,7 @@ class SecurityMaintenanceService:
                         release.id, UUID(str(audit["execution_id"]))
                     )
                 except Exception:
-                    logger.exception(
+                    logger.error(
                         "Security-maintenance baseline dispatch failed for release %s",
                         release.id,
                     )
@@ -1770,7 +1770,7 @@ class SecurityMaintenanceService:
             logger.warning(
                 "Security-maintenance approval %s created without notify: %s",
                 created.id,
-                exc,
+                type(exc).__name__,
             )
         async with crud_security_maintenance.locked(
             self.db, self.account_id, f"item:{item_id}"

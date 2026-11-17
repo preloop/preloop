@@ -151,7 +151,7 @@ class ExecutionRecoveryService:
         try:
             nats_client = await get_nats_client()
         except Exception as e:
-            logger.error(f"Failed to connect to NATS for recovery: {e}")
+            logger.error(f"Failed to connect to NATS for recovery: {type(e).__name__}")
             nats_client = None
 
         recovered_count = 0
@@ -161,8 +161,7 @@ class ExecutionRecoveryService:
                 recovered_count += 1
             except Exception as e:
                 logger.error(
-                    f"Failed to recover execution {execution.id}: {e}",
-                    exc_info=True,
+                    f"Failed to recover execution {execution.id}: {type(e).__name__}"
                 )
 
         logger.info(
@@ -189,7 +188,7 @@ class ExecutionRecoveryService:
         except Exception as exc:  # noqa: BLE001 - a probe never fails a pass
             logger.warning(
                 "Worker-pool capacity probe failed (%s); running the pass anyway",
-                _exception_message(exc),
+                type(exc).__name__,
             )
             return None
         return None if answer is None else bool(answer)
@@ -369,8 +368,7 @@ class ExecutionRecoveryService:
                 logger.error(
                     "Failed to re-dispatch execution %s: %s",
                     execution.id,
-                    e,
-                    exc_info=True,
+                    type(e).__name__,
                 )
                 return False
 
@@ -508,8 +506,7 @@ class ExecutionRecoveryService:
         except Exception as check_error:
             check_error_message = _exception_message(check_error)
             logger.warning(
-                f"Error checking container status for {execution.id}: {check_error_message}. "
-                "Marking as FAILED to avoid hanging."
+                f"Error checking container status for {execution.id}: {type(check_error).__name__}. Marking as FAILED to avoid hanging."
             )
             update_data = FlowExecutionUpdate(
                 status="FAILED",
@@ -579,8 +576,7 @@ class ExecutionRecoveryService:
         except Exception as e:
             error_message = _exception_message(e)
             logger.error(
-                f"Error in resumed monitoring task for {session_reference}: {error_message}",
-                exc_info=True,
+                f"Error in resumed monitoring task for {session_reference}: {type(e).__name__}"
             )
             # Mark as failed - need a fresh session since the one above was closed
             failure_db = None
@@ -617,7 +613,9 @@ class ExecutionRecoveryService:
                 failure_db.commit()
                 _retire_runtime_credentials(failure_db, execution_log)
             except Exception as update_error:
-                logger.error(f"Failed to mark execution as failed: {update_error}")
+                logger.error(
+                    f"Failed to mark execution as failed: {type(update_error).__name__}"
+                )
             finally:
                 if failure_db is not None:
                     failure_db.close()

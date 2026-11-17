@@ -494,7 +494,9 @@ class JwksCache:
             if now - entry.last_warning >= WARN_INTERVAL_SECONDS:
                 entry.last_warning = now
                 logger.warning(
-                    "Gateway IdP issuer unavailable (issuer=%s): %s", issuer, exc.detail
+                    "Gateway IdP issuer unavailable (issuer=%s): %s",
+                    issuer,
+                    type(exc).__name__,
                 )
             raise
         entry.keys = keys
@@ -877,7 +879,7 @@ async def authenticate_idp_bearer(
         raise
     except Exception:
         # Fail closed: a matched issuer never falls through to key auth.
-        logger.exception(
+        logger.error(
             "Gateway IdP validation error (fp=%s issuer=%s)",
             _token_log_fingerprint(token),
             _issuer_log_label(issuer),
@@ -1019,7 +1021,7 @@ def _audit_first_seen(
         )
     except Exception:
         session.rollback()
-        logger.warning("Failed to audit first IdP subject sighting", exc_info=True)
+        logger.warning("Failed to audit first IdP subject sighting")
 
 
 # --- Admin test ------------------------------------------------------------

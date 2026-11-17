@@ -358,7 +358,6 @@ def enqueue_event(
             "Failed to enqueue webhook event %s for subject %s",
             event_type,
             subject_id,
-            exc_info=True,
             extra={
                 "webhook_event_type": event_type,
                 "webhook_subject_id": str(subject_id) if subject_id else None,
@@ -429,7 +428,7 @@ def enqueue_raw_delivery(
         )
         return result
     except Exception:  # noqa: BLE001 - shim emit must never break approvals
-        logger.warning("Failed to enqueue legacy approval webhook", exc_info=True)
+        logger.warning("Failed to enqueue legacy approval webhook")
         return result
 
 
@@ -767,7 +766,7 @@ async def enqueue_event_async(
             result.delivery_ids = [row[0] for row in inserted.fetchall()]
         return result
     except Exception:  # noqa: BLE001 - emitting must never break the caller
-        logger.warning("Failed to enqueue webhook event %s", event_type, exc_info=True)
+        logger.warning("Failed to enqueue webhook event %s", event_type)
         return result
 
 
@@ -818,7 +817,7 @@ async def enqueue_raw_delivery_async(
         result.delivery_ids = [item[0] for item in inserted.fetchall()]
         return result
     except Exception:  # noqa: BLE001 - shim emit must never break approvals
-        logger.warning("Failed to enqueue legacy approval webhook", exc_info=True)
+        logger.warning("Failed to enqueue legacy approval webhook")
         return result
 
 
@@ -867,7 +866,7 @@ def enqueue_event_detached(
         )
         session.commit()
     except Exception:  # noqa: BLE001 - emitting must never break the caller
-        logger.warning("Detached webhook emit failed for %s", event_type, exc_info=True)
+        logger.warning("Detached webhook emit failed for %s", event_type)
         session.rollback()
     finally:
         session.close()

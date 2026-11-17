@@ -210,7 +210,7 @@ def parse_model_io_rules(raw: Any) -> List[ModelIORule]:
         try:
             rules.append(ModelIORule.model_validate(item))
         except Exception as exc:
-            logger.warning("Skipping invalid model I/O rule: %s", exc)
+            logger.warning("Skipping invalid model I/O rule: %s", type(exc).__name__)
     return rules
 
 
@@ -725,7 +725,7 @@ def _emit_notices(
             if outbox_enabled():
                 stamped = replace(stamped, audit_fields=fields)
         except Exception:  # noqa: BLE001 - notify must never fail the call
-            logger.warning("Policy notice audit failed", exc_info=True)
+            logger.warning("Policy notice audit failed")
         schedule_policy_notice(stamped)
 
 
@@ -837,7 +837,11 @@ def evaluate_model_io(
                     bindings,
                 )
             except Exception as exc:
-                logger.error("Model I/O condition error rule_id=%s: %s", rule.id, exc)
+                logger.error(
+                    "Model I/O condition error rule_id=%s: %s",
+                    rule.id,
+                    type(exc).__name__,
+                )
                 if action == NOTIFY_ACTION:
                     # A broken notify condition must not block the call.
                     continue
@@ -994,7 +998,7 @@ def _audit_redaction(
         else:
             _log_policy_decision_async(**fields)
     except Exception:  # noqa: BLE001 - audit must not change the decision
-        logger.warning("Redaction audit failed", exc_info=True)
+        logger.warning("Redaction audit failed")
 
 
 def redact_request_upstream(
@@ -1098,7 +1102,7 @@ def _record_blocking_hit(
     try:
         event_id = _audit_decision(account_id, user_id, target, decision, rule)
     except Exception:  # noqa: BLE001 - audit must not change the decision
-        logger.warning("Policy decision audit failed", exc_info=True)
+        logger.warning("Policy decision audit failed")
     account_uuid = _uuid_or_none(account_id)
     if account_uuid is None:
         return
@@ -1707,7 +1711,7 @@ def _notify_only_stream(
                     ),
                 )
         except Exception:  # noqa: BLE001 - notify must never fail the call
-            logger.warning("Notify-only response evaluation failed", exc_info=True)
+            logger.warning("Notify-only response evaluation failed")
 
 
 def wrap_stream_for_response_policy(

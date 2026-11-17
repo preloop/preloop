@@ -275,9 +275,7 @@ def _intake_from_delivery(
     except (IssuePayloadError, KeyError, TypeError, ValueError, SQLAlchemyError):
         db.rollback()
         logger.warning(
-            "Could not store delivered issue %s for triage",
-            subject.get("id"),
-            exc_info=True,
+            "Could not store delivered issue %s for triage", subject.get("id")
         )
         return False
     return True

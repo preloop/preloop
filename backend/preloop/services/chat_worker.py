@@ -444,7 +444,7 @@ async def run() -> None:
                 if not worked:
                     await asyncio.sleep(2)
             except Exception:
-                logger.exception("Chat worker failed; durable state retained")
+                logger.error("Chat worker failed; durable state retained")
                 await asyncio.sleep(5)
 
 

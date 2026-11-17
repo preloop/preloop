@@ -56,8 +56,7 @@ async def publish_flow_schedule_tick(flow_id: str, schedule_key: str = "") -> No
             logger.error(f"Failed to publish scheduled tick for flow {flow_id}.")
     except Exception as e:
         logger.error(
-            f"Exception while publishing scheduled tick for flow {flow_id}: {e}",
-            exc_info=True,
+            f"Exception while publishing scheduled tick for flow {flow_id}: {type(e).__name__}"
         )
 
 
@@ -82,7 +81,9 @@ def sync_flow_schedule_jobs(scheduler: AsyncIOScheduler) -> None:
                 trigger = config.build_trigger()
             except Exception as e:
                 logger.error(
-                    f"Flow {flow.id} has invalid schedule_config ({raw_config!r}): {e}"
+                    "Invalid schedule config: flow_id=%s error_type=%s",
+                    flow.id,
+                    type(e).__name__,
                 )
                 continue
             desired[str(flow.id)] = (
@@ -130,6 +131,6 @@ def sync_flow_schedule_jobs(scheduler: AsyncIOScheduler) -> None:
                 f"{flow_id}: {schedule_key}"
             )
     except Exception as e:
-        logger.error(f"Error during flow schedule synchronization: {e}", exc_info=True)
+        logger.error(f"Error during flow schedule synchronization: {type(e).__name__}")
     finally:
         db.close()

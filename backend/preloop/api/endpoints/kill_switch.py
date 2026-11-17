@@ -193,11 +193,10 @@ def activate_kill_switch(
         end_sessions_for_kill_switch(db, current_user.account_id)
 
     logger.warning(
-        "KILL SWITCH ACTIVATED: account=%s scopes=%s by=%s reason=%r",
+        "Kill switch activated: account_id=%s scopes=%s user_id=%s",
         current_user.account_id,
         scopes,
         current_user.id,
-        payload.reason,
     )
     return _status_response(db, current_user.account_id)
 

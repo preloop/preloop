@@ -132,7 +132,7 @@ def verify_chain(
         )
     except Exception:
         db.rollback()
-        logger.error("Failed to audit a chain verification", exc_info=True)
+        logger.error("Failed to audit a chain verification")
     return report
 
 
@@ -216,7 +216,7 @@ def rotate_signing_key(
         )
     except Exception as exc:
         db.rollback()
-        logger.error("Signing key rotation failed", exc_info=True)
+        logger.error("Signing key rotation failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="could not rotate the signing key",
@@ -238,7 +238,7 @@ def rotate_signing_key(
         )
     except Exception:
         db.rollback()
-        logger.error("Failed to audit a signing key rotation", exc_info=True)
+        logger.error("Failed to audit a signing key rotation")
     return {
         "retired": record_signing.public_key_summary(retired) if retired else None,
         "active": record_signing.public_key_summary(active),

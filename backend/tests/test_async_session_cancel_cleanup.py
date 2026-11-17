@@ -123,5 +123,7 @@ async def test_detached_cleanup_failure_is_retrieved_and_logged(
     session_module._pending_async_closes.add(cleanup)
     session_module._async_close_done(cleanup)
     assert cleanup not in session_module._pending_async_closes
-    logger.opt.assert_called_once_with(exception=failure)
-    logger.opt.return_value.error.assert_called_once()
+    logger.opt.assert_not_called()
+    logger.error.assert_called_once_with(
+        "Async database session cleanup failed: error_type={}", "RuntimeError"
+    )

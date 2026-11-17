@@ -202,9 +202,7 @@ def sync_execution_rollups(
             if sync_execution_cost_rollup(db, str(execution_id)):
                 synced += 1
         except Exception:  # noqa: BLE001 - a rollup miss must not fail repricing
-            logger.exception(
-                "Failed to sync cost rollup for execution %s", execution_id
-            )
+            logger.error("Failed to sync cost rollup for execution %s", execution_id)
     if synced:
         db.commit()
     return synced
@@ -347,7 +345,7 @@ def reprice_gateway_usage(
             account_id=account_id, start=start, end=end, progress=progress
         )
     except Exception:  # noqa: BLE001 - failed recovery must not prevent local repricing
-        logger.exception("Alibaba catalog preflight failed")
+        logger.error("Alibaba catalog preflight failed")
     if progress:
         progress()
     result = RepriceResult(dry_run=dry_run)
@@ -442,7 +440,7 @@ def reprice_gateway_usage(
                         ai_model, **estimate_kwargs
                     )
             except Exception:  # noqa: BLE001 - pricing must never break a backfill
-                logger.exception(
+                logger.error(
                     "Live price lookup failed while repricing model %s", model_id
                 )
 

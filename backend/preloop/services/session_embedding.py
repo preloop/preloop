@@ -459,7 +459,9 @@ def run_account_batch(
         active_provider = provider or build_provider(setting)
     except EmbeddingProviderError as exc:
         logger.warning(
-            "Session embedding misconfigured for account %s: %s", account, exc
+            "Session embedding misconfigured for account %s: %s",
+            account,
+            type(exc).__name__,
         )
         return _degrade(
             db, account_id=account, reason=DEGRADED_MISCONFIGURED, pending=pending
@@ -485,7 +487,9 @@ def run_account_batch(
         vectors = active_provider.embed(texts)
     except EmbeddingProviderError as exc:
         logger.warning(
-            "Session embedding provider failed for account %s: %s", account, exc
+            "Session embedding provider failed for account %s: %s",
+            account,
+            type(exc).__name__,
         )
         _release(db, claimed)
         return _degrade(
@@ -496,9 +500,8 @@ def run_account_batch(
             runtime_session_id=runtime_session_id,
         )
     except Exception:
-        logger.exception(
-            "Session embedding failed after claiming chunks for account %s",
-            account,
+        logger.error(
+            "Session embedding failed after claiming chunks for account %s", account
         )
         _release(db, claimed)
         return _degrade(
@@ -538,9 +541,8 @@ def run_account_batch(
             commit=True,
         )
     except Exception:
-        logger.exception(
-            "Session embedding could not store vectors for account %s",
-            account,
+        logger.error(
+            "Session embedding could not store vectors for account %s", account
         )
         _release(db, claimed)
         return _degrade(
@@ -604,7 +606,7 @@ def _release(db: Session, chunks: Sequence[SessionSearchDocument]) -> None:
         )
     except Exception:  # noqa: BLE001 - releasing must not raise over a failure
         db.rollback()
-        logger.warning("Session embedding could not release its claim", exc_info=True)
+        logger.warning("Session embedding could not release its claim")
 
 
 def _record_usage(
@@ -654,7 +656,5 @@ def _record_usage(
     except Exception:  # noqa: BLE001 - the vectors are written; the row is not
         db.rollback()
         logger.warning(
-            "Session embedding could not record usage for account %s",
-            account_id,
-            exc_info=True,
+            "Session embedding could not record usage for account %s", account_id
         )

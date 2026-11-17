@@ -192,9 +192,7 @@ def emit_gateway_usage(usage: Any) -> None:
         _record_duration_metric(attrs, float(getattr(usage, "duration", 0.0) or 0.0))
         _record_usage_metrics(attrs)
     except Exception:
-        logger.warning(
-            "OTLP gateway export failed; request is unchanged", exc_info=True
-        )
+        logger.warning("OTLP gateway export failed; request is unchanged")
 
 
 def emit_list_models(*, account_id: Optional[str] = None) -> None:
@@ -220,9 +218,7 @@ def emit_list_models(*, account_id: Optional[str] = None) -> None:
         span = tracer.start_span("list_models", kind=SpanKind.SERVER, attributes=attrs)
         span.end()
     except Exception:
-        logger.warning(
-            "OTLP list_models export failed; request is unchanged", exc_info=True
-        )
+        logger.warning("OTLP list_models export failed; request is unchanged")
 
 
 def emit_tool_call(
@@ -279,7 +275,7 @@ def emit_tool_call(
         span.end(end_time=end_ns)
         _record_duration_metric(attrs, duration_ms / 1000.0)
     except Exception:
-        logger.warning("OTLP tool export failed; request is unchanged", exc_info=True)
+        logger.warning("OTLP tool export failed; request is unchanged")
 
 
 def configure_for_tests(exporter: SpanExporter) -> None:
@@ -339,8 +335,7 @@ def _ensure_provider() -> Optional[TracerProvider]:
         except Exception:
             _state.init_failed = True
             logger.warning(
-                "OTLP exporter setup failed; export disabled for this process",
-                exc_info=True,
+                "OTLP exporter setup failed; export disabled for this process"
             )
             return None
 
@@ -450,10 +445,7 @@ def _init_metrics(
         except Exception:
             logger.debug("Global meter provider already set")
     except Exception:
-        logger.warning(
-            "OTLP metric exporter setup failed; traces still enabled",
-            exc_info=True,
-        )
+        logger.warning("OTLP metric exporter setup failed; traces still enabled")
 
 
 def _record_duration_metric(attrs: Mapping[str, Any], duration_s: float) -> None:

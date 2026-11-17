@@ -263,7 +263,7 @@ def _emit_updated(db: Session, *, account_id: UUID, session_ids: list[UUID]) -> 
                 )
             )
         except Exception:
-            logger.exception(
+            logger.error(
                 "Failed to emit runtime_session_updated for session %s",
                 runtime_session_id,
             )

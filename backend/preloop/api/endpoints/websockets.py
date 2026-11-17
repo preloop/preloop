@@ -121,7 +121,7 @@ async def _run_execution_command(
         try:
             nc = await get_nats_client()
         except Exception as e:
-            logger.error(f"Failed to get NATS client: {e}")
+            logger.error(f"Failed to get NATS client: {type(e).__name__}")
             nc = None
 
         payload = data.get("payload") or {}
@@ -164,11 +164,9 @@ async def _set_approval_visibility(connection_id: str, user: models.User) -> Non
         manager.approval_visibility[connection_id] = await run_db_async(check)
     except HTTPException as exc:
         if exc.status_code != 403:
-            logger.warning(
-                "Approval websocket authorization unavailable", exc_info=True
-            )
+            logger.warning("Approval websocket authorization unavailable")
     except Exception:
-        logger.warning("Approval websocket authorization failed", exc_info=True)
+        logger.warning("Approval websocket authorization failed")
 
 
 async def _set_presence_visibility(connection_id: str, user: models.User) -> None:
@@ -187,11 +185,9 @@ async def _set_presence_visibility(connection_id: str, user: models.User) -> Non
         manager.presence_visibility[connection_id] = await run_db_async(check)
     except HTTPException as exc:
         if exc.status_code != 403:
-            logger.warning(
-                "Presence websocket authorization unavailable", exc_info=True
-            )
+            logger.warning("Presence websocket authorization unavailable")
     except Exception:
-        logger.warning("Presence websocket authorization failed", exc_info=True)
+        logger.warning("Presence websocket authorization failed")
 
 
 async def _set_topic_visibility(connection_id: str, user: models.User) -> None:
@@ -298,25 +294,27 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
                     if response != "pong":
                         logger.warning(
-                            f"Session {session.id} expected pong, got: {response[:50]}"
+                            "Session %s expected pong: response_chars=%s",
+                            session.id,
+                            len(response),
                         )
                         break
                 except asyncio.TimeoutError:
-                    logger.info(
-                        f"Session {session.id} did not respond to ping, disconnecting"
+                    logger.warning(
+                        "Session did not respond to ping: session_id=%s", session.id
                     )
                     break  # Client did not respond to ping, assume disconnected.
     except WebSocketDisconnect:
         logger.info(f"Session {session.id} disconnected normally")
     except Exception as e:
-        logger.error(f"Error in WebSocket session {session.id}: {e}", exc_info=True)
+        logger.error(f"Error in WebSocket session {session.id}: {type(e).__name__}")
     finally:
         await manager.unwatch_user_connection(revocation_id)
         manager.disconnect(connection_id)
         try:
             await session_manager.end_session(session.id)
         except Exception as e:
-            logger.error(f"Error ending session {session.id}: {e}")
+            logger.error(f"Error ending session {session.id}: {type(e).__name__}")
 
 
 @router.websocket("/ws/flow-executions/{execution_id}")
@@ -430,7 +428,9 @@ async def flow_execution_websocket(
                         return
                     await websocket.send_json(data)
             except Exception as e:
-                logger.error(f"Error forwarding NATS message to WebSocket: {e}")
+                logger.error(
+                    f"Error forwarding NATS message to WebSocket: {type(e).__name__}"
+                )
 
         nats_sub = await event_bus.nc.subscribe(update_subject, cb=nats_message_handler)
         await event_bus.nc.flush()
@@ -478,7 +478,7 @@ async def flow_execution_websocket(
                 try:
                     result = await _run_execution_command(user, execution_id, data)
                 except Exception as e:
-                    logger.error(f"Failed to run execution command: {e}")
+                    logger.error(f"Failed to run execution command: {type(e).__name__}")
                     error = "failed"
                 if result is None:
                     await websocket.send_json(
@@ -506,13 +506,12 @@ async def flow_execution_websocket(
             except json.JSONDecodeError:
                 await websocket.send_json({"error": "Invalid JSON"})
             except Exception as e:
-                logger.error(f"Error processing WebSocket message: {e}", exc_info=True)
+                logger.error(f"Error processing WebSocket message: {type(e).__name__}")
                 await websocket.send_json({"error": f"Error processing message: {e}"})
 
     except Exception as e:
         logger.error(
-            f"Error in WebSocket connection for execution {execution_id}: {e}",
-            exc_info=True,
+            f"Error in WebSocket connection for execution {execution_id}: {type(e).__name__}"
         )
         await websocket.send_json({"error": f"Connection error: {e}"})
 
@@ -525,12 +524,12 @@ async def flow_execution_websocket(
             try:
                 await nats_sub.unsubscribe()
             except Exception as e:
-                logger.error(f"Error unsubscribing from NATS: {e}")
+                logger.error(f"Error unsubscribing from NATS: {type(e).__name__}")
 
         try:
             await event_bus.close()
         except Exception as e:
-            logger.error(f"Error closing NATS connection: {e}")
+            logger.error(f"Error closing NATS connection: {type(e).__name__}")
 
         try:
             await websocket.close()
@@ -769,7 +768,7 @@ async def unified_websocket(websocket: WebSocket):
             )
         except RuntimeError as e:
             logger.info(
-                f"Session {session.id} disconnected before handshake completed: {e}"
+                f"Session {session.id} disconnected before handshake completed: {type(e).__name__}"
             )
             return
 
@@ -787,8 +786,9 @@ async def unified_websocket(websocket: WebSocket):
                     # Log non-JSON messages with client info to identify problematic clients
                     user_agent = websocket.headers.get("user-agent", "unknown")
                     logger.warning(
-                        f"Received non-JSON message from session {session.id} "
-                        f"(User-Agent: {user_agent}): {text[:200]} - Error: {e}"
+                        "Received non-JSON message: session_id=%s chars=%s",
+                        session.id,
+                        len(text),
                     )
                     continue
 
@@ -880,7 +880,9 @@ async def unified_websocket(websocket: WebSocket):
                     try:
                         result = await _run_execution_command(user, execution_id, data)
                     except Exception as e:
-                        logger.error(f"Failed to run execution command: {e}")
+                        logger.error(
+                            f"Failed to run execution command: {type(e).__name__}"
+                        )
                         error = "failed"
                     if result is None:
                         await websocket.send_json(
@@ -983,21 +985,22 @@ async def unified_websocket(websocket: WebSocket):
                         pong = json.loads(pong_text)
                         if pong.get("type") != "pong":
                             logger.warning(
-                                f"Expected pong from session {session.id}, got: {pong}"
+                                "Expected pong: session_id=%s message_chars=%s",
+                                session.id,
+                                len(pong_text),
                             )
                             break
                     except json.JSONDecodeError:
                         # Non-JSON response to ping, treat as invalid
                         logger.warning(
-                            f"Session {session.id} sent non-JSON response to ping: {pong_text[:100]}"
+                            "Session %s sent non-JSON ping response: chars=%s",
+                            session.id,
+                            len(pong_text),
                         )
                         break
                 except asyncio.TimeoutError:
                     logger.warning(
-                        f"Session {session.id} did not respond to ping, disconnecting - "
-                        f"User: {session.display_name}, "
-                        f"IP: {client_ip}, "
-                        f"User-Agent: {user_agent[:100]}"
+                        "Session did not respond to ping: session_id=%s", session.id
                     )
                     break
 
@@ -1014,10 +1017,7 @@ async def unified_websocket(websocket: WebSocket):
             duration_str = "unknown"
         username = session.display_name
         logger.info(
-            f"Session {session.id} disconnected - "
-            f"User: {username}, "
-            f"Duration: {duration_str}, "
-            f"Reason: {e}"
+            f"Session {session.id} disconnected - User: {username}, Duration: {duration_str}, Reason: {type(e).__name__}"
         )
     except Exception as e:
         from sqlalchemy.exc import OperationalError
@@ -1025,19 +1025,15 @@ async def unified_websocket(websocket: WebSocket):
         username = session.display_name
         if isinstance(e, OperationalError):
             logger.warning(
-                "Unified WebSocket session %s lost database connection: %s "
-                "(User: %s, IP: %s)",
+                "Unified WebSocket session %s lost database connection: %s (User: %s, IP: %s)",
                 session.id,
-                e,
+                type(e).__name__,
                 username,
                 client_ip,
             )
         else:
             logger.error(
-                f"Error in unified WebSocket session {session.id}: {e}, "
-                f"User: {username}, "
-                f"IP: {client_ip}",
-                exc_info=True,
+                f"Error in unified WebSocket session {session.id}: {type(e).__name__}, User: {username}, IP: {client_ip}"
             )
     finally:
         # Cleanup
@@ -1050,12 +1046,12 @@ async def unified_websocket(websocket: WebSocket):
             try:
                 manager.disconnect(manager_connection_id)
             except Exception as e:
-                logger.error(f"Error disconnecting from manager: {e}")
+                logger.error(f"Error disconnecting from manager: {type(e).__name__}")
 
         try:
             await session_manager.end_session(session.id)
         except Exception as e:
-            logger.error(f"Error ending session: {e}")
+            logger.error(f"Error ending session: {type(e).__name__}")
 
         # Close WebSocket
         try:
@@ -1246,7 +1242,7 @@ async def runtime_session_websocket(websocket: WebSocket, runtime_session_id: st
             )
         )
     except Exception:
-        logger.warning("Session attach authorization failed", exc_info=True)
+        logger.warning("Session attach authorization failed")
         await refuse(
             SESSION_ATTACH_CLOSE_FORBIDDEN,
             "forbidden",
@@ -1279,7 +1275,7 @@ async def runtime_session_websocket(websocket: WebSocket, runtime_session_id: st
                 )
             )
         except Exception:
-            logger.warning("Session attach audit failed (%s)", action, exc_info=True)
+            logger.warning("Session attach audit failed (%s)", action)
 
     connection_id = await manager.connect_with_account(websocket, account_id)
     manager.session_streams[connection_id] = SessionStreamFilter(

@@ -143,6 +143,5 @@ class GatewayStreamingResponse(StreamingResponse):
                         await run_db_off_loop(close_and_record)
                 except Exception:  # noqa: BLE001 - body is already on the wire
                     logger.warning(
-                        "Deferred gateway stream recording failed after body flush",
-                        exc_info=True,
+                        "Deferred gateway stream recording failed after body flush"
                     )

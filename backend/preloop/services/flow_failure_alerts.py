@@ -302,7 +302,7 @@ def _send_emails(db: Session, owners: List[Any], message: Dict[str, str]) -> int
             )
             sent += 1
         except Exception:  # noqa: BLE001 - one bad address must not stop the rest
-            logger.warning("Flow failure alert email failed", exc_info=True)
+            logger.warning("Flow failure alert email failed")
     return sent
 
 
@@ -342,14 +342,14 @@ def deliver_failure_alert(
     try:
         owners = policy_owners(db, getattr(flow, "account_id", None))
     except Exception:  # noqa: BLE001 - never let recipient lookup raise
-        logger.warning("Flow failure alert recipient lookup failed", exc_info=True)
+        logger.warning("Flow failure alert recipient lookup failed")
         return result
     result["recipients"] = len(owners)
 
     try:
         result["email"] = _send_emails(db, owners, message)
     except Exception:  # noqa: BLE001 - one channel must not stop the others
-        logger.warning("Flow failure alert email channel failed", exc_info=True)
+        logger.warning("Flow failure alert email channel failed")
     try:
         result["push"] = send_push_to_owners(
             db,
@@ -365,7 +365,7 @@ def deliver_failure_alert(
             thread_id="flow-failures",
         )
     except Exception:  # noqa: BLE001 - never let a transport raise
-        logger.warning("Flow failure alert push channel failed", exc_info=True)
+        logger.warning("Flow failure alert push channel failed")
     return result
 
 
@@ -561,9 +561,7 @@ def evaluate_failure_streak(
             except Exception:  # noqa: BLE001 - rollback is best effort
                 pass
             logger.warning(
-                "Could not claim flow failure alert marker for flow %s",
-                flow_id,
-                exc_info=True,
+                "Could not claim flow failure alert marker for flow %s", flow_id
             )
             return FailureAlertOutcome(skipped_reason="claim_failed")
 
@@ -588,6 +586,5 @@ def evaluate_failure_streak(
         logger.warning(
             "Flow failure streak evaluation failed for execution %s",
             getattr(execution, "id", "unknown"),
-            exc_info=True,
         )
         return FailureAlertOutcome(skipped_reason="error")

@@ -744,4 +744,4 @@ def audit_period_export(
         )
     except Exception:
         db.rollback()
-        logger.error("Failed to audit period export", exc_info=True)
+        logger.error("Failed to audit period export")

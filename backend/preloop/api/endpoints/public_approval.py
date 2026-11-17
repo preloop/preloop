@@ -404,7 +404,7 @@ async def _decide_with_token(
             # client gets a fixed sentence: this endpoint is reachable with
             # only a token, and internal failure text can carry database
             # identifiers, file paths and source context.
-            logger.exception(
+            logger.error(
                 "Failed to record %s decision for approval request %s",
                 decision.action,
                 request_id,

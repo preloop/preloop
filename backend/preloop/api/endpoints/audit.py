@@ -361,7 +361,7 @@ def list_audit_logs(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error listing audit logs: {e}", exc_info=True)
+        logger.error(f"Error listing audit logs: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve audit logs",
@@ -510,7 +510,7 @@ def list_grouped_audit_logs(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error listing grouped audit logs: {e}", exc_info=True)
+        logger.error(f"Error listing grouped audit logs: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve grouped audit logs",
@@ -824,7 +824,7 @@ def _build_audit_overview(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error building the audit overview: {e}", exc_info=True)
+        logger.error(f"Error building the audit overview: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve the audit overview",
@@ -878,7 +878,7 @@ def get_audit_stats(
         )
 
     except Exception as e:
-        logger.error(f"Error getting audit statistics: {e}", exc_info=True)
+        logger.error(f"Error getting audit statistics: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve audit statistics",
@@ -941,7 +941,7 @@ def get_user_audit_logs(
         )
 
     except Exception as e:
-        logger.error(f"Error getting user audit logs: {e}", exc_info=True)
+        logger.error(f"Error getting user audit logs: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve user audit logs",
@@ -983,7 +983,7 @@ def get_permission_denials(
         )
 
     except Exception as e:
-        logger.error(f"Error getting permission denials: {e}", exc_info=True)
+        logger.error(f"Error getting permission denials: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve permission denials",

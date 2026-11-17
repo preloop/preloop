@@ -344,9 +344,8 @@ def notify_unpriced_model(
         )
         _mark_locally(key)
     except Exception:  # noqa: BLE001 - alerting must never break the gateway
-        logger.exception(
-            "Unpriced-model alert bookkeeping failed for provider %s",
-            provider_name,
+        logger.error(
+            "Unpriced-model alert bookkeeping failed for provider %s", provider_name
         )
         return False
 
@@ -371,7 +370,7 @@ def notify_unpriced_model(
     try:
         notify_admins(subject, message)
     except Exception:  # noqa: BLE001 - never raise into the request path
-        logger.exception("Failed to send unpriced-model notification")
+        logger.error("Failed to send unpriced-model notification")
         return False
     return True
 

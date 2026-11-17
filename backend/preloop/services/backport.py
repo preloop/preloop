@@ -242,7 +242,7 @@ def backport_event_matches(
     except BackportConfigError as error:
         # Never start an agent for a broken backport block, but make the
         # "flow never fires" case visible in the logs.
-        logger.warning("Backport flow not started: %s", error)
+        logger.warning("Backport flow not started: %s", type(error).__name__)
         return False
     if plan is None:
         return True

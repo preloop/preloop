@@ -55,8 +55,7 @@ def upgrade(revision: str = "head") -> None:
 
 def _log_retry(attempt: int, delay: float, error: BaseException) -> None:
     logger.warning(
-        "Migration attempt %s hit lock contention (SQLSTATE %s); "
-        "retrying in %.1fs. Locks released by committed revisions are kept.",
+        "Migration attempt %s hit lock contention (SQLSTATE %s); retrying in %.1fs. Locks released by committed revisions are kept.",
         attempt,
         sqlstate_of(error) or "unknown",
         delay,

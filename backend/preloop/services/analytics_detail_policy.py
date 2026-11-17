@@ -23,9 +23,7 @@ def should_degrade_gateway_analytics(account_id: str) -> bool:
         policy = get_plugin_manager().get_service("analytics_detail_policy")
         return policy is not None and bool(policy(account_id=account_id))
     except Exception:
-        logger.warning(
-            "Analytics detail policy failed; retaining detail", exc_info=True
-        )
+        logger.warning("Analytics detail policy failed; retaining detail")
         # Policies own their read sessions; the caller may have pending
         # runtime-session or optimization writes that must remain intact.
         return False
