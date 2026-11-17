@@ -1,7 +1,7 @@
 """Tracker schemas for request and response validation."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from datetime import datetime
 from uuid import UUID
 
@@ -22,6 +22,14 @@ from .tracker_scope_rule import TrackerScopeRuleCreate, TrackerScopeRuleResponse
 TrackerType = models.TrackerType
 
 logger = logging.getLogger(__name__)
+
+
+class TrackerSyncResponse(BaseModel):
+    """Receipt for a queued tracker sync."""
+
+    status: Literal["queued"] = "queued"
+    tracker_id: UUID
+    task_id: UUID = Field(description="Correlation ID included in sync worker logs")
 
 
 class BitbucketDCConnectionDetails(BaseModel):

@@ -120,6 +120,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Projects: listing projects by organization now returns the matching projects.
+- Trackers: manual sync returns a task ID that also appears in worker logs,
+  and reports a queue failure instead of claiming the sync was queued.
+
 - flows: a Codex native-result read-only review whose session ends with an
   answer but no command (the model satisfied the result schema on its first
   turn) is continued in up to two fresh sessions that must inspect the

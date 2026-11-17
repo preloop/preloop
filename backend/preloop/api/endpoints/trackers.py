@@ -3,6 +3,7 @@
 import logging
 import os
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import UUID4, BaseModel, ConfigDict, Field, ValidationError
@@ -17,6 +18,7 @@ from preloop.schemas.tracker import (
     BitbucketDCConnectionDetails,
     JiraManualWebhook,
     TrackerResponse,
+    TrackerSyncResponse,
     TrackerUpdate,
     TrackerTestResponse,
     TrackerTestRequest,
@@ -1341,13 +1343,18 @@ async def update_tracker(
         )
 
 
-@router.post("/trackers/{tracker_id}/sync", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/trackers/{tracker_id}/sync",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=TrackerSyncResponse,
+    responses={503: {"description": "Sync could not be queued"}},
+)
 @require_permission("edit_trackers")
 async def sync_tracker(
     tracker_id: UUID4,
     current_user: AuthUserResponse = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
-) -> Dict[str, str]:
+) -> TrackerSyncResponse:
     """Queue a background sync for an existing tracker."""
     await run_db_off_loop(
         lambda: ensure_permission_in_oss(db, current_user, "edit_trackers")
@@ -1367,8 +1374,24 @@ async def sync_tracker(
             detail="Tracker not found or access denied",
         )
 
-    await event_bus_service.publish_task("poll_tracker_on_demand", str(tracker.id))
-    return {"status": "queued", "tracker_id": str(tracker.id)}
+    task_id = uuid4()
+    try:
+        ack = await event_bus_service.publish_task(
+            "poll_tracker_on_demand", str(tracker.id), task_id=str(task_id)
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to queue tracker sync: task_id=%s error_type=%s",
+            task_id,
+            type(exc).__name__,
+        )
+        ack = None
+    if ack is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Sync could not be queued. Please retry.",
+        )
+    return TrackerSyncResponse(tracker_id=tracker.id, task_id=task_id)
 
 
 @router.delete("/trackers/{tracker_id}", status_code=status.HTTP_200_OK)

@@ -236,7 +236,7 @@ def list_projects(
 
         # Filter to only projects in this organization
         accessible_projects = [
-            p for p in accessible_projects if p.organization_id == organization_id
+            p for p in accessible_projects if p.organization_id == organization.id
         ]
 
     # Apply pagination
@@ -293,7 +293,7 @@ def list_organization_projects(
 
     # Filter to only projects in this organization
     org_projects = [
-        p for p in accessible_projects if p.organization_id == organization_id
+        p for p in accessible_projects if p.organization_id == organization.id
     ]
 
     # Apply pagination

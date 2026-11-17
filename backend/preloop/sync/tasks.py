@@ -66,9 +66,25 @@ async def poll_tracker_on_demand(
     tracker_id: Union[int, str],
     since: Optional[datetime] = None,
     force_update: bool = True,
+    *,
+    task_id: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Run explicit initial/manual discovery without the scheduled cooldown."""
-    return await poll_tracker(tracker_id, since, force_update)
+    logger.info("Starting tracker sync: task_id=%s tracker_id=%s", task_id, tracker_id)
+    try:
+        result = await poll_tracker(tracker_id, since, force_update)
+    except Exception:
+        logger.error(
+            "Tracker sync failed: task_id=%s tracker_id=%s", task_id, tracker_id
+        )
+        raise
+    logger.info(
+        "Tracker sync %s: task_id=%s tracker_id=%s",
+        "completed" if result is not None and not result.get("errors", 0) else "failed",
+        task_id,
+        tracker_id,
+    )
+    return result
 
 
 async def poll_tracker(
