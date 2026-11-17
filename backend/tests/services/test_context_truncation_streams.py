@@ -26,8 +26,12 @@ def service() -> OpenAIGatewayService:
 @pytest.mark.parametrize("client_closes", [False, True])
 @pytest.mark.parametrize("newline", ["\n", "\r\n"])
 @pytest.mark.parametrize("snapshot_only", [False, True])
+@pytest.mark.parametrize("late_error", [httpx.ReadTimeout, httpx.RemoteProtocolError])
 def test_native_terminal_records_usage_without_reading_eof(
-    client_closes: bool, newline: str, snapshot_only: bool
+    client_closes: bool,
+    newline: str,
+    snapshot_only: bool,
+    late_error: type[Exception],
 ) -> None:
     """Reading past completed must not convert a delivered turn into a 502."""
     gateway = service()
@@ -52,7 +56,7 @@ def test_native_terminal_records_usage_without_reading_eof(
 
     def chunks() -> Iterator[str]:
         yield "data: " + json.dumps(terminal) + newline * 2
-        raise httpx.ReadTimeout("The upstream never closes its body")
+        raise late_error("Upstream reset the connection after completing the turn")
 
     upstream = MagicMock()
     upstream.hosted_call = None

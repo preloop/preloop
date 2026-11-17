@@ -82,7 +82,7 @@ def flow_gateway(
     )
 
 
-def upstream_stream(input_tokens: int) -> MagicMock:
+def upstream_stream(input_tokens: int, *, late_reset: bool = False) -> MagicMock:
     """Send a terminal usage event, then fail if the consumer reads again."""
 
     def chunks() -> Iterator[str]:
@@ -109,6 +109,8 @@ def upstream_stream(input_tokens: int) -> MagicMock:
             )
             + "\n\n"
         )
+        if late_reset:
+            raise httpx.RemoteProtocolError("Connection reset after completed response")
         raise httpx.ReadTimeout("Body never closes")
 
     response = MagicMock(status_code=200, headers={})
@@ -170,6 +172,44 @@ def test_truncated_terminal_stream_persists_evidence_models_and_refuses_retry(
         service._check_context_window(
             model, {"input": "Short reminder"}, gateway_provider="openai"
         )
+
+
+def test_complete_answer_followed_by_reset_keeps_success_and_usage(
+    db_session: Session,
+    flow_gateway: tuple[OpenAIGatewayService, models.FlowExecution, models.AIModel],
+) -> None:
+    """A complete answer remains successful even if the HTTP peer resets later."""
+    service, execution, model = flow_gateway
+    response = upstream_stream(8194, late_reset=True)
+    client = MagicMock()
+    client.send.return_value = response
+    with patch(
+        "preloop.services.openai_gateway._openai_passthrough_http_client",
+        return_value=client,
+    ):
+        events = list(
+            service.stream_response(
+                {"model": "example-coder", "input": "Review the change"}
+            )
+        )
+        service.flush_deferred_stream_record()
+        service.flush_deferred_stream_record()
+    assert len(events) == 1
+    assert json.loads(events[0].removeprefix("data: "))["type"] == "response.completed"
+    rows = (
+        db_session.query(models.ApiUsage)
+        .filter_by(flow_execution_id=execution.id)
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].status_code == 200
+    assert rows[0].error_class is None
+    assert rows[0].prompt_tokens == 8194
+    assert rows[0].completion_tokens == 49
+    db_session.refresh(execution)
+    assert execution.status == "RUNNING"
+    assert execution.failure_category is None
+    response.close.assert_called_once()
 
 
 @pytest.mark.parametrize(
