@@ -165,3 +165,19 @@ def cold_start_context(context: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         return context, False
     cleaned = {key: value for key, value in context.items() if key not in RESTORE_KEYS}
     return cleaned, True
+
+
+def validate_native_result_config(
+    agent_config: Any, result_schema: Any, validate_result: Any
+) -> None:
+    """Reject native capture without its enabled schema before launching.
+
+    Raises:
+        ValueError: Native results were explicitly enabled without validation.
+    """
+    if native_result_enabled(agent_config) and (
+        not result_schema or validate_result is False
+    ):
+        from preloop.services.flow_failure_messages import NATIVE_RESULT_SCHEMA_REQUIRED
+
+        raise ValueError(NATIVE_RESULT_SCHEMA_REQUIRED)

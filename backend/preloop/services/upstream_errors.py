@@ -26,6 +26,7 @@ ERROR_CLASS_UPSTREAM_OVERLOADED = "upstream_overloaded"
 ERROR_CLASS_UPSTREAM_RATE_LIMITED = "upstream_rate_limited"
 ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED = "upstream_quota_exhausted"
 ERROR_CLASS_UPSTREAM_AUTH = "upstream_auth"
+ERROR_CLASS_UPSTREAM_POLICY_REFUSAL = "upstream_policy_refusal"
 ERROR_CLASS_UPSTREAM_PROTOCOL = "upstream_protocol"
 ERROR_CLASS_UPSTREAM_ERROR = "upstream_error"
 #: The gateway's own budget hard limit (#1447). Not an upstream class: it is
@@ -216,6 +217,26 @@ _PROTOCOL_MISMATCH_MARKERS = (
 )
 
 
+# Provider wording recognized by the supported SDK mappings: OpenAI safety
+# errors, Anthropic filtering, and Gemini/Vertex blocked responses. Avoid a
+# bare "safety" or "policy" match: ordinary request errors can mention either.
+PROVIDER_POLICY_REFUSAL_MARKERS = (
+    "contentpolicyviolationerror",
+    "content_policy_violation",
+    "content_filter_policy",
+    "cyber_policy",
+    "responsibleaipolicyviolation",
+    "blocked by our safety systems",
+    "request was rejected as a result of the safety system",
+    "violating our usage policy",
+    "content filtering policy",
+    "the response was blocked.",
+    "the response was filtered due to the prompt triggering azure openai's content management",
+    "your task failed as a result of our safety system",
+    "your request was rejected as a result of our safety system",
+)
+
+
 # Textual fallbacks for connection-level failures when the exception type is
 # opaque (e.g. wrapped by a provider SDK).
 _NETWORK_MARKERS = (
@@ -235,7 +256,7 @@ _NETWORK_MARKERS = (
 
 def _exception_text(exc: Exception) -> str:
     parts = [type(exc).__name__, str(exc)]
-    for attr in ("message", "error_type", "code", "litellm_debug_info"):
+    for attr in ("message", "type", "error_type", "code", "body", "litellm_debug_info"):
         value = getattr(exc, attr, None)
         if value:
             parts.append(str(value))
@@ -379,6 +400,17 @@ def classify_upstream_error(exc: Exception) -> Optional[UpstreamErrorClass]:
         return UpstreamErrorClass(
             error_class=ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
             status_code=status if status in (502, 503) else 503,
+            terminal=True,
+        )
+
+    if (
+        _contains(text, PROVIDER_POLICY_REFUSAL_MARKERS)
+        or getattr(exc, "code", None) == "content_filter"
+        or re.search(r"[\"']code[\"']\s*:\s*[\"']content_filter[\"']", text)
+    ):
+        return UpstreamErrorClass(
+            error_class=ERROR_CLASS_UPSTREAM_POLICY_REFUSAL,
+            status_code=status if status in (400, 403, 422) else 400,
             terminal=True,
         )
 
@@ -537,6 +569,7 @@ _RETRYABLE_ERROR_CLASSES = frozenset(
 
 _NON_RETRYABLE_ERROR_CLASSES = frozenset(
     {
+        ERROR_CLASS_UPSTREAM_POLICY_REFUSAL,
         ERROR_CLASS_UPSTREAM_AUTH,
         ERROR_CLASS_UPSTREAM_PROTOCOL,
         ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
@@ -691,6 +724,10 @@ def classify_recorded_error(
     if _contains(text, PRELOOP_BUDGET_DENIAL_MARKERS):
         # Preloop's budget, not the upstream's (#1447).
         return ERROR_CLASS_BUDGET_EXCEEDED
+    if _contains(text, PROVIDER_POLICY_REFUSAL_MARKERS) or re.search(
+        r"[\"']code[\"']\s*:\s*[\"']content_filter[\"']", text
+    ):
+        return ERROR_CLASS_UPSTREAM_POLICY_REFUSAL
     if status_code == 429:
         if _contains(text, _QUOTA_MARKERS):
             return ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED

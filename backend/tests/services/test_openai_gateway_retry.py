@@ -851,3 +851,21 @@ def test_codex_http_transient_failure_exhausts_bounded_retries(
         assert service._last_upstream_retry_count == 2
     if failure_kind == "http":
         assert all(failure.closed for failure in failures)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_policy_refusal_is_attempted_exactly_once(stream: bool) -> None:
+    """A refusal wrapped as a stream/server error cannot spend retry budget."""
+    service, model, backend = _service_and_model()
+    backend.completion.side_effect = _MidStreamFallbackError(
+        "This request was blocked by our safety systems. Reason: Potentially unintended activity."
+    )
+    with patch("preloop.services.openai_gateway._sleep_before_upstream_retry") as sleep:
+        with pytest.raises(ModelGatewayAPIError) as error:
+            (_open_stream if stream else _call)(service, model)
+    assert backend.completion.call_count == 1
+    sleep.assert_not_called()
+    assert error.value.status_code == 400
+    assert error.value.error_class == "upstream_policy_refusal"
+    assert error.value.terminal
+    assert error.value.response_headers()["x-should-retry"] == "false"

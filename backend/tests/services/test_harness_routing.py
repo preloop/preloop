@@ -498,11 +498,13 @@ async def test_queue_timeout_uses_flow_timeout_and_names_reason(monkeypatch) -> 
     executor = _executor(
         {"harness": "copilot_cli", "harness_queue_timeout_seconds": 600}
     )
+    expire = MagicMock(return_value=True)
+    monkeypatch.setattr(executor, "fail_if_unleased", expire)
     status = await executor.get_status(execution.agent_session_reference)
     assert status == AgentStatus.FAILED
-    assert execution.routing_reason == "queue_timeout"
-    assert "queue_timeout" in execution.error_message
-    assert "last reason runner_offline" in execution.error_message
+    expire.assert_called_once()
+    assert expire.call_args.args[1] >= 700
+    assert expire.call_args.kwargs["detail"] == "Last routing reason: runner_offline."
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,40 @@ interface FailureCategoryMeta {
  * agent's own work, then the two states that are nobody's fault.
  */
 export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
+  runner_unavailable: {
+    label: 'no runner available',
+    tooltip:
+      'No eligible runner picked up the execution before its queue wait ended. Check the pool and runner availability.',
+  },
+  ci_authorization: {
+    label: 'ci authorization denied',
+    tooltip: 'The CI credential was not authorized for this flow or review.',
+  },
+  flow_config: {
+    label: 'flow configuration',
+    tooltip:
+      'The flow configuration cannot run. Correct the settings shown in the error before running again.',
+  },
+  agent_reported_failure: {
+    label: 'agent reported failure',
+    tooltip:
+      'The result document says the work could not complete, even if the agent exited successfully.',
+  },
+  orchestrator_error: {
+    label: 'flow controller error',
+    tooltip:
+      'The flow controller caught an unexpected failure. See the execution message for details.',
+  },
+  execution_error: {
+    label: 'execution error',
+    tooltip:
+      'A failure was recorded while saving the execution. See the execution message for details.',
+  },
+  model_policy: {
+    label: 'provider policy refusal',
+    tooltip:
+      'The model provider refused this request under its safety or content policy. Retrying the same request will not help.',
+  },
   runner_conflict: {
     label: 'runner conflict',
     tooltip:

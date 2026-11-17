@@ -40,7 +40,6 @@ from preloop.services.host_exec import (
     ISOLATED_PUBLICATION_UNAVAILABLE,
     OFFLINE_POLICY_MILESTONE,
     OFFLINE_POLICY_REROUTE,
-    ROUTING_QUEUE_TIMEOUT,
     ROUTING_RUNNER_ASLEEP,
     harness_fallback_mode,
     offline_policy_mode,
@@ -361,40 +360,27 @@ class RemoteRunnerExecutor(AgentExecutor):
                 self._owner_runner_id(execution) if execution else (None, True)
             )
             if queued == "FAILED":
-                if execution:
-                    execution.status = "FAILED"
-                    if harness_routed:
-                        waited_for = execution.routing_reason
-                        execution.routing_reason = ROUTING_QUEUE_TIMEOUT
-                        execution.error_message = (
-                            "No eligible runner took this run within "
-                            f"{queue_timeout} ({ROUTING_QUEUE_TIMEOUT}"
-                            + (f"; last reason {waited_for}" if waited_for else "")
-                            + ")"
-                        )
-                    elif owner_id is not None:
-                        # A host-bound continuation has exactly one machine
-                        # that can finish it. Say so, name the surviving local
-                        # state, and stop: moving the run to another host
-                        # would silently restart from a cold clone.
-                        execution.error_message = runner_blocked_notice(
+                waited = int((datetime.now(timezone.utc) - started).total_seconds())
+                detail = None
+                if execution is not None:
+                    if owner_id is not None:
+                        detail = runner_blocked_notice(
                             crud_flow_runner.get_fresh(self.db, runner_id=owner_id),
                             _resume_from_execution_id({}, execution) or execution.id,
                         )
-                    else:
-                        execution.error_message = (
-                            f"No matching self-hosted runner for pool "
-                            f"{self.pool} within {DEFAULT_QUEUE_TIMEOUT}"
-                            + (
-                                "; isolated publication requires protocol v1 and a configured ready helper image"
-                                if (execution.result or {}).get("_private_publication")
-                                else ""
-                            )
+                    elif (execution.result or {}).get("_private_publication"):
+                        detail = (
+                            "Isolated publication requires protocol v1 and a "
+                            "configured ready helper image."
                         )
-                    execution.end_time = datetime.now(timezone.utc)
-                    self.db.add(execution)
-                    self.db.commit()
-                return AgentStatus.FAILED
+                    elif harness_routed and execution.routing_reason:
+                        detail = f"Last routing reason: {execution.routing_reason}."
+                if self.fail_if_unleased(
+                    session_reference, max(0, waited), detail=detail
+                ):
+                    return AgentStatus.FAILED
+                # A lease or stop landed first; refresh on the next monitor poll.
+                return AgentStatus.STARTING
             # A runner may have come online; try to lease now.
             if execution and owner_resolved:
                 flow = self._flow_for_execution(execution)
@@ -529,6 +515,18 @@ class RemoteRunnerExecutor(AgentExecutor):
             self.db, id=_execution_id_from_ref(session_reference), refresh=True
         )
         return execution.result if execution else None
+
+    def fail_if_unleased(
+        self, session_reference: str, wait_seconds: int, *, detail: str | None = None
+    ) -> bool:
+        """End a queue wait only while no runner assignment exists."""
+        return crud_flow_execution.fail_unleased_runner_execution(
+            self.db,
+            execution_id=_execution_id_from_ref(session_reference),
+            pool=self.pool,
+            wait_seconds=wait_seconds,
+            detail=detail,
+        )
 
     async def stop(self, session_reference: str) -> None:
         execution_id = _execution_id_from_ref(session_reference)

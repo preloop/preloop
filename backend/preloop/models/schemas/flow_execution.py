@@ -289,7 +289,10 @@ class FlowExecutionBase(BaseModel):
             "was refused before launch), resume_failed (a parked run could not be continued), "
             "gateway_bypassed (a private-runner host CLI made no "
             "request through the Preloop gateway), timeout, cancelled, "
-            "unknown. Null for successful or still-running executions, and "
+            "flow_config, agent_reported_failure, orchestrator_error, "
+            "execution_error, model_policy, runner_unavailable, ci_authorization; "
+            "unknown is a legacy value. "
+            "Null for successful or still-running executions, and "
             "for executions that predate this field."
         ),
     )

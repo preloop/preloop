@@ -181,6 +181,7 @@ from preloop.services.upstream_errors import (
     ERROR_CLASS_NETWORK,
     ERROR_CLASS_STREAM_ABANDONED,
     ERROR_CLASS_UPSTREAM_DISCONNECT,
+    ERROR_CLASS_UPSTREAM_POLICY_REFUSAL,
     ERROR_CLASS_UPSTREAM_OVERLOADED,
     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
     classify_recorded_error,
@@ -7968,6 +7969,7 @@ class OpenAIGatewayService:
             or "OpenAI Responses upstream error"
         )
         error_type: Optional[str] = None
+        parsed: Any = None
         try:
             parsed = json.loads(body_text)
             error = parsed.get("error") if isinstance(parsed, dict) else None
@@ -7984,6 +7986,7 @@ class OpenAIGatewayService:
                 self.status_code = status_code
                 self.message = message
                 self.error_type = error_type
+                self.body = parsed
                 self.response = httpx.Response(status_code, headers=headers)
                 super().__init__(message)
 
@@ -10176,6 +10179,16 @@ class OpenAIGatewayService:
         surfaced_message = upstream_detail.message
         error_type = getattr(exc, "type", None) or getattr(exc, "error_type", None)
         code = getattr(exc, "code", None)
+        # SDK bodies can carry the provider's class even when the wrapper is
+        # a generic APIError. Keep that class on the client-facing envelope.
+        body = getattr(exc, "body", None)
+        body_detail = extract_upstream_error_detail(
+            json.dumps(body, default=str)
+            if isinstance(body, dict)
+            else str(raw_message)
+        )
+        error_type = body_detail.error_type or upstream_detail.error_type or error_type
+        code = body_detail.code or upstream_detail.code or code
         classified = classify_upstream_error(exc)
 
         # When the upstream did not give us its own HTTP status, a 5xx mapping
@@ -10229,7 +10242,20 @@ class OpenAIGatewayService:
             else:
                 message = _origin_labelled(status_code) or surfaced_message
 
-            if classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT:
+            if classified.error_class == ERROR_CLASS_UPSTREAM_POLICY_REFUSAL:
+                if error_type in {
+                    "provider_unavailable",
+                    "upstream_disconnect",
+                    "server_error",
+                }:
+                    error_type = None
+                error_type = error_type or (
+                    "invalid_request_error"
+                    if provider != "gemini"
+                    else "INVALID_ARGUMENT"
+                )
+                code = code or "content_policy_violation"
+            elif classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT:
                 error_type = error_type or "upstream_disconnect"
                 code = code or ERROR_CLASS_UPSTREAM_DISCONNECT
             elif classified.error_class == ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED:

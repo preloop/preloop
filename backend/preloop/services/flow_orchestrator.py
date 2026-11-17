@@ -56,6 +56,7 @@ from preloop.agents.verification import (
     VERIFICATION_DENIED_MARKER,
     VERIFICATION_MARKER,
 )
+from preloop.services.flow_failure_messages import AGENT_REPORTED_FAILURE
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_AGENT_NO_PROGRESS,
     FAILURE_CATEGORY_PUBLICATION_MISSING,
@@ -63,6 +64,8 @@ from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_MODEL_STREAM_IDLE,
     FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_UNKNOWN,
+    FAILURE_CATEGORY_EXECUTION_ERROR,
+    FAILURE_CATEGORY_ORCHESTRATOR_ERROR,
     derive_failure_category,
 )
 from preloop.services.stream_stall import (
@@ -448,8 +451,8 @@ def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optiona
     explicit ``status`` verdict, else ``None`` (no artifact, no status field,
     or an unrecognised value — none of which is a confirmation).
 
-    ``status`` is authoritative when it carries a recognized value. When it
-    is absent or unrecognized, the audit contracts' top-level ``verdict`` is
+    A failure in ``status`` or ``verdict`` wins over any success signal.
+    Otherwise the audit contracts' top-level ``verdict`` is
     consulted as a fallback so audit runs that honour their result schema are
     recognized as completed (channel 2) instead of being overridden to FAILED
     for a missing success confirmation.
@@ -460,6 +463,10 @@ def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optiona
     if not isinstance(artifact, dict):
         return None
     if _unposted_review_field(artifact) is not None:
+        return "failure"
+    from preloop.services.flow_execution_outcome import result_failure_signal
+
+    if result_failure_signal(artifact) is not None:
         return "failure"
     status = artifact.get("status")
     if isinstance(status, str):
@@ -3299,8 +3306,11 @@ class FlowExecutionOrchestrator:
             try:
                 token = await resolve_tracker_git_token(tracker)
             except ManagedCredentialError as exc:
-                raise RuntimeError(
-                    f"Tracker {tracker.name or tracker_id}: {exc.actionable_message()}"
+                from preloop.agents.errors import AgentStartError
+
+                raise AgentStartError(
+                    f"Tracker {tracker.name or tracker_id}: {exc.actionable_message()}",
+                    category="repository_access",
                 ) from exc
             if not token:
                 logger.warning(
@@ -8889,8 +8899,9 @@ class FlowExecutionOrchestrator:
                         )
                         final_status = "FAILED"
                         error_message = result.error_message or (
-                            "Agent reported an explicit failure in result.json "
-                            f"({signal_field}={signal_value!r})."
+                            AGENT_REPORTED_FAILURE.format(
+                                field=signal_field, value=signal_value
+                            )
                         )
                     elif (
                         result.status == AgentStatus.SUCCEEDED
@@ -9065,6 +9076,23 @@ class FlowExecutionOrchestrator:
             # the Job and its pods. Read available artifacts first, within a
             # short cleanup bound, and always stop even if capture fails or
             # this monitor is canceled. The execution still failed its budget.
+            from preloop.agents.remote_runner import RemoteRunnerExecutor
+            from preloop.services.flow_failure_messages import RUNNER_UNAVAILABLE
+
+            if isinstance(
+                agent_executor, RemoteRunnerExecutor
+            ) and agent_executor.fail_if_unleased(session_reference, elapsed):
+                return {
+                    "status": "FAILED",
+                    "failure_category": "runner_unavailable",
+                    "error_message": RUNNER_UNAVAILABLE.format(
+                        pool=agent_executor.pool, wait_seconds=elapsed
+                    ),
+                    "actions_taken": self.execution_logger.get_actions_taken(),
+                    "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                    "result": None,
+                }
+
             try:
                 self._record_completion(
                     finalization_started_at=datetime.now(timezone.utc).isoformat()
@@ -9233,7 +9261,7 @@ class FlowExecutionOrchestrator:
         derived = derive_failure_category(
             status=status, error_message=kwargs.get("error_message")
         )
-        if derived != FAILURE_CATEGORY_UNKNOWN:
+        if derived not in (FAILURE_CATEGORY_UNKNOWN, FAILURE_CATEGORY_EXECUTION_ERROR):
             return
         # An unclassifiable failure (often the agent's last prose) on a run
         # that has spent a ceiling: the ceiling is why it stopped.
@@ -9277,6 +9305,20 @@ class FlowExecutionOrchestrator:
             kwargs["result"] = captured
             kwargs["result_schema_validation"] = self._result_schema_validation
 
+        if status == "SUCCEEDED":
+            from preloop.services.flow_execution_outcome import result_failure_signal
+
+            signal = result_failure_signal(
+                kwargs.get("result", getattr(self.execution_log, "result", None))
+            )
+            if signal is not None:
+                field, value = signal
+                status = "FAILED"
+                kwargs["error_message"] = AGENT_REPORTED_FAILURE.format(
+                    field=field, value=value
+                )
+                kwargs["failure_category"] = "agent_reported_failure"
+
         if self.execution_log is not None and status is not None:
             status = self._guard_status_write(status, kwargs)
 
@@ -9295,13 +9337,18 @@ class FlowExecutionOrchestrator:
         if status is not None and kwargs.get("failure_category") is None:
             derived = derive_failure_category(
                 status=status,
+                fallback_category=FAILURE_CATEGORY_ORCHESTRATOR_ERROR,
                 error_message=(
                     kwargs.get("error_message")
                     or getattr(self.execution_log, "error_message", None)
                 ),
             )
             existing = getattr(self.execution_log, "failure_category", None)
-            if derived == FAILURE_CATEGORY_UNKNOWN and existing:
+            if derived in (
+                FAILURE_CATEGORY_UNKNOWN,
+                FAILURE_CATEGORY_EXECUTION_ERROR,
+                FAILURE_CATEGORY_ORCHESTRATOR_ERROR,
+            ) and existing not in (None, FAILURE_CATEGORY_UNKNOWN):
                 # Never downgrade a category an earlier, better-informed
                 # write already established.
                 derived = existing
@@ -10000,6 +10047,7 @@ class FlowExecutionOrchestrator:
             error_message=agent_result.get("error_message"),
             explicit_category=explicit,
             failure_analysis=agent_result.get("failure_analysis"),
+            fallback_category="agent_error",
         )
 
     async def _retry_after_no_progress(self, failure_category: Optional[str]) -> None:
@@ -11011,8 +11059,14 @@ class FlowExecutionOrchestrator:
             from preloop.services.native_result import (
                 COLD_START_MESSAGE,
                 native_result_cold_start,
+                validate_native_result_config,
             )
 
+            validate_native_result_config(
+                self.flow.agent_config,
+                self.flow.result_schema,
+                self.flow.validate_result,
+            )
             native_enabled = self._resolve_native_result()
             if native_result_cold_start(
                 self.flow, self.trigger_event_data, enabled=native_enabled
@@ -11587,6 +11641,7 @@ class FlowExecutionOrchestrator:
                         status="FAILED",
                         error_message=str(e),
                         exception=e,
+                        fallback_category=FAILURE_CATEGORY_ORCHESTRATOR_ERROR,
                     )
                     if getattr(self, "_finalization_step", None) == "publication":
                         exception_category = FAILURE_CATEGORY_PUBLICATION_MISSING

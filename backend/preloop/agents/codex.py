@@ -1057,7 +1057,11 @@ exit $CODEX_EXIT_CODE
         if (context.get("agent_config") or {}).get("native_result") is not True:
             return "", ""
         if context.get("validate_result") is False or not context.get("result_schema"):
-            raise ValueError("native_result requires an enabled result_schema")
+            from preloop.services.flow_failure_messages import (
+                NATIVE_RESULT_SCHEMA_REQUIRED,
+            )
+
+            raise ValueError(NATIVE_RESULT_SCHEMA_REQUIRED)
         schema = check_result_schema(context["result_schema"])
         encoded = base64.b64encode(json.dumps(schema).encode()).decode("ascii")
         path = "/tmp/preloop-native-result-schema.json"

@@ -15,6 +15,13 @@ import {
 describe('failure-category', () => {
   it('covers the vocabulary the server stores', () => {
     expect(Object.keys(FAILURE_CATEGORY_META)).to.have.members([
+      'flow_config',
+      'agent_reported_failure',
+      'orchestrator_error',
+      'execution_error',
+      'model_policy',
+      'runner_unavailable',
+      'ci_authorization',
       'runner_conflict',
       'runner_error',
       'model_transient',

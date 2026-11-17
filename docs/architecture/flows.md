@@ -747,3 +747,29 @@ with a stdin provider to keep prompts outside argv. Execution-scoped credentials
 can request native approvals only for their own active flow session. See the
 [adapter guide](https://github.com/preloop/preloop/blob/main/runtime-plugins/harness-preloop/README.md) for version pins,
 capability limits, and publication order.
+
+### Named failure outcomes
+
+Failed executions always carry a `failure_category`. The controller classifies
+known failures at their source; CRUD writers enforce the same result contract
+for private-runner completions and late result updates. An error in either
+`result.json.status` or `result.json.verdict` makes the execution fail even when
+schema validation passes or the success marker was printed. Completed review
+verdicts such as `fail` and `request_changes` still describe successful execution
+of the review.
+
+`agent_reported_failure` names an explicit result error. `flow_config` names an
+unusable flow configuration: in particular, `native_result: true` requires a
+result schema with validation enabled. Create/update reject that combination;
+existing flows display the problem and fail before launching an agent.
+`runner_unavailable` means no runner picked up the execution; its message names
+the pool and wait duration. A user cancellation remains `cancelled`.
+
+Unexpected failures retain their original message and name the boundary that
+caught them (`orchestrator_error`, `agent_error`, or `execution_error`). A database
+guard supplies `execution_error` for uncategorized terminal writes from older
+workers and bulk updates. The migration also replaces historical null/`unknown`
+categories, recognizing the native-result and explicit-result failure messages.
+It does not infer a historical root cause when the stored message cannot name one.
+Shared messages and categories live in `services/flow_failure_messages.py`;
+restricted-CI and permission-hook audit writers can reuse that vocabulary.

@@ -1190,6 +1190,16 @@ export class FlowView extends LitElement {
       <div class="column-layout wide">
         <div class="main-column">
           ${this.renderReferenceDataWarning()} ${this.renderSummaryStrip()}
+          ${
+            this.flow?.agent_config?.native_result === true &&
+            (!this.flow.result_schema || this.flow.validate_result === false)
+              ? html`<sl-alert variant="danger" open data-native-result-error>
+                  Native results require a result schema with validation
+                  enabled. Edit this flow to enable schema validation or disable
+                  native results.
+                </sl-alert>`
+              : nothing
+          }
           ${this.renderFailingSince()}
           <!-- Recent executions come before the prompt (#1692): the runs are
                why the page is opened, the prompt is reference. -->

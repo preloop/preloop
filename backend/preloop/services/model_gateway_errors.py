@@ -39,11 +39,15 @@ class UpstreamErrorDetail:
             Never a metadata dump.
         provider_name: The lowercased provider name from litellm's
             ``<Provider>Exception`` marker, or ``None`` when absent.
+        error_type: Provider-native error class, when supplied in the body.
+        code: Provider-native error code, when supplied in the body.
     """
 
     message: str
     provider_detail: Optional[str] = None
     provider_name: Optional[str] = None
+    error_type: Optional[str] = None
+    code: Optional[str] = None
 
 
 def _parse_embedded_json(text: str) -> Optional[dict[str, Any]]:
@@ -107,11 +111,15 @@ def extract_upstream_error_detail(raw_message: str) -> UpstreamErrorDetail:
 
     body = _parse_embedded_json(text)
     message = text
+    error_type = None
+    code = None
     if body is not None:
-        error_obj = body.get("error")
+        error_obj = body.get("error", body)
         inner: Any = None
         if isinstance(error_obj, dict):
             inner = error_obj.get("message")
+            error_type = error_obj.get("type") or error_obj.get("status")
+            code = error_obj.get("code")
         elif isinstance(error_obj, str):
             inner = error_obj
         elif isinstance(body.get("message"), str):
@@ -126,6 +134,10 @@ def extract_upstream_error_detail(raw_message: str) -> UpstreamErrorDetail:
         message=message,
         provider_detail=_compact_hint(provider_name, body),
         provider_name=provider_name,
+        error_type=scrub_secrets(error_type)[:80]
+        if isinstance(error_type, str)
+        else None,
+        code=scrub_secrets(code)[:80] if isinstance(code, str) else None,
     )
 
 
@@ -433,4 +445,13 @@ class ModelGatewayAPIError(Exception):
         if self.terminal:
             headers["X-Preloop-Retry-Terminal"] = "true"
         headers.update(getattr(self, "extra_response_headers", None) or {})
+        if self.error_class == "upstream_policy_refusal":
+            # A provider retry hint cannot turn a deterministic refusal into
+            # a request the client should replay.
+            headers = {
+                key: value
+                for key, value in headers.items()
+                if key.lower() != "x-should-retry"
+            }
+            headers["x-should-retry"] = "false"
         return headers

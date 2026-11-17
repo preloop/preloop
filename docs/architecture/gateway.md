@@ -295,3 +295,18 @@ Claude/Codex subscription recovery preserves agent enrollment through
 `preloop agents reconnect`. Credential imports serialize with rotation and reject
 recently consumed refresh tokens; provider-declared invalid grants require fresh
 authorization. See [OAuth credential recovery](#gateway-database-ownership).
+
+### Provider policy refusals
+
+The shared upstream classifier recognizes provider safety and content-policy
+refusals before connection, authentication, and overload classification. It uses
+the supported SDK policy exception, structured provider codes, and specific
+provider messages; a generic mention of safety or policy is insufficient.
+These failures return a 4xx response, preserve the provider's error class and
+code when supplied, and carry `x-should-retry: false`. The gateway attempts a
+refused request once. Failures arising after response headers are sent use the
+existing terminal stream error envelope.
+
+Usage records carry `upstream_policy_refusal`, distinct from gateway policy
+denials and transient upstream failures. The usage search results and session
+request timeline display “Provider policy refusal”.

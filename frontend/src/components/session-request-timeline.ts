@@ -333,6 +333,13 @@ export class SessionRequestTimeline extends LitElement {
           <div class="request-title">
             ${model}
             ${
+              row.error_class === 'upstream_policy_refusal'
+                ? html`<sl-badge variant="danger" pill
+                    >Provider policy refusal</sl-badge
+                  >`
+                : nothing
+            }
+            ${
               row.is_retry
                 ? html`<sl-badge variant="warning" pill>retry</sl-badge>`
                 : nothing

@@ -86,13 +86,24 @@ async def test_queued_status_fails_after_timeout(
         "preloop.agents.remote_runner.crud_flow_execution.get",
         lambda *args, **kwargs: execution,
     )
+    calls = []
+
+    def fail_unleased(db: Any, **kwargs: Any) -> bool:
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.fail_unleased_runner_execution",
+        fail_unleased,
+    )
     executor = RemoteRunnerExecutor(
         "codex", {}, db=db, pool="local", account_id=uuid4()
     )
     status = await executor.get_status(f"runner:queued:local:{execution_id}")
     assert status == AgentStatus.FAILED
-    assert execution.status == "FAILED"
-    assert "No matching self-hosted runner" in (execution.error_message or "")
+    assert calls[0]["pool"] == "local"
+    assert calls[0]["wait_seconds"] >= 960
+    assert calls[0]["execution_id"] == execution_id
 
 
 @pytest.mark.asyncio

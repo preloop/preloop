@@ -130,9 +130,15 @@ it*, not about severity:
     The execution exceeded its wall-clock budget.
 ``cancelled``
     A human (or a policy) stopped the run.
-``unknown``
-    Nothing matched. A growing ``unknown`` share is the signal to extend this
-    module, so it is never silently merged into ``agent_error``.
+``flow_config``
+    The saved flow configuration cannot run.
+``agent_reported_failure``
+    The result document explicitly says the work could not complete.
+``orchestrator_error`` / ``execution_error``
+    An unexpected failure caught by the controller or execution persistence.
+    The original message is retained for diagnosis.
+``model_policy``
+    The upstream provider refused the request under its safety or content policy.
 """
 
 from __future__ import annotations
@@ -147,6 +153,8 @@ from preloop.services.upstream_errors import (
     ERROR_CLASS_NETWORK,
     ERROR_CLASS_STREAM_ABANDONED,
     ERROR_CLASS_UPSTREAM_AUTH,
+    ERROR_CLASS_UPSTREAM_POLICY_REFUSAL,
+    PROVIDER_POLICY_REFUSAL_MARKERS,
     ERROR_CLASS_UPSTREAM_DISCONNECT,
     ERROR_CLASS_UPSTREAM_OVERLOADED,
     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
@@ -200,9 +208,24 @@ FAILURE_CATEGORY_RESUME_FAILED = "resume_failed"
 FAILURE_CATEGORY_GATEWAY_BYPASSED = "gateway_bypassed"
 FAILURE_CATEGORY_TIMEOUT = "timeout"
 FAILURE_CATEGORY_CANCELLED = "cancelled"
+# Legacy value remains readable, but is never returned for a new failure.
 FAILURE_CATEGORY_UNKNOWN = "unknown"
+FAILURE_CATEGORY_FLOW_CONFIG = "flow_config"
+FAILURE_CATEGORY_RUNNER_UNAVAILABLE = "runner_unavailable"
+FAILURE_CATEGORY_CI_AUTHORIZATION = "ci_authorization"
+FAILURE_CATEGORY_AGENT_REPORTED_FAILURE = "agent_reported_failure"
+FAILURE_CATEGORY_ORCHESTRATOR_ERROR = "orchestrator_error"
+FAILURE_CATEGORY_EXECUTION_ERROR = "execution_error"
+FAILURE_CATEGORY_MODEL_POLICY = "model_policy"
 
 FAILURE_CATEGORIES = (
+    FAILURE_CATEGORY_RUNNER_UNAVAILABLE,
+    FAILURE_CATEGORY_CI_AUTHORIZATION,
+    FAILURE_CATEGORY_FLOW_CONFIG,
+    FAILURE_CATEGORY_AGENT_REPORTED_FAILURE,
+    FAILURE_CATEGORY_ORCHESTRATOR_ERROR,
+    FAILURE_CATEGORY_EXECUTION_ERROR,
+    FAILURE_CATEGORY_MODEL_POLICY,
     FAILURE_CATEGORY_RUNNER_CONFLICT,
     FAILURE_CATEGORY_RUNNER_ERROR,
     FAILURE_CATEGORY_MODEL_TRANSIENT,
@@ -261,6 +284,7 @@ _ERROR_CLASS_CATEGORIES = {
     ERROR_CLASS_STREAM_ABANDONED: FAILURE_CATEGORY_MODEL_TRANSIENT,
     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED: FAILURE_CATEGORY_PROVIDER_BILLING,
     ERROR_CLASS_UPSTREAM_AUTH: FAILURE_CATEGORY_MODEL_AUTH,
+    ERROR_CLASS_UPSTREAM_POLICY_REFUSAL: FAILURE_CATEGORY_MODEL_POLICY,
     # The deployment never gave this hosted model a tariff. Nothing upstream
     # failed, and no retry can change it: it is a configuration fault.
     ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED: FAILURE_CATEGORY_MODEL_CONFIG,
@@ -285,7 +309,7 @@ _RUNNER_CONFLICT_RE = re.compile(
 # runtime's opaque "argument list too long"; its message must land in the
 # same category, since it is the same failure caught earlier.
 _RUNNER_ERROR_RE = re.compile(
-    r"failed to start agent (?:job|container|pod)"
+    r"failed to start (?:agent|Codex CLI|Gemini CLI|OpenCode CLI|Aider|OpenHands) (?:job|container|pod)"
     r"|failed to create (?:kubernetes )?job"
     r"|argument list too long"
     r"|launch payload exceeds"
@@ -309,7 +333,7 @@ _TIMEOUT_RE = re.compile(
 # "Execution stopped by user" / agent status STOPPED
 _CANCELLED_RE = re.compile(
     r"\b(?:stopped by (?:the )?user|cancelled by|canceled by|execution cancelled"
-    r"|execution canceled|halt requested)\b",
+    r"|execution canceled|halt requested|kill switch prevented agent launch)\b",
     re.IGNORECASE,
 )
 # 'AI_APICallError: Invalid authentication credentials', 'unexpected status
@@ -446,7 +470,9 @@ _VERIFICATION_BLOCKED_RE = re.compile(
     r"|Isolated verification check .+ failed with exit (?:126|127)\b"
     r"|Isolated verification exceeded its configured budget"
     r"|Isolated verifier runtime unavailable or removal unconfirmed"
-    r"|No required checks selected; publication blocked",
+    r"|No required checks selected; publication blocked"
+    r"|verification gate requires a valid trusted test profile"
+    r"|Missing trusted verifier runtime adapter",
     re.IGNORECASE | re.DOTALL,
 )
 _VERIFICATION_FAILED_RE = re.compile(
@@ -491,7 +517,7 @@ _AGENT_ERROR_RE = re.compile(
     r"|agent exited with"
     r"|monitoring error"
     r"|agent monitoring failed"
-    r"|confirmation round that the original task did not complete",
+    r"|confirmation round that the original task did not complete|exit status \d+",
     re.IGNORECASE,
 )
 
@@ -533,7 +559,92 @@ _MODEL_KEY_REJECTION_RE = re.compile(
     r"^provider rejected this model's API key", re.IGNORECASE
 )
 
+# Controller and adapter refusals. These are our own messages, rather than
+# guesses about arbitrary model prose.
+_FLOW_CONFIG_RE = re.compile(
+    r"native_result requires an enabled result_schema"
+    r"|(?:codex|opencode)_cli_version must be an exact release version"
+    r"|Invalid agent memory limit|Unsupported agent type:"
+    r"|Read-only review requires|Write API tokens cannot enter an isolated agent"
+    r"|host execution profiles cannot run on hosted compute"
+    r"|a host flow that runs in an authorized directory"
+    r"|Host profiles do not support remote workspace seeds"
+    r"|Unsupported private Docker harness|requires agent_config.host_exec_profile"
+    r"|Read-only review does not resume|Isolated agent clone requires"
+    r"|repo_index must be a non-negative int"
+    r"|Private publication requires a trusted policy snapshot"
+    r"|Isolated recovery has no publication policy"
+    r"|host_exec_profile|harness routing cannot run on hosted compute"
+    r"|host execution (?:does not|cannot)|isolated publication is unavailable",
+    re.IGNORECASE,
+)
+_AGENT_REPORTED_FAILURE_RE = re.compile(
+    r"Agent reported an explicit failure in result.json", re.IGNORECASE
+)
+_ADAPTER_MODEL_CONFIG_RE = re.compile(
+    r"No model specified for|A model endpoint is required for"
+    r"|A model credential is required for"
+    r"|AI model is not available to this flow account"
+    r"|Recorded routing model .+ is not available"
+    r"|No runner can take this run .+ fallback model",
+    re.IGNORECASE,
+)
+_ADAPTER_RUNNER_ERROR_RE = re.compile(
+    r"kubernetes_asyncio is not installed|Invalid native host lease"
+    r"|Runner execution no longer exists|Invalid Agent Control session reference"
+    r"|Private runner (?:launch|bootstrap script)|invalid private runner bootstrap script",
+    re.IGNORECASE,
+)
+_ORCHESTRATOR_ERROR_RE = re.compile(
+    r"NATS client not available|Completion event enqueue failed"
+    r"|Unsupported post-result failure|Flow with id .+ not found",
+    re.IGNORECASE,
+)
+
 _STRUCTURAL_MESSAGE_RULES = (
+    (
+        re.compile(
+            r"Private publication execution is no longer authorized|Private publication has no controller-accepted completion receipt|Agent runtime cleanup was not confirmed",
+            re.IGNORECASE,
+        ),
+        FAILURE_CATEGORY_PUBLICATION_MISSING,
+    ),
+    (
+        re.compile(
+            r"The runner owner declined this run, or the approval request timed out",
+            re.IGNORECASE,
+        ),
+        FAILURE_CATEGORY_APPROVAL_DENIED,
+    ),
+    (
+        re.compile(
+            r"No runner in pool .+ picked up this execution|No matching self-hosted runner for pool|No eligible runner took this run|No runner can take this run on harness [^:]+:",
+            re.IGNORECASE,
+        ),
+        FAILURE_CATEGORY_RUNNER_UNAVAILABLE,
+    ),
+    (
+        re.compile(r"Restricted CI .+ denied", re.IGNORECASE),
+        FAILURE_CATEGORY_CI_AUTHORIZATION,
+    ),
+    (
+        re.compile(
+            r"Read-only native permission credential binding is invalid|Token is not bound to a managed agent or active flow execution|PreToolUse hook .{0,30}403",
+            re.IGNORECASE,
+        ),
+        FAILURE_CATEGORY_HOOK_BINDING_INVALID,
+    ),
+    (
+        re.compile(
+            "|".join(map(re.escape, PROVIDER_POLICY_REFUSAL_MARKERS)), re.IGNORECASE
+        ),
+        FAILURE_CATEGORY_MODEL_POLICY,
+    ),
+    (_FLOW_CONFIG_RE, FAILURE_CATEGORY_FLOW_CONFIG),
+    (_AGENT_REPORTED_FAILURE_RE, FAILURE_CATEGORY_AGENT_REPORTED_FAILURE),
+    (_ADAPTER_MODEL_CONFIG_RE, FAILURE_CATEGORY_MODEL_CONFIG),
+    (_ADAPTER_RUNNER_ERROR_RE, FAILURE_CATEGORY_RUNNER_ERROR),
+    (_ORCHESTRATOR_ERROR_RE, FAILURE_CATEGORY_ORCHESTRATOR_ERROR),
     (_PROVIDER_SCHEMA_RE, FAILURE_CATEGORY_MODEL_CONFIG),
     (_MODEL_KEY_REJECTION_RE, FAILURE_CATEGORY_MODEL_AUTH),
     (_GATEWAY_BYPASSED_RE, FAILURE_CATEGORY_GATEWAY_BYPASSED),
@@ -606,6 +717,7 @@ def derive_failure_category(
     explicit_category: Optional[str] = None,
     failure_analysis: Any = None,
     exception: Optional[BaseException] = None,
+    fallback_category: str = FAILURE_CATEGORY_EXECUTION_ERROR,
 ) -> Optional[str]:
     """Classify one terminal execution outcome.
 
@@ -617,13 +729,14 @@ def derive_failure_category(
             over everything else.
         failure_analysis: The agent executor's log-analysis verdict
             (``AgentFailureAnalysis`` or its dict form), when present.
+        fallback_category: Layer that caught an otherwise unclassified failure.
         exception: Exception that ended the run, when the failure came from
             an exception path rather than an agent result.
 
     Returns:
         A value from :data:`FAILURE_CATEGORIES`, or None when the outcome was
         not a failure. Never raises: a failure that cannot be classified is
-        ``unknown``, and an execution is never left uncategorized because
+        named after the catching layer, and an execution is never left uncategorized because
         classification itself went wrong.
     """
     normalized_status = (status or "").strip().upper()
@@ -635,11 +748,17 @@ def derive_failure_category(
     if normalized_status in ("TIMEOUT", "TIMED_OUT"):
         return FAILURE_CATEGORY_TIMEOUT
 
-    if explicit_category in FAILURE_CATEGORIES:
+    if (
+        explicit_category in FAILURE_CATEGORIES
+        and explicit_category != FAILURE_CATEGORY_UNKNOWN
+    ):
         return explicit_category
 
     exception_category = getattr(exception, "category", None)
-    if exception_category in FAILURE_CATEGORIES:
+    if (
+        exception_category in FAILURE_CATEGORIES
+        and exception_category != FAILURE_CATEGORY_UNKNOWN
+    ):
         return exception_category
 
     text = " ".join(
@@ -652,6 +771,20 @@ def derive_failure_category(
         if text and pattern.search(text):
             return category
 
+    exception_type_categories = {
+        "WorkspaceSeedError": FAILURE_CATEGORY_FLOW_CONFIG,
+        "SessionRestoreError": FAILURE_CATEGORY_RESUME_FAILED,
+        "RunnerLaunchConfigurationChangedError": FAILURE_CATEGORY_FLOW_CONFIG,
+        "RunnerLaunchRejectedError": FAILURE_CATEGORY_RUNNER_ERROR,
+        "PublicationError": FAILURE_CATEGORY_PUBLICATION_MISSING,
+        "ExecutionStoppedError": FAILURE_CATEGORY_CANCELLED,
+        "FlowHaltActiveError": FAILURE_CATEGORY_CANCELLED,
+    }
+    if exception is not None:
+        for cls in type(exception).__mro__:
+            if cls.__name__ in exception_type_categories:
+                return exception_type_categories[cls.__name__]
+
     analysis_category = _from_failure_analysis(failure_analysis)
     if analysis_category is not None:
         return analysis_category
@@ -660,4 +793,9 @@ def derive_failure_category(
         if text and pattern.search(text):
             return category
 
-    return FAILURE_CATEGORY_UNKNOWN
+    return (
+        fallback_category
+        if fallback_category in FAILURE_CATEGORIES
+        and fallback_category != FAILURE_CATEGORY_UNKNOWN
+        else FAILURE_CATEGORY_EXECUTION_ERROR
+    )
