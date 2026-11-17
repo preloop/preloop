@@ -133,6 +133,41 @@ def inspection_root(flow: Any, binding: Mapping[str, Any]) -> str:
     return ""
 
 
+def _schema_view(node: Any, root: Any) -> Mapping[str, Any]:
+    """Follow local schema references for narrative and binding declarations.
+
+    Result validation remains the schema validator's responsibility. This
+    view only reads authored declarations and never resolves remote resources.
+    """
+    seen: set[str] = set()
+    while isinstance(node, Mapping) and isinstance(node.get("$ref"), str):
+        reference = node["$ref"]
+        if reference in seen or not (reference == "#" or reference.startswith("#/")):
+            break
+        seen.add(reference)
+        target = root
+        try:
+            for part in reference[2:].split("/") if reference.startswith("#/") else []:
+                part = part.replace("~1", "/").replace("~0", "~")
+                target = target[int(part)] if isinstance(target, list) else target[part]
+        except (KeyError, IndexError, TypeError, ValueError):
+            break
+        if not isinstance(target, Mapping):
+            break
+        sibling = {key: value for key, value in node.items() if key != "$ref"}
+        node = {**target, **sibling}
+        if "properties" in target or "properties" in sibling:
+            node["properties"] = {
+                **target.get("properties", {}),
+                **sibling.get("properties", {}),
+            }
+        if "required" in target or "required" in sibling:
+            node["required"] = list(
+                set(target.get("required", [])) | set(sibling.get("required", []))
+            )
+    return node if isinstance(node, Mapping) else {}
+
+
 def _bindings(flow: Any, result: Mapping[str, Any]) -> dict[str, tuple[str, bool]]:
     """Field to (fact, required). Explicit bindings are always required."""
     block = review_integrity_block(getattr(flow, "git_clone_config", None))
@@ -144,7 +179,8 @@ def _bindings(flow: Any, result: Mapping[str, Any]) -> dict[str, tuple[str, bool
             if fact in FACTS
         }
     schema = getattr(flow, "result_schema", None)
-    properties = schema.get("properties") if isinstance(schema, Mapping) else None
+    schema = _schema_view(schema, schema)
+    properties = schema.get("properties")
     declared = set(properties) if isinstance(properties, Mapping) else set()
     listed = schema.get("required") if isinstance(schema, Mapping) else None
     required = set(listed) if isinstance(listed, list) else set()
@@ -202,6 +238,9 @@ def degenerate_review(flow: Any, document: Mapping[str, Any]) -> bool:
             "status",
             "verdict",
             "severity",
+            "priority",
+            "confidence",
+            "result",
             "success",
             "container_termination",
         }
@@ -209,8 +248,10 @@ def degenerate_review(flow: Any, document: Mapping[str, Any]) -> bool:
     strings: list[str] = []
     required_strings: list[str] = []
 
+    root_schema = getattr(flow, "result_schema", None)
+
     def visit(value: Any, schema: Any, required: bool = False) -> None:
-        schema = schema if isinstance(schema, Mapping) else {}
+        schema = _schema_view(schema, root_schema)
         if "enum" in schema or "const" in schema:
             return
         if isinstance(value, str):

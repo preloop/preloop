@@ -250,3 +250,49 @@ def test_candidate_transport_preserves_each_existing_artifact_allowance(
         )["error"]
         == "result_artifact_too_large"
     )
+
+
+@pytest.mark.parametrize("link", ["temporary", "native", "file"])
+def test_capture_never_follows_agent_planted_links(tmp_path: Path, link: str) -> None:
+    from preloop.services.native_result import NATIVE_RESULT_PATH
+
+    native, result = tmp_path / "native.json", tmp_path / "result.json"
+    secret = tmp_path / "protected.json"
+    protected = json.dumps(document("Private unrelated contents"))
+    secret.write_text(protected)
+    native.write_text(json.dumps(document("Native review completed")))
+    result.write_text(json.dumps(document("File review completed")))
+    target = {
+        "temporary": result.with_suffix(".capture.tmp"),
+        "native": native,
+        "file": result,
+    }[link]
+    target.unlink(missing_ok=True)
+    target.symlink_to(secret)
+    script = CodexAgent._native_result_capture_block(
+        {
+            "agent_config": {"native_result": True},
+            "git_clone_config": {"publication_mode": "read_only"},
+        }
+    )
+    script = script.replace(NATIVE_RESULT_PATH, str(native)).replace(
+        "/workspace/result.json", str(result)
+    )
+    subprocess.run(["bash", "-c", script], check=True, capture_output=True)
+    assert secret.read_text() == protected
+    assert "Private unrelated contents" not in result.read_text()
+
+
+def test_capture_runs_only_after_workspace_reclamation() -> None:
+    with patch.object(CodexAgent, "_prepare_init_commands", return_value=""):
+        script = CodexAgent({})._build_codex_script(
+            {
+                "agent_config": {"native_result": True},
+                "git_clone_config": {"publication_mode": "read_only"},
+                "result_schema": SCHEMA,
+                "prompt": "Review",
+            }
+        )
+    assert script.rindex("Take the workspace back from the agent user") < script.index(
+        "native_path = Path("
+    )
