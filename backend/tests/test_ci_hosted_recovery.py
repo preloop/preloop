@@ -448,3 +448,34 @@ def test_oversized_job_name_total_does_not_allocate_a_matrix() -> None:
     assert not recovery.optional_capacity_finished(
         [job(name="Backend Tests (1/1000000000)", labels=["ubuntu-24.04"])]
     )
+
+
+def test_disk_preflight_failure_recovers_without_retrying_test_failures() -> None:
+    """Only a failed reserve check before tests is an infrastructure retry."""
+    disk = job(
+        status="completed",
+        conclusion="failure",
+        runner_id=1,
+        steps=[
+            {"name": "Check runner disk reserve", "conclusion": "failure"},
+            {"name": "Run tests", "conclusion": "skipped"},
+        ],
+    )
+    assert recovery.needs_recovery([disk], None, datetime.now(timezone.utc))
+    assert not recovery.unrelated_failure([disk], None)
+    disk["steps"][-1]["conclusion"] = "failure"
+    assert not recovery.disk_preflight_failed(disk)
+    assert recovery.unrelated_failure([disk], None)
+
+
+def test_recovery_no_longer_starts_for_every_requested_run() -> None:
+    """Only assigned capacity and failed completion events need a listener."""
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/ci-hosted-recovery.yml").read_text()
+    )
+    events = workflow.get("on", workflow.get(True))
+    assert events["workflow_run"]["types"] == ["completed"]
+    assert "workflow_dispatch" in events
+    starter = load_ci_jobs()["recover-capacity"]
+    assert "outputs.self_hosted == 'true'" in starter["if"]
+    assert "github.run_attempt == 1" in starter["if"]

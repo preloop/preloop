@@ -319,7 +319,9 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
         ("malformed", 0),
         ("disabled", 0),
         ("missing-token", 0),
-        ("many", 18),
+        ("standby", 0),
+        ("irrelevant", 0),
+        ("many", 7),
     ],
 )
 def test_real_selector_uses_available_capacity(
@@ -346,7 +348,7 @@ if case in {'unlabeled', 'hosted-alias'}:
     labels.remove('preloop-ci-general')
 if case == 'hosted-alias':
     labels.append('ubuntu-latest')
-runner = dict(status='offline' if case == 'offline' else 'online',
+runner = dict(name='deb1' if case == 'standby' else 'general', status='offline' if case == 'offline' else 'online',
               busy=case == 'busy', labels=[{'name': name} for name in labels])
 runners = [] if case == 'absent' else [runner] * (30 if case == 'many' else 3)
 if case == 'partial':
@@ -359,6 +361,7 @@ print(json.dumps({'runners': runners}))
         os.environ,
         PATH=f"{tmp_path}:{os.environ['PATH']}",
         CASE=case,
+        BACKEND_REQUIRED="false" if case == "irrelevant" else "true",
         TRUSTED_SOURCE="false" if case == "fork" else "true",
         RUNNER_READ_TOKEN="" if case == "missing-token" else "synthetic",
         SELF_HOSTED_TESTS="false" if case == "disabled" else "true",
@@ -374,7 +377,9 @@ print(json.dumps({'runners': runners}))
         timeout=15,
     )
     assert result.returncode == 0, result.stderr
-    plan = json.loads(output.read_text().splitlines()[1])
+    plan = json.loads(
+        output.read_text().split("backend_plan<<EOF\n", 1)[1].splitlines()[0]
+    )
     assert len(plan) == BACKEND_TEST_SPLITS + 1
     assert plan[0] is None
     private = [slot for slot in plan[1:] if isinstance(slot["runner"], list)]

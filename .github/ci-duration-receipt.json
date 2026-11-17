@@ -1,0 +1,28 @@
+{
+  "source_run": "44009022912",
+  "source_url": "https://github.com/preloop/preloop/actions/runs/44009022912",
+  "test_cases": 30045,
+  "files": 1539,
+  "group_seconds": [
+    327.471,
+    344.6770000000001,
+    343.0620000000001,
+    325.50800000000004,
+    359.668,
+    358.342,
+    326.065,
+    312.476,
+    358.1459999999999,
+    322.54,
+    320.911,
+    323.39799999999997,
+    312.2590000000001,
+    327.784,
+    316.52799999999974,
+    317.9399999999998,
+    295.14999999999986,
+    335.371
+  ],
+  "max_over_median": 1.1039990914295097,
+  "scope": "JUnit execution replay, not predicted wall time; measure each runner class after merge"
+}
