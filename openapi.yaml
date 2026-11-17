@@ -5695,10 +5695,9 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties:
-                  type: string
-                title: Response Sync Tracker Api V1 Trackers  Tracker Id  Sync Post
+                $ref: '#/components/schemas/TrackerSyncResponse'
+        '503':
+          description: Sync could not be queued
         '422':
           description: Validation Error
           content:
@@ -5709,8 +5708,6 @@ paths:
           description: Invalid or expired credential
         '403':
           description: Operation or resource denied for restricted CI credentials
-        '503':
-          description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/trackers/test-and-list-orgs:
     post:
@@ -57839,6 +57836,28 @@ components:
       - id
       title: TrackerScopeRuleResponse
       description: Schema for responding with tracker scope rule details.
+    TrackerSyncResponse:
+      properties:
+        status:
+          type: string
+          const: queued
+          title: Status
+          default: queued
+        tracker_id:
+          type: string
+          format: uuid
+          title: Tracker Id
+        task_id:
+          type: string
+          format: uuid
+          title: Task Id
+          description: Correlation ID included in sync worker logs
+      type: object
+      required:
+      - tracker_id
+      - task_id
+      title: TrackerSyncResponse
+      description: Receipt for a queued tracker sync.
     TrackerTestRequest:
       properties:
         tracker_id:
