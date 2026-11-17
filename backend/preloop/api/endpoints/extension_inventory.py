@@ -94,6 +94,7 @@ def list_approvals(
 @router.get(
     "/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}",
     response_model=ExtensionApprovalSummary,
+    responses={404: {"description": "Extension approval not found"}},
 )
 @require_permission("view_agents")
 def get_approval(

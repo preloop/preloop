@@ -53,6 +53,7 @@ async function mount(
     manage?: boolean;
     page?: ExtensionPage;
     loader?: (filters: ExtensionFilters) => Promise<ExtensionPage>;
+    accessLoader?: ExtensionInventory['accessLoader'];
     updater?: ExtensionInventory['updater'];
   } = {}
 ): Promise<ExtensionInventory> {
@@ -60,7 +61,7 @@ async function mount(
     html`<extension-inventory
       .fingerprint=${options.device ? installed.fingerprint : ''}
       .loader=${options.loader ?? (async () => options.page ?? (options.device ? devicePage() : aggregatePage()))}
-      .accessLoader=${async () => ({ view: true, manage: options.manage ?? false })}
+      .accessLoader=${options.accessLoader ?? (async () => ({ view: true, manage: options.manage ?? false }))}
       .updater=${options.updater ?? (async () => {})}
     ></extension-inventory>`
   );
@@ -69,6 +70,50 @@ async function mount(
 }
 
 describe('extension inventory', () => {
+  for (const device of [false, true]) {
+    // protects=one initial fetch per view; fails_when=lifecycle hooks duplicate
+    // requests; no_claim=fixture loaders count calls without a live backend.
+    it(`loads access and inventory once on the initial ${device ? 'device' : 'account'} render`, async () => {
+      let accessCalls = 0;
+      const calls: ExtensionFilters[] = [];
+      const element = await mount({
+        device,
+        accessLoader: async () => {
+          accessCalls++;
+          return { view: true, manage: false };
+        },
+        loader: async (filters) => {
+          calls.push(filters);
+          return device ? devicePage() : aggregatePage();
+        },
+      });
+      await element.updateComplete;
+      expect(accessCalls).to.equal(1);
+      expect(calls.map((filters) => filters.fingerprint)).to.deep.equal([
+        device ? installed.fingerprint : undefined,
+      ]);
+
+      element.fingerprint = 'd'.repeat(64);
+      await waitUntil(() => calls.length >= 2);
+      await element.updateComplete;
+      expect(accessCalls).to.equal(2);
+      expect(calls.map((filters) => filters.fingerprint)).to.deep.equal([
+        device ? installed.fingerprint : undefined,
+        'd'.repeat(64),
+      ]);
+
+      element.fingerprint = '';
+      await waitUntil(() => calls.length >= 3);
+      await element.updateComplete;
+      expect(accessCalls).to.equal(3);
+      expect(calls.map((filters) => filters.fingerprint)).to.deep.equal([
+        device ? installed.fingerprint : undefined,
+        'd'.repeat(64),
+        undefined,
+      ]);
+    });
+  }
+
   // protects=device facts and hash-only provenance; fails_when=columns or scope
   // are missing; no_claim=synthetic HTTP DTO, no agent execution evidence.
   it('renders device columns and hash prefixes without an approval editor for viewers', async () => {

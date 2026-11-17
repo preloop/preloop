@@ -1,6 +1,7 @@
 """Tenant and permission boundaries for a single extension decision lookup."""
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -9,6 +10,19 @@ from preloop.models.crud import crud_extension_approval
 from preloop.schemas.discovered_extension import ExtensionApprovalUpdate
 
 PATH = "/api/v1/agents/extension-approvals/claude_code/plugin/reviewer@community"
+
+
+def test_approval_lookup_documents_missing_decision(
+    client: TestClient, app: FastAPI
+) -> None:
+    """Keep the missing-decision response in the generated API contract."""
+    response = client.get(PATH)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Extension approval not found"
+    operation = app.openapi()["paths"][
+        "/api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}"
+    ]["get"]
+    assert operation["responses"]["404"]["description"] == response.json()["detail"]
 
 
 def test_approval_lookup_is_tenant_scoped(

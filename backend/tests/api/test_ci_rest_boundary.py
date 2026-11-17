@@ -181,6 +181,12 @@ def test_route_inventory_includes_lazy_hidden_and_new_routes(app: Any) -> None:
     assert actual["GET /api/v1/agents/extension-approvals"] == "deny"
     assert (
         actual[
+            "GET /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}"
+        ]
+        == "deny"
+    )
+    assert (
+        actual[
             "PUT /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}"
         ]
         == "deny"

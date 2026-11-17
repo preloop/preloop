@@ -2185,6 +2185,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ExtensionApprovalSummary'
+        '404':
+          description: Extension approval not found
         '422':
           description: Validation Error
           content:
