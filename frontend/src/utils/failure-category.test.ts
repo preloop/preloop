@@ -17,6 +17,7 @@ describe('failure-category', () => {
     expect(Object.keys(FAILURE_CATEGORY_META)).to.have.members([
       'flow_config',
       'agent_reported_failure',
+      'agent_tool_loop',
       'orchestrator_error',
       'execution_error',
       'model_policy',

@@ -8,6 +8,8 @@ decision (or timeout) and returns a simple allow/deny.
 """
 
 import logging
+import re
+import shlex
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Dict, Literal, Optional
@@ -346,6 +348,23 @@ def _native_tool_status(
     return "allowed" if decision == "allow" else "denied"
 
 
+def _native_command_name(arguments: dict[str, Any]) -> str | None:
+    """Identify the executable for loop diagnostics without retaining arguments."""
+    command = arguments.get("command") or arguments.get("cmd")
+    if not isinstance(command, str):
+        return None
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return None
+    for word in words:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", word):
+            continue
+        name = word.rsplit("/", 1)[-1]
+        return name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name) else None
+    return None
+
+
 def _record_native_tool_call(
     identity: PermissionIdentity,
     *,
@@ -363,7 +382,9 @@ def _record_native_tool_call(
     call decided by a hook was neither, so a watcher saw approvals but not
     the calls around them. The row has the same shape as an MCP tool call:
     tool name, outcome, and an arguments summary of key names and sizes only,
-    never the values. The live event is the ``runtime_session_updated`` event
+    never the values. A bounded executable name identifies repeated commands;
+    command arguments and paths are not retained. The live event is the
+    ``runtime_session_updated`` event
     MCP calls already emit, with the decision fields added.
 
     Never raises: the decision has been made and must reach the agent.
@@ -392,6 +413,26 @@ def _record_native_tool_call(
         "arguments_summary": _summarize_arguments(arguments),
         "arguments_hash": _hash_arguments(arguments),
     }
+    command_name = _native_command_name(arguments)
+    if command_name:
+        from preloop.services.sensitive_data.storage import (
+            StorageScope,
+            apply_storage_redaction,
+        )
+        from preloop.utils.secret_scrubbing import scrub_secrets
+
+        metadata["command_name"] = apply_storage_redaction(
+            identity.account_id,
+            scrub_secrets(command_name),
+            scope=StorageScope(
+                target="tool.args",
+                tool_name=payload.tool_name,
+                server_name=source,
+                managed_agent_id=str(identity.managed_agent_id)
+                if identity.managed_agent_id
+                else None,
+            ),
+        )
     if approval_request_id:
         metadata["approval_request_id"] = approval_request_id
     work_ref = _native_work_ref(payload)

@@ -56,9 +56,13 @@ from preloop.agents.verification import (
     VERIFICATION_DENIED_MARKER,
     VERIFICATION_MARKER,
 )
-from preloop.services.flow_failure_messages import AGENT_REPORTED_FAILURE
+from preloop.services.flow_failure_messages import (
+    AGENT_REPORTED_FAILURE,
+    AGENT_TOOL_LOOP,
+)
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_AGENT_NO_PROGRESS,
+    FAILURE_CATEGORY_AGENT_TOOL_LOOP,
     FAILURE_CATEGORY_PUBLICATION_MISSING,
     FAILURE_CATEGORY_RESULT_SCHEMA_INVALID,
     FAILURE_CATEGORY_MODEL_STREAM_IDLE,
@@ -4569,7 +4573,7 @@ class FlowExecutionOrchestrator:
         )
 
     def _get_recent_runtime_tool_activity_signatures(
-        self, limit: int = 12
+        self, limit: int = 32
     ) -> list[str]:
         """Return recent tool-call signatures, including failures, for loop detection."""
         if not self.execution_log:
@@ -4593,6 +4597,7 @@ class FlowExecutionOrchestrator:
                 # Key names and sizes only; the payload is never
                 # persisted on the activity row (issue #793).
                 "arguments_summary": metadata.get("arguments_summary"),
+                "command_name": metadata.get("command_name"),
             }
             # Prefer arguments_hash so same-shape/different-value calls
             # (get_pr(123) vs get_pr(124)) do not share a signature.
@@ -4666,6 +4671,12 @@ class FlowExecutionOrchestrator:
                 tail[index * pattern_length : (index + 1) * pattern_length] == pattern
                 for index in range(repetitions)
             ):
+                # The threshold proves a loop; report the whole observed streak.
+                while len(signatures) >= (repetitions + 1) * pattern_length:
+                    start = len(signatures) - (repetitions + 1) * pattern_length
+                    if signatures[start : start + pattern_length] != pattern:
+                        break
+                    repetitions += 1
                 decoded_pattern = [json.loads(item) for item in pattern]
                 return {
                     "pattern_length": pattern_length,
@@ -8733,13 +8744,15 @@ class FlowExecutionOrchestrator:
                 if loop_detection:
                     repeated_tools = ", ".join(
                         f"{item.get('server_name')}/{item.get('tool_name')}"
+                        + (
+                            f" (command {item['command_name']})"
+                            if item.get("command_name")
+                            else ""
+                        )
                         for item in loop_detection["pattern"]
                     )
-                    error_message = (
-                        "Execution stopped after detecting a repeated tool loop: "
-                        f"{repeated_tools} repeated "
-                        f"{loop_detection['repetitions']} times with identical "
-                        "arguments."
+                    error_message = AGENT_TOOL_LOOP.format(
+                        tools=repeated_tools, repetitions=loop_detection["repetitions"]
                     )
                     logger.warning(error_message)
                     self.execution_logger.log_milestone(
@@ -8758,6 +8771,7 @@ class FlowExecutionOrchestrator:
                     return {
                         "status": "FAILED",
                         "error_message": error_message,
+                        "failure_category": FAILURE_CATEGORY_AGENT_TOOL_LOOP,
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                         # Capture whatever the agent reported before it got

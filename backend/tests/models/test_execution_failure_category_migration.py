@@ -31,17 +31,22 @@ def test_category_backfill_and_guard(db_engine: Engine) -> None:
         )
         connection.execute(
             text(
-                "INSERT INTO flow_execution VALUES ('FAILED', 'native_result requires an enabled result_schema', NULL), ('FAILED', 'Agent reported an explicit failure in result.json', 'unknown'), ('RUNNING', NULL, NULL)"
+                "INSERT INTO flow_execution VALUES ('FAILED', 'native_result requires an enabled result_schema', NULL), ('FAILED', 'Agent reported an explicit failure in result.json', 'unknown'), ('RUNNING', NULL, NULL), ('FAILED', 'Execution stopped after detecting a repeated tool loop: native/Bash repeated 20 times with identical arguments.', 'unknown')"
             )
         )
         with Operations.context(MigrationContext.configure(connection)):
             migration.upgrade()
         assert connection.execute(
             text("SELECT failure_category FROM flow_execution ORDER BY error_message")
-        ).scalars().all() == ["agent_reported_failure", "flow_config", None]
+        ).scalars().all() == [
+            "agent_reported_failure",
+            "agent_tool_loop",
+            "flow_config",
+            None,
+        ]
         connection.execute(
             text(
-                "INSERT INTO flow_execution VALUES ('FAILED', 'unexpected failure', NULL)"
+                "INSERT INTO flow_execution VALUES ('FAILED', 'unexpected failure', NULL), ('ABORTED', 'aborted execution', NULL)"
             )
         )
         connection.execute(

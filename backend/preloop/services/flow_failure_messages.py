@@ -12,6 +12,11 @@ AGENT_REPORTED_FAILURE = (
     "Agent reported an explicit failure in result.json ({field}={value!r})."
 )
 
+AGENT_TOOL_LOOP = (
+    "Execution stopped after detecting a repeated tool loop: {tools} repeated "
+    "at least {repetitions} times with identical arguments."
+)
+
 RUNNER_UNAVAILABLE = (
     "No runner in pool {pool!r} picked up this execution after {wait_seconds} seconds. "
     "Check that a runner is online and eligible for this pool."
@@ -29,6 +34,7 @@ FAILURE_MESSAGE_CATEGORIES: dict[str, str] = {
     NATIVE_RESULT_SCHEMA_REQUIRED: "flow_config",
     AGENT_REPORTED_FAILURE: "agent_reported_failure",
     RUNNER_UNAVAILABLE: "runner_unavailable",
+    AGENT_TOOL_LOOP: "agent_tool_loop",
     CI_AUTHORIZATION_DENIED: "ci_authorization",
     CI_FLOW_DENIED: "ci_authorization",
     CI_REVIEW_DENIED: "ci_authorization",

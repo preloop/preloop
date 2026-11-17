@@ -14,7 +14,7 @@ depends_on = None
 
 # A storage fallback protects bulk updates and workers still running an older
 # version. Rich classification remains in the application; storage only names
-# the two unambiguous legacy messages, otherwise the execution write boundary.
+# unambiguous legacy messages, otherwise the execution write boundary.
 CATEGORY_SQL = """
 CASE
     WHEN status IN ('TIMEOUT', 'TIMED_OUT') THEN 'timeout'
@@ -22,6 +22,7 @@ CASE
         THEN 'flow_config'
     WHEN error_message ILIKE '%explicit failure in result.json%'
         THEN 'agent_reported_failure'
+    WHEN error_message ILIKE '%repeated%tool loop:%' THEN 'agent_tool_loop'
     ELSE 'execution_error'
 END
 """
@@ -31,13 +32,13 @@ def upgrade() -> None:
     """Backfill uncategorized failures and guard all future terminal writes."""
     op.execute(
         f"""UPDATE flow_execution SET failure_category = {CATEGORY_SQL}
-        WHERE status IN ('FAILED', 'ERROR', 'TIMEOUT', 'TIMED_OUT')
+        WHERE status IN ('FAILED', 'ERROR', 'TIMEOUT', 'TIMED_OUT', 'ABORTED')
           AND (failure_category IS NULL OR failure_category IN ('', 'unknown'))"""
     )
     op.execute("""
         CREATE FUNCTION ensure_flow_failure_category() RETURNS trigger AS $$
         BEGIN
-            IF NEW.status IN ('FAILED', 'ERROR', 'TIMEOUT', 'TIMED_OUT')
+            IF NEW.status IN ('FAILED', 'ERROR', 'TIMEOUT', 'TIMED_OUT', 'ABORTED')
                AND (NEW.failure_category IS NULL
                     OR NEW.failure_category IN ('', 'unknown')) THEN
                 NEW.failure_category := CASE
@@ -47,6 +48,8 @@ def upgrade() -> None:
                         THEN 'flow_config'
                     WHEN NEW.error_message ILIKE '%explicit failure in result.json%'
                         THEN 'agent_reported_failure'
+                    WHEN NEW.error_message ILIKE '%repeated%tool loop:%'
+                        THEN 'agent_tool_loop'
                     ELSE 'execution_error'
                 END;
             END IF;

@@ -675,3 +675,14 @@ def test_typed_failure_uses_its_own_layer(name: str, category: str) -> None:
         derive_failure_category(status="FAILED", exception=error_type("detail"))
         == category
     )
+
+
+def test_legacy_tool_loop_failure_is_named() -> None:
+    """Existing loop-stop messages retain their own cause after backfill."""
+    assert (
+        derive_failure_category(
+            status="FAILED",
+            error_message="Execution stopped after detecting a repeated tool loop: native/Bash repeated 20 times with identical arguments.",
+        )
+        == "agent_tool_loop"
+    )

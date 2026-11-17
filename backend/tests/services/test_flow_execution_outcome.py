@@ -8,7 +8,9 @@ from preloop.services.flow_execution_outcome import normalize_execution_outcome
 
 
 @pytest.mark.parametrize("category", [None, "", "unknown"])
-@pytest.mark.parametrize("status", ["FAILED", "ERROR", "TIMEOUT", "TIMED_OUT"])
+@pytest.mark.parametrize(
+    "status", ["FAILED", "ERROR", "TIMEOUT", "TIMED_OUT", "ABORTED"]
+)
 def test_missing_category_is_named(status: str, category: str | None) -> None:
     """Both fresh failures and legacy categories receive a persistence fallback."""
     values = {"status": status, "failure_category": category}

@@ -130,6 +130,8 @@ it*, not about severity:
     The execution exceeded its wall-clock budget.
 ``cancelled``
     A human (or a policy) stopped the run.
+``agent_tool_loop``
+    The agent repeated the same tool calls without progress and was stopped.
 ``flow_config``
     The saved flow configuration cannot run.
 ``agent_reported_failure``
@@ -210,6 +212,7 @@ FAILURE_CATEGORY_TIMEOUT = "timeout"
 FAILURE_CATEGORY_CANCELLED = "cancelled"
 # Legacy value remains readable, but is never returned for a new failure.
 FAILURE_CATEGORY_UNKNOWN = "unknown"
+FAILURE_CATEGORY_AGENT_TOOL_LOOP = "agent_tool_loop"
 FAILURE_CATEGORY_FLOW_CONFIG = "flow_config"
 FAILURE_CATEGORY_RUNNER_UNAVAILABLE = "runner_unavailable"
 FAILURE_CATEGORY_CI_AUTHORIZATION = "ci_authorization"
@@ -219,6 +222,7 @@ FAILURE_CATEGORY_EXECUTION_ERROR = "execution_error"
 FAILURE_CATEGORY_MODEL_POLICY = "model_policy"
 
 FAILURE_CATEGORIES = (
+    FAILURE_CATEGORY_AGENT_TOOL_LOOP,
     FAILURE_CATEGORY_RUNNER_UNAVAILABLE,
     FAILURE_CATEGORY_CI_AUTHORIZATION,
     FAILURE_CATEGORY_FLOW_CONFIG,
@@ -269,7 +273,7 @@ FAILURE_CATEGORY_MAX_LENGTH = 32
 # so callers holding only an exception can still classify it. The flows-list
 # window ``failed`` count uses the same set so a TIMEOUT is not a silent
 # success next to a FAILED.
-FAILURE_STATUSES = frozenset({"FAILED", "ERROR", "TIMEOUT", "TIMED_OUT"})
+FAILURE_STATUSES = frozenset({"FAILED", "ERROR", "TIMEOUT", "TIMED_OUT", "ABORTED"})
 _FAILURE_STATUSES = FAILURE_STATUSES
 _CANCELLED_STATUSES = frozenset({"STOPPED", "CANCELLED", "CANCELED"})
 
@@ -639,6 +643,13 @@ _STRUCTURAL_MESSAGE_RULES = (
             "|".join(map(re.escape, PROVIDER_POLICY_REFUSAL_MARKERS)), re.IGNORECASE
         ),
         FAILURE_CATEGORY_MODEL_POLICY,
+    ),
+    (
+        re.compile(
+            r"Execution stopped after detecting a repeated (?:MCP )?tool loop:",
+            re.IGNORECASE,
+        ),
+        FAILURE_CATEGORY_AGENT_TOOL_LOOP,
     ),
     (_FLOW_CONFIG_RE, FAILURE_CATEGORY_FLOW_CONFIG),
     (_AGENT_REPORTED_FAILURE_RE, FAILURE_CATEGORY_AGENT_REPORTED_FAILURE),

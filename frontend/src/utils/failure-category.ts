@@ -41,6 +41,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The flow configuration cannot run. Correct the settings shown in the error before running again.',
   },
+  agent_tool_loop: {
+    label: 'repeated tool loop',
+    tooltip:
+      'The agent repeated identical tool calls without progress, so the run stopped. The execution message names the tool and repeat count.',
+  },
   agent_reported_failure: {
     label: 'agent reported failure',
     tooltip:
