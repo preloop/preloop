@@ -723,3 +723,28 @@ async def test_launch_the_cli_would_refuse_is_a_named_launch_error(
     )
     assert "launch" not in delivered
     assert match.split(" is ")[0] in delivered["launch_error"]
+
+
+@pytest.mark.parametrize("status", ["SUCCEEDED", "FAILED"])
+def test_runner_result_error_has_named_failure(status: str) -> None:
+    """Both upgraded and older runners retain explicit result failure details."""
+    from preloop.services.flow_failure_category import derive_failure_category
+
+    result = {"status": "success", "verdict": "error"}
+    stored_status, error, retained = validate_runner_completion(
+        {
+            "status": status,
+            "exit_code": 0,
+            "completion_protocol": "docker_v1",
+            "launch_version": 1,
+            "result": result,
+        },
+        leased_job={"launch_version": 1, "agent_type": "codex"},
+    )
+    assert stored_status == "FAILED"
+    assert "verdict='error'" in error
+    assert retained == result
+    assert (
+        derive_failure_category(status=stored_status, error_message=error)
+        == "agent_reported_failure"
+    )

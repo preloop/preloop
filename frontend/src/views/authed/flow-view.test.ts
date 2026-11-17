@@ -1436,3 +1436,36 @@ describe('FlowView leave guard', () => {
     }
   });
 });
+
+describe('FlowView invalid native results', () => {
+  for (const validate of [true, false]) {
+    it(`shows a saved configuration problem (validation ${validate})`, async () => {
+      const element = document.createElement('flow-view') as any;
+      element.flowReady = true;
+      element.isNew = false;
+      element.isEditing = false;
+      element.initialized = true;
+      element.flow = {
+        id: 'flow-1',
+        name: 'Review',
+        agent_type: 'codex',
+        agent_config: { native_result: true },
+        result_schema: validate ? null : { type: 'object' },
+        validate_result: validate,
+      };
+      document.body.appendChild(element);
+      await element.updateComplete;
+      try {
+        const warning = element.shadowRoot.querySelector(
+          '[data-native-result-error]'
+        );
+        expect(warning).not.to.equal(null);
+        expect(warning.textContent).to.contain(
+          'Native results require a result schema'
+        );
+      } finally {
+        element.remove();
+      }
+    });
+  }
+});

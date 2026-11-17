@@ -1,8 +1,8 @@
 """Native Codex structured results: when they are on, and cold-start rules.
 
 ``agent_config.native_result`` asks the Codex CLI to constrain its final
-answer to the flow's ``result_schema`` and write it to ``result.json``
-itself. An explicit ``true`` or ``false`` on the flow always wins. When the
+answer to the flow's ``result_schema`` and capture it independently of
+an agent-written ``result.json``. An explicit ``true`` or ``false`` on the flow always wins. When the
 key is absent it defaults to on for Codex review flows (the Codex review
 presets, and any flow in read-only review mode) that have an enabled result
 schema, because a review that exits 0 without writing its own result is the
@@ -165,3 +165,74 @@ def cold_start_context(context: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         return context, False
     cleaned = {key: value for key, value in context.items() if key not in RESTORE_KEYS}
     return cleaned, True
+
+
+def validate_native_result_config(
+    agent_config: Any, result_schema: Any, validate_result: Any
+) -> None:
+    """Reject native capture without its enabled schema before launching.
+
+    Raises:
+        ValueError: Native results were explicitly enabled without validation.
+    """
+    if native_result_enabled(agent_config) and (
+        not result_schema or validate_result is False
+    ):
+        from preloop.services.flow_failure_messages import NATIVE_RESULT_SCHEMA_REQUIRED
+
+        raise ValueError(NATIVE_RESULT_SCHEMA_REQUIRED)
+
+
+RESULT_DOCUMENT_MAX_BYTES = 256 * 1024
+RESULT_TRANSPORT_MAX_BYTES = 2 * RESULT_DOCUMENT_MAX_BYTES + 1024
+
+NATIVE_RESULT_PATH = "/workspace/.preloop-native-result.json"
+NATIVE_CANDIDATES_KEY = "_preloop_native_result_candidates_v1"
+
+# Stdlib-only transport packaging. Neither candidate is trusted here; schema
+# and integrity validation remain controller responsibilities. File writes are
+# atomic so a concurrent capture sees either the original file or both candidates.
+NATIVE_RESULT_CAPTURE = r"""
+import json, os
+from pathlib import Path
+from typing import Any
+native_path = Path("/workspace/.preloop-native-result.json")
+result_path = Path("/workspace/result.json")
+def read(path: Path) -> Any:
+    try:
+        with path.open("rb") as source:
+            raw = source.read(256 * 1024 + 1)
+        if len(raw) > 256 * 1024:
+            return {"error": "result_artifact_too_large"}
+        return json.loads(raw)
+    except (OSError, ValueError):
+        return None
+native = read(native_path)
+if native is not None:
+    file_result = read(result_path)
+    key = "_preloop_native_result_candidates_v1"
+    if isinstance(file_result, dict) and key in file_result:
+        file_result = file_result[key].get("file")
+    temporary = result_path.with_suffix(".capture.tmp")
+    temporary.write_text(json.dumps({key: {"native": native, "file": file_result}}, ensure_ascii=False, separators=(",", ":")))
+    os.replace(temporary, result_path)
+"""
+
+
+def result_transport_within_limit(document: Any) -> bool:
+    """Keep the existing per-document limit when transporting two candidates."""
+    import json
+
+    candidates = (
+        document.get(NATIVE_CANDIDATES_KEY) if isinstance(document, dict) else None
+    )
+    values = (
+        (candidates.get("native"), candidates.get("file"))
+        if isinstance(candidates, dict)
+        else (document,)
+    )
+    return all(
+        len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
+        <= RESULT_DOCUMENT_MAX_BYTES
+        for value in values
+    )

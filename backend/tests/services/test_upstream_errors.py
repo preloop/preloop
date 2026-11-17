@@ -348,3 +348,37 @@ def test_hosted_credit_hold_is_retryable_without_upstream_rate_limit_class() -> 
     assert classified.error_class == ERROR_CLASS_HOSTED_CREDIT_RESERVED
     assert classified.retry_after_seconds == 1
     assert is_retryable_upstream_failure(error)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "This request was blocked by our safety systems. Reason: Potentially unintended activity.",
+        '{"error":{"type":"invalid_request_error","code":"content_policy_violation","message":"Request refused"}}',
+        "AnthropicError - Output blocked by content filtering policy",
+        "VertexAIException - The response was blocked.",
+        "ContentPolicyViolationError: provider rejected the request",
+    ],
+)
+@pytest.mark.parametrize("status", [None, 400, 403, 502])
+def test_policy_refusal_is_terminal_even_in_a_server_error(
+    message: str, status: int | None
+) -> None:
+    """Observed safety wording and SDK-mapped policy errors never retry."""
+    exc = _FakeHTTPError(message, status_code=status)
+    classified = classify_upstream_error(exc)
+    assert classified is not None
+    assert classified.error_class == "upstream_policy_refusal"
+    assert classified.status_code == (status if status in (400, 403) else 400)
+    assert classified.terminal
+    assert not is_retryable_upstream_failure(exc)
+    assert classify_recorded_error(status or 502, message) == "upstream_policy_refusal"
+
+
+def test_generic_policy_word_does_not_claim_a_refusal() -> None:
+    """Unrelated provider outages can mention policy without being refusals."""
+    classified = classify_upstream_error(
+        _FakeHTTPError("policy server unavailable", status_code=503)
+    )
+    assert classified is not None
+    assert classified.error_class == "upstream_overloaded"

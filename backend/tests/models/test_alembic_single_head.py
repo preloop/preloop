@@ -651,4 +651,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
         indexes.revision,
         grant_evidence.revision,
     }
-    assert script.get_heads() == [joined_evidence.revision]
+    failure_category = script.get_revision("20261220_execution_failure")
+    assert failure_category.down_revision == joined_evidence.revision
+    assert script.get_heads() == [failure_category.revision]

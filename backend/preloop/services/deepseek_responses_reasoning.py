@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
+from preloop.services.model_family import is_deepseek_family
 from preloop.utils.encryption import decrypt_value, encrypt_value
 
 _PURPOSE = "preloop.deepseek.responses-reasoning.v1"
@@ -26,8 +27,10 @@ class DeepSeekResponsesReasoning:
     def for_model(
         cls, model: Any, account_id: Any
     ) -> "DeepSeekResponsesReasoning | None":
-        """Enable only the resolved native DeepSeek provider's chat adapter."""
-        if str(getattr(model, "provider_name", "")).lower() != "deepseek":
+        """Enable DeepSeek chat reasoning, including namespaced aggregator routes."""
+        if str(getattr(model, "provider_name", "")).lower() != "deepseek" and not (
+            is_deepseek_family(str(getattr(model, "model_identifier", "")))
+        ):
             return None
         return cls(
             str(account_id),

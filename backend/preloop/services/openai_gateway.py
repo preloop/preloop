@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -120,6 +121,7 @@ from preloop.services.agent_session_headers import (
     runtime_principal_type,
 )
 from preloop.services import alibaba_pricing
+from preloop.services import context_truncation
 from preloop.services import kill_switch as kill_switch_service
 from preloop.services.context_optimization import (
     ContextOptimizationStats,
@@ -181,6 +183,7 @@ from preloop.services.upstream_errors import (
     ERROR_CLASS_NETWORK,
     ERROR_CLASS_STREAM_ABANDONED,
     ERROR_CLASS_UPSTREAM_DISCONNECT,
+    ERROR_CLASS_UPSTREAM_POLICY_REFUSAL,
     ERROR_CLASS_UPSTREAM_OVERLOADED,
     ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED,
     classify_recorded_error,
@@ -605,11 +608,14 @@ def _is_openrouter_upstream(ai_model: GatewayModel) -> bool:
 #: but rejects ``json_schema`` with an HTTP 400 ("This response_format type is
 #: unavailable now"), although LiteLLM's catalog lists schema support.
 _JSON_OBJECT_ONLY_HOSTS = frozenset({"api.deepseek.com"})
-_JSON_OBJECT_ONLY_MODEL_PREFIXES = ("deepseek/",)
 
 
 def _upstream_supports_json_object_only(kwargs: Dict[str, Any]) -> bool:
     """Whether the resolved upstream supports JSON mode but not JSON schemas."""
+    from preloop.services.model_family import is_deepseek_family
+
+    if is_deepseek_family(str(kwargs.get("model") or "")):
+        return True
     api_base = kwargs.get("api_base")
     if isinstance(api_base, str) and api_base.strip():
         try:
@@ -617,8 +623,7 @@ def _upstream_supports_json_object_only(kwargs: Dict[str, Any]) -> bool:
         except ValueError:
             return False
         return (host or "").lower() in _JSON_OBJECT_ONLY_HOSTS
-    model = str(kwargs.get("model") or "").lower()
-    return model.startswith(_JSON_OBJECT_ONLY_MODEL_PREFIXES)
+    return False
 
 
 def _json_schema_as_json_mode(
@@ -1458,6 +1463,8 @@ class OpenAIGatewayService:
         self._last_upstream_parameters = {}
         self._last_alibaba_cache_mode = None
         self._codex_transport_meta = None
+        self._context_input_estimate: Optional[int] = None
+        self._context_preflight_signal: Optional[Dict[str, Any]] = None
         self.last_usage_id = None
         # A fresh identity for every request, including one that never reaches
         # usage recording. Re-arming here (rather than minting at first use)
@@ -2398,6 +2405,7 @@ class OpenAIGatewayService:
         messages = self._normalize_responses_input_recorded(
             payload, ai_model=model, endpoint_kind="responses"
         )
+        payload = self._defer_codex_response_format(payload, messages)
         started_at = time.perf_counter()
         self._reject_if_gateway_halted(
             endpoint="/openai/v1/responses",
@@ -3830,6 +3838,7 @@ class OpenAIGatewayService:
         messages = self._normalize_responses_input_recorded(
             payload, ai_model=model, endpoint_kind="responses_stream"
         )
+        payload = self._defer_codex_response_format(payload, messages)
         started_at = time.perf_counter()
         self._reject_if_gateway_halted(
             endpoint="/openai/v1/responses",
@@ -5512,6 +5521,9 @@ class OpenAIGatewayService:
         if stream:
             upstream_payload["stream"] = True
         self._record_effective_request_parameters(upstream_payload)
+        self._check_context_window(
+            ai_model, upstream_payload, gateway_provider="openai"
+        )
         return upstream_payload
 
     # Default ``instructions`` used when a chat-completions request targets a
@@ -6319,7 +6331,7 @@ class OpenAIGatewayService:
                     maybe_usage = resp.get("usage")
                     if isinstance(maybe_usage, dict):
                         usage = maybe_usage
-                continue
+                break
 
             if event_type in {"response.failed", "response.error", "error"}:
                 resp = event.get("response") or event
@@ -7303,6 +7315,8 @@ class OpenAIGatewayService:
             ai_model, payload.get("model")
         )
         body["stream"] = bool(stream)
+        self._context_input_estimate = context_truncation.estimate_request_input(body)
+        self._check_context_window(ai_model, body, gateway_provider="anthropic")
 
         base_url = (
             str(ai_model.api_endpoint).rstrip("/")
@@ -7933,6 +7947,7 @@ class OpenAIGatewayService:
         governed_payload = rewrite_crosschat_responses_input(governed_payload)
         body = build_passthrough_body(ai_model, governed_payload, stream=stream)
         self._record_effective_request_parameters(body)
+        self._check_context_window(ai_model, body, gateway_provider="openai")
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -7968,6 +7983,7 @@ class OpenAIGatewayService:
             or "OpenAI Responses upstream error"
         )
         error_type: Optional[str] = None
+        parsed: Any = None
         try:
             parsed = json.loads(body_text)
             error = parsed.get("error") if isinstance(parsed, dict) else None
@@ -7984,6 +8000,7 @@ class OpenAIGatewayService:
                 self.status_code = status_code
                 self.message = message
                 self.error_type = error_type
+                self.body = parsed
                 self.response = httpx.Response(status_code, headers=headers)
                 super().__init__(message)
 
@@ -8238,11 +8255,10 @@ class OpenAIGatewayService:
                             state["usage"] = self._merge_usage_dicts(
                                 state["usage"], response_obj["usage"]
                             )
-                        if isinstance(response_obj.get("output_text"), str):
-                            state["snapshot_text"] = response_obj["output_text"]
+                        if snapshot := canonical_response_text(response_obj):
+                            state["snapshot_text"] = snapshot
                         state["status"] = response_obj.get("status") or state["status"]
-                    if event_type == "response.completed":
-                        state["saw_terminal"] = True
+                    state["saw_terminal"] = True
                     continue
                 if event_type == "response.created":
                     response_obj = event.get("response")
@@ -8280,13 +8296,20 @@ class OpenAIGatewayService:
                     # Relay whole SSE frames: concatenating them reproduces the
                     # upstream bytes, and the policy wrapper needs complete
                     # ``data:`` events to assemble the response text.
-                    while "\n\n" in buffer:
-                        frame, buffer = buffer.split("\n\n", 1)
-                        frame = f"{frame}\n\n"
+                    while separator := re.search(r"\r?\n\r?\n", buffer):
+                        frame, buffer = (
+                            buffer[: separator.end()],
+                            buffer[separator.end() :],
+                        )
                         _consume_frame(frame, state)
                         if state["saw_terminal"]:
                             terminal_sent = True
                         yield frame
+                        if terminal_sent:
+                            break
+                    if terminal_sent:
+                        buffer = ""
+                        break
                 if buffer:
                     _consume_frame(buffer, state)
                     if state["saw_terminal"]:
@@ -8341,12 +8364,13 @@ class OpenAIGatewayService:
                         ai_model=ai_model,
                         requested_model=requested_model,
                         response_payload=None,
-                        upstream_response=None,
+                        upstream_response={"usage": state["usage"]},
                         endpoint_kind="responses_stream",
                         budget_result=budget_result,
                         error_detail=gateway_error.message,
                         error_class=gateway_error.error_class,
                         request_payload=payload,
+                        accumulated_output_text=_accumulated_text(),
                     )
                     recorded = True
                 logger.warning(
@@ -8469,6 +8493,38 @@ class OpenAIGatewayService:
         if response_format is not None:
             kwargs["response_format"] = response_format
         return kwargs
+
+    def _defer_codex_response_format(
+        self, payload: Dict[str, Any], messages: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Let Codex use a tool before enforcing its final-answer format.
+
+        Only the Codex CLI with tools, an output format and fully supplied
+        history qualifies. Other clients and server-stored histories retain
+        their requested semantics. Final result validation is unchanged.
+        """
+        identity = self._client_identity_headers.get("User-Agent", "")
+        if (
+            not identity.startswith(("codex_exec/", "codex_cli_rs/"))
+            or not payload.get("tools")
+            or payload.get("tool_choice") == "none"
+            or payload.get("previous_response_id")
+            or any(message.get("role") == "tool" for message in messages)
+        ):
+            return payload
+        text = payload.get("text")
+        if payload.get("response_format") is None and not (
+            isinstance(text, dict) and text.get("format")
+        ):
+            return payload
+        deferred = {
+            key: value for key, value in payload.items() if key != "response_format"
+        }
+        if isinstance(text, dict):
+            deferred["text"] = {
+                key: value for key, value in text.items() if key != "format"
+            }
+        return deferred
 
     def _build_completion_kwargs(
         self,
@@ -8703,6 +8759,7 @@ class OpenAIGatewayService:
             # unknown "usage" body field.
             extra_body = kwargs.setdefault("extra_body", {})
             extra_body.setdefault("usage", {"include": True})
+        payload = self._defer_codex_response_format(payload, messages)
         kwargs.update(self._normalize_completion_parameters(payload, provider=provider))
         # Codex omits sampling controls. Compatible local servers otherwise
         # receive LiteLLM's defaults instead of the operator's model settings.
@@ -8799,6 +8856,7 @@ class OpenAIGatewayService:
 
     def _record_effective_request_parameters(self, body: Dict[str, Any]) -> None:
         """Keep only controls from the resolved outbound Responses body."""
+        self._context_input_estimate = context_truncation.estimate_request_input(body)
         parameters: Dict[str, Any] = {}
         if isinstance(body.get("model"), str):
             parameters["model"] = body["model"]
@@ -8977,6 +9035,11 @@ class OpenAIGatewayService:
             body.update(
                 model=ai_model.model_identifier, messages=messages, stream=stream
             )
+            if purpose == "gateway":
+                self._context_input_estimate = (
+                    context_truncation.estimate_request_input(body)
+                )
+                self._check_context_window(ai_model, body, gateway_provider=provider)
             if stream:
                 body["stream_options"] = {"include_usage": True}
             self.release_db_for_wait(ai_model)
@@ -8988,6 +9051,11 @@ class OpenAIGatewayService:
             stream=stream,
             provider=provider,
         )
+        if purpose == "gateway":
+            self._context_input_estimate = context_truncation.estimate_request_input(
+                kwargs
+            )
+            self._check_context_window(ai_model, kwargs, gateway_provider=provider)
 
         def _invoke() -> Any:
             self.release_db_for_wait(ai_model)
@@ -9136,6 +9204,8 @@ class OpenAIGatewayService:
         retry budget and rate-limit header capture.
         """
         kwargs = self._build_embedding_kwargs(ai_model, payload=payload)
+        self._context_input_estimate = context_truncation.estimate_request_input(kwargs)
+        self._check_context_window(ai_model, kwargs, gateway_provider="openai")
 
         def _invoke() -> Any:
             self.release_db_for_wait(ai_model)
@@ -10176,6 +10246,16 @@ class OpenAIGatewayService:
         surfaced_message = upstream_detail.message
         error_type = getattr(exc, "type", None) or getattr(exc, "error_type", None)
         code = getattr(exc, "code", None)
+        # SDK bodies can carry the provider's class even when the wrapper is
+        # a generic APIError. Keep that class on the client-facing envelope.
+        body = getattr(exc, "body", None)
+        body_detail = extract_upstream_error_detail(
+            json.dumps(body, default=str)
+            if isinstance(body, dict)
+            else str(raw_message)
+        )
+        error_type = body_detail.error_type or upstream_detail.error_type or error_type
+        code = body_detail.code or upstream_detail.code or code
         classified = classify_upstream_error(exc)
 
         # When the upstream did not give us its own HTTP status, a 5xx mapping
@@ -10229,7 +10309,20 @@ class OpenAIGatewayService:
             else:
                 message = _origin_labelled(status_code) or surfaced_message
 
-            if classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT:
+            if classified.error_class == ERROR_CLASS_UPSTREAM_POLICY_REFUSAL:
+                if error_type in {
+                    "provider_unavailable",
+                    "upstream_disconnect",
+                    "server_error",
+                }:
+                    error_type = None
+                error_type = error_type or (
+                    "invalid_request_error"
+                    if provider != "gemini"
+                    else "INVALID_ARGUMENT"
+                )
+                code = code or "content_policy_violation"
+            elif classified.error_class == ERROR_CLASS_UPSTREAM_DISCONNECT:
                 error_type = error_type or "upstream_disconnect"
                 code = code or ERROR_CLASS_UPSTREAM_DISCONNECT
             elif classified.error_class == ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED:
@@ -11470,7 +11563,11 @@ class OpenAIGatewayService:
             )
         token_details = self._extract_token_details(usage_details)
         usage_estimated = False
-        if not prompt_tokens and not completion_tokens and status_code in (200, 499):
+        if (
+            not prompt_tokens
+            and not completion_tokens
+            and (status_code in (200, 499) or accumulated_output_text)
+        ):
             fallback = self._estimate_usage_fallback(
                 ai_model=ai_model,
                 request_payload=request_payload,
@@ -11491,6 +11588,31 @@ class OpenAIGatewayService:
         )
         runtime_principal = runtime_context.get("runtime_principal") or {}
         runtime_session_id = self._resolve_runtime_session()
+
+        input_estimate = getattr(self, "_context_input_estimate", None)
+        if input_estimate is None:
+            input_estimate = context_truncation.estimate_request_input(
+                request_payload or {}
+            )
+        truncation_signal = getattr(self, "_context_preflight_signal", None)
+        if (
+            prompt_tokens
+            and input_estimate >= context_truncation.MIN_INPUT_ESTIMATE
+            and not usage_estimated
+            and usage_source != "estimated"
+        ):
+            previous_input = crud_api_usage.get_previous_gateway_input(
+                self.db,
+                account_id=str(self.auth_context.account_id),
+                ai_model_id=str(ai_model.id),
+                runtime_session_id=runtime_session_id,
+                execution_id=runtime_context.get("flow_execution_id"),
+            )
+            truncation_signal = context_truncation.detect_truncation(
+                estimated=input_estimate,
+                reported=int(prompt_tokens),
+                previous=previous_input,
+            )
 
         model_alias = runtime.model_gateway_model_alias or requested_model
         request_fingerprint = self._gateway_request_fingerprint(
@@ -11654,10 +11776,17 @@ class OpenAIGatewayService:
                 if upstream_response
                 else None,
                 "usage_details": usage_details or None,
+                "input_token_estimate": input_estimate,
+                context_truncation.CONTEXT_TRUNCATED_SUSPECTED: truncation_signal,
                 "upstream_parameters": dict(self._last_upstream_parameters) or None,
                 "first_response_at": self._first_model_response_at,
                 "usage_warnings": (
                     self._usage_warnings(usage_details)
+                    + (
+                        [context_truncation.CONTEXT_TRUNCATED_SUSPECTED]
+                        if truncation_signal
+                        else []
+                    )
                     + (
                         ["total_tokens_below_components"]
                         if total_below_components
@@ -11722,6 +11851,13 @@ class OpenAIGatewayService:
             str(usage_identity[0]) if usage_identity is not None else str(usage_row.id)
         )
         observed_at = usage_row.timestamp
+
+        if truncation_signal and runtime_context.get("flow_execution_id"):
+            context_truncation.record_execution_truncation(
+                self.db,
+                execution_id=runtime_context["flow_execution_id"],
+                signal=truncation_signal,
+            )
 
         self._record_credential_health(
             ai_model,
@@ -12473,6 +12609,7 @@ class OpenAIGatewayService:
         gateway_provider: GatewayProvider = "openai",
     ) -> Optional[BudgetCheckResult]:
         """Check configured gateway budgets before the upstream call."""
+        self._check_context_failure(gateway_provider=gateway_provider)
         # The run's own per-execution ceiling is independent of the account
         # budget policies below: it applies even when no BudgetPolicy exists,
         # and it is refused before an extension enforcer can short-circuit.
@@ -12514,6 +12651,80 @@ class OpenAIGatewayService:
                     "Scheduling price lookup after denial failed", exc_info=True
                 )
         return result
+
+    def _check_context_failure(
+        self, *, gateway_provider: GatewayProvider
+    ) -> Optional[str]:
+        """Refuse further model work for an execution already stopped for input loss."""
+        from preloop.models.crud import crud_flow_execution
+
+        context = (
+            self.auth_context.api_key.context_data if self.auth_context.api_key else {}
+        )
+        execution_id = (context or {}).get("flow_execution_id")
+        if not execution_id:
+            return None
+        stored = crud_flow_execution.current_failure(self.db, execution_id=execution_id)
+        if (
+            stored
+            and stored.get("failure_category")
+            == context_truncation.CONTEXT_TRUNCATED_SUSPECTED
+        ):
+            if self._owns_db_session:
+                self.release_db_for_wait()
+            raise ModelGatewayAPIError(
+                provider=gateway_provider,
+                status_code=400,
+                code=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+                error_class=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+                message=stored["error_message"],
+                terminal=True,
+                origin="gateway",
+            )
+        return str(execution_id)
+
+    def _check_context_window(
+        self,
+        ai_model: GatewayModel,
+        payload: Dict[str, Any],
+        *,
+        gateway_provider: GatewayProvider,
+    ) -> None:
+        """Check the final outbound body after optimization and tool stripping."""
+        from preloop.services.model_context_limits import resolve_model_context_limits
+
+        execution_id = self._check_context_failure(gateway_provider=gateway_provider)
+        if not execution_id:
+            return
+        limits = resolve_model_context_limits(
+            model_identifier=ai_model.model_identifier,
+            provider_name=ai_model.provider_name,
+            model_parameters=ai_model.model_parameters,
+        )
+        estimate = context_truncation.estimate_request_input(payload)
+        if limits.context_window is None or estimate <= limits.context_window:
+            return
+        signal = {
+            "signal": "registered_context_window_exceeded",
+            "estimated_input_tokens": estimate,
+            "context_window": limits.context_window,
+            "context_window_source": limits.context_window_source,
+        }
+        self._context_preflight_signal = signal
+        context_truncation.record_execution_truncation(
+            self.db, execution_id=execution_id, signal=signal
+        )
+        if self._owns_db_session:
+            self.release_db_for_wait()
+        raise ModelGatewayAPIError(
+            provider=gateway_provider,
+            status_code=400,
+            code=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+            error_class=context_truncation.CONTEXT_TRUNCATED_SUSPECTED,
+            message=context_truncation.truncation_message(signal),
+            terminal=True,
+            origin="gateway",
+        )
 
     @staticmethod
     def _normalize_budget_gateway_error(

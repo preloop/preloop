@@ -568,6 +568,7 @@ export interface GatewayUsageSearchResultItem {
   timestamp: string;
   status_code: number;
   outcome: 'success' | 'error';
+  error_class?: string | null;
   endpoint: string;
   method: string;
   provider_name: string | null;
@@ -1314,6 +1315,7 @@ export interface RuntimeSessionRequestItem {
   provider_name: string | null;
   status_code: number;
   is_error: boolean;
+  error_class?: string | null;
   finish_reason: string | null;
   is_retry: boolean;
   prompt_tokens: number;

@@ -226,3 +226,19 @@ class TestProviderDetailPayload:
             )
             payload = err.to_payload()
             assert "provider_detail" not in payload["error"]
+
+
+def test_policy_refusal_vetoes_upstream_retry_hint() -> None:
+    """Native retry headers cannot override the refusal contract."""
+    from preloop.services.model_gateway_errors import ModelGatewayAPIError
+
+    error = ModelGatewayAPIError(
+        provider="openai",
+        status_code=400,
+        message="Request refused",
+        terminal=True,
+        error_class="upstream_policy_refusal",
+    )
+    error.extra_response_headers = {"X-Should-Retry": "true"}
+    assert error.response_headers()["x-should-retry"] == "false"
+    assert "X-Should-Retry" not in error.response_headers()

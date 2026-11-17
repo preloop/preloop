@@ -313,6 +313,7 @@ class CRUDGatewayUsageSearchDocument(CRUDBase[GatewayUsageSearchDocument]):
                     else None,
                     "timestamp": usage.timestamp,
                     "status_code": usage.status_code,
+                    "error_class": usage.error_class,
                     "outcome": "error" if usage.status_code >= 400 else "success",
                     "endpoint": usage.endpoint,
                     "method": usage.method,

@@ -56,13 +56,20 @@ from preloop.agents.verification import (
     VERIFICATION_DENIED_MARKER,
     VERIFICATION_MARKER,
 )
+from preloop.services.flow_failure_messages import (
+    AGENT_REPORTED_FAILURE,
+    AGENT_TOOL_LOOP,
+)
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_AGENT_NO_PROGRESS,
+    FAILURE_CATEGORY_AGENT_TOOL_LOOP,
     FAILURE_CATEGORY_PUBLICATION_MISSING,
     FAILURE_CATEGORY_RESULT_SCHEMA_INVALID,
     FAILURE_CATEGORY_MODEL_STREAM_IDLE,
     FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_UNKNOWN,
+    FAILURE_CATEGORY_EXECUTION_ERROR,
+    FAILURE_CATEGORY_ORCHESTRATOR_ERROR,
     derive_failure_category,
 )
 from preloop.services.stream_stall import (
@@ -312,8 +319,14 @@ AUDIT_RESULT_SCHEMA_MARKERS = (
 )
 
 
-def _success_instruction_for_prompt(prompt: str) -> str:
+def _success_instruction_for_prompt(prompt: str, *, native_result: bool = False) -> str:
     """Select the completion instruction matching the prompt's result contract."""
+    if native_result:
+        return (
+            "\n\n---\nComplete the task, then return your final answer in the required "
+            "result format. That final answer ends the run. Include the full review "
+            "and evidence in that answer.\n---"
+        )
     normalized_prompt = prompt.lower()
     if (
         "preloop.eval.result/v1" in normalized_prompt
@@ -448,8 +461,8 @@ def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optiona
     explicit ``status`` verdict, else ``None`` (no artifact, no status field,
     or an unrecognised value — none of which is a confirmation).
 
-    ``status`` is authoritative when it carries a recognized value. When it
-    is absent or unrecognized, the audit contracts' top-level ``verdict`` is
+    A failure in ``status`` or ``verdict`` wins over any success signal.
+    Otherwise the audit contracts' top-level ``verdict`` is
     consulted as a fallback so audit runs that honour their result schema are
     recognized as completed (channel 2) instead of being overridden to FAILED
     for a missing success confirmation.
@@ -460,6 +473,10 @@ def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optiona
     if not isinstance(artifact, dict):
         return None
     if _unposted_review_field(artifact) is not None:
+        return "failure"
+    from preloop.services.flow_execution_outcome import result_failure_signal
+
+    if result_failure_signal(artifact) is not None:
         return "failure"
     status = artifact.get("status")
     if isinstance(status, str):
@@ -2292,7 +2309,8 @@ class FlowExecutionOrchestrator:
         # last instruction it saw (see execution ff1294e1 — work done, marker
         # forgotten). Nothing may be appended after this.
         resolved_prompt = resolved_prompt + _success_instruction_for_prompt(
-            resolved_prompt
+            resolved_prompt,
+            native_result=getattr(self, "_native_result_effective", False) is True,
         )
 
         logger.info("Prompt resolution complete")
@@ -3299,8 +3317,11 @@ class FlowExecutionOrchestrator:
             try:
                 token = await resolve_tracker_git_token(tracker)
             except ManagedCredentialError as exc:
-                raise RuntimeError(
-                    f"Tracker {tracker.name or tracker_id}: {exc.actionable_message()}"
+                from preloop.agents.errors import AgentStartError
+
+                raise AgentStartError(
+                    f"Tracker {tracker.name or tracker_id}: {exc.actionable_message()}",
+                    category="repository_access",
                 ) from exc
             if not token:
                 logger.warning(
@@ -4559,7 +4580,7 @@ class FlowExecutionOrchestrator:
         )
 
     def _get_recent_runtime_tool_activity_signatures(
-        self, limit: int = 12
+        self, limit: int = 32
     ) -> list[str]:
         """Return recent tool-call signatures, including failures, for loop detection."""
         if not self.execution_log:
@@ -4583,6 +4604,7 @@ class FlowExecutionOrchestrator:
                 # Key names and sizes only; the payload is never
                 # persisted on the activity row (issue #793).
                 "arguments_summary": metadata.get("arguments_summary"),
+                "command_name": metadata.get("command_name"),
             }
             # Prefer arguments_hash so same-shape/different-value calls
             # (get_pr(123) vs get_pr(124)) do not share a signature.
@@ -4656,6 +4678,12 @@ class FlowExecutionOrchestrator:
                 tail[index * pattern_length : (index + 1) * pattern_length] == pattern
                 for index in range(repetitions)
             ):
+                # The threshold proves a loop; report the whole observed streak.
+                while len(signatures) >= (repetitions + 1) * pattern_length:
+                    start = len(signatures) - (repetitions + 1) * pattern_length
+                    if signatures[start : start + pattern_length] != pattern:
+                        break
+                    repetitions += 1
                 decoded_pattern = [json.loads(item) for item in pattern]
                 return {
                     "pattern_length": pattern_length,
@@ -5027,6 +5055,105 @@ class FlowExecutionOrchestrator:
         )
         return archive
 
+    def _native_candidate_valid(self, document: Any) -> bool:
+        """Validate a native candidate against the schema and bound review facts."""
+        from preloop.services.flow_result_schema import (
+            flow_result_schema,
+            validate_result_document,
+        )
+        from preloop.services import review_integrity
+        from preloop.services.review_diff import review_diff_identity
+        from preloop.models.crud.execution_tool_evidence import inspection_summary
+        from types import SimpleNamespace
+
+        if not isinstance(document, dict):
+            return False
+        schema = flow_result_schema(getattr(self, "flow", None))
+        if not schema or not validate_result_document(document, schema)["valid"]:
+            return False
+        execution = getattr(self, "execution_log", None)
+        if not review_integrity.applies(self.flow, execution):
+            return True
+        receipt = getattr(self, "_startup_receipt", None)
+        diff = review_diff_identity(
+            SimpleNamespace(
+                startup_receipt=receipt
+                if isinstance(receipt, dict)
+                else getattr(execution, "startup_receipt", None),
+                ci_review_binding=execution.ci_review_binding,
+            )
+        )
+        try:
+            inspection = inspection_summary(
+                self.db,
+                execution_id=execution.id,
+                binding=execution.ci_review_binding,
+                diff=diff,
+                root=review_integrity.inspection_root(
+                    self.flow, execution.ci_review_binding
+                ),
+            )
+        except Exception:
+            self.db.rollback()
+            logger.warning("Could not verify native review candidate inspection")
+            return False
+        return (
+            review_integrity.evaluate(
+                self.flow,
+                result=document,
+                binding=execution.ci_review_binding,
+                diff=diff,
+                inspection=inspection,
+            )["status"]
+            == review_integrity.STATUS_VERIFIED
+        )
+
+    def _usable_native_review(self, document: Any) -> bool:
+        """Allow a completed native review to survive a subsequent tool loop."""
+        from preloop.services import review_integrity
+
+        return (
+            getattr(self, "_native_result_effective", False) is True
+            and review_integrity.applies(
+                getattr(self, "flow", None), getattr(self, "execution_log", None)
+            )
+            and _result_artifact_confirmation(document) != "failure"
+            and self._native_candidate_valid(document)
+        )
+
+    def _select_native_result_candidate(self, document: Any) -> Any:
+        """Prefer a usable native answer; otherwise use a verified file result.
+
+        Explicit native failure reports remain authoritative. If neither
+        candidate validates, retain the native answer (or file when absent)
+        for ordinary schema/integrity diagnostics. Arrival order is irrelevant.
+        """
+        from preloop.services.native_result import NATIVE_CANDIDATES_KEY
+        from preloop.services.flow_result_schema import (
+            flow_result_schema,
+            validate_result_document,
+        )
+
+        if getattr(
+            self, "_native_result_effective", False
+        ) is not True or not isinstance(document, dict):
+            return document
+        candidates = document.get(NATIVE_CANDIDATES_KEY)
+        if not isinstance(candidates, dict):
+            return document
+        native, file_result = candidates.get("native"), candidates.get("file")
+        schema = flow_result_schema(getattr(self, "flow", None))
+        if (
+            schema
+            and isinstance(native, dict)
+            and validate_result_document(native, schema)["valid"]
+            and _result_artifact_confirmation(native) == "failure"
+        ) or self._native_candidate_valid(native):
+            return native
+        if self._native_candidate_valid(file_result):
+            return file_result
+        return native if native is not None else file_result
+
     async def _capture_result_artifact(
         self,
         agent_executor: Any,
@@ -5061,6 +5188,7 @@ class FlowExecutionOrchestrator:
 
         def accept(document: Any) -> None:
             nonlocal artifact, persisted
+            document = self._select_native_result_candidate(document)
             artifact = sanitize_captured_result(document)
             if artifact is None:
                 return
@@ -5322,8 +5450,17 @@ class FlowExecutionOrchestrator:
 
         execution = getattr(self, "execution_log", None)
         flow = getattr(self, "flow", None)
+        early_native_answer = (
+            getattr(self, "_native_result_effective", False) is True
+            and final_status == "FAILED"
+            and agent_result.get("failure_category")
+            in {
+                "no_confirmation",
+                "result_schema_invalid",
+            }
+        )
         if (
-            final_status != "SUCCEEDED"
+            (final_status != "SUCCEEDED" and not early_native_answer)
             or execution is None
             or not review_integrity.applies(flow, execution)
         ):
@@ -5343,14 +5480,27 @@ class FlowExecutionOrchestrator:
             )
         )
         try:
-            inspection = inspection_summary(self.db, execution_id=execution.id)
+            inspection = inspection_summary(
+                self.db,
+                execution_id=execution.id,
+                binding=execution.ci_review_binding,
+                diff=diff,
+                root=review_integrity.inspection_root(
+                    flow, execution.ci_review_binding
+                ),
+            )
         except Exception:
             self.db.rollback()
             logger.warning("Could not read tool evidence for the review floor")
             inspection = None
+        if early_native_answer and (
+            not review_integrity.inspection_required(flow)
+            or (inspection or {}).get("diff_commands")
+        ):
+            return final_status, agent_result, merged_result
         outcome = review_integrity.evaluate(
             flow,
-            result=merged_result,
+            result=None if early_native_answer else merged_result,
             binding=execution.ci_review_binding,
             diff=diff,
             inspection=inspection,
@@ -7598,6 +7748,15 @@ class FlowExecutionOrchestrator:
 
         Returns ``(final_status, error_message, result_artifact)``.
         """
+        if self.execution_log is not None:
+            failure = crud_flow_execution.current_failure(
+                self.db, execution_id=self.execution_log.id
+            )
+            if (
+                failure
+                and failure.get("failure_category") == "context_truncated_suspected"
+            ):
+                return "FAILED", failure["error_message"], result_artifact
         # Layer 3: post-exit full-log refetch + sentinel rescan.
         refetched_lines = await self._refetch_exited_session_logs(
             agent_executor, session_reference
@@ -7688,15 +7847,33 @@ class FlowExecutionOrchestrator:
         # say explicitly that the run failed ONLY for missing confirmation,
         # and name both channels — operators must be able to tell this
         # class apart from real failures at a glance.
+        model_turns = 0
+        for line in refetched_lines:
+            try:
+                event = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(event, dict) and event.get("type") == "turn.completed":
+                model_turns += 1
+        if self.execution_log is not None:
+            from preloop.models.crud import crud_api_usage
+
+            usage = crud_api_usage.get_gateway_usage_for_execution(
+                self.db, str(self.execution_log.id)
+            )
+            requests = usage.get("api_requests")
+            if isinstance(requests, int):
+                model_turns = max(model_turns, requests)
+        tool_calls = self.tool_calls_count
         error_message = result.error_message or (
+            f"Observed {model_turns} model turns, {tool_calls} tool calls. "
             "Agent exited with code 0 but did not confirm "
             "success on either channel: the "
             f"{FLOW_SUCCESS_SENTINEL} sentinel was not printed "
             "and no result.json with a recognized completion "
             'status (top-level {"status": "success"} or an '
             "audit verdict such as pass, pass_with_findings, "
-            "or fail) was written. The work may have completed "
-            "without confirmation, or the agent died mid-task."
+            "or fail) was written."
         )
         if self._inplace_nudge_seen and not result.error_message:
             # Name the reminder round: an operator reading this should not
@@ -7705,7 +7882,7 @@ class FlowExecutionOrchestrator:
                 " The agent was reminded once in its own container and still "
                 "did not confirm."
             )
-        if not result.error_message:
+        if not result.error_message and tool_calls > 0:
             error_message += self._native_result_hint()
         return "FAILED", error_message, result_artifact
 
@@ -8683,15 +8860,18 @@ class FlowExecutionOrchestrator:
                         await asyncio.sleep(0)
                         continue
 
-                # Publish status update (best effort - don't fail if NATS is down)
-                try:
-                    await self._publish_update(
-                        "agent_status", {"status": status.value, "elapsed": elapsed}
-                    )
-                except Exception as publish_error:
-                    logger.warning(
-                        f"Failed to publish status update: {type(publish_error).__name__}"
-                    )
+                # Runtime exit is provisional until result/integrity gates finish.
+                # Only finalization may publish a terminal execution status.
+                if status.value not in TERMINAL_EXECUTION_STATUSES:
+                    try:
+                        await self._publish_update(
+                            "agent_status", {"status": status.value, "elapsed": elapsed}
+                        )
+                    except Exception as publish_error:
+                        logger.warning(
+                            "Failed to publish status update: %s",
+                            type(publish_error).__name__,
+                        )
 
                 # A run that has changed nothing at all after the configured
                 # deadline is reminded once and, if still unchanged after the
@@ -8723,13 +8903,15 @@ class FlowExecutionOrchestrator:
                 if loop_detection:
                     repeated_tools = ", ".join(
                         f"{item.get('server_name')}/{item.get('tool_name')}"
+                        + (
+                            f" (command {item['command_name']})"
+                            if item.get("command_name")
+                            else ""
+                        )
                         for item in loop_detection["pattern"]
                     )
-                    error_message = (
-                        "Execution stopped after detecting a repeated tool loop: "
-                        f"{repeated_tools} repeated "
-                        f"{loop_detection['repetitions']} times with identical "
-                        "arguments."
+                    error_message = AGENT_TOOL_LOOP.format(
+                        tools=repeated_tools, repetitions=loop_detection["repetitions"]
                     )
                     logger.warning(error_message)
                     self.execution_logger.log_milestone(
@@ -8745,16 +8927,21 @@ class FlowExecutionOrchestrator:
                         },
                     )
                     await agent_executor.stop(session_reference)
+                    artifact = await self._capture_result_artifact(
+                        agent_executor, session_reference
+                    )
+                    completed_review = self._usable_native_review(artifact)
                     return {
-                        "status": "FAILED",
-                        "error_message": error_message,
+                        "status": "SUCCEEDED" if completed_review else "FAILED",
+                        "error_message": None if completed_review else error_message,
+                        "failure_category": (
+                            None
+                            if completed_review
+                            else FAILURE_CATEGORY_AGENT_TOOL_LOOP
+                        ),
                         "actions_taken": self.execution_logger.get_actions_taken(),
                         "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
-                        # Capture whatever the agent reported before it got
-                        # stuck in the tool loop.
-                        "result": await self._capture_result_artifact(
-                            agent_executor, session_reference
-                        ),
+                        "result": artifact,
                     }
 
                 if status in (
@@ -8889,8 +9076,9 @@ class FlowExecutionOrchestrator:
                         )
                         final_status = "FAILED"
                         error_message = result.error_message or (
-                            "Agent reported an explicit failure in result.json "
-                            f"({signal_field}={signal_value!r})."
+                            AGENT_REPORTED_FAILURE.format(
+                                field=signal_field, value=signal_value
+                            )
                         )
                     elif (
                         result.status == AgentStatus.SUCCEEDED
@@ -9065,6 +9253,23 @@ class FlowExecutionOrchestrator:
             # the Job and its pods. Read available artifacts first, within a
             # short cleanup bound, and always stop even if capture fails or
             # this monitor is canceled. The execution still failed its budget.
+            from preloop.agents.remote_runner import RemoteRunnerExecutor
+            from preloop.services.flow_failure_messages import RUNNER_UNAVAILABLE
+
+            if isinstance(
+                agent_executor, RemoteRunnerExecutor
+            ) and agent_executor.fail_if_unleased(session_reference, elapsed):
+                return {
+                    "status": "FAILED",
+                    "failure_category": "runner_unavailable",
+                    "error_message": RUNNER_UNAVAILABLE.format(
+                        pool=agent_executor.pool, wait_seconds=elapsed
+                    ),
+                    "actions_taken": self.execution_logger.get_actions_taken(),
+                    "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
+                    "result": None,
+                }
+
             try:
                 self._record_completion(
                     finalization_started_at=datetime.now(timezone.utc).isoformat()
@@ -9194,6 +9399,7 @@ class FlowExecutionOrchestrator:
         from preloop.services.flow_failure_category import (
             FAILURE_CATEGORY_BUDGET_EXCEEDED,
             FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+            FAILURE_CATEGORY_CONTEXT_TRUNCATED,
             FAILURE_CATEGORY_MODEL_AUTH,
             FAILURE_CATEGORY_MODEL_CONFIG,
             FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
@@ -9219,6 +9425,7 @@ class FlowExecutionOrchestrator:
             in (
                 FAILURE_CATEGORY_BUDGET_EXCEEDED,
                 FAILURE_CATEGORY_DEFAULT_LIMIT_REACHED,
+                FAILURE_CATEGORY_CONTEXT_TRUNCATED,
                 FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE,
             )
             or recorded_provider_rejection
@@ -9233,7 +9440,7 @@ class FlowExecutionOrchestrator:
         derived = derive_failure_category(
             status=status, error_message=kwargs.get("error_message")
         )
-        if derived != FAILURE_CATEGORY_UNKNOWN:
+        if derived not in (FAILURE_CATEGORY_UNKNOWN, FAILURE_CATEGORY_EXECUTION_ERROR):
             return
         # An unclassifiable failure (often the agent's last prose) on a run
         # that has spent a ceiling: the ceiling is why it stopped.
@@ -9277,6 +9484,20 @@ class FlowExecutionOrchestrator:
             kwargs["result"] = captured
             kwargs["result_schema_validation"] = self._result_schema_validation
 
+        if status == "SUCCEEDED":
+            from preloop.services.flow_execution_outcome import result_failure_signal
+
+            signal = result_failure_signal(
+                kwargs.get("result", getattr(self.execution_log, "result", None))
+            )
+            if signal is not None:
+                field, value = signal
+                status = "FAILED"
+                kwargs["error_message"] = AGENT_REPORTED_FAILURE.format(
+                    field=field, value=value
+                )
+                kwargs["failure_category"] = "agent_reported_failure"
+
         if self.execution_log is not None and status is not None:
             status = self._guard_status_write(status, kwargs)
 
@@ -9295,13 +9516,18 @@ class FlowExecutionOrchestrator:
         if status is not None and kwargs.get("failure_category") is None:
             derived = derive_failure_category(
                 status=status,
+                fallback_category=FAILURE_CATEGORY_ORCHESTRATOR_ERROR,
                 error_message=(
                     kwargs.get("error_message")
                     or getattr(self.execution_log, "error_message", None)
                 ),
             )
             existing = getattr(self.execution_log, "failure_category", None)
-            if derived == FAILURE_CATEGORY_UNKNOWN and existing:
+            if derived in (
+                FAILURE_CATEGORY_UNKNOWN,
+                FAILURE_CATEGORY_EXECUTION_ERROR,
+                FAILURE_CATEGORY_ORCHESTRATOR_ERROR,
+            ) and existing not in (None, FAILURE_CATEGORY_UNKNOWN):
                 # Never downgrade a category an earlier, better-informed
                 # write already established.
                 derived = existing
@@ -9434,6 +9660,16 @@ class FlowExecutionOrchestrator:
                     kwargs.pop("error_message", None)
                 kwargs.pop("failure_category", None)
                 return "STOPPED"
+            if stored == "FAILED":
+                failure = crud_flow_execution.current_failure(
+                    self.db, execution_id=execution_id
+                )
+                if (
+                    failure
+                    and failure.get("failure_category") == "context_truncated_suspected"
+                ):
+                    kwargs.update(failure)
+                    return "FAILED"
         return status
 
     async def _release_runtime_after_lost_launch(
@@ -10000,6 +10236,7 @@ class FlowExecutionOrchestrator:
             error_message=agent_result.get("error_message"),
             explicit_category=explicit,
             failure_analysis=agent_result.get("failure_analysis"),
+            fallback_category="agent_error",
         )
 
     async def _retry_after_no_progress(self, failure_category: Optional[str]) -> None:
@@ -11011,8 +11248,14 @@ class FlowExecutionOrchestrator:
             from preloop.services.native_result import (
                 COLD_START_MESSAGE,
                 native_result_cold_start,
+                validate_native_result_config,
             )
 
+            validate_native_result_config(
+                self.flow.agent_config,
+                self.flow.result_schema,
+                self.flow.validate_result,
+            )
             native_enabled = self._resolve_native_result()
             if native_result_cold_start(
                 self.flow, self.trigger_event_data, enabled=native_enabled
@@ -11587,6 +11830,7 @@ class FlowExecutionOrchestrator:
                         status="FAILED",
                         error_message=str(e),
                         exception=e,
+                        fallback_category=FAILURE_CATEGORY_ORCHESTRATOR_ERROR,
                     )
                     if getattr(self, "_finalization_step", None) == "publication":
                         exception_category = FAILURE_CATEGORY_PUBLICATION_MISSING

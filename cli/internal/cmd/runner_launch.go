@@ -209,11 +209,16 @@ var runnerResultVerdicts = map[string]string{
 
 func runnerResultConfirmation(result map[string]any) string {
 	status, _ := result["status"].(string)
-	if confirmation := runnerResultStatuses[strings.ToLower(strings.TrimSpace(status))]; confirmation != "" {
-		return confirmation
-	}
 	verdict, _ := result["verdict"].(string)
-	return runnerResultVerdicts[strings.ToLower(strings.TrimSpace(verdict))]
+	statusConfirmation := runnerResultStatuses[strings.ToLower(strings.TrimSpace(status))]
+	verdictConfirmation := runnerResultVerdicts[strings.ToLower(strings.TrimSpace(verdict))]
+	if statusConfirmation == "failure" || verdictConfirmation == "failure" {
+		return "failure"
+	}
+	if statusConfirmation != "" {
+		return statusConfirmation
+	}
+	return verdictConfirmation
 }
 
 func runnerResultRecognized(result map[string]any) bool {

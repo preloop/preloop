@@ -21,6 +21,7 @@ import aiodocker
 from aiodocker.exceptions import DockerError
 
 from preloop.agents.resources import docker_memory_bytes
+from preloop.services.native_result import RESULT_TRANSPORT_MAX_BYTES
 from preloop.config import settings
 from preloop.utils import pr_metadata
 from preloop.services.flow_failure_category import (
@@ -954,7 +955,7 @@ def k8s_workspace_snapshot_limit() -> int:
 
 
 _WORST_CASE_EMISSION_LINES = (
-    MAX_RESULT_ARTIFACT_BYTES
+    RESULT_TRANSPORT_MAX_BYTES
     + MAX_EVIDENCE_ARCHIVE_BYTES
     + K8S_WORKSPACE_STREAM_MAX_BYTES
 ) * 4 // (3 * 60) + 64
@@ -1129,7 +1130,7 @@ _preloop_emit_artifacts() {{
     fi
     if [ -f {RESULT_ARTIFACT_PATH} ]; then
         _pl_size=$(wc -c < {RESULT_ARTIFACT_PATH} | tr -d ' ')
-        if [ "$_pl_size" -gt {MAX_RESULT_ARTIFACT_BYTES} ] 2>/dev/null; then
+        if [ "$_pl_size" -gt {RESULT_TRANSPORT_MAX_BYTES} ] 2>/dev/null; then
             echo "PRELOOP_ARTIFACT_BEGIN result too_large $_pl_size"
         else
             echo "PRELOOP_ARTIFACT_BEGIN result present $_pl_size"
@@ -2677,7 +2678,7 @@ class ContainerAgentExecutor(AgentExecutor):
             member = next((m for m in tar.getmembers() if m.isfile()), None)
             if member is None:
                 return None
-            if member.size > MAX_RESULT_ARTIFACT_BYTES:
+            if member.size > RESULT_TRANSPORT_MAX_BYTES:
                 self.logger.warning(
                     f"Result artifact from container {session_reference[:12]} "
                     f"is too large ({member.size} bytes), not persisting content"
@@ -2690,7 +2691,7 @@ class ContainerAgentExecutor(AgentExecutor):
             fileobj = tar.extractfile(member)
             if fileobj is None:
                 return None
-            raw = fileobj.read(MAX_RESULT_ARTIFACT_BYTES + 1)
+            raw = fileobj.read(RESULT_TRANSPORT_MAX_BYTES + 1)
         finally:
             tar.close()
 
@@ -2713,6 +2714,13 @@ class ContainerAgentExecutor(AgentExecutor):
             return {
                 "error": "result_artifact_invalid_json",
                 "detail": str(e)[:500],
+            }
+        from preloop.services.native_result import result_transport_within_limit
+
+        if not result_transport_within_limit(parsed):
+            return {
+                "error": "result_artifact_too_large",
+                "limit_bytes": MAX_RESULT_ARTIFACT_BYTES,
             }
         if not isinstance(parsed, dict):
             return {
@@ -4189,6 +4197,11 @@ class ContainerAgentExecutor(AgentExecutor):
         if review_checkout:
             from preloop.services import review_diff
 
+            for name in ("head_sha", "base_sha", "base_ref"):
+                commands.append(
+                    f"export PRELOOP_REVIEW_{name.upper()}="
+                    + shlex.quote(execution_context.get("read_only_" + name) or "")
+                )
             diff_script = inspect.getsource(review_diff) + (
                 "\nimport sys\nprint(DIFF_MARKER + json.dumps("
                 "compute_diff(sys.argv[1], sys.argv[2] or None, sys.argv[3])))\n"
@@ -5049,6 +5062,25 @@ fi
 cd /workspace
 """.strip()
 
+    def _build_review_base_fetch_shell(
+        self, full_path: str, base: str, head: str
+    ) -> str:
+        """Keep the admitted base and its history available after lease revocation."""
+        from preloop.services.product_provenance import is_git_sha
+
+        if not is_git_sha(base) or not is_git_sha(head):
+            raise ValueError("Read-only review requires valid bound revisions")
+        root = shlex.quote(full_path)
+        return f"""
+if ! git -C {root} cat-file -e {base}^{{commit}} 2>/dev/null; then
+    git -C {root} fetch origin {base} || exit 1
+fi
+git -C {root} diff --no-ext-diff --no-textconv {base}...{head} -- >/dev/null || {{
+    echo 'FATAL ERROR: The admitted review diff is unavailable'
+    exit 1
+}}
+""".strip()
+
     def _build_git_pre_clone_shell(self, full_path: str) -> str:
         """Build shell that prepares the clone target directory."""
 
@@ -5467,6 +5499,14 @@ true
                 if rebase_shell:
                     commands.append(rebase_shell)
                     execution_context["_git_resume_rebase"] = True
+        if execution_context.get("read_only_review") and execution_context.get(
+            "read_only_base_sha"
+        ):
+            commands.append(
+                self._build_review_base_fetch_shell(
+                    full_path, execution_context["read_only_base_sha"], pin_sha
+                )
+            )
         return commands
 
     def _evidence_exclude_commands(self, execution_context: Dict[str, Any]) -> list:

@@ -1108,3 +1108,23 @@ describe('ApiUsageView', () => {
     ).to.not.equal(0);
   });
 });
+
+describe('Provider policy refusal usage', () => {
+  it('names a refusal distinctly from other request errors', () => {
+    const element = document.createElement('api-usage-view') as any;
+    const item = searchResponseWithExcerpt('Request refused').items[0];
+    const container = document.createElement('div');
+    render(
+      element.renderSearchResult({
+        ...item,
+        status_code: 400,
+        outcome: 'error',
+        error_class: 'upstream_policy_refusal',
+      }),
+      container
+    );
+    expect(container.querySelector('sl-badge')?.textContent).to.contain(
+      'Provider policy refusal'
+    );
+  });
+});

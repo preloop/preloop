@@ -1742,7 +1742,11 @@ export class ApiUsageView extends LitElement {
             pill
             variant=${item.outcome === 'error' ? 'danger' : 'success'}
           >
-            ${item.outcome}
+            ${
+              item.error_class === 'upstream_policy_refusal'
+                ? 'Provider policy refusal'
+                : item.outcome
+            }
           </sl-badge>
         </div>
         <div class="search-meta">${billingAttribution(item.meta_data)}</div>

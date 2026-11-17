@@ -753,3 +753,80 @@ def test_terminal_responses_stream_error_is_a_failed_response():
     assert event["response"]["status"] == "failed"
     assert event["response"]["error"]["code"] == "insufficient_quota"
     assert "requires more credits" in event["response"]["error"]["message"]
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic", "gemini"])
+def test_policy_refusal_preserves_provider_class(provider: str) -> None:
+    """Provider class/code survives mapping while usage gets a distinct class."""
+    exc = _FakeHTTPError(
+        '{"error":{"type":"invalid_request_error","code":"content_policy_violation",'
+        '"message":"This request was blocked by our safety systems."}}',
+        status_code=502,
+    )
+    mapped = OpenAIGatewayService._normalize_upstream_error(provider, exc)
+    assert mapped.status_code == 400
+    assert mapped.error_type == "invalid_request_error"
+    assert mapped.code == "content_policy_violation"
+    assert mapped.error_class == "upstream_policy_refusal"
+    assert mapped.terminal
+    assert mapped.response_headers()["x-should-retry"] == "false"
+
+
+def test_responses_http_refusal_preserves_code_from_body() -> None:
+    """The direct subscription route retains policy codes before retrying."""
+    import httpx
+
+    raw = OpenAIGatewayService._openai_passthrough_raw_error(
+        502,
+        '{"error":{"type":"invalid_request_error","code":"content_policy_violation","message":"Request refused"}}',
+        httpx.Headers(),
+    )
+    mapped = OpenAIGatewayService._normalize_upstream_error("openai", raw)
+    assert mapped.status_code == 400
+    assert mapped.code == "content_policy_violation"
+    assert mapped.error_class == "upstream_policy_refusal"
+
+
+@pytest.mark.parametrize("code", ["content_filter", "cyber_policy"])
+def test_sdk_policy_body_preserves_native_code(code: str) -> None:
+    """Supported SDKs may expose the inner error as the exception body."""
+    exc = _FakeHTTPError("Request rejected", status_code=502)
+    exc.body = {
+        "type": "invalid_request_error",
+        "code": code,
+        "message": "Request rejected",
+    }
+    mapped = OpenAIGatewayService._normalize_upstream_error("openai", exc)
+    assert mapped.status_code == 400
+    assert mapped.code == code
+    assert mapped.error_type == "invalid_request_error"
+    assert mapped.error_class == "upstream_policy_refusal"
+
+
+@pytest.mark.parametrize(
+    "provider,body,expected_type",
+    [
+        (
+            "anthropic",
+            '{"type":"error","error":{"type":"invalid_request_error","message":"Output blocked by content filtering policy"}}',
+            "invalid_request_error",
+        ),
+        (
+            "gemini",
+            '{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"The response was blocked."}}',
+            "INVALID_ARGUMENT",
+        ),
+    ],
+)
+def test_native_policy_error_envelopes(
+    provider: str, body: str, expected_type: str
+) -> None:
+    """Each ingress retains the fields from its supported provider envelope."""
+    mapped = OpenAIGatewayService._normalize_upstream_error(
+        provider, _FakeHTTPError(body, status_code=400)
+    )
+    assert mapped.status_code == 400
+    assert mapped.error_type == expected_type
+    assert mapped.error_class == "upstream_policy_refusal"
+    payload = mapped.to_payload()["error"]
+    assert payload["status" if provider == "gemini" else "type"] == expected_type

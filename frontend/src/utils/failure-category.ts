@@ -27,6 +27,45 @@ interface FailureCategoryMeta {
  * agent's own work, then the two states that are nobody's fault.
  */
 export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
+  runner_unavailable: {
+    label: 'no runner available',
+    tooltip:
+      'No eligible runner picked up the execution before its queue wait ended. Check the pool and runner availability.',
+  },
+  ci_authorization: {
+    label: 'ci authorization denied',
+    tooltip: 'The CI credential was not authorized for this flow or review.',
+  },
+  flow_config: {
+    label: 'flow configuration',
+    tooltip:
+      'The flow configuration cannot run. Correct the settings shown in the error before running again.',
+  },
+  agent_tool_loop: {
+    label: 'repeated tool loop',
+    tooltip:
+      'The agent repeated identical tool calls without progress, so the run stopped. The execution message names the tool and repeat count.',
+  },
+  agent_reported_failure: {
+    label: 'agent reported failure',
+    tooltip:
+      'The result document says the work could not complete, even if the agent exited successfully.',
+  },
+  orchestrator_error: {
+    label: 'flow controller error',
+    tooltip:
+      'The flow controller caught an unexpected failure. See the execution message for details.',
+  },
+  execution_error: {
+    label: 'execution error',
+    tooltip:
+      'A failure was recorded while saving the execution. See the execution message for details.',
+  },
+  model_policy: {
+    label: 'provider policy refusal',
+    tooltip:
+      'The model provider refused this request under its safety or content policy. Retrying the same request will not help.',
+  },
   runner_conflict: {
     label: 'runner conflict',
     tooltip:
@@ -85,6 +124,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The agent exited cleanly but never signalled that it had finished, so Preloop cannot say the work is done.',
   },
+  context_truncated_suspected: {
+    label: 'context truncation suspected',
+    tooltip:
+      "The request exceeds the registered model window, or reported input suggests the model server discarded prompt context. Raise the server's context window or choose a model with a larger one.",
+  },
   agent_no_progress: {
     label: 'agent no progress',
     tooltip:
@@ -110,10 +154,15 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The review result names a commit or diff other than the one Preloop admitted and checked out, so its verdict is not recorded or posted.',
   },
+  review_degenerate: {
+    label: 'review has no substance',
+    tooltip:
+      'The review contains only minimal text without a usable conclusion or findings, so its verdict is not recorded or posted.',
+  },
   review_not_inspected: {
     label: 'review not inspected',
     tooltip:
-      'The review made no repository tool call and ran no command, so it did not read the change and its verdict is not recorded or posted.',
+      'No successful command read the bound diff or a changed file, so the review verdict is not recorded or posted.',
   },
   tool_error: {
     label: 'tool error',

@@ -291,6 +291,18 @@ def _stamp_platform_review(git_clone_config: Any, previous: Any) -> None:
     stamp_enabled_at(git_clone_config, previous)
 
 
+def _reject_invalid_native_result(
+    agent_config: Any, result_schema: Any, validate_result: Any
+) -> None:
+    """Refuse a saved native-result configuration that cannot execute."""
+    from preloop.services.native_result import validate_native_result_config
+
+    try:
+        validate_native_result_config(agent_config, result_schema, validate_result)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 def _reject_invalid_platform_review(
     db: Session,
     *,
@@ -460,6 +472,9 @@ def create_flow(
 
     _validate_flow_model_binding(
         db, flow_in.agent_type, flow_in.ai_model_id, current_user.account_id
+    )
+    _reject_invalid_native_result(
+        flow_in.agent_config, flow_in.result_schema, flow_in.validate_result
     )
     _reject_invalid_platform_review(
         db,
@@ -3887,6 +3902,15 @@ def update_flow(
                 # Clear update notification since they're making their own changes
                 flow_in.preset_update_available = False
 
+    _reject_invalid_native_result(
+        flow_in.agent_config if flow_in.agent_config is not None else flow.agent_config,
+        flow_in.result_schema
+        if "result_schema" in flow_in.model_fields_set
+        else flow.result_schema,
+        flow_in.validate_result
+        if flow_in.validate_result is not None
+        else flow.validate_result,
+    )
     _reject_invalid_platform_review(
         db,
         account_id=current_user.account_id,

@@ -3979,3 +3979,75 @@ async def test_update_flow_disable_only_validates_against_stored_codex_flow(
         "is_enabled": False,
         "source_preset_id": None,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema,validate", [(None, True), ({"type": "object"}, False)])
+async def test_create_rejects_native_result_without_enabled_schema(
+    mock_account: Account, mocker: MockerFixture, schema: dict | None, validate: bool
+) -> None:
+    """An impossible native result configuration never reaches persistence."""
+    mocker.patch.object(flows, "_validate_flow_model_binding")
+    crud = mocker.patch.object(flows, "crud_flow")
+    crud.get_by_name_and_account.return_value = None
+    crud.get_global_preset_by_name.return_value = None
+    payload = schemas.FlowCreate(
+        name="Native result flow",
+        prompt_template="Review the change",
+        agent_type="codex",
+        agent_config={"native_result": True},
+        result_schema=schema,
+        validate_result=validate,
+    )
+    with pytest.raises(HTTPException) as error:
+        await maybe_await(
+            flows.create_flow(
+                db=MagicMock(), flow_in=payload, current_user=mock_account
+            )
+        )
+    assert error.value.status_code == 422
+    assert "native_result requires an enabled result_schema" in error.value.detail
+    crud.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"result_schema": None},
+        {"validate_result": False},
+        {"name": "Updated flow"},
+    ],
+)
+async def test_update_checks_merged_native_result_configuration(
+    mock_account: Account, mocker: MockerFixture, changes: dict
+) -> None:
+    """Partial edits cannot remove validation or hide a broken existing config."""
+    flow_id = uuid.uuid4()
+    stored = models.Flow(
+        id=flow_id,
+        name="Native result flow",
+        account_id=mock_account.account_id,
+        agent_type="codex",
+        agent_config={"native_result": True},
+        result_schema=None if "name" in changes else {"type": "object"},
+        validate_result=True,
+        trigger_event_source="webhook",
+        webhook_config={"webhook_secret": "test-placeholder"},
+    )
+    crud = mocker.patch.object(flows, "crud_flow")
+    crud.get.return_value = stored
+    crud.get_by_name_and_account.return_value = None
+    crud.get_global_preset_by_name.return_value = None
+    with pytest.raises(HTTPException) as error:
+        await maybe_await(
+            flows.update_flow(
+                db=MagicMock(),
+                flow_id=flow_id,
+                flow_in=schemas.FlowUpdate(**changes),
+                current_user=mock_account,
+            )
+        )
+    assert error.value.status_code == 422
+    assert "native_result requires an enabled result_schema" in error.value.detail
+    crud.update.assert_not_called()
