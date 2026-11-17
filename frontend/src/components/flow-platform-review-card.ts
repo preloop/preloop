@@ -281,9 +281,13 @@ export class FlowPlatformReviewCard extends LitElement {
       if (block.enabled || this.flow.git_clone_config?.platform_review) {
         config.platform_review = block;
       }
-      const updated = await updateFlow(this.flow.id, {
-        git_clone_config: config,
-      });
+      // git_clone_config is replaced whole, so the write is conditional
+      // on the revision this card was rendered from.
+      const updated = await updateFlow(
+        this.flow.id,
+        { git_clone_config: config },
+        { revision: this.flow.revision }
+      );
       this.flow = updated;
       this.draft = this.storedBlock();
       this.saved = true;

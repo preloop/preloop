@@ -18,6 +18,7 @@ import {
   getFlowExecutions,
   createFlow,
   updateFlow,
+  FlowRevisionConflictError,
   rotateFlowWebhookSecret,
   deleteFlow,
   getTrackers,
@@ -2114,6 +2115,8 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
             const save = this.saveFlowFromForm(e);
             e.detail.waitUntil?.(save);
           }}
+          @flow-reload=${() =>
+            this.loadFlowData(new URLSearchParams(window.location.search))}
           @flow-cancel=${() =>
             Router.go(
               this.isNew ? '/console/flows' : `/console/flows/${this.flowId}`
@@ -2129,6 +2132,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     // shadow root is cleared, so a later server error had nowhere to go.
     const form = e.target as {
       formError?: string;
+      revisionConflict?: boolean;
       markSaved?: () => void;
     } | null;
     try {
@@ -2143,12 +2147,17 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
         if (e.detail.markSaved) e.detail.markSaved();
         Router.go(`/console/flows/${newFlow.id}`);
       } else {
-        await updateFlow(this.flowId!, payload);
+        // Send the revision the form was loaded with, so a change someone
+        // else saved meanwhile is reported instead of overwritten.
+        await updateFlow(this.flowId!, payload, {
+          revision: this.flow?.revision,
+        });
         if (e.detail.markSaved) e.detail.markSaved();
         Router.go(`/console/flows/${this.flowId}`);
       }
     } catch (error: any) {
       if (form) {
+        form.revisionConflict = error instanceof FlowRevisionConflictError;
         form.formError =
           error?.message || 'Failed to save flow. Please try again.';
       }
@@ -2229,7 +2238,9 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
         const newFlow = await createFlow(payload);
         Router.go(`/console/flows/${newFlow.id}`);
       } else {
-        await updateFlow(this.flowId!, payload);
+        await updateFlow(this.flowId!, payload, {
+          revision: this.flow?.revision,
+        });
         // Redirect to flow view after successful update
         Router.go(`/console/flows/${this.flowId}`);
       }
