@@ -69,7 +69,9 @@ expires. A maintenance pass deactivates active keys that are bound in
 their `context_data` to a flow execution or runtime session that has
 ended, or that have expired. It never touches keys that a person created,
 which carry neither binding, or durable managed-agent credentials. Key
-names are never used as evidence.
+names are never used as evidence. A key keeps working for the post-run
+flush: the pass skips executions that ended less than five minutes ago and
+runtime sessions that ended less than an hour ago.
 
 The pass runs hourly as the `deactivate_ended_run_keys` task. To run it by
 hand:

@@ -211,3 +211,63 @@ def test_command_defaults_to_dry_run(
     assert '"mode": "dry-run"' in out
     assert '"matched_total": 4' in out
     assert _active(db_session, fixture_keys) == set(fixture_keys)
+
+
+def test_runs_inside_the_flush_grace_keep_their_keys(
+    db_session: Session, test_user: models.User
+) -> None:
+    flow = models.Flow(
+        account_id=test_user.account_id,
+        name="Grace flow",
+        prompt_template="Example",
+        agent_config={},
+    )
+    db_session.add(flow)
+    db_session.flush()
+    just_ended = models.FlowExecution(
+        flow_id=flow.id, status="SUCCEEDED", end_time=NOW - timedelta(seconds=10)
+    )
+    long_ended = models.FlowExecution(
+        flow_id=flow.id, status="FAILED", end_time=NOW - timedelta(minutes=10)
+    )
+    session_just_ended = models.RuntimeSession(
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id=f"src-{uuid4().hex[:6]}",
+        started_at=NOW - timedelta(hours=1),
+        ended_at=NOW - timedelta(seconds=10),
+    )
+    db_session.add_all([just_ended, long_ended, session_just_ended])
+    db_session.flush()
+    future = NOW + timedelta(hours=1)
+    keys = {
+        "just_ended": _key(
+            db_session,
+            test_user,
+            "Flow Execution",
+            expires_at=future,
+            context_data={"flow_execution_id": str(just_ended.id)},
+        ),
+        "long_ended": _key(
+            db_session,
+            test_user,
+            "Flow Execution",
+            expires_at=future,
+            context_data={"flow_execution_id": str(long_ended.id)},
+        ),
+        "session_just_ended": _key(
+            db_session,
+            test_user,
+            "Session",
+            expires_at=future,
+            context_data={"runtime_session_id": str(session_just_ended.id)},
+        ),
+    }
+    db_session.flush()
+
+    result = deactivate_ended_run_keys(
+        db_session, dry_run=False, account_id=test_user.account_id
+    )
+
+    assert result.deactivated == 1
+    assert _active(db_session, keys) == {"just_ended", "session_just_ended"}

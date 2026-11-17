@@ -18,6 +18,13 @@ User = models.User
 
 logger = logging.getLogger(__name__)
 
+# A run's key stays usable for a short flush after the run ends
+# (``_reject_finished_flow_execution_key`` allows five minutes; the browser
+# step route accepts a key pinned to an ended session). The ended-run sweep
+# leaves keys alone for at least that long.
+RUN_KEY_EXECUTION_FLUSH_GRACE = timedelta(minutes=5)
+RUN_KEY_SESSION_FLUSH_GRACE = timedelta(hours=1)
+
 
 class CRUDApiKey(CRUDBase[ApiKey]):
     """CRUD operations for API key."""
@@ -465,8 +472,11 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         ``runtime_session_id`` are considered; keys a person created by hand
         carry neither, and durable managed-agent credentials are excluded
         explicitly. Such a key is over when it has expired, or its execution
-        is in a terminal state or gone, or its runtime session has ended or
-        is gone. The key name is never used as evidence.
+        is gone or has been terminal for longer than
+        ``RUN_KEY_EXECUTION_FLUSH_GRACE``, or its runtime session is gone or
+        ended more than ``RUN_KEY_SESSION_FLUSH_GRACE`` ago. The grace keeps
+        the key usable for the post-run flush an adapter makes after the run
+        ends. The key name is never used as evidence.
 
         Args:
             db: Database session.
@@ -485,15 +495,23 @@ class CRUDApiKey(CRUDBase[ApiKey]):
 
         execution_ref = ApiKey.context_data.op("->>")("flow_execution_id")
         session_ref = ApiKey.context_data.op("->>")("runtime_session_id")
+        execution_cutoff = now - RUN_KEY_EXECUTION_FLUSH_GRACE
+        session_cutoff = now - RUN_KEY_SESSION_FLUSH_GRACE
         live_execution = exists().where(
             cast(models.FlowExecution.id, String) == execution_ref,
-            models.FlowExecution.status.not_in(
-                sorted(CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES)
+            or_(
+                models.FlowExecution.status.not_in(
+                    sorted(CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES)
+                ),
+                models.FlowExecution.end_time >= execution_cutoff,
             ),
         )
         live_session = exists().where(
             cast(models.RuntimeSession.id, String) == session_ref,
-            models.RuntimeSession.ended_at.is_(None),
+            or_(
+                models.RuntimeSession.ended_at.is_(None),
+                models.RuntimeSession.ended_at >= session_cutoff,
+            ),
         )
         expired = and_(ApiKey.expires_at.is_not(None), ApiKey.expires_at < now)
         execution_ended = and_(execution_ref.is_not(None), ~live_execution)
