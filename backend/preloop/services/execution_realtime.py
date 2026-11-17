@@ -63,11 +63,14 @@ def _stamp(
         else for_execution(db, event["execution_id"])
     )
     event = masker.mask(event)
-    seq, lifecycle_seq = crud_realtime.allocate_sequence(
-        db,
-        event["execution_id"],
-        lifecycle=event.get("type") in LIFECYCLE_TYPES,
-    )
+    try:
+        seq, lifecycle_seq = crud_realtime.allocate_sequence(
+            db,
+            event["execution_id"],
+            lifecycle=event.get("type") in LIFECYCLE_TYPES,
+        )
+    except Exception:
+        return _unsequenced(event)
     return {
         **event,
         "seq": seq,

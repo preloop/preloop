@@ -228,13 +228,21 @@ def test_attribution_keeps_account_scope_and_missing_references(
 
 
 @pytest.mark.parametrize(
-    "case", ["ok", "missing", "foreign", "operation", "thread", "closed_put"]
+    "case",
+    ["ok", "missing", "foreign", "operation", "thread", "closed_put", "closed_get"],
 )
 def test_artifact_authorization_omits_archives(
     db_session: Session, archived_world: SimpleNamespace, case: str
 ) -> None:
     world = archived_world
     execution_id = uuid4() if case == "missing" else world.executions[0]
+    if case == "ok":
+        execution = crud_flow_execution.get_without_workspace(
+            db_session, execution_id, account_id=world.account_id
+        )
+        crud_flow_execution.update(
+            db_session, db_obj=execution, obj_in={"status": "RUNNING"}
+        )
     operation = "put" if case == "closed_put" else "get"
     claims = dict(
         execution_id=execution_id,
@@ -257,6 +265,7 @@ def test_artifact_authorization_omits_archives(
                     "operation": 403,
                     "thread": 403,
                     "closed_put": 409,
+                    "closed_get": 409,
                 }[case]
             )
     assert all("workspace_snapshot" not in sql for sql in statements)
@@ -491,7 +500,9 @@ def test_publication_refresh_rechecks_stale_identity_without_archives(
             assert result["token"] == "synthetic"
             assert response.headers["Cache-Control"] == "no-store"
     execution_selects = [sql for sql in statements if "FROM flow_execution" in sql]
-    assert len(execution_selects) == 2
+    assert len(execution_selects) == (2 if race else 3)
+    if not race:
+        assert "SELECT flow_execution.credential_fingerprints" in execution_selects[-1]
     assert all("workspace_snapshot" not in sql for sql in statements)
 
 
