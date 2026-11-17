@@ -1,15 +1,14 @@
 name: Release validation (nonpublishing)
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/release*.yml'
-      - '.github/workflows/publish-*-image.yml'
-      - 'scripts/image_sbom.py'
-      - 'scripts/release_audit.py'
-      - 'scripts/tests/sbom_fixture/**'
-      - 'backend/tests/scripts/test_image_sbom.py'
-      - 'backend/tests/scripts/test_release_audit.py'
+  workflow_call:
+    inputs:
+      full:
+        type: boolean
+        default: false
+      checkout_ref:
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       tag:
@@ -25,6 +24,8 @@ env:
 
 jobs:
   validate:
+    permissions:
+      contents: read
     name: SBOM and audit validation
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -32,6 +33,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Exercise audit failure cases
         run: |
           python3 -m unittest discover -s backend/tests/scripts -p test_image_sbom.py
@@ -54,7 +56,7 @@ jobs:
   # publishes nothing.
   remote-audit:
     name: Remote release audit (read-only)
-    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != '' && inputs.checkout_ref == ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

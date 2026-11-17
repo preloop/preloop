@@ -1,35 +1,14 @@
 name: TOTP browser journey
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/totp-e2e.yml"
-      - "backend/preloop/api/auth/**"
-      - "backend/preloop/api/endpoints/oauth*.py"
-      - "backend/preloop/services/authentication_policy.py"
-      - "backend/preloop/services/mfa.py"
-      - "backend/preloop/services/rate_limit.py"
-      - "backend/preloop/services/audit/**"
-      - "backend/preloop/utils/email.py"
-      - "backend/preloop/models/crud/mfa.py"
-      - "backend/tests/e2e_support/**"
-      - "backend/tests/test_totp_e2e_support.py"
-      - "scripts/init_db.py"
-      - "scripts/reset_mfa.py"
-      - "scripts/reset_passkey_only.py"
-      - "frontend/tests/e2e/totp-sign-in.spec.ts"
-      - "frontend/tests/e2e/vite.totp.config.ts"
-      - "frontend/playwright*.ts"
-      - "frontend/vite.config.ts"
-      - "frontend/src/components/mfa-card.ts"
-      - "frontend/src/components/step-up-dialog.ts"
-      - "frontend/src/services/mfa.ts"
-      - "frontend/src/services/passkeys.ts"
-      - "frontend/src/views/public/*"
-      - "frontend/src/views/authed/settings/security-view.ts"
-      - "cli/internal/cmd/auth*.go"
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      full:
+        type: boolean
+        default: false
+      checkout_ref:
+        type: string
+        default: ''
   workflow_dispatch:
 
 permissions:
@@ -53,6 +32,8 @@ env:
 
 jobs:
   totp-browser:
+    permissions:
+      contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     services:
@@ -70,6 +51,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.checkout_ref || github.sha }}
       # Keep the existing repository convention and actionlint compatibility.
       - uses: ./.github/actions/setup-ci-python # zizmor: ignore[self-repository]
         with:
@@ -150,6 +132,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: totp-browser-evidence
           path: frontend/test-results/**/*.png
           if-no-files-found: ignore

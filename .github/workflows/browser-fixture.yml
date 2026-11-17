@@ -12,20 +12,19 @@
 name: Browser fixture flow
 
 on:
-  pull_request:
-    paths:
-      - 'environments/fixture-site/**'
-      - 'environments/preloop/browser/**'
-      - 'environments/preloop/tools/**'
-      - 'environments/egress-proxy/**'
-      - 'scripts/tests/browser_fixture_flow.py'
-      - 'backend/tests/services/test_browser_fixture_flow.py'
-      - '.github/workflows/browser-fixture.yml'
+  workflow_call:
+    inputs:
+      full:
+        type: boolean
+        default: false
+      checkout_ref:
+        type: string
+        default: ''
   workflow_dispatch:
 
 concurrency:
   # Cancel superseded PR work; every main/release/manual run keeps its own slot.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  group: browser-fixture-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -37,6 +36,8 @@ permissions:
 
 jobs:
   browser-fixture:
+    permissions:
+      contents: read
     name: Browser fixture flow
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -44,6 +45,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.checkout_ref || github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

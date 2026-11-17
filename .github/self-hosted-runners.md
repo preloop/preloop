@@ -1,8 +1,8 @@
 # Self-hosted runners
 
-CI distributes backend shards across available capacity at dispatch. Each
+After the fast gate succeeds, CI distributes backend shards across available capacity. Each
 online idle general self-hosted runner takes one shard immediately, up to the
-matrix size; the remaining shards use GitHub-hosted `ubuntu-24.04`. There is
+configured general-pool limit; the remaining shards use GitHub-hosted `ubuntu-24.04`. There is
 no hosted-queue delay threshold or fixed half-matrix cap. Unreadable inventory,
 an absent read token, or `CI_SELF_HOSTED_TESTS=false` keeps every shard hosted.
 Fork and Dependabot PRs always remain hosted. Trusted same-repository PRs and
@@ -24,18 +24,22 @@ Ubuntu 24.04 uses setup-python's Ubuntu build when system Python is not 3.11;
 it does not need a misleading `ubuntu-latest` label or a hosted toolcache.
 
 The picker assigns at most one shard per observed idle runner, up to the
-backend matrix size. Other jobs stay hosted. A runner registration represents
+configured general-pool limit. Standby deb1–deb12 registrations are excluded.
+Other jobs stay hosted. A runner registration represents
 a configured slot, not a CPU; provision slots to fit the host's measured capacity.
 This snapshot is not a reservation: another run can consume a slot or a spot
 VM can stop after selection. GitHub cannot migrate an assigned job between
-runner labels. The hosted recovery workflow watches trusted PRs and main pushes
-for up to 30 minutes. It releases its hosted runner as soon as the complete
+runner labels. The picker starts the hosted recovery workflow only when backend work is
+actually assigned to private capacity. It watches trusted PRs, main pushes
+and main nightlies for up to 30 minutes. There is no every-run requested
+listener; failed completions retain a short fallback check. It releases its hosted runner as soon as the complete
 backend matrix is visible and every optional-runner shard has succeeded or
 all shards are assigned to hosted runners; unrelated hosted jobs can continue.
 After a general-pool backend shard waits unassigned for three minutes, or its
 assigned runner is reported offline/missing, it cancels the
 current run and retries failed/canceled jobs and their dependents once on hosted
-runners. A completed failure without offline/missing-runner evidence stops
+runners. A failed disk reserve check before any tests also permits the same
+bounded hosted retry. Other completed failures without offline/missing-runner evidence stop
 automatic recovery, including when it appears during cancellation. It waits
 up to two minutes for cancellation to finish. Successful jobs are retained;
 work in progress at cancellation may repeat. It never provisions a VM.
@@ -287,7 +291,8 @@ loss. Shared tool and uv caches, Docker images, volumes and other runner slots
 are untouched. This bounds temporary environment retention; cache/image growth
 still requires host maintenance with an exclusive maintenance window.
 
-The duration hints were refreshed from all 18 JUnit artifacts of successful
-main run 43549579108. Replaying those file timings changes the longest partition
-from 611 to 335 seconds while preserving all 1,500 discovered files and the
-existing coverage gate. These are test-time estimates; setup and queues remain.
+The duration hints are refreshed from a complete successful JUnit shard set
+using `scripts/ci_refresh_durations.py`. The source run, test count and replay
+ratio live in `.github/ci-duration-receipt.json`. The current measured replay
+has max/median 1.104; job receipts report observed execution separately by
+runner class. Setup and queue time remain separate from test-time weights.

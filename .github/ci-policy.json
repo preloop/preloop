@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "legacy": {
+    "backend": [
+      "backend/**",
+      "environments/perl/**",
+      "environments/scanner/**",
+      "environments/universal/**",
+      "environments/preloop/Dockerfile",
+      "docs/guide/flows/restricted-ci.md",
+      "docs/guide/flows/repo-review-presets.md",
+      "pyproject.toml",
+      "requirements/**",
+      "!requirements/docs.in",
+      "!requirements/docs.txt",
+      ".github/requirements/app-dev.txt",
+      ".github/requirements/coverage.txt",
+      ".github/requirements/sqlalchemy-21.in",
+      ".github/requirements/sqlalchemy-21.txt",
+      ".github/requirements/test.txt",
+      ".github/requirements/test.in",
+      "scripts/init_db.py"
+    ],
+    "frontend": [
+      "frontend/**"
+    ],
+    "cli": [
+      "cli/**"
+    ],
+    "egress": [
+      "environments/egress-proxy/**"
+    ],
+    "browser": [
+      "environments/preloop/**",
+      "environments/egress-proxy/**",
+      "backend/tests/services/test_flow_environment.py",
+      "backend/preloop/services/flow_environment.py"
+    ],
+    "plugins": [
+      "runtime-plugins/**",
+      "pyproject.toml",
+      ".github/requirements/runtime-plugin-test.txt",
+      ".github/requirements/runtime-test.txt",
+      ".github/requirements/runtime-test.in"
+    ],
+    "helm": [
+      "helm/**",
+      "scripts/helm-render-check.sh",
+      "backend/tests/helm/**",
+      "frontend/docker/**",
+      "frontend/Dockerfile",
+      "backend/tests/test_nginx_*.py"
+    ],
+    "workflow": [
+      ".github/workflows/ci.yml",
+      ".github/actions/setup-ci-python/**",
+      ".github/actions/install-ci-python-deps/**",
+      "scripts/run_backend_shard.py",
+      ".github/pytest-split-durations.json"
+    ],
+    "requirements": [
+      "requirements/**",
+      ".github/requirements/**",
+      "pyproject.toml",
+      "Dockerfile"
+    ]
+  },
+  "sensitive": [
+    ".github/**",
+    ".pre-commit-config.yaml",
+    "**/pyproject.toml",
+    "pyproject.toml",
+    "requirements/**",
+    "**/requirements*.txt",
+    "**/requirements*.in",
+    "**/package.json",
+    "**/package-lock.json",
+    "**/go.mod",
+    "**/go.sum",
+    "**/*.lock",
+    "Dockerfile",
+    "**/Dockerfile*",
+    "backend/preloop/models/**",
+    "backend/preloop/api/auth/**",
+    "backend/preloop/api/common*",
+    "backend/preloop/api/endpoints/auth*",
+    "backend/preloop/api/endpoints/oauth*",
+    "backend/preloop/api/endpoints/*permission*",
+    "backend/preloop/api/endpoints/*role*",
+    "backend/preloop/api/endpoints/*approval*",
+    "backend/preloop/services/*auth*",
+    "backend/preloop/services/*permission*",
+    "backend/preloop/services/*policy*",
+    "backend/preloop/services/*session*",
+    "backend/preloop/services/*secret*",
+    "backend/preloop/services/*token*",
+    "backend/preloop/services/mfa*",
+    "backend/preloop/services/rate_limit*",
+    "backend/preloop/middleware/**",
+    "backend/preloop/security/**",
+    "backend/preloop/execution/**",
+    "backend/preloop/config*",
+    "backend/preloop/app*",
+    "backend/preloop/main*",
+    "frontend/src/services/auth*",
+    "frontend/src/services/mfa*",
+    "frontend/src/services/passkey*",
+    "frontend/src/views/public/**",
+    "cli/internal/auth/**",
+    "cli/internal/credentials/**",
+    "cli/internal/cmd/auth*",
+    "environments/egress-proxy/**",
+    "security/**",
+    "scripts/ci_*.py",
+    "scripts/run_backend_shard.py",
+    "scripts/*install*",
+    "scripts/*defender*",
+    "backend/preloop/api/endpoints/api_key*",
+    "backend/preloop/api/endpoints/*polic*",
+    "backend/preloop/api/endpoints/*account*",
+    "backend/preloop/api/endpoints/*user*",
+    "backend/preloop/api/endpoints/*team*",
+    "backend/preloop/api/endpoints/*organization*",
+    "backend/preloop/services/*polic*",
+    "backend/preloop/services/*approval*",
+    "backend/preloop/services/*credential*",
+    "backend/preloop/services/*passkey*",
+    "backend/preloop/services/audit/**",
+    "backend/preloop/api/mcp*",
+    "backend/preloop/api/websocket*",
+    "backend/preloop/plugins/**",
+    "backend/preloop/utils/*url*",
+    "backend/preloop/utils/*ssrf*",
+    "backend/preloop/utils/*security*",
+    "cli/internal/mcpclient/**",
+    "cli/internal/verify/**",
+    "runtime-plugins/**",
+    "helm/**"
+  ],
+  "leaves": {
+    "parity": [
+      "cli/**",
+      "**/*.go",
+      "**/go.mod",
+      "**/go.sum",
+      ".github/**"
+    ],
+    "windows": [
+      "cli/**",
+      "scripts/**/*.ps1",
+      ".github/**"
+    ],
+    "docs": [
+      "docs/**",
+      "ARCHITECTURE.md",
+      "backend/tests/test_architecture_docs_map.py",
+      "backend/tests/test_docs_workflow_toolchain.py",
+      "mkdocs.yml",
+      "requirements/docs.txt",
+      ".github/workflows/docs.yml"
+    ],
+    "fuzz": [
+      "cli/**",
+      ".github/workflows/fuzz.yml"
+    ],
+    "browser_fixture": [
+      "environments/fixture-site/**",
+      "environments/preloop/browser/**",
+      "environments/preloop/tools/**",
+      "environments/egress-proxy/**",
+      "scripts/tests/browser_fixture_flow.py",
+      "backend/tests/services/test_browser_fixture_flow.py",
+      ".github/workflows/browser-fixture.yml"
+    ],
+    "totp": [
+      ".github/workflows/totp-e2e.yml",
+      "backend/preloop/api/auth/**",
+      "backend/preloop/api/endpoints/oauth*.py",
+      "backend/preloop/services/authentication_policy.py",
+      "backend/preloop/services/mfa.py",
+      "backend/preloop/services/rate_limit.py",
+      "backend/preloop/services/audit/**",
+      "backend/preloop/utils/email.py",
+      "backend/preloop/models/crud/mfa.py",
+      "backend/tests/e2e_support/**",
+      "backend/tests/test_totp_e2e_support.py",
+      "scripts/init_db.py",
+      "scripts/reset_mfa.py",
+      "scripts/reset_passkey_only.py",
+      "frontend/tests/e2e/totp-sign-in.spec.ts",
+      "frontend/tests/e2e/vite.totp.config.ts",
+      "frontend/playwright*.ts",
+      "frontend/vite.config.ts",
+      "frontend/src/components/mfa-card.ts",
+      "frontend/src/components/step-up-dialog.ts",
+      "frontend/src/services/mfa.ts",
+      "frontend/src/services/passkeys.ts",
+      "frontend/src/views/public/*",
+      "frontend/src/views/authed/settings/security-view.ts",
+      "cli/internal/cmd/auth*.go"
+    ],
+    "release_validation": [
+      ".github/workflows/release*.yml",
+      ".github/workflows/publish-*-image.yml",
+      "scripts/image_sbom.py",
+      "scripts/release_audit.py",
+      "scripts/tests/sbom_fixture/**",
+      "backend/tests/scripts/test_image_sbom.py",
+      "backend/tests/scripts/test_release_audit.py"
+    ],
+    "upgrade": [
+      "scripts/upgrade_acceptance/**",
+      ".github/workflows/upgrade-acceptance.yml",
+      ".github/requirements/upgrade-acceptance.in",
+      ".github/requirements/upgrade-acceptance.txt"
+    ],
+    "claude": [
+      "runtime-plugins/claude-preloop/**",
+      ".github/workflows/claude-code-e2e.yml"
+    ]
+  }
+}

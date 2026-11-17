@@ -21,6 +21,12 @@ on:
   # in-flight branch rather than main — silently ran no checks at all, so they
   # looked clean because nothing had examined them.
   pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+  merge_group:
+    types: [checks_requested]
+  schedule:
+    - cron: '37 2 * * *'
+  workflow_dispatch:
 
 concurrency:
   # Cancel superseded PR work; every main/release/manual run keeps its own slot.
@@ -30,6 +36,7 @@ concurrency:
 env:
   PYTHON_VERSION: "3.11"
   NODE_VERSION: "22"
+  PRELOOP_DISABLE_TELEMETRY: "true"
 
 permissions:
   contents: read
@@ -42,6 +49,8 @@ jobs:
   changes:
     name: Detect changed paths
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     outputs:
       backend: ${{ steps.out.outputs.backend }}
       frontend: ${{ steps.out.outputs.frontend }}
@@ -52,119 +61,32 @@ jobs:
       helm: ${{ steps.out.outputs.helm }}
       workflow: ${{ steps.out.outputs.workflow }}
       requirements: ${{ steps.out.outputs.requirements }}
+      full: ${{ steps.out.outputs.full }}
+      parity: ${{ steps.out.outputs.parity }}
+      windows: ${{ steps.out.outputs.windows }}
+      docs: ${{ steps.out.outputs.docs }}
+      fuzz: ${{ steps.out.outputs.fuzz }}
+      browser_fixture: ${{ steps.out.outputs.browser_fixture }}
+      totp: ${{ steps.out.outputs.totp }}
+      release_validation: ${{ steps.out.outputs.release_validation }}
+      upgrade: ${{ steps.out.outputs.upgrade }}
+      claude: ${{ steps.out.outputs.claude }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-        if: github.event_name == 'pull_request'
-
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        if: github.event_name == 'pull_request'
-        id: filter
-        with:
-          # Negated globs (`!requirements/docs.txt`) are inert under the
-          # default `some` quantifier: a negated pattern matches every other
-          # path, so the backend filter would select every non-empty PR.
-          predicate-quantifier: 'some-with-excludes'
-          filters: |
-            backend:
-              - 'backend/**'
-              # backend/tests/test_perl_agent_image.py and
-              # test_preloop_perl_toolchain.py pin these recipes.
-              - 'environments/perl/**'
-              # backend/tests/test_scanner_agent_image.py pins this recipe.
-              - 'environments/scanner/**'
-              # backend/tests/test_universal_agent_image.py pins this recipe.
-              - 'environments/universal/**'
-              - 'environments/preloop/Dockerfile'
-              # test_restricted_ci_docs_examples.py validates their JSON.
-              - 'docs/guide/flows/restricted-ci.md'
-              - 'docs/guide/flows/repo-review-presets.md'
-              - 'pyproject.toml'
-              - 'requirements/**'
-              # mkdocs lock only. Backend shards install app-dev.txt, not this.
-              - '!requirements/docs.in'
-              - '!requirements/docs.txt'
-              - '.github/requirements/app-dev.txt'
-              - '.github/requirements/coverage.txt'
-              - '.github/requirements/sqlalchemy-21.in'
-              - '.github/requirements/sqlalchemy-21.txt'
-              - '.github/requirements/test.txt'
-              - '.github/requirements/test.in'
-              - 'scripts/init_db.py'
-            frontend:
-              - 'frontend/**'
-            cli:
-              - 'cli/**'
-            egress:
-              - 'environments/egress-proxy/**'
-            browser:
-              - 'environments/preloop/**'
-              - 'environments/egress-proxy/**'
-              - 'backend/tests/services/test_flow_environment.py'
-              - 'backend/preloop/services/flow_environment.py'
-            plugins:
-              - 'runtime-plugins/**'
-              - 'pyproject.toml'
-              - '.github/requirements/runtime-plugin-test.txt'
-              - '.github/requirements/runtime-test.txt'
-              - '.github/requirements/runtime-test.in'
-            helm:
-              - 'helm/**'
-              - 'scripts/helm-render-check.sh'
-              - 'backend/tests/helm/**'
-              # The console nginx config the chart mirrors, and its tests.
-              - 'frontend/docker/**'
-              - 'frontend/Dockerfile'
-              - 'backend/tests/test_nginx_*.py'
-            workflow:
-              - '.github/workflows/ci.yml'
-              - '.github/actions/setup-ci-python/**'
-              - '.github/actions/install-ci-python-deps/**'
-              - 'scripts/run_backend_shard.py'
-              - '.github/pytest-split-durations.json'
-            # Anything that can change what a hash-pinned lock resolves to.
-            requirements:
-              - 'requirements/**'
-              - '.github/requirements/**'
-              - 'pyproject.toml'
-              - 'Dockerfile'
-
-      - name: Set job outputs
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Compare complete PR path and test impact selection
         id: out
-        env:
-          EVENT: ${{ github.event_name }}
-          BACKEND: ${{ steps.filter.outputs.backend }}
-          FRONTEND: ${{ steps.filter.outputs.frontend }}
-          CLI: ${{ steps.filter.outputs.cli }}
-          EGRESS: ${{ steps.filter.outputs.egress }}
-          BROWSER: ${{ steps.filter.outputs.browser }}
-          PLUGINS: ${{ steps.filter.outputs.plugins }}
-          HELM: ${{ steps.filter.outputs.helm }}
-          WORKFLOW: ${{ steps.filter.outputs.workflow }}
-          REQUIREMENTS: ${{ steps.filter.outputs.requirements }}
-        run: |
-          if [ "$EVENT" != "pull_request" ] || [ "$WORKFLOW" = "true" ]; then
-            echo "backend=true" >> "$GITHUB_OUTPUT"
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
-            echo "cli=true" >> "$GITHUB_OUTPUT"
-            echo "egress=true" >> "$GITHUB_OUTPUT"
-            echo "browser=true" >> "$GITHUB_OUTPUT"
-            echo "plugins=true" >> "$GITHUB_OUTPUT"
-            echo "helm=true" >> "$GITHUB_OUTPUT"
-            echo "workflow=true" >> "$GITHUB_OUTPUT"
-            echo "requirements=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "backend=${BACKEND:-false}" >> "$GITHUB_OUTPUT"
-            echo "frontend=${FRONTEND:-false}" >> "$GITHUB_OUTPUT"
-            echo "cli=${CLI:-false}" >> "$GITHUB_OUTPUT"
-            echo "egress=${EGRESS:-false}" >> "$GITHUB_OUTPUT"
-            echo "browser=${BROWSER:-false}" >> "$GITHUB_OUTPUT"
-            echo "plugins=${PLUGINS:-false}" >> "$GITHUB_OUTPUT"
-            echo "helm=${HELM:-false}" >> "$GITHUB_OUTPUT"
-            echo "workflow=false" >> "$GITHUB_OUTPUT"
-            echo "requirements=${REQUIREMENTS:-false}" >> "$GITHUB_OUTPUT"
-          fi
+        run: python3 scripts/ci_select.py
+      - name: Retain selection receipt
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          overwrite: true
+          name: ci-selection
+          path: ci-selection.json
+          retention-days: 30
 
   # ==========================================================================
   # Where do the test jobs run?
@@ -190,11 +112,17 @@ jobs:
   # backend shards use the same action: Debian needs system Python and
   # venv; Ubuntu can download its matching build. No job container is used.
   pick-runner:
+    permissions:
+      contents: read
     name: Pick test runner
+    needs: [changes, fast]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       backend_plan: ${{ steps.pick.outputs.backend_plan }}
+      self_hosted: ${{ steps.pick.outputs.self_hosted }}
+      observed_idle: ${{ steps.pick.outputs.observed_idle }}
+      routing_reason: ${{ steps.pick.outputs.routing_reason }}
     steps:
       - name: Assign backend shards to available runner capacity
         id: pick
@@ -202,8 +130,9 @@ jobs:
           # Empty on forks and Dependabot: secrets are not exposed there.
           RUNNER_READ_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
           SELF_HOSTED_TESTS: ${{ vars.CI_SELF_HOSTED_TESTS }}
+          BACKEND_REQUIRED: ${{ needs.changes.outputs.backend }}
           REPO: ${{ github.repository }}
-          TRUSTED_SOURCE: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
+          TRUSTED_SOURCE: ${{ github.event_name == 'push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
         run: |
           set -uo pipefail
 
@@ -213,10 +142,8 @@ jobs:
             SELF_HOSTED_REASON="untrusted source uses hosted runners"
           fi
 
-          # Eighteen shards; durations refreshed from all 18 JUnit artifacts
-          # of green main run 43549579108 (29,257 test cases). Replaying its
-          # file timings lowers the longest group from 611s to 335s, without
-          # changing discovery, test order within files, or coverage.
+          # Whole-file weights come from all 18 successful JUnit reports.
+          # Source and replay ratio: .github/ci-duration-receipt.json.
           SPLITS=18
 
           emit() {
@@ -225,7 +152,7 @@ jobs:
             case "$idle" in
               ''|*[!0-9]*) idle=0 ;;
             esac
-            if [ "$idle" -gt "$SPLITS" ]; then idle=$SPLITS; fi
+            if [ "$idle" -gt 7 ]; then idle=7; fi
 
             plan=$(IDLE="$idle" SPLITS="$SPLITS" jq -cn '
               def slot($runner): {runner:$runner};
@@ -241,6 +168,9 @@ jobs:
             fi
 
             {
+              echo "self_hosted=$([ "$idle" -gt 0 ] && echo true || echo false)"
+              echo "observed_idle=$idle"
+              echo "routing_reason=$reason"
               echo "backend_plan<<EOF"
               echo "$plan"
               echo "EOF"
@@ -251,6 +181,10 @@ jobs:
             echo "- reason: $reason" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           }
+
+          if [ "${BACKEND_REQUIRED:-true}" != "true" ]; then
+            emit 0 "backend paths are irrelevant; no optional capacity to recover"
+          fi
 
           if [ "${SELF_HOSTED_TESTS:-true}" = "false" ]; then
             emit 0 "${SELF_HOSTED_REASON:-repository variable CI_SELF_HOSTED_TESTS is false}"
@@ -269,6 +203,7 @@ jobs:
           available=$(printf '%s' "$runners" | jq -s '
             [ .[].runners[]?
               | select(.status == "online" and .busy == false)
+              | select(((.name // "") | test("^deb([1-9]|1[0-2])$")) | not)
               | [.labels[].name] as $labels
               | select(($labels | index("self-hosted")) != null
                    and ($labels | index("Linux")) != null
@@ -310,6 +245,8 @@ jobs:
   # Dockerfile:28-29 and scripts/generate_sbom.sh use, so this checks the same
   # thing those do. Measured cold-cache locally: 47s for all ten lock files.
   requirements-resolve:
+    permissions:
+      contents: read
     name: Requirements Resolve
     runs-on: ubuntu-24.04
     needs: changes
@@ -319,6 +256,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Set up Python
         uses: ./.github/actions/setup-ci-python
@@ -359,12 +297,16 @@ jobs:
   # ==========================================================================
 
   lint:
+    permissions:
+      contents: read
     name: Lint & Format
+    needs: changes
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Set up Python
         uses: ./.github/actions/setup-ci-python
@@ -389,13 +331,24 @@ jobs:
       - name: Install frontend dependencies
         run: cd frontend && npm ci
 
+      - name: Frontend format and type checks
+        if: needs.changes.outputs.frontend == 'true'
+        run: cd frontend && npm run format:check && npm run typecheck
+
+      - name: Typecheck CI selection and control scripts
+        run: mypy --follow-imports=skip --ignore-missing-imports scripts/ci_select.py scripts/ci_control.py scripts/ci_receipt.py
+
+      - name: Python type baseline (comparison only)
+        continue-on-error: true
+        run: mypy --follow-imports=skip --ignore-missing-imports scripts/ci_select.py scripts/run_backend_shard.py
+
       - name: Run pre-commit
         run: pre-commit run --all-files
 
       - name: Test CI efficiency guards
         env:
           PRELOOP_DISABLE_TELEMETRY: 'true'
-        run: python -m pytest --noconftest .github/tests/test_ci_efficiency.py -q
+        run: python -m pytest --noconftest .github/tests -q
 
       - name: Run ruff
         run: ruff check .
@@ -412,15 +365,177 @@ jobs:
           PRELOOP_DISABLE_TELEMETRY: 'true'
         run: python -m pytest scripts/fixtures/warehouse_sim/tests -q
 
-  helm-lint:
-    name: Helm Chart Checks
+  backend-fast:
+    name: Backend Fast
+    permissions:
+      contents: read
     runs-on: ubuntu-24.04
     needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    timeout-minutes: 15
+    env:
+      OPENAI_API_KEY: mock_key
+      ANTHROPIC_API_KEY: mock_key
+      PRELOOP_CI_SHARD: '0'
+      PGPASSWORD: test_password
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          clean: true
+
+      - name: Set up Python
+        id: setup-python
+        uses: ./.github/actions/setup-ci-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # App + [dev] extra hash-pinned via app-dev.txt; `--no-deps` installs
+      # only the local package.
+      - name: Install dependencies
+        uses: ./.github/actions/install-ci-python-deps
+
+      - name: Prepare Postgres
+        run: python scripts/ci_postgres.py prepare
+
+      - name: Initialize database
+        run: python scripts/init_db.py --force
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-selection
+      - name: Run smoke and affected whole-file unit tests
+        run: python scripts/ci_select.py --run-fast
+      - name: Drop CI database
+        if: always() && steps.setup-python.outcome == 'success'
+        run: python scripts/ci_postgres.py drop
+      - name: Retain fast test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          overwrite: true
+          name: fast-test-results
+          path: fast-test-results.xml
+
+  cli-fast:
+    name: CLI Fast
+    needs: changes
+    if: needs.changes.outputs.cli == 'true'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+      - name: Build, vet and short unit tests
+        run: go build ./... && go vet ./... && go test -short ./...
+
+  test-cli-linux:
+    name: CLI Tests (Linux)
+    needs: [changes, fast]
+    if: needs.changes.outputs.cli == 'true'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+      - name: All Linux CLI unit tests
+        run: go test ./...
+
+  fast:
+    name: CI Fast
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    needs: [changes, lint, requirements-resolve, backend-fast, cli-fast]
+    if: always() && !cancelled()
+    steps:
+      - name: Require complete fast checks
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          needs = json.loads(os.environ['RESULTS'])
+          assert needs['changes']['result'] == 'success'
+          assert needs['lint']['result'] == 'success'
+          for job, output in [('requirements-resolve', 'requirements'), ('backend-fast', 'backend'), ('cli-fast', 'cli')]:
+              expected = 'success' if needs['changes']['outputs'][output] == 'true' else 'skipped'
+              assert needs[job]['result'] == expected, (job, needs[job]['result'])
+          PYTHON
+
+  review:
+    needs: fast
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    uses: ./.github/workflows/preloop-flow-trigger.yml
+    with:
+      pr: ${{ github.event.pull_request.number }}
+      head: ${{ github.event.pull_request.head.sha }}
+      ci_run: ${{ github.run_id }}
+    secrets:
+      PRELOOP_TOKEN: ${{ secrets.PRELOOP_TOKEN }}
+
+  recover-capacity:
+    name: Start recovery only for assigned private capacity
+    needs: pick-runner
+    if: needs.pick-runner.outputs.self_hosted == 'true' && github.run_attempt == 1
+    permissions:
+      contents: read
+      actions: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Start bounded trusted recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ github.run_id }}
+        run: |
+          # Before this PR lands, the existing default-branch listener owns
+          # recovery. Do not dispatch an input it does not yet implement.
+          workflow=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/ci-hosted-recovery.yml?ref=main" --jq .content | base64 --decode)
+          if ! grep -q 'workflow_dispatch:' <<< "$workflow"; then
+            echo '::notice::Legacy default-branch recovery listener is still active'
+            exit 0
+          fi
+          gh workflow run ci-hosted-recovery.yml --repo "$GITHUB_REPOSITORY" --ref main -f run_id="$CI_RUN_ID"
+
+  helm-lint:
+    permissions:
+      contents: read
+    name: Helm Chart Checks
+    runs-on: ubuntu-24.04
+    needs: [changes, fast]
     if: needs.changes.outputs.helm == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       # Install pinned Helm before render checks instead of relying on the image.
       - name: Set up Helm
@@ -473,11 +588,13 @@ jobs:
   # VM's Postgres. The VM needs Docker for the fallback start, and the
   # runner user in the docker group. A persistent server avoids the pull.
   test-backend:
+    permissions:
+      contents: read
     name: Backend Tests (${{ matrix.group }}/18)
     # Retry attempts bypass cached picker outputs: rerun-failed-jobs does not
     # rerun a successful picker. Recovery must never requeue a lost spot slot.
     runs-on: ${{ github.run_attempt > 1 && 'ubuntu-24.04' || fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
-    needs: [changes, pick-runner]
+    needs: [changes, pick-runner, fast]
     if: needs.changes.outputs.backend == 'true'
     timeout-minutes: 15
     strategy:
@@ -489,6 +606,11 @@ jobs:
       OPENAI_API_KEY: mock_key
       ANTHROPIC_API_KEY: mock_key
       PRELOOP_DISABLE_TELEMETRY: "true"
+      # Native numerical libraries must not multiply threads per runner slot.
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      NUMEXPR_NUM_THREADS: '1'
       COVERAGE_FILE: coverage-data.${{ matrix.group }}
       PRELOOP_CI_SHARD: ${{ matrix.group }}
       # Fixture role from .github/self-hosted-runners.md. The database URL
@@ -547,9 +669,21 @@ jobs:
 
       # clean: true is the default, but a self-hosted workspace is reused
       # between runs, so say it out loud.
+      - name: Check runner disk reserve
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          set -euo pipefail
+          available=$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')
+          if [ "${available:-0}" -lt 3145728 ]; then
+            echo "::error::CI disk reserve below 3 GiB; retry on hosted capacity"
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
           clean: true
 
       - name: Set up Python
@@ -596,6 +730,7 @@ jobs:
       - name: Upload coverage data
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          overwrite: true
           name: backend-coverage-${{ matrix.group }}
           path: coverage-data.${{ matrix.group }}
           if-no-files-found: error
@@ -604,6 +739,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
+          overwrite: true
           name: backend-test-results-${{ matrix.group }}
           path: test-results.xml
 
@@ -617,6 +753,8 @@ jobs:
           df -h "$RUNNER_TEMP"
 
   test-backend-coverage:
+    permissions:
+      contents: read
     name: Backend Coverage
     runs-on: ubuntu-24.04
     needs: [changes, test-backend]
@@ -626,6 +764,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
           clean: true
 
       - name: Set up Python
@@ -670,7 +809,7 @@ jobs:
 
       - name: Upload coverage
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'schedule'
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
@@ -681,9 +820,11 @@ jobs:
   # ==========================================================================
 
   test-frontend:
+    permissions:
+      contents: read
     name: Frontend Tests
     runs-on: ubuntu-24.04
-    needs: [changes]
+    needs: [changes, fast]
     if: needs.changes.outputs.frontend == 'true'
     timeout-minutes: 45
     defaults:
@@ -694,6 +835,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
           clean: true
 
       - name: Set up Node.js
@@ -792,9 +934,11 @@ jobs:
   # ==========================================================================
 
   test-runtime-plugins:
+    permissions:
+      contents: read
     name: Runtime Plugin Tests
     runs-on: ubuntu-24.04
-    needs: [changes]
+    needs: [changes, fast]
     if: needs.changes.outputs.plugins == 'true'
     timeout-minutes: 30
 
@@ -802,6 +946,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
           clean: true
 
       - name: Set up Python
@@ -916,10 +1061,11 @@ jobs:
   #      comment in cli/internal/cmd/testsupport_test.go.
 
   test-cli-windows:
+    permissions:
+      contents: read
     name: CLI Tests (Windows)
     runs-on: windows-latest
-    continue-on-error: true
-    needs: changes
+    needs: [changes, fast]
     if: needs.changes.outputs.cli == 'true'
 
     defaults:
@@ -930,6 +1076,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -959,9 +1106,11 @@ jobs:
   # treats that skip as success and a failure here as a failed suite.
 
   test-egress-proxy:
+    permissions:
+      contents: read
     name: Egress Proxy
     runs-on: ubuntu-24.04
-    needs: changes
+    needs: [changes, fast]
     if: needs.changes.outputs.egress == 'true'
     defaults:
       run:
@@ -970,6 +1119,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -991,15 +1141,18 @@ jobs:
   # PRELOOP_BROWSER_CI=1 makes a missing browser a failure, not a skip.
 
   test-browser-profile:
+    permissions:
+      contents: read
     name: Browser profile
     runs-on: ubuntu-24.04
-    needs: changes
+    needs: [changes, fast]
     if: needs.changes.outputs.browser == 'true'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -1063,7 +1216,10 @@ jobs:
   # the evidence behind that assertion.
 
   cli-vuln-scan:
+    permissions:
+      contents: read
     name: CLI Vulnerability Scan
+    needs: fast
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -1073,6 +1229,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -1093,13 +1250,170 @@ jobs:
   # a failed suite must still fail this job (skipped-because-needs-failed
   # would otherwise look like a path-filter skip). `changes` is in `needs`
   # so a checkout/filter crash cannot leave this job green with no tests.
+  leaf-parity:
+    needs: [changes, fast]
+    if: needs.changes.outputs.parity == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/discovery-parity.yml
+    with:
+      full: ${{ needs.changes.outputs.full == 'true' }}
+      checkout_ref: ${{ github.sha }}
+
+  leaf-windows:
+    needs: [changes, fast]
+    if: needs.changes.outputs.windows == 'true'
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/windows-security.yml
+    with:
+      full: ${{ needs.changes.outputs.full == 'true' }}
+      checkout_ref: ${{ github.sha }}
+
+  leaf-docs:
+    needs: [changes, fast]
+    if: needs.changes.outputs.docs == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/docs.yml
+    with:
+      full: ${{ needs.changes.outputs.full == 'true' }}
+      checkout_ref: ${{ github.sha }}
+
+  leaf-fuzz:
+    needs: [changes, fast]
+    if: needs.changes.outputs.fuzz == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/fuzz.yml
+    with:
+      full: ${{ needs.changes.outputs.full == 'true' }}
+      checkout_ref: ${{ github.sha }}
+
+  leaf-browser-fixture:
+    needs: [changes, fast]
+    if: needs.changes.outputs.browser_fixture == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/browser-fixture.yml
+    with:
+      full: ${{ needs.changes.outputs.full == 'true' }}
+      checkout_ref: ${{ github.sha }}
+
+  leaf-totp:
+    needs: [changes, fast]
+    if: needs.changes.outputs.totp == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/totp-e2e.yml
+    with:
+      full: ${{ needs.changes.outputs.full == 'true' }}
+      checkout_ref: ${{ github.sha }}
+
+  leaf-release-validation:
+    needs: [changes, fast]
+    if: needs.changes.outputs.release_validation == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-validation.yml
+    with:
+      full: ${{ needs.changes.outputs.full == 'true' }}
+      checkout_ref: ${{ github.sha }}
+
+  leaf-upgrade:
+    needs: [changes, fast]
+    if: needs.changes.outputs.upgrade == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/upgrade-acceptance.yml
+    with:
+      full: ${{ needs.changes.outputs.full == 'true' }}
+      checkout_ref: ${{ github.sha }}
+
+  leaf-claude:
+    needs: [changes, fast]
+    if: needs.changes.outputs.claude == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/claude-code-e2e.yml
+    with:
+      full: ${{ needs.changes.outputs.full == 'true' }}
+      checkout_ref: ${{ github.sha }}
+
+  full-codeql:
+    needs: fast
+    if: github.event_name != 'pull_request' && github.event_name != 'push'
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+      security-events: write
+    uses: ./.github/workflows/codeql.yml
+    with:
+      checkout_ref: ${{ github.sha }}
+      analysis_ref: ${{ github.ref }}
+
+  full-secret-scan:
+    needs: fast
+    if: github.event_name != 'pull_request' && github.event_name != 'push'
+    permissions:
+      contents: read
+      security-events: write
+    uses: ./.github/workflows/secret-scan.yml
+    with:
+      checkout_ref: ${{ github.sha }}
+      analysis_ref: ${{ github.ref }}
+
+  full-zizmor:
+    needs: fast
+    if: github.event_name != 'pull_request' && github.event_name != 'push'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/zizmor.yml
+    with:
+      checkout_ref: ${{ github.sha }}
+
+  cancel-fast-failure:
+    name: Cancel after fast failure
+    needs: [changes, lint, requirements-resolve, backend-fast, cli-fast]
+    if: failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_RUN_ID: ${{ github.run_id }}
+        run: gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID/cancel"
+
   ci:
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     name: CI
     runs-on: ubuntu-24.04
     if: always() && !cancelled()
     needs:
       - changes
+      - leaf-parity
+      - leaf-windows
+      - leaf-docs
+      - leaf-fuzz
+      - leaf-browser-fixture
+      - leaf-totp
+      - leaf-release-validation
+      - leaf-upgrade
+      - leaf-claude
+      - full-codeql
+      - full-secret-scan
+      - full-zizmor
       - pick-runner
+      - fast
+      - test-cli-windows
+      - test-cli-linux
       - lint
       - helm-lint
       - requirements-resolve
@@ -1111,10 +1425,42 @@ jobs:
       - test-browser-profile
       - cli-vuln-scan
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ci-selection
+      - name: Enforce exact expected results and record candidate timings
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/ci_receipt.py
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          overwrite: true
+          name: ci-receipt
+          path: ci-receipt.json
+          retention-days: 30
       - name: Require every suite to have passed or been skipped
         env:
           CHANGES: ${{ needs.changes.result }}
           PICKRUNNER: ${{ needs.pick-runner.result }}
+          LEAF_PARITY: ${{ needs.leaf-parity.result }}
+          LEAF_WINDOWS: ${{ needs.leaf-windows.result }}
+          LEAF_DOCS: ${{ needs.leaf-docs.result }}
+          LEAF_FUZZ: ${{ needs.leaf-fuzz.result }}
+          LEAF_BROWSER_FIXTURE: ${{ needs.leaf-browser-fixture.result }}
+          LEAF_TOTP: ${{ needs.leaf-totp.result }}
+          LEAF_RELEASE_VALIDATION: ${{ needs.leaf-release-validation.result }}
+          LEAF_UPGRADE: ${{ needs.leaf-upgrade.result }}
+          LEAF_CLAUDE: ${{ needs.leaf-claude.result }}
+          SCAN_CODEQL: ${{ needs.full-codeql.result }}
+          SCAN_SECRET_SCAN: ${{ needs.full-secret-scan.result }}
+          SCAN_ZIZMOR: ${{ needs.full-zizmor.result }}
+          FAST: ${{ needs.fast.result }}
+          CLIWINDOWS: ${{ needs.test-cli-windows.result }}
           LINT: ${{ needs.lint.result }}
           HELM: ${{ needs.helm-lint.result }}
           REQRESOLVE: ${{ needs.requirements-resolve.result }}
@@ -1141,6 +1487,20 @@ jobs:
           }
           check changes "$CHANGES"
           check pick-runner "$PICKRUNNER"
+          check leaf-parity "$LEAF_PARITY"
+          check leaf-windows "$LEAF_WINDOWS"
+          check leaf-docs "$LEAF_DOCS"
+          check leaf-fuzz "$LEAF_FUZZ"
+          check leaf-browser-fixture "$LEAF_BROWSER_FIXTURE"
+          check leaf-totp "$LEAF_TOTP"
+          check leaf-release-validation "$LEAF_RELEASE_VALIDATION"
+          check leaf-upgrade "$LEAF_UPGRADE"
+          check leaf-claude "$LEAF_CLAUDE"
+          check full-codeql "$SCAN_CODEQL"
+          check full-secret-scan "$SCAN_SECRET_SCAN"
+          check full-zizmor "$SCAN_ZIZMOR"
+          check fast "$FAST"
+          check test-cli-windows "$CLIWINDOWS"
           check lint "$LINT"
           check helm-lint "$HELM"
           check requirements-resolve "$REQRESOLVE"

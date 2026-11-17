@@ -54,14 +54,20 @@
 name: Preloop flow trigger
 
 on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
-      - labeled
-      - unlabeled
+  workflow_call:
+    inputs:
+      pr:
+        type: number
+        required: true
+      head:
+        type: string
+        required: true
+      ci_run:
+        type: string
+        required: true
+    secrets:
+      PRELOOP_TOKEN:
+        required: false
   # Fork PRs do not receive repo secrets on `pull_request`. This event
   # runs from the base branch and can use PRELOOP_TOKEN. Checkout below
   # is the default branch only; do not point it at the PR head.
@@ -79,10 +85,17 @@ on:
         description: Pull request number to review
         required: true
         type: number
+      head:
+        description: Expected current head (optional for manual review)
+        type: string
+      ci_run:
+        description: Fast-green CI run (optional for manual review)
+        type: string
 
 permissions:
   contents: read
   pull-requests: read
+  actions: read
 
 # Both pull_request and pull_request_target fire for every PR, and only
 # one of them reviews (see the job condition). Keep the other one in a
@@ -93,7 +106,11 @@ concurrency:
 
 jobs:
   trigger:
-    # Same-repo: pull_request only. Forks: pull_request_target only.
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    # Same-repo: called by CI after its fast gate only. Forks: pull_request_target only.
     # Both events fire on a same-repo PR; the fork clause prevents a
     # double review. Label events only retrigger for the two labels this
     # workflow owns: skip-review removed, or preloop-review added. Any
@@ -103,7 +120,6 @@ jobs:
     if: >
       github.event_name == 'workflow_dispatch' ||
       (
-        github.event.pull_request.draft == false &&
         github.event.pull_request.user.login != 'dependabot[bot]' &&
         github.actor != 'dependabot[bot]' &&
         !contains(github.event.pull_request.labels.*.name, 'preloop-skip-review') &&
@@ -147,14 +163,10 @@ jobs:
           fi
           meta=$(gh pr view "$PR_NUMBER" --json state,isDraft,labels)
           state=$(printf '%s' "$meta" | jq -r .state)
-          draft=$(printf '%s' "$meta" | jq -r .isDraft)
           label=$(printf '%s' "$meta" | jq -r '[.labels[].name] | index("preloop-skip-review") != null')
           optin=$(printf '%s' "$meta" | jq -r '[.labels[].name] | index("preloop-review") != null')
           if [ "$state" != "OPEN" ]; then
             skip "PR #${PR_NUMBER} is ${state}, not OPEN."
-          fi
-          if [ "$draft" = "true" ]; then
-            skip "PR #${PR_NUMBER} is a draft."
           fi
           if [ "$label" = "true" ]; then
             skip "PR #${PR_NUMBER} has the preloop-skip-review label."
@@ -172,18 +184,60 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
+      - name: Require current-head fast success
+        id: fast-admission
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          EXPECTED_HEAD: ${{ inputs.head || github.event.pull_request.head.sha }}
+          CI_RUN_ID: ${{ inputs.ci_run }}
+        run: |
+          set -euo pipefail
+          # Fork target events have no write token in their CI. Wait here only
+          # for those forks; same-repository reviews enter through needs: fast.
+          deadline=$(( $(date +%s) + 20 * 60 ))
+          while :; do
+            pr=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER")
+            head=$(jq -r .head.sha <<< "$pr")
+            test "$(jq -r .state <<< "$pr")" = open
+            test -z "$EXPECTED_HEAD" || test "$head" = "$EXPECTED_HEAD"
+            run_id="$CI_RUN_ID"
+            if [ -z "$run_id" ]; then
+              run_id=$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$head&per_page=100" --jq '.workflow_runs | sort_by(.created_at) | last | .id // empty')
+            fi
+            if [ -n "$run_id" ]; then
+              metadata=$(gh api "repos/$GH_REPO/actions/runs/$run_id")
+              test "$(jq -r .head_sha <<< "$metadata")" = "$head"
+              test "$(jq -r .event <<< "$metadata")" = pull_request
+              state=$(gh api "repos/$GH_REPO/actions/runs/$run_id/jobs?per_page=100" --jq '[.jobs[] | select(.name == "CI Fast")] | last | .conclusion // "pending"')
+              if [ "$state" = success ]; then break; fi
+              case "$state" in failure|cancelled|timed_out|skipped) exit 1 ;; esac
+            fi
+            test "$(date +%s)" -lt "$deadline"
+            sleep 15
+          done
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          # A completed review of this exact head is the durable dedup receipt.
+          reviewed=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/reviews" --jq ".[] | select(.commit_id == \"$head\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\")) | .id")
+          if [ -n "$reviewed" ]; then
+            echo "reviewed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # This job only needs scripts/install-cli.sh. Check out the default
       # branch so a PR cannot supply the installer (or a replacement
       # preloop binary) that then runs with PRELOOP_TOKEN.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && steps.fast-admission.outputs.reviewed != 'true'
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       - name: Install the Preloop CLI
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && steps.fast-admission.outputs.reviewed != 'true'
         env:
+          PRELOOP_DISABLE_TELEMETRY: "true"
           # Pin the downloaded release. install-cli.sh from the default
           # branch already fetches SHA256SUMS; the check below fails the
           # job on a mismatch because the installer only warns.
@@ -212,10 +266,11 @@ jobs:
 
       - name: Trigger the flow and wait for the verdict
         id: trigger
-        if: steps.gate.outputs.skip != 'true'
+        if: steps.gate.outputs.skip != 'true' && steps.fast-admission.outputs.reviewed != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          PRELOOP_DISABLE_TELEMETRY: "true"
           PRELOOP_TOKEN: ${{ secrets.PRELOOP_TOKEN }}
           # Pinned to prod. Do not point this at staging; the staging
           # webhook reviewer is the flow this job replaces.
@@ -224,7 +279,8 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
           # The commit this run is for. Empty on workflow_dispatch, where
           # the live head is used.
-          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REVIEW_HEAD: ${{ steps.fast-admission.outputs.head }}
+          EVENT_HEAD_SHA: ${{ inputs.head || github.event.pull_request.head.sha }}
           EVENT_ACTION: ${{ github.event.action || 'dispatch' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -244,6 +300,12 @@ jobs:
           esac
           pr_json="${RUNNER_TEMP}/pr.json"
           gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}" > "$pr_json"
+          # Re-fetch immediately before triggering: an old workflow must never
+          # review a new head using stale readiness or approval evidence.
+          test "$(jq -r .state "$pr_json")" = open
+          live_head=$(jq -r .head.sha "$pr_json")
+          test -z "${REVIEW_HEAD:-}" || test "$live_head" = "$REVIEW_HEAD"
+          test -z "$EVENT_HEAD_SHA" || test "$live_head" = "$EVENT_HEAD_SHA"
           payload="${RUNNER_TEMP}/preloop-payload.json"
           jq -c --arg type "$type" --arg action "$EVENT_ACTION" \
             --arg sha "$EVENT_HEAD_SHA" --arg run_url "$RUN_URL" '

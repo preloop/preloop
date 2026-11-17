@@ -66,3 +66,9 @@ rules:
       # superseded, canceled and repeated attempts before Actions mutations.
       # Regression tests pin checkout ref, permissions and mutation guards.
       - ci-hosted-recovery.yml
+      # Control-only listener: immutable default-branch code for nightlies,
+      # main-only checkout for review events, no candidate code or artifacts.
+      # Structured API calls verify current head/base/approval before a PR rerun;
+      # selection artifacts are bounded JSON and nightly logs are parsed as test
+      # identifiers. Neither is extracted to the workspace or executed.
+      - ci-follow-up.yml

@@ -302,7 +302,9 @@ def test_gate_reviews_a_fork_pr_from_a_member_without_a_label(tmp_path: Path) ->
 def test_label_events_only_retrigger_for_the_two_owned_labels() -> None:
     doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     on = doc.get("on") or doc[True]
-    for event in ("pull_request", "pull_request_target"):
+    assert "workflow_call" in on
+    assert "pull_request" not in on
+    for event in ("pull_request_target",):
         assert {"labeled", "unlabeled"} <= set(on[event]["types"]), event
     condition = doc["jobs"]["trigger"]["if"]
     assert (
@@ -330,10 +332,10 @@ def _run_trigger(
         pytest.skip("bash and jq are required")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True)
-    (tmp_path / "pr.json").write_text(json.dumps(GITHUB_PR), encoding="utf-8")
+    (tmp_path / "forge-pr.json").write_text(json.dumps(GITHUB_PR), encoding="utf-8")
     (tmp_path / "statuses").write_text("\n".join(statuses) + "\n", encoding="utf-8")
     stubs = {
-        "gh": f"#!/bin/sh\ncat '{tmp_path}/pr.json'\n",
+        "gh": f"#!/bin/sh\ncat '{tmp_path}/forge-pr.json'\n",
         "sleep": "#!/bin/sh\nexit 0\n",
         "curl": (
             "#!/bin/sh\n"
