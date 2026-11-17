@@ -184,6 +184,27 @@ Cilium enforces it as written. `controlPlaneIngress` should stay off on
 Cilium, since it relies on an `ipBlock` to re-admit node-sourced traffic
 to the API and gateway.
 
+## Scoped output maintenance
+
+Operators can apply the current masking policy to stored execution output with
+`python -m preloop.models.mask_execution_credentials`. Run it from the backend
+environment with the intended database configuration. Start with an explicit
+account and execution scope and inspect the counts from a dry run:
+
+```bash
+python -m preloop.models.mask_execution_credentials \
+  --account-id 00000000-0000-4000-8000-000000000001 \
+  --execution-id 00000000-0000-4000-8000-000000000002 --dry-run
+```
+
+Dry run is also the default when neither mode flag is provided. Repeat
+`--execution-id` to select multiple executions; omitting it selects all executions
+in the required account. After checking the scope and counts, replace `--dry-run`
+with `--apply` to rewrite matching stored output and persist the execution's
+`credential_fingerprints`. Apply commits one execution at a time and marks changed
+search documents for reindexing. The command prints counts only. It does not
+rotate or revoke credentials, and it does not modify external-provider state.
+
 ## The credential an agent carries
 
 `create_flow_runtime_token`

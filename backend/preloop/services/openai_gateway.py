@@ -9348,9 +9348,13 @@ class OpenAIGatewayService:
         # an optional embedding parameter should ignore it, not fail the call.
         kwargs["drop_params"] = True
         apply_preloop_client_headers(kwargs, ai_model)
-        wire_model, _, _, _ = litellm.get_llm_provider(
-            model=kwargs["model"], api_base=kwargs.get("api_base")
-        )
+        try:
+            wire_model, _, _, _ = litellm.get_llm_provider(
+                model=kwargs["model"], api_base=kwargs.get("api_base")
+            )
+        except litellm.BadRequestError:
+            # Diagnostics must also allow custom embedding backends.
+            wire_model = kwargs["model"]
         self._upstream_is_openrouter = _is_openrouter_upstream(ai_model)
         if self._upstream_is_openrouter:
             routing = self._openrouter_routing(ai_model, payload, provider="openai")

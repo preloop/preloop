@@ -1,6 +1,6 @@
 """CRUD operations for ToolAccessRule model."""
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Sequence
 
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
@@ -60,6 +60,36 @@ class CRUDToolAccessRule(CRUDBase[ToolAccessRule]):
         if enabled_only:
             query = query.filter(self.model.is_enabled.is_(True))
         return query.order_by(self.model.priority.asc()).all()
+
+    def has_approval_path(
+        self,
+        db: Session,
+        *,
+        config_ids: Sequence[str],
+        account_id: str,
+        has_default_workflow: bool,
+    ) -> bool:
+        """Check enabled rules for an explicit or account-default approval path.
+
+        Args:
+            db: The database session.
+            config_ids: Tool configurations eligible for this discovery request.
+            account_id: Account owning the rules.
+            has_default_workflow: Whether a rule can fall back to account approval.
+
+        Returns:
+            Whether any eligible rule can require an approval workflow.
+        """
+        if not config_ids:
+            return False
+        query = db.query(self.model.id).filter(
+            self.model.tool_configuration_id.in_(config_ids),
+            self.model.account_id == account_id,
+            self.model.is_enabled.is_(True),
+        )
+        if not has_default_workflow:
+            query = query.filter(self.model.approval_workflow_id.is_not(None))
+        return query.first() is not None
 
     def get_first_by_config(
         self,

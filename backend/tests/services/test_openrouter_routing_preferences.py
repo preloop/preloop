@@ -608,3 +608,35 @@ def test_native_protocol_summaries_are_content_free(body: dict, expected: dict) 
     for key, value in expected.items():
         assert summary[key] == value
     assert "private" not in str(summary)
+
+
+def test_custom_embedding_model_survives_diagnostic_provider_lookup() -> None:
+    """Diagnostic model resolution cannot reject a supported custom backend."""
+    import litellm
+
+    gateway = service()
+    configured = model(
+        provider_name="openai-compatible",
+        model_identifier="custom-embedding",
+        api_endpoint="https://example.com/v1",
+        model_parameters={},
+    )
+    with (
+        patch("preloop.services.openai_gateway.get_secret_service") as secret,
+        patch(
+            "preloop.services.openai_gateway.litellm.get_llm_provider",
+            side_effect=litellm.BadRequestError(
+                message="Unknown diagnostic model",
+                model="custom-embedding",
+                llm_provider="custom",
+            ),
+        ),
+    ):
+        secret.return_value.resolve_ai_model_credentials.return_value = SimpleNamespace(
+            credential_type="api_key", value="synthetic-secret"
+        )
+        kwargs = gateway._build_embedding_kwargs(configured, payload={"input": "hello"})
+    assert kwargs["model"].endswith("custom-embedding")
+    assert kwargs["api_base"] == "https://example.com/v1"
+    assert kwargs["input"] == "hello"
+    assert gateway._last_upstream_parameters["model"] == kwargs["model"]

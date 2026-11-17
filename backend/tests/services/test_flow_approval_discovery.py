@@ -24,7 +24,7 @@ def discovery(mocker: MockerFixture) -> dict[str, Any]:
         prefix + "crud_approval_workflow.get_multi_by_account", return_value=[object()]
     )
     mocker.patch(prefix + "crud_approval_workflow.get_default", return_value=None)
-    mocker.patch(prefix + "crud_tool_access_rule.get_multi_by_config", return_value=[])
+    mocker.patch(prefix + "crud_tool_access_rule.has_approval_path", return_value=False)
     return {
         "db": MagicMock(spec=Session),
         "context": UserContext(
@@ -127,8 +127,8 @@ def test_tool_access_rule(discovery: dict[str, Any], mocker: MockerFixture) -> N
         )
     ]
     mocker.patch(
-        "preloop.services.flow_approval_discovery.crud.crud_tool_access_rule.get_multi_by_config",
-        return_value=[models.ToolAccessRule(approval_workflow_id="fixture-workflow")],
+        "preloop.services.flow_approval_discovery.crud.crud_tool_access_rule.has_approval_path",
+        return_value=True,
     )
     assert flow_may_use_approval_status(**discovery)
 
@@ -235,3 +235,36 @@ async def test_server_applies_discovery_only_to_lean(
         else {"get_pull_request", "get_approval_status"}
     )
     assert probe.call_count == (1 if profile == "lean" else 0)
+
+
+@pytest.mark.parametrize("default_available", [False, True])
+def test_access_rules_are_batched_for_allowed_builtin_configs(
+    discovery: dict[str, Any], mocker: MockerFixture, default_available: bool
+) -> None:
+    """Broad allowlists perform one account-scoped access-rule existence lookup."""
+    discovery["allowed"] = {"get_issue", "get_pull_request", "search_issues"}
+    discovery["configs"] = [
+        models.ToolConfiguration(id=identifier, tool_name=name, tool_source=source)
+        for identifier, name, source in (
+            ("issue-config", "get_issue", "builtin"),
+            ("pr-config", "get_pull_request", "builtin"),
+            ("search-config", "search", "builtin"),
+            ("disallowed-config", "create_issue", "builtin"),
+            ("external-config", "get_issue", "mcp"),
+        )
+    ]
+    mocker.patch(
+        "preloop.services.flow_approval_discovery.crud.crud_approval_workflow.get_default",
+        return_value=object() if default_available else None,
+    )
+    lookup = mocker.patch(
+        "preloop.services.flow_approval_discovery.crud.crud_tool_access_rule.has_approval_path",
+        return_value=True,
+    )
+    assert flow_may_use_approval_status(**discovery)
+    lookup.assert_called_once_with(
+        discovery["db"],
+        config_ids=["issue-config", "pr-config", "search-config"],
+        account_id="fixture-account",
+        has_default_workflow=default_available,
+    )

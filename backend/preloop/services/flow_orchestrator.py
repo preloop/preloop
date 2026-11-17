@@ -31,6 +31,7 @@ from preloop.models.models.flow_execution import (
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.runtime_session import RuntimeSession
 from preloop.models.db.session import release_transaction
+from preloop.utils.execution_credentials import CredentialMasker
 from preloop.agents import (
     create_executor_for_execution,
     AgentStatus,
@@ -1881,7 +1882,13 @@ class FlowExecutionOrchestrator:
     # NATS max payload is typically 1MB; use 900KB to leave headroom
     NATS_MAX_PAYLOAD_BYTES = 900 * 1024
 
-    async def _publish_update(self, message_type: str, payload: Dict[str, Any]):
+    async def _publish_update(
+        self,
+        message_type: str,
+        payload: Dict[str, Any],
+        *,
+        credential_masker: CredentialMasker | None = None,
+    ) -> None:
         """
         Publishes a structured message to the NATS stream for real-time updates.
         Includes account_id for proper filtering to prevent cross-account data leaks.
@@ -1895,9 +1902,6 @@ class FlowExecutionOrchestrator:
             logger.warning("Execution log not created yet, skipping update publish.")
             return
 
-        from preloop.models.crud.execution_credentials import for_execution
-
-        payload = for_execution(self.db, self.execution_log.id).mask(payload)
         try:
             if message_type in {"execution_started", "status_update"}:
                 payload = {
@@ -1924,7 +1928,9 @@ class FlowExecutionOrchestrator:
             }
             from preloop.services.execution_realtime import stamp_execution_event_async
 
-            message = await stamp_execution_event_async(message)
+            message = await stamp_execution_event_async(
+                message, credential_masker=credential_masker
+            )
             subject = f"flow-updates.{self.execution_log.id}"
             encoded_message = json.dumps(message).encode()
 
@@ -4353,7 +4359,8 @@ class FlowExecutionOrchestrator:
         """Interpret one runtime line independently of raw-log transport ownership."""
         from preloop.models.crud.execution_credentials import for_execution
 
-        log_line = for_execution(self.db, self.execution_log.id).mask(log_line)
+        credential_masker = for_execution(self.db, self.execution_log.id)
+        log_line = credential_masker.mask(log_line)
         # Store the log line for later summary
         self.execution_logger.log_agent_output(log_line)
 
@@ -4536,6 +4543,7 @@ class FlowExecutionOrchestrator:
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "line": log_line,
                 },
+                credential_masker=credential_masker,
             )
 
     async def _consume_runner_log_page(self, session_reference: str) -> bool:

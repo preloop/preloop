@@ -96,6 +96,10 @@ func executeModelsRouting(client *api.Client, out io.Writer, modelID string, cha
 		return json.NewEncoder(out).Encode(routing)
 	}
 	for key, value := range changes {
+		if values, ok := value.([]string); ok && len(values) == 0 {
+			delete(routing, key)
+			continue
+		}
 		routing[key] = value
 	}
 	model.Parameters["provider"] = routing

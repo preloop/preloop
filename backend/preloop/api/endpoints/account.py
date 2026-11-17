@@ -4159,14 +4159,13 @@ async def update_account_runtime_session(
             },
             commit=False,
         )
-        crud_api_key.deactivate_runtime_keys_for_session(
-            db,
-            account_id=str(account.id),
-            runtime_session_id=runtime_session_id,
-            commit=False,
-        )
-
         emit_session_ended(db, updated, reason="operator")
+    crud_api_key.deactivate_runtime_keys_for_session(
+        db,
+        account_id=str(account.id),
+        runtime_session_id=runtime_session_id,
+        commit=False,
+    )
     db.commit()
 
     _stop_runner_session_on_end(

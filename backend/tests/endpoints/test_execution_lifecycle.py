@@ -262,9 +262,7 @@ def test_lifecycle_recovery_checks_permission_before_read() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cursor_failure_preserves_delivery_and_explicitly_requests_recovery() -> (
-    None
-):
+async def test_inventory_failure_withholds_output_and_requests_recovery() -> None:
     from preloop.services import execution_realtime
 
     event = {
@@ -290,12 +288,50 @@ async def test_cursor_failure_preserves_delivery_and_explicitly_requests_recover
             execution_realtime.stamp_execution_event(event),
             await execution_realtime.stamp_execution_event_async(event),
         ]:
-            assert result["payload"] == event["payload"]
+            assert "payload" not in result
             assert result["resync_required"] is True
             assert "seq" not in result and "lifecycle_seq" not in result
             projected = execution_realtime.lifecycle_event(result)
             assert projected["resync_required"] is True
             assert "seq" not in projected
+
+
+@pytest.mark.asyncio
+async def test_cursor_failure_preserves_already_masked_output() -> None:
+    """Sequence storage failure does not discard safely normalized output."""
+    from preloop.services import execution_realtime
+    from preloop.utils.execution_credentials import CredentialMasker
+
+    token = "synthetic-output-credential-123456789"
+    event = {
+        "type": "agent_log_line",
+        "execution_id": str(uuid4()),
+        "seq": 999,
+        "payload": {"line": token},
+    }
+    db = MagicMock()
+    with (
+        patch.object(execution_realtime, "run_db_sync", side_effect=lambda fn: fn(db)),
+        patch.object(
+            execution_realtime, "run_db_async", AsyncMock(side_effect=lambda fn: fn(db))
+        ),
+        patch(
+            "preloop.models.crud.execution_credentials.for_execution",
+            return_value=CredentialMasker.from_values([token]),
+        ),
+        patch.object(
+            execution_realtime.crud_realtime,
+            "allocate_sequence",
+            side_effect=RuntimeError("cursor unavailable"),
+        ),
+    ):
+        for result in [
+            execution_realtime.stamp_execution_event(event),
+            await execution_realtime.stamp_execution_event_async(event),
+        ]:
+            assert result["payload"] == {"line": "[REDACTED]"}
+            assert result["resync_required"] is True
+            assert "seq" not in result
 
 
 def test_lifecycle_recovery_runs_synchronously_and_preserves_domain() -> None:

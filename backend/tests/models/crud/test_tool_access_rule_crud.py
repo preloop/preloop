@@ -1,6 +1,11 @@
 """Tests for ToolAccessRule CRUD operations."""
 
 import uuid
+from typing import Any, Callable
+
+import pytest
+
+from preloop.models import models
 
 from sqlalchemy.orm import Session
 
@@ -269,3 +274,67 @@ class TestToolAccessRuleCRUD:
             account_id=str(account.id),
         )
         assert len(rules) == 0
+
+
+@pytest.mark.parametrize(
+    "enabled,explicit_workflow,default_workflow,matching_account,matching_config,expected",
+    [
+        (True, True, False, True, True, True),
+        (True, False, True, True, True, True),
+        (True, False, False, True, True, False),
+        (False, True, True, True, True, False),
+        (True, True, True, False, True, False),
+        (True, True, True, True, False, False),
+    ],
+)
+def test_has_approval_path_scope(
+    db_session: Session,
+    create_account: Callable[..., Any],
+    enabled: bool,
+    explicit_workflow: bool,
+    default_workflow: bool,
+    matching_account: bool,
+    matching_config: bool,
+    expected: bool,
+) -> None:
+    """Only enabled scoped rules with an explicit or fallback workflow qualify."""
+    account = create_account()
+    workflow = crud_approval_workflow.create(
+        db_session,
+        obj_in=ApprovalWorkflowCreate(name="Example approval", approval_type="manual"),
+        account_id=str(account.id),
+    )
+    config = models.ToolConfiguration(
+        tool_name="get_issue",
+        tool_source="builtin",
+        account_id=account.id,
+    )
+    db_session.add(config)
+    db_session.flush()
+    crud_tool_access_rule.create(
+        db_session,
+        obj_in={
+            "account_id": account.id,
+            "tool_configuration_id": config.id,
+            "action": "allow",
+            "priority": 0,
+            "condition_type": "simple",
+            "is_enabled": enabled,
+            "approval_workflow_id": workflow.id if explicit_workflow else None,
+        },
+    )
+    assert (
+        crud_tool_access_rule.has_approval_path(
+            db_session,
+            config_ids=[str(config.id) if matching_config else str(uuid.uuid4())],
+            account_id=str(account.id) if matching_account else str(uuid.uuid4()),
+            has_default_workflow=default_workflow,
+        )
+        is expected
+    )
+    assert not crud_tool_access_rule.has_approval_path(
+        db_session,
+        config_ids=[],
+        account_id=str(account.id),
+        has_default_workflow=default_workflow,
+    )

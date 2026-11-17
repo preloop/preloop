@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import execution_realtime as crud_realtime
 from preloop.services.db_executor import run_db_async, run_db_sync
+from preloop.utils.execution_credentials import CredentialMasker
 
 logger = logging.getLogger(__name__)
 
@@ -50,16 +51,26 @@ LIFECYCLE_FIELDS = (
 MAX_LIFECYCLE_BYTES = 8192
 
 
-def _stamp(db: Session, event: dict) -> dict:
+def _stamp(
+    db: Session, event: dict, credential_masker: CredentialMasker | None = None
+) -> dict:
     """Mask an event before allocating its delivery cursor."""
     from preloop.models.crud.execution_credentials import for_execution
 
-    event = for_execution(db, event["execution_id"]).mask(event)
-    seq, lifecycle_seq = crud_realtime.allocate_sequence(
-        db,
-        event["execution_id"],
-        lifecycle=event.get("type") in LIFECYCLE_TYPES,
+    masker = (
+        credential_masker
+        if credential_masker is not None
+        else for_execution(db, event["execution_id"])
     )
+    event = masker.mask(event)
+    try:
+        seq, lifecycle_seq = crud_realtime.allocate_sequence(
+            db,
+            event["execution_id"],
+            lifecycle=event.get("type") in LIFECYCLE_TYPES,
+        )
+    except Exception:
+        return _unsequenced(event)
     return {
         **event,
         "seq": seq,
@@ -87,10 +98,12 @@ def stamp_execution_event(event: dict) -> dict:
         return _resync_without_output(event)
 
 
-async def stamp_execution_event_async(event: dict) -> dict:
-    """Mask and allocate without blocking an async publisher's event loop."""
+async def stamp_execution_event_async(
+    event: dict, *, credential_masker: CredentialMasker | None = None
+) -> dict:
+    """Mask and allocate, optionally reusing the current line's trusted snapshot."""
     try:
-        return await run_db_async(lambda db: _stamp(db, event))
+        return await run_db_async(lambda db: _stamp(db, event, credential_masker))
     except Exception:
         return _resync_without_output(event)
 

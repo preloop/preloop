@@ -86,6 +86,7 @@ def flow_may_use_approval_status(
     default_workflow = crud.crud_approval_workflow.get_default(
         db, account_id=context.account_id
     )
+    matching_config_ids: set[str] = set()
     for name in allowed:
         names = {name, TOOL_NAME_ALIASES.get(name, name)}
         matching = [
@@ -109,15 +110,15 @@ def flow_may_use_approval_status(
                 # Even allow/deny conditions can fail evaluation and fall
                 # back to approval in policy_evaluator.
                 return True
-        for config in matching:
-            rules = crud.crud_tool_access_rule.get_multi_by_config(
-                db,
-                config_id=str(config.id),
-                account_id=context.account_id,
-                enabled_only=True,
-            )
-            if any(rule.approval_workflow_id or default_workflow for rule in rules):
-                return True
+        matching_config_ids.update(str(config.id) for config in matching)
+
+    if crud.crud_tool_access_rule.has_approval_path(
+        db,
+        config_ids=sorted(matching_config_ids),
+        account_id=context.account_id,
+        has_default_workflow=default_workflow is not None,
+    ):
+        return True
 
     from preloop.services.sensitive_data.policy_store import (
         parse_sensitive_data_config,

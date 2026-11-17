@@ -126,6 +126,13 @@ def test_native_end_is_followed_by_idempotent_operator_cleanup(
 ) -> None:
     """An earlier hook transition does not prevent runner and binding cleanup."""
     session = _cleanup_session(db_session, test_user)
+    key, _ = crud.crud_api_key.create_runtime_key(
+        db_session,
+        name="Session retry credential",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={"runtime_session_id": str(session.id)},
+    )
     crud.crud_runtime_session.mark_ended_by_hook(
         db_session,
         account_id=str(test_user.account_id),
@@ -142,6 +149,8 @@ def test_native_end_is_followed_by_idempotent_operator_cleanup(
         f"/api/v1/runtime-sessions/{session.id}", json={"action": "end"}
     )
     assert response.status_code == 200
+    db_session.refresh(key)
+    assert key.is_active is False
     stop.assert_called_once()
     clear.assert_called_once()
     events.assert_not_called()
