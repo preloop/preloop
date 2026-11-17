@@ -19,9 +19,16 @@ on:
   # No base-branch filter: a PR should get CI regardless of what it targets.
   # Restricting this to `main` meant stacked PRs — ones opened against another
   # in-flight branch rather than main — silently ran no checks at all, so they
-  # looked clean because nothing had examined them.
+  # looked clean because nothing had examined them. Stacked PRs (base other
+  # than main) now always select the full suite. CI deliberately does not
+  # listen to `edited`/`labeled`: body or label edits would cancel in-progress
+  # runs. `ci:full` is handled by ci-full-label.yml (rerun = full). A stacked
+  # PR retargeted to main after its base merges keeps a result against the old
+  # base until its next push; the merge queue (merge_group below) is what
+  # tests the real base before merge, and approval admission refuses a stale
+  # base receipt.
   pull_request:
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    types: [opened, synchronize, reopened]
   merge_group:
     types: [checks_requested]
   schedule:

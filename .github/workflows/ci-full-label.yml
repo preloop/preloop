@@ -1,0 +1,47 @@
+# Adding the `ci:full` label reruns the latest CI run for the PR head.
+# A rerun (run_attempt > 1) always selects every test and workflow, so the
+# label forces the full suite without CI itself listening to label or body
+# edits (which would cancel in-progress CI on every unrelated label or edit).
+# No checkout: this job only calls the Actions API with structured input.
+# Fork PRs get a read-only token, so for them add the label and push, or ask a
+# maintainer to run `gh run rerun` on the CI run.
+
+name: CI full label
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions: {}
+
+concurrency:
+  group: ci-full-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  rerun:
+    name: Rerun CI in full
+    if: github.event.label.name == 'ci:full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Rerun the latest CI run for this head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh api "repos/${REPO}/actions/workflows/ci.yml/runs?event=pull_request&head_sha=${HEAD_SHA}&per_page=1" --jq '.workflow_runs[0].id // empty')"
+          if [ -z "${run_id}" ]; then
+            echo "No CI run for ${HEAD_SHA} yet; its first run will read the label."
+            exit 0
+          fi
+          status="$(gh api "repos/${REPO}/actions/runs/${run_id}" --jq '.status')"
+          if [ "${status}" != "completed" ]; then
+            gh run cancel "${run_id}" --repo "${REPO}"
+            gh run watch "${run_id}" --repo "${REPO}" --exit-status >/dev/null 2>&1 || true
+          fi
+          gh run rerun "${run_id}" --repo "${REPO}"

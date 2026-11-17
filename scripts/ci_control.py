@@ -85,15 +85,21 @@ def read_selection(api: GitHub, run_id: int) -> dict[str, Any] | None:
         check=False,
     )
     if result.returncode or len(result.stdout) > 4 * 1024 * 1024:
-        raise RuntimeError("Selection artifact unavailable or oversized")
-    with zipfile.ZipFile(io.BytesIO(result.stdout)) as archive:
-        entry = archive.getinfo("ci-selection.json")
-        if entry.file_size > 2 * 1024 * 1024:
-            raise ValueError("Selection receipt too large")
-        selection = json.loads(archive.read(entry))
-    if not isinstance(selection, dict):
-        raise ValueError("Invalid selection receipt")
-    return selection
+        return None
+    try:
+        with zipfile.ZipFile(io.BytesIO(result.stdout)) as archive:
+            entry = archive.getinfo("ci-selection.json")
+            if entry.file_size > 2 * 1024 * 1024:
+                return None
+            with archive.open(entry) as handle:
+                raw = handle.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
+            return None
+        selection = json.loads(raw)
+    except (zipfile.BadZipFile, KeyError, ValueError):
+        # Malformed evidence fails closed: no rerun is requested.
+        return None
+    return selection if isinstance(selection, dict) else None
 
 
 def approve_full(api: GitHub, number: int) -> str:
