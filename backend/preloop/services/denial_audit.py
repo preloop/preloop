@@ -10,8 +10,9 @@ from preloop.models.crud.denial_audit import record_denial
 from preloop.services.sensitive_data.redact import redact_text
 from preloop.utils.secret_scrubbing import scrub_secrets
 
-# Only server-authored messages become reasons. Provider bodies, rule names,
-# approval comments, tool inputs and credential values never enter the record.
+# Only known server reasons become codes. Access-rule explanations are bounded
+# and redacted separately; provider bodies, approval comments and tool inputs
+# never enter the record.
 REASONS = {
     "ci_key_inactive": "The CI key is inactive or has been revoked.",
     "ci_key_expired": "The CI key has expired.",
@@ -106,9 +107,16 @@ def write_denial(
     target: str,
     reason_code: str,
     user_id: UUID | None = None,
+    rule_message: str | None = None,
 ) -> None:
     """Persist a bounded, redacted counter using only trusted attribution."""
     message = REASONS[reason_code]
+    if reason_code == "permission_denied" and rule_message:
+        rule_message = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", rule_message)
+        safe_message, _ = redact_text(scrub_secrets(rule_message))
+        message = "".join(
+            char for char in (safe_message or message) if char.isprintable()
+        )[:500]
     # Redact before truncating, so a long credential cannot be cut into a
     # fragment that no longer matches a shared sensitive-data detector.
     target = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", target)

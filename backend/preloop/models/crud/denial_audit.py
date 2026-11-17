@@ -66,6 +66,7 @@ def record_denial(
             action,
             target,
             reason_code,
+            message,
             minute.isoformat(),
         ],
         separators=(",", ":"),

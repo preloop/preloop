@@ -35,6 +35,7 @@ def _write(db: Session, account_id: UUID, principal_id: UUID, **kwargs: Any) -> 
         action="agent_permission_denied",
         target=kwargs.get("target", "Bash"),
         reason_code=kwargs.get("reason_code", "tool_blocked"),
+        rule_message=kwargs.get("rule_message"),
     )
 
 
@@ -127,3 +128,37 @@ def test_reason_principal_and_target_are_separate_counters(
     assert all(row.details["count"] == 1 for row in rows)
     assert all(len(row.resource_id) <= 200 for row in rows)
     assert "a" * 100 not in str([row.details for row in rows])
+
+
+def test_rule_explanations_are_redacted_bounded_and_counted_separately(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Different policy reasons cannot disappear into one generic counter."""
+    explanation = (
+        "Writes outside the workspace are denied. Bearer synthetic-secret " + "x" * 2000
+    )
+    for _ in range(2):
+        _write(
+            db_session,
+            test_user.account_id,
+            test_user.id,
+            reason_code="permission_denied",
+            rule_message=explanation,
+        )
+    _write(
+        db_session,
+        test_user.account_id,
+        test_user.id,
+        reason_code="permission_denied",
+        rule_message="Only read commands are allowed.",
+    )
+    rows = db_session.scalars(
+        select(models.AuditLog).where(
+            models.AuditLog.account_id == test_user.account_id
+        )
+    ).all()
+    assert sorted(row.details["count"] for row in rows) == [1, 2]
+    message = next(row.details["message"] for row in rows if row.details["count"] == 2)
+    assert message.startswith("Writes outside the workspace are denied.")
+    assert "synthetic-secret" not in message
+    assert len(message) == 500

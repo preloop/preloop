@@ -637,7 +637,8 @@ callbacks receive completed CLI sessions.
 `models.crud.denial_audit` writes `restricted_ci_denied` and
 `agent_permission_denied` directly on an independent audit transaction. It locks
 the account's `AuditChainState`, then reads PostgreSQL wall time and selects a
-UUID derived from account, principal, target, reason and UTC minute. Concurrent
+UUID derived from account, principal, target, reason code, sanitized explanation
+and UTC minute. Concurrent
 API workers increment the same persisted counter without an in-memory limiter.
 The audit API exposes the open row immediately and indexes exact reason filters.
 

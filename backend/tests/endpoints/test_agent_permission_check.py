@@ -742,3 +742,32 @@ def test_permission_auth_403_is_audited(
     assert row.details["count"] == 3
     assert row.details["reason_code"] == "api_key_scope_denied"
     assert "synthetic-secret" not in str(row.details)
+
+
+def test_permission_rule_explanation_is_audited_without_the_credential(
+    client: TestClient, db_session: Session
+) -> None:
+    """Keep the useful rule explanation while removing credential material."""
+    from preloop.models import models
+
+    token = _issue_opencode_runtime_token(client)
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission",
+        new=AsyncMock(
+            return_value=("deny", f"Workspace writes are blocked: {token}", None, False)
+        ),
+    ):
+        response = client.post(
+            PERMISSION_CHECK_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            json={"tool_name": "Bash"},
+        )
+    assert response.status_code == 200
+    row = (
+        db_session.query(models.AuditLog)
+        .filter_by(action="agent_permission_denied")
+        .one()
+    )
+    assert row.details["reason_code"] == "permission_denied"
+    assert row.details["message"].startswith("Workspace writes are blocked:")
+    assert token not in str(row.details)

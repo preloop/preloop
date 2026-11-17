@@ -209,8 +209,9 @@ Use a human credential with `view_audit_logs`. Useful reasons include
 `session_ended`, `execution_ended`, `agent_inactive`, `client_policy_denied`,
 `tool_blocked`, `approval_unavailable`, `approval_denied`, `approval_expired`,
 and `approval_pending`. `permission_denied` identifies a refusal from an access
-rule; free-form rule descriptions and approver comments are excluded from this
-content-free record. Approval lifecycle records remain available separately.
+rule and retains its bounded, redacted explanation. Different explanations have
+separate counters. Approver comments are excluded; approval lifecycle records
+remain available separately.
 
 Identical refusals share one row per principal, tool, reason, and UTC minute.
 `details.count` counts all attempts, while the API's `total` counts rows. The row

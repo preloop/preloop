@@ -762,7 +762,9 @@ class AgentPermissionCheckResponse(BaseModel):
     )
 
 
-def _audit_permission_denial(token: str, tool_name: str, reason_code: str) -> None:
+def _audit_permission_denial(
+    token: str, tool_name: str, reason_code: str, rule_message: str | None = None
+) -> None:
     """Recover stored attribution even when authentication refused the key."""
     from preloop.services.denial_audit import write_denial
 
@@ -799,6 +801,9 @@ def _audit_permission_denial(token: str, tool_name: str, reason_code: str) -> No
             action="agent_permission_denied",
             target=tool_name.replace(token, "[REDACTED]") if token else tool_name,
             reason_code=reason_code,
+            rule_message=rule_message.replace(token, "[REDACTED]")
+            if rule_message and token
+            else rule_message,
         )
 
 
@@ -844,7 +849,12 @@ async def agent_permission_check(
             else reason_for_detail(result.reason, fallback)
         )
         await run_db_off_loop(
-            lambda: _audit_permission_denial(token, payload.tool_name, code)
+            lambda: _audit_permission_denial(
+                token,
+                payload.tool_name,
+                code,
+                rule_message=result.reason if code == "permission_denied" else None,
+            )
         )
     return result
 
