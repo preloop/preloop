@@ -216,6 +216,8 @@ def test_command_defaults_to_dry_run(
 def test_runs_inside_the_flush_grace_keep_their_keys(
     db_session: Session, test_user: models.User
 ) -> None:
+    # The module NOW is taken at import; a late test needs the current time.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     flow = models.Flow(
         account_id=test_user.account_id,
         name="Grace flow",
@@ -225,21 +227,21 @@ def test_runs_inside_the_flush_grace_keep_their_keys(
     db_session.add(flow)
     db_session.flush()
     just_ended = models.FlowExecution(
-        flow_id=flow.id, status="SUCCEEDED", end_time=NOW - timedelta(seconds=10)
+        flow_id=flow.id, status="SUCCEEDED", end_time=now - timedelta(seconds=10)
     )
     long_ended = models.FlowExecution(
-        flow_id=flow.id, status="FAILED", end_time=NOW - timedelta(minutes=10)
+        flow_id=flow.id, status="FAILED", end_time=now - timedelta(minutes=10)
     )
     session_just_ended = models.RuntimeSession(
         account_id=test_user.account_id,
         session_source_type="claude_code",
         session_source_id=f"src-{uuid4().hex[:6]}",
-        started_at=NOW - timedelta(hours=1),
-        ended_at=NOW - timedelta(seconds=10),
+        started_at=now - timedelta(hours=1),
+        ended_at=now - timedelta(seconds=10),
     )
     db_session.add_all([just_ended, long_ended, session_just_ended])
     db_session.flush()
-    future = NOW + timedelta(hours=1)
+    future = now + timedelta(hours=1)
     keys = {
         "just_ended": _key(
             db_session,
