@@ -5,13 +5,21 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
+from preloop.api.flow_preconditions import (
+    CONDITIONAL_RESPONSES,
+    IF_MATCH_DESCRIPTION,
+    if_match_condition,
+    precondition_failed,
+    set_flow_etag,
+)
 from preloop.models import crud, models
 from preloop.models.crud.ci_administration import CiSharedFlowError
+from preloop.models.schemas.flow_revision import FlowRevisionMismatchError
 from preloop.models.db.session import get_db_session
 from preloop.schemas.ci_administration import (
     CiAdminCapabilities,
@@ -107,6 +115,7 @@ def create_identity(
 @router.get("/shared-flows/{flow_id}", response_model=CiSharedFlowRead)
 def get_shared_flow(
     flow_id: UUID,
+    response: Response,
     actor: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> CiSharedFlowRead:
@@ -115,19 +124,29 @@ def get_shared_flow(
     Human administrators only. A CI credential cannot call this route, so an
     identity cannot learn which other projects share its flow.
     """
-    return _call(
+    shared = _call(
         lambda: crud.crud_ci_administration.shared_flow(
             db, actor=actor, flow_id=flow_id
         )
     )
+    set_flow_etag(response, shared.revision)
+    return shared
 
 
-@router.put("/shared-flows/{flow_id}", response_model=CiSharedFlowRead)
+@router.put(
+    "/shared-flows/{flow_id}",
+    response_model=CiSharedFlowRead,
+    responses=CONDITIONAL_RESPONSES,
+)
 def put_shared_flow(
     flow_id: UUID,
     payload: CiSharedFlowUpdate,
+    response: Response,
     actor: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
+    if_match: str | None = Header(
+        default=None, alias="If-Match", description=IF_MATCH_DESCRIPTION
+    ),
 ) -> CiSharedFlowRead:
     """Replace the project allowlist of a shared read-only review flow.
 
@@ -144,12 +163,27 @@ def put_shared_flow(
     every identity bound to it from its next request on. A dedicated flow
     that still has identities bound to it is refused with 409; retire them
     first, because an identity's binding mode is fixed at provisioning.
+
+    The allowlist is part of the flow's configuration: a successful PUT
+    moves the flow's revision, returned as ``revision`` and in the ``ETag``
+    header. With ``If-Match`` the PUT applies only at that revision and is
+    refused with 412 otherwise.
     """
-    return _call(
-        lambda: crud.crud_ci_administration.share_flow(
-            db, actor=actor, flow_id=flow_id, payload=payload
+    expected = if_match_condition(if_match)
+    try:
+        shared = _call(
+            lambda: crud.crud_ci_administration.share_flow(
+                db,
+                actor=actor,
+                flow_id=flow_id,
+                payload=payload,
+                expected_revision=expected,
+            )
         )
-    )
+    except FlowRevisionMismatchError as exc:
+        raise precondition_failed(exc.current_revision) from None
+    set_flow_etag(response, shared.revision)
+    return shared
 
 
 @router.get("/{principal_id}", response_model=CiAdminIdentityRead)

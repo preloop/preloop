@@ -180,6 +180,28 @@ Private native-host execution also accepts explicit Codex, OpenCode and DeepSeek
 
 Failing GitHub `check_run`, `check_suite`, and `workflow_run` events on a PR this flow opened resume the same way as a review comment, with `{{execution.ci_failure}}` filled in. The skip/resume filter is GitHub-only: existing GitLab `pipeline` / `job` flows keep firing on every event. GitLab payload extractors stay in `flow_ci_feedback` so an opt-in can reuse them later.
 
+## Configuration revisions and conditional writes
+
+`flow.config_revision` (#2375) increases by one in the same flush as any
+change to a configuration column. A `before_flush` hook in
+`preloop.models.models.flow` does this, so every ORM writer is covered
+(the PUT route, preset sync and apply, model-delete orphan marking,
+delivery-report policy, the shared-flow allowlist). Columns listed in
+`NON_CONFIGURATION_COLUMNS` (timestamps, preset-notice bookkeeping) never
+move it, and assigning the stored value is not a change. `updated_at` is not
+used because non-configuration writes also move it and it is a timestamp,
+not a counter.
+
+The API exposes the revision as `revision` and as the strong `ETag` `"<n>"`.
+Write routes take `If-Match`, checked under the flow's `FOR UPDATE` row lock
+before anything changes (stale: 412 with the current `ETag`). Trigger routes
+check `If-Match` under a `FOR SHARE` lock taken in the transaction that
+inserts the execution. `flow_execution.flow_revision` is filled by the
+INSERT itself (a scalar subquery on the flow row), so every creation path
+records the revision the execution was created with. This records which
+configuration a run started from; it is not a lock. A later configuration
+change does not stop a run that is already going.
+
 ## Matrix / Batch Fan-Out
 
 One flow definition can drive an agent-harness × model evaluation grid without cloning the flow per combination:

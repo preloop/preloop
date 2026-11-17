@@ -14,12 +14,14 @@ from sqlalchemy import (
     String,
     Text,
 )
+from sqlalchemy import event, select
 from sqlalchemy import false as sa_false
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, query_expression, relationship
 
 from .base import Base
+from .flow import Flow
 
 #: SQL for the resume chain root a repair turn stores in its trigger payload.
 #: Spelled with ``->``/``->>`` and literal keys (not SQLAlchemy's JSONB
@@ -389,6 +391,10 @@ class FlowExecution(Base):
     # batch_id so the whole batch can be listed and rolled up as a unit.
     batch_id = Column(UUID(as_uuid=True), nullable=True, index=True)
     runner_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    # The flow's config_revision when this execution was created (#2375),
+    # copied by the INSERT itself (see _record_flow_revision). NULL for
+    # executions created before the column existed.
+    flow_revision = Column(Integer, nullable=True)
 
     # Execution metrics
     tool_calls_count = Column(
@@ -473,3 +479,19 @@ class FlowExecution(Base):
 
     def __repr__(self):
         return f"<FlowExecution(id={self.id}, flow_id={self.flow_id}, status='{self.status}')>"
+
+
+@event.listens_for(FlowExecution, "before_insert")
+def _record_flow_revision(mapper: object, connection: object, target: object) -> None:
+    """Record the flow's configuration revision in the execution's INSERT.
+
+    A scalar subquery rather than a Python value, so the INSERT reads the row
+    as the inserting transaction sees it, including a ``FOR SHARE`` lock a
+    conditional trigger holds on it, whichever creation path is used.
+    """
+    if getattr(target, "flow_revision", None) is None:
+        target.flow_revision = (  # type: ignore[attr-defined]
+            select(Flow.config_revision)
+            .where(Flow.id == target.flow_id)  # type: ignore[attr-defined]
+            .scalar_subquery()
+        )

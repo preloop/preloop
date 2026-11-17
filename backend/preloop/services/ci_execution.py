@@ -16,6 +16,7 @@ from preloop.api.loop_safety import run_db_off_loop
 from preloop.models import crud, models
 from preloop.models.crud.ci_execution import context_from_binding
 from preloop.models.crud.ci_principal import CiAuthorizationContext
+from preloop.models.schemas.flow_revision import RevisionCondition
 from preloop.schemas.ci_execution import (
     CiReviewBinding,
     CiReviewRequest,
@@ -340,6 +341,7 @@ def execution_projection(execution: models.FlowExecution) -> dict[str, Any]:
         "start_time": execution.start_time,
         "end_time": execution.end_time,
         "failure_category": execution.failure_category,
+        "flow_revision": execution.flow_revision,
         "startup_receipt": receipt,
         "startup_receipt_status": startup_receipt_status(execution, receipt),
         "platform_review": _platform_review(execution),
@@ -359,7 +361,10 @@ def _platform_review(execution: models.FlowExecution) -> dict[str, Any] | None:
 
 
 def _prepare_execution(
-    db: Session, context: CiAuthorizationContext, binding: CiReviewBinding
+    db: Session,
+    context: CiAuthorizationContext,
+    binding: CiReviewBinding,
+    expected_revision: RevisionCondition | None = None,
 ) -> tuple[models.Flow, models.FlowExecution, dict[str, Any], dict[str, Any]]:
     crud.crud_ci_principal.authorize(db, context=context, action=CiAction.TRIGGER)
     flow = _review_flow(db, context)
@@ -367,7 +372,11 @@ def _prepare_execution(
     event["test_mode"] = False
     attach_trigger_subject(event)
     execution = crud.crud_ci_execution.create(
-        db, context=context, binding=binding, event=event
+        db,
+        context=context,
+        binding=binding,
+        event=event,
+        expected_revision=expected_revision,
     )
     # Refresh after the creation commit; avoid expired ORM reads on the loop.
     refreshed_flow = crud.crud_flow.get(
@@ -379,9 +388,28 @@ def _prepare_execution(
 
 
 async def trigger_ci_review(
-    db: Session, *, context: CiAuthorizationContext, request: CiReviewRequest
+    db: Session,
+    *,
+    context: CiAuthorizationContext,
+    request: CiReviewRequest,
+    expected_revision: RevisionCondition | None = None,
 ) -> dict[str, Any]:
-    """Validate before insert, then reuse the existing single-execution dispatch."""
+    """Validate before insert, then reuse the existing single-execution dispatch.
+
+    Args:
+        db: Database session.
+        context: The restricted CI principal.
+        request: Pull request number and exact head.
+        expected_revision: The caller's ``If-Match``. The execution is
+            created only while the flow is at that configuration revision.
+
+    Returns:
+        The CI status projection of the new execution.
+
+    Raises:
+        FlowRevisionMismatchError: ``expected_revision`` does not hold; no
+            execution was created.
+    """
     from preloop.services.flow_trigger_service import FlowTriggerService
     from preloop.sync.services.event_bus import get_nats_client
 
@@ -391,7 +419,7 @@ async def trigger_ci_review(
         )
         binding = await _read_provider(source)
         flow, execution, projection, event = await run_db_off_loop(
-            lambda: _prepare_execution(db, context, binding)
+            lambda: _prepare_execution(db, context, binding, expected_revision)
         )
     except SQLAlchemyError:
         raise CiReviewUnavailableError() from None

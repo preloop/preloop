@@ -23,11 +23,16 @@ type reviewPostingServer struct {
 	record    map[string]any
 	publish   func(w http.ResponseWriter)
 	putStatus int
+	ifMatch   []string
+	// concurrent makes the flow change on the server between the CLI's read
+	// and its write, as another editor would.
+	concurrent bool
 }
 
 func newReviewFlow() map[string]any {
 	return map[string]any{
 		"id":              reviewFlowID,
+		"revision":        4,
 		"name":            "Reviewer",
 		"validate_result": true,
 		"result_schema": map[string]any{
@@ -55,6 +60,13 @@ func startReviewPostingServer(t *testing.T, state *reviewPostingServer) {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			state.puts = append(state.puts, body)
+			state.ifMatch = append(state.ifMatch, r.Header.Get("If-Match"))
+			if state.concurrent {
+				w.Header().Set("ETag", `"5"`)
+				w.WriteHeader(http.StatusPreconditionFailed)
+				_, _ = w.Write([]byte(`{"detail":{"code":"flow_revision_mismatch","message":"The flow changed since it was read.","current_revision":5}}`))
+				return
+			}
 			if state.putStatus != 0 {
 				w.WriteHeader(state.putStatus)
 				_, _ = w.Write([]byte(`{"detail":"platform_review requires a result_schema with validate_result on: only a validated result is posted"}`))
@@ -106,6 +118,10 @@ func TestReviewPostingEnableWritesOnlyTheBlock(t *testing.T) {
 	}
 	if len(state.puts[0]) != 1 {
 		t.Fatalf("PUT must carry only git_clone_config, got %v", state.puts[0])
+	}
+	// The write is conditional on the revision the CLI read.
+	if state.ifMatch[0] != `"4"` {
+		t.Fatalf("If-Match = %q, want the read revision", state.ifMatch[0])
 	}
 	config := state.puts[0]["git_clone_config"].(map[string]any)
 	if config["publication_mode"] != "read_only" || config["repositories"] == nil {
@@ -326,5 +342,37 @@ func TestVerdictEnumOfAppliesTheServerValueRule(t *testing.T) {
 		if got := verdictEnumOf(schema("pass", bad)); got != nil {
 			t.Fatalf("%q accepted: %v", bad, got)
 		}
+	}
+}
+
+func TestReviewPostingRefusesToOverwriteAConcurrentChange(t *testing.T) {
+	state := &reviewPostingServer{flow: newReviewFlow(), concurrent: true}
+	startReviewPostingServer(t, state)
+
+	_, err := runReviewPosting(t, "enable", reviewFlowID, "--state", "pass=success", "--state", "fail=failure")
+	if err == nil {
+		t.Fatal("a stale write must fail")
+	}
+	for _, want := range []string{"changed since it was read", "revision 5", "nothing was saved"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want %q", err, want)
+		}
+	}
+	if len(state.puts) != 1 || state.ifMatch[0] != `"4"` {
+		t.Fatalf("puts = %d, If-Match = %v", len(state.puts), state.ifMatch)
+	}
+}
+
+func TestReviewPostingWithoutARevisionStaysUnconditional(t *testing.T) {
+	flow := newReviewFlow()
+	delete(flow, "revision") // a server that predates revisions
+	state := &reviewPostingServer{flow: flow}
+	startReviewPostingServer(t, state)
+
+	if _, err := runReviewPosting(t, "enable", reviewFlowID, "--state", "pass=success", "--state", "fail=failure"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if state.ifMatch[0] != "" {
+		t.Fatalf("If-Match = %q, want none", state.ifMatch[0])
 	}
 }
