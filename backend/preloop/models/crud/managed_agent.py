@@ -1052,6 +1052,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         if after_id is not None:
             query = query.filter(ManagedAgent.id > after_id)
         return query.order_by(ManagedAgent.id).limit(limit).all()
+
     def governed_owner_ids(
         self,
         db: Session,

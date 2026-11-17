@@ -61,6 +61,7 @@ from preloop.plugins.account_hooks import (
     VISIBLE_FLOW,
     VISIBLE_MANAGED_AGENT,
     filter_viewable,
+    get_authorizer,
 )
 from preloop.schemas.attention import (
     ExtensionAttentionItem,
@@ -1718,35 +1719,46 @@ def list_account_managed_agents(
             # Fallback for simple key=value pairs or generic strings not properly json encoded if passed directly from some clients, although we expect valid JSON.
             pass
 
-    result = crud_managed_agent.list_for_account(
-        db,
-        account_id=str(account.id),
-        query=query,
-        agent_kind=agent_kind,
-        last_seen_after=last_seen_after,
-        status=status,
-        owner_username=owner_username,
-        tags=parsed_tags,
-        limit=limit,
-        offset=offset,
-    )
+    filters: dict[str, Any] = {
+        "account_id": str(account.id),
+        "query": query,
+        "agent_kind": agent_kind,
+        "last_seen_after": last_seen_after,
+        "status": status,
+        "owner_username": owner_username,
+        "tags": parsed_tags,
+    }
+    if get_authorizer() is None:
+        # Nothing is hidden, so the database pages and counts directly.
+        result = crud_managed_agent.list_for_account(
+            db, limit=limit, offset=offset, **filters
+        )
+        total = int(result["total"])
+        page = [dict(item) for item in result["items"]]
+    else:
+        # Visibility is per row: filter every candidate before paging so a
+        # page is full while visible agents remain, and count only those.
+        result = crud_managed_agent.list_for_account(
+            db, limit=None, offset=0, **filters
+        )
+        visible = filter_viewable(
+            db,
+            current_user,
+            VISIBLE_MANAGED_AGENT,
+            [dict(item) for item in result["items"]],
+        )
+        total = len(visible)
+        page = visible[offset : offset + limit]
     return AccountManagedAgentListResponse(
         query=query,
         agent_kind=agent_kind,
         last_seen_after=last_seen_after,
         status=status,
-        total=result["total"],
+        total=total,
         limit=limit,
         offset=offset,
         items=_enrich_managed_agent_summaries(
-            db,
-            account_id=str(account.id),
-            summaries=filter_viewable(
-                db,
-                current_user,
-                VISIBLE_MANAGED_AGENT,
-                [dict(item) for item in result["items"]],
-            ),
+            db, account_id=str(account.id), summaries=page
         ),
     )
 
@@ -1761,13 +1773,18 @@ def list_account_controllable_agents(
     limit: int = Query(100, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """List agents that expose the Agent Control product surface."""
+    """List agents that expose the Agent Control product surface.
+
+    Visibility and the control filters are per row, so they run over every
+    candidate before ``offset``/``limit`` are applied; ``total`` counts the
+    matching agents, not just the returned page.
+    """
     result = crud_managed_agent.list_for_account(
         db,
         account_id=str(account.id),
         status="all",
-        limit=limit,
-        offset=offset,
+        limit=None,
+        offset=0,
     )
     items = _enrich_managed_agent_summaries(
         db,
@@ -1792,7 +1809,7 @@ def list_account_controllable_agents(
         total=len(items),
         limit=limit,
         offset=offset,
-        items=items,
+        items=items[offset : offset + limit],
     )
 
 

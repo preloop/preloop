@@ -3302,7 +3302,14 @@ paths:
       tags:
       - Account
       summary: List Account Controllable Agents
-      description: List agents that expose the Agent Control product surface.
+      description: 'List agents that expose the Agent Control product surface.
+
+
+        Visibility and the control filters are per row, so they run over every
+
+        candidate before ``offset``/``limit`` are applied; ``total`` counts the
+
+        matching agents, not just the returned page.'
       operationId: list_account_controllable_agents_api_v1_agents_control_get
       security:
       - bearerAuth: []
@@ -5978,9 +5985,11 @@ paths:
       tags:
       - MCP Servers
       summary: List Mcp Servers
-      description: "List all MCP servers for the current user.\n\nArgs:\n    current_user:\
-        \ Current authenticated user\n    db: Database session\n\nReturns:\n    List\
-        \ of MCP servers"
+      description: "List all MCP servers for the current user.\n\nEvery visible server\
+        \ is returned (the route has no paging), and the\n``X-Total-Count`` header\
+        \ carries the number of rows in the body.\n\nArgs:\n    response: Receives\
+        \ the ``X-Total-Count`` header.\n    current_user: Current authenticated user\n\
+        \    db: Database session\n\nReturns:\n    List of MCP servers"
       operationId: list_mcp_servers_api_v1_mcp_servers_get
       responses:
         '200':
@@ -6843,8 +6852,11 @@ paths:
       - Tools
       summary: List Approval Workflows
       description: "List all approval workflows for the current user's account.\n\n\
-        Args:\n    account: Current user's account (from dependency)\n    db: Database\
-        \ session\n\nReturns:\n    List of approval workflows"
+        The route has no paging, so every workflow is returned and the\n``X-Total-Count``\
+        \ header carries how many.\n\nArgs:\n    response: Receives the ``X-Total-Count``\
+        \ header.\n    account: Current user's account (from dependency)\n    current_user:\
+        \ Authenticated user.\n    db: Database session\n\nReturns:\n    List of approval\
+        \ workflows"
       operationId: list_approval_workflows_api_v1_approval_workflows_get
       responses:
         '200':
@@ -9936,7 +9948,12 @@ paths:
       tags:
       - Retention
       summary: List Legal Holds
-      description: List this account's legal holds, newest first.
+      description: 'List this account''s legal holds, newest first.
+
+
+        The ``X-Total-Count`` header carries the number of matching holds, so a
+
+        caller can page with ``offset`` past the first ``limit`` rows.'
       operationId: list_legal_holds_api_v1_retention_holds_get
       security:
       - bearerAuth: []
@@ -9977,6 +9994,16 @@ paths:
           minimum: 1
           default: 100
           title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Holds to skip
+          default: 0
+          title: Offset
+        description: Holds to skip
       responses:
         '200':
           description: Successful Response

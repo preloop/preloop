@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -1329,22 +1329,29 @@ async def delete_tool_configuration(
 @router.get("/approval-workflows", response_model=List[ApprovalWorkflowResponse])
 @require_permission("view_approvals")
 async def list_approval_workflows(
+    response: Response,
     account: Account = Depends(get_account_for_user),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> List[ApprovalWorkflowResponse]:
     """List all approval workflows for the current user's account.
 
+    The route has no paging, so every workflow is returned and the
+    ``X-Total-Count`` header carries how many.
+
     Args:
+        response: Receives the ``X-Total-Count`` header.
         account: Current user's account (from dependency)
+        current_user: Authenticated user.
         db: Database session
 
     Returns:
         List of approval workflows
     """
     policies = crud_approval_workflow.get_multi_by_account(
-        db, account_id=str(account.id)
+        db, account_id=str(account.id), limit=None
     )
+    response.headers["X-Total-Count"] = str(len(policies))
 
     logger.info(f"Returning {len(policies)} approval workflows for user {account.id}")
 

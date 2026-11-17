@@ -545,6 +545,7 @@ def _session_runner_page(
 @router.get("/runners", response_model=List[schemas.RunnerResponse])
 @require_permission("view_flows")
 def list_runners(
+    response: Response,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
     skip: int = 0,
@@ -563,10 +564,18 @@ def list_runners(
             db, current_user, skip=skip, limit=limit, is_admin=is_admin
         )
     else:
-        rows = crud_flow_runner.list_for_account(
-            db, account_id=current_user.account_id, skip=skip, limit=limit
+        # Visibility is per row, so filter every candidate before paging;
+        # otherwise a page comes back short while more visible runners exist.
+        visible = filter_viewable(
+            db,
+            current_user,
+            VISIBLE_RUNNER,
+            crud_flow_runner.list_for_account(
+                db, account_id=current_user.account_id, skip=0, limit=None
+            ),
         )
-        rows = filter_viewable(db, current_user, VISIBLE_RUNNER, rows)
+        response.headers["X-Total-Count"] = str(len(visible))
+        rows = visible[max(skip, 0) : max(skip, 0) + max(limit, 0)]
         # One admin check for the page, rather than two queries per runner.
         is_admin = (
             viewer_is_account_admin(db, current_user)

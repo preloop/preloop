@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   number of matching rows, like the approval and execution lists already do.
   The flow lists apply visibility before paging, so a page is short only at
   the end. The response bodies are unchanged.
+- The same applies to `GET /api/v1/mcp-servers`, `GET /api/v1/approval-workflows`
+  and `GET /api/v1/runners` (which no longer stop at 100 rows or return short
+  pages) and `GET /api/v1/retention/holds` (which gains an `offset`
+  parameter). `GET /api/v1/agents` and `GET /api/v1/agents/control` apply
+  visibility before paging, and their `total` counts only the agents the
+  caller can see.
 - Issue search compares the `organization_id` filter as a UUID, so an
   organization filter (in any letter case) finds its issues. An unknown,
   malformed or excluded organization or project filter returns no results
