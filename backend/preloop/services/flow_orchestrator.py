@@ -1937,7 +1937,7 @@ class FlowExecutionOrchestrator:
             # Check if message exceeds NATS max payload
             if len(encoded_message) > self.NATS_MAX_PAYLOAD_BYTES:
                 # Truncate the payload - specifically handle "line" field for log lines
-                truncated_payload = dict(payload)
+                truncated_payload = dict(message.get("payload", {}))
                 if "line" in truncated_payload and isinstance(
                     truncated_payload["line"], str
                 ):
