@@ -438,19 +438,55 @@ def test_connection_details_url_override_is_validated(client: Any) -> None:
 
 
 @pytest.mark.parametrize(
-    "details,source,isolated",
+    "stored_auth,source,isolated",
     [
-        ({"auth_type": "api_token"}, None, True),
-        ({}, None, True),
-        ({"auth_type": "github_app"}, None, False),
-        ({"auth_type": "oauth_app"}, None, False),
-        ({"auth_type": "api_token"}, object(), False),
+        (None, None, True),
+        ("api_token", None, True),
+        ("github_app", None, False),
+        ("oauth_app", None, False),
+        ("api_token", object(), False),
     ],
 )
-def test_loop_bound_credentials_are_not_isolated(
-    details: Dict[str, Any], source: Any, isolated: bool
+def test_isolation_follows_server_side_state(
+    stored_auth: Any, source: Any, isolated: bool
 ) -> None:
-    """Saved GitHub App / OAuth and managed trackers stay on the API loop."""
+    """Only saved OAuth trackers and managed grants stay on the API loop."""
+    from types import SimpleNamespace
+
     from preloop.api.endpoints.trackers import _probe_isolated
 
-    assert _probe_isolated(details, source) is isolated
+    saved = None if stored_auth is None else SimpleNamespace(auth_type=stored_auth)
+    assert _probe_isolated(saved, source) is isolated
+
+
+@pytest.mark.parametrize(
+    "path,extra,result",
+    [
+        (TEST_PATH, {}, {"success": False, "message": "x", "orgs": []}),
+        (
+            "/api/v1/trackers/list-projects-for-org",
+            {"organization_identifier": "1"},
+            [],
+        ),
+    ],
+)
+def test_request_auth_type_cannot_opt_out_of_isolation(
+    client: Any, path: str, extra: Dict[str, Any], result: Any
+) -> None:
+    """A caller-sent ``auth_type`` does not move the probe onto the API loop."""
+    from preloop.api.endpoints import trackers as endpoint
+
+    probe = AsyncMock(return_value=result)
+    with patch.object(endpoint, "run_tracker_probe", new=probe):
+        client.post(
+            path,
+            json={
+                "tracker_type": "gitlab",
+                "api_key": "x",
+                "url": "https://gitlab.example.com",
+                "connection_details": {"auth_type": "github_app"},
+                **extra,
+            },
+        )
+    probe.assert_awaited_once()
+    assert probe.await_args.kwargs["isolate"] is True

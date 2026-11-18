@@ -175,22 +175,25 @@ def _effective_url(details: Dict[str, Any]) -> Optional[str]:
     return str(value) if value else None
 
 
-def _probe_isolated(details: Dict[str, Any], credential_source: Any) -> bool:
+def _probe_isolated(saved_tracker: Any, credential_source: Any) -> bool:
     """Whether a connection test may run on a private probe loop.
 
-    Managed grants and GitHub App / OAuth installations resolve credentials
-    through services bound to the API loop, so they stay on it.
+    Decided from server-side state only, never from request fields: managed
+    grants and saved GitHub App / OAuth trackers resolve credentials through
+    services bound to the API loop, so they stay on it. Everything else is
+    isolated under the address guard.
 
     Args:
-        details: The merged connection details passed to the client.
+        saved_tracker: The caller's saved tracker row, or None.
         credential_source: The managed credential source, if any.
 
     Returns:
-        True for plain token trackers.
+        False only for managed grants and saved OAuth trackers.
     """
-    return credential_source is None and details.get("auth_type") not in (
-        OAUTH_AUTH_TYPES
-    )
+    if credential_source is not None:
+        return False
+    stored_auth = getattr(saved_tracker, "auth_type", None)
+    return stored_auth not in OAUTH_AUTH_TYPES
 
 
 async def _limit_connection_tests(current_user: AuthUserResponse) -> None:
@@ -1684,7 +1687,9 @@ async def test_connection_and_list_orgs(
         return await run_tracker_probe(
             probe_connection,
             url=_effective_url(test_details),
-            isolate=_probe_isolated(test_details, test_credential_source),
+            isolate=_probe_isolated(
+                tracker if test_data.tracker_id else None, test_credential_source
+            ),
         )
     except TrackerProbeError as e:
         logger.warning(
@@ -1770,6 +1775,7 @@ async def list_projects_for_org(
             tracker if project_data.tracker_id else None,
         )
     )
+    saved_tracker = tracker if project_data.tracker_id else None
     credential_source = (
         tracker_credential_source(tracker) if project_data.tracker_id else None
     )
@@ -1808,7 +1814,7 @@ async def list_projects_for_org(
         return await run_tracker_probe(
             probe_projects,
             url=_effective_url(list_details),
-            isolate=_probe_isolated(list_details, credential_source),
+            isolate=_probe_isolated(saved_tracker, credential_source),
         )
     except TrackerProbeError as e:
         raise _probe_http_error(e)
