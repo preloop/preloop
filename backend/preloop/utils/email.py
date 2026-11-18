@@ -49,6 +49,19 @@ class EmailError(Exception):
 EMAIL_NOT_CONFIGURED = "Email is not configured on this server (SMTP_HOST is empty)."
 
 
+def email_is_configured() -> bool:
+    """Report whether this server can send email.
+
+    A mail server host is the only required setting: credentials are optional
+    and, when absent, mail is sent without SMTP AUTH. Every caller that tells
+    "not configured" apart from "failed" uses this predicate.
+
+    Returns:
+        True when ``SMTP_HOST`` is set.
+    """
+    return bool(SMTP_HOST)
+
+
 def _failure_reason(error: Exception, stage: str = "") -> str:
     """Map an SMTP failure to one fixed sentence without server-supplied text."""
     if isinstance(error, smtplib.SMTPNotSupportedError) and stage == "login":
@@ -122,7 +135,7 @@ def send_email(
         msg.attach(part2)
 
     # Skip sending when no mail server is configured (development mode).
-    if not SMTP_HOST:
+    if not email_is_configured():
         logger.warning(
             "Email not sent: SMTP_HOST not configured. Would have sent email to %s",
             to_email,
