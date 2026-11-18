@@ -349,16 +349,7 @@ READ_ONLY_GIT = frozenset(
         "show-ref",
         "for-each-ref",
         "describe",
-        "grep",
-        "blame",
         "diff-tree",
-        "shortlog",
-        "verify-commit",
-        "name-rev",
-        "branch",
-        "remote",
-        "tag",
-        "--version",
     }
 )
 
@@ -368,7 +359,7 @@ def _writes_git_config(words: list[str]) -> bool:
 
     Allowed: the global options ``-C <dir>``, ``--no-pager`` and ``-P``, then a
     subcommand from :data:`READ_ONLY_GIT`. Everything else (``-c``, aliases,
-    ``config``, ``--git-dir``) counts as a possible change; rejecting a
+    ``config``, ``--git-dir``, ``--output``) counts as a possible change; rejecting a
     harmless call only costs a continuation.
     """
     if PurePosixPath(words[0]).name != "git":
@@ -376,7 +367,13 @@ def _writes_git_config(words: list[str]) -> bool:
     rest = words[1:]
     while rest and rest[0] in {"-C", "--no-pager", "-P"}:
         rest = rest[2:] if rest[0] == "-C" else rest[1:]
-    return not rest or rest[0] not in READ_ONLY_GIT
+    if not rest or rest[0] not in READ_ONLY_GIT:
+        return True
+    # Options that run a command or write a file, in any subcommand.
+    return any(
+        arg.startswith(("--output", "-O", "--open-files-in-pager", "--exec"))
+        for arg in rest[1:]
+    )
 
 
 def _substitute(token: str, base: str, head: str) -> str:
