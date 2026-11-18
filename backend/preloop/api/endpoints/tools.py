@@ -57,6 +57,7 @@ from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 from preloop.tools.builtin_defs import (
+    ISSUE_REFERENCE_FORMS,
     ASK_USER_TOOL,
     DEPOSIT_ARTIFACT_TOOL,
     GET_ARTIFACT_TOOL,
@@ -193,7 +194,11 @@ BUILTIN_TOOLS = [
         "schema": {
             "type": "object",
             "properties": {
-                "issues": {"type": "array", "items": {"type": "string"}},
+                "issues": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Issue identifiers. " + ISSUE_REFERENCE_FORMS,
+                },
                 "compliance_metric": {"type": "string", "default": "DoR"},
             },
             "required": ["issues"],
@@ -209,7 +214,11 @@ BUILTIN_TOOLS = [
         "schema": {
             "type": "object",
             "properties": {
-                "issues": {"type": "array", "items": {"type": "string"}},
+                "issues": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Issue identifiers. " + ISSUE_REFERENCE_FORMS,
+                },
                 "compliance_metric": {"type": "string", "default": "DoR"},
             },
             "required": ["issues"],
@@ -226,7 +235,8 @@ BUILTIN_TOOLS = [
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Issue, PR, or MR identifier (URL, key, or ID)",
+                    "description": "Issue, PR, or MR identifier (URL, key, or ID). "
+                    "For an issue: " + ISSUE_REFERENCE_FORMS,
                 },
                 "comment": {
                     "type": "string",

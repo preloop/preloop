@@ -752,9 +752,22 @@ def builtin_tools_with_ask_user(tools: List[Dict[str, Any]]) -> List[Dict[str, A
 # (tools.py), the FastMCP registration (initialize_mcp.py) and the dynamic
 # server (dynamic_mcp_server.py) cannot drift apart.
 
+#: Issue reference forms every tool that takes an issue accepts.
+ISSUE_REFERENCE_FORMS = (
+    "Accepted forms: a key ('group/project#12' for GitLab, 'owner/repo#12' "
+    "for GitHub, 'PROJ-12' for Jira); an issue URL (GitLab "
+    "'.../group/project/-/issues/12' or '.../group/project/-/work_items/12', "
+    "GitHub '.../owner/repo/issues/12', Jira '.../browse/PROJ-12'); a bare "
+    "number '12', which must match exactly one synced issue; or the Preloop "
+    "issue UUID. Only synced issues are found; GitLab epics, objectives and "
+    "key results are not issues."
+)
+
 GET_ISSUE_DESCRIPTION = (
-    "Get detailed information about an issue by its identifier (URL, key, or "
-    "ID). Returns the synchronized snapshot. Pass include to add blocks read "
+    "Get detailed information about an issue by its identifier (URL, key, "
+    "number or ID). "
+    + ISSUE_REFERENCE_FORMS
+    + " Returns the synchronized snapshot. Pass include to add blocks read "
     "live from the tracker: label_catalog for the complete project label "
     "catalogue and the recognized complexity, risk and readiness schemes, "
     "revision for the "
@@ -767,7 +780,7 @@ GET_ISSUE_SCHEMA: Dict[str, Any] = {
     "properties": {
         "issue": {
             "type": "string",
-            "description": "Issue identifier (URL, key like 'PROJECT#123', or UUID)",
+            "description": "Issue identifier. " + ISSUE_REFERENCE_FORMS,
         },
         "include": {
             "type": "array",
@@ -798,7 +811,10 @@ UPDATE_ISSUE_DESCRIPTION = (
 UPDATE_ISSUE_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
-        "issue": {"type": "string", "description": "Issue identifier"},
+        "issue": {
+            "type": "string",
+            "description": "Issue identifier. " + ISSUE_REFERENCE_FORMS,
+        },
         "title": {"type": "string", "description": "New title"},
         "description": {"type": "string", "description": "New description"},
         "status": {"type": "string", "description": "New status"},

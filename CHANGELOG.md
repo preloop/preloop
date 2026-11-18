@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `get_issue` and the other issue tools now find a GitLab issue from its
+  `/-/work_items/<iid>` URL, the form GitLab 18.10 and later shows in the
+  browser, as well as from `/-/issues/<iid>`. Issue triage no longer refuses
+  an issue whose GitLab `web_url` uses the work items form. Synced GitLab
+  issues now keep their GitLab URL. A bare number such as `12` matches issue
+  12 only, not 112, and a number shared by several projects returns an error
+  listing the matching keys instead of an arbitrary one. A work item URL that
+  names no synced issue says which key was looked up.
 - Hosted read-only reviews are no longer sent into an extra session when they
   did read the diff in a common way. The inspection check now accepts
   `git diff <base>..<head>` and `git diff <base> <head>` when the base is the

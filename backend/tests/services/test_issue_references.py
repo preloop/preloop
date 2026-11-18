@@ -113,6 +113,16 @@ class TestGitLabForms:
         assert keys(refs) == ["grp/sub/other#31"]
         assert refs[0].url == "https://gitlab.example.com/grp/sub/other/-/issues/31"
 
+    @pytest.mark.parametrize("word", ["issues", "work_items"])
+    def test_work_item_url_gives_the_same_key(self, word):
+        refs = extract_issue_references(
+            description=f"See https://gitlab.example.com/grp/sub/proj/-/{word}/7"
+            "?show=1#note_3",
+            **GITLAB,
+        )
+        assert keys(refs) == ["grp/sub/proj#7"]
+        assert refs[0].url == f"https://gitlab.example.com/grp/sub/proj/-/{word}/7"
+
     def test_cross_project_key(self):
         refs = extract_issue_references(description="Closes grp/other#8", **GITLAB)
         assert keys(refs) == ["grp/other#8"]

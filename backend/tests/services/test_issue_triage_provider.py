@@ -388,3 +388,40 @@ async def test_gitlab_namespaced_project_uses_encoded_api_path() -> None:
     tracker.connection_details["project_id"] = "example/project"
     await IssueTriageProvider(tracker, "7").read_issue()
     assert tracker.calls[0][1] == "/projects/example%2Fproject/issues/7"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("word", ["issues", "work_items"])
+@pytest.mark.parametrize("project_id", ["42", "example/project"])
+async def test_gitlab_issue_url_accepts_either_path_word(
+    word: str, project_id: str
+) -> None:
+    tracker = FakeTracker("gitlab")
+    tracker.connection_details["project_id"] = project_id
+    url = f"https://gitlab.example.com/example/project/-/{word}/7"
+    tracker.issue["web_url"] = url
+    issue = await IssueTriageProvider(tracker, "7").read_issue()
+    assert issue.url == url
+    assert issue.title == "Original title"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("word", ["issues", "work_items"])
+@pytest.mark.parametrize(
+    ("web_path", "code"),
+    [
+        ("example/other/-/{word}/7", "issue_project_mismatch"),
+        ("example/project/-/{word}/8", "issue_repository_mismatch"),
+        ("example/project/-/merge_requests/7", "issue_repository_mismatch"),
+    ],
+)
+async def test_gitlab_issue_url_for_another_issue_is_refused(
+    word: str, web_path: str, code: str
+) -> None:
+    tracker = FakeTracker("gitlab")
+    tracker.connection_details["project_id"] = "example/project"
+    tracker.issue["web_url"] = "https://gitlab.example.com/" + web_path.format(
+        word=word
+    )
+    with pytest.raises(TriageProviderError, match=code):
+        await IssueTriageProvider(tracker, "7").read_issue()

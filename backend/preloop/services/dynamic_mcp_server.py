@@ -939,6 +939,7 @@ def register_default_tools(server: DynamicMCPServer):
     from preloop.api.endpoints import mcp as mcp_router
 
     from preloop.tools.builtin_defs import (
+        ISSUE_REFERENCE_FORMS,
         GET_ISSUE_DESCRIPTION,
         GET_ISSUE_SCHEMA,
         UPDATE_ISSUE_DESCRIPTION,
@@ -1068,7 +1069,8 @@ def register_default_tools(server: DynamicMCPServer):
                 "issues": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of issue identifiers (URLs, keys, or UUIDs)",
+                    "description": "List of issue identifiers. "
+                    + ISSUE_REFERENCE_FORMS,
                 },
                 "compliance_metric": {
                     "type": "string",
@@ -1091,7 +1093,8 @@ def register_default_tools(server: DynamicMCPServer):
                 "issues": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of issue identifiers (URLs, keys, or UUIDs)",
+                    "description": "List of issue identifiers. "
+                    + ISSUE_REFERENCE_FORMS,
                 },
                 "compliance_metric": {
                     "type": "string",

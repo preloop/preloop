@@ -29,6 +29,7 @@ from preloop.models.crud.project import (
     repository_host,
 )
 from preloop.models.db.session import release_transaction
+from preloop.models.models.project import KEY_PREFIXES_RECORDED_KEY
 from preloop.models.models import (
     Issue,
     Organization,
@@ -633,6 +634,12 @@ class TrackerClient:
                 crud_issue_embedding.create_embeddings(
                     db, issue_id=current_issue_model.id
                 )
+
+        if not (project.meta_data or {}).get(KEY_PREFIXES_RECORDED_KEY):
+            # Once per project: lets bare-number lookups use exact keys even
+            # for issues synced under a name the project no longer has.
+            crud_issue.record_key_prefixes(db, project=project)
+            db.commit()
 
         return issues_processed, embedding_updates
 

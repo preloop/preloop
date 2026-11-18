@@ -9,10 +9,36 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Query, Session
 
 from ..models.issue import Issue
-from ..models.project import Project
+from ..models.project import FORMER_SLUGS_KEY, KEY_PREFIXES_RECORDED_KEY, Project
 from ..models.tracker import Tracker
 from .base import CRUDBase
 from .issue_compliance_result import issue_compliance_result
+
+
+def _key_prefixes(slug: str, meta: Optional[Dict[str, Any]]) -> set[str]:
+    """Return every prefix the project's synced issue keys may carry.
+
+    Issue keys keep the repository or path name they were synced under, so a
+    renamed or transferred project's keys may use its current slug or any
+    former one (recorded by the Project model on every slug change, and by
+    the transfer endpoint's history for older moves).
+
+    Args:
+        slug: The project's current slug.
+        meta: The project's ``meta_data``.
+
+    Returns:
+        The current slug and every recorded former name.
+    """
+    prefixes = {slug}
+    meta = meta if isinstance(meta, dict) else {}
+    for former in meta.get(FORMER_SLUGS_KEY) or []:
+        if isinstance(former, str) and former:
+            prefixes.add(former)
+    for move in meta.get("repository_transfers") or []:
+        if isinstance(move, dict) and isinstance(move.get("from_full_name"), str):
+            prefixes.add(move["from_full_name"])
+    return prefixes
 
 
 class CRUDIssue(CRUDBase[Issue]):
@@ -218,6 +244,138 @@ class CRUDIssue(CRUDBase[Issue]):
         if account_id:
             query = query.join(Tracker).filter(Tracker.account_id == account_id)
         return query.first()
+
+    #: Candidate keys per ``key IN (...)`` query in ``list_by_issue_number``.
+    ISSUE_NUMBER_BATCH = 500
+
+    def issue_number_key_query(
+        self, db: Session, *, keys: List[str], account_id: Optional[str] = None
+    ) -> Query:
+        """Build the equality read on ``Issue.key`` for candidate keys.
+
+        Args:
+            db: Database session.
+            keys: Exact issue keys to look up.
+            account_id: Restrict to trackers of this account.
+
+        Returns:
+            A query the ``issue.key`` index can serve.
+        """
+        query = db.query(Issue).filter(Issue.key.in_(keys))
+        if account_id:
+            query = query.join(Tracker).filter(Tracker.account_id == account_id)
+        return query
+
+    def record_key_prefixes(self, db: Session, *, project: Project) -> None:
+        """Record every prefix the project's stored issue keys use.
+
+        Keys keep the name they were synced under, and renames made before
+        former slugs were tracked left no record. Reading the distinct
+        prefixes once lets ``list_by_issue_number`` compose exact keys for
+        this project from then on. Later renames are recorded by the Project
+        model. Flushes only; the caller commits.
+
+        Args:
+            db: Database session.
+            project: The project whose issue keys to read.
+        """
+        prefix = func.regexp_replace(Issue.key, "[#-][0-9]+$", "")
+        found = {
+            row[0]
+            for row in db.query(prefix)
+            .filter(Issue.project_id == project.id, Issue.key.isnot(None))
+            .distinct()
+            if row[0]
+        }
+        meta = dict(project.meta_data or {})
+        former = list(meta.get(FORMER_SLUGS_KEY) or [])
+        former.extend(sorted(p for p in found if p != project.slug and p not in former))
+        meta[FORMER_SLUGS_KEY] = former
+        meta[KEY_PREFIXES_RECORDED_KEY] = True
+        project.meta_data = meta  # reassign: JSON column mutations are untracked
+        db.add(project)
+        db.flush()
+
+    def list_by_issue_number(
+        self,
+        db: Session,
+        *,
+        number: str,
+        account_id: Optional[str] = None,
+        limit: int = 11,
+    ) -> List[Issue]:
+        """List issues whose key ends in exactly this number.
+
+        Matches ``<project>#<number>`` (GitHub, GitLab) and
+        ``<project>-<number>`` (Jira), so ``12`` matches ``group/project#12``
+        but never ``group/project#112``. The candidate keys are composed from
+        the slugs of the account's projects (sync stores the GitHub full name,
+        the GitLab path and the Jira project key there, which is exactly the
+        issue key's prefix) and looked up in batches with ``key IN (...)``, so
+        the key index serves the read.
+
+        Args:
+            db: Database session.
+            number: All-digits issue number or iid.
+            account_id: Restrict to projects and trackers of this account.
+            limit: Maximum rows returned.
+
+        Returns:
+            Matching issues ordered by key.
+
+        Raises:
+            ValueError: If ``number`` is not all digits.
+        """
+        from ..models.organization import Organization
+
+        if not number.isdigit():
+            raise ValueError("number must be all digits")
+        projects = (
+            db.query(Project.id, Project.slug, Project.meta_data, Tracker.tracker_type)
+            .join(Organization, Project.organization_id == Organization.id)
+            .join(Tracker, Organization.tracker_id == Tracker.id)
+        )
+        if account_id:
+            projects = projects.filter(Tracker.account_id == account_id)
+        keys: List[str] = []
+        unslugged: List[Any] = []
+        for project_id, slug, meta, tracker_type in projects.order_by(Project.slug):
+            if not slug or not (meta or {}).get(KEY_PREFIXES_RECORDED_KEY):
+                # No slug, or the project's existing key prefixes were never
+                # recorded (it may have been renamed before renames were
+                # tracked): suffix-match inside this project as well.
+                unslugged.append(project_id)
+            if not slug:
+                continue
+            separator = "-" if tracker_type == "jira" else "#"
+            keys.extend(
+                f"{prefix}{separator}{number}"
+                for prefix in sorted(_key_prefixes(slug, meta))
+            )
+
+        found: Dict[Any, Issue] = {}
+        for start in range(0, len(keys), self.ISSUE_NUMBER_BATCH):
+            if len(found) >= limit:
+                break
+            batch = keys[start : start + self.ISSUE_NUMBER_BATCH]
+            for issue in self.issue_number_key_query(
+                db, keys=batch, account_id=account_id
+            ).limit(limit - len(found)):
+                found[issue.id] = issue
+        if unslugged and len(found) < limit:
+            # Their key prefixes are not all derivable from the project row.
+            # Match their issues by suffix, but only inside those projects, so
+            # the project index bounds the scan. Sync records the prefixes
+            # (record_key_prefixes), after which a project leaves this path.
+            query = db.query(Issue).filter(
+                Issue.project_id.in_(unslugged),
+                Issue.key.like(f"%#{number}") | Issue.key.like(f"%-{number}"),
+            )
+            if account_id:
+                query = query.join(Tracker).filter(Tracker.account_id == account_id)
+            for issue in query.order_by(Issue.key).limit(limit - len(found)):
+                found[issue.id] = issue
+        return sorted(found.values(), key=lambda issue: issue.key or "")[:limit]
 
     def get_by_external_id(
         self,

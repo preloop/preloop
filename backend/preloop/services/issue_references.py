@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
+from preloop.utils.issue_urls import parse_issue_path
+
 # Kind ranks: a closing keyword is a promise, a plain mention is a hint, and a
 # branch number is a guess. Stronger kinds win when the same issue is found
 # twice and are listed first.
@@ -151,20 +153,17 @@ def _issue_url(
 
 
 def _parse_issue_url(host: str, rest: str) -> Optional[tuple[str, str]]:
-    """Return (key, normalized_url) for a tracker issue URL, else None."""
+    """Return (key, normalized_url) for a tracker issue URL, else None.
+
+    GitLab ``/-/issues/<iid>`` and ``/-/work_items/<iid>`` give the same key;
+    the normalized URL keeps the path word the text used.
+    """
+    rest = re.split(r"[?#]", rest, maxsplit=1)[0]
     path = "/" + rest.rstrip("/").rstrip(".,;")
-    match = re.match(r"^/(?P<path>.+?)/-/issues/(?P<number>\d+)$", path)
-    if match:
-        key = f"{match.group('path')}#{match.group('number')}"
-        return key, f"https://{host}{path}"
-    match = re.match(r"^/(?P<path>[^/]+/[^/]+)/issues/(?P<number>\d+)$", path)
-    if match:
-        key = f"{match.group('path')}#{match.group('number')}"
-        return key, f"https://{host}{path}"
-    match = re.match(rf"^/browse/(?P<jira>{_JIRA_KEY})$", path)
-    if match:
-        return match.group("jira"), f"https://{host}{path}"
-    return None
+    parsed = parse_issue_path(path, host)
+    if parsed is None:
+        return None
+    return parsed.key, f"https://{host}{path.rstrip('/')}"
 
 
 def _add(
