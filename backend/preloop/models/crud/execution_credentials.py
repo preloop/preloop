@@ -31,7 +31,10 @@ def register(db: Session, execution_id: Any, values: Iterable[str]) -> Credentia
         .where(models.FlowExecution.id == execution_uuid)
         .with_for_update()
     ).scalar_one()
-    fingerprints = {item["sha256"]: item for item in [*(previous or []), *added]}
+    fingerprints = {
+        (item.get("hmac_sha256") or item.get("sha256")): item
+        for item in [*(previous or []), *added]
+    }
     db.execute(
         update(models.FlowExecution)
         .where(models.FlowExecution.id == execution_uuid)

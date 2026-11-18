@@ -111,6 +111,14 @@ def test_malformed_if_match_is_rejected(header: str) -> None:
         parse_if_match(header)
 
 
+def test_if_match_handles_whitespace_around_delimiters() -> None:
+    padding = "\t" * 256
+    condition = parse_if_match(f'W/"4"{padding},{padding}"3"')
+    assert condition is not None and condition.matches(3)
+    with pytest.raises(MalformedIfMatchError):
+        parse_if_match(f'"3"{padding}x')
+
+
 def test_no_header_is_no_condition() -> None:
     assert parse_if_match(None) is None
 

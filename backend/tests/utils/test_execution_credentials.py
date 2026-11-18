@@ -1,6 +1,7 @@
 """Execution credential masking across output representations."""
 
 import base64
+import hashlib
 from collections.abc import Callable
 import io
 import json
@@ -14,6 +15,31 @@ import pytest
 from preloop.utils.execution_credentials import CredentialMasker, credential_values
 
 TOKEN = "synthetic-execution/credential+with=punctuation 123456"
+
+
+def test_mixed_inventory_masks_legacy_and_keyed_fingerprints() -> None:
+    """Stored inventories from a rolling upgrade redact buffered and streamed output."""
+    from preloop.utils.execution_credentials import CredentialStream
+
+    old = b"legacy-secret"
+    legacy = {
+        "length": len(old),
+        "prefix": old[:3].hex(),
+        "sha256": hashlib.sha256(old).hexdigest(),
+    }
+    new = CredentialMasker.from_values([TOKEN]).fingerprints
+    assert all("sha256" not in item and "prefix" not in item for item in new)
+    assert all("hmac_sha256" in item and "encrypted_prefix" in item for item in new)
+    masker = CredentialMasker(json.loads(json.dumps([legacy, *new])))
+    assert masker.mask_bytes(old + TOKEN.encode()) == b"[REDACTED][REDACTED]"
+    stream = CredentialStream(masker)
+    assert (
+        stream.feed(old[:5])
+        + stream.feed(old[5:] + TOKEN[:8].encode())
+        + stream.feed(TOKEN[8:].encode())
+        + stream.finish()
+        == b"[REDACTED][REDACTED]"
+    )
 
 
 def test_agent_environment_and_file_output(tmp_path: Path) -> None:

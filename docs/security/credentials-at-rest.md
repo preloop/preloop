@@ -27,6 +27,11 @@ Three forms of encryption are in use:
   `preloop.models.db.encrypted_types`) stores `enc:v1:<fernet token>` and
   decrypts on read, so application code sees plaintext.
 
+Execution credential masking uses the deployment key for new fingerprints.
+Upgrade the API and execution workers together before resuming executions.
+Older workers cannot read the keyed format. Keep the original deployment key
+for as long as late output can arrive for those executions.
+
 ## Sealing existing rows
 
 Revision `20261119_credentials_at_rest` changes no data in the migration hook.
@@ -136,7 +141,7 @@ tracked as follow-up work.
 | `fleet_finding.device_key` | Not a secret: identifier, dedupe or lookup key | `20261021_device_fleet` |
 | `flow.webhook_secret_rotated_at` | Not a secret: rotation timestamp | `20261210_flow_webhook_rotation` |
 | `flow_execution.initiating_ci_key_id` | Not a secret: foreign key | `20261004_ci_principal` |
-| `flow_execution.credential_fingerprints` | SHA-256 digests with bounded matching prefixes and byte lengths; no complete credential values | `20261220_exec_credentials` |
+| `flow_execution.credential_fingerprints` | HMAC-SHA256 with a deployment-derived key, Fernet-encrypted matching prefixes and byte lengths. Older rows retain SHA-256 digests and plaintext prefixes. | `20261220_exec_credentials` |
 | `flow_execution.webhook_delivery_key` | Not a secret: identifier, dedupe or lookup key | `20260908_webhook_delivery_key` |
 | `flow_execution.total_tokens` | Not a secret: count, type or timestamp | `20251118_add_execution_metrics_to_flow_execution` |
 | `flow_feedback.event_key` | Not a secret: identifier, dedupe or lookup key | `20260906_flow_feedback` |
