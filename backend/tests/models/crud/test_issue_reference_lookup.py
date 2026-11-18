@@ -1,6 +1,8 @@
 """Issue references resolve against real synced rows (PostgreSQL)."""
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.dialects import postgresql
 
 from preloop.api.endpoints.mcp import (
     IssueAmbiguousError,
@@ -13,26 +15,36 @@ HOST = "https://gitlab.example.com"
 
 
 @pytest.fixture
-def synced(create_account, create_tracker, create_issue):
+def synced(
+    create_account, create_tracker, create_organization, create_project, create_issue
+):
     """One account with GitLab and GitHub issues as sync stores them."""
     account = create_account()
     gitlab = create_tracker(account=account, tracker_type="gitlab")
     github = create_tracker(account=account, tracker_type="github")
+    gl_org = create_organization(tracker=gitlab)
+    gh_org = create_organization(tracker=github)
+    proj = create_project(identifier="1", slug="grp/sub/proj", organization=gl_org)
+    other = create_project(identifier="2", slug="grp/other", organization=gl_org)
+    repo = create_project(identifier="3", slug="org/repo", organization=gh_org)
     rows = {
         "gl12": create_issue(
             tracker=gitlab,
+            project=proj,
             key="grp/sub/proj#12",
             external_url="",  # rows synced before web_url was stored
         ),
         "gl112": create_issue(
             tracker=gitlab,
+            project=proj,
             key="grp/sub/proj#112",
             external_url=f"{HOST}/grp/sub/proj/-/work_items/112",
         ),
-        "gl7": create_issue(tracker=gitlab, key="grp/sub/proj#7"),
-        "other7": create_issue(tracker=gitlab, key="grp/other#7"),
+        "gl7": create_issue(tracker=gitlab, project=proj, key="grp/sub/proj#7"),
+        "other7": create_issue(tracker=gitlab, project=other, key="grp/other#7"),
         "gh5": create_issue(
             tracker=github,
+            project=repo,
             key="org/repo#5",
             external_url="https://github.com/org/repo/issues/5",
         ),
@@ -135,3 +147,124 @@ def test_url_never_resolves_by_key_suffix(
     create_issue(tracker=tracker, key=stored)
     with pytest.raises(IssueNotFoundError, match="looked up synced issue"):
         _find_issue_by_identifier(db_session, url, str(account.id))
+
+
+def test_bare_number_ignores_projects_of_other_accounts(
+    db_session,
+    synced,
+    create_account,
+    create_tracker,
+    create_organization,
+    create_project,
+    create_issue,
+) -> None:
+    account_id, rows = synced
+    stranger = create_tracker(account=create_account(), tracker_type="gitlab")
+    project = create_project(
+        identifier="9",
+        slug="grp/hidden",
+        organization=create_organization(tracker=stranger),
+    )
+    create_issue(tracker=stranger, project=project, key="grp/hidden#5")
+    matches = crud_issue.list_by_issue_number(
+        db_session, number="5", account_id=account_id
+    )
+    assert [m.id for m in matches] == [rows["gh5"].id]
+
+
+def test_jira_project_key_uses_a_dash(
+    db_session,
+    create_account,
+    create_tracker,
+    create_organization,
+    create_project,
+    create_issue,
+) -> None:
+    account = create_account()
+    jira = create_tracker(account=account, tracker_type="jira")
+    project = create_project(
+        identifier="10000", slug="PROJ", organization=create_organization(tracker=jira)
+    )
+    issue = create_issue(tracker=jira, project=project, key="PROJ-12")
+    create_issue(tracker=jira, project=project, key="PROJ-112")
+    found = _find_issue_by_identifier(db_session, "12", str(account.id))
+    assert found.id == issue.id
+
+
+def test_bare_number_scans_projects_in_batches(
+    db_session,
+    create_account,
+    create_tracker,
+    create_organization,
+    create_project,
+    create_issue,
+    monkeypatch,
+) -> None:
+    account = create_account()
+    tracker = create_tracker(account=account, tracker_type="gitlab")
+    org = create_organization(tracker=tracker)
+    projects = [
+        create_project(identifier=str(i), slug=f"grp/p{i:02d}", organization=org)
+        for i in range(7)
+    ]
+    first = create_issue(tracker=tracker, project=projects[0], key="grp/p00#3")
+    last = create_issue(tracker=tracker, project=projects[6], key="grp/p06#3")
+    monkeypatch.setattr(type(crud_issue), "ISSUE_NUMBER_BATCH", 2)
+    with pytest.raises(IssueAmbiguousError) as err:
+        _find_issue_by_identifier(db_session, "3", str(account.id))
+    assert err.value.candidates == [first.key, last.key]
+    assert crud_issue.list_by_issue_number(
+        db_session, number="3", account_id=str(account.id), limit=1
+    ) == [first]
+
+
+def test_project_without_slug_still_matches(
+    db_session,
+    create_account,
+    create_tracker,
+    create_organization,
+    create_project,
+    create_issue,
+) -> None:
+    account = create_account()
+    tracker = create_tracker(account=account, tracker_type="gitlab")
+    project = create_project(
+        identifier="1", slug=None, organization=create_organization(tracker=tracker)
+    )
+    issue = create_issue(tracker=tracker, project=project, key="grp/legacy#12")
+    create_issue(tracker=tracker, project=project, key="grp/legacy#112")
+    assert crud_issue.list_by_issue_number(
+        db_session, number="12", account_id=str(account.id)
+    ) == [issue]
+
+
+def test_bare_number_query_uses_the_key_index(db_session, synced) -> None:
+    """The candidate-key read is an equality on ``issue.key``, which the key
+    index serves (a leading-wildcard LIKE could not)."""
+    account_id, _ = synced
+    query = crud_issue.issue_number_key_query(
+        db_session, keys=["grp/sub/proj#12", "grp/other#12"], account_id=account_id
+    )
+    sql = str(
+        query.statement.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "LIKE" not in sql.upper()
+    # On a near-empty table PostgreSQL costs every issue index about the same,
+    # so leave ix_issue_key as the only non-constraint issue index (as
+    # test_session_keys_index does). The DROPs roll back with the test.
+    competing = db_session.execute(
+        text(
+            "SELECT i.indexname FROM pg_indexes i "
+            "WHERE i.tablename = 'issue' AND i.indexname <> 'ix_issue_key' "
+            "AND NOT EXISTS (SELECT 1 FROM pg_constraint c "
+            "WHERE c.conindid = to_regclass(quote_ident(i.schemaname) "
+            "|| '.' || quote_ident(i.indexname)))"
+        )
+    ).scalars()
+    for index_name in list(competing):
+        db_session.execute(text(f'DROP INDEX IF EXISTS "{index_name}"'))
+    db_session.execute(text("SET LOCAL enable_seqscan = off"))
+    plan = "\n".join(row[0] for row in db_session.execute(text(f"EXPLAIN {sql}")))
+    assert "ix_issue_key" in plan, plan

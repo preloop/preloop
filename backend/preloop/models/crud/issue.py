@@ -219,6 +219,27 @@ class CRUDIssue(CRUDBase[Issue]):
             query = query.join(Tracker).filter(Tracker.account_id == account_id)
         return query.first()
 
+    #: Candidate keys per ``key IN (...)`` query in ``list_by_issue_number``.
+    ISSUE_NUMBER_BATCH = 500
+
+    def issue_number_key_query(
+        self, db: Session, *, keys: List[str], account_id: Optional[str] = None
+    ) -> Query:
+        """Build the equality read on ``Issue.key`` for candidate keys.
+
+        Args:
+            db: Database session.
+            keys: Exact issue keys to look up.
+            account_id: Restrict to trackers of this account.
+
+        Returns:
+            A query the ``issue.key`` index can serve.
+        """
+        query = db.query(Issue).filter(Issue.key.in_(keys))
+        if account_id:
+            query = query.join(Tracker).filter(Tracker.account_id == account_id)
+        return query
+
     def list_by_issue_number(
         self,
         db: Session,
@@ -229,13 +250,18 @@ class CRUDIssue(CRUDBase[Issue]):
     ) -> List[Issue]:
         """List issues whose key ends in exactly this number.
 
-        Matches ``...#<number>`` (GitHub, GitLab) and ``...-<number>`` (Jira),
-        so ``12`` matches ``group/project#12`` but never ``group/project#112``.
+        Matches ``<project>#<number>`` (GitHub, GitLab) and
+        ``<project>-<number>`` (Jira), so ``12`` matches ``group/project#12``
+        but never ``group/project#112``. The candidate keys are composed from
+        the slugs of the account's projects (sync stores the GitHub full name,
+        the GitLab path and the Jira project key there, which is exactly the
+        issue key's prefix) and looked up in batches with ``key IN (...)``, so
+        the key index serves the read.
 
         Args:
             db: Database session.
             number: All-digits issue number or iid.
-            account_id: Restrict to trackers of this account.
+            account_id: Restrict to projects and trackers of this account.
             limit: Maximum rows returned.
 
         Returns:
@@ -244,14 +270,48 @@ class CRUDIssue(CRUDBase[Issue]):
         Raises:
             ValueError: If ``number`` is not all digits.
         """
+        from ..models.organization import Organization
+
         if not number.isdigit():
             raise ValueError("number must be all digits")
-        query = db.query(Issue).filter(
-            Issue.key.like(f"%#{number}") | Issue.key.like(f"%-{number}")
+        projects = (
+            db.query(Project.id, Project.slug, Tracker.tracker_type)
+            .join(Organization, Project.organization_id == Organization.id)
+            .join(Tracker, Organization.tracker_id == Tracker.id)
         )
         if account_id:
-            query = query.join(Tracker).filter(Tracker.account_id == account_id)
-        return query.order_by(Issue.key).limit(limit).all()
+            projects = projects.filter(Tracker.account_id == account_id)
+        keys: List[str] = []
+        unslugged: List[Any] = []
+        for project_id, slug, tracker_type in projects.order_by(Project.slug):
+            if not slug:
+                unslugged.append(project_id)
+                continue
+            separator = "-" if tracker_type == "jira" else "#"
+            keys.append(f"{slug}{separator}{number}")
+
+        found: Dict[Any, Issue] = {}
+        for start in range(0, len(keys), self.ISSUE_NUMBER_BATCH):
+            if len(found) >= limit:
+                break
+            batch = keys[start : start + self.ISSUE_NUMBER_BATCH]
+            for issue in self.issue_number_key_query(
+                db, keys=batch, account_id=account_id
+            ).limit(limit - len(found)):
+                found[issue.id] = issue
+        if unslugged and len(found) < limit:
+            # Projects synced before slugs were stored have no derivable key
+            # prefix. Match their issues by suffix, but only inside those
+            # projects, so the project index bounds the scan.
+            query = db.query(Issue).filter(
+                Issue.project_id.in_(unslugged),
+                Issue.key.like(f"%#{number}") | Issue.key.like(f"%-{number}"),
+            )
+            if account_id:
+                query = query.join(Tracker).filter(Tracker.account_id == account_id)
+            for issue in query.order_by(Issue.key).limit(limit - len(found)):
+                found[issue.id] = issue
+        return sorted(found.values(), key=lambda issue: issue.key or "")[:limit]
 
     def get_by_external_id(
         self,
