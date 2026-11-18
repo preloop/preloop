@@ -48,7 +48,7 @@ from preloop.api.endpoints.issue_compliance import (
     get_compliance_improvement_suggestion as api_get_compliance_suggestion,
 )
 from preloop.schemas.issue_triage import IssueTriageContext, IssueTriageResult
-from preloop.utils.issue_urls import issue_key_from_url, parse_issue_url
+from preloop.utils.issue_urls import parse_issue_url
 from preloop.utils.permissions import require_permission
 from preloop.schemas.issue import IssueCreate
 from preloop.schemas.tracker_models import IssueUpdate
@@ -603,17 +603,21 @@ def _find_issue_by_identifier(db, identifier: str, account_id: str) -> Issue:
         issue_obj = crud_issue.get_by_key(db, key=parsed_url.key, account_id=account_id)
         if issue_obj:
             return issue_obj
-        if parsed_url.path_word == "work_items":
-            # GitLab work items also cover epics, objectives and key results,
-            # which are never synced as issues.
-            raise IssueNotFoundError(
-                f"Issue not found by URL: {identifier} (looked up synced issue "
-                f"{parsed_url.key}). The URL names a GitLab work item; only "
-                "synced issues can be read. If it is an issue, pass it as "
-                f"'{parsed_url.key}' (group/project#<iid>) once its project "
-                "is synced."
-            )
-        identifier = parsed_url.key
+        # A URL names one project exactly: never fall back to a suffix match,
+        # which could resolve to another project's issue (team/api#12 to
+        # acme/team/api#12). GitLab work items also cover epics, objectives
+        # and key results, which are never synced as issues.
+        hint = (
+            " The URL names a GitLab work item; only synced issues can be read."
+            if parsed_url.path_word == "work_items"
+            else ""
+        )
+        form = "'group/project#<iid>'" if parsed_url.project else "the issue key"
+        raise IssueNotFoundError(
+            f"Issue not found by URL: {identifier} (looked up synced issue "
+            f"{parsed_url.key}).{hint} If it is an issue, pass it as "
+            f"'{parsed_url.key}' ({form}) once its project is synced."
+        )
 
     # Try exact key match first
     issue_obj = crud_issue.get_by_key(db, key=identifier, account_id=account_id)
@@ -2302,52 +2306,10 @@ async def add_comment(
             )
 
     else:
-        # This is a regular issue - use the existing logic
-        parsed_key = None
-        if target.startswith("http"):
-            # Detect platform from URL for self-hosted instance support
-            issue_platform = None
-            try:
-                issue_platform = _detect_platform_from_url(target)
-            except ValueError:
-                # Self-hosted or nonstandard issue URL; rely on later slug parsing.
-                pass
-
-            # GitHub issue URL: https://github.com/owner/repo/issues/123
-            if issue_platform == "github" and "/issues/" in target:
-                parts = target.split("/")
-                if len(parts) >= 7:
-                    owner = parts[3]
-                    repo = parts[4]
-                    issue_number = parts[6].rstrip("/").split("?")[0].split("#")[0]
-                    parsed_key = f"{owner}/{repo}#{issue_number}"
-                    logger.info(f"Parsed GitHub issue URL to key: {parsed_key}")
-            # GitLab issue URL: https://gitlab.com/owner/repo/-/issues/1 or
-            # .../-/work_items/1, also on self-hosted GitLab.
-            elif issue_platform == "gitlab":
-                parsed_key = issue_key_from_url(target)
-                if parsed_key:
-                    logger.info(f"Parsed GitLab issue URL to key: {parsed_key}")
-
-        # Try to find the issue
-        issue_obj = None
+        # This is a regular issue. The lookup parses tracker URLs (GitHub,
+        # GitLab /-/issues/ and /-/work_items/, Jira) to an exact key itself.
         try:
-            if parsed_key:
-                try:
-                    issue_obj = _find_issue_by_identifier(
-                        db, parsed_key, current_user.account_id
-                    )
-                    logger.info(f"Found issue using parsed key: {parsed_key}")
-                except IssueNotFoundError:
-                    logger.info(
-                        f"Could not find issue with parsed key {parsed_key}, "
-                        "trying original target"
-                    )
-
-            if not issue_obj:
-                issue_obj = _find_issue_by_identifier(
-                    db, target, current_user.account_id
-                )
+            issue_obj = _find_issue_by_identifier(db, target, current_user.account_id)
         except IssueAmbiguousError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         except IssueNotFoundError as e:

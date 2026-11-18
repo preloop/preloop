@@ -116,3 +116,22 @@ def test_other_account_cannot_resolve(db_session, synced, create_account) -> Non
     other = create_account()
     with pytest.raises(IssueNotFoundError):
         _find_issue_by_identifier(db_session, "grp/sub/proj#12", str(other.id))
+
+
+@pytest.mark.parametrize(
+    ("stored", "url"),
+    [
+        ("acme/team/api#12", f"{HOST}/team/api/-/issues/12"),
+        ("acme/team/api#12", f"{HOST}/team/api/-/work_items/12"),
+        ("acme/team/api#12", "https://github.com/team/api/issues/12"),
+        ("XPROJ-12", "https://jira.example.com/browse/PROJ-12"),
+    ],
+)
+def test_url_never_resolves_by_key_suffix(
+    db_session, create_account, create_tracker, create_issue, stored, url
+) -> None:
+    account = create_account()
+    tracker = create_tracker(account=account, tracker_type="gitlab")
+    create_issue(tracker=tracker, key=stored)
+    with pytest.raises(IssueNotFoundError, match="looked up synced issue"):
+        _find_issue_by_identifier(db_session, url, str(account.id))
