@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- OpenRouter-routed executions show which upstream provider served the final
+  answer (**Served by** on the execution page, `upstream_route` on the
+  execution detail and `upstream_providers` / `final_answer_upstream_provider`
+  in CI timings). A native-result run that fails with `no_confirmation`,
+  `result_schema_invalid` or `review_not_inspected` on a route with several
+  upstreams or no provider preference names that provider and links the
+  guide. Saving a flow with a result schema on an OpenRouter model whose
+  provider preference pins no provider returns a non-blocking
+  `config_warnings` entry, shown on the flow and model pages.
+
 ### Fixed
+
+- A gateway request with zero tokens and no provider cost (a failed or
+  cancelled upstream request) no longer pages admins about a missing catalog
+  price or makes an execution's cost look partial. The budget pre-check no
+  longer pages a pricing gap for OpenRouter models whose usage is priced from
+  the provider's reported cost.
 
 - `get_issue` and the other issue tools now find a GitLab issue from its
   `/-/work_items/<iid>` URL, the form GitLab 18.10 and later shows in the

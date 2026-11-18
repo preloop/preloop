@@ -3324,6 +3324,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 usage.meta_data["upstream_provider"].astext.label("upstream_provider"),
                 usage.meta_data["upstream_retries"].label("upstream_retries"),
                 usage.meta_data["first_response_at"].label("first_response_at"),
+                usage.meta_data["finish_reason"].astext.label("finish_reason"),
             )
             .filter(
                 usage.account_id == account_id,
@@ -3360,6 +3361,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         unpriced_condition = and_(
             ApiUsage.estimated_cost.is_(None),
             func.coalesce(ApiUsage.cost_source, "") != "subscription",
+            # A zero-token request (failed or cancelled upstream) has nothing
+            # to price; it must not make the execution's cost look partial.
+            ApiUsage.total_tokens > 0,
         )
         row = (
             db.query(

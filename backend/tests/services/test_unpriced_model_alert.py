@@ -552,3 +552,60 @@ def test_deferred_alert_does_not_notify_for_repaired_row(monkeypatch):
         )
     notify.assert_not_called()
     db.close.assert_called_once()
+
+
+def _unpriced_row(**tokens):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        cost_source="unpriced",
+        account_id="00000000-0000-0000-0000-000000000001",
+        ai_model_id=None,
+        model_alias="openrouter/example/model",
+        provider_name="openrouter",
+        meta_data={"usage_details": tokens.pop("usage_details", None)},
+        **tokens,
+    )
+
+
+@pytest.mark.parametrize(
+    ("row_kwargs", "expected"),
+    [
+        # Failed or cancelled upstream request: nothing to price, no gap.
+        ({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, False),
+        # Real gap: tokens and no price from provider, catalog or override.
+        ({"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}, True),
+    ],
+)
+def test_deferred_alert_skips_zero_token_rows(monkeypatch, row_kwargs, expected):
+    from unittest.mock import MagicMock
+    from preloop.models.crud import crud_api_usage
+
+    db = MagicMock()
+
+    def sessions():
+        yield db
+
+    monkeypatch.setattr("preloop.models.db.session.get_db_session", sessions)
+    row = _unpriced_row(**row_kwargs)
+    monkeypatch.setattr(crud_api_usage, "get", lambda *args, **kwargs: row)
+    with patch.object(
+        unpriced_model_alert, "notify_unpriced_model", return_value=True
+    ) as notify:
+        result = unpriced_model_alert.notify_unpriced_usage_row(
+            "usage-example", refresh_status="unavailable"
+        )
+    assert result is expected
+    assert notify.called is expected
+
+
+def test_has_billable_usage_counts_provider_cost_without_tokens():
+    assert unpriced_model_alert.has_billable_usage(
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        usage_details={"cost": 0.0},
+    )
+    assert not unpriced_model_alert.has_billable_usage(
+        prompt_tokens=0, completion_tokens=0, total_tokens=0, usage_details={}
+    )

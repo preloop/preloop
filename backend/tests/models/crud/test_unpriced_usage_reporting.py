@@ -181,6 +181,45 @@ def test_subscription_zero_is_a_complete_zero(db_session, create_account, create
     assert usage["unpriced_tokens"] == 0
 
 
+def test_zero_token_request_does_not_make_execution_cost_partial(
+    db_session, create_account, create_user
+):
+    """A failed upstream request with no tokens has nothing to price."""
+    account = create_account()
+    user = create_user(account=account)
+    _, flow, execution = _setup_execution(db_session, account)
+
+    _log(
+        db_session,
+        account=account,
+        user=user,
+        flow=flow,
+        execution=execution,
+        estimated_cost=0.25,
+        cost_source="provider",
+    )
+    _log(
+        db_session,
+        account=account,
+        user=user,
+        flow=flow,
+        execution=execution,
+        estimated_cost=None,
+        cost_source="unpriced",
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+    )
+
+    usage = crud_api_usage.get_gateway_usage_for_execution(
+        db_session, str(execution.id)
+    )
+
+    assert usage["estimated_cost"] == 0.25
+    assert usage["cost_is_partial"] is False
+    assert usage["unpriced_requests"] == 0
+
+
 def _window():
     """A bracketing window around freshly logged rows."""
     now = datetime.now(UTC)

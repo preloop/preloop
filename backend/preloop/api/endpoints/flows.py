@@ -606,6 +606,23 @@ def create_flow(
         new_value={"id": str(flow.id), "name": flow.name},
     )
 
+    return _with_config_warnings(db, flow, account_id=current_user.account_id)
+
+
+def _with_config_warnings(db: Session, flow: Any, *, account_id: Any) -> Any:
+    """Attach non-blocking configuration advice to a flow for the response.
+
+    Args:
+        db: Database session.
+        flow: The saved or loaded flow row.
+        account_id: Caller's account.
+
+    Returns:
+        The same flow with ``config_warnings`` set.
+    """
+    from preloop.services.flow_config_warnings import flow_config_warnings
+
+    flow.config_warnings = flow_config_warnings(db, flow, account_id=account_id)
     return flow
 
 
@@ -1645,8 +1662,42 @@ def read_flow_execution(
         db, account_id=current_user.account_id, execution=execution
     )
     execution.platform_review = _platform_review_with_links(db, execution)
+    execution.upstream_route = _execution_upstream_route(
+        db, execution, account_id=current_user.account_id
+    )
 
     return execution
+
+
+def _execution_upstream_route(
+    db: Session, execution: Any, *, account_id: Any
+) -> Optional[Dict[str, Any]]:
+    """Summarise the OpenRouter upstream providers an execution used.
+
+    Args:
+        db: Database session.
+        execution: Execution already authorized for ``account_id``.
+        account_id: Caller's account, enforced again by the query.
+
+    Returns:
+        The route summary, or None when no upstream provider was recorded.
+    """
+    from preloop.services.review_completion_evidence import upstream_route_summary
+
+    try:
+        requests = crud_api_usage.review_request_facts(
+            db, execution_id=execution.id, account_id=account_id
+        )
+    except Exception:  # noqa: BLE001 - a missing summary must not fail the read
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Upstream route summary failed for %s", execution.id
+        )
+        db.rollback()
+        return None
+    summary = upstream_route_summary(execution, requests)
+    return summary if summary["upstream_providers"] else None
 
 
 def _parse_mcp_log_timestamp(value: Any) -> Optional[datetime]:
@@ -3901,7 +3952,7 @@ def read_flow(
         "token_usage": getattr(stat, "token_usage", None),
     }
     set_flow_etag(response, getattr(flow, "config_revision", None))
-    return flow
+    return _with_config_warnings(db, flow, account_id=current_user.account_id)
 
 
 @router.post(
@@ -4296,7 +4347,7 @@ def update_flow(
     )
 
     set_flow_etag(response, getattr(flow, "config_revision", None))
-    return flow
+    return _with_config_warnings(db, flow, account_id=current_user.account_id)
 
 
 _FLOW_DELETE_DESCRIPTION = """Delete a flow and its execution history.
