@@ -152,3 +152,15 @@ def test_invitation_email_returns_send_result(_send_email: MagicMock) -> None:
         )
         is False
     )
+
+
+def test_host_without_credentials_is_configured(monkeypatch) -> None:
+    """protects=#2389 auth-less relays; fails_when=empty creds mean unconfigured."""
+    monkeypatch.setattr(email, "SMTP_HOST", "relay.example.com")
+    monkeypatch.setattr(email, "SMTP_USERNAME", "")
+    monkeypatch.setattr(email, "SMTP_PASSWORD", "")
+    assert email.email_is_configured() is True
+    monkeypatch.setattr(email, "SMTP_HOST", "")
+    monkeypatch.setattr(email, "SMTP_USERNAME", "jane@example.com")
+    monkeypatch.setattr(email, "SMTP_PASSWORD", "secret")
+    assert email.email_is_configured() is False

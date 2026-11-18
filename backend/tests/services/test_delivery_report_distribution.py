@@ -642,6 +642,8 @@ class TestDistribute:
     def test_unconfigured_smtp_is_not_reported_as_sent(
         self, db_session: Session, owner: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # "Not configured" means no mail server host; credentials are optional.
+        monkeypatch.setattr("preloop.utils.email.SMTP_HOST", "")
         monkeypatch.setattr("preloop.utils.email.SMTP_USERNAME", "")
         monkeypatch.setattr("preloop.utils.email.SMTP_PASSWORD", "")
         record = asyncio.run(

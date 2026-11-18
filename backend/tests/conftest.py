@@ -33,6 +33,22 @@ async def maybe_await(result):
 
 
 @pytest.fixture(autouse=True)
+def clear_ambient_smtp_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with email unconfigured, whatever the runner exports.
+
+    ``preloop.utils.email`` reads ``SMTP_*`` once at import, so a host in the
+    runner's environment (or ``.env``) would make tests open real connections.
+    Tests that need a mail server set these attributes themselves.
+    """
+    from preloop.utils import email
+
+    for name in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD"):
+        monkeypatch.setattr(email, name, "")
+    monkeypatch.setattr(email, "SMTP_PORT", 587)
+    monkeypatch.setattr(email, "SMTP_SECURITY", "starttls")
+
+
+@pytest.fixture(autouse=True)
 def mock_openai_client():
     """Mock the OpenAI client to avoid real API calls."""
     with patch("openai.Client") as mock_client:
