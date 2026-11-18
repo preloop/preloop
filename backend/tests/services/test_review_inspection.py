@@ -30,7 +30,10 @@ BASE = "b" * 40
         (f"git diff {HEAD}...{HEAD}", False),
         (f"git diff {BASE}...{HEAD} >/dev/null", False),
         (f"git diff {BASE}...{HEAD} | wc -l", False),
-        (f"false; git diff {BASE}...{HEAD}", False),
+        # The diff runs after ``;`` whatever came before, and as the last
+        # command its success is the exit code.
+        (f"false; git diff {BASE}...{HEAD}", True),
+        (f"git diff {BASE}...{HEAD}; false", False),
     ],
 )
 def test_command_evidence(command: str, expected: bool) -> None:

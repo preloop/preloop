@@ -513,14 +513,35 @@ on the pull request:
 - **Repository inspection.** At least one successful completed native command
   must read the bound patch or a changed file. The controller and hosted
   continuation use the same command matcher; neither interprets assistant
-  prose as evidence. `git diff <base>...<head>` qualifies (including the
-  `PRELOOP_REVIEW_*` variables below). `git show <base-or-head>:<changed-path>`
-  or `cat`, `head`, `tail`, `nl`, or `sed -n '<line-range>p'` of a
-  checkout-relative path in the trusted diff's file list also qualifies.
-  Simple shell wrappers and `&&` chains are supported. Summary flags such as
-  `--stat`, `--name-only`, revision queries, directory listings, failed commands,
-  pipelines, redirections and arbitrary scripts do not qualify. This is a
-  minimum evidence floor; it does not prove complete coverage or correctness.
+  prose as evidence. These qualify:
+  - `git diff <base>...<head>`; when the bound base is the merge base (the
+    usual case), also `git diff <base>..<head>` and `git diff <base> <head>`.
+    Revisions may be full SHAs, abbreviations of seven or more hex digits, or
+    the `PRELOOP_REVIEW_*` variables below. Options that keep the whole patch
+    are allowed: `--find-renames`, `--find-copies`, `-M`, `-C` (with or
+    without a threshold), `--unified=<n>`/`-U<n>`, `--no-color`,
+    `--no-ext-diff`, `--no-textconv`, `-p`, `--binary`, `--full-index` and the
+    diff algorithm options; so is `git --no-pager diff`. A pathspec after `--`
+    must be `.` or name changed files.
+  - `git show <base-or-head>:<changed-path>`, or `cat`, `head`, `tail`, `nl`
+    or `sed -n '<line-range>p'` of a checkout-relative path in the trusted
+    diff's file list.
+
+  The read may be wrapped in `bash -c`/`bash -lc` and sit in a chain, as long
+  as the exit code shows it succeeded: it comes first or after `;` or `&&`,
+  and only `&&` follows it. `cd <dir> && git diff ...` and
+  `git diff --stat <base>...<head>; git diff <base>...<head>` qualify;
+  `git diff <base>...<head>; echo done` does not, because its exit code is the
+  `echo`'s. Literal `HEAD` does not stand for the head SHA: the agent owns the
+  checkout and could have moved it. These never qualify: summary options
+  (`--stat`, `--name-only`, `--name-status`, `--numstat`, `--quiet`,
+  `--check`), options that hide changes (`-w`), another range, a pathspec
+  with no changed file, piping the read into another command or redirecting
+  its output, `||`, background jobs, subshells, command substitution, control
+  flow, writing a file, `export`/`source`/`eval` or variable assignments,
+  `git config` changes, revision queries, directory listings, failed commands
+  and arbitrary scripts. This is a minimum evidence floor; it does not prove
+  complete coverage or correctness.
 - **Usable narrative.** `review_degenerate` rejects results whose narrative
   strings are all below three letters/digits, any required free-text field has
   fewer than three letters/digits (including `review: "..."` alongside useful
@@ -552,7 +573,9 @@ Codex CLI ends a session when the model answers without a tool call and captures
 that answer as the result. If the session exits successfully without a qualifying
 read, Preloop starts up to two fresh sessions in the same container. Each gets
 the same prompt/schema and a short instruction naming the bound revisions,
-requesting the diff and changed files, and describing a usable review. The
+the command that qualifies (`git diff <base>...<head>` on its own), the forms
+that do not (summary options, `HEAD`, pipes, redirections, a diff followed by
+`;`), and describing a usable review. The
 `PRELOOP_REVIEW_CONTINUATION` log records each attempt. Existing timeout and
 model budgets apply; no token, turn or cost ceiling is added. The continuation
 is off with `review_integrity.require_inspection: false` or
