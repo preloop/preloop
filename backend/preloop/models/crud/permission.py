@@ -62,7 +62,17 @@ def ensure_owner_remains(
 
     Raises:
         LastOwnerError: When ``user_id`` is the only active owner left.
+
+    Core has no owner protection: without the RBAC plugin every member has
+    full access and roles carry no rights, so the guard applies only while
+    role-based access is enforced.
     """
+    from preloop.utils import permissions
+
+    if permissions.members_have_full_access() or not (
+        permissions._rbac_checks_enabled()
+    ):
+        return
     db.scalar(
         select(models.Account.id)
         .where(models.Account.id == account_id)

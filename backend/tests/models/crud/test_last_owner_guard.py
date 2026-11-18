@@ -23,6 +23,29 @@ from tests import test_passkey_only as passkey_support
 api = passkey_support.api
 
 
+@pytest.fixture(autouse=True)
+def enforced_roles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owner protection applies only while role-based access is enforced."""
+    from preloop.utils import permissions
+
+    monkeypatch.setattr(permissions, "members_have_full_access", lambda: False)
+    monkeypatch.setattr(permissions, "_rbac_checks_enabled", lambda: True)
+
+
+def test_core_without_roles_has_no_owner_protection(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """protects=core semantics (every member has full access);
+    fails_when=core refuses removing the only owner role."""
+    from preloop.utils import permissions
+
+    monkeypatch.setattr(permissions, "members_have_full_access", lambda: True)
+    user = _user(db_session)
+    owner = _role(db_session, "owner")
+    _grant(db_session, user, owner)
+    crud_user_role.remove_role(db_session, user_id=user.id, role_id=owner.id)
+
+
 def _role(db: Session, name: str) -> models.Role:
     role = crud_role.get_by_name(db, name=name)
     if role is None:

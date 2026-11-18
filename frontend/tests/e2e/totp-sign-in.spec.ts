@@ -601,7 +601,8 @@ test.describe('local TOTP sign-in', () => {
           apiKey
         )
       ).status()
-    ).toBe(401);
+      // A valid key is the wrong kind of credential: 403, not "invalid" 401.
+    ).toBe(403);
     const approval = JSON.parse(driver('approval', { email: user.email })) as {
       id: string;
       token: string;
