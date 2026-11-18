@@ -1008,20 +1008,38 @@ async def expire_stale_approvals() -> int:
 
 
 async def deactivate_ended_run_keys() -> dict[str, Any]:
-    """Deactivate API keys of flow executions and runtime sessions that ended.
+    """Hourly credential and account hygiene.
+
+    Deactivates API keys of flow executions and runtime sessions that ended,
+    then runs the unverified sign-up cleanup
+    (``preloop.services.unverified_signup_cleanup``; dry run unless
+    ``UNVERIFIED_SIGNUP_CLEANUP=apply``). A failure of the second pass is
+    logged and does not undo the first.
 
     Returns:
-        Counts from ``preloop.services.run_key_maintenance``.
+        Counts from ``preloop.services.run_key_maintenance``, with the sign-up
+        cleanup counts under ``unverified_signups``.
     """
     from preloop.services.run_key_maintenance import (
         deactivate_ended_run_keys as _deactivate,
+    )
+    from preloop.services.unverified_signup_cleanup import (
+        cleanup_unverified_signups,
     )
 
     def _sweep() -> dict[str, Any]:
         """Run one bounded pass with its own session."""
         db = next(get_db_session())
         try:
-            return _deactivate(db, dry_run=False).as_dict()
+            result = _deactivate(db, dry_run=False).as_dict()
+            try:
+                result["unverified_signups"] = cleanup_unverified_signups(db).as_dict()
+            except Exception as error:
+                db.rollback()
+                logger.error(
+                    "Unverified sign-up cleanup failed: %s", type(error).__name__
+                )
+            return result
         finally:
             db.close()
 

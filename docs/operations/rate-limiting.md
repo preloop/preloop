@@ -33,6 +33,8 @@ Content-Type: application/json
 | `telemetry.otlp_ingest` | `POST /api/v1/telemetry/otlp/v1/{metrics,logs,traces}` | API key | 600 / 60 s (`PRELOOP_OTLP_INGEST_RATE_LIMIT`) |
 | `notifications.test_push` | `POST /api/v1/notification-preferences/me/test-push` | user | 5 / 60 s |
 | `trackers.connection_test` | `POST /api/v1/trackers/test-and-list-orgs`, `POST /api/v1/trackers/list-projects-for-org`, `POST /api/v1/trackers` | user | 20 / 60 s |
+| `account.deletion_request` | `POST /api/v1/account/deletion-request` | client address, and separately the signed-in account or the address a signed-out request names | 3 / 3600 s |
+| `account.deletion_confirm` | `POST /api/v1/account/deletion-request/confirm` | client address | 10 / 3600 s |
 
 `auth.login.user` counts wrong-password attempts for one account (a username
 and an email of the same person share it) from one client address, and is
@@ -47,6 +49,10 @@ defaults, setting names and keys unchanged. Their original settings (in
 brackets above) still set the limit; `RATE_LIMIT_<RULE>` overrides them like
 any rule. `auth.email_send` charges the client address and the target address
 together: a request refused on either is not charged to the other.
+`account.deletion_request` charges its two identities the same way. A
+signed-out request is also counted once per identity that holds the address;
+when that budget is spent, no further link is mailed but the answer does not
+change, so the limit does not reveal whether the address has an account.
 Refusals keep each endpoint's own message in `detail`. OTLP ingest keeps the
 OTLP status envelope (`{"code": 429, "message": "Rate limit exceeded"}`) with
 `Retry-After`, because exporters parse that body.
