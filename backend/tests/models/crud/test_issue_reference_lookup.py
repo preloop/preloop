@@ -271,8 +271,12 @@ def test_bare_number_query_uses_the_key_index(db_session, synced) -> None:
 
 
 def test_transferred_project_keeps_its_issue_keys(
-    db_session, create_account, create_tracker, create_organization,
-    create_project, create_issue,
+    db_session,
+    create_account,
+    create_tracker,
+    create_organization,
+    create_project,
+    create_issue,
 ) -> None:
     """A transfer changes the slug; synced keys keep the former name."""
     account = create_account()
@@ -284,7 +288,10 @@ def test_transferred_project_keeps_its_issue_keys(
         organization=org,
         meta_data={
             "repository_transfers": [
-                {"from_full_name": "old-owner/widget", "to_full_name": "new-owner/widget"}
+                {
+                    "from_full_name": "old-owner/widget",
+                    "to_full_name": "new-owner/widget",
+                }
             ]
         },
     )
@@ -295,8 +302,12 @@ def test_transferred_project_keeps_its_issue_keys(
 
 
 def test_renamed_project_without_history_still_matches(
-    db_session, create_account, create_tracker, create_organization,
-    create_project, create_issue,
+    db_session,
+    create_account,
+    create_tracker,
+    create_organization,
+    create_project,
+    create_issue,
 ) -> None:
     """An upstream rename that sync has not rewritten into the keys yet."""
     account = create_account()
