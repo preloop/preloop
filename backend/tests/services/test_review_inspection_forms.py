@@ -108,6 +108,15 @@ FORMS: list[tuple[str, bool]] = [
     ("git config diff.external true; git diff {B}...{H}", False),
     ("git -c diff.external=true diff {B}...{H}", False),
     ("echo x | tee README.md; cat README.md", False),
+    ("command exec >/dev/null; git diff {B}...{H}", False),
+    ("builtin export GIT_EXTERNAL_DIFF=true; git diff {B}...{H}", False),
+    ("env GIT_EXTERNAL_DIFF=true git diff {B}...{H}", False),
+    ("env git config diff.external true; git diff {B}...{H}", False),
+    ("git -C {R} config diff.external true; git diff {B}...{H}", False),
+    ("git --no-pager config diff.external true; git diff {B}...{H}", False),
+    ("timeout 5 git diff {B}...{H}", False),
+    ("true || cd sub && cat keep.txt", False),
+    ("true || cd sub && git diff {B}...{H} -- README.md", False),
     # Text that only mentions a diff.
     ("echo 'git diff {B}...{H}'", False),
     ("git log -1 {B}..{H}", False),
@@ -155,6 +164,21 @@ def test_two_dot_needs_the_merge_base() -> None:
     assert command_reads_change(f"git diff {other}..{HEAD}", **with_merge_base)
     assert command_reads_change(f"git diff {other}...{HEAD}", **with_merge_base)
     assert not command_reads_change(f"git diff {BASE}..{HEAD}", **with_merge_base)
+
+
+def test_cd_after_or_may_not_have_run() -> None:
+    """``true || cd sub`` skips the ``cd``; a relative read is from the root."""
+    kwargs: dict[str, Any] = {
+        "base": BASE,
+        "head": HEAD,
+        "files": ["sub/README.md"],
+        "root": "/workspace",
+    }
+    assert command_reads_change("cd sub && cat README.md", **kwargs)
+    assert not command_reads_change("true || cd sub && cat README.md", **kwargs)
+    assert not command_reads_change(
+        f"true || cd sub && git diff {BASE}...{HEAD} -- README.md", **kwargs
+    )
 
 
 def test_short_abbreviation_does_not_count() -> None:
@@ -342,7 +366,12 @@ def test_container_and_controller_agree(
 ) -> None:
     """The real check in the shell and the controller decide each form alike."""
     repo, base, head = checkout["repo"], checkout["base"], checkout["head"]
-    text = _fill(command, base, head, base, repo).replace("/tmp/patch", "patch.out")
+    text = (
+        _fill(command, base, head, base, repo)
+        .replace("/tmp/patch", "patch.out")
+        # Keep the shared checkout's configuration intact; still a write.
+        .replace("config diff.external", "config --file scratch.cfg diff.external")
+    )
     calls, state = _container_accepts(tmp_path, checkout, [text])
     in_container = calls == 1
     codes = json.loads((state / "codes-1").read_text())

@@ -14,7 +14,7 @@ being 0. Accepted reads:
   ``$PRELOOP_REVIEW_BASE_SHA`` / ``$PRELOOP_REVIEW_HEAD_SHA`` variables. Only
   options that keep the whole patch are allowed (rename and copy detection,
   context lines, colour, diff algorithm, external diff and textconv off).
-  No pathspec, ``.``, or changed files.
+  A pathspec after ``--`` may be ``.`` or name a changed file.
 * ``git show <base|head>:<changed file>``.
 * ``cat``, ``nl``, ``head``, ``tail`` or ``sed -n '<range>p'`` of a changed file.
 
@@ -87,6 +87,18 @@ STATE_CHANGING = frozenset(
         "trap",
         "enable",
         "hash",
+        # Wrappers run another command, which may be one of the above.
+        "command",
+        "builtin",
+        "env",
+        "nohup",
+        "timeout",
+        "stdbuf",
+        "nice",
+        "setsid",
+        "xargs",
+        "sudo",
+        "su",
     }
 )
 
@@ -295,7 +307,10 @@ def command_reads_change(
             if len(args) != 2 or ".." in PurePosixPath(args[1]).parts:
                 return False
             target = PurePosixPath(args[1])
-            if target.is_absolute():
+            if before == "||":
+                # Reached only when what came before failed: it may not run.
+                cwd = None
+            elif target.is_absolute():
                 cwd = str(target)
             elif cwd is not None:
                 cwd = str(PurePosixPath(cwd) / target) if cwd else str(target)
@@ -319,10 +334,18 @@ def command_reads_change(
 
 def _writes_git_config(words: list[str]) -> bool:
     """Whether a ``git config`` call may change how a later ``git diff`` prints."""
-    if PurePosixPath(words[0]).name != "git" or "config" not in words[1:3]:
+    if PurePosixPath(words[0]).name != "git":
         return False
-    rest = words[words.index("config") + 1 :]
-    return not any(arg in {"-l", "--list"} or arg.startswith("--get") for arg in rest)
+    rest = words[1:]
+    # Skip Git's global options to find the subcommand.
+    while rest and rest[0].startswith("-"):
+        takes_value = rest[0] in {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
+        rest = rest[2:] if takes_value else rest[1:]
+    if not rest or rest[0] != "config":
+        return False
+    return not any(
+        arg in {"-l", "--list"} or arg.startswith("--get") for arg in rest[1:]
+    )
 
 
 def _substitute(token: str, base: str, head: str) -> str:
