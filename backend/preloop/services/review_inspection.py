@@ -332,19 +332,51 @@ def command_reads_change(
     return False
 
 
-def _writes_git_config(words: list[str]) -> bool:
-    """Whether a ``git`` call may be a ``git config`` write.
+#: Git subcommands that read the repository. Any other subcommand (or an
+#: alias) may change what a later ``git diff`` prints.
+READ_ONLY_GIT = frozenset(
+    {
+        "diff",
+        "show",
+        "log",
+        "status",
+        "rev-parse",
+        "rev-list",
+        "merge-base",
+        "ls-files",
+        "ls-tree",
+        "cat-file",
+        "show-ref",
+        "for-each-ref",
+        "describe",
+        "grep",
+        "blame",
+        "diff-tree",
+        "shortlog",
+        "verify-commit",
+        "name-rev",
+        "branch",
+        "remote",
+        "tag",
+        "--version",
+    }
+)
 
-    Any ``config`` word before ``--`` counts, wherever Git's global options put
-    the subcommand and whatever flags follow: Git accepts read flags after a
-    write action, so telling reads from writes by their flags is brittle.
-    Reading configuration is not needed to read a diff; rejecting it only
-    costs a continuation.
+
+def _writes_git_config(words: list[str]) -> bool:
+    """Whether a ``git`` call may change how a later ``git diff`` prints.
+
+    Allowed: the global options ``-C <dir>``, ``--no-pager`` and ``-P``, then a
+    subcommand from :data:`READ_ONLY_GIT`. Everything else (``-c``, aliases,
+    ``config``, ``--git-dir``) counts as a possible change; rejecting a
+    harmless call only costs a continuation.
     """
     if PurePosixPath(words[0]).name != "git":
         return False
-    options = words[1 : words.index("--")] if "--" in words else words[1:]
-    return "config" in options
+    rest = words[1:]
+    while rest and rest[0] in {"-C", "--no-pager", "-P"}:
+        rest = rest[2:] if rest[0] == "-C" else rest[1:]
+    return not rest or rest[0] not in READ_ONLY_GIT
 
 
 def _substitute(token: str, base: str, head: str) -> str:
