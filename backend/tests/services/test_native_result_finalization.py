@@ -312,21 +312,63 @@ async def test_uninspected_valid_answer_still_fails_as_not_inspected() -> None:
 
 
 @pytest.mark.parametrize(
-    "artifact,observed,recorded",
+    "artifact,recorded",
     [
-        (None, "no final answer was captured", "No final answer was captured"),
-        (
-            bundle(None, native_error="not_json"),
-            "was not valid JSON",
-            "The final answer was not valid JSON",
-        ),
-        (
-            bundle(["a progress note"]),
-            "was not a JSON object",
-            "The final answer was not a JSON object",
-        ),
+        (bundle(None, native_error="not_json"), "The final answer was not valid JSON"),
+        (bundle(["a progress note"]), "The final answer was not a JSON object"),
     ],
-    ids=["none", "not-json", "not-object"],
+    ids=["not-json", "not-object"],
+)
+@pytest.mark.asyncio
+async def test_written_answer_that_is_not_json_is_schema_invalid(
+    artifact: Any, recorded: str
+) -> None:
+    """An answer exists but is unusable: a schema failure, not a missing one."""
+    orch = codex(orchestrator())
+    fake = executor(None, AgentStatus.SUCCEEDED)
+    fake.get_result_artifact = AsyncMock(return_value=artifact)
+    nudge = AsyncMock(return_value={"outcome": "skipped"})
+    with patch.object(orch, "_run_confirmation_nudge", nudge):
+        status, result = await finalize(orch, fake)
+    assert status == "FAILED"
+    assert result["failure_category"] == "result_schema_invalid"
+    assert result["error_message"] == (
+        f"Result document does not match the flow result schema: $: {recorded}"
+    )
+    assert orch._result_schema_validation["errors"] == [
+        {"path": "$", "message": recorded}
+    ]
+    nudge.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fenced_answer_is_unwrapped_and_succeeds(tmp_path: Path) -> None:
+    from preloop.services.native_result import (
+        NATIVE_RESULT_BUNDLE_PATH,
+        native_result_capture_script,
+    )
+
+    fenced = (
+        "```json\n" + json.dumps(make_review(head_sha=HEAD, base_sha=BASE)) + "\n```"
+    )
+    (tmp_path / ".preloop-native-result.json").write_text(fenced)
+    exec(native_result_capture_script().replace("/workspace", str(tmp_path)), {})
+    captured = json.loads((tmp_path / Path(NATIVE_RESULT_BUNDLE_PATH).name).read_text())
+    orch = codex(orchestrator())
+    fake = executor(None, AgentStatus.SUCCEEDED)
+    fake.get_result_artifact = AsyncMock(return_value=captured)
+    status, result = await finalize(orch, fake)
+    assert status == "SUCCEEDED", result.get("error_message")
+    assert orch._native_answer_unwrapped == "markdown_fence"
+    orch.execution_logger.log_milestone.assert_any_call(
+        "native_answer_unwrapped", {"wrapper": "markdown_fence"}
+    )
+
+
+@pytest.mark.parametrize(
+    "artifact,observed,recorded",
+    [(None, "no final answer was captured", "No final answer was captured")],
+    ids=["none"],
 )
 @pytest.mark.asyncio
 async def test_unconfirmed_run_says_what_was_observed(
@@ -431,12 +473,12 @@ def test_capture_reports_an_answer_that_is_not_json(
     from preloop.services.native_result import (
         NATIVE_CANDIDATES_KEY,
         NATIVE_RESULT_BUNDLE_PATH,
-        NATIVE_RESULT_CAPTURE,
+        native_result_capture_script,
     )
 
     if answer is not None:
         (tmp_path / ".preloop-native-result.json").write_text(answer)
-    exec(NATIVE_RESULT_CAPTURE.replace("/workspace", str(tmp_path)), {})
+    exec(native_result_capture_script().replace("/workspace", str(tmp_path)), {})
     written = tmp_path / Path(NATIVE_RESULT_BUNDLE_PATH).name
     if expected is None:
         # Nothing to report: the capture stays as it was before.

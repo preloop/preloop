@@ -267,7 +267,7 @@ def test_native_capture_rejects_oversized_candidate_without_reading(
     """Neither native answers nor fallback files may bypass the document cap."""
     from preloop.services.native_result import (
         NATIVE_CANDIDATES_KEY,
-        NATIVE_RESULT_CAPTURE,
+        native_result_capture_script,
         RESULT_DOCUMENT_MAX_BYTES,
     )
 
@@ -293,7 +293,7 @@ def test_native_capture_rejects_oversized_candidate_without_reading(
         return guarded
 
     monkeypatch.setattr(os, "fdopen", guarded_fdopen)
-    exec(NATIVE_RESULT_CAPTURE.replace("/workspace", str(tmp_path)), {})
+    exec(native_result_capture_script().replace("/workspace", str(tmp_path)), {})
     bundle = json.loads((tmp_path / Path(NATIVE_RESULT_BUNDLE_PATH).name).read_text())
     assert bundle[NATIVE_CANDIDATES_KEY][oversized] == {
         "error": "result_artifact_too_large"

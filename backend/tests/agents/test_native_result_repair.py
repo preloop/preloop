@@ -197,7 +197,11 @@ def test_checker_follows_local_references_and_any_of() -> None:
 
 @pytest.mark.parametrize(
     "raw,message",
-    [(None, "No final answer"), ("", "No final answer"), ("{not json", "Not valid")],
+    [
+        (None, "No final answer"),
+        ("", "No final answer"),
+        ("{not json", "Your answer was wrapped in a Markdown code fence"),
+    ],
 )
 def test_missing_or_unparseable_answer_is_repaired(raw: Any, message: str) -> None:
     prompt = repair_prompt(raw, SCHEMA, "Review the change")
@@ -375,6 +379,15 @@ def test_invalid_answer_gets_one_repair_naming_the_errors(tmp_path: Path) -> Non
     assert _markers(log) == [
         {"attempt": 1, "reason": "result_schema_invalid", "paths": ["$.findings"]}
     ]
+
+
+def test_fenced_valid_answer_needs_no_repair(tmp_path: Path) -> None:
+    fenced = "```json\n" + json.dumps(review(), indent=2) + "\n```\n"
+    calls, result, log = _run(tmp_path, _blocks(_context()), [fenced])
+    assert calls == 1
+    assert _markers(log) == []
+    # The answer file is left as written; the capture unwraps it.
+    assert result.read_text().startswith("```json\n")
 
 
 def test_repairs_are_bounded_and_keep_the_last_answer(tmp_path: Path) -> None:

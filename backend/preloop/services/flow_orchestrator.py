@@ -5353,6 +5353,7 @@ class FlowExecutionOrchestrator:
         candidate validates, retain the native answer (or file when absent)
         for ordinary schema/integrity diagnostics. Arrival order is irrelevant.
         """
+        from preloop.services.native_answer import MARKDOWN_FENCE
         from preloop.services.native_result import NATIVE_CANDIDATES_KEY
         from preloop.services.flow_result_schema import (
             flow_result_schema,
@@ -5361,6 +5362,7 @@ class FlowExecutionOrchestrator:
 
         # Each capture states its own reason; none carries over from an earlier one.
         self._native_answer_error = None
+        self._native_answer_unwrapped = None
         if getattr(
             self, "_native_result_effective", False
         ) is not True or not isinstance(document, dict):
@@ -5375,6 +5377,17 @@ class FlowExecutionOrchestrator:
             if native is not None and not isinstance(native, dict)
             else candidates.get("native_error")
         )
+        if native is not None and candidates.get("native_unwrapped") == (
+            MARKDOWN_FENCE
+        ):
+            # The capture removed one Markdown fence around the answer; the
+            # document below is still checked in full.
+            self._native_answer_unwrapped = MARKDOWN_FENCE
+            logger_ = getattr(self, "execution_logger", None)
+            if logger_ is not None:
+                logger_.log_milestone(
+                    "native_answer_unwrapped", {"wrapper": MARKDOWN_FENCE}
+                )
         schema = flow_result_schema(getattr(self, "flow", None))
         if (
             schema
@@ -5542,6 +5555,13 @@ class FlowExecutionOrchestrator:
                     "capture_state": "captured",
                     "result_source": "native_structured_result" if native else "file",
                     "result_captured_at": datetime.now(timezone.utc).isoformat(),
+                    **(
+                        {"answer_unwrapped": unwrapped}
+                        if (
+                            unwrapped := getattr(self, "_native_answer_unwrapped", None)
+                        )
+                        else {}
+                    ),
                 },
                 result=document,
                 validation=getattr(self, "_result_schema_validation", None),
@@ -9423,7 +9443,14 @@ class FlowExecutionOrchestrator:
                         and not self._success_sentinel_seen.is_set()
                         and artifact_confirmation != "success"
                         and getattr(self, "_native_result_effective", False) is True
-                        and isinstance(result_artifact, dict)
+                        and (
+                            isinstance(result_artifact, dict)
+                            # An answer that was written but is not JSON (or
+                            # not an object) leaves no document to capture;
+                            # it still exists and still fails the schema.
+                            or getattr(self, "_native_answer_error", None)
+                            in {"not_json", "not_object"}
+                        )
                         and isinstance(validation, dict)
                         and validation.get("valid") is False
                     ):

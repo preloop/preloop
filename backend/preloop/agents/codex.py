@@ -1165,14 +1165,14 @@ exit $CODEX_EXIT_CODE
     @staticmethod
     def _native_result_capture_block(context: Dict[str, Any]) -> str:
         """Preserve final-answer and file candidates for controller validation."""
-        from preloop.services.native_result import NATIVE_RESULT_CAPTURE
+        from preloop.services.native_result import native_result_capture_script
         from preloop.services.read_only_review import read_only_review
 
         if (context.get("agent_config") or {}).get(
             "native_result"
         ) is not True or not read_only_review(context.get("git_clone_config")):
             return ""
-        return "python3 -c " + shlex.quote(NATIVE_RESULT_CAPTURE) + "\n"
+        return "python3 -c " + shlex.quote(native_result_capture_script()) + "\n"
 
     def _review_inspection_continuation_block(
         self,
@@ -1327,7 +1327,7 @@ done
         Returns:
             The shell block, or an empty string for runs without native results.
         """
-        from preloop.services import native_result_repair
+        from preloop.services import native_answer, native_result_repair
 
         config = execution_context.get("agent_config") or {}
         if not isinstance(config, dict) or config.get("native_result") is not True:
@@ -1338,7 +1338,8 @@ done
         inspection_check = self._review_inspection_check(execution_context)
         inspected = inspection_check or "true"
         checker = (
-            inspect.getsource(native_result_repair)
+            inspect.getsource(native_answer)
+            + inspect.getsource(native_result_repair)
             + """
 import sys
 answer_path, schema_path, prompt_path, out_path = sys.argv[1:5]

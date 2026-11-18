@@ -51334,6 +51334,14 @@ components:
           - type: string
           - type: 'null'
           title: Result Sha256
+        answer_unwrapped:
+          anyOf:
+          - type: string
+            const: markdown_fence
+          - type: 'null'
+          title: Answer Unwrapped
+          description: Set when the native final answer was one JSON document inside
+            a Markdown code fence and the fence was removed before validation.
       type: object
       required:
       - captured

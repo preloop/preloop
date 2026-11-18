@@ -143,6 +143,7 @@ async def test_captured_result_survives_later_failure(
         "captured": True,
         "source": "native_structured_result",
         "result_sha256": digest(document),
+        "answer_unwrapped": None,
     }
     expected_failure = (
         "completion_event_queueing"

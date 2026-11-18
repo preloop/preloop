@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   12 only, not 112, and a number shared by several projects returns an error
   listing the matching keys instead of an arbitrary one. A work item URL that
   names no synced issue says which key was looked up.
+- A native review whose final answer is a valid JSON document inside a single
+  Markdown code fence is accepted: the fence is removed and the document goes
+  through every schema and review check as before, instead of the run spending
+  its repair sessions and failing. The execution records
+  `answer_unwrapped: "markdown_fence"`. A final answer that is not valid JSON
+  now fails as `result_schema_invalid` rather than `no_confirmation`, and the
+  repair prompt says plainly to reply with the JSON object only.
 - REST requests are recorded for every credential (API keys, runtime keys and
   CI identities as well as login sessions) and every status, including 5xx
   and requests the CI middleware rejects. Success traffic is rolled up per
