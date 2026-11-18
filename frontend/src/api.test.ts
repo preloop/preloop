@@ -485,9 +485,8 @@ describe('api', () => {
         });
       });
       await fetchWithAuth('/api/v1/test').catch(() => undefined);
-      const { takeSessionEndNotice } = await import(
-        './services/session-end-notice'
-      );
+      const { takeSessionEndNotice } =
+        await import('./services/session-end-notice');
       expect(takeSessionEndNotice()).to.contain(
         'requires a second sign-in step'
       );
