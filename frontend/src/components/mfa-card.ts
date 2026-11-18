@@ -296,19 +296,27 @@ export class MfaCard extends LitElement {
                         check your codes. ${this.remaining} recovery codes
                         remaining.
                       </p>
-                      <p>
-                        Enter a recovery code to remove it, then set it up
-                        again. If you have no recovery codes left, ask an
-                        administrator to reset your sign-in.
-                      </p>
-                      ${this.proofInput()}
-                      <sl-button
-                        variant="danger"
-                        outline
-                        ?disabled=${this.busy || !this.code}
-                        @click=${this.disable}
-                        >Remove authenticator app</sl-button
-                      >
+                      ${
+                        this.removalBlocked
+                          ? html`<p>
+                              Your account requires a second sign-in step. Add
+                              another factor before removing this one, or ask an
+                              administrator to reset your sign-in.
+                            </p>`
+                          : html`<p>
+                                Enter a recovery code to remove it, then set it
+                                up again. If you have no recovery codes left,
+                                ask an administrator to reset your sign-in.
+                              </p>
+                              ${this.proofInput()}
+                              <sl-button
+                                variant="danger"
+                                outline
+                                ?disabled=${this.busy || !this.code}
+                                @click=${this.disable}
+                                >Remove authenticator app</sl-button
+                              >`
+                      }
                     `
                   : this.enabled
                     ? html`

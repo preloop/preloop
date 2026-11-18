@@ -124,6 +124,9 @@ If the mail server reports `STARTTLS extension not supported by server`, set
 `SMTP_SECURITY` to `ssl` or, for an internal relay without credentials,
 `none`. Restart the stack after changing `.env`.
 
+Re-running the installer keeps an existing `SMTP_SECURITY`. On Kubernetes, set
+`config.smtp.security` in the Helm values (`starttls`, `ssl` or `none`).
+
 When an invitation email cannot be sent, the invitation is still created.
 The console says the email was not sent and why in one sentence (for
 example, that `SMTP_HOST` is empty or that the server rejected the

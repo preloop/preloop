@@ -110,6 +110,21 @@ def test_starttls_unsupported_gives_actionable_reason(smtp) -> None:
     assert "SMTP_SECURITY" in caught.value.reason
 
 
+def test_login_unsupported_points_at_credentials(smtp, monkeypatch) -> None:
+    """protects=a relay without AUTH names the right setting;
+    fails_when=it is reported as a missing STARTTLS."""
+    monkeypatch.setattr(email, "SMTP_USERNAME", "jane@example.com")
+    monkeypatch.setattr(email, "SMTP_PASSWORD", SECRET)
+    _server(smtp["SMTP"]).login.side_effect = smtplib.SMTPNotSupportedError(
+        "SMTP AUTH extension not supported by server."
+    )
+    with pytest.raises(EmailError) as caught:
+        _send()
+    assert "STARTTLS" not in caught.value.reason
+    assert "SMTP_USERNAME" in caught.value.reason
+    assert SECRET not in caught.value.reason
+
+
 def test_auth_failure_reason_has_no_secret(smtp, monkeypatch) -> None:
     """protects=no secret in the caller-facing reason; fails_when=echoes server."""
     monkeypatch.setattr(email, "SMTP_USERNAME", "jane@example.com")

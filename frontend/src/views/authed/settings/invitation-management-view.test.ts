@@ -54,6 +54,24 @@ describe('InvitationManagementView', () => {
           });
         }
 
+        if (url.endsWith('/api/v1/invitations') && method === 'POST') {
+          return json(
+            {
+              ...JSON.parse(String(init?.body ?? '{}')),
+              id: 'inv-new',
+              status: 'pending',
+              email_sent: false,
+              email_error:
+                'Email is not configured on this server (SMTP_HOST is empty).',
+            },
+            201
+          );
+        }
+
+        if (url.includes('/api/v1/roles')) {
+          return json({ roles: [], total: 0 });
+        }
+
         if (url.includes('/resend') && method === 'POST') {
           return json({
             email_sent: false,
@@ -94,6 +112,46 @@ describe('InvitationManagementView', () => {
     localStorage.clear();
     invalidateApiCaches();
     resetConfirmDialogForTests();
+  });
+
+  // protects=the page keeps the invite dialog open when every invitation was
+  // created but no email went out, and a reopened dialog starts clean;
+  // fails_when=the dialog closes before its warning is read or the stale
+  // warning reappears; no_claim=server stubbed.
+  it('keeps the invite dialog open while it warns about unsent email', async () => {
+    fetchStub = createFetchStub();
+    const element = await fixture<InvitationManagementView>(
+      html`<invitation-management-view></invitation-management-view>`
+    );
+    await element.updateComplete;
+    await waitUntil(
+      () => !!element.shadowRoot!.querySelector('preloop-invite-dialog')
+    );
+    (element as any).isCreateModalOpen = true;
+    await element.updateComplete;
+    const dialog = element.shadowRoot!.querySelector(
+      'preloop-invite-dialog'
+    ) as any;
+    await dialog.updateComplete;
+    dialog.emailsText = 'invitee@example.com';
+    await dialog.handleSendInvitations();
+    await element.updateComplete;
+    await dialog.updateComplete;
+    expect((element as any).isCreateModalOpen).to.equal(true);
+    expect(dialog.open).to.equal(true);
+    expect(dialog.shadowRoot!.textContent).to.contain('invitee@example.com');
+    expect(dialog.shadowRoot!.textContent).to.contain('SMTP_HOST');
+
+    const current = () =>
+      element.shadowRoot!.querySelector('preloop-invite-dialog') as any;
+    await waitUntil(() => !!current());
+    (element as any).isCreateModalOpen = false;
+    await element.updateComplete;
+    await current().updateComplete;
+    (element as any).isCreateModalOpen = true;
+    await element.updateComplete;
+    await current().updateComplete;
+    expect(current().shadowRoot!.textContent).not.to.contain('SMTP_HOST');
   });
 
   // protects=resend tells the admin the email did not go out;

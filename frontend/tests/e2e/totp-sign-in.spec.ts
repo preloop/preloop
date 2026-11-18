@@ -712,6 +712,7 @@ test.describe('local TOTP sign-in', () => {
     expect(await (await request(page, '/auth/mfa/status')).json()).toEqual({
       totp_enabled: false,
       totp_needs_setup: false,
+      totp_removal_blocked: false,
       recovery_codes_remaining: 0,
     });
     await signOut(page);
@@ -829,6 +830,7 @@ test.describe('local TOTP sign-in', () => {
     expect(await (await request(page, '/auth/mfa/status')).json()).toEqual({
       totp_enabled: false,
       totp_needs_setup: false,
+      totp_removal_blocked: false,
       recovery_codes_remaining: 0,
     });
   });
@@ -844,6 +846,10 @@ test.describe('local TOTP sign-in', () => {
   }, info) => {
     test.setTimeout(90_000);
     await register(page);
+    // Registering a passkey needs a fresh strong sign-in; the authenticator
+    // enrolment provides one, as in the passkey-only test below.
+    await enroll(page, info);
+    await page.goto('/console/settings/security');
     const cdp = await context.newCDPSession(page);
     await cdp.send('WebAuthn.enable');
     const { authenticatorId } = await cdp.send(
@@ -859,7 +865,6 @@ test.describe('local TOTP sign-in', () => {
         },
       }
     );
-    await page.goto('/console/settings/security');
     const registered = page.waitForResponse('**/webauthn/register/verify');
     await page
       .getByRole('button', { name: 'Add passkey', exact: true })

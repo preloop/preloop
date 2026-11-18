@@ -196,15 +196,7 @@ export class InvitationManagementView extends LitElement {
     }
 
     try {
-      const created = await createInvitation(
-        this.newInvitation as InvitationCreate
-      );
-      if (created.email_sent === false) {
-        showToast(
-          `Invitation created for ${created.email}, but the email was not sent. ${created.email_error ?? ''}`,
-          'warning'
-        );
-      }
+      await createInvitation(this.newInvitation as InvitationCreate);
       this.isCreateModalOpen = false;
       this.newInvitation = {};
       await this.fetchInvitations();

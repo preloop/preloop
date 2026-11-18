@@ -49,8 +49,13 @@ class EmailError(Exception):
 EMAIL_NOT_CONFIGURED = "Email is not configured on this server (SMTP_HOST is empty)."
 
 
-def _failure_reason(error: Exception) -> str:
+def _failure_reason(error: Exception, stage: str = "") -> str:
     """Map an SMTP failure to one fixed sentence without server-supplied text."""
+    if isinstance(error, smtplib.SMTPNotSupportedError) and stage == "login":
+        return (
+            "The mail server does not offer SMTP login; remove SMTP_USERNAME "
+            "and SMTP_PASSWORD to send without it."
+        )
     if isinstance(error, smtplib.SMTPNotSupportedError):
         return "The mail server does not offer STARTTLS; set SMTP_SECURITY to match it."
     if isinstance(error, smtplib.SMTPAuthenticationError):
@@ -157,6 +162,9 @@ def send_email(
             ),
         )
 
+    # The step that failed; SMTPNotSupportedError means a missing STARTTLS
+    # from starttls() but a missing AUTH extension from login().
+    stage = "connect"
     try:
         smtp_class = smtplib.SMTP_SSL if security == "ssl" else smtplib.SMTP
         connection = (
@@ -166,16 +174,19 @@ def send_email(
         )
         with connection as server:
             if security == "starttls":
+                stage = "starttls"
                 server.starttls()
             if authenticate:
+                stage = "login"
                 server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            stage = "send"
             server.sendmail(from_email, to_email, msg.as_string())
             logger.info("Email sent to %s", to_email)
         return True
     except Exception as e:
         logger.error(f"Failed to send email: {type(e).__name__}")
         raise EmailError(
-            f"Failed to send email: {str(e)}", reason=_failure_reason(e)
+            f"Failed to send email: {str(e)}", reason=_failure_reason(e, stage)
         ) from e
 
 

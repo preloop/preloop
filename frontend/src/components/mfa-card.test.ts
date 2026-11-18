@@ -128,6 +128,37 @@ describe('Authenticator enrollment', () => {
     expect(element.shadowRoot?.querySelector('sl-checkbox')).to.equal(null);
   });
 
+  // protects=an unreadable factor the policy still requires is not offered for
+  // removal; fails_when=Remove is shown and the server refuses it;
+  // no_claim=server is stubbed.
+  it('does not offer removal of an unreadable factor the policy requires', async () => {
+    fetchStub.callsFake(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/features')) return json({ features: {} });
+      if (url.endsWith('/status'))
+        return json({
+          totp_enabled: true,
+          totp_needs_setup: true,
+          totp_removal_blocked: true,
+          recovery_codes_remaining: 7,
+        });
+      return json({});
+    });
+    const element = await fixture<MfaCard>(html`<mfa-card></mfa-card>`);
+    await waitUntil(() =>
+      element.shadowRoot?.textContent?.includes('needs to be set up again')
+    );
+    const text = element.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(text).to.contain('Your account requires a second sign-in step.');
+    expect(text).to.contain('administrator to reset your sign-in');
+    expect(
+      Array.from(element.shadowRoot!.querySelectorAll('sl-button')).some(
+        (button) => button.textContent?.includes('Remove')
+      )
+    ).to.equal(false);
+    expect(element.shadowRoot!.querySelector('sl-input')).to.equal(null);
+  });
+
   // protects=policy-required authenticator is not offered for removal and a
   // server refusal is shown; fails_when=Turn off is offered or a 403 is
   // silent; no_claim=server is stubbed.

@@ -178,6 +178,8 @@ spec:
               value: {{ .Values.config.smtp.from | quote }}
             - name: SMTP_FROM_NAME
               value: {{ .Values.config.smtp.fromName | quote }}
+            - name: SMTP_SECURITY
+              value: {{ .Values.config.smtp.security | default "starttls" | quote }}
             {{- end }}
             - name: NATS_URL
               value: {{ $.Values.nats.url | default (printf "nats://%s-nats:4222" $.Release.Name) }}

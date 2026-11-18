@@ -108,6 +108,14 @@ export class PreloopInviteDialog extends LitElement {
    * nobody looked at (one of them a second copy of the page's own teams).
    */
   protected willUpdate(changed: Map<string, unknown>): void {
+    if (changed.has('open') && !this.open) {
+      // A host may close the dialog by setting open=false directly; start the
+      // next opening without the previous run's messages.
+      this.error = null;
+      this.successMessage = null;
+      this.failedInvites = [];
+      this.unsentInvites = [];
+    }
     if (changed.has('open') && this.open && !this.dataRequested) {
       this.dataRequested = true;
       void this.loadData();
@@ -233,7 +241,9 @@ export class PreloopInviteDialog extends LitElement {
           new CustomEvent('invitations-sent', {
             bubbles: true,
             composed: true,
-            detail: { partial: failed.length > 0 },
+            // partial keeps the host's dialog open: failed addresses stay to
+            // retry, and unsent emails need a warning the admin can read.
+            detail: { partial: failed.length > 0 || unsent.length > 0 },
           })
         );
       }
