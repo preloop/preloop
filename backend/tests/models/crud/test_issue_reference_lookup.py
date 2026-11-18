@@ -268,3 +268,46 @@ def test_bare_number_query_uses_the_key_index(db_session, synced) -> None:
     db_session.execute(text("SET LOCAL enable_seqscan = off"))
     plan = "\n".join(row[0] for row in db_session.execute(text(f"EXPLAIN {sql}")))
     assert "ix_issue_key" in plan, plan
+
+
+def test_transferred_project_keeps_its_issue_keys(
+    db_session, create_account, create_tracker, create_organization,
+    create_project, create_issue,
+) -> None:
+    """A transfer changes the slug; synced keys keep the former name."""
+    account = create_account()
+    tracker = create_tracker(account=account, tracker_type="github")
+    org = create_organization(tracker=tracker)
+    project = create_project(
+        identifier="1",
+        slug="new-owner/widget",
+        organization=org,
+        meta_data={
+            "repository_transfers": [
+                {"from_full_name": "old-owner/widget", "to_full_name": "new-owner/widget"}
+            ]
+        },
+    )
+    issue = create_issue(tracker=tracker, project=project, key="old-owner/widget#1")
+    create_issue(tracker=tracker, project=project, key="new-owner/widget#2")
+    found = _find_issue_by_identifier(db_session, "1", str(account.id))
+    assert found.id == issue.id
+
+
+def test_renamed_project_without_history_still_matches(
+    db_session, create_account, create_tracker, create_organization,
+    create_project, create_issue,
+) -> None:
+    """An upstream rename that sync has not rewritten into the keys yet."""
+    account = create_account()
+    tracker = create_tracker(account=account, tracker_type="gitlab")
+    project = create_project(
+        identifier="1",
+        slug="grp/renamed",
+        organization=create_organization(tracker=tracker),
+    )
+    issue = create_issue(tracker=tracker, project=project, key="grp/before#1")
+    create_issue(tracker=tracker, project=project, key="grp/before#11")
+    assert crud_issue.list_by_issue_number(
+        db_session, number="1", account_id=str(account.id)
+    ) == [issue]
