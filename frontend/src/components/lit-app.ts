@@ -31,6 +31,7 @@ import '../views/public/reset-password-view';
 import '../views/public/verify-email-view';
 import '../views/public/request-demo-view';
 import '../views/public/delete-account-view';
+import '../views/public/delete-account-confirm-view';
 import '../views/public/whatis-mcp-view';
 import '../views/public/pricing-view';
 import '../views/public/welcome-view';
@@ -204,6 +205,10 @@ export class LitApp extends LitElement {
       { path: '/reset-password', component: 'reset-password-view' },
       { path: '/verify-email', component: 'verify-email-view' },
       { path: '/request-demo', component: 'request-demo-view' },
+      {
+        path: '/delete-account/confirm',
+        component: 'delete-account-confirm-view',
+      },
       { path: '/delete-account', component: 'delete-account-view' },
       {
         path: '/docs',

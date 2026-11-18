@@ -134,6 +134,11 @@ AUTH_EMAIL_SEND = Rule("auth.email_send", 3, 900)
 TELEMETRY_OTLP_INGEST = Rule("telemetry.otlp_ingest", 600, 60)
 # Admin test push notifications per user.
 NOTIFICATIONS_TEST_PUSH = Rule("notifications.test_push", 5, 60)
+# Account deletion requests, one budget per client address and one per
+# target (signed-in account, or the address a signed-out request names).
+ACCOUNT_DELETION_REQUEST = Rule("account.deletion_request", 3, 3600)
+# Following an emailed deletion confirmation link, per client address.
+ACCOUNT_DELETION_CONFIRM = Rule("account.deletion_confirm", 10, 3600)
 
 
 class RateLimitExceeded(HTTPException):
@@ -730,6 +735,8 @@ def install_rate_limit_handler(app: Any) -> None:
 
 __all__ = [
     "install_rate_limit_handler",
+    "ACCOUNT_DELETION_CONFIRM",
+    "ACCOUNT_DELETION_REQUEST",
     "APPROVAL_PUBLIC_IP",
     "APPROVAL_PUBLIC_REQUEST",
     "AUTH_EMAIL_SEND",

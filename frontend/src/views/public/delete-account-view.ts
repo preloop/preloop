@@ -2,6 +2,7 @@ import { REST_API_PREFIX } from '../../api-path';
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { formStyles } from '../../styles/form-styles';
+import { fetchWithAuth } from '../../api';
 
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
@@ -10,26 +11,36 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '../../components/logo-component';
 
+/** Longest reason the server accepts. */
+export const REASON_MAX_LENGTH = 1000;
+
+const DELETION_URL = REST_API_PREFIX + '/account/deletion-request';
+
+type DeletionStatus = 'received' | 'confirmation_sent' | 'sign_in_required';
+
+/**
+ * Public "delete my account" page (also linked from app store listings).
+ *
+ * Signed in, the request goes with the session and the server takes the
+ * account from it. Signed out, the page asks for the account's address; the
+ * server mails a confirmation link to it and the request reaches the team
+ * only once that link is followed.
+ */
 @customElement('delete-account-view')
 export class DeleteAccountView extends LitElement {
+  @state() private _signedIn = false;
   @state() private _email = '';
-  @state() private _username = '';
-  @state() private _accountId = '';
-  @state() private _orgName = '';
   @state() private _reason = '';
   @state() private _submitting = false;
   @state() private _error: string | null = null;
-  @state() private _success = false;
+  @state() private _outcome: DeletionStatus | null = null;
+  @state() private _message = '';
 
   connectedCallback() {
     super.connectedCallback();
-
-    // Parse URL parameters
+    this._signedIn = Boolean(localStorage.getItem('accessToken'));
     const params = new URLSearchParams(window.location.search);
     this._email = params.get('email') || '';
-    this._username = params.get('username') || '';
-    this._accountId = params.get('account_id') || '';
-    this._orgName = params.get('org_name') || '';
   }
 
   static styles = [
@@ -88,52 +99,70 @@ export class DeleteAccountView extends LitElement {
     event.preventDefault();
     this._submitting = true;
     this._error = null;
-    this._success = false;
+
+    const body = JSON.stringify(
+      this._signedIn ? { reason: this._reason } : { email: this._email }
+    );
+    const init: RequestInit = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    };
 
     try {
-      const response = await fetch(
-        REST_API_PREFIX + '/account/deletion-request',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            email: this._email,
-            username: this._username,
-            account_id: this._accountId,
-            org_name: this._orgName,
-            reason: this._reason,
-          }),
-        }
-      );
-
+      const response = this._signedIn
+        ? await fetchWithAuth(DELETION_URL, init)
+        : await fetch(DELETION_URL, init);
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error('Network response was not ok');
+        const detail = typeof data?.detail === 'string' ? data.detail : null;
+        throw new Error(detail || 'request failed');
       }
-
-      this._submitting = false;
-      this._success = true;
+      this._outcome = data.status as DeletionStatus;
+      this._message = data.message || '';
     } catch (e) {
-      this._submitting = false;
+      const detail = e instanceof Error ? e.message : '';
       this._error =
-        'Failed to submit request. Please try again or contact support@preloop.ai';
+        detail && detail !== 'request failed'
+          ? detail
+          : 'Failed to submit request. Please try again or contact support@preloop.ai';
+    } finally {
+      this._submitting = false;
     }
   }
 
-  render() {
-    if (this._success) {
+  private _renderOutcome() {
+    if (this._outcome === 'received') {
       return html`
-        <div class="container">
-          <sl-alert variant="success" open>
-            <sl-icon slot="icon" name="check2-circle"></sl-icon>
-            <strong>Request Received</strong><br />
-            Your account deletion request has been submitted. We will process
-            your request within 30 days and send a confirmation to your email
-            address.
-          </sl-alert>
-        </div>
+        <sl-alert variant="success" open>
+          <sl-icon slot="icon" name="check2-circle"></sl-icon>
+          <strong>Request Received</strong><br />
+          ${this._message}
+        </sl-alert>
       `;
+    }
+    if (this._outcome === 'confirmation_sent') {
+      return html`
+        <sl-alert variant="primary" open>
+          <sl-icon slot="icon" name="envelope"></sl-icon>
+          <strong>Check your email</strong><br />
+          ${this._message}
+        </sl-alert>
+      `;
+    }
+    return html`
+      <sl-alert variant="warning" open>
+        <sl-icon slot="icon" name="box-arrow-in-right"></sl-icon>
+        <strong>Sign in required</strong><br />
+        ${this._message}
+        <p><a href="/login">Sign in</a>, then open this page again.</p>
+      </sl-alert>
+    `;
+  }
+
+  render() {
+    if (this._outcome) {
+      return html`<div class="container">${this._renderOutcome()}</div>`;
     }
 
     return html`
@@ -188,41 +217,36 @@ export class DeleteAccountView extends LitElement {
           </div>
 
           <form @submit=${this._handleSubmit}>
-            <sl-input
-              label="Email Address"
-              type="email"
-              required
-              help-text="The email address associated with your Preloop account"
-              .value=${this._email}
-              @sl-input=${(e: any) => (this._email = e.target.value)}
-            ></sl-input>
-
-            <sl-input
-              label="Username"
-              required
-              help-text="Your Preloop username"
-              .value=${this._username}
-              @sl-input=${(e: any) => (this._username = e.target.value)}
-            ></sl-input>
-
             ${
-              this._orgName
-                ? html`<sl-input
-                    label="Account"
-                    readonly
-                    .value=${this._orgName}
+              this._signedIn
+                ? html`<p class="signed-in">
+                    You are signed in. The request is made for the account you
+                    are signed in to; only an account owner can make it.
+                  </p>`
+                : html`<sl-input
+                    label="Email Address"
+                    type="email"
+                    required
+                    help-text="The verified email address of your Preloop account. We will send a link to it to confirm the request."
+                    .value=${this._email}
+                    @sl-input=${(e: any) => (this._email = e.target.value)}
                   ></sl-input>`
-                : ''
             }
-
-            <sl-textarea
-              label="Reason for leaving (optional)"
-              resize="auto"
-              help-text="Help us improve by sharing why you're deleting your account"
-              .value=${this._reason}
-              @sl-input=${(e: any) => (this._reason = e.target.value)}
-            ></sl-textarea>
-
+            ${
+              this._signedIn
+                ? html`<sl-textarea
+                    label="Reason for leaving (optional)"
+                    resize="auto"
+                    maxlength=${REASON_MAX_LENGTH}
+                    help-text="Help us improve by sharing why you're deleting your account"
+                    .value=${this._reason}
+                    @sl-input=${(e: any) => (this._reason = e.target.value)}
+                  ></sl-textarea>`
+                : html`<p class="reason-later">
+                    You can tell us why you are leaving on the confirmation
+                    page.
+                  </p>`
+            }
             ${
               this._error
                 ? html`<sl-alert variant="danger" open
