@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_person, crud_user, mfa
+from preloop.utils.encryption import try_decrypt_value
 
 
 def account(
@@ -148,7 +149,7 @@ def membership_account_counts(db: Session, account_id: UUID) -> dict[UUID, int]:
 
 
 def factor_coverage(db: Session, account_id: UUID) -> dict[UUID, dict[str, bool]]:
-    """Read public factor presence in two batched queries, never secret material."""
+    """Read factor presence in two batched queries; return no secret material."""
     passkeys = set(
         db.scalars(
             select(models.User.id)
@@ -162,19 +163,27 @@ def factor_coverage(db: Session, account_id: UUID) -> dict[UUID, dict[str, bool]
             )
         )
     )
-    totp = set(
-        db.scalars(
-            select(models.UserMfaFactor.user_id)
+    # A factor whose secret this server's key cannot decrypt (a restore under
+    # another key) is reported as unusable, not as a working authenticator.
+    # Only readability is derived; the decrypted value is discarded.
+    readable = {
+        user_id: try_decrypt_value(secret) is not None
+        for user_id, secret in db.execute(
+            select(models.UserMfaFactor.user_id, models.UserMfaFactor.secret_encrypted)
             .join(models.User, models.User.id == models.UserMfaFactor.user_id)
             .where(
                 models.User.account_id == account_id,
                 models.UserMfaFactor.confirmed_at.is_not(None),
             )
-        )
-    )
+        ).all()
+    }
     return {
-        user_id: {"passkey": user_id in passkeys, "totp": user_id in totp}
-        for user_id in passkeys | totp
+        user_id: {
+            "passkey": user_id in passkeys,
+            "totp": readable.get(user_id, False),
+            "totp_unusable": not readable.get(user_id, True),
+        }
+        for user_id in passkeys | set(readable)
     }
 
 

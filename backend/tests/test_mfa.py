@@ -217,6 +217,7 @@ def test_enrollment_encrypted_recovery_and_revocation(
     assert api.get(BASE + "/status", headers=headers).status_code == 401
     assert api.get(BASE + "/status", headers=_bearer(data["access_token"])).json() == {
         "totp_enabled": True,
+        "totp_needs_setup": False,
         "recovery_codes_remaining": 10,
     }
     assert decode_token(data["access_token"]).claims["amr"] == ["password", "otp"]

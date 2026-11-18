@@ -23,6 +23,30 @@ Never put a secret or recovery code in the reason.
 This works on single-user installations. It requires administrative access to
 the server, not a working browser session for the locked-out user.
 
+## Restoring a database: keep SECRET_KEY
+
+Authenticator secrets are encrypted with `SECURITY__ENCRYPTION_KEY`. When that
+setting is empty, as in the release compose bundle, the key is derived from
+`SECRET_KEY`. Restore a database next to the same `.env` it was backed up with.
+
+If the key differs, the authenticator app can no longer be checked:
+
+- A correct authenticator code is refused with `factor_unreadable` (HTTP 409).
+  The sign-in screen says the encryption key changed and switches to a
+  recovery code. The API log has one error line naming the user id.
+- Recovery codes still work, because they are hashed, not encrypted.
+- **Settings → Security** shows the authenticator app as needing to be set up
+  again. The user removes it with a recovery code and sets it up again.
+- The sign-in coverage table counts the member as having no working
+  authenticator.
+
+To recover, put the original `SECRET_KEY` (or `SECURITY__ENCRYPTION_KEY`) back
+and restart; every authenticator works again. If the original key is lost,
+each user signs in with a recovery code and sets the authenticator up again.
+A user with no recovery code left needs a reset with `scripts/reset_mfa.py`
+(see above) or, in Preloop Enterprise, **Reset sign-in** from an
+administrator.
+
 ## Storage, limits, and rollback
 
 Back up the database and its encryption key together. TOTP secrets use the same

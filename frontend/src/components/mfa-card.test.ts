@@ -3,6 +3,7 @@ import sinon from 'sinon';
 import './mfa-card';
 import { MfaCard } from './mfa-card';
 import { invalidateApiCaches } from '../api';
+import { answerConfirmDialog } from '../utils/test-confirm-dialog';
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -125,6 +126,49 @@ describe('Authenticator enrollment', () => {
     );
     expect(element.shadowRoot?.querySelector('img')).to.exist;
     expect(element.shadowRoot?.querySelector('sl-checkbox')).to.equal(null);
+  });
+
+  // protects=a factor this server cannot decrypt reads as needing setup and
+  // can be removed with a recovery code; fails_when=it still reads as on or
+  // removal asks for an authenticator code; no_claim=server is stubbed.
+  it('shows an unreadable authenticator as needing setup again', async () => {
+    let removed: unknown;
+    fetchStub.callsFake(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/features')) return json({ features: {} });
+      if (url.endsWith('/status'))
+        return json({
+          totp_enabled: true,
+          totp_needs_setup: true,
+          recovery_codes_remaining: 7,
+        });
+      if (url.endsWith('/disable')) {
+        removed = JSON.parse(init!.body as string);
+        return new Response(null, { status: 204 });
+      }
+      return json({});
+    });
+    const element = await fixture<MfaCard>(html`<mfa-card></mfa-card>`);
+    await waitUntil(() =>
+      element.shadowRoot?.textContent?.includes('needs to be set up again')
+    );
+    const text = element.shadowRoot!.textContent!;
+    expect(text).not.to.contain('Authenticator app is on');
+    expect(
+      element.shadowRoot?.querySelector('sl-input')?.getAttribute('label')
+    ).to.equal('Recovery code');
+    const input = element.shadowRoot!.querySelector('sl-input')!;
+    (input as unknown as HTMLInputElement).value = 'abcde-fghij';
+    input.dispatchEvent(new Event('sl-input'));
+    await element.updateComplete;
+    Array.from(element.shadowRoot!.querySelectorAll<HTMLElement>('sl-button'))
+      .find((button) => button.textContent?.includes('Remove'))!
+      .click();
+    await answerConfirmDialog(true);
+    await waitUntil(() =>
+      element.shadowRoot?.textContent?.includes('Set up authenticator app')
+    );
+    expect(removed).to.deep.equal({ recovery_code: 'abcde-fghij' });
   });
 
   // protects=one-time material erased on detach; fails_when=secret remains

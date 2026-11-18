@@ -564,6 +564,9 @@ export class LoginView extends LitElement {
       await this._continueAfterSignIn(data);
     } catch (error) {
       this.error = mfaMessage(error);
+      // The authenticator cannot be checked here; offer the recovery path.
+      if (error instanceof ApiError && error.code === 'factor_unreadable')
+        this.useRecoveryCode = true;
     } finally {
       this.submitting = false;
       this.mfaCode = '';

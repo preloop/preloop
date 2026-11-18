@@ -105,6 +105,8 @@ export function mfaMessage(error: unknown): string {
       'This code is invalid or has already been used. Try the next code.',
     challenge_expired: 'This sign-in has expired. Start again.',
     challenge_locked: 'Too many incorrect codes. Start again later.',
+    factor_unreadable:
+      'Your authenticator app cannot be checked on this server because its encryption key changed. Use a recovery code instead, or ask an administrator to reset your sign-in.',
     mfa_required_by_policy:
       'Your account requires a strong sign-in method. Add another factor before removing this one.',
   };

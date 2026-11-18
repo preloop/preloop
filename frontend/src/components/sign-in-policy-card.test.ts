@@ -92,6 +92,25 @@ describe('Account sign-in policy', () => {
     expect(text).to.contain('Authenticator app');
   });
 
+  // protects=an authenticator this server cannot decrypt is shown as
+  // unusable; fails_when=it reads as a working factor; no_claim=server is stubbed.
+  it('shows an unreadable authenticator as unusable', async () => {
+    fetchStub.callsFake(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/features'))
+        return json({ features: { strong_sign_in_policy: true } });
+      return json({
+        ...coverage,
+        members: [{ ...coverage.members[0], totp: false, totp_unusable: true }],
+      });
+    });
+    const element = await card();
+    const cell = element.shadowRoot!.querySelector('tbody td:nth-child(3)')!;
+    expect(cell.textContent!.replace(/\s+/g, ' ')).to.contain(
+      'Authenticator app (unusable, needs to be set up again)'
+    );
+  });
+
   // protects=policy disable clears step-up and replaces revoked tokens; fails_when=old credentials retained; no_claim=server auth is stubbed.
   it('turns step-up off with policy and stores replacement tokens', async () => {
     const element = await card();

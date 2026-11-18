@@ -181,6 +181,38 @@ describe('Login second step', () => {
     }
   });
 
+  // protects=a factor this server cannot decrypt is explained and the
+  // recovery path is offered; fails_when=generic error or code field stays;
+  // no_claim=server is stubbed.
+  it('explains an unreadable authenticator and switches to recovery', async () => {
+    const element = await secondStep();
+    fetchStub.callsFake(async () =>
+      json(
+        {
+          detail: {
+            code: 'factor_unreadable',
+            message: 'server message',
+          },
+        },
+        409
+      )
+    );
+    element.shadowRoot
+      ?.querySelector('form')
+      ?.dispatchEvent(new Event('submit', { cancelable: true }));
+    await waitUntil(() =>
+      element.shadowRoot
+        ?.querySelector('[role="alert"]')
+        ?.textContent?.includes('encryption key changed')
+    );
+    const alert = element.shadowRoot!.querySelector('[role="alert"]')!;
+    expect(alert.textContent).to.contain('recovery code');
+    expect(alert.textContent).to.contain('administrator');
+    expect(
+      element.shadowRoot?.querySelector('sl-input')?.getAttribute('label')
+    ).to.equal('Recovery code');
+  });
+
   for (const [code, message] of Object.entries({
     invalid_code: 'already been used',
     challenge_expired: 'sign-in has expired',
