@@ -97,8 +97,10 @@ def flow_config_warnings(
         if not _structured_result(db, flow):
             return []
         warnings: list[dict[str, Any]] = []
-        for model_id in _model_ids(flow):
-            model = crud_ai_model.get(db, id=model_id)
+        ids = _model_ids(flow)
+        found = crud_ai_model.get_by_ids(db, ids)
+        for model_id in ids:
+            model = found.get(model_id)
             if model is None or (
                 account_id is not None
                 and model.account_id is not None

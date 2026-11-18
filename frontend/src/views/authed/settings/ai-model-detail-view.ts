@@ -1294,10 +1294,6 @@ export class AIModelDetailView extends LitElement {
   }
 
   /**
-   * Subscription owner's opt-in to run their own hosted flows on this
-   * subscription. Rendered only for the owner; nobody else can change it.
-   */
-  /**
    * OpenRouter may send each request to a different upstream provider, and
    * structured results depend on which one answers. Shown for an
    * OpenRouter-routed model whose provider preference pins no upstream.
@@ -1325,6 +1321,10 @@ export class AIModelDetailView extends LitElement {
     </sl-alert>`;
   }
 
+  /**
+   * Subscription owner's opt-in to run their own hosted flows on this
+   * subscription. Rendered only for the owner; nobody else can change it.
+   */
   private renderOwnerFlowUse() {
     const state = this.ownerFlowUse;
     if (!state?.applicable || !state.can_manage) return nothing;

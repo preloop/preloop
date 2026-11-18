@@ -81,6 +81,9 @@ describe('FlowExecutionView upstream provider', () => {
     };
     const root = await mount();
     const strip = root.querySelector('[data-testid="strip-upstream"]')!;
+    expect(
+      strip.parentElement!.querySelector('.strip-label')!.textContent
+    ).to.equal('Served by');
     expect(strip.textContent).to.contain('Provider C');
     expect(strip.textContent).to.contain('+1 more');
     expect(strip.getAttribute('title')).to.contain('Provider A: 3 requests');
@@ -90,6 +93,21 @@ describe('FlowExecutionView upstream provider', () => {
     expect(hint.querySelector('a')!.getAttribute('href')).to.contain(
       '#structured-results-and-upstream-providers'
     );
+  });
+
+  it('does not credit a provider when no request finished with stop', async () => {
+    detail = {
+      ...BASE,
+      upstream_route: {
+        upstream_providers: [{ provider: 'Provider A', request_count: 2 }],
+        final_answer_upstream_provider: null,
+      },
+    };
+    const root = await mount();
+    const strip = root.querySelector('[data-testid="strip-upstream"]')!;
+    const label = strip.parentElement!.querySelector('.strip-label')!;
+    expect(label.textContent).to.equal('Providers');
+    expect(strip.getAttribute('title')).to.not.contain('Final answer');
   });
 
   it('shows nothing for a route with no recorded upstream', async () => {

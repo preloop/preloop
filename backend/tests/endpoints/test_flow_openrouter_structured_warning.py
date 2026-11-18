@@ -24,13 +24,14 @@ def _model(
     user: models.User,
     provider: str,
     routing: dict[str, Any] | None = None,
+    identifier: str = "example/model-flash",
 ) -> Any:
     return crud.crud_ai_model.create_with_account(
         db,
         obj_in={
             "name": f"{provider} model",
             "provider_name": provider,
-            "model_identifier": "example/model-flash",
+            "model_identifier": identifier,
             "api_key": "synthetic-key",
             "meta_data": {"gateway": {"enabled": True}},
             "model_parameters": {"provider": routing} if routing else None,
@@ -102,3 +103,42 @@ def test_order_with_fallbacks_still_warns(
     created = client.post("/api/v1/flows", json=_body(model))
     assert created.status_code == 200, created.text
     assert [w["code"] for w in created.json()["config_warnings"]] == [CODE]
+
+
+@pytest.mark.parametrize("kind", ["routing", "label"])
+def test_routing_rule_model_is_checked_too(
+    db_session: Session, test_user: models.User, client: TestClient, kind: str
+) -> None:
+    pinned = _model(db_session, test_user, "openrouter", {"only": ["provider-a"]})
+    routed = _model(db_session, test_user, "openrouter", identifier="example/other")
+    body = _body(pinned)
+    if kind == "routing":
+        body["agent_config"]["model_routing"] = {
+            "rules": [
+                {
+                    "id": "review",
+                    "labels": {"any": ["review"]},
+                    "ai_model_id": str(routed.id),
+                    "agent_type": "codex",
+                }
+            ]
+        }
+    else:
+        body["agent_config"]["model_by_label"] = [
+            {"label": "review", "ai_model_id": str(routed.id)}
+        ]
+    created = client.post("/api/v1/flows", json=body)
+    assert created.status_code == 200, created.text
+    warnings = created.json()["config_warnings"]
+    assert [w["ai_model_id"] for w in warnings] == [str(routed.id)]
+
+
+def test_get_by_ids_loads_models_in_one_lookup(
+    db_session: Session, test_user: models.User
+) -> None:
+    first = _model(db_session, test_user, "openrouter")
+    second = _model(db_session, test_user, "openai")
+    found = crud.crud_ai_model.get_by_ids(
+        db_session, [str(first.id), second.id, "not-a-uuid"]
+    )
+    assert set(found) == {str(first.id), str(second.id)}

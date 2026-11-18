@@ -4073,8 +4073,9 @@ ${execution.resolved_input_prompt}</pre>
 
   /**
    * Which OpenRouter upstream served the final answer, with every upstream
-   * the run used and its request count in the title. Hidden when the route
-   * recorded no upstream.
+   * the run used and its request count in the title. Labelled "Providers"
+   * when no request finished with stop, and hidden when the route recorded
+   * no upstream.
    */
   private renderUpstreamStripItem(execution: FlowExecution) {
     const providers = execution.upstream_route?.upstream_providers ?? [];
@@ -4091,8 +4092,12 @@ ${execution.resolved_input_prompt}</pre>
           }`
       )
       .join(', ');
+    // With no request ending in stop there is no final answer to attribute,
+    // so the item names the providers instead of crediting the first one.
     return html`<div class="strip-item">
-      <span class="strip-label">Served by</span>
+      <span class="strip-label"
+        >${finalAnswer ? 'Served by' : 'Providers'}</span
+      >
       <span
         class="strip-value"
         data-testid="strip-upstream"
