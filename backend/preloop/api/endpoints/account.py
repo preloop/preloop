@@ -1,6 +1,5 @@
 """Account-related endpoints."""
 
-import html
 import asyncio
 import logging
 import secrets
@@ -31,7 +30,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy.orm import Session
 
-from preloop.api.auth.jwt import get_current_active_user
+from preloop.api.auth.jwt import (
+    get_current_active_user,
+    get_current_active_user_optional,
+)
 from preloop.api.common import get_account_for_user
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.config import settings
@@ -1309,13 +1311,64 @@ class AccountDetailsUpdate(BaseModel):
 
 
 class AccountDeletionRequest(BaseModel):
-    """Account deletion request from user."""
+    """Account deletion request.
 
-    email: EmailStr
-    username: str
-    account_id: str
-    org_name: Optional[str] = None
-    reason: Optional[str] = None
+    Signed in, the account, username and address come from the session and
+    ``email``, ``username``, ``account_id`` and ``org_name`` are ignored.
+    Signed out, ``email`` names the address that receives the confirmation
+    link, and ``reason`` is ignored: it is given on the confirmation page so
+    it never travels in the emailed link. The ignored fields stay accepted so
+    older clients keep working.
+    """
+
+    email: Optional[EmailStr] = None
+    username: Optional[str] = Field(None, max_length=255)
+    account_id: Optional[str] = Field(None, max_length=255)
+    org_name: Optional[str] = Field(None, max_length=255)
+    reason: Optional[str] = Field(None, max_length=1000)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def blank_email_is_none(cls, value: Any) -> Any:
+        """Treat an empty address (signed-in form) as absent."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+
+class AccountDeletionConfirmRequest(BaseModel):
+    """Body of the emailed deletion confirmation link.
+
+    The reason for a signed-out request is given here, on the confirmation
+    page, so it never travels in the link.
+    """
+
+    token: str = Field(..., min_length=1, max_length=4096)
+    reason: Optional[str] = Field(None, max_length=1000)
+
+
+class AccountDeletionResponse(BaseModel):
+    """Outcome of a deletion request.
+
+    ``status`` is ``received`` (signed in, operators notified),
+    ``confirmation_sent`` (signed out; the same answer whether or not the
+    address belongs to anyone) or ``sign_in_required`` (signed out on a server
+    that cannot send email).
+    """
+
+    status: Literal["received", "confirmation_sent", "sign_in_required"]
+    message: str
+
+
+class AccountDeletionConfirmResponse(BaseModel):
+    """Outcome of following a deletion confirmation link.
+
+    ``status`` is ``received`` (operators notified) or ``not_owner`` (the
+    address is confirmed but holds no account it may ask to delete).
+    """
+
+    status: Literal["received", "not_owner"]
+    message: str
 
 
 @router.get("/account/details", response_model=AccountDetailsResponse)
@@ -4265,75 +4318,303 @@ async def update_account_runtime_session(
     return summary
 
 
-@public_router.post("/account/deletion-request")
-async def request_account_deletion(
-    deletion_request: AccountDeletionRequest,
-):
-    """Public endpoint to notify admins of account deletion request.
+DELETION_RECEIVED_MESSAGE = (
+    "Your account deletion request has been received. We will process it "
+    "within 30 days and confirm by email."
+)
+DELETION_CONFIRMATION_SENT_MESSAGE = (
+    "If that address belongs to a verified account, we have sent it a link "
+    "to confirm the request. Nothing happens until the link is followed."
+)
+DELETION_SIGN_IN_REQUIRED_MESSAGE = "Sign in to request deletion of your account."
+DELETION_NOT_OWNER_MESSAGE = (
+    "Only an account owner can request deletion of an account. Ask an owner "
+    "of your account, or sign in and leave it from your profile."
+)
+DELETION_RATE_LIMITED_MESSAGE = "Too many deletion requests; try again later."
+DELETION_LINK_INVALID_MESSAGE = "This link is invalid or has expired."
 
-    This endpoint is called from the public delete-account page and sends
-    notifications to admins via email and configured webhooks (Slack/Mattermost).
 
-    Args:
-        deletion_request: Account deletion request details
-
-    Returns:
-        Success message
-    """
+def _notify_deletion(notice: Any) -> None:
+    """Send one deletion notice to the operators (raises on failure)."""
     from preloop.sync.tasks import notify_admins
 
-    # Build notification message
-    subject = f"Account Deletion Request: {deletion_request.username}"
+    notify_admins(notice.subject, notice.text, notice.html)
 
-    message_parts = [
-        f"User: {deletion_request.username}",
-        f"Email: {deletion_request.email}",
-        f"Account ID: {deletion_request.account_id}",
-    ]
 
-    if deletion_request.org_name:
-        message_parts.append(f"Organization: {deletion_request.org_name}")
+def _send_deletion_link_task(user_email: str, token: str, username: str) -> None:
+    """Mail one confirmation link without failing the other messages."""
+    from preloop.utils.email import (
+        EmailError,
+        send_account_deletion_confirmation_email,
+    )
 
-    if deletion_request.reason:
-        message_parts.append(f"\nReason: {deletion_request.reason}")
-
-    message = "\n".join(message_parts)
-
-    # Build HTML version for email
-    # Escape user-controlled input to prevent HTML injection
-    safe_username = html.escape(deletion_request.username)
-    safe_email = html.escape(deletion_request.email)
-    safe_account_id = html.escape(deletion_request.account_id)
-
-    message_html = f"""
-    <h2>Account Deletion Request</h2>
-    <p><strong>User:</strong> {safe_username}</p>
-    <p><strong>Email:</strong> {safe_email}</p>
-    <p><strong>Account ID:</strong> {safe_account_id}</p>
-    """
-
-    if deletion_request.org_name:
-        safe_org_name = html.escape(deletion_request.org_name)
-        message_html += f"<p><strong>Organization:</strong> {safe_org_name}</p>"
-
-    if deletion_request.reason:
-        safe_reason = html.escape(deletion_request.reason)
-        message_html += f"<p><strong>Reason:</strong> {safe_reason}</p>"
-
-    # Send notifications
     try:
-        notify_admins(subject, message, message_html)
-        logger.info(
-            f"Account deletion request notification sent for account {deletion_request.account_id}"
+        send_account_deletion_confirmation_email(
+            user_email=user_email, token=token, username=username
         )
-        return {"status": "success", "message": "Deletion request received"}
-    except Exception as e:
+    except EmailError as error:
         logger.error(
-            f"Failed to send account deletion notification: {type(e).__name__}"
+            "Failed to send deletion confirmation email: %s", type(error).__name__
+        )
+
+
+@public_router.post("/account/deletion-request", response_model=AccountDeletionResponse)
+def request_account_deletion(
+    deletion_request: AccountDeletionRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db_session),
+    current_user: Optional[UserModel] = Depends(get_current_active_user_optional),
+) -> AccountDeletionResponse:
+    """Ask the operators to delete an account, once the request is proven.
+
+    Called from the public delete-account page. Signed in, the request is
+    proven by the session: only an account owner (or the single member of a
+    personal account) may ask, and the operators are notified at once.
+    Signed out, a one-time link goes to every identity holding the named
+    address verified, and the operators hear only when it is followed; the
+    answer is the same whether or not the address exists.
+
+    Plain ``def`` so the limiter and lookups run on the threadpool.
+
+    Args:
+        deletion_request: Optional address and reason.
+        request: The incoming request (client address, user agent).
+        background_tasks: Sends confirmation links after the response.
+        db: Database session.
+        current_user: The signed-in user, if a valid session was sent.
+
+    Returns:
+        The outcome; see :class:`AccountDeletionResponse`.
+
+    Raises:
+        HTTPException: 403 for a signed-in non-owner or an API key, 422 for a
+            signed-out request without an address, 429 when over budget, 500
+            when the operators could not be notified.
+    """
+    from preloop.models.models.person import normalize_email
+    from preloop.services import account_deletion_requests as deletion
+    from preloop.services.rate_limit import (
+        ACCOUNT_DELETION_REQUEST,
+        RateLimitExceeded,
+        client_ip_for_rate_limit,
+        enforce,
+        enforce_all_or_none,
+    )
+    from preloop.utils.email import email_is_configured
+    from preloop.utils.tokens import create_account_deletion_token
+
+    client_ip = client_ip_for_rate_limit(request)
+    reason = (deletion_request.reason or "").strip() or None
+
+    authorization = request.headers.get("authorization", "")
+    if current_user is None and authorization.lower().startswith("bearer "):
+        # A credential that did not yield a user (an API key outside its
+        # scope, a revoked or expired token) is refused with the strict
+        # check's own error, never treated as a signed-out request.
+        from preloop.api.auth.jwt import get_current_user
+
+        get_current_user(token=authorization[7:].strip(), db=db, request=request)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=DELETION_SIGN_IN_REQUIRED_MESSAGE,
+        )
+    if current_user is not None:
+        if getattr(current_user, "_auth_api_key", None) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=DELETION_SIGN_IN_REQUIRED_MESSAGE,
+            )
+        # Authorize before charging, so a member who may not ask cannot spend
+        # the account's budget and lock its owner out.
+        if not deletion.may_request_deletion(db, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=DELETION_NOT_OWNER_MESSAGE,
+            )
+        enforce_all_or_none(
+            ACCOUNT_DELETION_REQUEST,
+            [f"ip:{client_ip}", f"account:{current_user.account_id}"],
+            detail=DELETION_RATE_LIMITED_MESSAGE,
+        )
+        notice = deletion.build_notice(
+            db,
+            user=current_user,
+            confirmed_by=deletion.CONFIRMED_BY_SESSION,
+            reason=reason,
+        )
+        try:
+            # Record, notify, commit: like the emailed-link path, no request
+            # reaches the operators without its audit row, and none is
+            # recorded that they never saw.
+            deletion.record_request(
+                db,
+                user=current_user,
+                confirmed_by=deletion.CONFIRMED_BY_SESSION,
+                reason=reason,
+                ip_address=client_ip,
+                user_agent=request.headers.get("user-agent"),
+            )
+            _notify_deletion(notice)
+        except Exception as error:
+            db.rollback()
+            logger.error(
+                "Failed to send account deletion notification: %s",
+                type(error).__name__,
+            )
+            raise HTTPException(
+                status_code=500, detail="Failed to process deletion request"
+            )
+        db.commit()
+        logger.info(
+            "Account deletion request (signed-in session) for account %s",
+            current_user.account_id,
+        )
+        return AccountDeletionResponse(
+            status="received", message=DELETION_RECEIVED_MESSAGE
+        )
+
+    if not email_is_configured():
+        return AccountDeletionResponse(
+            status="sign_in_required", message=DELETION_SIGN_IN_REQUIRED_MESSAGE
+        )
+    if not deletion_request.email:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Enter the email address of your account.",
+        )
+    email = str(deletion_request.email)
+    enforce_all_or_none(
+        ACCOUNT_DELETION_REQUEST,
+        [f"ip:{client_ip}", f"email:{normalize_email(email)}"],
+        detail=DELETION_RATE_LIMITED_MESSAGE,
+    )
+    for person in deletion.verified_people_for_address(db, email):
+        try:
+            # Per identity as well, charged silently: a refusal here must not
+            # tell the caller that the address belongs to someone.
+            enforce(ACCOUNT_DELETION_REQUEST, f"person:{person.id}")
+        except RateLimitExceeded:
+            continue
+        token = create_account_deletion_token(
+            person.email,
+            person_id=person.id,
+            auth_generation=person.auth_generation,
+        )
+        background_tasks.add_task(
+            _send_deletion_link_task,
+            user_email=person.email,
+            token=token,
+            username=person.username or "",
+        )
+    return AccountDeletionResponse(
+        status="confirmation_sent", message=DELETION_CONFIRMATION_SENT_MESSAGE
+    )
+
+
+@public_router.post(
+    "/account/deletion-request/confirm",
+    response_model=AccountDeletionConfirmResponse,
+)
+def confirm_account_deletion(
+    body: AccountDeletionConfirmRequest,
+    request: Request,
+    db: Session = Depends(get_db_session),
+) -> AccountDeletionConfirmResponse:
+    """Follow an emailed deletion link: notify the operators once.
+
+    Args:
+        body: The token from the link.
+        request: The incoming request (client address, user agent).
+        db: Database session.
+
+    Returns:
+        ``received`` when the operators were notified, ``not_owner`` when the
+        address holds no account it may ask to delete.
+
+    Raises:
+        HTTPException: 400 for an invalid, expired, superseded or used link,
+            429 when over budget, 500 when the operators could not be
+            notified (the link stays usable).
+    """
+    from preloop.services import account_deletion_requests as deletion
+    from preloop.services.rate_limit import (
+        ACCOUNT_DELETION_CONFIRM,
+        client_ip_for_rate_limit,
+        enforce,
+    )
+    from preloop.utils.tokens import TokenError, verify_account_deletion_token
+
+    client_ip = client_ip_for_rate_limit(request)
+    enforce(
+        ACCOUNT_DELETION_CONFIRM,
+        client_ip,
+        detail=DELETION_RATE_LIMITED_MESSAGE,
+    )
+    try:
+        claims = verify_account_deletion_token(body.token)
+    except TokenError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=DELETION_LINK_INVALID_MESSAGE,
+        )
+    person = deletion.link_still_valid(db, claims)
+    if person is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=DELETION_LINK_INVALID_MESSAGE,
+        )
+    memberships = deletion.deletable_memberships(db, person.id)
+    if not deletion.consume_link(db, claims):
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=DELETION_LINK_INVALID_MESSAGE,
+        )
+    if not memberships:
+        db.commit()
+        return AccountDeletionConfirmResponse(
+            status="not_owner", message=DELETION_NOT_OWNER_MESSAGE
+        )
+    user_agent = request.headers.get("user-agent")
+    reason = (body.reason or "").strip() or None
+    try:
+        for user in memberships:
+            deletion.record_request(
+                db,
+                user=user,
+                confirmed_by=deletion.CONFIRMED_BY_EMAIL_LINK,
+                reason=reason,
+                ip_address=client_ip,
+                user_agent=user_agent,
+            )
+            _notify_deletion(
+                deletion.build_notice(
+                    db,
+                    user=user,
+                    confirmed_by=deletion.CONFIRMED_BY_EMAIL_LINK,
+                    reason=reason,
+                )
+            )
+    except Exception as error:
+        # Give the link back: nothing is recorded unless the operators heard.
+        db.rollback()
+        logger.error(
+            "Failed to send account deletion notification: %s",
+            type(error).__name__,
         )
         raise HTTPException(
             status_code=500, detail="Failed to process deletion request"
         )
+    db.commit()
+    logger.info(
+        "Account deletion request (emailed link) confirmed for %d account(s)",
+        len(memberships),
+    )
+    return AccountDeletionConfirmResponse(
+        status="received", message=DELETION_RECEIVED_MESSAGE
+    )
 
 
 @router.get(

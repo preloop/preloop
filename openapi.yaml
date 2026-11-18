@@ -5590,11 +5590,21 @@ paths:
       tags:
       - Account
       summary: Request Account Deletion
-      description: "Public endpoint to notify admins of account deletion request.\n\
-        \nThis endpoint is called from the public delete-account page and sends\n\
-        notifications to admins via email and configured webhooks (Slack/Mattermost).\n\
-        \nArgs:\n    deletion_request: Account deletion request details\n\nReturns:\n\
-        \    Success message"
+      description: "Ask the operators to delete an account, once the request is proven.\n\
+        \nCalled from the public delete-account page. Signed in, the request is\n\
+        proven by the session: only an account owner (or the single member of a\n\
+        personal account) may ask, and the operators are notified at once.\nSigned\
+        \ out, a one-time link goes to every identity holding the named\naddress verified,\
+        \ and the operators hear only when it is followed; the\nanswer is the same\
+        \ whether or not the address exists.\n\nPlain ``def`` so the limiter and lookups\
+        \ run on the threadpool.\n\nArgs:\n    deletion_request: Optional address\
+        \ and reason.\n    request: The incoming request (client address, user agent).\n\
+        \    background_tasks: Sends confirmation links after the response.\n    db:\
+        \ Database session.\n    current_user: The signed-in user, if a valid session\
+        \ was sent.\n\nReturns:\n    The outcome; see :class:`AccountDeletionResponse`.\n\
+        \nRaises:\n    HTTPException: 403 for a signed-in non-owner or an API key,\
+        \ 422 for a\n        signed-out request without an address, 429 when over\
+        \ budget, 500\n        when the operators could not be notified."
       operationId: request_account_deletion_api_v1_account_deletion_request_post
       requestBody:
         content:
@@ -5607,7 +5617,50 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema: {}
+              schema:
+                $ref: '#/components/schemas/AccountDeletionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/account/deletion-request/confirm:
+    post:
+      tags:
+      - Account
+      summary: Confirm Account Deletion
+      description: "Follow an emailed deletion link: notify the operators once.\n\n\
+        Args:\n    body: The token from the link.\n    request: The incoming request\
+        \ (client address, user agent).\n    db: Database session.\n\nReturns:\n \
+        \   ``received`` when the operators were notified, ``not_owner`` when the\n\
+        \    address holds no account it may ask to delete.\n\nRaises:\n    HTTPException:\
+        \ 400 for an invalid, expired, superseded or used link,\n        429 when\
+        \ over budget, 500 when the operators could not be\n        notified (the\
+        \ link stays usable)."
+      operationId: confirm_account_deletion_api_v1_account_deletion_request_confirm_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountDeletionConfirmRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDeletionConfirmResponse'
         '422':
           description: Validation Error
           content:
@@ -28635,35 +28688,126 @@ components:
       type: object
       title: AccessRuleUpdate
       description: Schema for updating an access rule.
+    AccountDeletionConfirmRequest:
+      properties:
+        token:
+          type: string
+          maxLength: 4096
+          minLength: 1
+          title: Token
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Reason
+      type: object
+      required:
+      - token
+      title: AccountDeletionConfirmRequest
+      description: 'Body of the emailed deletion confirmation link.
+
+
+        The reason for a signed-out request is given here, on the confirmation
+
+        page, so it never travels in the link.'
+    AccountDeletionConfirmResponse:
+      properties:
+        status:
+          type: string
+          enum:
+          - received
+          - not_owner
+          title: Status
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - status
+      - message
+      title: AccountDeletionConfirmResponse
+      description: 'Outcome of following a deletion confirmation link.
+
+
+        ``status`` is ``received`` (operators notified) or ``not_owner`` (the
+
+        address is confirmed but holds no account it may ask to delete).'
     AccountDeletionRequest:
       properties:
         email:
-          type: string
-          format: email
+          anyOf:
+          - type: string
+            format: email
+          - type: 'null'
           title: Email
         username:
-          type: string
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
           title: Username
         account_id:
-          type: string
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
           title: Account Id
         org_name:
           anyOf:
           - type: string
+            maxLength: 255
           - type: 'null'
           title: Org Name
         reason:
           anyOf:
           - type: string
+            maxLength: 1000
           - type: 'null'
           title: Reason
       type: object
-      required:
-      - email
-      - username
-      - account_id
       title: AccountDeletionRequest
-      description: Account deletion request from user.
+      description: 'Account deletion request.
+
+
+        Signed in, the account, username and address come from the session and
+
+        ``email``, ``username``, ``account_id`` and ``org_name`` are ignored.
+
+        Signed out, ``email`` names the address that receives the confirmation
+
+        link, and ``reason`` is ignored: it is given on the confirmation page so
+
+        it never travels in the emailed link. The ignored fields stay accepted so
+
+        older clients keep working.'
+    AccountDeletionResponse:
+      properties:
+        status:
+          type: string
+          enum:
+          - received
+          - confirmation_sent
+          - sign_in_required
+          title: Status
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - status
+      - message
+      title: AccountDeletionResponse
+      description: 'Outcome of a deletion request.
+
+
+        ``status`` is ``received`` (signed in, operators notified),
+
+        ``confirmation_sent`` (signed out; the same answer whether or not the
+
+        address belongs to anyone) or ``sign_in_required`` (signed out on a server
+
+        that cannot send email).'
     AccountDetailsResponse:
       properties:
         id:

@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 from sqlalchemy.future import select
 
@@ -184,6 +184,157 @@ class CRUDAccount(CRUDBase[Account]):
         else:
             db.flush()
         return account
+
+    #: Rows registration itself writes for a new account, as
+    #: ``(table, column)`` foreign keys. Any other row that points at a
+    #: candidate account, user or person means the account was used.
+    SIGNUP_DEFAULT_REFERENCES = frozenset(
+        {
+            ('"user"', "account_id"),
+            ('"user"', "person_id"),
+            ("user_role", "user_id"),
+            ("account", "primary_user_id"),
+            ("account", "root_account_id"),
+            ("person", "primary_user_id"),
+            ("person", "last_active_user_id"),
+            ("approval_workflow", "account_id"),
+            ("tool_configuration", "account_id"),
+            ("tool_access_rules", "account_id"),
+        }
+    )
+
+    def list_unused_unverified_signups(
+        self,
+        db: Session,
+        *,
+        created_before: datetime,
+        limit: int,
+        after_id: Optional[Any] = None,
+        exclude_ids: tuple[str, ...] = (),
+        only_ids: Optional[List[Any]] = None,
+        lock: bool = False,
+    ) -> tuple[List[Any], Optional[Any]]:
+        """Find self-registered accounts nobody ever used.
+
+        An account qualifies when it was created before ``created_before``,
+        is a top-level account without a billing customer, has exactly one
+        member whose identity belongs to no other account, whose address was
+        never verified and who never signed in, and nothing else in the
+        database refers to the account, the member or the identity except the
+        defaults registration writes (``SIGNUP_DEFAULT_REFERENCES``) and
+        failed-outcome audit rows (for example refused sign-ins). Foreign keys
+        are read from the live catalog, so tables added by plugins count.
+
+        Args:
+            db: Database session.
+            created_before: Only accounts created before this instant.
+            limit: Accounts examined per call (one batch).
+            after_id: Resume after this account id (keyset pagination).
+            exclude_ids: Account ids never to return (operator accounts).
+            only_ids: Re-check just these accounts.
+            lock: Lock the account, member and identity rows (``FOR UPDATE``)
+                so a verification or sign-in cannot commit between this check
+                and a delete in the same transaction.
+
+        Returns:
+            ``(qualifying account ids, last examined id)``; the second is None
+            when no account was examined, meaning the scan is complete.
+        """
+        from ..models.person import Person
+        from ..models.user import User
+
+        members = (
+            select(User.account_id, func.count(User.id).label("n"))
+            .group_by(User.account_id)
+            .subquery()
+        )
+        memberships = (
+            select(User.person_id, func.count(User.id).label("n"))
+            .group_by(User.person_id)
+            .subquery()
+        )
+        query = (
+            select(Account.id, User.id, Person.id)
+            .join(User, User.account_id == Account.id)
+            .join(Person, Person.id == User.person_id)
+            .join(members, members.c.account_id == Account.id)
+            .join(memberships, memberships.c.person_id == Person.id)
+            .where(
+                Account.created < created_before,
+                Account.parent_account_id.is_(None),
+                Account.stripe_customer_id.is_(None),
+                Account.is_superuser.is_(False),
+                members.c.n == 1,
+                memberships.c.n == 1,
+                User.last_login.is_(None),
+                User.is_superuser.is_(False),
+                Person.email_verified_at.is_(None),
+            )
+            .order_by(Account.id)
+            .limit(limit)
+        )
+        if after_id is not None:
+            query = query.where(Account.id > after_id)
+        if exclude_ids:
+            query = query.where(Account.id.not_in(list(exclude_ids)))
+        if only_ids is not None:
+            query = query.where(Account.id.in_(list(only_ids)))
+        if lock:
+            query = query.with_for_update(of=(Account, User, Person))
+        rows = db.execute(query).all()
+        if not rows:
+            return [], None
+        last_id = rows[-1][0]
+        by_target = {
+            "account": [row[0] for row in rows],
+            '"user"': [row[1] for row in rows],
+            "person": [row[2] for row in rows],
+        }
+        owner_of: Dict[Any, Any] = {}
+        for account_id, user_id, person_id in rows:
+            owner_of[account_id] = account_id
+            owner_of[user_id] = account_id
+            owner_of[person_id] = account_id
+        used = {owner_of[i] for i in self._referenced_ids(db, by_target)}
+        return [row[0] for row in rows if row[0] not in used], last_id
+
+    def _referenced_ids(self, db: Session, by_target: Dict[str, List[Any]]) -> set:
+        """Ids among ``by_target`` that any non-default row refers to."""
+        references = db.execute(
+            text(
+                """
+                SELECT c.conrelid::regclass::text AS tbl,
+                       a.attname AS col,
+                       c.confrelid::regclass::text AS target
+                FROM pg_constraint c
+                JOIN pg_attribute a
+                  ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1]
+                WHERE c.contype = 'f'
+                  AND array_length(c.conkey, 1) = 1
+                  AND c.confrelid::regclass::text = ANY(:targets)
+                """
+            ),
+            {"targets": list(by_target)},
+        ).all()
+        used: set = set()
+        for tbl, col, target in references:
+            if (tbl, col) in self.SIGNUP_DEFAULT_REFERENCES:
+                continue
+            ids = by_target[target]
+            column = '"' + col.replace('"', '""') + '"'
+            where = f"{column} = ANY(:ids)"
+            if tbl == target:
+                # A row's reference to itself (none today) is not use.
+                where += " AND id <> ALL(:ids)"
+            if tbl == "audit_log":
+                where += " AND status <> 'failure'"
+            # Identifiers come from the catalog, never from input.
+            found = db.execute(
+                text(f"SELECT DISTINCT {column} FROM {tbl} WHERE {where}"),  # nosec B608
+                {"ids": ids},
+            ).scalars()
+            used.update(found)
+        return used
 
     COST_REVISION_KEY = "cost_cache_revision"
 

@@ -26,6 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   price or makes an execution's cost look partial. The budget pre-check no
   longer pages a pricing gap for OpenRouter models whose usage is priced from
   the provider's reported cost.
+- Account deletion requests are now checked before they reach the team that
+  runs the server. When you are signed in, the request is made for the
+  account you are signed in to, and only an owner, or the only member of a
+  personal account, can make it. When you are signed out, we email a
+  one-time confirmation link to the account's verified address and pass the
+  request on only after you open it. The page gives the same answer whether
+  or not an address has an account. If the server cannot send email, the
+  page asks you to sign in. Requests are rate limited, the reason for
+  leaving is capped at 1,000 characters, the notification says how the
+  request was confirmed, and each confirmed request is recorded in the
+  account's audit log. See "Deleting your account" in the user guide.
 
 - `get_issue` and the other issue tools now find a GitLab issue from its
   `/-/work_items/<iid>` URL, the form GitLab 18.10 and later shows in the
@@ -186,6 +197,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deny and approval defaults are opt-in (#2313).
 
 ### Added
+
+- An optional cleanup for sign-ups that were never verified or used. It
+  runs in the existing hourly maintenance task, in dry-run mode by default,
+  and never touches an account with a sign-in, an API key, an agent or any
+  other data. Set `UNVERIFIED_SIGNUP_CLEANUP=apply` to delete; see the
+  operations guide for the conditions and settings.
 
 - Platform operators can read one account's failures and anomalies with
   `GET /api/v1/operator/accounts/{id}/health` or

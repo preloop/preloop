@@ -44,15 +44,6 @@ describe('DeleteAccountView', () => {
         String(c.args[0]).includes('/api/v1/account/deletion-request')
       );
 
-  it('labels the signed-in account as an account', async () => {
-    (el as any)._orgName = 'Acme';
-    await el.updateComplete;
-    const field = [...el.shadowRoot!.querySelectorAll('sl-input')].find(
-      (i) => (i as HTMLInputElement).value === 'Acme'
-    );
-    expect(field?.getAttribute('label')).to.equal('Account');
-  });
-
   it('renders the deletion request form and data-retention info', () => {
     expect(el.shadowRoot?.querySelector('form')).to.exist;
     expect(el.shadowRoot?.querySelector('sl-button[variant="danger"]')).to
@@ -62,28 +53,88 @@ describe('DeleteAccountView', () => {
     );
   });
 
-  it('submits a deletion request and shows a success state', async () => {
+  it('signed out: sends only the address, shows check-your-email', async () => {
     fetchStub.callsFake(
-      async () => new Response(JSON.stringify({}), { status: 200 })
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: 'confirmation_sent',
+            message: 'If that address belongs to a verified account...',
+          }),
+          { status: 200 }
+        )
     );
     (el as any)._email = 'user@example.com';
-    (el as any)._username = 'user';
     await (el as any)._handleSubmit(new Event('submit'));
     await tick();
     await el.updateComplete;
-    expect((el as any)._success).to.be.true;
-    expect(el.shadowRoot?.textContent).to.contain('Request Received');
     expect(calledDeletion()).to.be.true;
+    const call = fetchStub
+      .getCalls()
+      .find((c) => String(c.args[0]).includes('/account/deletion-request'))!;
+    expect(JSON.parse(call.args[1].body)).to.deep.equal({
+      email: 'user@example.com',
+    });
+    expect(el.shadowRoot?.querySelector('sl-textarea')).to.not.exist;
+    expect(el.shadowRoot?.textContent).to.contain('Check your email');
+  });
+
+  it('signed out on a server without email: says to sign in', async () => {
+    fetchStub.callsFake(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: 'sign_in_required',
+            message: 'Sign in to request deletion of your account.',
+          }),
+          { status: 200 }
+        )
+    );
+    (el as any)._email = 'user@example.com';
+    await (el as any)._handleSubmit(new Event('submit'));
+    await tick();
+    await el.updateComplete;
+    expect(el.shadowRoot?.textContent).to.contain('Sign in required');
+    expect(el.shadowRoot?.querySelector('a[href="/login"]')).to.exist;
+  });
+
+  it('signed in: hides the address field and sends the session', async () => {
+    localStorage.setItem('accessToken', 'synthetic-access');
+    try {
+      const signedIn = (await fixture(
+        html`<delete-account-view></delete-account-view>`
+      )) as DeleteAccountView;
+      expect(signedIn.shadowRoot?.querySelector('sl-input[type="email"]')).to
+        .not.exist;
+      fetchStub.callsFake(
+        async () =>
+          new Response(
+            JSON.stringify({ status: 'received', message: 'Received.' }),
+            { status: 200 }
+          )
+      );
+      await (signedIn as any)._handleSubmit(new Event('submit'));
+      await tick();
+      await signedIn.updateComplete;
+      const call = fetchStub
+        .getCalls()
+        .find((c) => String(c.args[0]).includes('/account/deletion-request'))!;
+      const headers = new Headers(call.args[1].headers);
+      expect(headers.get('Authorization')).to.equal('Bearer synthetic-access');
+      expect(JSON.parse(call.args[1].body)).to.not.have.property('email');
+      expect(signedIn.shadowRoot?.textContent).to.contain('Request Received');
+    } finally {
+      localStorage.removeItem('accessToken');
+    }
   });
 
   it('shows an error when the request fails', async () => {
     fetchStub.callsFake(async () => new Response('nope', { status: 500 }));
     (el as any)._email = 'user@example.com';
-    (el as any)._username = 'user';
     await (el as any)._handleSubmit(new Event('submit'));
     await tick();
     await el.updateComplete;
-    expect((el as any)._success).to.be.false;
+    expect((el as any)._outcome).to.equal(null);
     expect((el as any)._error).to.contain('Failed to submit request');
     const alert = el.shadowRoot?.querySelector('sl-alert[variant="danger"]');
     expect(alert).to.exist;
