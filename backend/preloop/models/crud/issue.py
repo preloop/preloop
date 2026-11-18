@@ -9,10 +9,36 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Query, Session
 
 from ..models.issue import Issue
-from ..models.project import Project
+from ..models.project import FORMER_SLUGS_KEY, Project
 from ..models.tracker import Tracker
 from .base import CRUDBase
 from .issue_compliance_result import issue_compliance_result
+
+
+def _key_prefixes(slug: str, meta: Optional[Dict[str, Any]]) -> set[str]:
+    """Return every prefix the project's synced issue keys may carry.
+
+    Issue keys keep the repository or path name they were synced under, so a
+    renamed or transferred project's keys may use its current slug or any
+    former one (recorded by the Project model on every slug change, and by
+    the transfer endpoint's history for older moves).
+
+    Args:
+        slug: The project's current slug.
+        meta: The project's ``meta_data``.
+
+    Returns:
+        The current slug and every recorded former name.
+    """
+    prefixes = {slug}
+    meta = meta if isinstance(meta, dict) else {}
+    for former in meta.get(FORMER_SLUGS_KEY) or []:
+        if isinstance(former, str) and former:
+            prefixes.add(former)
+    for move in meta.get("repository_transfers") or []:
+        if isinstance(move, dict) and isinstance(move.get("from_full_name"), str):
+            prefixes.add(move["from_full_name"])
+    return prefixes
 
 
 class CRUDIssue(CRUDBase[Issue]):
@@ -274,46 +300,24 @@ class CRUDIssue(CRUDBase[Issue]):
 
         if not number.isdigit():
             raise ValueError("number must be all digits")
-        sample_key = (
-            select(Issue.key)
-            .where(Issue.project_id == Project.id)
-            .limit(1)
-            .correlate(Project)
-            .scalar_subquery()
-        )
         projects = (
-            db.query(
-                Project.id,
-                Project.slug,
-                Project.meta_data,
-                Tracker.tracker_type,
-                sample_key,
-            )
+            db.query(Project.id, Project.slug, Project.meta_data, Tracker.tracker_type)
             .join(Organization, Project.organization_id == Organization.id)
             .join(Tracker, Organization.tracker_id == Tracker.id)
         )
         if account_id:
             projects = projects.filter(Tracker.account_id == account_id)
         keys: List[str] = []
-        unmatched: List[Any] = []
-        for project_id, slug, meta, tracker_type, sample in projects.order_by(
-            Project.slug
-        ):
+        unslugged: List[Any] = []
+        for project_id, slug, meta, tracker_type in projects.order_by(Project.slug):
+            if not slug:
+                unslugged.append(project_id)
+                continue
             separator = "-" if tracker_type == "jira" else "#"
-            prefixes = {slug} if slug else set()
-            # A repository transfer or rename changes the slug but keeps the
-            # issue keys synced under the former name.
-            for move in (meta or {}).get("repository_transfers") or []:
-                if isinstance(move, dict) and move.get("from_full_name"):
-                    prefixes.add(move["from_full_name"])
-            keys.extend(f"{prefix}{separator}{number}" for prefix in sorted(prefixes))
-            if sample is not None and not any(
-                sample.startswith(f"{prefix}{separator}") for prefix in prefixes
-            ):
-                # The project's keys use a prefix its row does not record (a
-                # missing slug, or a rename upstream that sync has not yet
-                # rewritten into the keys).
-                unmatched.append(project_id)
+            keys.extend(
+                f"{prefix}{separator}{number}"
+                for prefix in sorted(_key_prefixes(slug, meta))
+            )
 
         found: Dict[Any, Issue] = {}
         for start in range(0, len(keys), self.ISSUE_NUMBER_BATCH):
@@ -324,12 +328,12 @@ class CRUDIssue(CRUDBase[Issue]):
                 db, keys=batch, account_id=account_id
             ).limit(limit - len(found)):
                 found[issue.id] = issue
-        if unmatched and len(found) < limit:
-            # Their key prefix is not derivable from the project row, so match
-            # by suffix, but only inside those projects: the project index
-            # bounds the scan.
+        if unslugged and len(found) < limit:
+            # Projects synced before slugs were stored have no derivable key
+            # prefix. Match their issues by suffix, but only inside those
+            # projects, so the project index bounds the scan.
             query = db.query(Issue).filter(
-                Issue.project_id.in_(unmatched),
+                Issue.project_id.in_(unslugged),
                 Issue.key.like(f"%#{number}") | Issue.key.like(f"%-{number}"),
             )
             if account_id:

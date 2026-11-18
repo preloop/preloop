@@ -4,9 +4,9 @@ import datetime
 import uuid
 
 # Use TYPE_CHECKING to avoid circular imports
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String  # Added DateTime
+from sqlalchemy import DateTime, ForeignKey, String, event, inspect
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -61,3 +61,53 @@ class Project(Base):
     issues: Mapped[List["Issue"]] = relationship(
         "Issue", back_populates="project", cascade="all, delete-orphan"
     )
+
+
+#: ``meta_data`` key listing every slug a project had before its current one.
+FORMER_SLUGS_KEY = "former_slugs"
+
+
+@event.listens_for(Project.slug, "set", active_history=True)
+def _load_previous_slug(target: Project, value: Any, old: Any, initiator: Any) -> Any:
+    """Load the previous slug before it is replaced (see below).
+
+    Without ``active_history`` an expired instance would not know its old
+    slug at flush time.
+
+    Args:
+        target: The project.
+        value: The new slug.
+        old: The previous slug.
+        initiator: The attribute event token.
+
+    Returns:
+        The new slug, unchanged.
+    """
+    return value
+
+
+@event.listens_for(Project, "before_update")
+def _record_former_slug(mapper: Any, connection: Any, target: Project) -> None:
+    """Remember the previous slug whenever a project's slug changes.
+
+    Issue keys synced under a former repository or path name keep that name
+    until the issue changes upstream, so lookups that compose keys from the
+    slug also need the former ones. Runs at flush time, after every attribute
+    assignment, so it covers renames by sync and by the transfer endpoint.
+
+    Args:
+        mapper: The Project mapper.
+        connection: The flush connection.
+        target: The project being updated.
+    """
+    history = inspect(target).attrs.slug.history
+    previous = [old for old in history.deleted if old and old != target.slug]
+    if not previous:
+        return
+    meta = dict(target.meta_data or {})
+    former = list(meta.get(FORMER_SLUGS_KEY) or [])
+    for old in previous:
+        if old not in former:
+            former.append(old)
+    meta[FORMER_SLUGS_KEY] = former
+    target.meta_data = meta  # reassign: JSON column mutations are untracked

@@ -301,24 +301,44 @@ def test_transferred_project_keeps_its_issue_keys(
     assert found.id == issue.id
 
 
-def test_renamed_project_without_history_still_matches(
+@pytest.mark.parametrize("via", ["crud_update", "assignment"])
+def test_renamed_project_with_mixed_keys_resolves_old_key(
     db_session,
     create_account,
     create_tracker,
     create_organization,
     create_project,
     create_issue,
+    via,
 ) -> None:
-    """An upstream rename that sync has not rewritten into the keys yet."""
+    """After a rename, a project holds keys under both names; the old-name
+    key still resolves, every time (sync renames go through the CRUD update,
+    the transfer endpoint assigns the slug directly)."""
+    from preloop.models.crud import crud_project
+
     account = create_account()
     tracker = create_tracker(account=account, tracker_type="gitlab")
     project = create_project(
         identifier="1",
-        slug="grp/renamed",
+        slug="old-owner/widget",
         organization=create_organization(tracker=tracker),
     )
-    issue = create_issue(tracker=tracker, project=project, key="grp/before#1")
-    create_issue(tracker=tracker, project=project, key="grp/before#11")
-    assert crud_issue.list_by_issue_number(
-        db_session, number="1", account_id=str(account.id)
-    ) == [issue]
+    old = create_issue(tracker=tracker, project=project, key="old-owner/widget#1")
+    new = create_issue(tracker=tracker, project=project, key="new-owner/widget#2")
+    if via == "crud_update":
+        crud_project.update(
+            db_session, db_obj=project, obj_in={"slug": "new-owner/widget"}
+        )
+    else:
+        project.slug = "new-owner/widget"
+        project.meta_data = {"note": "replaced in the same flush"}
+        db_session.flush()
+    db_session.refresh(project)
+    assert project.meta_data["former_slugs"] == ["old-owner/widget"]
+    for _ in range(3):
+        assert _find_issue_by_identifier(db_session, "1", str(account.id)).id == (
+            old.id
+        )
+        assert _find_issue_by_identifier(db_session, "2", str(account.id)).id == (
+            new.id
+        )
