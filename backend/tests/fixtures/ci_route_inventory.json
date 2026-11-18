@@ -339,6 +339,7 @@
   "POST /anthropic/v1/messages": "deny",
   "POST /anthropic/v1/messages/count_tokens": "deny",
   "POST /api/v1/account/deletion-request": "deny",
+  "POST /api/v1/account/deletion-request/confirm": "deny",
   "POST /api/v1/account/gateway-identity-providers": "deny",
   "POST /api/v1/account/gateway-identity-providers/{provider_id}/test": "deny",
   "POST /api/v1/account/kill-switch/activate": "deny",

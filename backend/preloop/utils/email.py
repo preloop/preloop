@@ -306,6 +306,53 @@ def send_password_reset_email(
     send_email(user_email, subject, text_body, html_body)
 
 
+def send_account_deletion_confirmation_email(
+    user_email: str, token: str, username: Optional[str] = None
+) -> None:
+    """Send the link that confirms a signed-out account deletion request.
+
+    Args:
+        user_email: The verified address the request named.
+        token: The one-time deletion confirmation token.
+        username: The user the link confirms the request for.
+    """
+    confirm_link = f"{PRELOOP_URL}/delete-account/confirm?token={token}"
+    for_text, for_html = _for_user_lines(username, "confirms the request")
+
+    subject = f"Confirm your {APP_NAME} account deletion request"
+    text_body = f"""
+    Someone asked to delete the {APP_NAME} account that uses this address.
+
+    If it was you, confirm the request with the link below:
+
+    {confirm_link}
+    {for_text}
+    Nothing is deleted until you confirm. If you did not ask for this, ignore
+    this email and your account stays as it is.
+
+    Thank you,
+    The {APP_NAME} Team
+    """
+
+    html_body = f"""
+    <html>
+    <body>
+        <h2>Confirm your account deletion request</h2>
+        <p>Someone asked to delete the {APP_NAME} account that uses this
+        address.</p>
+        <p>If it was you, confirm the request with the link below:</p>
+        <p><a href="{confirm_link}">Confirm deletion request</a></p>
+        {for_html}
+        <p>Nothing is deleted until you confirm. If you did not ask for this,
+        ignore this email and your account stays as it is.</p>
+        <p>Thank you,<br>The {APP_NAME} Team</p>
+    </body>
+    </html>
+    """
+
+    send_email(user_email, subject, text_body, html_body)
+
+
 def send_invitation_email(
     user_email: str,
     token: str,

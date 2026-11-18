@@ -86,6 +86,44 @@ Each applied batch writes one `run_keys_deactivated` audit row per account
 with the key ids and the counts per reason (`expired`, `execution_ended`,
 `session_ended`). The output prints counts only.
 
+## Unverified sign-up cleanup
+
+Registration creates an account before its address is verified. The same
+hourly `deactivate_ended_run_keys` task then looks for self-registered
+accounts that were never used and, when enabled, deletes them. An account
+qualifies only when all of these hold:
+
+- it was created more than `UNVERIFIED_SIGNUP_MAX_AGE_DAYS` days ago
+  (default `7`, minimum `1`);
+- its single member's address was never verified and that member never
+  signed in (failed sign-ins do not count as use);
+- it has no billing customer, no parent or child accounts, and is not listed
+  in `OPERATOR_ACCOUNT_IDS`;
+- nothing else in the database points at the account, its member or the
+  member's identity: no API key, agent, tracker, flow, session, passkey,
+  single sign-on link or any other row besides the defaults registration
+  writes. Foreign keys are read from the live database, so tables added by
+  plugins count as well.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `UNVERIFIED_SIGNUP_CLEANUP` | `dry-run` | `dry-run` logs the counts and changes nothing; `apply` deletes; `off` skips the pass |
+| `UNVERIFIED_SIGNUP_MAX_AGE_DAYS` | `7` | minimum account age in days |
+
+`apply` needs an account to hold its audit trail: each batch writes one
+`unverified_signups_deleted` audit row, with the deleted account ids, in the
+first account in `OPERATOR_ACCOUNT_IDS`. Without one the pass runs as a dry
+run and logs why. A pass reads at most two batches of 100 accounts. To run it
+by hand:
+
+```bash
+python -m preloop.services.unverified_signup_cleanup                 # dry run
+python -m preloop.services.unverified_signup_cleanup --apply
+python -m preloop.services.unverified_signup_cleanup --max-age-days 14 --batch-size 100 --max-batches 5
+```
+
+Self-hosted installs keep the default dry run, which deletes nothing.
+
 ## Flow delete refusals
 
 A refused `DELETE /api/v1/flows/{id}` sends an `X-Preloop-Delete-Blocker`

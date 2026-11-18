@@ -391,3 +391,106 @@ def verify_report_opt_out_token(token: str) -> ReportOptOutClaims:
         )
     except (KeyError, ValueError, TypeError):
         raise TokenError("This opt-out link is not valid.")
+
+
+#: Type marker for the link that confirms a signed-out account deletion request.
+ACCOUNT_DELETION_TOKEN_TYPE = "account_deletion"
+
+#: How long a deletion confirmation link stays usable.
+ACCOUNT_DELETION_TOKEN_EXPIRE_MINUTES = int(
+    os.getenv("ACCOUNT_DELETION_TOKEN_EXPIRE_MINUTES", "60")
+)
+
+
+@dataclass(frozen=True)
+class AccountDeletionClaims:
+    """What a deletion confirmation link names.
+
+    Attributes:
+        person_id: The identity whose verified address received the link.
+        email: The address the link was sent to.
+        auth_generation: The identity's credential generation at issuance; a
+            password change or sign-out-everywhere invalidates the link.
+        jti: Random id; the server records it when the link is used so a link
+            confirms one request only.
+        issued_at: Issuance time in epoch seconds.
+        reason: The optional reason the requester typed, carried so the
+            server keeps nothing for requests nobody confirms.
+    """
+
+    person_id: UUID
+    email: str
+    auth_generation: int
+    jti: str
+    issued_at: int
+    reason: str | None = None
+
+
+def create_account_deletion_token(
+    email: str,
+    *,
+    person_id: UUID | str,
+    auth_generation: int,
+    reason: str | None = None,
+) -> str:
+    """Mint the one-time link that confirms a signed-out deletion request.
+
+    Args:
+        email: The verified address the link is mailed to.
+        person_id: The identity that owns that address.
+        auth_generation: The identity's current credential generation.
+        reason: Optional reason for leaving, already length-checked.
+
+    Returns:
+        A signed JWT for the confirmation URL.
+    """
+    now = datetime.now(UTC)
+    to_encode: dict = {
+        "sub": email,
+        "pid": str(person_id),
+        "gen": auth_generation,
+        "iat": int(now.timestamp()),
+        "exp": now + timedelta(minutes=ACCOUNT_DELETION_TOKEN_EXPIRE_MINUTES),
+        "type": ACCOUNT_DELETION_TOKEN_TYPE,
+        "jti": secrets.token_urlsafe(24),
+    }
+    if reason:
+        to_encode["rsn"] = reason
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def verify_account_deletion_token(token: str) -> AccountDeletionClaims:
+    """Verify a deletion confirmation link.
+
+    Args:
+        token: The JWT from the link.
+
+    Returns:
+        The identity, address and one-time id the link names.
+
+    Raises:
+        TokenError: If the token is invalid, expired, of another type, or
+            missing a binding.
+    """
+    payload = _decode_typed_token(token, ACCOUNT_DELETION_TOKEN_TYPE)
+    try:
+        generation = payload.get("gen")
+        if type(generation) is not int or generation < 0:
+            raise ValueError("Invalid generation")
+        issued_at = payload.get("iat")
+        if type(issued_at) is not int:
+            raise ValueError("Invalid issue time")
+        jti = payload.get("jti")
+        if not isinstance(jti, str) or not jti:
+            raise ValueError("Missing jti")
+        reason = payload.get("rsn")
+        return AccountDeletionClaims(
+            person_id=UUID(str(payload["pid"])),
+            email=str(payload["sub"]),
+            auth_generation=generation,
+            jti=jti,
+            issued_at=issued_at,
+            reason=reason if isinstance(reason, str) else None,
+        )
+    except (KeyError, ValueError, TypeError):
+        raise TokenError("This link is invalid or has expired.")
