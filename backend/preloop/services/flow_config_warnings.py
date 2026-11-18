@@ -125,5 +125,5 @@ def flow_config_warnings(
             )
         return warnings
     except Exception:  # noqa: BLE001 - advice must never fail a save
-        logger.warning("Flow config warnings failed", exc_info=True)
+        logger.warning("Flow config warnings failed")
         return []
