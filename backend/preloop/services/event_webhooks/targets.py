@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 from preloop.config import settings
 
 
-def _blocked_reason_for_address(raw: str) -> Optional[str]:
+def blocked_reason_for_address(raw: str) -> Optional[str]:
     """Return why one resolved address is off limits, or None."""
     try:
         address = ipaddress.ip_address(raw)
@@ -40,6 +40,10 @@ def _blocked_reason_for_address(raw: str) -> Optional[str]:
     return None
 
 
+# Former private name, kept for existing importers.
+_blocked_reason_for_address = blocked_reason_for_address
+
+
 def checked_target_addresses(host: str) -> list[str]:
     """Resolve once and reject the entire answer if any address is disallowed."""
     if not host:
@@ -60,7 +64,7 @@ def checked_target_addresses(host: str) -> list[str]:
     if not addresses:
         raise ValueError("unresolvable")
     for address in addresses:
-        reason = _blocked_reason_for_address(address)
+        reason = blocked_reason_for_address(address)
         if reason:
             raise ValueError(reason)
     return addresses

@@ -32,6 +32,7 @@ Content-Type: application/json
 | `auth.email_send` | `POST /api/v1/auth/resend-verification`, `POST /api/v1/auth/forgot-password` (one budget for both) | client address¹, and separately the target address | 3 / 900 s (`EMAIL_VERIFICATION_RESEND_LIMIT`, `EMAIL_VERIFICATION_RESEND_WINDOW`) |
 | `telemetry.otlp_ingest` | `POST /api/v1/telemetry/otlp/v1/{metrics,logs,traces}` | API key | 600 / 60 s (`PRELOOP_OTLP_INGEST_RATE_LIMIT`) |
 | `notifications.test_push` | `POST /api/v1/notification-preferences/me/test-push` | user | 5 / 60 s |
+| `trackers.connection_test` | `POST /api/v1/trackers/test-and-list-orgs`, `POST /api/v1/trackers/list-projects-for-org`, `POST /api/v1/trackers` | user | 20 / 60 s |
 | `account.deletion_request` | `POST /api/v1/account/deletion-request` | client address, and separately the signed-in account or the address a signed-out request names | 3 / 3600 s |
 | `account.deletion_confirm` | `POST /api/v1/account/deletion-request/confirm` | client address | 10 / 3600 s |
 

@@ -105,6 +105,8 @@ from ..exceptions import (
     TrackerRateLimitError,
     TrackerResponseError,
 )
+from preloop.services.tracker_probe import probe_httpx_timeout
+
 from .base import BaseTracker
 from .utils import parse_retry_after
 
@@ -466,7 +468,7 @@ class BitbucketDCTracker(BaseTracker):
         headers.update(extra_headers)
         try:
             async with httpx.AsyncClient(
-                timeout=HTTP_TIMEOUT_SECONDS,
+                timeout=probe_httpx_timeout(HTTP_TIMEOUT_SECONDS),
                 follow_redirects=False,
                 trust_env=False,
                 verify=self._ssl() if self._transport is None else True,

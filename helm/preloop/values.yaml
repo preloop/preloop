@@ -479,6 +479,19 @@ sso:
   # discovery, token and JWKS requests it makes at sign-in time.
   allowPrivateIssuers: false
 
+# Tracker connection tests: the console's test connection, organization and
+# project listing, and tracker registration build a client for a URL the user
+# types. Each test runs in a bounded slot (3 s connect, 5 s read, 8 s overall,
+# 4 at a time per API pod).
+trackers:
+  # Refuse tracker URLs that are cluster-internal names or resolve to
+  # loopback, private, unique-local or reserved addresses
+  # (TRACKER_BLOCK_PRIVATE_TARGETS). Link-local and cloud metadata addresses
+  # are refused either way. Keep false on a self-hosted install whose GitLab or
+  # Jira is on a private network; set true on any multi-tenant instance.
+  # Trackers that are already saved are not affected.
+  blockPrivateTargets: false
+
 environment:
   preloopUrl: "https://preloop.ai"
   debug: false

@@ -79,6 +79,8 @@ from ..exceptions import (
     TrackerRateLimitError,
     TrackerResponseError,
 )
+from preloop.services.tracker_probe import probe_httpx_timeout
+
 from .base import BaseTracker
 from .utils import HTTP_STATUS_NOT_MODIFIED, ConditionalResponse, parse_retry_after
 
@@ -259,7 +261,7 @@ class BitbucketTracker(BaseTracker):
         if extra_headers:
             headers = {**headers, **extra_headers}
         async with httpx.AsyncClient(
-            timeout=HTTP_TIMEOUT_SECONDS,
+            timeout=probe_httpx_timeout(HTTP_TIMEOUT_SECONDS),
             # Managed redirects are validated explicitly before sending a
             # credential to each destination; never let httpx follow them.
             follow_redirects=not self.managed,

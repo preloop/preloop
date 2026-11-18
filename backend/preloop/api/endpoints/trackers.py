@@ -68,6 +68,16 @@ from preloop.services.tracker_tool_unlock import (
     enabled_map_from_configs,
     unlocked_tool_names_after_tracker,
 )
+from preloop.services.rate_limit import enforce_async
+from preloop.services.tracker_probe import (
+    PROBE_BUSY_RETRY_AFTER_S,
+    PROBE_DEADLINE_S,
+    TRACKER_CONNECTION_TEST,
+    TrackerProbeBusyError,
+    TrackerProbeError,
+    TrackerTargetRefusedError,
+    run_tracker_probe,
+)
 from preloop.utils.audit import log_config_change
 from preloop.utils.bitbucket import BitbucketConfigError, validate_bitbucket_config
 from preloop.utils.bitbucket_dc import (
@@ -112,6 +122,94 @@ MANAGED_JIRA_SITE_DETAIL = (
     "different site from the tracker page (Connect Jira), not by editing it."
 )
 _JIRA_TOKEN_PRESERVED_KEYS = ("cloud_id", "webhook_status", "manual_webhook")
+
+PROBE_TIMEOUT_DETAIL = (
+    f"The tracker did not respond within {int(PROBE_DEADLINE_S)} seconds. "
+    "Check the URL and try again."
+)
+PROBE_BUSY_DETAIL = (
+    "Too many tracker connection tests are running. Try again in a few seconds."
+)
+PROBE_RATE_LIMITED_DETAIL = (
+    "Too many tracker connection tests. Wait a minute and try again."
+)
+
+
+def _probe_http_error(error: TrackerProbeError) -> HTTPException:
+    """Map a connection-test refusal to a plain HTTP error.
+
+    Args:
+        error: Raised by :func:`run_tracker_probe`.
+
+    Returns:
+        503 with ``Retry-After`` when every slot is busy, 400 for a refused
+        URL or a tracker that did not answer in time.
+    """
+    if isinstance(error, TrackerProbeBusyError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PROBE_BUSY_DETAIL,
+            headers={"Retry-After": str(PROBE_BUSY_RETRY_AFTER_S)},
+        )
+    if isinstance(error, TrackerTargetRefusedError):
+        reason = error.strerror or "address not allowed"
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"This tracker URL is not allowed: {reason}.",
+        )
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST, detail=PROBE_TIMEOUT_DETAIL
+    )
+
+
+def _effective_url(details: Dict[str, Any]) -> Optional[str]:
+    """The URL the client will use after ``connection_details`` are merged.
+
+    Args:
+        details: The merged connection details passed to the client.
+
+    Returns:
+        The effective ``url`` as a string, or None when absent.
+    """
+    value = details.get("url")
+    return str(value) if value else None
+
+
+def _probe_isolated(saved_tracker: Any, credential_source: Any) -> bool:
+    """Whether a connection test may run on a private probe loop.
+
+    Decided from server-side state only, never from request fields: managed
+    grants and saved GitHub App / OAuth trackers resolve credentials through
+    services bound to the API loop, so they stay on it. Everything else is
+    isolated under the address guard.
+
+    Args:
+        saved_tracker: The caller's saved tracker row, or None.
+        credential_source: The managed credential source, if any.
+
+    Returns:
+        False only for managed grants and saved OAuth trackers.
+    """
+    if credential_source is not None:
+        return False
+    stored_auth = getattr(saved_tracker, "auth_type", None)
+    return stored_auth not in OAUTH_AUTH_TYPES
+
+
+async def _limit_connection_tests(current_user: AuthUserResponse) -> None:
+    """Charge one tracker connection test to the caller's per-user budget.
+
+    Raises:
+        RateLimitExceeded: 429 with ``Retry-After`` when over budget.
+    """
+    identity = getattr(current_user, "id", None) or getattr(
+        current_user, "username", None
+    )
+    await enforce_async(
+        TRACKER_CONNECTION_TEST,
+        str(identity) if identity else None,
+        detail=PROBE_RATE_LIMITED_DETAIL,
+    )
 
 
 def _jira_cloud_id_from_client(client: Any) -> Optional[str]:
@@ -651,60 +749,64 @@ async def register_tracker(
         None  # Set for OAuth auth types
     )
 
-    try:
-        if auth_type in ("github_app", "oauth_app"):
-            # OAuth auth types are only supported for GitHub trackers
-            if tracker_type != TrackerType.GITHUB:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"OAuth authentication is only supported for GitHub trackers, not {tracker_type.value}",
+    await _limit_connection_tests(current_user)
+    if auth_type in ("github_app", "oauth_app"):
+        # OAuth auth types are only supported for GitHub trackers
+        if tracker_type != TrackerType.GITHUB:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"OAuth authentication is only supported for GitHub trackers, not {tracker_type.value}",
+            )
+
+        # Look up the OAuth App installation to get the actual installation ID
+        # Rollback expires ORM attributes; retain the scope for error logging.
+        installation_account_id = current_user.account_id
+
+        def lookup_installation() -> Optional[models.OAuthAppInstallation]:
+            try:
+                return crud_oauth_app_installation.get_by_provider_and_external_id(
+                    db,
+                    provider="github",
+                    external_id=github_installation_id,
+                    account_id=installation_account_id,
                 )
-
-            # Look up the OAuth App installation to get the actual installation ID
-            # Rollback expires ORM attributes; retain the scope for error logging.
-            installation_account_id = current_user.account_id
-
-            def lookup_installation() -> Optional[models.OAuthAppInstallation]:
+            except SQLAlchemyError:
+                # The session is unusable after a driver error. Reset it and
+                # answer without echoing driver text back to the console.
                 try:
-                    return crud_oauth_app_installation.get_by_provider_and_external_id(
-                        db,
-                        provider="github",
-                        external_id=github_installation_id,
-                        account_id=installation_account_id,
-                    )
+                    db.rollback()
                 except SQLAlchemyError:
-                    # The session is unusable after a driver error. Reset it and
-                    # answer without echoing driver text back to the console.
-                    try:
-                        db.rollback()
-                    except SQLAlchemyError:
-                        logger.error("Failed to roll back installation lookup")
-                    logger.error(
-                        "Failed to look up the GitHub App installation for account %s",
-                        installation_account_id,
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail=(
-                            "Could not verify the GitHub App installation. "
-                            "Please try again."
-                        ),
-                    )
-
-            installation = await run_db_off_loop(lookup_installation)
-
-            if not installation:
+                    logger.error("Failed to roll back installation lookup")
+                logger.error(
+                    "Failed to look up the GitHub App installation for account %s",
+                    installation_account_id,
+                )
                 raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="OAuth App installation not found",
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                        "Could not verify the GitHub App installation. "
+                        "Please try again."
+                    ),
                 )
 
-            resolved_github_installation_id = installation.external_id
+        installation = await run_db_off_loop(lookup_installation)
 
+        if not installation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="OAuth App installation not found",
+            )
+
+        resolved_github_installation_id = installation.external_id
+
+    async def probe_connection() -> Any:
+        """Build the client and test it; runs inside the probe bounds."""
+        nonlocal config, permission_warnings
+        if auth_type in ("github_app", "oauth_app"):
             # For github_app auth, create client with installation token support
             from preloop.sync.trackers.github import GitHubTracker
 
-            client = GitHubTracker(
+            client: Any = GitHubTracker(
                 tracker_id="test-connection",
                 api_key="",  # Not needed for github_app auth
                 connection_details={
@@ -801,7 +903,19 @@ async def register_tracker(
                 logger.warning(
                     f"GitHub token permission warnings for tracker '{name}': {permission_warnings}"
                 )
+        return client
 
+    try:
+        client = await run_tracker_probe(
+            probe_connection,
+            url=_effective_url(
+                {"url": str(url_str) if url_str else None, **(config or {})}
+            ),
+            # The GitHub App token service is bound to the API loop.
+            isolate=auth_type not in OAUTH_AUTH_TYPES,
+        )
+    except TrackerProbeError as e:
+        raise _probe_http_error(e)
     except HTTPException:
         raise
     except Exception as e:
@@ -1480,6 +1594,7 @@ async def test_connection_and_list_orgs(
     logger.info(
         f"User {current_user.username} testing tracker connection for type {test_data.tracker_type.value}"
     )
+    await _limit_connection_tests(current_user)
     account = crud_account.get(db, id=current_user.account_id)
     if not account:
         raise HTTPException(
@@ -1508,20 +1623,27 @@ async def test_connection_and_list_orgs(
         )
     except HTTPException as e:
         return TrackerTestResponse(success=False, message=str(e.detail), orgs=[])
-    try:
+    test_url = str(test_data.url) if test_data.url else None
+    test_details = {
+        "url": test_url,
+        **(test_data.connection_details or {}),
+        **auth_details,
+    }
+    test_credential_source = (
+        tracker_credential_source(tracker) if test_data.tracker_id else None
+    )
+    username = current_user.username
+    user_id = current_user.id
+
+    async def probe_connection() -> TrackerTestResponse:
+        """Build the client and list organizations inside the probe bounds."""
         client = await create_tracker_client(
             tracker_type=test_data.tracker_type.value,
             tracker_id="test-connection",
             raise_on_error=True,
             api_key=test_data.api_key,
-            connection_details={
-                "url": str(test_data.url) if test_data.url else None,
-                **(test_data.connection_details or {}),
-                **auth_details,
-            },
-            credential_source=(
-                tracker_credential_source(tracker) if test_data.tracker_id else None
-            ),
+            connection_details=test_details,
+            credential_source=test_credential_source,
         )
         if not client:
             raise ValueError(
@@ -1530,14 +1652,12 @@ async def test_connection_and_list_orgs(
 
         connection_result = await client.test_connection()
         if not connection_result.connected:
-            logger.warning(
-                "Tracker connection test failed: user_id=%s", current_user.id
-            )
+            logger.warning("Tracker connection test failed: user_id=%s", user_id)
             return TrackerTestResponse(
                 success=False, message=connection_result.message, orgs=[]
             )
 
-        logger.info(f"Connection test successful for user {current_user.username}")
+        logger.info(f"Connection test successful for user {username}")
 
         orgs = await client.get_organizations()
         if len(orgs) == 1:
@@ -1563,6 +1683,22 @@ async def test_connection_and_list_orgs(
             orgs=orgs,
         )
 
+    try:
+        return await run_tracker_probe(
+            probe_connection,
+            url=_effective_url(test_details),
+            isolate=_probe_isolated(
+                tracker if test_data.tracker_id else None, test_credential_source
+            ),
+        )
+    except TrackerProbeError as e:
+        logger.warning(
+            "Tracker connection test refused: user_id=%s tracker_type=%s reason=%s",
+            user_id,
+            test_data.tracker_type.value,
+            type(e).__name__,
+        )
+        raise _probe_http_error(e)
     except (
         TrackerAuthenticationError,
         TrackerConnectionError,
@@ -1619,6 +1755,7 @@ async def list_projects_for_org(
         f"User {current_user.username} listing projects for org {project_data.organization_identifier} "
         f"in tracker type {project_data.tracker_type.value}"
     )
+    await _limit_connection_tests(current_user)
     auth_details: Dict[str, Any] = {}
     if project_data.tracker_id:
         # Use CRUD layer to get tracker
@@ -1638,6 +1775,7 @@ async def list_projects_for_org(
             tracker if project_data.tracker_id else None,
         )
     )
+    saved_tracker = tracker if project_data.tracker_id else None
     credential_source = (
         tracker_credential_source(tracker) if project_data.tracker_id else None
     )
@@ -1648,23 +1786,38 @@ async def list_projects_for_org(
     db.close()
     if project_data.url and not project_data.url.endswith("/"):
         project_data.url = project_data.url + "/"
-    # create_tracker_client swallows configuration errors and returns None,
-    # which is the 400 below.
-    client = await create_tracker_client(
-        tracker_type=project_data.tracker_type.value,
-        tracker_id="list-projects",
-        api_key=project_data.api_key,
-        connection_details={
-            "url": str(project_data.url) if project_data.url else None,
-            **(project_data.connection_details or {}),
-            **auth_details,
-        },
-        credential_source=credential_source,
-    )
-    if not client:
-        raise HTTPException(status_code=400, detail="Could not create tracker client")
-    try:
+    list_url = str(project_data.url) if project_data.url else None
+    list_details = {
+        "url": list_url,
+        **(project_data.connection_details or {}),
+        **auth_details,
+    }
+
+    async def probe_projects() -> List[ProjectIdentifier]:
+        """Build the client and list projects inside the probe bounds."""
+        # create_tracker_client swallows configuration errors and returns
+        # None, which is the 400 below.
+        client = await create_tracker_client(
+            tracker_type=project_data.tracker_type.value,
+            tracker_id="list-projects",
+            api_key=project_data.api_key,
+            connection_details=list_details,
+            credential_source=credential_source,
+        )
+        if not client:
+            raise HTTPException(
+                status_code=400, detail="Could not create tracker client"
+            )
         return await client.get_projects(project_data.organization_identifier)
+
+    try:
+        return await run_tracker_probe(
+            probe_projects,
+            url=_effective_url(list_details),
+            isolate=_probe_isolated(saved_tracker, credential_source),
+        )
+    except TrackerProbeError as e:
+        raise _probe_http_error(e)
     except HTTPException:
         raise
     except Exception as e:
