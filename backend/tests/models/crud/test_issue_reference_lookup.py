@@ -10,6 +10,9 @@ from preloop.api.endpoints.mcp import (
     _find_issue_by_identifier,
 )
 from preloop.models.crud import crud_issue
+from preloop.models.models.project import KEY_PREFIXES_RECORDED_KEY
+
+RECORDED = {KEY_PREFIXES_RECORDED_KEY: True}
 
 HOST = "https://gitlab.example.com"
 
@@ -24,9 +27,15 @@ def synced(
     github = create_tracker(account=account, tracker_type="github")
     gl_org = create_organization(tracker=gitlab)
     gh_org = create_organization(tracker=github)
-    proj = create_project(identifier="1", slug="grp/sub/proj", organization=gl_org)
-    other = create_project(identifier="2", slug="grp/other", organization=gl_org)
-    repo = create_project(identifier="3", slug="org/repo", organization=gh_org)
+    proj = create_project(
+        identifier="1", slug="grp/sub/proj", organization=gl_org, meta_data=RECORDED
+    )
+    other = create_project(
+        identifier="2", slug="grp/other", organization=gl_org, meta_data=RECORDED
+    )
+    repo = create_project(
+        identifier="3", slug="org/repo", organization=gh_org, meta_data=RECORDED
+    )
     rows = {
         "gl12": create_issue(
             tracker=gitlab,
@@ -322,6 +331,7 @@ def test_renamed_project_with_mixed_keys_resolves_old_key(
         identifier="1",
         slug="old-owner/widget",
         organization=create_organization(tracker=tracker),
+        meta_data=RECORDED,  # exact keys only: the listener must record it
     )
     old = create_issue(tracker=tracker, project=project, key="old-owner/widget#1")
     new = create_issue(tracker=tracker, project=project, key="new-owner/widget#2")
@@ -331,7 +341,7 @@ def test_renamed_project_with_mixed_keys_resolves_old_key(
         )
     else:
         project.slug = "new-owner/widget"
-        project.meta_data = {"note": "replaced in the same flush"}
+        project.meta_data = {**RECORDED, "note": "replaced in the same flush"}
         db_session.flush()
     db_session.refresh(project)
     assert project.meta_data["former_slugs"] == ["old-owner/widget"]
@@ -342,3 +352,35 @@ def test_renamed_project_with_mixed_keys_resolves_old_key(
         assert _find_issue_by_identifier(db_session, "2", str(account.id)).id == (
             new.id
         )
+
+
+def test_project_renamed_before_tracking_still_matches(
+    db_session,
+    create_account,
+    create_tracker,
+    create_organization,
+    create_project,
+    create_issue,
+) -> None:
+    """Slug already differs from the key prefix and nothing is recorded."""
+    account = create_account()
+    tracker = create_tracker(account=account, tracker_type="gitlab")
+    project = create_project(
+        identifier="1",
+        slug="grp/renamed",
+        organization=create_organization(tracker=tracker),
+    )
+    issue = create_issue(tracker=tracker, project=project, key="grp/before#1")
+    create_issue(tracker=tracker, project=project, key="grp/before#11")
+    assert crud_issue.list_by_issue_number(
+        db_session, number="1", account_id=str(account.id)
+    ) == [issue]
+
+    # Once sync records the prefixes, the exact path alone finds it.
+    crud_issue.record_key_prefixes(db_session, project=project)
+    db_session.refresh(project)
+    assert project.meta_data["former_slugs"] == ["grp/before"]
+    assert project.meta_data[KEY_PREFIXES_RECORDED_KEY] is True
+    assert crud_issue.list_by_issue_number(
+        db_session, number="1", account_id=str(account.id)
+    ) == [issue]

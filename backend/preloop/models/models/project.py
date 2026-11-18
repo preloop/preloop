@@ -66,6 +66,10 @@ class Project(Base):
 #: ``meta_data`` key listing every slug a project had before its current one.
 FORMER_SLUGS_KEY = "former_slugs"
 
+#: ``meta_data`` flag set once the prefixes of a project's existing issue keys
+#: have been recorded in ``FORMER_SLUGS_KEY``.
+KEY_PREFIXES_RECORDED_KEY = "issue_key_prefixes_recorded"
+
 
 @event.listens_for(Project.slug, "set", active_history=True)
 def _load_previous_slug(target: Project, value: Any, old: Any, initiator: Any) -> Any:

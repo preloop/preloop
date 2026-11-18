@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Query, Session
 
 from ..models.issue import Issue
-from ..models.project import FORMER_SLUGS_KEY, Project
+from ..models.project import FORMER_SLUGS_KEY, KEY_PREFIXES_RECORDED_KEY, Project
 from ..models.tracker import Tracker
 from .base import CRUDBase
 from .issue_compliance_result import issue_compliance_result
@@ -266,6 +266,36 @@ class CRUDIssue(CRUDBase[Issue]):
             query = query.join(Tracker).filter(Tracker.account_id == account_id)
         return query
 
+    def record_key_prefixes(self, db: Session, *, project: Project) -> None:
+        """Record every prefix the project's stored issue keys use.
+
+        Keys keep the name they were synced under, and renames made before
+        former slugs were tracked left no record. Reading the distinct
+        prefixes once lets ``list_by_issue_number`` compose exact keys for
+        this project from then on. Later renames are recorded by the Project
+        model. Flushes only; the caller commits.
+
+        Args:
+            db: Database session.
+            project: The project whose issue keys to read.
+        """
+        prefix = func.regexp_replace(Issue.key, "[#-][0-9]+$", "")
+        found = {
+            row[0]
+            for row in db.query(prefix)
+            .filter(Issue.project_id == project.id, Issue.key.isnot(None))
+            .distinct()
+            if row[0]
+        }
+        meta = dict(project.meta_data or {})
+        former = list(meta.get(FORMER_SLUGS_KEY) or [])
+        former.extend(sorted(p for p in found if p != project.slug and p not in former))
+        meta[FORMER_SLUGS_KEY] = former
+        meta[KEY_PREFIXES_RECORDED_KEY] = True
+        project.meta_data = meta  # reassign: JSON column mutations are untracked
+        db.add(project)
+        db.flush()
+
     def list_by_issue_number(
         self,
         db: Session,
@@ -310,8 +340,12 @@ class CRUDIssue(CRUDBase[Issue]):
         keys: List[str] = []
         unslugged: List[Any] = []
         for project_id, slug, meta, tracker_type in projects.order_by(Project.slug):
-            if not slug:
+            if not slug or not (meta or {}).get(KEY_PREFIXES_RECORDED_KEY):
+                # No slug, or the project's existing key prefixes were never
+                # recorded (it may have been renamed before renames were
+                # tracked): suffix-match inside this project as well.
                 unslugged.append(project_id)
+            if not slug:
                 continue
             separator = "-" if tracker_type == "jira" else "#"
             keys.extend(
@@ -329,9 +363,10 @@ class CRUDIssue(CRUDBase[Issue]):
             ).limit(limit - len(found)):
                 found[issue.id] = issue
         if unslugged and len(found) < limit:
-            # Projects synced before slugs were stored have no derivable key
-            # prefix. Match their issues by suffix, but only inside those
-            # projects, so the project index bounds the scan.
+            # Their key prefixes are not all derivable from the project row.
+            # Match their issues by suffix, but only inside those projects, so
+            # the project index bounds the scan. Sync records the prefixes
+            # (record_key_prefixes), after which a project leaves this path.
             query = db.query(Issue).filter(
                 Issue.project_id.in_(unslugged),
                 Issue.key.like(f"%#{number}") | Issue.key.like(f"%-{number}"),

@@ -1030,3 +1030,39 @@ async def test_webhook_registration_failures_count_in_scan_errors(
         client.client.register_webhook.assert_called_once()
     else:
         client.client.register_webhook.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("meta", "records"),
+    [({}, True), (None, True), ({"issue_key_prefixes_recorded": True}, False)],
+)
+@patch("preloop.sync.scanner.core.crud_issue")
+@patch("preloop.sync.scanner.core.crud_comment")
+@patch("preloop.sync.scanner.core.crud_issue_embedding")
+async def test_scan_issues_records_key_prefixes_once(
+    mock_crud_embedding,
+    mock_crud_comment,
+    mock_crud_issue,
+    meta,
+    records,
+    mock_db_session,
+    mock_tracker,
+    mock_organization,
+    mock_project,
+):
+    """A scan records the project's issue key prefixes until it has done so."""
+    with patch("preloop.sync.trackers.github.GitHubTracker"):
+        mock_internal_client = AsyncMock()
+        mock_internal_client.get_issues.return_value = []
+        client = TrackerClient(mock_tracker)
+        client.client = mock_internal_client
+        mock_project.meta_data = meta
+
+        await client.scan_issues(mock_db_session, mock_organization, mock_project)
+
+    assert mock_crud_issue.record_key_prefixes.called is records
+    if records:
+        mock_crud_issue.record_key_prefixes.assert_called_once_with(
+            mock_db_session, project=mock_project
+        )
