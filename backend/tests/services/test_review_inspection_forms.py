@@ -117,7 +117,11 @@ FORMS: list[tuple[str, bool]] = [
     ("timeout 5 git diff {B}...{H}", False),
     ("git --shallow-file x config diff.external true; git diff {B}...{H}", False),
     ("git --exec-path x config diff.external true; git diff {B}...{H}", False),
-    ("git config --get user.name; git diff {B}...{H}", True),
+    ("git config --replace-all diff.external true -l; git diff {B}...{H}", False),
+    (
+        "git config --replace-all diff.external true --get-color; git diff {B}...{H}",
+        False,
+    ),
     ("true || cd sub && cat keep.txt", False),
     ("true || cd sub && git diff {B}...{H} -- README.md", False),
     # Text that only mentions a diff.

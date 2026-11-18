@@ -335,14 +335,16 @@ def command_reads_change(
 def _writes_git_config(words: list[str]) -> bool:
     """Whether a ``git`` call may be a ``git config`` write.
 
-    Any ``config`` word counts, wherever Git's global options put the
-    subcommand: listing every global option that takes a value is brittle,
-    and rejecting a read-only call here only costs a false negative.
+    Any ``config`` word before ``--`` counts, wherever Git's global options put
+    the subcommand and whatever flags follow: Git accepts read flags after a
+    write action, so telling reads from writes by their flags is brittle.
+    Reading configuration is not needed to read a diff; rejecting it only
+    costs a continuation.
     """
-    if PurePosixPath(words[0]).name != "git" or "config" not in words[1:]:
+    if PurePosixPath(words[0]).name != "git":
         return False
-    rest = words[words.index("config") + 1 :]
-    return not any(arg in {"-l", "--list"} or arg.startswith("--get") for arg in rest)
+    options = words[1 : words.index("--")] if "--" in words else words[1:]
+    return "config" in options
 
 
 def _substitute(token: str, base: str, head: str) -> str:
