@@ -71,6 +71,30 @@ export function takePendingMfaChallenge(): string {
   return challenge;
 }
 
+const SIGN_IN_NOTICE = 'preloop.signInNotice';
+const SIGN_IN_NOTICES: Record<string, string> = {
+  mfa_restarted: 'Sign-in was restarted. Enter your password again.',
+  password_changed: 'Your password was changed. Sign in again.',
+};
+
+/**
+ * Leave the sign-in page one notice for its next load. Only a fixed name is
+ * stored (never a challenge, code or token); session storage dies with the tab.
+ */
+export function setSignInNotice(
+  name: keyof typeof SIGN_IN_NOTICES | null
+): void {
+  if (name) sessionStorage.setItem(SIGN_IN_NOTICE, name);
+  else sessionStorage.removeItem(SIGN_IN_NOTICE);
+}
+
+/** Read and clear the pending sign-in notice. */
+export function takeSignInNotice(): string {
+  const name = sessionStorage.getItem(SIGN_IN_NOTICE);
+  sessionStorage.removeItem(SIGN_IN_NOTICE);
+  return (name && SIGN_IN_NOTICES[name]) || '';
+}
+
 /** Replace the current session after enrollment or a fresh proof. */
 export function storeMfaTokens(data: MfaTokens): void {
   localStorage.setItem('accessToken', data.access_token);
@@ -104,10 +128,19 @@ export function mfaMessage(error: unknown): string {
     invalid_code:
       'This code is invalid or has already been used. Try the next code.',
     challenge_expired: 'This sign-in has expired. Start again.',
-    challenge_locked: 'Too many incorrect codes. Start again later.',
+    challenge_locked: 'Too many incorrect codes for this sign-in. Start again.',
+    factor_unreadable:
+      'Your authenticator app cannot be checked on this server because its encryption key changed. Use a recovery code instead, or ask an administrator to reset your sign-in.',
     mfa_required_by_policy:
-      'Your account requires a strong sign-in method. Add another factor before removing this one.',
+      'Your account requires a second sign-in step. Add another factor before removing this one.',
   };
+  if (error instanceof ApiError && error.code === 'mfa_user_locked') {
+    const seconds = Number(error.detail?.retry_after_seconds);
+    const minutes = Number.isFinite(seconds)
+      ? Math.max(1, Math.ceil(seconds / 60))
+      : 60;
+    return `Too many incorrect codes. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+  }
   return error instanceof ApiError && error.code && messages[error.code]
     ? messages[error.code]
     : error instanceof Error

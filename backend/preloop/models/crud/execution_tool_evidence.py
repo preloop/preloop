@@ -409,6 +409,7 @@ def _persist_native_command_evidence(
                 head=binding.get("head_sha", ""),
                 files=diff.get("files", []),
                 root=root,
+                merge_base=diff.get("merge_base_sha") or "",
             ):
                 observation["inspection_receipt"] = inspection_receipt(
                     binding, diff, root

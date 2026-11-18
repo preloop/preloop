@@ -8,6 +8,7 @@ No exception text or caller-supplied proof enters the audit trail.
 import hashlib
 import hmac
 import ipaddress
+import logging
 import os
 import re
 import secrets
@@ -26,7 +27,9 @@ from preloop.models import models
 from preloop.models.crud import crud_user, mfa as crud_mfa
 from preloop.services import rate_limit
 from preloop.services.auth_audit import record_auth_event
-from preloop.utils.encryption import decrypt_value, encrypt_value
+from preloop.utils.encryption import encrypt_value, try_decrypt_value
+
+logger = logging.getLogger(__name__)
 
 WEAK_METHODS = frozenset({"password", "email_link", "chat", "social"})
 
@@ -51,11 +54,16 @@ def error(code: str, status: int = 401) -> HTTPException:
     messages = {
         "invalid_code": "The code is invalid or has already been used.",
         "challenge_expired": "Sign in again to get a new challenge.",
-        "challenge_locked": "Too many incorrect codes. Sign in again later.",
+        "challenge_locked": "Too many incorrect codes for this sign-in. Start again.",
         "mfa_already_enabled": "An authenticator app is already enabled.",
         "no_pending_enrollment": "Start authenticator enrollment first.",
         "mfa_not_enabled": "Enroll an authenticator app first.",
         "mfa_unavailable": "Authenticator enrollment is disabled on this server.",
+        "factor_unreadable": (
+            "Your authenticator app cannot be checked on this server because "
+            "its encryption key changed. Use a recovery code instead, or ask "
+            "an administrator to reset your sign-in."
+        ),
     }
     return HTTPException(
         status,
@@ -63,9 +71,58 @@ def error(code: str, status: int = 401) -> HTTPException:
     )
 
 
+def user_locked(now: float) -> HTTPException:
+    """The per-user hourly budget is spent; say when the fixed window ends.
+
+    Every proof, recovery codes included, is refused until then.
+    """
+    window = rate_limit.AUTH_MFA_USER.window_s
+    retry = max(1, int(window - (now % window)))
+    minutes = -(-retry // 60)
+    return HTTPException(
+        429,
+        detail={
+            "code": "mfa_user_locked",
+            "message": (
+                f"Too many incorrect codes. Try again in {minutes} "
+                f"minute{'s' if minutes != 1 else ''}."
+            ),
+            "retry_after_seconds": retry,
+        },
+        headers={"Retry-After": str(retry)},
+    )
+
+
 def totp(secret: str) -> pyotp.TOTP:
     """The interoperable SHA-1, six-digit, 30-second authenticator profile."""
     return pyotp.TOTP(secret, digits=6, interval=30, digest=hashlib.sha1)
+
+
+def readable(obj: models.UserMfaFactor) -> bool:
+    """Whether this server's encryption key can read the factor's secret."""
+    return try_decrypt_value(obj.secret_encrypted) is not None
+
+
+def factor_secret(obj: models.UserMfaFactor) -> str:
+    """Decrypt the factor's secret or refuse with ``factor_unreadable``.
+
+    A secret written under another encryption key (for example a database
+    restored next to a different ``SECRET_KEY``) makes the factor unusable.
+    No code is ever accepted for it. One line names the user; the secret and
+    the stored token are never logged.
+
+    Raises:
+        HTTPException: 409 ``factor_unreadable`` when decryption fails.
+    """
+    secret = try_decrypt_value(obj.secret_encrypted)
+    if secret is None:
+        logger.error(
+            "Authenticator secret for user %s cannot be decrypted with this "
+            "server's encryption key; the factor is unusable",
+            obj.user_id,
+        )
+        raise error("factor_unreadable", 409)
+    return secret
 
 
 def match_step(
@@ -268,11 +325,11 @@ def prove(
         rate_limit.transactional_count(db, rate_limit.AUTH_MFA_USER, identity, now=now)
         >= 10
     ):
-        raise error("challenge_locked", 429)
+        raise user_locked(now)
     accepted = False
     if code is not None:
         step = match_step(
-            decrypt_value(obj.secret_encrypted),
+            factor_secret(obj),
             code,
             now=now,
             last_used_step=obj.last_used_step,

@@ -23,6 +23,30 @@ Never put a secret or recovery code in the reason.
 This works on single-user installations. It requires administrative access to
 the server, not a working browser session for the locked-out user.
 
+## Restoring a database: keep SECRET_KEY
+
+Authenticator secrets are encrypted with `SECURITY__ENCRYPTION_KEY`. When that
+setting is empty, as in the release compose bundle, the key is derived from
+`SECRET_KEY`. Restore a database next to the same `.env` it was backed up with.
+
+If the key differs, the authenticator app can no longer be checked:
+
+- A correct authenticator code is refused with `factor_unreadable` (HTTP 409).
+  The sign-in screen says the encryption key changed and switches to a
+  recovery code. The API log has one error line naming the user id.
+- Recovery codes still work, because they are hashed, not encrypted.
+- **Settings → Security** shows the authenticator app as needing to be set up
+  again. The user removes it with a recovery code and sets it up again.
+- The sign-in coverage table counts the member as having no working
+  authenticator.
+
+To recover, put the original `SECRET_KEY` (or `SECURITY__ENCRYPTION_KEY`) back
+and restart; every authenticator works again. If the original key is lost,
+each user signs in with a recovery code and sets the authenticator up again.
+A user with no recovery code left needs a reset with `scripts/reset_mfa.py`
+(see above) or, in Preloop Enterprise, **Reset sign-in** from an
+administrator.
+
 ## Storage, limits, and rollback
 
 Back up the database and its encryption key together. TOTP secrets use the same
@@ -33,7 +57,10 @@ Verification, replay protection, recovery-code consumption and challenge use
 share a database transaction under row locks. MFA budgets use the shared
 `rate_limit_bucket` table: five failures per challenge lifetime and ten failures
 per user per fixed hour. The fifth failure returns `invalid_code`; subsequent
-attempts on that challenge return `challenge_locked`. A challenge expires after
+attempts on that challenge return `challenge_locked`; signing in again starts a
+new challenge at once. After ten failures in the hour every proof, recovery
+codes included, returns `mfa_user_locked` (HTTP 429) with `retry_after_seconds`
+and a `Retry-After` header until the hour ends. A challenge expires after
 five minutes. These mandatory MFA limits do not accept the generic limiter's
 disable/override settings and do not fall back to process-local budgets during
 a database outage. Other limiter rules retain their existing behavior.
@@ -50,10 +77,26 @@ Coordinate rollback with application code and take a backup before downgrading.
 
 ## Step-up policy extension
 
-Core always uses a ten-minute window for passkey removal and passkey-only
-settings. The account window is inert without an edition provider. A provider
-registered with `account_hooks.register_step_up_policy` may return a freshness
-window for approval decisions and API-key creation/deletion. The
+Core always uses a ten-minute window for removing a passkey, turning
+passkey-only sign-in on or off, and registering a passkey once the user
+already has a strong factor. The account window is inert without an edition
+provider. A provider registered with `account_hooks.register_step_up_policy`
+may return a freshness window for these actions (the `action` name each one
+passes is in brackets):
+
+- approving, declining or deciding an approval in the console, singly or in a
+  batch (`approval.approve`, `approval.decline`, `approval.decide`,
+  `approval.decide_batch`)
+- creating or deleting an API key (`api_key.create`, `api_key.delete`)
+- in Preloop Enterprise: changing member or team roles (`member.role`),
+  configuring single sign-on (`sso.configure`) and changing the sign-in policy
+  (`sign_in_policy.update`)
+
+Resetting a member's sign-in (Preloop Enterprise) asks for a proof no older
+than the account window, capped at ten minutes. Changing your own password
+does not ask for a fresh code; it requires the current password instead.
+Replacing recovery codes and turning off the authenticator app ask for the
+user's own code rather than a step-up. The
 `register_factor_removal_policy` guard may refuse removal of a required factor.
 Providers run in the caller's transaction and must not commit.
 

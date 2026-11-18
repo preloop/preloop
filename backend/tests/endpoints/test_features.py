@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from preloop.config import SERVER_VERSION
+from preloop.config import PRODUCT_VERSION, SERVER_VERSION
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +47,7 @@ class TestGetFeatures:
         assert result == {
             "edition": "oss",
             "server_version": SERVER_VERSION,
+            "product_version": PRODUCT_VERSION,
             "plugins": ["rbac", "audit"],
             "features": {
                 "rbac": True,
@@ -93,6 +94,7 @@ class TestGetFeatures:
         assert result == {
             "edition": "oss",
             "server_version": SERVER_VERSION,
+            "product_version": PRODUCT_VERSION,
             "plugins": [],
             "features": {
                 "registration": True,

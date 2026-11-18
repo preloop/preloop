@@ -129,24 +129,40 @@ MAX_EXTRA_SESSIONS = (
     + NATIVE_RESULT_REPAIR_CONTINUATIONS
 )
 
+#: Which command forms the inspection check accepts, in words a model can act
+#: on. Without it a model continued after ``git diff --stat`` runs it again.
+INSPECTION_FORMS = (
+    "Run `git diff {base}...{head}` as its own command (or last in a `&&` "
+    "chain) and read the patch it prints. Write both SHAs out; `HEAD` does not "
+    "count. These do not count: `--stat`, `--name-only`, `--name-status`, "
+    "`--numstat` or `--quiet` (a summary, not the patch), piping the diff into "
+    "another command, redirecting its output, or a diff followed by `;` and "
+    "more commands. Reading the changed files with `cat <path>` also counts."
+)
+
 #: What the inspection check requires, as the combined continuation says it.
 INSPECTION_REQUIREMENT = (
     "The check needs at least one successful command in this session that "
-    "reads the bound change: run `git diff {base}...{head}` and read the "
-    "changed files. Bound head_sha: {head}; bound base_sha: {base}; base ref: "
+    "reads the bound change. "
+    + INSPECTION_FORMS
+    + " Bound head_sha: {head}; bound base_sha: {base}; base ref: "
     "{base_ref}. {result_bindings}Directory listings and revision queries do "
     "not count."
 )
 
-REVIEW_CONTINUATION_PROMPT = """
+REVIEW_CONTINUATION_PROMPT = (
+    """
 
 ---
-Your previous attempt did not read the bound change. Before answering, run \
-`git diff {base}...{head}` and read the changed files. Bound head_sha: {head}; \
+Your previous attempt did not read the bound change. Before answering, read \
+it. """
+    + INSPECTION_FORMS
+    + """ Bound head_sha: {head}; \
 bound base_sha: {base}; base ref: {base_ref}. {result_bindings}Return a \
 substantive review: actionable findings with evidence and fixes, or a clear \
 no-issues conclusion. Directory listings and revision queries are not a review.
 """
+)
 
 
 class CodexAgent(ContainerAgentExecutor):
@@ -1508,12 +1524,21 @@ done
 import subprocess, sys
 root, base, head, log = sys.argv[1:]
 try:
+    # The same inputs the controller has: the merge base and the changed
+    # paths of the bound diff, renames listed under both names.
+    merge_base = subprocess.check_output(
+        ["git", "-C", root, "merge-base", base, head], stderr=subprocess.DEVNULL
+    ).decode().strip()
     paths = subprocess.check_output(
-        ["git", "-C", root, "diff", "--name-only", "-z", base + "..." + head, "--"],
+        ["git", "-C", root, "diff", "--no-renames", "--name-only", "-z",
+         merge_base, head, "--"],
         stderr=subprocess.DEVNULL,
     ).decode().split("\\0")
     with open(log) as lines:
-        inspected = log_reads_change(lines, base=base, head=head, files=paths, root=root)
+        inspected = log_reads_change(
+            lines, base=base, head=head, files=paths, root=root,
+            merge_base=merge_base,
+        )
 except (OSError, ValueError, subprocess.SubprocessError):
     inspected = False
 sys.exit(0 if inspected else 1)

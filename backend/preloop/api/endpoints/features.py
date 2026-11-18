@@ -16,7 +16,7 @@ from preloop.models.crud import crud_account_sso_connection
 from preloop.api.auth import get_current_active_user
 from preloop.services.configuration_gating import configuration_capabilities
 from preloop.plugins.base import get_plugin_manager
-from preloop.config import SERVER_VERSION
+from preloop.config import PRODUCT_VERSION, SERVER_VERSION
 from preloop.services.instance_service import instance_edition
 
 __all__ = [
@@ -59,6 +59,7 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
         Dictionary with:
         - edition: Runtime edition (oss, cloud, enterprise)
         - server_version: Running backend version
+        - product_version: Installed product release, for display
         - plugins: List of enabled plugin metadata
         - features: Dict of feature flags (e.g., rbac, user_management, registration, etc.)
     """
@@ -68,6 +69,7 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
     # cannot relabel Cloud as Enterprise, or depend on plugin iteration order.
     result["edition"] = instance_edition()
     result["server_version"] = SERVER_VERSION
+    result["product_version"] = PRODUCT_VERSION
 
     # Registration state comes from the SAME computed rule /register
     # enforces (preloop.api.auth.bootstrap): an unclaimed instance (zero

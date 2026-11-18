@@ -36,6 +36,9 @@ describe('Required sign-in enrollment', () => {
     );
     await waitUntil(() => !!element.shadowRoot?.querySelector('mfa-card'));
     expect(element.shadowRoot?.textContent).to.contain('Protect your sign-in');
+    expect(element.shadowRoot?.textContent).to.contain(
+      'ask an account administrator'
+    );
     expect(navigate.called).to.equal(false);
   });
 

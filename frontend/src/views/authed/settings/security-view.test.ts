@@ -165,6 +165,11 @@ describe('SecurityView', () => {
       'Password changed successfully'
     );
     expect((element as any).newPassword).to.equal('');
+    // protects=the sign-in page explains the ended session (L1-3).
+    expect(sessionStorage.getItem('preloop.signInNotice')).to.equal(
+      'password_changed'
+    );
+    sessionStorage.clear();
   });
 
   it('reports a failed password change', async () => {

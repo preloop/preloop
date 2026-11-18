@@ -3,12 +3,104 @@
 import uuid
 from typing import List, Optional
 
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from preloop.models import models
 
 from .base import CRUDBase
+
+LAST_OWNER_MESSAGE = (
+    "This change would leave the account without an owner. "
+    "Make another member an owner first."
+)
+
+
+class LastOwnerError(Exception):
+    """A role or membership change would leave an account with no owner.
+
+    The API maps it to HTTP 409 with code ``last_owner``.
+    """
+
+    code = "last_owner"
+
+    def __init__(self) -> None:
+        """Carry the fixed, caller-safe message."""
+        super().__init__(LAST_OWNER_MESSAGE)
+
+
+def _owner_role_ids(db: Session) -> set[uuid.UUID]:
+    """The global system ``owner`` role ids."""
+    return set(
+        db.scalars(
+            select(models.Role.id).where(
+                models.Role.name == "owner",
+                models.Role.account_id.is_(None),
+                models.Role.is_system_role.is_(True),
+            )
+        )
+    )
+
+
+def ensure_owner_remains(
+    db: Session,
+    *,
+    account_id: uuid.UUID,
+    user_id: uuid.UUID,
+    role_id: Optional[uuid.UUID] = None,
+) -> None:
+    """Refuse a change that would leave ``account_id`` with no active owner.
+
+    The account row is locked first, so two concurrent removals in the same
+    account are serialized and the second one counts after the first commits.
+
+    Args:
+        db: Session the change is staged in; the lock lasts until it ends.
+        account_id: Account the membership belongs to.
+        user_id: Membership losing the role, or being deactivated or deleted.
+        role_id: The role being removed; None when the whole membership goes.
+
+    Raises:
+        LastOwnerError: When ``user_id`` is the only active owner left.
+
+    Core has no owner protection: without the RBAC plugin every member has
+    full access and roles carry no rights, so the guard applies only while
+    role-based access is enforced.
+    """
+    from preloop.utils import permissions
+
+    if permissions.members_have_full_access() or not (
+        permissions._rbac_checks_enabled()
+    ):
+        return
+    db.scalar(
+        select(models.Account.id)
+        .where(models.Account.id == account_id)
+        .with_for_update()
+    )
+    owners = _owner_role_ids(db)
+    if not owners or (role_id is not None and role_id not in owners):
+        return
+    holds = db.scalar(
+        select(func.count())
+        .select_from(models.UserRole)
+        .where(models.UserRole.user_id == user_id, models.UserRole.role_id.in_(owners))
+    )
+    if not holds:
+        return
+    others = db.scalar(
+        select(func.count(func.distinct(models.User.id)))
+        .select_from(models.UserRole)
+        .join(models.User, models.User.id == models.UserRole.user_id)
+        .where(
+            models.User.account_id == account_id,
+            models.User.is_active.is_(True),
+            models.User.id != user_id,
+            models.UserRole.role_id.in_(owners),
+        )
+    )
+    if not others:
+        raise LastOwnerError()
 
 
 class CRUDPermission(CRUDBase[models.Permission]):
@@ -365,7 +457,15 @@ class CRUDUserRole(CRUDBase[models.UserRole]):
 
         Returns:
             True if removed, False if not found.
+
+        Raises:
+            LastOwnerError: When this would remove the account's last owner.
         """
+        user = db.get(models.User, user_id)
+        if user is not None:
+            ensure_owner_remains(
+                db, account_id=user.account_id, user_id=user_id, role_id=role_id
+            )
         user_role = (
             db.query(models.UserRole)
             .filter(

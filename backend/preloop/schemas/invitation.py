@@ -60,6 +60,22 @@ class InvitationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class InvitationEmailDelivery(BaseModel):
+    """Whether the invitation email reached the mail server.
+
+    The invitation exists either way. ``email_error`` is one fixed sentence
+    naming the setting to check; it never carries credentials, the invitation
+    token or the mail server's raw reply.
+    """
+
+    email_sent: bool = True
+    email_error: Optional[str] = None
+
+
+class InvitationCreated(InvitationResponse, InvitationEmailDelivery):
+    """A new invitation and the outcome of its email."""
+
+
 class InvitationListResponse(BaseModel):
     """Response schema for paginated invitation list."""
 

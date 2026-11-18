@@ -575,6 +575,9 @@ config:
       key: "smtp-password"
     from: ""
     fromName: "Preloop"
+    # Transport security: starttls (default), ssl (implicit TLS, usually
+    # port 465) or none (internal relays only; refused with credentials).
+    security: "starttls"
 
 # Database configuration
 database:

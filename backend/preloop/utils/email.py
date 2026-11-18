@@ -20,6 +20,11 @@ SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+# Transport security: "starttls" (default, upgrade a plain connection),
+# "ssl" (implicit TLS, usually port 465) or "none" (internal relays only;
+# credentials are never sent over it).
+SMTP_SECURITY = os.getenv("SMTP_SECURITY", "starttls").strip().lower()
+SMTP_SECURITY_MODES = ("starttls", "ssl", "none")
 SMTP_FROM = os.getenv("SMTP_FROM", "hello@preloop.ai")
 SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "Preloop")
 PRELOOP_URL = os.getenv("PRELOOP_URL", "https://preloop.ai")
@@ -27,9 +32,44 @@ APP_NAME = os.getenv("APP_NAME", "Preloop")
 
 
 class EmailError(Exception):
-    """Raised when email sending fails."""
+    """Raised when email sending fails.
 
-    pass
+    Attributes:
+        reason: One sentence safe to show an administrator. It names the
+            setting to check and never includes credentials, message content
+            or the server's raw reply.
+    """
+
+    def __init__(self, message: str, *, reason: Optional[str] = None) -> None:
+        """Keep the internal message and a caller-facing reason apart."""
+        super().__init__(message)
+        self.reason = reason or "The mail server could not be reached or refused it."
+
+
+EMAIL_NOT_CONFIGURED = "Email is not configured on this server (SMTP_HOST is empty)."
+
+
+def _failure_reason(error: Exception, stage: str = "") -> str:
+    """Map an SMTP failure to one fixed sentence without server-supplied text."""
+    if isinstance(error, smtplib.SMTPNotSupportedError) and stage == "login":
+        return (
+            "The mail server does not offer SMTP login; remove SMTP_USERNAME "
+            "and SMTP_PASSWORD to send without it."
+        )
+    if isinstance(error, smtplib.SMTPNotSupportedError):
+        return "The mail server does not offer STARTTLS; set SMTP_SECURITY to match it."
+    if isinstance(error, smtplib.SMTPAuthenticationError):
+        return "The mail server rejected the SMTP username or password."
+    if isinstance(error, smtplib.SMTPRecipientsRefused):
+        return "The mail server refused the recipient address."
+    if isinstance(error, smtplib.SMTPSenderRefused):
+        return "The mail server refused the sender address (SMTP_FROM)."
+    if isinstance(error, (OSError, smtplib.SMTPConnectError)):
+        return (
+            "The mail server could not be reached; check SMTP_HOST, SMTP_PORT "
+            "and SMTP_SECURITY."
+        )
+    return "The mail server did not accept the message."
 
 
 def send_email(
@@ -55,7 +95,7 @@ def send_email(
         headers: Extra message headers, such as ``List-Unsubscribe``.
 
     Returns:
-        True when handed to SMTP; False when credentials are not configured.
+        True when handed to SMTP; False when SMTP_HOST is not configured.
 
     Raises:
         EmailError: If email sending fails.
@@ -81,11 +121,10 @@ def send_email(
         part2 = MIMEText(body_html, "html")
         msg.attach(part2)
 
-    # Skip sending if SMTP credentials are not configured (development mode)
-    if not SMTP_USERNAME or not SMTP_PASSWORD:
+    # Skip sending when no mail server is configured (development mode).
+    if not SMTP_HOST:
         logger.warning(
-            "Email not sent: SMTP credentials not configured. "
-            "Would have sent email to %s",
+            "Email not sent: SMTP_HOST not configured. Would have sent email to %s",
             to_email,
         )
         # Neither the subject nor the body is logged. Several senders put
@@ -103,22 +142,52 @@ def send_email(
         # Don't raise error - just return gracefully to avoid HTTP 500 in dev/CI environments
         return False
 
+    security = SMTP_SECURITY
+    if security not in SMTP_SECURITY_MODES:
+        logger.error("Email not sent: unknown SMTP_SECURITY value")
+        raise EmailError(
+            "Unknown SMTP_SECURITY",
+            reason="SMTP_SECURITY must be starttls, ssl or none.",
+        )
+    authenticate = bool(SMTP_USERNAME or SMTP_PASSWORD)
+    if authenticate and security == "none":
+        logger.error(
+            "Email not sent: refusing to send SMTP credentials without encryption"
+        )
+        raise EmailError(
+            "Credentials over an unencrypted connection",
+            reason=(
+                "SMTP credentials are set but SMTP_SECURITY is none; use "
+                "starttls or ssl, or remove the credentials."
+            ),
+        )
+
+    # The step that failed; SMTPNotSupportedError means a missing STARTTLS
+    # from starttls() but a missing AUTH extension from login().
+    stage = "connect"
     try:
-        # Send the message via SMTP server
+        smtp_class = smtplib.SMTP_SSL if security == "ssl" else smtplib.SMTP
         connection = (
-            smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+            smtp_class(SMTP_HOST, SMTP_PORT)
             if timeout is None
-            else smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=timeout)
+            else smtp_class(SMTP_HOST, SMTP_PORT, timeout=timeout)
         )
         with connection as server:
-            server.starttls()  # Secure the connection
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            if security == "starttls":
+                stage = "starttls"
+                server.starttls()
+            if authenticate:
+                stage = "login"
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            stage = "send"
             server.sendmail(from_email, to_email, msg.as_string())
             logger.info("Email sent to %s", to_email)
         return True
     except Exception as e:
         logger.error(f"Failed to send email: {type(e).__name__}")
-        raise EmailError(f"Failed to send email: {str(e)}")
+        raise EmailError(
+            f"Failed to send email: {str(e)}", reason=_failure_reason(e, stage)
+        ) from e
 
 
 def _for_user_lines(username: Optional[str], action: str) -> tuple[str, str]:
@@ -231,7 +300,7 @@ def send_invitation_email(
     invited_by: str,
     role_names: Optional[list[str]] = None,
     team_names: Optional[list[str]] = None,
-) -> None:
+) -> bool:
     """Send an invitation email to join an organization.
 
     Args:
@@ -241,6 +310,12 @@ def send_invitation_email(
         invited_by: Name/email of the person who sent the invitation.
         role_names: Names of roles that will be assigned (optional).
         team_names: Names of teams the user will be added to (optional).
+
+    Returns:
+        True when handed to SMTP; False when SMTP_HOST is not configured.
+
+    Raises:
+        EmailError: If the mail server could not take the message.
     """
     accept_link = f"{PRELOOP_URL}/invitations/accept?token={token}"
 
@@ -319,7 +394,7 @@ The {APP_NAME} Team
     </html>
     """
 
-    send_email(user_email, subject, text_body, html_body)
+    return send_email(user_email, subject, text_body, html_body)
 
 
 def send_tracker_registered_email(

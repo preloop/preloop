@@ -96,6 +96,7 @@ export class SignInEnrollmentView extends LitElement {
             </section>`
           : nothing
       }
+      <p>If you cannot set up either, ask an account administrator for help.</p>
       <p><a href="/login">Use another sign-in method</a></p>
       <sl-button @click=${() => signOut()}>Sign out</sl-button>
     </main>`;
