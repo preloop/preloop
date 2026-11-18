@@ -579,6 +579,23 @@ whatever the last session wrote and applies every check above. If it is still
 invalid, the run fails with `result_schema_invalid` and the validation errors,
 as before. Flows without `agent_config.native_result: true` are unchanged.
 
+**A fenced answer.** A model that is not held to the schema sometimes writes
+its final answer as the JSON document inside a Markdown code fence
+(```` ```json ````, the document, ```` ``` ````). Preloop removes exactly that
+one wrapper: after trimming whitespace, the whole answer must be a single fenced
+block, with no tag or a `json` tag in any case, and its body must parse as one
+JSON value. Nothing else is accepted: no JSON taken out of surrounding prose,
+no second block, no text after the fence, no repair of invalid JSON. The fence
+carries no content, and the unwrapped document goes through the same schema,
+result binding, inspection and narrative checks; a fenced answer that is not
+valid JSON inside still fails as before. The in-container repair check and the
+controller use the same reader, so a fenced valid review needs no repair
+session. The run records `answer_unwrapped: "markdown_fence"` in
+`completion.result_captured` and a `native_answer_unwrapped` log milestone.
+When an answer is still not JSON, the repair prompt tells the model that its
+answer was wrapped in a fence or had text outside the JSON, and to reply with
+the JSON object only.
+
 One run is not covered by either rule above: the inspection continuations are
 used up, the last session still did not read the change, and its final answer
 is not usable either, because it is missing, not JSON or does not match the
@@ -606,9 +623,10 @@ inspected run whose last answer fails the schema fails with
 failing paths. This also holds when that answer carries no completion status,
 as a progress note does: such a run used to be reported as `no_confirmation`
 with a message saying that no result had been written. A run that does end as
-`no_confirmation` now says what was observed: no final answer was captured, the
-answer was not valid JSON, or the answer did not match the schema (with the
-paths). When the model provider rejects the request before any answer exists,
+`no_confirmation` now says what was observed, for example that no final answer
+was captured. A final answer that exists but is not valid JSON, or not a JSON
+object, fails with `result_schema_invalid` and that reason, not with
+`no_confirmation`. When the model provider rejects the request before any answer exists,
 the recorded validation says that the model request failed and points to the
 provider error, instead of `No result.json was captured`.
 

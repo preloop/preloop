@@ -216,10 +216,18 @@ def read(path: Path, strict: bool = False) -> Any:
     except OSError:
         return None
     try:
-        return json.loads(raw)
+        if not strict:
+            return json.loads(raw)
+        # The final answer: one Markdown fence around it is accepted
+        # (parse_native_answer is prepended from preloop.services.native_answer).
+        value, unwrapped = parse_native_answer(raw)
+        if unwrapped:
+            native_unwrapped.append(unwrapped)
+        return value
     except ValueError:
         # An answer that is text but not JSON is reported as such (no content).
         return NOT_JSON if strict and raw.strip() else None
+native_unwrapped = []
 native = read(native_path, strict=True)
 native_error = None
 if native is NOT_JSON:
@@ -238,9 +246,24 @@ if native is not None or native_error:
             candidates = {"native": native, "file": file_result}
             if native_error:
                 candidates["native_error"] = native_error
+            if native_unwrapped and native is not None:
+                candidates["native_unwrapped"] = native_unwrapped[0]
             json.dump({key: candidates}, destination, ensure_ascii=False, separators=(",", ":"))
         os.replace(temporary, bundle_path)
 """
+
+
+def native_result_capture_script() -> str:
+    """The capture script with the shared answer reader prepended.
+
+    Returns:
+        Python source for ``python3 -c`` inside the agent container.
+    """
+    import inspect
+
+    from preloop.services import native_answer
+
+    return inspect.getsource(native_answer) + NATIVE_RESULT_CAPTURE
 
 
 def result_transport_within_limit(document: Any) -> bool:
