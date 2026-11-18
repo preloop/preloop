@@ -2544,6 +2544,16 @@ export interface UserInvitation {
   accepted_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Present on create: false when the invitation email did not go out. */
+  email_sent?: boolean;
+  /** One secret-free sentence saying why the email was not sent. */
+  email_error?: string | null;
+}
+
+/** Outcome of an invitation email (create and resend). */
+export interface InvitationEmailDelivery {
+  email_sent: boolean;
+  email_error: string | null;
 }
 
 export interface InvitationCreate {

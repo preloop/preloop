@@ -40,7 +40,8 @@ export class PreloopInviteDialog extends LitElement {
         margin-top: 1rem;
       }
 
-      .success-alert {
+      .success-alert,
+      .unsent-alert {
         margin-top: 1rem;
       }
 
@@ -92,6 +93,10 @@ export class PreloopInviteDialog extends LitElement {
   /** Addresses the last send could not invite, kept for a retry. */
   @state()
   private failedInvites: FailedInvite[] = [];
+
+  /** Invitations that were created but whose email did not go out. */
+  @state()
+  private unsentInvites: FailedInvite[] = [];
 
   /** Whether the teams and roles have been asked for. */
   private dataRequested = false;
@@ -167,6 +172,7 @@ export class PreloopInviteDialog extends LitElement {
     this.error = null;
     this.successMessage = null;
     this.failedInvites = [];
+    this.unsentInvites = [];
 
     const { valid: emails, invalid } = this.parseEmails();
     if (invalid.length > 0) {
@@ -200,8 +206,16 @@ export class PreloopInviteDialog extends LitElement {
         )
       );
       const failed: FailedInvite[] = [];
+      const unsent: FailedInvite[] = [];
       results.forEach((result, index) => {
-        if (result.status === 'rejected') {
+        if (result.status === 'fulfilled') {
+          if (result.value.email_sent === false) {
+            unsent.push({
+              email: emails[index],
+              reason: result.value.email_error || 'The email was not sent.',
+            });
+          }
+        } else {
           failed.push({
             email: emails[index],
             reason:
@@ -212,6 +226,7 @@ export class PreloopInviteDialog extends LitElement {
         }
       });
       const sent = emails.length - failed.length;
+      this.unsentInvites = unsent;
 
       if (sent > 0) {
         this.dispatchEvent(
@@ -235,10 +250,14 @@ export class PreloopInviteDialog extends LitElement {
         return;
       }
 
-      this.successMessage = `Sent ${sent} invitation${sent === 1 ? '' : 's'}.`;
       this.emailsText = '';
       this.selectedRoleIds = [];
       this.selectedTeamIds = [];
+      if (unsent.length > 0) {
+        // Stay open: the admin has to tell these people another way.
+        return;
+      }
+      this.successMessage = `Sent ${sent} invitation${sent === 1 ? '' : 's'}.`;
 
       // Auto close after a short delay so user sees the success state
       setTimeout(() => {
@@ -261,6 +280,7 @@ export class PreloopInviteDialog extends LitElement {
     this.error = null;
     this.successMessage = null;
     this.failedInvites = [];
+    this.unsentInvites = [];
     this.dispatchEvent(
       new CustomEvent('close', { bubbles: true, composed: true })
     );
@@ -386,6 +406,30 @@ export class PreloopInviteDialog extends LitElement {
                           </ul>`
                         : ''
                     }
+                  </sl-alert>
+                `
+              : ''
+          }
+          ${
+            this.unsentInvites.length > 0
+              ? html`
+                  <sl-alert
+                    variant="warning"
+                    open
+                    class="unsent-alert"
+                    role="status"
+                  >
+                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                    ${this.unsentInvites.length === 1 ? 'The invitation was' : 'These invitations were'}
+                    created, but the email was not sent. Ask an administrator to
+                    check the mail settings, then use Resend invitation on the
+                    pending invitation.
+                    <ul class="failure-list">
+                      ${this.unsentInvites.map(
+                        (entry) =>
+                          html`<li>${entry.email}: ${entry.reason}</li>`
+                      )}
+                    </ul>
                   </sl-alert>
                 `
               : ''

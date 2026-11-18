@@ -114,7 +114,8 @@ def test_delivery_retains_redemption_value(invitation_client, resend: bool) -> N
     case.allowed.add("invite_users")
     if resend:
         response = case.client.post(f"/invitations/{case.row.id}/resend")
-        assert response.status_code == 204
+        assert response.status_code == 200
+        assert case.row.token not in response.text
     else:
         response = case.client.post("/invitations", json={"email": case.row.email})
         assert response.status_code == 201
@@ -125,7 +126,5 @@ def test_delivery_retains_redemption_value(invitation_client, resend: bool) -> N
 
 def test_response_schema_documents_metadata(invitation_client) -> None:
     schema = invitation_client.client.get("/openapi.json").json()
-    assert (
-        "token"
-        not in schema["components"]["schemas"]["InvitationResponse"]["properties"]
-    )
+    for name in ("InvitationResponse", "InvitationCreated", "InvitationEmailDelivery"):
+        assert "token" not in schema["components"]["schemas"][name]["properties"]

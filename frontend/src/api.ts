@@ -8353,7 +8353,9 @@ export async function createInvitation(
   return response.json();
 }
 
-export async function resendInvitation(invitationId: string): Promise<void> {
+export async function resendInvitation(
+  invitationId: string
+): Promise<import('./types').InvitationEmailDelivery> {
   const response = await fetchWithAuth(
     `${REST_API_PREFIX}/invitations/${invitationId}/resend`,
     {
@@ -8366,6 +8368,9 @@ export async function resendInvitation(invitationId: string): Promise<void> {
       extractErrorMessage(errorData, 'Failed to resend invitation')
     );
   }
+  // Servers before the delivery report answered 204 with no body.
+  if (response.status === 204) return { email_sent: true, email_error: null };
+  return response.json();
 }
 
 export async function cancelInvitation(invitationId: string): Promise<void> {

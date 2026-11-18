@@ -92,6 +92,7 @@ class TestSendEmail:
     @patch("preloop.utils.email.smtplib.SMTP")
     @patch("preloop.utils.email.SMTP_USERNAME", "test@example.com")
     @patch("preloop.utils.email.SMTP_PASSWORD", "password")
+    @patch("preloop.utils.email.SMTP_HOST", "smtp.example.com")
     def test_send_email_with_html(self, mock_smtp):
         """Test sending email with both text and HTML bodies."""
         mock_server = MagicMock()
@@ -112,8 +113,9 @@ class TestSendEmail:
         assert "<html>" in message_str
 
     @patch("preloop.utils.email.smtplib.SMTP")
-    def test_send_email_no_credentials_does_not_send(self, mock_smtp, monkeypatch):
-        """Test that email logs warning and returns gracefully when credentials are missing."""
+    def test_send_email_no_host_does_not_send(self, mock_smtp, monkeypatch):
+        """Without SMTP_HOST the sender logs a warning and returns gracefully."""
+        monkeypatch.setattr("preloop.utils.email.SMTP_HOST", "")
         # Use monkeypatch to modify module-level variables at runtime
         monkeypatch.setattr("preloop.utils.email.SMTP_USERNAME", "")
         monkeypatch.setattr("preloop.utils.email.SMTP_PASSWORD", "")
@@ -131,6 +133,7 @@ class TestSendEmail:
     @patch("preloop.utils.email.smtplib.SMTP")
     @patch("preloop.utils.email.SMTP_USERNAME", "test@example.com")
     @patch("preloop.utils.email.SMTP_PASSWORD", "password")
+    @patch("preloop.utils.email.SMTP_HOST", "smtp.example.com")
     def test_send_email_smtp_error_raises_email_error(self, mock_smtp):
         """Test that SMTP errors raise EmailError."""
         mock_server = MagicMock()
@@ -150,6 +153,7 @@ class TestSendEmail:
     @patch("preloop.utils.email.smtplib.SMTP")
     @patch("preloop.utils.email.SMTP_USERNAME", "test@example.com")
     @patch("preloop.utils.email.SMTP_PASSWORD", "password")
+    @patch("preloop.utils.email.SMTP_HOST", "smtp.example.com")
     def test_send_email_custom_from_address(self, mock_smtp):
         """Test sending email with custom from address."""
         mock_server = MagicMock()
@@ -169,6 +173,7 @@ class TestSendEmail:
     @patch("preloop.utils.email.smtplib.SMTP")
     @patch("preloop.utils.email.SMTP_USERNAME", "test@example.com")
     @patch("preloop.utils.email.SMTP_PASSWORD", "password")
+    @patch("preloop.utils.email.SMTP_HOST", "smtp.example.com")
     @patch("preloop.utils.email.settings")
     def test_send_email_includes_portal_url_in_subject(self, mock_settings, mock_smtp):
         """Test that portal URL is included in subject."""
@@ -614,6 +619,7 @@ class TestUnconfiguredSmtpDoesNotLogSecrets:
     the logs in clear text while still valid.
     """
 
+    @patch("preloop.utils.email.SMTP_HOST", "")
     @patch("preloop.utils.email.SMTP_USERNAME", "")
     @patch("preloop.utils.email.SMTP_PASSWORD", "")
     def test_password_reset_token_is_not_logged(self):
@@ -638,6 +644,7 @@ class TestUnconfiguredSmtpDoesNotLogSecrets:
         # The reset link carries the token, so it must be absent too.
         assert "reset-password?token=" not in combined
 
+    @patch("preloop.utils.email.SMTP_HOST", "")
     @patch("preloop.utils.email.SMTP_USERNAME", "")
     @patch("preloop.utils.email.SMTP_PASSWORD", "")
     def test_body_and_subject_are_not_logged_but_send_is_reported(self):
@@ -810,6 +817,7 @@ def test_send_email_explicit_socket_timeout(monkeypatch):
 
     monkeypatch.setattr(email, "SMTP_USERNAME", "test")
     monkeypatch.setattr(email, "SMTP_PASSWORD", "test")
+    monkeypatch.setattr(email, "SMTP_HOST", "smtp.example.com")
     smtp = MagicMock()
     monkeypatch.setattr(email.smtplib, "SMTP", smtp)
     email.send_email("owner@example.com", "allowance", "notice", timeout=10)
@@ -822,6 +830,7 @@ def test_send_email_timeout_is_delivery_failure(monkeypatch):
 
     monkeypatch.setattr(email, "SMTP_USERNAME", "test")
     monkeypatch.setattr(email, "SMTP_PASSWORD", "test")
+    monkeypatch.setattr(email, "SMTP_HOST", "smtp.example.com")
     smtp = MagicMock(side_effect=TimeoutError("SMTP timed out"))
     monkeypatch.setattr(email.smtplib, "SMTP", smtp)
     with pytest.raises(email.EmailError, match="SMTP timed out"):

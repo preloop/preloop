@@ -196,7 +196,15 @@ export class InvitationManagementView extends LitElement {
     }
 
     try {
-      await createInvitation(this.newInvitation as InvitationCreate);
+      const created = await createInvitation(
+        this.newInvitation as InvitationCreate
+      );
+      if (created.email_sent === false) {
+        showToast(
+          `Invitation created for ${created.email}, but the email was not sent. ${created.email_error ?? ''}`,
+          'warning'
+        );
+      }
       this.isCreateModalOpen = false;
       this.newInvitation = {};
       await this.fetchInvitations();
@@ -209,8 +217,15 @@ export class InvitationManagementView extends LitElement {
   async handleResendInvitation(invitation: UserInvitation) {
     if (!this.editPermissions.allows('invite_users')) return;
     try {
-      await resendInvitation(invitation.id);
-      showToast(`Invitation resent to ${invitation.email}.`, 'success');
+      const delivery = await resendInvitation(invitation.id);
+      if (delivery.email_sent) {
+        showToast(`Invitation resent to ${invitation.email}.`, 'success');
+      } else {
+        showToast(
+          `The invitation to ${invitation.email} is still valid, but the email was not sent. ${delivery.email_error ?? ''}`,
+          'warning'
+        );
+      }
     } catch (error) {
       this.error =
         error instanceof Error ? error.message : 'Failed to resend invitation';

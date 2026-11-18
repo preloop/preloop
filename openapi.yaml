@@ -1197,7 +1197,12 @@ paths:
       - Auth
       - MFA
       summary: Status
-      description: Read state without disclosing secrets or recovery hashes.
+      description: 'Read state without disclosing secrets or recovery hashes.
+
+
+        ``totp_needs_setup`` is true when a confirmed factor''s secret cannot be
+
+        decrypted with this server''s key: it must be removed and enrolled again.'
       operationId: status_api_v1_auth_mfa_status_get
       responses:
         '200':
@@ -26858,7 +26863,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/InvitationResponse'
+                $ref: '#/components/schemas/InvitationCreated'
         '422':
           description: Validation Error
           content:
@@ -27008,10 +27013,11 @@ paths:
       tags:
       - Invitations
       summary: Resend Invitation
-      description: "Resend an invitation email.\n\nArgs:\n    invitation_id: Invitation\
-        \ ID to resend\n    current_user: Current authenticated user\n    db: Database\
-        \ session\n\nRaises:\n    HTTPException: If invitation not found, not in same\
-        \ account, or not pending"
+      description: "Resend an invitation email and report whether it reached the mail\
+        \ server.\n\nArgs:\n    invitation_id: Invitation ID to resend\n    current_user:\
+        \ Current authenticated user\n    db: Database session\n\nReturns:\n    Whether\
+        \ the email reached the mail server, and why not.\n\nRaises:\n    HTTPException:\
+        \ If invitation not found, not in same account, or not pending"
       operationId: resend_invitation_api_v1_invitations__invitation_id__resend_post
       security:
       - bearerAuth: []
@@ -27024,8 +27030,12 @@ paths:
           format: uuid
           title: Invitation Id
       responses:
-        '204':
+        '200':
           description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationEmailDelivery'
         '422':
           description: Validation Error
           content:
@@ -44509,6 +44519,94 @@ components:
       - email
       title: InvitationCreate
       description: Schema for creating a user invitation.
+    InvitationCreated:
+      properties:
+        email_sent:
+          type: boolean
+          title: Email Sent
+          default: true
+        email_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email Error
+        id:
+          type: string
+          title: Id
+        account_id:
+          type: string
+          title: Account Id
+        email:
+          type: string
+          format: email
+          title: Email
+        status:
+          type: string
+          title: Status
+        role_ids:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Ids
+        team_ids:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Team Ids
+        invited_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Invited By
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        accepted_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Accepted At
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+      type: object
+      required:
+      - id
+      - account_id
+      - email
+      - status
+      - role_ids
+      - team_ids
+      - invited_by
+      - created_at
+      - accepted_at
+      - expires_at
+      title: InvitationCreated
+      description: A new invitation and the outcome of its email.
+    InvitationEmailDelivery:
+      properties:
+        email_sent:
+          type: boolean
+          title: Email Sent
+          default: true
+        email_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email Error
+      type: object
+      title: InvitationEmailDelivery
+      description: 'Whether the invitation email reached the mail server.
+
+
+        The invitation exists either way. ``email_error`` is one fixed sentence
+
+        naming the setting to check; it never carries credentials, the invitation
+
+        token or the mail server''s raw reply.'
     InvitationListResponse:
       properties:
         invitations:
@@ -47668,6 +47766,10 @@ components:
         totp_enabled:
           type: boolean
           title: Totp Enabled
+        totp_needs_setup:
+          type: boolean
+          title: Totp Needs Setup
+          default: false
         recovery_codes_remaining:
           type: integer
           title: Recovery Codes Remaining
@@ -59170,7 +59272,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

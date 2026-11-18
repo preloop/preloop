@@ -12,11 +12,17 @@ from preloop.api.auth.jwt import get_current_active_user, get_password_hash
 from preloop.schemas.invitation import (
     InvitationAccept,
     InvitationCreate,
+    InvitationCreated,
+    InvitationEmailDelivery,
     InvitationListResponse,
     InvitationPublicInfo,
     InvitationResponse,
 )
-from preloop.utils.email import send_invitation_email
+from preloop.utils.email import (
+    EMAIL_NOT_CONFIGURED,
+    EmailError,
+    send_invitation_email,
+)
 from preloop.models.crud import (
     crud_account,
     crud_person,
@@ -47,9 +53,29 @@ router = APIRouter()
 public_router = APIRouter()  # Public endpoints (no auth required)
 
 
+def _deliver(**kwargs: Any) -> InvitationEmailDelivery:
+    """Send an invitation email and report the outcome without raising.
+
+    Args:
+        **kwargs: Arguments for ``send_invitation_email``.
+
+    Returns:
+        The delivery outcome; the reason is a fixed, secret-free sentence.
+    """
+    try:
+        sent = send_invitation_email(**kwargs)
+    except EmailError as error:
+        return InvitationEmailDelivery(email_sent=False, email_error=error.reason)
+    if not sent:
+        return InvitationEmailDelivery(
+            email_sent=False, email_error=EMAIL_NOT_CONFIGURED
+        )
+    return InvitationEmailDelivery()
+
+
 @router.post(
     "/invitations",
-    response_model=InvitationResponse,
+    response_model=InvitationCreated,
     status_code=status.HTTP_201_CREATED,
 )
 @require_permission("invite_users")
@@ -198,7 +224,7 @@ def create_invitation(
                     continue
                 team_names.append(team.name)
 
-        send_invitation_email(
+        delivery = _deliver(
             user_email=invitation.email,
             token=invitation.token,
             organization_name=account.organization_name or "your organization",
@@ -210,8 +236,15 @@ def create_invitation(
         logger.warning(
             f"Could not send invitation email: account {current_user.account_id} not found"
         )
+        delivery = InvitationEmailDelivery(
+            email_sent=False,
+            email_error="The account for this invitation was not found.",
+        )
 
-    return InvitationResponse.model_validate(invitation)
+    return InvitationCreated(
+        **InvitationResponse.model_validate(invitation).model_dump(),
+        **delivery.model_dump(),
+    )
 
 
 @router.get("/invitations", response_model=InvitationListResponse)
@@ -339,20 +372,23 @@ def cancel_invitation(
 
 
 @router.post(
-    "/invitations/{invitation_id}/resend", status_code=status.HTTP_204_NO_CONTENT
+    "/invitations/{invitation_id}/resend", response_model=InvitationEmailDelivery
 )
 @require_permission("invite_users")
 def resend_invitation(
     invitation_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
-) -> None:
-    """Resend an invitation email.
+) -> InvitationEmailDelivery:
+    """Resend an invitation email and report whether it reached the mail server.
 
     Args:
         invitation_id: Invitation ID to resend
         current_user: Current authenticated user
         db: Database session
+
+    Returns:
+        Whether the email reached the mail server, and why not.
 
     Raises:
         HTTPException: If invitation not found, not in same account, or not pending
@@ -440,7 +476,7 @@ def resend_invitation(
                     continue
                 team_names.append(team.name)
 
-        send_invitation_email(
+        delivery = _deliver(
             user_email=invitation.email,
             token=invitation.token,
             organization_name=account.organization_name or "your organization",
@@ -452,6 +488,11 @@ def resend_invitation(
         logger.warning(
             f"Could not send invitation email: account {current_user.account_id} not found"
         )
+        delivery = InvitationEmailDelivery(
+            email_sent=False,
+            email_error="The account for this invitation was not found.",
+        )
+    return delivery
 
 
 # Public endpoint (no authentication required)

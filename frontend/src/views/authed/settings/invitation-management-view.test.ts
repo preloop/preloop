@@ -54,6 +54,14 @@ describe('InvitationManagementView', () => {
           });
         }
 
+        if (url.includes('/resend') && method === 'POST') {
+          return json({
+            email_sent: false,
+            email_error:
+              'Email is not configured on this server (SMTP_HOST is empty).',
+          });
+        }
+
         if (url.includes('/api/v1/invitations/') && method === 'DELETE') {
           return new Response(null, { status: 204 });
         }
@@ -86,6 +94,30 @@ describe('InvitationManagementView', () => {
     localStorage.clear();
     invalidateApiCaches();
     resetConfirmDialogForTests();
+  });
+
+  // protects=resend tells the admin the email did not go out;
+  // fails_when=a success toast says "resent"; no_claim=server stubbed.
+  it('warns when a resend could not send the email', async () => {
+    fetchStub = createFetchStub({ invitations: [sampleInvitation] });
+    const element = await fixture<InvitationManagementView>(
+      html`<invitation-management-view></invitation-management-view>`
+    );
+    await waitUntil(() => (element as any).invitations?.length === 1);
+    await element.handleResendInvitation(sampleInvitation as any);
+    await waitUntil(() =>
+      [...document.querySelectorAll('sl-alert')].some((alert) =>
+        alert.textContent?.includes('invitee@example.com')
+      )
+    );
+    const alert = [...document.querySelectorAll('sl-alert')].find((item) =>
+      item.textContent?.includes('invitee@example.com')
+    )!;
+    expect(alert.getAttribute('variant')).to.equal('warning');
+    expect(alert.textContent).to.contain('email was not sent');
+    expect(alert.textContent).to.contain('SMTP_HOST');
+    expect(alert.textContent).not.to.contain('resent to');
+    alert.remove();
   });
 
   it('shows the not-available message when feature is disabled', async () => {

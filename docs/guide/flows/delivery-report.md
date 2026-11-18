@@ -330,7 +330,7 @@ email has the summary, what needs you, the shipped changes with their
 summary and files, the line saying assessments were skipped when they were,
 and a link to the report page. A run sends once; the outcome is stored on
 the result as `distribution` (`sent`, `failed`, `disabled`, `no_recipients`,
-`not_configured`). `not_configured` means SMTP credentials are missing.
+`not_configured`). `not_configured` means `SMTP_HOST` is not set.
 The `sent_to` and `failed` lists record each recipient's outcome; a `failed`
 record may still have a non-empty `sent_to` when only some recipients were reached.
 
