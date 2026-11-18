@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Hosted read-only reviews are no longer sent into an extra session when they
+  did read the diff in a common way. The inspection check now accepts
+  `git diff <base>..<head>` and `git diff <base> <head>` when the base is the
+  merge base, abbreviated SHAs, `git --no-pager diff`, options that keep the
+  whole patch (`--find-renames`, `--find-copies`, `-M`, `-C`, `--unified=<n>`,
+  diff algorithms), and a read that ends a `;` sequence such as
+  `git diff --stat <base>...<head>; git diff <base>...<head>`. A review that
+  did not read the diff still fails. The instruction a continued session gets
+  now names the command that counts and the forms that do not (`--stat`,
+  `HEAD`, pipes, a diff followed by `;`), so the model does not repeat a
+  summary. In-container check and controller use the same rule and inputs.
 - A native review whose final answer is a valid JSON document inside a single
   Markdown code fence is accepted: the fence is removed and the document goes
   through every schema and review check as before, instead of the run spending

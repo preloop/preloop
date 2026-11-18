@@ -435,6 +435,7 @@ class ObservationCounter:
                                     head=self._binding.get("head_sha", ""),
                                     files=self._diff.get("files", []),
                                     root=self._root,
+                                    merge_base=self._diff.get("merge_base_sha") or "",
                                 )
                             )
                             or (
