@@ -31,6 +31,7 @@ describe('Login second step', () => {
       social: {},
     };
     localStorage.clear();
+    sessionStorage.clear();
     invalidateApiCaches();
     fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
       if (String(input).endsWith('/features')) return json({ features: {} });
@@ -174,7 +175,13 @@ describe('Login second step', () => {
       await login.updateComplete;
       expect(login.shadowRoot?.textContent).to.contain('Confirm your sign-in');
       expect(localStorage.length).to.equal(0);
-      expect(sessionStorage.length).to.equal(0);
+      // Only the fixed restart-notice name may be kept, never the challenge.
+      expect(Object.keys(sessionStorage)).to.deep.equal([
+        'preloop.signInNotice',
+      ]);
+      expect(sessionStorage.getItem('preloop.signInNotice')).to.equal(
+        'mfa_restarted'
+      );
       expect(location.href).not.to.contain('synthetic-challenge');
     } finally {
       history.replaceState({}, '', originalUrl);
@@ -213,10 +220,22 @@ describe('Login second step', () => {
     ).to.equal('Recovery code');
   });
 
+  // protects=the sign-in page says why an administrator ended the session;
+  // fails_when=plain sign-in form with no reason; no_claim=server is stubbed.
+  it('shows why an administrator ended the session', async () => {
+    sessionStorage.setItem('sessionEndReason', 'sign_in_reset');
+    const element = await fixture<LoginView>(html`<login-view></login-view>`);
+    await element.updateComplete;
+    expect(element.shadowRoot?.textContent).to.contain(
+      'An administrator reset your sign-in.'
+    );
+    expect(sessionStorage.getItem('sessionEndReason')).to.equal(null);
+  });
+
   for (const [code, message] of Object.entries({
     invalid_code: 'already been used',
     challenge_expired: 'sign-in has expired',
-    challenge_locked: 'Too many incorrect codes',
+    challenge_locked: 'Too many incorrect codes for this sign-in. Start again.',
   })) {
     // protects=stable actionable second-step errors; fails_when=refusal loses
     // its message or challenge; no_claim=server is stubbed.
@@ -236,4 +255,52 @@ describe('Login second step', () => {
       expect(element.shadowRoot?.textContent).to.contain('Start again');
     });
   }
+
+  // protects=a reload on the code step explains the restart (L1-2); fails_when=
+  // the password form reappears silently or the notice persists; no_claim=server is stubbed.
+  it('explains a restarted sign-in after reloading the code step', async () => {
+    const element = await secondStep();
+    await element.updateComplete;
+    element.remove();
+    const again = await fixture<LoginView>(html`<login-view></login-view>`);
+    await again.updateComplete;
+    expect(again.shadowRoot?.textContent).to.contain(
+      'Sign-in was restarted. Enter your password again.'
+    );
+    const third = await fixture<LoginView>(html`<login-view></login-view>`);
+    await third.updateComplete;
+    expect(third.shadowRoot?.textContent).not.to.contain(
+      'Sign-in was restarted'
+    );
+  });
+
+  // protects=the session ended by a password change is explained (L1-3).
+  it('says the password was changed', async () => {
+    sessionStorage.setItem('preloop.signInNotice', 'password_changed');
+    const element = await fixture<LoginView>(html`<login-view></login-view>`);
+    await element.updateComplete;
+    expect(element.shadowRoot?.textContent).to.contain(
+      'Your password was changed. Sign in again.'
+    );
+    expect(sessionStorage.getItem('preloop.signInNotice')).to.equal(null);
+  });
+
+  // protects=the two lockouts read differently (L1-1).
+  it('shows how long the per-user lock lasts', async () => {
+    const element = await secondStep();
+    fetchStub.callsFake(async () =>
+      json(
+        { detail: { code: 'mfa_user_locked', retry_after_seconds: 1500 } },
+        429
+      )
+    );
+    element.shadowRoot
+      ?.querySelector('form')
+      ?.dispatchEvent(new Event('submit', { cancelable: true }));
+    await waitUntil(() =>
+      element.shadowRoot
+        ?.querySelector('[role="alert"]')
+        ?.textContent?.includes('Try again in 25 minutes')
+    );
+  });
 });

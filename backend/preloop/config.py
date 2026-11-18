@@ -155,8 +155,36 @@ def _load_release_version(
     return default
 
 
+def _load_product_version(server_version: str, manifest: Path | None = None) -> str:
+    """The installed product release, for display only.
+
+    An edition image ships its release manifest at ``/app/EE-RELEASE.json``
+    next to the bundled open-source package; its ``version`` is what the
+    operator installed. Without a readable manifest this is the package
+    version. Client compatibility and update checks keep ``SERVER_VERSION``.
+
+    Args:
+        server_version: The open-source package version.
+        manifest: Manifest path; defaults to ``EE-RELEASE.json`` in the
+            project root.
+
+    Returns:
+        The manifest's version string, else ``server_version``.
+    """
+    import json
+
+    if manifest is None:
+        manifest = Path(__file__).resolve().parents[2] / "EE-RELEASE.json"
+    try:
+        value = json.loads(manifest.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        return server_version
+    return value.strip() if isinstance(value, str) and value.strip() else server_version
+
+
 # Versioning
 SERVER_VERSION = _load_release_version()
+PRODUCT_VERSION = _load_product_version(SERVER_VERSION)
 MIN_CLIENT_VERSION = SERVER_VERSION
 MAX_CLIENT_VERSION = SERVER_VERSION
 

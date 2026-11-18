@@ -128,6 +128,57 @@ describe('Authenticator enrollment', () => {
     expect(element.shadowRoot?.querySelector('sl-checkbox')).to.equal(null);
   });
 
+  // protects=policy-required authenticator is not offered for removal and a
+  // server refusal is shown; fails_when=Turn off is offered or a 403 is
+  // silent; no_claim=server is stubbed.
+  it('explains instead of offering Turn off when policy requires the factor', async () => {
+    let blocked = true;
+    fetchStub.callsFake(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/features')) return json({ features: {} });
+      if (url.endsWith('/status'))
+        return json({
+          totp_enabled: true,
+          totp_removal_blocked: blocked,
+          recovery_codes_remaining: 10,
+        });
+      if (url.endsWith('/disable'))
+        return json({ detail: { code: 'mfa_required_by_policy' } }, 403);
+      return json({});
+    });
+    const blockedText =
+      'Your account requires a second sign-in step. Add another factor before removing this one.';
+    let element = await fixture<MfaCard>(html`<mfa-card></mfa-card>`);
+    await waitUntil(() =>
+      element.shadowRoot?.textContent?.includes('Authenticator app is on')
+    );
+    const buttons = () =>
+      Array.from(element.shadowRoot!.querySelectorAll('sl-button')).map(
+        (button) => button.textContent?.trim()
+      );
+    expect(element.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.contain(
+      blockedText
+    );
+    expect(buttons()).not.to.include('Turn off');
+    // Policy changed after the page loaded: the server refusal is shown.
+    blocked = false;
+    element = await fixture<MfaCard>(html`<mfa-card></mfa-card>`);
+    await waitUntil(() => buttons().includes('Turn off'));
+    const input = element.shadowRoot!.querySelector('sl-input')!;
+    (input as unknown as HTMLInputElement).value = '123456';
+    input.dispatchEvent(new Event('sl-input'));
+    await element.updateComplete;
+    Array.from(element.shadowRoot!.querySelectorAll<HTMLElement>('sl-button'))
+      .find((button) => button.textContent?.trim() === 'Turn off')!
+      .click();
+    await answerConfirmDialog(true);
+    await waitUntil(() =>
+      element.shadowRoot
+        ?.querySelector('[role="status"]')
+        ?.textContent?.includes(blockedText)
+    );
+  });
+
   // protects=a factor this server cannot decrypt reads as needing setup and
   // can be removed with a recovery code; fails_when=it still reads as on or
   // removal asks for an authenticator code; no_claim=server is stubbed.

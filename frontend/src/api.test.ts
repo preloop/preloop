@@ -464,6 +464,35 @@ describe('api', () => {
       expect(routerGoStub).to.have.been.calledWith('/login');
     });
 
+    // protects=a sign-out caused by an administrator's policy change carries
+    // its reason to the sign-in page; fails_when=reason header is dropped;
+    // no_claim=server is stubbed.
+    it('keeps the session end reason for the sign-in page', async () => {
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/api/v1/auth/refresh')) {
+          return new Response(JSON.stringify({ detail: 'Session revoked' }), {
+            status: 401,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Session-End-Reason': 'sign_in_policy',
+            },
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      await fetchWithAuth('/api/v1/test').catch(() => undefined);
+      const { takeSessionEndNotice } = await import(
+        './services/session-end-notice'
+      );
+      expect(takeSessionEndNotice()).to.contain(
+        'requires a second sign-in step'
+      );
+    });
+
     it('clears tokens when refresh is definitively rejected', async () => {
       fetchStub.callsFake(async (input: RequestInfo | URL) => {
         const url = typeof input === 'string' ? input : input.toString();

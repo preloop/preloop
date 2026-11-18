@@ -13,6 +13,7 @@ import consoleStyles from '../styles/console-styles.css?inline';
 export class MfaCard extends LitElement {
   @state() private enabled = false;
   @state() private needsSetup = false;
+  @state() private removalBlocked = false;
   @state() private enrollmentAvailable = true;
   @state() private remaining = 0;
   @state() private loaded = false;
@@ -81,6 +82,7 @@ export class MfaCard extends LitElement {
       this.enrollmentAvailable = features.features.mfa_totp !== false;
       this.enabled = data.totp_enabled;
       this.needsSetup = data.totp_needs_setup === true;
+      this.removalBlocked = data.totp_removal_blocked === true;
       if (this.needsSetup) this.recovery = true;
       this.remaining = data.recovery_codes_remaining;
       this.loaded = true;
@@ -314,32 +316,48 @@ export class MfaCard extends LitElement {
                           Authenticator app is on. ${this.remaining} recovery
                           codes remaining.
                         </p>
-                        <p>
-                          Enter a fresh code to replace recovery codes or turn
-                          off the authenticator app.
-                        </p>
-                        ${this.proofInput()}
-                        <sl-button
-                          variant="text"
-                          @click=${() => {
-                            this.recovery = !this.recovery;
-                            this.code = '';
-                          }}
-                          >${this.recovery ? 'Use an authenticator code' : 'Use a recovery code to turn off'}</sl-button
-                        >
-                        <sl-button
-                          ?disabled=${this.recovery || this.busy || !this.code}
-                          @click=${this.regenerate}
-                          >Replace recovery codes</sl-button
-                        >
-                        <sl-button
-                          class="remove"
-                          variant="danger"
-                          outline
-                          ?disabled=${this.busy || !this.code}
-                          @click=${this.disable}
-                          >Turn off</sl-button
-                        >
+                        ${
+                          this.removalBlocked
+                            ? html`<p>
+                                  Enter a fresh code to replace recovery codes.
+                                </p>
+                                <p>
+                                  Your account requires a second sign-in step.
+                                  Add another factor before removing this one.
+                                </p>
+                                ${this.proofInput()}
+                                <sl-button
+                                  ?disabled=${this.busy || !this.code}
+                                  @click=${this.regenerate}
+                                  >Replace recovery codes</sl-button
+                                >`
+                            : html`<p>
+                                  Enter a fresh code to replace recovery codes
+                                  or turn off the authenticator app.
+                                </p>
+                                ${this.proofInput()}
+                                <sl-button
+                                  variant="text"
+                                  @click=${() => {
+                                    this.recovery = !this.recovery;
+                                    this.code = '';
+                                  }}
+                                  >${this.recovery ? 'Use an authenticator code' : 'Use a recovery code to turn off'}</sl-button
+                                >
+                                <sl-button
+                                  ?disabled=${this.recovery || this.busy || !this.code}
+                                  @click=${this.regenerate}
+                                  >Replace recovery codes</sl-button
+                                >
+                                <sl-button
+                                  class="remove"
+                                  variant="danger"
+                                  outline
+                                  ?disabled=${this.busy || !this.code}
+                                  @click=${this.disable}
+                                  >Turn off</sl-button
+                                >`
+                        }
                       `
                     : !this.enrollmentAvailable
                       ? html`<p>

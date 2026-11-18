@@ -1373,6 +1373,37 @@ async def login_json(
     }
 
 
+def _with_session_end_reason(
+    db: Session, user: Any, token_data: Any, exc: HTTPException
+) -> HTTPException:
+    """Add ``X-Session-End-Reason`` when an administrator change ended a session.
+
+    The value is ``sign_in_policy`` or ``sign_in_reset``; the console turns it
+    into a notice on the sign-in page. Only a holder of this user's signed
+    refresh token sees it, and it never names the administrator or the reason
+    they gave.
+    """
+    from preloop.api.auth.jwt import REFRESH_TOKEN_EXPIRE_DAYS
+    from preloop.models.crud.audit_log import session_end_reason
+
+    expires = token_data.claims.get("exp")
+    if exc.status_code != status.HTTP_401_UNAUTHORIZED or type(expires) is not int:
+        return exc
+    issued = datetime.fromtimestamp(expires, UTC) - timedelta(
+        days=REFRESH_TOKEN_EXPIRE_DAYS
+    )
+    reason = session_end_reason(
+        db, account_id=user.account_id, user_id=user.id, since=issued
+    )
+    if reason is None:
+        return exc
+    return HTTPException(
+        status_code=exc.status_code,
+        detail=exc.detail,
+        headers={**(exc.headers or {}), "X-Session-End-Reason": reason},
+    )
+
+
 @router.post(
     "/refresh",
     response_model=Token,
@@ -1434,12 +1465,15 @@ def refresh_token(
             )
 
         require_active_identity(session, user)
-        reject_stale_token_generation(user, token_data)
         from preloop.services.authentication_policy import authorize_authentication
 
-        auth_context = authorize_authentication(
-            db, user, claims=token_data.claims, purpose="refresh"
-        )
+        try:
+            reject_stale_token_generation(user, token_data)
+            auth_context = authorize_authentication(
+                db, user, claims=token_data.claims, purpose="refresh"
+            )
+        except HTTPException as exc:
+            raise _with_session_end_reason(session, user, token_data, exc) from None
 
         # A session may not outlive the verification requirement either: a
         # user who was signed in when the setting went on stops rotating.

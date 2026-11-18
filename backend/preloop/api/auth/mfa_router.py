@@ -54,6 +54,8 @@ class MfaStatus(BaseModel):
 
     totp_enabled: bool
     totp_needs_setup: bool = False
+    # The sign-in policy forbids removing this, the user's only strong factor.
+    totp_removal_blocked: bool = False
     recovery_codes_remaining: int
 
 
@@ -160,8 +162,23 @@ def status(
     return MfaStatus(
         totp_enabled=enabled,
         totp_needs_setup=enabled and obj is not None and not mfa.readable(obj),
+        totp_removal_blocked=enabled and _removal_blocked(db, user),
         recovery_codes_remaining=crud_mfa.remaining(db, user.id),
     )
+
+
+def _removal_blocked(db: Session, user: models.User) -> bool:
+    """Ask the optional edition guard, without a proof, whether removal would fail."""
+    from preloop.plugins.account_hooks import get_factor_removal_policy
+
+    policy = get_factor_removal_policy()
+    if policy is None:
+        return False
+    try:
+        policy(db, user, "totp")
+    except HTTPException:
+        return True
+    return False
 
 
 @router.post("/enroll", response_model=Enrollment)

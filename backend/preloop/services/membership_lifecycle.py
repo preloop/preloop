@@ -42,11 +42,15 @@ def offboard_membership(
         Counts of what this call revoked and the preserved machine key ids.
 
     Raises:
+        LastOwnerError: The membership is the account's last active owner.
         ValueError: The membership is not in the account, the actor belongs
             to another account, or the reason is empty or too long.
     """
     if actor is not None and actor.account_id != account_id and not actor.is_superuser:
         raise ValueError("Actor does not belong to account")
+    from preloop.models.crud.permission import ensure_owner_remains
+
+    ensure_owner_remains(db, account_id=account_id, user_id=user_id)
     if not reason.strip() or len(reason) > 500:
         raise ValueError("Offboarding reason must contain 1 to 500 characters")
     try:

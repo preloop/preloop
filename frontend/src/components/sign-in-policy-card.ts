@@ -238,8 +238,11 @@ export class SignInPolicyCard extends LitElement {
                 ></sl-input>
                 <p class="help">
                   Use 0 for off, or 5–720 minutes. Covered members confirm their
-                  identity again before console approval decisions, API key
-                  changes, and sensitive account settings.
+                  identity again before approving or declining approvals in the
+                  console, creating or deleting API keys, changing member or
+                  team roles, configuring single sign-on, and changing this
+                  policy. Changing a password asks for the current password, not
+                  a fresh code.
                 </p>
                 <p class="help">
                   Mobile, watch, Slack, and Mattermost approval channels use

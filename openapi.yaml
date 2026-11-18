@@ -47770,6 +47770,10 @@ components:
           type: boolean
           title: Totp Needs Setup
           default: false
+        totp_removal_blocked:
+          type: boolean
+          title: Totp Removal Blocked
+          default: false
         recovery_codes_remaining:
           type: integer
           title: Recovery Codes Remaining

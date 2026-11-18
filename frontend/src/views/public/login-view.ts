@@ -5,11 +5,13 @@ import {
   takePendingMfaChallenge,
   takeRedirectMfaChallenge,
   enrollmentOnly,
+  setSignInNotice,
+  takeSignInNotice,
 } from '../../services/mfa';
 import { REST_API_PREFIX } from '../../api-path';
 import { discoverSso } from '../../services/sso-api';
 import { consumeLoginReturn } from '../../utils/login-return';
-import { LitElement, html, css, nothing } from 'lit';
+import { LitElement, html, css, nothing, type PropertyValues } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '../../router';
 import {
@@ -28,6 +30,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '../../components/logo-component';
 import { trackGoal } from '../../services/web-analytics';
 import { passkeysSupported, signInWithPasskey } from '../../services/passkeys';
+import { takeSessionEndNotice } from '../../services/session-end-notice';
 
 const OAUTH_PROVIDER_CONFIG: Record<string, { label: string; icon: string }> = {
   github: { label: 'GitHub', icon: 'github' },
@@ -155,6 +158,9 @@ export class LoginView extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    // A notice left by a reloaded code step or a password change.
+    const notice = takeSignInNotice();
+    if (notice) this.successMessage = notice;
     this.mfaChallenge = takePendingMfaChallenge();
     const handoff = takeRedirectMfaChallenge();
     if (handoff) {
@@ -170,6 +176,8 @@ export class LoginView extends LitElement {
       )
         ? target
         : undefined;
+    const ended = takeSessionEndNotice();
+    if (ended) this.successMessage = ended;
     if (this.targetAccountId)
       this.successMessage =
         'Sign in again for the selected account. Account owners can use their password or passkey for emergency access.';
@@ -384,6 +392,14 @@ export class LoginView extends LitElement {
     } finally {
       this.resending = false;
     }
+  }
+
+  updated(changed: PropertyValues): void {
+    super.updated(changed);
+    // Remember only that a code step is open, so a reload can say why the
+    // password form is back. The challenge itself is never stored.
+    if (changed.has('mfaChallenge'))
+      setSignInNotice(this.mfaChallenge ? 'mfa_restarted' : null);
   }
 
   disconnectedCallback(): void {

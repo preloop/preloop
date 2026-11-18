@@ -536,6 +536,8 @@ export class ConsoleHeader extends LitElement {
       .getFeatures()
       .then((features) => {
         this.serverVersion = features.server_version || '';
+        this.productVersion =
+          features.product_version || features.server_version || '';
         this.cloudSupport = features.features.cloud_support === true;
         this.runnerNoticesEnabled = features.features.runner_sharing === true;
         void this.refreshRunnerNotices();
@@ -1193,6 +1195,8 @@ export class ConsoleHeader extends LitElement {
   }
 
   @state() private serverVersion = '';
+  /** Installed release (an edition's own version), for display only. */
+  @state() private productVersion = '';
 
   async fetchUserDetails(): Promise<void> {
     const version = ++this.userRequestVersion;
@@ -1502,7 +1506,7 @@ export class ConsoleHeader extends LitElement {
         <sl-divider></sl-divider>
         <div class="dropdown-footer">
           ${brand.name}
-          ${this.serverVersion ? `v${this.serverVersion}` : 'version unavailable'}
+          ${this.productVersion ? `v${this.productVersion}` : 'version unavailable'}
         </div>
       </sl-menu>
     </sl-dropdown>`;

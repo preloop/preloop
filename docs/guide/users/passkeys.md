@@ -67,6 +67,17 @@ passkey and turn the setting on again.
 
 ## For operators
 
+Passkeys need the console to be opened at a domain name. Browsers refuse an
+IP address as the passkey's relying party ID, so a console opened at
+`http://127.0.0.1:8080` or `http://192.0.2.10` cannot add or use a passkey
+(the console says so). `http://localhost:<port>` works on the machine itself,
+because browsers treat `localhost` as secure; any other name needs HTTPS. The
+port does not matter. By default the API uses the host name of each request as
+the relying party ID and the browser's `Origin` as the expected origin. Set
+`WEBAUTHN_RP_ID` (for example `preloop.example.com`) and `WEBAUTHN_ORIGIN`
+(for example `https://preloop.example.com`) only when a proxy changes the
+host the API sees. A passkey works only under the name it was registered on.
+
 If requiring user verification locks out people whose security keys have no
 PIN, set `PASSKEYS_REQUIRE_USER_VERIFICATION=false` on the API. Passkeys then
 fall back to `preferred` verification, and nobody can newly turn on

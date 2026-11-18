@@ -54,7 +54,7 @@ def error(code: str, status: int = 401) -> HTTPException:
     messages = {
         "invalid_code": "The code is invalid or has already been used.",
         "challenge_expired": "Sign in again to get a new challenge.",
-        "challenge_locked": "Too many incorrect codes. Sign in again later.",
+        "challenge_locked": "Too many incorrect codes for this sign-in. Start again.",
         "mfa_already_enabled": "An authenticator app is already enabled.",
         "no_pending_enrollment": "Start authenticator enrollment first.",
         "mfa_not_enabled": "Enroll an authenticator app first.",
@@ -68,6 +68,28 @@ def error(code: str, status: int = 401) -> HTTPException:
     return HTTPException(
         status,
         detail={"code": code, "message": messages.get(code, "Authentication failed.")},
+    )
+
+
+def user_locked(now: float) -> HTTPException:
+    """The per-user hourly budget is spent; say when the fixed window ends.
+
+    Every proof, recovery codes included, is refused until then.
+    """
+    window = rate_limit.AUTH_MFA_USER.window_s
+    retry = max(1, int(window - (now % window)))
+    minutes = -(-retry // 60)
+    return HTTPException(
+        429,
+        detail={
+            "code": "mfa_user_locked",
+            "message": (
+                f"Too many incorrect codes. Try again in {minutes} "
+                f"minute{'s' if minutes != 1 else ''}."
+            ),
+            "retry_after_seconds": retry,
+        },
+        headers={"Retry-After": str(retry)},
     )
 
 
@@ -303,7 +325,7 @@ def prove(
         rate_limit.transactional_count(db, rate_limit.AUTH_MFA_USER, identity, now=now)
         >= 10
     ):
-        raise error("challenge_locked", 429)
+        raise user_locked(now)
     accepted = False
     if code is not None:
         step = match_step(

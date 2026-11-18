@@ -1643,6 +1643,18 @@ def create_app() -> FastAPI:
 
     install_rate_limit_handler(app)
 
+    from preloop.models.crud.permission import LastOwnerError
+
+    @app.exception_handler(LastOwnerError)
+    async def last_owner_exception_handler(
+        request: Request, exc: LastOwnerError
+    ) -> JSONResponse:
+        """Refuse a change that would leave an account without an owner."""
+        return JSONResponse(
+            status_code=409,
+            content={"detail": {"code": exc.code, "message": str(exc)}},
+        )
+
     # Add global exception handler to ensure all errors are logged
     @app.exception_handler(ModelGatewayAPIError)
     async def model_gateway_exception_handler(

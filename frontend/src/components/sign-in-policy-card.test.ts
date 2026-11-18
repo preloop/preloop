@@ -111,6 +111,16 @@ describe('Account sign-in policy', () => {
     );
   });
 
+  // protects=step-up help lists exactly what the window gates;
+  // fails_when=the list drifts from the gated endpoints; no_claim=server.
+  it('lists the actions the step-up window gates', async () => {
+    const element = await card();
+    const text = element.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(text).to.contain(
+      'Covered members confirm their identity again before approving or declining approvals in the console, creating or deleting API keys, changing member or team roles, configuring single sign-on, and changing this policy. Changing a password asks for the current password, not a fresh code.'
+    );
+  });
+
   // protects=policy disable clears step-up and replaces revoked tokens; fails_when=old credentials retained; no_claim=server auth is stubbed.
   it('turns step-up off with policy and stores replacement tokens', async () => {
     const element = await card();

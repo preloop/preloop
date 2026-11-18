@@ -388,10 +388,30 @@ def select_authenticated_membership(
     raise HTTPException(status_code=401, detail="Invalid account selection")
 
 
+INTERACTIVE_SESSION_MESSAGE = (
+    "This action needs an interactive console session with a recent second "
+    "step; API keys cannot perform it."
+)
+
+
 def request_authentication_context(request: Any, user: models.User) -> dict[str, Any]:
-    """Project the verified person session used for a browser token exchange."""
+    """Project the verified person session used for a browser token exchange.
+
+    Raises:
+        HTTPException: 403 ``interactive_session_required`` for a valid API
+            key, which can never carry a person's sign-in proof; 401 for any
+            other credential that is not a person session.
+    """
     from preloop.api.auth.jwt import decode_token
 
+    if getattr(user, "_auth_api_key", None) is not None:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "interactive_session_required",
+                "message": INTERACTIVE_SESSION_MESSAGE,
+            },
+        )
     scheme, _, bearer = request.headers.get("authorization", "").partition(" ")
     if scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="Person session required")
