@@ -53,6 +53,9 @@ class MfaStatus(BaseModel):
     """Non-sensitive factor state."""
 
     totp_enabled: bool
+    totp_needs_setup: bool = False
+    # The sign-in policy forbids removing this, the user's only strong factor.
+    totp_removal_blocked: bool = False
     recovery_codes_remaining: int
 
 
@@ -149,11 +152,33 @@ def _confirmed(db: Session, user: models.User) -> models.UserMfaFactor:
 def status(
     user: models.User = Depends(person_session), db: Session = Depends(get_db_session)
 ) -> MfaStatus:
-    """Read state without disclosing secrets or recovery hashes."""
+    """Read state without disclosing secrets or recovery hashes.
+
+    ``totp_needs_setup`` is true when a confirmed factor's secret cannot be
+    decrypted with this server's key: it must be removed and enrolled again.
+    """
+    obj = crud_mfa.factor(db, user.id)
+    enabled = obj is not None and obj.confirmed_at is not None
     return MfaStatus(
-        totp_enabled=crud_mfa.enabled(db, user.id),
+        totp_enabled=enabled,
+        totp_needs_setup=enabled and obj is not None and not mfa.readable(obj),
+        totp_removal_blocked=enabled and _removal_blocked(db, user),
         recovery_codes_remaining=crud_mfa.remaining(db, user.id),
     )
+
+
+def _removal_blocked(db: Session, user: models.User) -> bool:
+    """Ask the optional edition guard, without a proof, whether removal would fail."""
+    from preloop.plugins.account_hooks import get_factor_removal_policy
+
+    policy = get_factor_removal_policy()
+    if policy is None:
+        return False
+    try:
+        policy(db, user, "totp")
+    except HTTPException:
+        return True
+    return False
 
 
 @router.post("/enroll", response_model=Enrollment)

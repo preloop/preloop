@@ -12,6 +12,8 @@ import consoleStyles from '../styles/console-styles.css?inline';
 @customElement('mfa-card')
 export class MfaCard extends LitElement {
   @state() private enabled = false;
+  @state() private needsSetup = false;
+  @state() private removalBlocked = false;
   @state() private enrollmentAvailable = true;
   @state() private remaining = 0;
   @state() private loaded = false;
@@ -79,6 +81,9 @@ export class MfaCard extends LitElement {
       ]);
       this.enrollmentAvailable = features.features.mfa_totp !== false;
       this.enabled = data.totp_enabled;
+      this.needsSetup = data.totp_needs_setup === true;
+      this.removalBlocked = data.totp_removal_blocked === true;
+      if (this.needsSetup) this.recovery = true;
       this.remaining = data.recovery_codes_remaining;
       this.loaded = true;
     } catch (error) {
@@ -141,21 +146,34 @@ export class MfaCard extends LitElement {
 
   private disable(): void {
     void this.run(async () => {
-      const confirmed = await confirmDialog({
-        title: 'Turn off authenticator app',
-        message:
-          'Password sign-in will no longer ask for an authenticator code.',
-        confirmLabel: 'Turn off',
-        variant: 'danger',
-      });
+      const confirmed = await confirmDialog(
+        this.needsSetup
+          ? {
+              title: 'Remove authenticator app',
+              message:
+                'Your remaining recovery codes stop working. Set up the authenticator app again afterwards.',
+              confirmLabel: 'Remove',
+              variant: 'danger',
+            }
+          : {
+              title: 'Turn off authenticator app',
+              message:
+                'Password sign-in will no longer ask for an authenticator code.',
+              confirmLabel: 'Turn off',
+              variant: 'danger',
+            }
+      );
       if (!confirmed) return;
       await mfaRequest('disable', {
         [this.recovery ? 'recovery_code' : 'code']: this.code,
       });
-      this.enabled = false;
+      const removed = this.needsSetup;
+      this.enabled = this.needsSetup = false;
       this.remaining = 0;
       this.recovery = false;
-      this.message = 'Authenticator app turned off.';
+      this.message = removed
+        ? 'Authenticator app removed. Set it up again.'
+        : 'Authenticator app turned off.';
     });
   }
 
@@ -270,53 +288,100 @@ export class MfaCard extends LitElement {
                       >Cancel</sl-button
                     >
                   `
-                : this.enabled
+                : this.enabled && this.needsSetup
                   ? html`
                       <p>
-                        Authenticator app is on. ${this.remaining} recovery
-                        codes remaining.
+                        Your authenticator app needs to be set up again. This
+                        server's encryption key changed, so it can no longer
+                        check your codes. ${this.remaining} recovery codes
+                        remaining.
                       </p>
-                      <p>
-                        Enter a fresh code to replace recovery codes or turn off
-                        the authenticator app.
-                      </p>
-                      ${this.proofInput()}
-                      <sl-button
-                        variant="text"
-                        @click=${() => {
-                          this.recovery = !this.recovery;
-                          this.code = '';
-                        }}
-                        >${this.recovery ? 'Use an authenticator code' : 'Use a recovery code to turn off'}</sl-button
-                      >
-                      <sl-button
-                        ?disabled=${this.recovery || this.busy || !this.code}
-                        @click=${this.regenerate}
-                        >Replace recovery codes</sl-button
-                      >
-                      <sl-button
-                        class="remove"
-                        variant="danger"
-                        outline
-                        ?disabled=${this.busy || !this.code}
-                        @click=${this.disable}
-                        >Turn off</sl-button
-                      >
+                      ${
+                        this.removalBlocked
+                          ? html`<p>
+                              Your account requires a second sign-in step. Add
+                              another factor before removing this one, or ask an
+                              administrator to reset your sign-in.
+                            </p>`
+                          : html`<p>
+                                Enter a recovery code to remove it, then set it
+                                up again. If you have no recovery codes left,
+                                ask an administrator to reset your sign-in.
+                              </p>
+                              ${this.proofInput()}
+                              <sl-button
+                                variant="danger"
+                                outline
+                                ?disabled=${this.busy || !this.code}
+                                @click=${this.disable}
+                                >Remove authenticator app</sl-button
+                              >`
+                      }
                     `
-                  : !this.enrollmentAvailable
-                    ? html`<p>
-                        Authenticator enrollment is disabled on this server.
-                      </p>`
-                    : html`<p>
-                          Add a code from your authenticator app after password
-                          sign-in. Passkey and single sign-on continue to work.
+                  : this.enabled
+                    ? html`
+                        <p>
+                          Authenticator app is on. ${this.remaining} recovery
+                          codes remaining.
                         </p>
-                        <sl-button
-                          variant="primary"
-                          ?loading=${this.busy}
-                          @click=${this.start}
-                          >Set up authenticator app</sl-button
-                        >`
+                        ${
+                          this.removalBlocked
+                            ? html`<p>
+                                  Enter a fresh code to replace recovery codes.
+                                </p>
+                                <p>
+                                  Your account requires a second sign-in step.
+                                  Add another factor before removing this one.
+                                </p>
+                                ${this.proofInput()}
+                                <sl-button
+                                  ?disabled=${this.busy || !this.code}
+                                  @click=${this.regenerate}
+                                  >Replace recovery codes</sl-button
+                                >`
+                            : html`<p>
+                                  Enter a fresh code to replace recovery codes
+                                  or turn off the authenticator app.
+                                </p>
+                                ${this.proofInput()}
+                                <sl-button
+                                  variant="text"
+                                  @click=${() => {
+                                    this.recovery = !this.recovery;
+                                    this.code = '';
+                                  }}
+                                  >${this.recovery ? 'Use an authenticator code' : 'Use a recovery code to turn off'}</sl-button
+                                >
+                                <sl-button
+                                  ?disabled=${this.recovery || this.busy || !this.code}
+                                  @click=${this.regenerate}
+                                  >Replace recovery codes</sl-button
+                                >
+                                <sl-button
+                                  class="remove"
+                                  variant="danger"
+                                  outline
+                                  ?disabled=${this.busy || !this.code}
+                                  @click=${this.disable}
+                                  >Turn off</sl-button
+                                >`
+                        }
+                      `
+                    : !this.enrollmentAvailable
+                      ? html`<p>
+                          Authenticator enrollment is disabled on this server.
+                        </p>`
+                      : html`<p>
+                            Add a code from your authenticator app after
+                            password sign-in. Passkey and single sign-on
+                            continue to work.
+                          </p>
+                          <sl-button
+                            variant="primary"
+                            ?loading=${this.busy}
+                            @click=${this.start}
+                            >Set up authenticator app</sl-button
+                          >`
         }
       </div>
     </section>`;

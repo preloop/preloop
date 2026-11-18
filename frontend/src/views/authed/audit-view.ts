@@ -1423,6 +1423,14 @@ export class AuditView extends AuthedElement {
         return `Role assigned: ${event.details?.role || ''}`;
       case 'role_removed':
         return `Role removed: ${event.details?.role || ''}`;
+      case 'account.member.sign_in_reset': {
+        const member = this._getUserDisplay(
+          event.details?.target_user_id || event.resource_id
+        );
+        const reason =
+          typeof event.details?.reason === 'string' ? event.details.reason : '';
+        return `Sign-in reset for ${member}${reason ? `: ${reason}` : ''}`;
+      }
       default:
         // Sentence case with acronyms kept ("API key created"), dotted
         // types read word by word, as the Overview feed words them.

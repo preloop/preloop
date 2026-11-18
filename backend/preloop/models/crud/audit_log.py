@@ -1466,3 +1466,48 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
 
 # Global instance
 crud_audit_log = CRUDAuditLog(AuditLog)
+
+
+SIGN_IN_RESET_ACTION = "account.member.sign_in_reset"
+SIGN_IN_POLICY_ACTION = "account.sign_in_policy.updated"
+
+
+def session_end_reason(
+    db: Session, *, account_id: UUID, user_id: UUID, since: datetime
+) -> Optional[str]:
+    """Name an administrator change that ended a session issued at ``since``.
+
+    Reads only the action of the newest matching record: an administrator's
+    reset of this member, or a sign-in policy change on its account. The
+    actor, reason and details are never returned.
+
+    Args:
+        db: Database session.
+        account_id: The membership's account.
+        user_id: The membership whose session was refused.
+        since: When the refused token was issued (timezone-aware).
+
+    Returns:
+        ``"sign_in_reset"``, ``"sign_in_policy"`` or None.
+    """
+    action = db.scalar(
+        select(AuditLog.action)
+        .where(
+            AuditLog.account_id == account_id,
+            AuditLog.timestamp >= func.to_timestamp(since.timestamp()),
+            or_(
+                and_(
+                    AuditLog.action == SIGN_IN_RESET_ACTION,
+                    AuditLog.resource_id == str(user_id),
+                ),
+                AuditLog.action == SIGN_IN_POLICY_ACTION,
+            ),
+        )
+        .order_by(AuditLog.timestamp.desc())
+        .limit(1)
+    )
+    if action == SIGN_IN_RESET_ACTION:
+        return "sign_in_reset"
+    if action == SIGN_IN_POLICY_ACTION:
+        return "sign_in_policy"
+    return None

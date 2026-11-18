@@ -146,6 +146,68 @@ def seed_plan_catalog(db_session, project_root: str) -> None:
     db_session.commit()
 
 
+ROLLBACK_MESSAGE = (
+    "The database was migrated by a newer Preloop version than this image.",
+    "Set PRELOOP_VERSION back to the newer version, or restore the backup taken"
+    " before the upgrade.",
+    "Images alone cannot be rolled back.",
+)
+
+
+def unknown_revisions(database: set[str], known: set[str]) -> set[str]:
+    """Return the database's current revisions that this image does not ship.
+
+    Args:
+        database: Revision ids recorded in the database's alembic_version table.
+        known: Every revision id in this image's migration scripts.
+
+    Returns:
+        The recorded revisions missing from this image; empty when it can upgrade.
+    """
+    return set(database) - set(known)
+
+
+def stop_if_database_is_newer(database: set[str], known: set[str]) -> None:
+    """Exit non-zero with a plain explanation when the database is newer.
+
+    No downgrade is attempted.
+
+    Args:
+        database: Revision ids recorded in the database.
+        known: Every revision id in this image's migration scripts.
+
+    Raises:
+        SystemExit: When the database holds a revision this image does not know.
+    """
+    if unknown_revisions(database, known):
+        for line in ROLLBACK_MESSAGE:
+            click.echo(line)
+        sys.exit(1)
+
+
+def _database_revisions(engine) -> set[str]:
+    """Read the recorded Alembic revisions; empty for a new database."""
+    from sqlalchemy import inspect
+
+    with engine.connect() as connection:
+        if not inspect(connection).has_table("alembic_version"):
+            return set()
+        rows = connection.execute(text("SELECT version_num FROM alembic_version"))
+        return {row[0] for row in rows}
+
+
+def _image_revisions(alembic_dir: str) -> set[str]:
+    """List every revision id in this image's migration scripts."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(os.path.join(alembic_dir, "alembic.ini"))
+    config.set_main_option("script_location", os.path.join(alembic_dir, "alembic"))
+    return {
+        rev.revision for rev in ScriptDirectory.from_config(config).walk_revisions()
+    }
+
+
 @click.command()
 @click.option("--force", is_flag=True, help="Skip confirmation")
 def init_db(force: bool):
@@ -174,6 +236,10 @@ def init_db(force: bool):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # Alembic config is in backend/preloop/models/
         alembic_dir = os.path.join(project_root, "backend", "preloop", "models")
+
+        stop_if_database_is_newer(
+            _database_revisions(get_engine()), _image_revisions(alembic_dir)
+        )
 
         # Run alembic upgrade head
         click.echo("Running Alembic migrations to create database tables...")

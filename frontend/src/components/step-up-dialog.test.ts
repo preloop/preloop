@@ -56,6 +56,37 @@ describe('Shared step-up', () => {
     ).to.equal(1);
   });
 
+  // protects=the result of the retried action is never shown under the
+  // step-up dialog; fails_when=the proof resolves while "Confirm it's you" is
+  // still on screen; no_claim=server responses are stubbed.
+  it('closes before the caller sees the accepted proof', async () => {
+    sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input) =>
+        String(input).endsWith('/step-up')
+          ? json({ access_token: 'fresh', refresh_token: 'new-refresh' })
+          : json({ features: {} })
+      );
+    const dialog = await fixture<StepUpDialog>(
+      html`<step-up-dialog></step-up-dialog>`
+    );
+    const order: string[] = [];
+    const result = dialog.ask(['totp']);
+    await dialog.updateComplete;
+    const inner = dialog.shadowRoot!.querySelector('sl-dialog')!;
+    await waitUntil(() => inner.hasAttribute('open'));
+    inner.addEventListener('sl-after-hide', () => order.push('hidden'));
+    void result.then(() => {
+      order.push(inner.hasAttribute('open') ? 'resolved-open' : 'resolved');
+    });
+    dialog.shadowRoot
+      ?.querySelector('form')
+      ?.dispatchEvent(new Event('submit', { cancelable: true }));
+    await waitUntil(() => order.some((step) => step.startsWith('resolved')));
+    expect(await result).to.equal(true);
+    expect(order).to.deep.equal(['hidden', 'resolved']);
+  });
+
   // protects=one retry and visible second failure; fails_when=recursive prompts
   // or a hidden refusal; no_claim=server responses are stubbed.
   it('retries the original request once and surfaces a second failure', async () => {

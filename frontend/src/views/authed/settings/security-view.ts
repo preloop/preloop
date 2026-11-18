@@ -29,6 +29,7 @@ import consoleStyles from '../../../styles/console-styles.css?inline';
 import '../../../components/view-header';
 import '../../../components/mfa-card';
 import '../../../components/sign-in-policy-card';
+import { setSignInNotice } from '../../../services/mfa';
 
 @customElement('security-view')
 export class SecurityView extends LitElement {
@@ -285,6 +286,8 @@ export class SecurityView extends LitElement {
         new_password: this.newPassword,
       });
       this.changePasswordMessage = 'Password changed successfully.';
+      // The change ends this session; the sign-in page says why.
+      setSignInNotice('password_changed');
       this.currentPassword = '';
       this.newPassword = '';
       this.confirmNewPassword = '';

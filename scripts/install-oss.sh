@@ -40,6 +40,7 @@ LOG_FILE="${INSTALL_DIR}/install.log"
 # SMTP (approval emails, invitations, password resets). Set these to skip the
 # interactive prompts; leave SMTP_HOST empty to run without email.
 #   SMTP_HOST SMTP_PORT SMTP_USERNAME SMTP_PASSWORD SMTP_FROM SMTP_FROM_NAME
+#   SMTP_SECURITY (starttls, the default; ssl for implicit TLS; none)
 #   PRELOOP_SKIP_SMTP=1   never prompt for SMTP
 PRELOOP_URL="${PRELOOP_URL:-}"
 PRELOOP_TLS_EMAIL="${PRELOOP_TLS_EMAIL:-}"
@@ -51,6 +52,7 @@ SMTP_USERNAME="${SMTP_USERNAME:-}"
 SMTP_PASSWORD="${SMTP_PASSWORD:-}"
 SMTP_FROM="${SMTP_FROM:-}"
 SMTP_FROM_NAME="${SMTP_FROM_NAME:-Preloop}"
+SMTP_SECURITY="${SMTP_SECURITY:-}"
 PRELOOP_SKIP_SMTP="${PRELOOP_SKIP_SMTP:-}"
 
 # First user + signup lockdown. Setting username AND password runs this
@@ -219,6 +221,7 @@ load_existing_env() {
   [ -n "$SMTP_FROM" ] || SMTP_FROM="$(env_value SMTP_FROM "$env_file")"
   existing_port="$(env_value SMTP_PORT "$env_file")"
   [ -z "$existing_port" ] || SMTP_PORT="$existing_port"
+  [ -n "$SMTP_SECURITY" ] || SMTP_SECURITY="$(env_value SMTP_SECURITY "$env_file")"
   existing_from_name="$(env_value SMTP_FROM_NAME "$env_file")"
   [ -z "$existing_from_name" ] || SMTP_FROM_NAME="$existing_from_name"
 }
@@ -1011,6 +1014,7 @@ $(compose_env_assign SMTP_USERNAME "$SMTP_USERNAME")
 $(compose_env_assign SMTP_PASSWORD "$SMTP_PASSWORD")
 $(compose_env_assign SMTP_FROM "$SMTP_FROM")
 $(compose_env_assign SMTP_FROM_NAME "$SMTP_FROM_NAME")
+$(compose_env_assign SMTP_SECURITY "$SMTP_SECURITY")
 EOF
   else
     # Keep an existing install's secrets, but refresh the public URL.
@@ -1034,6 +1038,7 @@ EOF
         compose_env_assign SMTP_PASSWORD "$SMTP_PASSWORD"
         compose_env_assign SMTP_FROM "$SMTP_FROM"
         compose_env_assign SMTP_FROM_NAME "$SMTP_FROM_NAME"
+        compose_env_assign SMTP_SECURITY "$SMTP_SECURITY"
       } >> "$tmp_env"
     fi
     mv "$tmp_env" "${INSTALL_DIR}/.env"

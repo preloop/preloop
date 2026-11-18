@@ -501,6 +501,30 @@ describe('AuditView', () => {
     document.body.removeChild(element);
   });
 
+  // protects=an administrator's sign-in reset shows whom it affected and the
+  // reason on the row; fails_when=only the action name is shown;
+  // no_claim=server data is synthetic.
+  it('shows the member and reason of a sign-in reset on its row', async () => {
+    const element = document.createElement('audit-view') as AuditView;
+    (element as any)._userMap.set('member-id', {
+      full_name: 'Jane Doe',
+      username: 'jane',
+    });
+    const label = (element as any)._getPrimaryLabel({
+      action: 'account.member.sign_in_reset',
+      resource_id: 'member-id',
+      details: { target_user_id: 'member-id', reason: 'Lost phone' },
+    });
+    expect(label).to.equal('Sign-in reset for Jane Doe: Lost phone');
+    expect(
+      (element as any)._getPrimaryLabel({
+        action: 'account.member.sign_in_reset',
+        resource_id: 'member-id',
+        details: {},
+      })
+    ).to.equal('Sign-in reset for Jane Doe');
+  });
+
   it('opens an event from a keyboard-reachable button with aria-expanded', async () => {
     const element = document.createElement('audit-view') as AuditView;
     document.body.appendChild(element);

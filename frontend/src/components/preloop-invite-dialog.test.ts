@@ -15,7 +15,13 @@ describe('PreloopInviteDialog', () => {
     });
   }
 
-  function createFetchStub(opts: { failFor?: string[]; rbac?: boolean } = {}) {
+  function createFetchStub(
+    opts: {
+      failFor?: string[];
+      rbac?: boolean;
+      unsent?: Record<string, string>;
+    } = {}
+  ) {
     return sinon
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -43,7 +49,13 @@ describe('PreloopInviteDialog', () => {
           if (opts.failFor?.includes(body.email)) {
             return json({ detail: 'User is already a member' }, 400);
           }
-          return json({ id: `inv-${body.email}`, email: body.email });
+          const reason = opts.unsent?.[body.email];
+          return json({
+            id: `inv-${body.email}`,
+            email: body.email,
+            email_sent: reason === undefined,
+            email_error: reason ?? null,
+          });
         }
         return json({ detail: `Unhandled: ${method} ${url}` }, 500);
       });
@@ -78,6 +90,57 @@ describe('PreloopInviteDialog', () => {
     fetchStub?.restore();
     localStorage.clear();
     invalidateApiCaches();
+  });
+
+  // protects=an admin learns the invitation exists but its email did not go
+  // protects=the host's "keep open" signal and a clean reopen; fails_when=
+  // partial is false for unsent email or the warning survives a close by the
+  // host setting open=false; no_claim=server stubbed.
+  it('asks the host to stay open and forgets the warning once closed', async () => {
+    fetchStub = createFetchStub({
+      unsent: {
+        'jane@example.com': 'The mail server did not accept the message.',
+      },
+    });
+    const element = await mount();
+    const events: CustomEvent[] = [];
+    element.addEventListener('invitations-sent', (e) =>
+      events.push(e as CustomEvent)
+    );
+    (element as any).emailsText = 'jane@example.com';
+    (element as any).selectedRoleIds = ['role-1'];
+    await element.handleSendInvitations();
+    expect(events[0].detail.partial).to.equal(true);
+    element.open = false;
+    await element.updateComplete;
+    element.open = true;
+    await element.updateComplete;
+    expect(element.shadowRoot!.querySelector('sl-alert[variant="warning"]')).to
+      .not.exist;
+  });
+
+  // out; fails_when=dialog shows "Sent" and auto-closes; no_claim=server stubbed.
+  it('warns when an invitation is created but its email was not sent', async () => {
+    const reason =
+      'The mail server does not offer STARTTLS; set SMTP_SECURITY to match it.';
+    fetchStub = createFetchStub({ unsent: { 'jane@example.com': reason } });
+    const element = await mount();
+    (element as any).emailsText = 'jane@example.com\njohn@example.com';
+    (element as any).selectedRoleIds = ['role-1'];
+    await element.handleSendInvitations();
+    await element.updateComplete;
+    const warning = element.shadowRoot!.querySelector(
+      'sl-alert[variant="warning"]'
+    );
+    expect(warning, 'warning alert').to.exist;
+    expect(warning!.textContent).to.contain('jane@example.com');
+    expect(warning!.textContent).to.contain(reason);
+    expect(warning!.textContent).to.contain('not sent');
+    expect(warning!.textContent).not.to.contain('john@example.com');
+    await new Promise((resolve) => setTimeout(resolve, 1700));
+    expect(element.open, 'stays open so the warning can be read').to.equal(
+      true
+    );
   });
 
   it('reads teams and roles when it first opens, not while closed', async () => {

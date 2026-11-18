@@ -22,6 +22,8 @@ interface Member {
   role: string;
   passkey: boolean;
   totp: boolean;
+  /** Enrolled, but this server's key cannot read it. */
+  totp_unusable?: boolean;
   sso: boolean;
   reset_allowed: boolean;
 }
@@ -236,8 +238,11 @@ export class SignInPolicyCard extends LitElement {
                 ></sl-input>
                 <p class="help">
                   Use 0 for off, or 5–720 minutes. Covered members confirm their
-                  identity again before console approval decisions, API key
-                  changes, and sensitive account settings.
+                  identity again before approving or declining approvals in the
+                  console, creating or deleting API keys, changing member or
+                  team roles, configuring single sign-on, and changing this
+                  policy. Changing a password asks for the current password, not
+                  a fresh code.
                 </p>
                 <p class="help">
                   Mobile, watch, Slack, and Mattermost approval channels use
@@ -274,7 +279,7 @@ export class SignInPolicyCard extends LitElement {
                           <td>${member.email}</td>
                           <td>${member.role}</td>
                           <td>
-                            ${[member.passkey && 'Passkey', member.totp && 'Authenticator app', member.sso && 'SSO'].filter(Boolean).join(', ') || 'Enrollment needed'}
+                            ${[member.passkey && 'Passkey', member.totp && 'Authenticator app', member.totp_unusable && 'Authenticator app (unusable, needs to be set up again)', member.sso && 'SSO'].filter(Boolean).join(', ') || 'Enrollment needed'}
                           </td>
                           <td>
                             ${

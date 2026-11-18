@@ -59,7 +59,7 @@ curl -fsSL https://preloop.ai/install/oss | \
 | `PRELOOP_ADMIN_USERNAME` / `PRELOOP_ADMIN_EMAIL` / `PRELOOP_ADMIN_PASSWORD` | Unattended first-user creation (email is validated up front; the run fails fast on a malformed address) |
 | `PRELOOP_SKIP_ADMIN=1` | Skip first-user creation, leave signups open |
 | `PRELOOP_BOOTSTRAP_TOKEN` | Provide your own first-user setup token instead of the generated one (kept across re-runs) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `PRELOOP_SKIP_SMTP=1` | Mail settings |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `PRELOOP_SKIP_SMTP=1` | Mail settings; see [Email (SMTP)](#email-smtp) |
 | `PRELOOP_DISABLE_TELEMETRY=true` | Disable the daily version check-in; saved in the install's `.env`. Set on every test/CI install |
 | `DISABLE_VERSION_CHECK=true` | Compatibility alias for the same opt-out; also saved in `.env` |
 | `INSTALL_DIR` | Override `~/.preloop-oss` |
@@ -107,6 +107,30 @@ command targets your deployment. You can also set it per-command:
     under Git Bash, it silently installs to a directory that is not on the
     Windows `PATH`. See [Windows](windows-wsl2.md) for WSL, manual download,
     and current limits.
+
+## Email (SMTP)
+
+Preloop sends invitations, password resets and approval emails through the
+SMTP server in `.env`. Without `SMTP_HOST` no email is sent.
+
+| Setting | Meaning |
+|---------|---------|
+| `SMTP_HOST`, `SMTP_PORT` | The mail server. |
+| `SMTP_SECURITY` | `starttls` (default): connect in plain text and upgrade with STARTTLS, usually port 587. `ssl`: implicit TLS from the first byte, usually port 465. `none`: no encryption, for an internal relay only, usually port 25. |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | Optional. Leave both empty for a relay that accepts mail without authentication; Preloop then sends without `AUTH`. Preloop never sends them when `SMTP_SECURITY=none` and reports an error instead. |
+| `SMTP_FROM`, `SMTP_FROM_NAME` | The sender address and name. |
+
+If the mail server reports `STARTTLS extension not supported by server`, set
+`SMTP_SECURITY` to `ssl` or, for an internal relay without credentials,
+`none`. Restart the stack after changing `.env`.
+
+Re-running the installer keeps an existing `SMTP_SECURITY`. On Kubernetes, set
+`config.smtp.security` in the Helm values (`starttls`, `ssl` or `none`).
+
+When an invitation email cannot be sent, the invitation is still created.
+The console says the email was not sent and why in one sentence (for
+example, that `SMTP_HOST` is empty or that the server rejected the
+credentials); fix the setting, then use **Resend invitation** on the pending invitation.
 
 ## Managing the stack
 

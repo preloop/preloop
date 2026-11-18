@@ -108,6 +108,26 @@ def decrypt_value(encrypted_value: str) -> str:
         raise ValueError("Unable to decrypt value") from e
 
 
+def try_decrypt_value(encrypted_value: str) -> str | None:
+    """Decrypt a stored value, returning None when this key cannot read it.
+
+    Unlike ``decrypt_value`` this logs nothing, so a caller can write one
+    line of its own that names the affected record.
+
+    Args:
+        encrypted_value: Fernet-encrypted value from storage
+
+    Returns:
+        The plain text value, or None if the token is invalid for this key
+    """
+    if not encrypted_value:
+        return ""
+    try:
+        return _get_fernet().decrypt(encrypted_value.encode("utf-8")).decode("utf-8")
+    except InvalidToken:
+        return None
+
+
 def reset_encryption_cache() -> None:
     """Reset the encryption key cache. Useful for testing."""
     global _fernet

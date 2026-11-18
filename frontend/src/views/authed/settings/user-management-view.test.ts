@@ -544,6 +544,64 @@ describe('UserManagementView', () => {
     expect(element.shadowRoot!.querySelector('div.error')).to.not.exist;
   });
 
+  // protects=the last owner refusal is explained and the box stays checked;
+  // fails_when=the dialog shows a generic error or the owner box reads as
+  // cleared; no_claim=server is stubbed.
+  it('keeps the owner box checked and shows why removal was refused', async () => {
+    fetchStub = createFetchStub({ users: [sampleUser], advancedRoles: true });
+    const base = fetchStub.wrappedMethod;
+    fetchStub.restore();
+    const message =
+      'This change would leave the account without an owner. Make another member an owner first.';
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method || 'GET').toUpperCase();
+        if (url.endsWith('/users/user-1/roles/role-1') && method === 'DELETE')
+          return json({ detail: { code: 'last_owner', message } }, 409);
+        if (url.endsWith('/users/user-1/roles') && method === 'GET')
+          return json([{ id: 'role-1', name: 'owner' }]);
+        if (url.includes('/api/v1/roles'))
+          return json({ roles: [{ id: 'role-1', name: 'owner' }] });
+        return createFetchStubResponse(url, method, init);
+      });
+    function createFetchStubResponse(
+      url: string,
+      method: string,
+      init?: RequestInit
+    ): Promise<Response> {
+      if (url.includes('/api/v1/features'))
+        return Promise.resolve(
+          json({
+            plugins: [],
+            features: { user_management: true, rbac: true },
+          })
+        );
+      if (url.includes('/auth/users/me'))
+        return Promise.resolve(json({ permissions: null }));
+      if (url.includes('/api/v1/users') && method === 'GET')
+        return Promise.resolve(json({ users: [sampleUser], total: 1 }));
+      return base.call(window, url, init);
+    }
+    const element = await mountWithUser();
+    await (element as any).openRoleModal(sampleUser);
+    await element.updateComplete;
+    const box = element.shadowRoot!.querySelector<HTMLInputElement>(
+      'sl-dialog[label="Manage roles"] sl-checkbox'
+    )!;
+    expect(box.checked).to.equal(true);
+    box.checked = false;
+    box.dispatchEvent(new Event('sl-change'));
+    await waitUntil(() =>
+      element.shadowRoot
+        ?.querySelector('sl-dialog[label="Manage roles"] [role="alert"]')
+        ?.textContent?.includes('without an owner')
+    );
+    await element.updateComplete;
+    expect(box.checked).to.equal(true);
+  });
+
   it('lists roles by their display names in the roles dialog', async () => {
     fetchStub = createFetchStub({ users: [sampleUser], advancedRoles: true });
     const element = await mountWithUser();

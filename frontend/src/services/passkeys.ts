@@ -112,6 +112,18 @@ function serializeAssertion(credential: PublicKeyCredential): any {
 }
 
 /* Error bodies are either a string or {code, message}. */
+/**
+ * WebAuthn refuses an IP address as the relying party id with a SecurityError
+ * ("invalid domain"). Say what to change instead of showing that text.
+ */
+function explainSecurityError(error: unknown): never {
+  if (error instanceof DOMException && error.name === 'SecurityError')
+    throw new Error(
+      'Passkeys need the console to be opened at a domain name (for example localhost or the server name), not an IP address. Open it by name.'
+    );
+  throw error;
+}
+
 function detailMessage(detail: unknown, fallback: string): string {
   if (typeof detail === 'string') return detail;
   if (
@@ -135,9 +147,9 @@ export async function registerPasskey(name?: string): Promise<PasskeySummary> {
   }
   const { options, challenge_token } = await optionsResponse.json();
 
-  const credential = (await navigator.credentials.create({
-    publicKey: prepareCreationOptions(options),
-  })) as PublicKeyCredential | null;
+  const credential = (await navigator.credentials
+    .create({ publicKey: prepareCreationOptions(options) })
+    .catch(explainSecurityError)) as PublicKeyCredential | null;
   if (!credential) {
     throw new Error('Passkey registration was cancelled');
   }
@@ -201,9 +213,9 @@ export async function signInWithPasskey(
   }
   const { options, challenge_token } = await optionsResponse.json();
 
-  const credential = (await navigator.credentials.get({
-    publicKey: prepareRequestOptions(options),
-  })) as PublicKeyCredential | null;
+  const credential = (await navigator.credentials
+    .get({ publicKey: prepareRequestOptions(options) })
+    .catch(explainSecurityError)) as PublicKeyCredential | null;
   if (!credential) {
     throw new Error('Passkey sign-in was cancelled');
   }

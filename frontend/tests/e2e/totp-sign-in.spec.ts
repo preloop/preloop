@@ -601,7 +601,8 @@ test.describe('local TOTP sign-in', () => {
           apiKey
         )
       ).status()
-    ).toBe(401);
+      // A valid key is the wrong kind of credential: 403, not "invalid" 401.
+    ).toBe(403);
     const approval = JSON.parse(driver('approval', { email: user.email })) as {
       id: string;
       token: string;
@@ -710,6 +711,8 @@ test.describe('local TOTP sign-in', () => {
     await expect(card).toContainText('Authenticator app turned off.');
     expect(await (await request(page, '/auth/mfa/status')).json()).toEqual({
       totp_enabled: false,
+      totp_needs_setup: false,
+      totp_removal_blocked: false,
       recovery_codes_remaining: 0,
     });
     await signOut(page);
@@ -791,6 +794,13 @@ test.describe('local TOTP sign-in', () => {
       ''
     );
     expect(recoveryLocked.status()).toBe(429);
+    // The hourly lock covers recovery codes too and says when it ends.
+    const lockedDetail = (await recoveryLocked.json()).detail;
+    expect(lockedDetail.code).toBe('mfa_user_locked');
+    expect(lockedDetail.retry_after_seconds).toBeGreaterThan(0);
+    expect(recoveryLocked.headers()['retry-after']).toBe(
+      String(lockedDetail.retry_after_seconds)
+    );
     const now = Number(readFileSync(join(directory!, 'clock'), 'utf8'));
     advance((Math.floor(now / 3600) + 1) * 3600 - now);
     const restored = await request(
@@ -819,12 +829,82 @@ test.describe('local TOTP sign-in', () => {
     expect(counts('auth.mfa.reset')).toBe(1);
     expect(await (await request(page, '/auth/mfa/status')).json()).toEqual({
       totp_enabled: false,
+      totp_needs_setup: false,
+      totp_removal_blocked: false,
       recovery_codes_remaining: 0,
     });
   });
 
   // protects=the documented current-session promise when TOTP confirms the switch;
   // fails_when=the returned pair is immediately refused; no_claim=physical keys.
+  // protects=a passkey signs in through the console and an assertion without
+  // user verification creates no session; fails_when=the ceremony never
+  // completes or an unverified assertion signs in; no_claim=hardware keys.
+  test('passkey sign-in, and refusal without user verification', async ({
+    page,
+    context,
+  }, info) => {
+    test.setTimeout(90_000);
+    await register(page);
+    // Registering a passkey needs a fresh strong sign-in; the authenticator
+    // enrolment provides one, as in the passkey-only test below.
+    await enroll(page, info);
+    await page.goto('/console/settings/security');
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('WebAuthn.enable');
+    const { authenticatorId } = await cdp.send(
+      'WebAuthn.addVirtualAuthenticator',
+      {
+        options: {
+          protocol: 'ctap2',
+          transport: 'internal',
+          hasResidentKey: true,
+          hasUserVerification: true,
+          isUserVerified: true,
+          automaticPresenceSimulation: true,
+        },
+      }
+    );
+    const registered = page.waitForResponse('**/webauthn/register/verify');
+    await page
+      .getByRole('button', { name: 'Add passkey', exact: true })
+      .click();
+    expect((await registered).status()).toBe(200);
+    await signOut(page);
+
+    await page.goto('/login');
+    const signedIn = page.waitForResponse('**/webauthn/authenticate/verify');
+    await page
+      .getByRole('button', { name: 'Sign in with passkey', exact: true })
+      .click();
+    expect((await signedIn).status()).toBe(200);
+    await page.waitForURL('**/console**');
+    await evidence(page, info, 'passkey-sign-in');
+    await signOut(page);
+
+    await cdp.send('WebAuthn.setUserVerified', {
+      authenticatorId,
+      isUserVerified: false,
+    });
+    await page.goto('/login');
+    const verifyCalls: number[] = [];
+    page.on('response', (response) => {
+      if (response.url().includes('/webauthn/authenticate/verify'))
+        verifyCalls.push(response.status());
+    });
+    await page
+      .getByRole('button', { name: 'Sign in with passkey', exact: true })
+      .click();
+    // The browser refuses a required-UV ceremony, or the server answers
+    // passkey_user_verification_required; either way no session exists.
+    await expect(page.getByRole('alert')).toBeVisible();
+    expect(verifyCalls.every((status) => status !== 200)).toBe(true);
+    expect(
+      await page.evaluate(() => !!localStorage.getItem('accessToken'))
+    ).toBe(false);
+    await cdp.detach();
+  });
+
   test('passkey-only enabled with TOTP keeps the current session usable', async ({
     page,
     context,

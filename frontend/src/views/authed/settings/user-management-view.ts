@@ -404,7 +404,11 @@ export class UserManagementView extends LitElement {
     }
   }
 
-  async handleToggleRole(roleId: string, isChecked: boolean) {
+  async handleToggleRole(
+    roleId: string,
+    isChecked: boolean,
+    box?: HTMLInputElement
+  ) {
     if (!this.editPermissions.allows('assign_roles')) return;
     if (!this.selectedUser) return;
 
@@ -420,6 +424,8 @@ export class UserManagementView extends LitElement {
     } catch (error) {
       this.dialogError =
         error instanceof Error ? error.message : 'Failed to update role';
+      // The change was refused: show the role as it still is on the server.
+      if (box) box.checked = !isChecked;
     }
   }
 
@@ -877,7 +883,7 @@ export class UserManagementView extends LitElement {
                   ?disabled=${!this.editPermissions.allows('assign_roles')}
                   ?checked=${isAssigned}
                   @sl-change=${(e: any) =>
-                    this.handleToggleRole(role.id, e.target.checked)}
+                    this.handleToggleRole(role.id, e.target.checked, e.target)}
                 >
                   ${roleLabel(role.name)}
                 </sl-checkbox>

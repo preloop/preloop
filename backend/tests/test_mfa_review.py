@@ -96,7 +96,9 @@ def test_registration_rejects_api_keys(
     response = api.post(
         "/api/v1/auth/webauthn/register/" + path, headers=_bearer(key), json=body
     )
-    assert response.status_code == 401, response.text
+    # A valid key is refused as the wrong kind of credential, not as invalid.
+    assert response.status_code == 403, response.text
+    assert response.json()["detail"]["code"] == "interactive_session_required"
 
 
 def test_oauth_form_hands_off_to_console(

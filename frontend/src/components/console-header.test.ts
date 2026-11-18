@@ -21,6 +21,7 @@ import type { ConsoleHeader } from './console-header.ts';
 import { publishAttentionSummary } from '../utils/attention-summary';
 import { loadShoelaceTokens } from '../utils/test-shoelace-theme';
 import { Router } from '../router';
+import { invalidateApiCaches } from '../api';
 
 const USER = {
   id: 'user-1',
@@ -1590,6 +1591,44 @@ describe('console header branded help', () => {
       );
     } finally {
       open.restore();
+    }
+  });
+
+  // protects=an edition image shows its installed release in the footer;
+  // fails_when=the footer shows the bundled open-source package version;
+  // no_claim=server is stubbed.
+  it('shows the product release version when the server reports one', async () => {
+    const original = window.fetch;
+    window.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.includes('/users/me')
+        ? USER
+        : url.includes('/features')
+          ? {
+              edition: 'enterprise',
+              server_version: '1.2.3',
+              product_version: '2.0.0-rc.1',
+              features: {},
+              plugins: [],
+            }
+          : [];
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof window.fetch;
+    try {
+      invalidateApiCaches();
+      const el = await fixture<ConsoleHeader>(
+        html`<console-header></console-header>`
+      );
+      await waitUntil(() =>
+        el.shadowRoot!.textContent!.includes('v2.0.0-rc.1')
+      );
+      expect(el.shadowRoot!.textContent).not.to.contain('v1.2.3');
+    } finally {
+      window.fetch = original;
+      invalidateApiCaches();
     }
   });
 

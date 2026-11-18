@@ -46,12 +46,34 @@ export class StepUpDialog extends LitElement {
     });
   }
 
+  /**
+   * Close the prompt and settle the caller only once it is off screen, so a
+   * dialog the retried action opens (a one-time API key, for example) never
+   * shares the screen with "Confirm it’s you".
+   */
   private finish(verified: boolean): void {
     this.generation++;
+    const resolve = this.resolve;
+    this.resolve = null;
+    const dialog = this.shadowRoot?.querySelector('sl-dialog');
+    const showing = this.open && !!dialog?.open;
     this.open = false;
     this.code = '';
-    this.resolve?.(verified);
-    this.resolve = null;
+    if (!resolve) return;
+    if (!showing) {
+      resolve(verified);
+      return;
+    }
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      dialog!.removeEventListener('sl-after-hide', settle);
+      resolve(verified);
+    };
+    dialog!.addEventListener('sl-after-hide', settle);
+    // Fallback if the element is detached before its hide animation ends.
+    setTimeout(settle, 2000);
   }
 
   private async verify(method: 'totp' | 'passkey'): Promise<void> {
@@ -109,7 +131,9 @@ export class StepUpDialog extends LitElement {
       label="Confirm it’s you"
       ?open=${this.open}
       @sl-after-hide=${(event: Event) => {
-        if (event.target === event.currentTarget) this.finish(false);
+        // Escape or the close button; a close we started has open=false.
+        if (event.target === event.currentTarget && this.open)
+          this.finish(false);
       }}
     >
       <p>Confirm your identity to continue this action.</p>
