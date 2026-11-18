@@ -101,9 +101,7 @@ export class DeleteAccountView extends LitElement {
     this._error = null;
 
     const body = JSON.stringify(
-      this._signedIn
-        ? { reason: this._reason }
-        : { email: this._email, reason: this._reason }
+      this._signedIn ? { reason: this._reason } : { email: this._email }
     );
     const init: RequestInit = {
       method: 'POST',
@@ -234,16 +232,21 @@ export class DeleteAccountView extends LitElement {
                     @sl-input=${(e: any) => (this._email = e.target.value)}
                   ></sl-input>`
             }
-
-            <sl-textarea
-              label="Reason for leaving (optional)"
-              resize="auto"
-              maxlength=${REASON_MAX_LENGTH}
-              help-text="Help us improve by sharing why you're deleting your account"
-              .value=${this._reason}
-              @sl-input=${(e: any) => (this._reason = e.target.value)}
-            ></sl-textarea>
-
+            ${
+              this._signedIn
+                ? html`<sl-textarea
+                    label="Reason for leaving (optional)"
+                    resize="auto"
+                    maxlength=${REASON_MAX_LENGTH}
+                    help-text="Help us improve by sharing why you're deleting your account"
+                    .value=${this._reason}
+                    @sl-input=${(e: any) => (this._reason = e.target.value)}
+                  ></sl-textarea>`
+                : html`<p class="reason-later">
+                    You can tell us why you are leaving on the confirmation
+                    page.
+                  </p>`
+            }
             ${
               this._error
                 ? html`<sl-alert variant="danger" open

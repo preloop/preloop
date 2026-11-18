@@ -5,6 +5,7 @@ import { formStyles } from '../../styles/form-styles';
 import { ApiError, post } from '../../api';
 
 import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '../../components/logo-component';
@@ -20,6 +21,7 @@ export const CONFIRM_LINK_ERROR = 'This link is invalid or has expired.';
 @customElement('delete-account-confirm-view')
 export class DeleteAccountConfirmView extends LitElement {
   @state() private _token = '';
+  @state() private _reason = '';
   @state() private _submitting = false;
   @state() private _error = '';
   @state() private _done: { status: string; message: string } | null = null;
@@ -39,7 +41,7 @@ export class DeleteAccountConfirmView extends LitElement {
     try {
       this._done = await post(
         REST_API_PREFIX + '/account/deletion-request/confirm',
-        { token: this._token }
+        { token: this._token, reason: this._reason }
       );
     } catch (error) {
       this._error =
@@ -72,6 +74,14 @@ export class DeleteAccountConfirmView extends LitElement {
                     deleted. Our team then processes the request within 30 days
                     and confirms by email.
                   </p>
+                  <sl-textarea
+                    label="Reason for leaving (optional)"
+                    resize="auto"
+                    maxlength="1000"
+                    help-text="Help us improve by sharing why you're deleting your account"
+                    .value=${this._reason}
+                    @sl-input=${(e: any) => (this._reason = e.target.value)}
+                  ></sl-textarea>
                   ${
                     this._error
                       ? html`<sl-alert variant="danger" open

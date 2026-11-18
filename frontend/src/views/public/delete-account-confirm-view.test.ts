@@ -57,13 +57,17 @@ describe('DeleteAccountConfirmView', () => {
     const el = (await fixture(
       html`<delete-account-confirm-view></delete-account-confirm-view>`
     )) as DeleteAccountConfirmView;
+    (el as any)._reason = 'moving on';
     await (el as any)._confirm();
     await el.updateComplete;
     const call = fetchStub.getCall(0);
     expect(String(call.args[0])).to.contain(
       '/account/deletion-request/confirm'
     );
-    expect(JSON.parse(call.args[1].body)).to.deep.equal({ token: 't0k' });
+    expect(JSON.parse(call.args[1].body)).to.deep.equal({
+      token: 't0k',
+      reason: 'moving on',
+    });
     expect(el.shadowRoot?.textContent).to.contain('Received.');
   });
 

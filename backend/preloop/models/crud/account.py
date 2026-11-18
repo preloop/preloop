@@ -211,6 +211,8 @@ class CRUDAccount(CRUDBase[Account]):
         limit: int,
         after_id: Optional[Any] = None,
         exclude_ids: tuple[str, ...] = (),
+        only_ids: Optional[List[Any]] = None,
+        lock: bool = False,
     ) -> tuple[List[Any], Optional[Any]]:
         """Find self-registered accounts nobody ever used.
 
@@ -229,6 +231,10 @@ class CRUDAccount(CRUDBase[Account]):
             limit: Accounts examined per call (one batch).
             after_id: Resume after this account id (keyset pagination).
             exclude_ids: Account ids never to return (operator accounts).
+            only_ids: Re-check just these accounts.
+            lock: Lock the account, member and identity rows (``FOR UPDATE``)
+                so a verification or sign-in cannot commit between this check
+                and a delete in the same transaction.
 
         Returns:
             ``(qualifying account ids, last examined id)``; the second is None
@@ -271,6 +277,10 @@ class CRUDAccount(CRUDBase[Account]):
             query = query.where(Account.id > after_id)
         if exclude_ids:
             query = query.where(Account.id.not_in(list(exclude_ids)))
+        if only_ids is not None:
+            query = query.where(Account.id.in_(list(only_ids)))
+        if lock:
+            query = query.with_for_update(of=(Account, User, Person))
         rows = db.execute(query).all()
         if not rows:
             return [], None

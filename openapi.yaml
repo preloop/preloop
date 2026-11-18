@@ -28695,11 +28695,22 @@ components:
           maxLength: 4096
           minLength: 1
           title: Token
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Reason
       type: object
       required:
       - token
       title: AccountDeletionConfirmRequest
-      description: Body of the emailed deletion confirmation link.
+      description: 'Body of the emailed deletion confirmation link.
+
+
+        The reason for a signed-out request is given here, on the confirmation
+
+        page, so it never travels in the link.'
     AccountDeletionConfirmResponse:
       properties:
         status:
@@ -28765,7 +28776,11 @@ components:
 
         Signed out, ``email`` names the address that receives the confirmation
 
-        link. The ignored fields stay accepted so older clients keep working.'
+        link, and ``reason`` is ignored: it is given on the confirmation page so
+
+        it never travels in the emailed link. The ignored fields stay accepted so
+
+        older clients keep working.'
     AccountDeletionResponse:
       properties:
         status:

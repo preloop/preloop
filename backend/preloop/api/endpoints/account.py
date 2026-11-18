@@ -1316,7 +1316,9 @@ class AccountDeletionRequest(BaseModel):
     Signed in, the account, username and address come from the session and
     ``email``, ``username``, ``account_id`` and ``org_name`` are ignored.
     Signed out, ``email`` names the address that receives the confirmation
-    link. The ignored fields stay accepted so older clients keep working.
+    link, and ``reason`` is ignored: it is given on the confirmation page so
+    it never travels in the emailed link. The ignored fields stay accepted so
+    older clients keep working.
     """
 
     email: Optional[EmailStr] = None
@@ -1335,9 +1337,14 @@ class AccountDeletionRequest(BaseModel):
 
 
 class AccountDeletionConfirmRequest(BaseModel):
-    """Body of the emailed deletion confirmation link."""
+    """Body of the emailed deletion confirmation link.
+
+    The reason for a signed-out request is given here, on the confirmation
+    page, so it never travels in the link.
+    """
 
     token: str = Field(..., min_length=1, max_length=4096)
+    reason: Optional[str] = Field(None, max_length=1000)
 
 
 class AccountDeletionResponse(BaseModel):
@@ -4401,22 +4408,36 @@ def request_account_deletion(
     client_ip = client_ip_for_rate_limit(request)
     reason = (deletion_request.reason or "").strip() or None
 
+    authorization = request.headers.get("authorization", "")
+    if current_user is None and authorization.lower().startswith("bearer "):
+        # A credential that did not yield a user (an API key outside its
+        # scope, a revoked or expired token) is refused with the strict
+        # check's own error, never treated as a signed-out request.
+        from preloop.api.auth.jwt import get_current_user
+
+        get_current_user(token=authorization[7:].strip(), db=db, request=request)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=DELETION_SIGN_IN_REQUIRED_MESSAGE,
+        )
     if current_user is not None:
         if getattr(current_user, "_auth_api_key", None) is not None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=DELETION_SIGN_IN_REQUIRED_MESSAGE,
             )
-        enforce_all_or_none(
-            ACCOUNT_DELETION_REQUEST,
-            [f"ip:{client_ip}", f"account:{current_user.account_id}"],
-            detail=DELETION_RATE_LIMITED_MESSAGE,
-        )
+        # Authorize before charging, so a member who may not ask cannot spend
+        # the account's budget and lock its owner out.
         if not deletion.may_request_deletion(db, current_user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=DELETION_NOT_OWNER_MESSAGE,
             )
+        enforce_all_or_none(
+            ACCOUNT_DELETION_REQUEST,
+            [f"ip:{client_ip}", f"account:{current_user.account_id}"],
+            detail=DELETION_RATE_LIMITED_MESSAGE,
+        )
         notice = deletion.build_notice(
             db,
             user=current_user,
@@ -4424,8 +4445,20 @@ def request_account_deletion(
             reason=reason,
         )
         try:
+            # Record, notify, commit: like the emailed-link path, no request
+            # reaches the operators without its audit row, and none is
+            # recorded that they never saw.
+            deletion.record_request(
+                db,
+                user=current_user,
+                confirmed_by=deletion.CONFIRMED_BY_SESSION,
+                reason=reason,
+                ip_address=client_ip,
+                user_agent=request.headers.get("user-agent"),
+            )
             _notify_deletion(notice)
         except Exception as error:
+            db.rollback()
             logger.error(
                 "Failed to send account deletion notification: %s",
                 type(error).__name__,
@@ -4433,14 +4466,6 @@ def request_account_deletion(
             raise HTTPException(
                 status_code=500, detail="Failed to process deletion request"
             )
-        deletion.record_request(
-            db,
-            user=current_user,
-            confirmed_by=deletion.CONFIRMED_BY_SESSION,
-            reason=reason,
-            ip_address=client_ip,
-            user_agent=request.headers.get("user-agent"),
-        )
         db.commit()
         logger.info(
             "Account deletion request (signed-in session) for account %s",
@@ -4476,7 +4501,6 @@ def request_account_deletion(
             person.email,
             person_id=person.id,
             auth_generation=person.auth_generation,
-            reason=reason,
         )
         background_tasks.add_task(
             _send_deletion_link_task,
@@ -4554,13 +4578,14 @@ def confirm_account_deletion(
             status="not_owner", message=DELETION_NOT_OWNER_MESSAGE
         )
     user_agent = request.headers.get("user-agent")
+    reason = (body.reason or "").strip() or None
     try:
         for user in memberships:
             deletion.record_request(
                 db,
                 user=user,
                 confirmed_by=deletion.CONFIRMED_BY_EMAIL_LINK,
-                reason=claims.reason,
+                reason=reason,
                 ip_address=client_ip,
                 user_agent=user_agent,
             )
@@ -4569,7 +4594,7 @@ def confirm_account_deletion(
                     db,
                     user=user,
                     confirmed_by=deletion.CONFIRMED_BY_EMAIL_LINK,
-                    reason=claims.reason,
+                    reason=reason,
                 )
             )
     except Exception as error:

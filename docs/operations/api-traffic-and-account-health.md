@@ -97,8 +97,8 @@ qualifies only when all of these hold:
   (default `7`, minimum `1`);
 - its single member's address was never verified and that member never
   signed in (failed sign-ins do not count as use);
-- it has no billing customer, no parent or child accounts, and is not listed
-  in `OPERATOR_ACCOUNT_IDS`;
+- it has no billing customer, no parent or child accounts, and is not any of
+  the accounts listed in `OPERATOR_ACCOUNT_IDS`;
 - nothing else in the database points at the account, its member or the
   member's identity: no API key, agent, tracker, flow, session, passkey,
   single sign-on link or any other row besides the defaults registration
@@ -113,7 +113,9 @@ qualifies only when all of these hold:
 `apply` needs an account to hold its audit trail: each batch writes one
 `unverified_signups_deleted` audit row, with the deleted account ids, in the
 first account in `OPERATOR_ACCOUNT_IDS`. Without one the pass runs as a dry
-run and logs why. A pass reads at most two batches of 100 accounts. To run it
+run and logs why. Before deleting a batch, the pass checks each account again with its rows
+locked, so one verified or signed in to since the scan is kept. A pass reads
+at most two batches of 100 accounts. To run it
 by hand:
 
 ```bash

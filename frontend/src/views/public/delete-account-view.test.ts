@@ -53,7 +53,7 @@ describe('DeleteAccountView', () => {
     );
   });
 
-  it('signed out: sends only the address and reason, shows check-your-email', async () => {
+  it('signed out: sends only the address, shows check-your-email', async () => {
     fetchStub.callsFake(
       async () =>
         new Response(
@@ -65,7 +65,6 @@ describe('DeleteAccountView', () => {
         )
     );
     (el as any)._email = 'user@example.com';
-    (el as any)._reason = 'done';
     await (el as any)._handleSubmit(new Event('submit'));
     await tick();
     await el.updateComplete;
@@ -75,8 +74,8 @@ describe('DeleteAccountView', () => {
       .find((c) => String(c.args[0]).includes('/account/deletion-request'))!;
     expect(JSON.parse(call.args[1].body)).to.deep.equal({
       email: 'user@example.com',
-      reason: 'done',
     });
+    expect(el.shadowRoot?.querySelector('sl-textarea')).to.not.exist;
     expect(el.shadowRoot?.textContent).to.contain('Check your email');
   });
 

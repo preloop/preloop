@@ -72,12 +72,11 @@ def configured_max_age_days() -> int:
     return max(MIN_MAX_AGE_DAYS, value)
 
 
-def _operator_account_id() -> Optional[str]:
-    """The account that receives the batch audit rows, if one is configured."""
+def _operator_account_ids() -> list[str]:
+    """Operator accounts: never cleaned up; the first holds the audit rows."""
     from preloop.config import settings
 
-    ids = list(settings.operator_account_ids)
-    return ids[0] if ids else None
+    return [str(i) for i in settings.operator_account_ids]
 
 
 @dataclass
@@ -138,7 +137,8 @@ def cleanup_unverified_signups(
     result = SignupCleanupResult(mode=run_mode)
     if run_mode == "off":
         return result
-    audit_account = _operator_account_id()
+    operator_ids = _operator_account_ids()
+    audit_account = operator_ids[0] if operator_ids else None
     if run_mode == "apply" and audit_account is None:
         result.mode = "dry-run"
         result.refused = "no OPERATOR_ACCOUNT_IDS account to hold the audit rows"
@@ -149,7 +149,7 @@ def cleanup_unverified_signups(
     apply = result.mode == "apply"
     days = max(MIN_MAX_AGE_DAYS, max_age_days or configured_max_age_days())
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
-    exclude = tuple(str(i) for i in ([audit_account] if audit_account else []))
+    exclude = tuple(operator_ids)
 
     after_id: Optional[Any] = None
     for _ in range(max_batches):
@@ -165,8 +165,14 @@ def cleanup_unverified_signups(
         result.batches += 1
         result.matched += len(account_ids)
         if apply and account_ids:
-            _delete_batch(db, account_ids, audit_account=str(audit_account), days=days)
-            result.deleted += len(account_ids)
+            result.deleted += _delete_batch(
+                db,
+                account_ids,
+                audit_account=str(audit_account),
+                days=days,
+                created_before=cutoff,
+                exclude=exclude,
+            )
     else:
         result.complete = after_id is None
         if after_id is not None:
@@ -185,9 +191,33 @@ def cleanup_unverified_signups(
 
 
 def _delete_batch(
-    db: Session, account_ids: list[Any], *, audit_account: str, days: int
-) -> None:
-    """Delete one batch and record it, in one transaction."""
+    db: Session,
+    account_ids: list[Any],
+    *,
+    audit_account: str,
+    days: int,
+    created_before: datetime,
+    exclude: tuple[str, ...],
+) -> int:
+    """Delete one batch and record it, in one transaction.
+
+    The candidates are qualified again with their rows locked, so an account
+    verified or signed in to since the scan is kept.
+
+    Returns:
+        Accounts deleted.
+    """
+    account_ids, _ = crud_account.list_unused_unverified_signups(
+        db,
+        created_before=created_before,
+        limit=len(account_ids),
+        exclude_ids=exclude,
+        only_ids=account_ids,
+        lock=True,
+    )
+    if not account_ids:
+        db.rollback()
+        return 0
     emails: list[str] = []
     for account_id in account_ids:
         for user in crud_user.get_by_account(db, account_id=str(account_id)):
@@ -209,6 +239,7 @@ def _delete_batch(
         commit=False,
     )
     db.commit()
+    return len(account_ids)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

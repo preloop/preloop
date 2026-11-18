@@ -248,17 +248,50 @@ def test_signup_with_data_is_kept(
     assert _exists(db_session, user.account_id)
 
 
-def test_operator_account_is_never_deleted(
+def test_every_operator_account_is_never_deleted(
     db_session: Session, register: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     user = register()
-    keeper = register()
-    monkeypatch.setattr(settings, "operator_account_ids", [str(keeper.account_id)])
+    first = register()
+    second = register()
+    monkeypatch.setattr(
+        settings,
+        "operator_account_ids",
+        [str(first.account_id), str(second.account_id)],
+    )
 
     _run(db_session)
 
-    assert _exists(db_session, keeper.account_id)
+    assert _exists(db_session, first.account_id)
+    assert _exists(db_session, second.account_id)
     assert not _exists(db_session, user.account_id)
+
+
+def test_account_verified_after_the_scan_is_kept(
+    db_session: Session,
+    register: Any,
+    operator_account: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A verification that lands between the scan and the delete wins."""
+    user = register()
+    scan = crud_account.list_unused_unverified_signups
+
+    def scan_then_verify(db: Session, **kw: Any) -> Any:
+        found = scan(db, **kw)
+        if not kw.get("lock"):
+            user.person.email_verified_at = datetime.now(UTC)
+            db.flush()
+        return found
+
+    monkeypatch.setattr(
+        crud_account, "list_unused_unverified_signups", scan_then_verify
+    )
+
+    result = _run(db_session)
+
+    assert _exists(db_session, user.account_id)
+    assert result.deleted == 0
 
 
 def test_batches_are_bounded(

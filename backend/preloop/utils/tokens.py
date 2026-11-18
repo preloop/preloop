@@ -414,8 +414,6 @@ class AccountDeletionClaims:
         jti: Random id; the server records it when the link is used so a link
             confirms one request only.
         issued_at: Issuance time in epoch seconds.
-        reason: The optional reason the requester typed, carried so the
-            server keeps nothing for requests nobody confirms.
     """
 
     person_id: UUID
@@ -423,7 +421,6 @@ class AccountDeletionClaims:
     auth_generation: int
     jti: str
     issued_at: int
-    reason: str | None = None
 
 
 def create_account_deletion_token(
@@ -431,15 +428,16 @@ def create_account_deletion_token(
     *,
     person_id: UUID | str,
     auth_generation: int,
-    reason: str | None = None,
 ) -> str:
     """Mint the one-time link that confirms a signed-out deletion request.
+
+    The link carries no free text: the reason is asked for on the
+    confirmation page, so it never reaches URLs, history or access logs.
 
     Args:
         email: The verified address the link is mailed to.
         person_id: The identity that owns that address.
         auth_generation: The identity's current credential generation.
-        reason: Optional reason for leaving, already length-checked.
 
     Returns:
         A signed JWT for the confirmation URL.
@@ -454,8 +452,6 @@ def create_account_deletion_token(
         "type": ACCOUNT_DELETION_TOKEN_TYPE,
         "jti": secrets.token_urlsafe(24),
     }
-    if reason:
-        to_encode["rsn"] = reason
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -483,14 +479,12 @@ def verify_account_deletion_token(token: str) -> AccountDeletionClaims:
         jti = payload.get("jti")
         if not isinstance(jti, str) or not jti:
             raise ValueError("Missing jti")
-        reason = payload.get("rsn")
         return AccountDeletionClaims(
             person_id=UUID(str(payload["pid"])),
             email=str(payload["sub"]),
             auth_generation=generation,
             jti=jti,
             issued_at=issued_at,
-            reason=reason if isinstance(reason, str) else None,
         )
     except (KeyError, ValueError, TypeError):
         raise TokenError("This link is invalid or has expired.")

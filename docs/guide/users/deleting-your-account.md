@@ -22,8 +22,8 @@ message asking them to contact an owner.
 
 Enter the email address of your account and press **Request Account
 Deletion**. If the address belongs to an account and has been verified, we
-send a confirmation link to it. Open the link and press **Confirm deletion
-request**. Only then is the request passed on. The link works once and
+send a confirmation link to it. Open the link, optionally say why you are leaving, and press **Confirm
+deletion request**. Only then is the request passed on. The link works once and
 expires after an hour.
 
 The page shows the same message whether or not the address belongs to an
@@ -36,9 +36,11 @@ request.
 
 ## Limits
 
-The reason for leaving is optional and up to 1,000 characters. Requests are
-limited per client address and per account or email address (three an hour
-by default), so a page reload or a second click does not send duplicates.
+The reason for leaving is optional and up to 1,000 characters. When you are
+signed out, you give it on the confirmation page, so it is never part of the
+emailed link. Requests are limited to three an hour per client address and
+per account or email address. A second request within that budget sends
+another notification or link; past it, the page asks you to try later.
 
 ## What the team sees
 

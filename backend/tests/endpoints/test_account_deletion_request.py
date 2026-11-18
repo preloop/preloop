@@ -396,9 +396,10 @@ def test_link_notifies_operators_once_and_audits(
     mailed: list,
 ) -> None:
     owner = _member(db_session, email="jane@example.com", username="jane")
-    token = _link_for(client, mailed, "jane@example.com", reason="done here")
+    token = _link_for(client, mailed, "jane@example.com", reason="not in link")
+    assert "rsn" not in jwt.decode(token, options={"verify_signature": False})
 
-    response = client.post(CONFIRM_URL, json={"token": token})
+    response = client.post(CONFIRM_URL, json={"token": token, "reason": "done here"})
 
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "received"
@@ -408,6 +409,7 @@ def test_link_notifies_operators_once_and_audits(
     assert "jane@example.com" in text
     assert str(owner.account_id) in text
     assert "done here" in text
+    assert "not in link" not in text
     rows = _audit_rows(db_session, owner.account_id)
     assert len(rows) == 1
     assert rows[0].details["confirmed_by"] == CONFIRMED_BY_EMAIL_LINK
@@ -536,3 +538,60 @@ def test_api_key_callers_cannot_request_deletion(
 
     assert response.status_code == 403
     assert notified == []
+
+
+def test_unresolved_bearer_credential_is_refused_not_signed_out(
+    client: TestClient, smtp_on: None, notified: list, mailed: list
+) -> None:
+    response = client.post(
+        URL,
+        json={"email": "jane@example.com"},
+        headers={"Authorization": "Bearer not-a-session"},
+    )
+
+    assert response.status_code in (401, 403)
+    assert mailed == []
+
+
+def test_non_owner_cannot_spend_the_owners_budget(
+    client: TestClient,
+    db_session: Session,
+    session: _Session,
+    notified: list,
+) -> None:
+    owner = _member(db_session, email="owner@example.com", username="owner1")
+    viewer = _member(
+        db_session,
+        email="viewer@example.com",
+        username="viewer1",
+        role="viewer",
+        account_id=owner.account_id,
+    )
+    session.user = viewer
+    for n in range(5):
+        headers = {"X-Forwarded-For": f"203.0.113.{n + 20}"}
+        assert client.post(URL, json={}, headers=headers).status_code == 403
+
+    session.user = owner
+    response = client.post(URL, json={}, headers={"X-Forwarded-For": "203.0.113.99"})
+
+    assert response.status_code == 200, response.text
+    assert len(notified) == 1
+
+
+def test_signed_in_failed_notification_leaves_no_audit_row(
+    client: TestClient, db_session: Session, session: _Session
+) -> None:
+    owner = _member(db_session, email="jane@example.com", username="jane")
+    session.user = owner
+
+    with patch("preloop.sync.tasks.notify_admins", side_effect=RuntimeError("down")):
+        assert client.post(URL, json={}).status_code == 500
+
+    assert _audit_rows(db_session, owner.account_id) == []
+
+
+def test_confirm_reason_is_length_capped(client: TestClient) -> None:
+    response = client.post(CONFIRM_URL, json={"token": "t", "reason": "x" * 1001})
+
+    assert response.status_code == 422
