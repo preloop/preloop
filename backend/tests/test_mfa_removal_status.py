@@ -27,9 +27,10 @@ def test_status_reports_policy_blocked_removal(
     fails_when=status says removal is allowed while the guard refuses it."""
     user, _, data = enroll(api, db_session, now)
     headers = _bearer(data["access_token"])
-    assert api.get(BASE + "/status", headers=headers).json()[
-        "totp_removal_blocked"
-    ] is False
+    assert (
+        api.get(BASE + "/status", headers=headers).json()["totp_removal_blocked"]
+        is False
+    )
 
     def refuse(db: Session, member: models.User, kind: str) -> None:
         raise HTTPException(403, detail={"code": "mfa_required_by_policy"})
