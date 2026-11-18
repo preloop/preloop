@@ -1915,7 +1915,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         in_reply_to: str | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
-        """Add a comment to an issue, pull request, or merge request. For general comments: provide just target and comment. For inline code comments: also provide path and line. To reply to a thread: provide in_reply_to with the comment ID."""
+        """Add a comment to an issue, pull request, or merge request. For general comments: provide just target and comment. For inline code comments: also provide path and line. To reply to a thread: provide in_reply_to with the comment ID. An issue target takes the same forms as get_issue, including GitLab /-/issues/<iid> and /-/work_items/<iid> URLs."""
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 

@@ -185,7 +185,8 @@ class BaseTracker(ABC):
 
         description = issue_data.get("description", "")
 
-        issue_url = issue_data.get("url", "")
+        # GitLab payloads carry the page URL as web_url, GitHub-shaped ones as url.
+        issue_url = issue_data.get("web_url") or issue_data.get("url", "")
 
         transformed = {
             "project_id": project.id,

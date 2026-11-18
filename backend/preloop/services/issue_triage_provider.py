@@ -8,6 +8,7 @@ from urllib.parse import quote, unquote, urlparse
 
 from preloop.schemas.issue_triage import TriageIssue
 from preloop.sync.exceptions import TrackerError
+from preloop.utils.issue_urls import parse_issue_path
 
 CATALOGUE_PAGE_SIZE = 100
 CATALOGUE_MAX_PAGES = 10
@@ -145,13 +146,17 @@ class IssueTriageProvider:
         if self.kind == "github":
             if path.lower() != f"/{self.repository}/issues/{self.number}".lower():
                 raise TriageProviderError("issue_repository_mismatch")
-        elif not path.endswith(f"/-/issues/{self.number}"):
-            raise TriageProviderError("issue_repository_mismatch")
-        elif (
-            not self.project.isdecimal()
-            and path != f"{self.web_prefix}/{self.project}/-/issues/{self.number}"
-        ):
-            raise TriageProviderError("issue_project_mismatch")
+        else:
+            # GitLab answers /-/issues/<iid> or, with the Work items view
+            # (GitLab 18.10+), /-/work_items/<iid>; compare the canonical key.
+            web_issue = parse_issue_path(path)
+            if web_issue is None or web_issue.number != self.number:
+                raise TriageProviderError("issue_repository_mismatch")
+            if (
+                not self.project.isdecimal()
+                and f"/{web_issue.project}" != f"{self.web_prefix}/{self.project}"
+            ):
+                raise TriageProviderError("issue_project_mismatch")
         labels = raw.get("labels")
         if not isinstance(labels, list):
             raise TriageProviderError("invalid_issue_labels")

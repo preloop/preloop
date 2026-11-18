@@ -219,6 +219,40 @@ class CRUDIssue(CRUDBase[Issue]):
             query = query.join(Tracker).filter(Tracker.account_id == account_id)
         return query.first()
 
+    def list_by_issue_number(
+        self,
+        db: Session,
+        *,
+        number: str,
+        account_id: Optional[str] = None,
+        limit: int = 11,
+    ) -> List[Issue]:
+        """List issues whose key ends in exactly this number.
+
+        Matches ``...#<number>`` (GitHub, GitLab) and ``...-<number>`` (Jira),
+        so ``12`` matches ``group/project#12`` but never ``group/project#112``.
+
+        Args:
+            db: Database session.
+            number: All-digits issue number or iid.
+            account_id: Restrict to trackers of this account.
+            limit: Maximum rows returned.
+
+        Returns:
+            Matching issues ordered by key.
+
+        Raises:
+            ValueError: If ``number`` is not all digits.
+        """
+        if not number.isdigit():
+            raise ValueError("number must be all digits")
+        query = db.query(Issue).filter(
+            Issue.key.like(f"%#{number}") | Issue.key.like(f"%-{number}")
+        )
+        if account_id:
+            query = query.join(Tracker).filter(Tracker.account_id == account_id)
+        return query.order_by(Issue.key).limit(limit).all()
+
     def get_by_external_id(
         self,
         db: Session,

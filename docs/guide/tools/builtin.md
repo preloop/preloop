@@ -162,13 +162,37 @@ Connect GitHub, GitLab, or Jira from the console before using tracker-dependent 
 
 ## Issue Management Tools
 
+### Issue references
+
+Tools that take an issue (`get_issue`, `update_issue`, `add_comment`,
+`estimate_compliance`, `improve_compliance`) accept any of these forms:
+
+| Form | Example |
+| --- | --- |
+| GitLab key | `group/subgroup/project#12` |
+| GitLab issue URL | `https://gitlab.example.com/group/project/-/issues/12` |
+| GitLab work item URL (GitLab 18.10 and later) | `https://gitlab.example.com/group/project/-/work_items/12` |
+| GitHub key or URL | `owner/repo#12`, `https://github.com/owner/repo/issues/12` |
+| Jira key or URL | `PROJ-12`, `https://jira.example.com/browse/PROJ-12` |
+| Bare number | `12` or `#12` |
+| Preloop issue ID | the issue's UUID |
+
+Both GitLab URL forms name the same issue; query strings and `#note_...`
+fragments are ignored. A bare number matches the issue number exactly (`12`
+never matches `#112`); when it matches issues in more than one project the
+tool returns an error listing the candidate keys, so pass one of them.
+
+Only synced issues are found. A GitLab `/-/work_items/<iid>` URL that names an
+epic, objective or key result, or an issue in a project that is not synced,
+returns "not found" with the key that was looked up.
+
 ### `get_issue`
 
 Fetch full details for a single issue.
 
 **Arguments:**
 
-- `issue` (string, required) - Issue identifier: URL, key, or ID (e.g., "PROJ-123", "https://github.com/acme/repo/issues/456")
+- `issue` (string, required) - Issue reference in any [accepted form](#issue-references) (e.g., "PROJ-123", "group/project#12", "https://gitlab.example.com/group/project/-/work_items/12")
 
 **Returns (illustrative):**
 
@@ -266,7 +290,7 @@ Modify an existing issue.
 
 **Arguments:**
 
-- `issue` (string, required) - Issue to update (URL, key, or ID)
+- `issue` (string, required) - Issue to update, in any [accepted form](#issue-references)
 - `title` (string, optional) - New title
 - `description` (string, optional) - New description
 - `status` (string, optional) - New status

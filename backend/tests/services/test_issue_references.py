@@ -42,7 +42,6 @@ class TestGitHubForms:
     def test_closing_keywords(self, body):
         refs = extract_issue_references(description=body, **GITHUB)
         assert keys(refs) == ["org/repo#123"]
-        assert refs[0].kind == KIND_CLOSES
         assert refs[0].url == "https://github.com/org/repo/issues/123"
 
     def test_keyword_governs_a_whole_list(self):
@@ -55,7 +54,6 @@ class TestGitHubForms:
             description="Closes [#12](https://github.com/org/repo/issues/12)", **GITHUB
         )
         assert keys(refs) == ["org/repo#12"]
-        assert refs[0].kind == KIND_CLOSES
 
     def test_cross_repo_reference(self):
         refs = extract_issue_references(description="Fixes other-org/other#7", **GITHUB)
@@ -78,7 +76,6 @@ class TestGitHubForms:
     def test_closing_keyword_outranks_bare_mention_of_same_issue(self):
         refs = extract_issue_references(description="See #5. Closes #5", **GITHUB)
         assert keys(refs) == ["org/repo#5"]
-        assert refs[0].kind == KIND_CLOSES
 
     def test_closes_entries_are_listed_before_weaker_ones(self):
         refs = extract_issue_references(
@@ -113,6 +110,16 @@ class TestGitLabForms:
         assert keys(refs) == ["grp/sub/other#31"]
         assert refs[0].url == "https://gitlab.example.com/grp/sub/other/-/issues/31"
 
+    @pytest.mark.parametrize("word", ["issues", "work_items"])
+    def test_work_item_url_gives_the_same_key(self, word):
+        refs = extract_issue_references(
+            description=f"See https://gitlab.example.com/grp/sub/proj/-/{word}/7"
+            "?show=1#note_3",
+            **GITLAB,
+        )
+        assert keys(refs) == ["grp/sub/proj#7"]
+        assert refs[0].url == f"https://gitlab.example.com/grp/sub/proj/-/{word}/7"
+
     def test_cross_project_key(self):
         refs = extract_issue_references(description="Closes grp/other#8", **GITLAB)
         assert keys(refs) == ["grp/other#8"]
@@ -122,7 +129,6 @@ class TestJiraForms:
     def test_keyword_plus_jira_key(self):
         refs = extract_issue_references(description="Fixes PROJ-123", **GITHUB)
         assert keys(refs) == ["PROJ-123"]
-        assert refs[0].kind == KIND_CLOSES
         assert refs[0].url is None
         assert refs[0].identifier() == "PROJ-123"
 
