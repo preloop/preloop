@@ -417,3 +417,40 @@ def test_non_isolated_probe_still_validates_with_the_strict_policy(
 
     with pytest.raises(TrackerProbeTimeoutError):
         asyncio.run(run_tracker_probe(slow, url=None, isolate=False, deadline=0.2))
+
+
+def test_connection_details_url_override_is_validated(client: Any) -> None:
+    """The URL the client actually uses is the one that is validated."""
+    with patch(
+        "preloop.api.endpoints.trackers.create_tracker_client", new=AsyncMock()
+    ) as factory:
+        response = client.post(
+            TEST_PATH,
+            json={
+                "tracker_type": "gitlab",
+                "api_key": "x",
+                "url": "https://gitlab.example.com",
+                "connection_details": {"url": "http://169.254.169.254/"},
+            },
+        )
+    assert response.status_code == 400, response.text
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "details,source,isolated",
+    [
+        ({"auth_type": "api_token"}, None, True),
+        ({}, None, True),
+        ({"auth_type": "github_app"}, None, False),
+        ({"auth_type": "oauth_app"}, None, False),
+        ({"auth_type": "api_token"}, object(), False),
+    ],
+)
+def test_loop_bound_credentials_are_not_isolated(
+    details: Dict[str, Any], source: Any, isolated: bool
+) -> None:
+    """Saved GitHub App / OAuth and managed trackers stay on the API loop."""
+    from preloop.api.endpoints.trackers import _probe_isolated
+
+    assert _probe_isolated(details, source) is isolated

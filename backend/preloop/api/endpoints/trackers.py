@@ -162,6 +162,37 @@ def _probe_http_error(error: TrackerProbeError) -> HTTPException:
     )
 
 
+def _effective_url(details: Dict[str, Any]) -> Optional[str]:
+    """The URL the client will use after ``connection_details`` are merged.
+
+    Args:
+        details: The merged connection details passed to the client.
+
+    Returns:
+        The effective ``url`` as a string, or None when absent.
+    """
+    value = details.get("url")
+    return str(value) if value else None
+
+
+def _probe_isolated(details: Dict[str, Any], credential_source: Any) -> bool:
+    """Whether a connection test may run on a private probe loop.
+
+    Managed grants and GitHub App / OAuth installations resolve credentials
+    through services bound to the API loop, so they stay on it.
+
+    Args:
+        details: The merged connection details passed to the client.
+        credential_source: The managed credential source, if any.
+
+    Returns:
+        True for plain token trackers.
+    """
+    return credential_source is None and details.get("auth_type") not in (
+        OAUTH_AUTH_TYPES
+    )
+
+
 async def _limit_connection_tests(current_user: AuthUserResponse) -> None:
     """Charge one tracker connection test to the caller's per-user budget.
 
@@ -874,7 +905,9 @@ async def register_tracker(
     try:
         client = await run_tracker_probe(
             probe_connection,
-            url=str(url_str) if url_str else None,
+            url=_effective_url(
+                {"url": str(url_str) if url_str else None, **(config or {})}
+            ),
             # The GitHub App token service is bound to the API loop.
             isolate=auth_type not in OAUTH_AUTH_TYPES,
         )
@@ -1650,8 +1683,8 @@ async def test_connection_and_list_orgs(
     try:
         return await run_tracker_probe(
             probe_connection,
-            url=test_url,
-            isolate=test_credential_source is None,
+            url=_effective_url(test_details),
+            isolate=_probe_isolated(test_details, test_credential_source),
         )
     except TrackerProbeError as e:
         logger.warning(
@@ -1773,7 +1806,9 @@ async def list_projects_for_org(
 
     try:
         return await run_tracker_probe(
-            probe_projects, url=list_url, isolate=credential_source is None
+            probe_projects,
+            url=_effective_url(list_details),
+            isolate=_probe_isolated(list_details, credential_source),
         )
     except TrackerProbeError as e:
         raise _probe_http_error(e)
