@@ -94,6 +94,9 @@ _METADATA_NETWORKS: Tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = 
     ipaddress.ip_network("::ffff:169.254.0.0/112"),  # mapped IPv4 link-local
 )
 
+# Shared with the tracker connection-test guard (preloop.services.tracker_probe).
+METADATA_NETWORKS = _METADATA_NETWORKS
+
 _PROJECT_KEY_RE = re.compile(r"^~?[A-Za-z][A-Za-z0-9_\-.]{0,127}$")
 _REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,127}$")
 _USER_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@\-]{0,254}$")
@@ -1077,6 +1080,7 @@ __all__ = [
     "ENV_INSTANCES",
     "ENV_PRIVATE_NETWORKS",
     "InstanceIdentity",
+    "METADATA_NETWORKS",
     "PARTICIPANT_APPROVED",
     "PARTICIPANT_NEEDS_WORK",
     "PARTICIPANT_UNAPPROVED",

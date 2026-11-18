@@ -1348,6 +1348,19 @@ class Settings(BaseSettings):
             "deployments legitimately post to internal collectors."
         ),
     )
+    tracker_block_private_targets: bool = Field(
+        False,
+        description=(
+            "Refuse tracker URLs given to the tracker test, list and register "
+            "endpoints that are cluster-internal names or resolve to "
+            "loopback, private, unique-local, reserved or otherwise "
+            "non-global address space (TRACKER_BLOCK_PRIVATE_TARGETS). "
+            "Link-local and cloud metadata addresses are refused either way. "
+            "Off by default because self-hosted deployments legitimately "
+            "connect to a private GitLab or Jira; turn it on for any "
+            "multi-tenant instance. Saved trackers are not affected."
+        ),
+    )
     gateway_idp_allow_private_issuers: bool = Field(
         False,
         description=(

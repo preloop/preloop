@@ -489,6 +489,7 @@ are per account (console or API). Setup guides: `https://docs.preloop.ai/guide/s
 | `sso.enabled` | `ENTERPRISE_SSO_ENABLED`: mount the SSO sign-in and administration routes. `false` renders the variable as `false` | `false` |
 | `sso.publicUrl` | `SSO_PUBLIC_URL`: https origin for the OIDC redirect URI, SAML SP entity id and ACS; empty uses `environment.preloopUrl`. No path or userinfo | `""` |
 | `sso.allowPrivateIssuers` | `GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS`: accept private-address issuer and metadata URLs when saving a connection. Core setting shared with gateway identity providers, which it also relaxes. Single-tenant installs only | `false` |
+| `trackers.blockPrivateTargets` | `TRACKER_BLOCK_PRIVATE_TARGETS`: refuse tracker URLs in connection tests and registration that are cluster-internal names or resolve to loopback, private, unique-local or reserved addresses. Link-local and metadata addresses are refused either way. Turn on for multi-tenant instances | `false` |
 
 ### Resource management parameters
 
