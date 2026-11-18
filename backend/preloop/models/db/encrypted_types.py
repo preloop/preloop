@@ -179,9 +179,15 @@ def _policy_snapshot(value: Any, transform: Transform) -> Any:
     return result
 
 
+def _legacy_fingerprints(value: Any, transform: Transform) -> Any:
+    """Protect pre-HMAC digests and their short matching prefixes at rest."""
+    return _map_secret_leaves(value, transform, {"prefix", "sha256"}.__contains__)
+
+
 #: Selector name -> function that applies a transform to the secret fields of
 #: a document. Names are stored in the column type, so they must stay stable.
 SECRET_SELECTORS: dict[str, Callable[[Any, Transform], Any]] = {
+    "legacy_fingerprints": _legacy_fingerprints,
     "mcp_auth_config": _mcp_auth_config,
     "webhook_secret": _webhook_secret,
     "policy_snapshot": _policy_snapshot,

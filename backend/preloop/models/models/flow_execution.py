@@ -20,6 +20,8 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, query_expression, relationship
 
+from preloop.models.db.encrypted_types import SecretFieldsJSON
+
 from .base import Base
 from .flow import Flow
 
@@ -215,7 +217,9 @@ class FlowExecution(Base):
     # the parsed contents of /workspace/result.json captured by the runner
     # after the agent finishes. First-class alternative to scraping logs.
     result = Column(JSONB, nullable=True)
-    credential_fingerprints = Column(JSONB, nullable=True)
+    credential_fingerprints = Column(
+        SecretFieldsJSON("legacy_fingerprints", jsonb=True), nullable=True
+    )
     # Evidence pack (tar.gz of /workspace/evidence) captured by the runner for
     # audit-style flows. Size-capped at capture time
     # (MAX_EVIDENCE_ARCHIVE_BYTES); served by

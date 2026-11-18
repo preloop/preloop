@@ -75,6 +75,13 @@ class Target:
 #: Every column sealed by this backfill. Identifiers are constants, never
 #: user input. Keep in step with docs/security/credentials-at-rest.md.
 TARGETS: tuple[Target, ...] = (
+    Target(
+        "cred_execution_fingerprints",
+        "flow_execution",
+        "credential_fingerprints",
+        "legacy_fingerprints",
+        "jsonb",
+    ),
     Target("cred_tracker_api_key", "tracker", "api_key"),
     Target("cred_org_webhook_secret", "organization", "webhook_secret"),
     Target("cred_webhook_secret", "webhook", "secret"),

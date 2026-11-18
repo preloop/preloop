@@ -104,9 +104,15 @@ def rows(db_session, create_account, create_tracker, create_organization):
         managed_config=agent_doc,
         backup_metadata={"env": {"ANTHROPIC_AUTH_TOKEN": SECRET}},
     )
+    execution = models.FlowExecution(
+        flow_id=flow.id,
+        credential_fingerprints=[{"sha256": SECRET, "prefix": "7379", "length": 20}],
+    )
+    db_session.add(execution)
     db_session.add(enrollment)
     db_session.flush()
     return {
+        "flow_execution": execution,
         "tracker": tracker,
         "organization": org,
         "webhook": webhook,
@@ -174,6 +180,9 @@ def _write_legacy_plaintext(db: Session, rows: dict[str, Any]) -> None:
             import json
 
             raw = {
+                "legacy_fingerprints": [
+                    {"sha256": SECRET, "prefix": "7379", "length": 20}
+                ],
                 "mcp_auth_config": {"token": SECRET, "scope": "read"},
                 "webhook_secret": {"api_key": SECRET},
                 "agent_config": {"apiKey": SECRET, "model": "m"},
@@ -211,7 +220,8 @@ def test_batch_dry_run_counts_without_writing(db_session, rows) -> None:
         result = process_batch(
             db_session, target, after=_ours(target, rows), batch_size=1, dry_run=True
         )
-        assert (result.plaintext, result.changed) == (1, 1), target.name
+        expected_fields = 2 if target.selector == "legacy_fingerprints" else 1
+        assert (result.plaintext, result.changed) == (expected_fields, 1), target.name
         stored = _raw(db_session, target.table, target.column, rows[target.table].id)
         assert SECRET in repr(stored), target.name
 
@@ -235,6 +245,44 @@ def test_batch_seals_in_place_is_idempotent_and_reversible(db_session, rows) -> 
         )
         assert back.changed == 1, target.name
         assert SECRET in repr(_raw(db_session, target.table, target.column, row_id))
+
+
+def test_execution_masking_survives_sealing_and_registration(
+    db_session: Session, rows: dict[str, Any]
+) -> None:
+    """Late output masks old credentials alongside newly issued credentials."""
+    import hashlib
+    import json
+
+    from preloop.models.crud import execution_credentials
+
+    old = "example-old"
+    row_id = rows["flow_execution"].id
+    digest = hashlib.sha256(old.encode()).hexdigest()
+    inventory = [
+        {"prefix": old[:2].encode().hex(), "length": len(old), "sha256": digest}
+    ]
+    db_session.execute(
+        text(
+            "UPDATE flow_execution SET credential_fingerprints=CAST(:fp AS jsonb) WHERE id=:id"
+        ),
+        {"id": row_id, "fp": json.dumps(inventory)},
+    )
+    target = next(t for t in TARGETS if t.name == "cred_execution_fingerprints")
+    assert (
+        process_batch(
+            db_session, target, after=_ours(target, rows), batch_size=1
+        ).changed
+        == 1
+    )
+    masker = execution_credentials.register(db_session, row_id, ["example-new"])
+    assert masker.mask("example-old example-new") == "[REDACTED] [REDACTED]"
+    stored = _raw(db_session, target.table, target.column, row_id)
+    assert digest not in repr(stored)
+    assert (
+        execution_credentials.for_execution(db_session, row_id).mask(old)
+        == "[REDACTED]"
+    )
 
 
 def test_registry_step_advances_cursor_and_finishes(db_session, rows) -> None:
