@@ -7,27 +7,31 @@ optional daily version check described in
 [Your data](security-privacy.md#your-data), and nothing to the companies
 listed here unless you configure them yourself.
 
-Last reviewed: 3 November 2026.
+Last reviewed: 18 November 2026.
 
 ## Where Preloop Cloud runs
 
 | What | Provider | Location |
 | --- | --- | --- |
 | Application, gateway, database and console | Hetzner Online GmbH | Falkenstein, Germany (datacenter FSN1-DC8) |
-| Flow executions (the containers that run agents for hosted flows) | Google Cloud | Belgium (`europe-west1-b`) |
-| Database backups (continuous archive, 7 day retention policy) | Amazon Web Services, S3 | United States (`us-east-1`) |
+| Flow executions (the containers that run agents for hosted flows) | Amazon Web Services | Frankfurt, Germany (`eu-central-1`) |
+| Database backups (continuous archive, 7 day retention policy), encrypted on our servers in Germany before upload | Amazon Web Services, S3 | Frankfurt, Germany (`eu-central-1`) |
+| Agents you deploy to a cloud VM from the console (optional) | Google Cloud | Belgium (`europe-west1-b`) |
 | Error reports from the application | Hetzner Online GmbH | Finland |
 
 Flows routed to a [private runner](../guide/runners/quickstart-linux.md)
 run on your machine, not on the flow execution host.
+
+Database backups are encrypted on our servers in Germany before upload, and
+the storage provider never holds a key.
 
 ## Subprocessors
 
 | Subprocessor | Purpose | Data it receives |
 | --- | --- | --- |
 | Hetzner Online GmbH | Hosting | Everything Preloop Cloud stores |
-| Google Cloud | Flow execution host | Flow prompts, workspace files and repository checkouts while a hosted flow runs |
-| Amazon Web Services | Database backup storage | A compressed copy of the database |
+| Amazon Web Services | Flow execution host and database backup storage | Flow prompts, workspace files and repository checkouts while a hosted flow runs; an encrypted, compressed copy of the database |
+| Google Cloud | Virtual machines for agents you choose to deploy to a cloud VM from the console | The deployed agent's configuration and the work you send to that agent |
 | Brevo | Transactional email | Recipient address and message content: invitations, password resets, and approval requests (tool name, agent name, summary, agent reasoning and redacted tool arguments) |
 | Apple Push Notification service | Mobile push to iOS devices | Approval request notifications: tool name, agent name, agent reasoning, summary and redacted tool arguments |
 | Firebase Cloud Messaging (Google) | Mobile push to Android devices | The same approval request notification content |
