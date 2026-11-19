@@ -1135,9 +1135,12 @@ names are `private_key`, `authorization_bearer`, `bearer_token`,
 `preloop_run_token`, and `sensitive_field` (a structured key such as
 `password` whose whole value is replaced).
 
-A real match still sets `redacted`, `storage_redacted`, and
-`capture_complete: false`. Ordinary source that matches none of these stays
-byte for byte, with `capture_complete: true` and `storage_redacted: false`.
+On a gateway tool observation, a real match still sets `redacted`,
+`storage_redacted`, and `capture_complete: false`. Ordinary source that
+matches none of these stays byte for byte, with `capture_complete: true`
+and `storage_redacted: false`. A native command observation records the
+same rule facts when its text matches. Its completeness stays the existing
+size and JSONB check.
 
 Each record's `sha256` hashes its `document` encoded as compact JSON with sorted
 keys, UTF-8, `ensure_ascii=false`, and no nonfinite numbers. Execution and gateway
