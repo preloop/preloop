@@ -178,6 +178,16 @@ def process_batch(
     Returns:
         Counts for the batch and the last id read (None when nothing was left).
     """
+    if target.name == "cred_execution_fingerprints":
+        from preloop.models.crud.execution_credentials import protection_enabled
+
+        active = protection_enabled(db)
+        if not dry_run and decrypt and active:
+            raise RuntimeError(
+                "Disable protected fingerprint writes before restoring the legacy inventory"
+            )
+        if not dry_run and not decrypt and not active:
+            return BatchResult()
     lock = "" if dry_run else " FOR UPDATE"
     rows = db.execute(
         text(
@@ -213,6 +223,11 @@ def _registry_step(target: Target) -> Callable[[Session], bool]:
     """Build the scheduler step for one registered target."""
 
     def step(db: Session) -> bool:
+        if target.name == "cred_execution_fingerprints":
+            from preloop.models.crud.execution_credentials import protection_enabled
+
+            if not protection_enabled(db):
+                return True
         cursor = db.execute(
             text(
                 "SELECT last_usage_id FROM agent_usage_backfill "
@@ -247,6 +262,7 @@ def run_all(
     dry_run: bool = False,
     decrypt: bool = False,
     batch_size: int = BATCH_SIZE,
+    targets: tuple[Target, ...] = TARGETS,
 ) -> dict[str, BatchResult]:
     """Process every target from the first row, committing each batch.
 
@@ -260,7 +276,7 @@ def run_all(
         Totals per target name.
     """
     totals: dict[str, BatchResult] = {}
-    for target in TARGETS:
+    for target in targets:
         total = BatchResult()
         after = _NIL
         while True:
@@ -297,16 +313,36 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Restore plaintext, before rolling back to a release without "
         "encryption at rest.",
     )
+    mode.add_argument(
+        "--enable-execution-fingerprints",
+        action="store_true",
+        help="Enable protected writes and queue the backfill after all readers are upgraded.",
+    )
+    mode.add_argument(
+        "--restore-execution-fingerprints",
+        action="store_true",
+        help="Switch writers to compatibility mode and unseal only execution inventories.",
+    )
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     args = parser.parse_args(argv)
     from preloop.models.db.session import get_db_session
 
     db = next(get_db_session())
     try:
+        from preloop.models.crud.execution_credentials import set_protection
+
+        if args.enable_execution_fingerprints:
+            set_protection(db, True)
+            return 0
+        if args.restore_execution_fingerprints or args.decrypt:
+            set_protection(db, False)
         totals = run_all(
             db,
             dry_run=args.dry_run,
-            decrypt=args.decrypt,
+            decrypt=args.decrypt or args.restore_execution_fingerprints,
+            targets=tuple(t for t in TARGETS if t.name == "cred_execution_fingerprints")
+            if args.restore_execution_fingerprints
+            else TARGETS,
             batch_size=args.batch_size,
         )
     finally:

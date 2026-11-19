@@ -27,11 +27,33 @@ Three forms of encryption are in use:
   `preloop.models.db.encrypted_types`) stores `enc:v1:<fernet token>` and
   decrypts on read, so application code sees plaintext.
 
-Execution credential masking uses the deployment key for new fingerprints.
-Upgrade the API and execution workers together before resuming executions.
-The background credential backfill seals the digest and prefix of existing
-SHA-256 records in batches. Older workers cannot read the keyed or sealed formats. Keep the original deployment key
-for as long as late output can arrive for those executions.
+### Execution fingerprint rollout
+
+Revision `20261224_seal_exec_fp` registers the inventory backfill. Fresh
+databases enable protected writes immediately. Existing installations stay
+in compatibility mode during a rolling upgrade. Old and new workers can
+read newly issued credentials' masking inventories during that transition.
+The previous unkeyed digests remain readable in storage during this window.
+
+Once all APIs, workers and schedulers are on the new release, run the following
+from an upgraded server with the deployment key. This switches writers together
+and releases the scheduler to seal historical prefixes and digests in batches.
+
+```bash
+python -m preloop.models.credential_encryption --enable-execution-fingerprints
+```
+
+New records retain their previous reader's digest and prefix under Fernet
+encryption alongside the deployment-keyed HMAC. Before starting older workers,
+run the following on the new release and let it finish. It switches writers
+back to compatibility mode, parks the background backfill, and unseals the
+legacy verifier. Old readers ignore the additional HMAC field. The global
+`--decrypt` command performs the same cutover while also unsealing other
+credential columns. Both procedures require the original deployment key.
+
+```bash
+python -m preloop.models.credential_encryption --restore-execution-fingerprints
+```
 
 ## Sealing existing rows
 
@@ -142,7 +164,7 @@ tracked as follow-up work.
 | `fleet_finding.device_key` | Not a secret: identifier, dedupe or lookup key | `20261021_device_fleet` |
 | `flow.webhook_secret_rotated_at` | Not a secret: rotation timestamp | `20261210_flow_webhook_rotation` |
 | `flow_execution.initiating_ci_key_id` | Not a secret: foreign key | `20261004_ci_principal` |
-| `flow_execution.credential_fingerprints` | HMAC-SHA256 with a deployment-derived key, Fernet-encrypted matching prefixes and byte lengths. Legacy SHA-256 digests and prefixes are Fernet-sealed by the credential backfill. | `20261220_exec_credentials` |
+| `flow_execution.credential_fingerprints` | HMAC-SHA256 with a deployment-derived key, Fernet-encrypted matching prefixes and byte lengths. Rollback and legacy SHA-256 digests and prefixes are Fernet-sealed. | `20261220_exec_credentials`, `20261224_seal_exec_fp` |
 | `flow_execution.webhook_delivery_key` | Not a secret: identifier, dedupe or lookup key | `20260908_webhook_delivery_key` |
 | `flow_execution.total_tokens` | Not a secret: count, type or timestamp | `20251118_add_execution_metrics_to_flow_execution` |
 | `flow_feedback.event_key` | Not a secret: identifier, dedupe or lookup key | `20260906_flow_feedback` |

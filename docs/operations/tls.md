@@ -19,6 +19,14 @@ The examples below assume a single public hostname:
 https://preloop.example.com
 ```
 
+## Updating a bundled TLS proxy
+
+Rerun the updated OSS installer to replace the generated NGINX 1.27 proxy with
+the pinned 1.30.7 image. HTTP/2 stays enabled. If you manage the proxy image
+yourself, update it separately. Kubernetes installations also need a patched
+ingress controller when that controller terminates HTTP/2. Updating the
+console image alone leaves that external TLS endpoint on its existing build.
+
 ## Prerequisites
 
 - A Linux host with ports `80` and `443` reachable from the internet.

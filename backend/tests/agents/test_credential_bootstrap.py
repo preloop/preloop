@@ -39,6 +39,34 @@ def _run_bootstrap(script: str, **extra_env: str) -> tuple[int, str, float]:
     return result.returncode, result.stdout, time.monotonic() - started
 
 
+def test_standalone_bootstrap_needs_only_stdlib(tmp_path: Path) -> None:
+    """Agent images have neither server packages nor deployment keys."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            bootstrap_source(),
+            "/bin/bash",
+            "-c",
+            'printf "%s" "$OPENAI_API_KEY"',
+        ],
+        cwd=tmp_path,
+        env={
+            "PATH": os.environ["PATH"],
+            "OPENAI_API_KEY": _TOKEN,
+            "PRELOOP_DISABLE_TELEMETRY": "true",
+        },
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+    assert result.stdout == "[REDACTED]"
+    assert _TOKEN not in result.stderr
+
+
 def _gone(pid: int) -> bool:
     """Report whether ``pid`` ends within two seconds.
 

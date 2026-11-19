@@ -240,6 +240,10 @@ def test_batch_seals_in_place_is_idempotent_and_reversible(db_session, rows) -> 
         again = process_batch(db_session, target, after=after, batch_size=1)
         assert (again.plaintext, again.changed) == (0, 0), target.name
 
+        if target.name == "cred_execution_fingerprints":
+            from preloop.models.crud.execution_credentials import set_protection
+
+            set_protection(db_session, False)
         back = process_batch(
             db_session, target, after=after, batch_size=1, decrypt=True
         )
@@ -283,6 +287,76 @@ def test_execution_masking_survives_sealing_and_registration(
         execution_credentials.for_execution(db_session, row_id).mask(old)
         == "[REDACTED]"
     )
+
+
+def test_fingerprint_migration_and_rolling_cutover(
+    db_session: Session, rows: dict[str, Any]
+) -> None:
+    """Exercise the registering migration, old readers, secure cutover and downgrade."""
+    import hashlib
+    import importlib
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from preloop.models.crud import execution_credentials as inventory
+    from preloop.models.credential_encryption import REGISTERED_STEPS
+
+    revision = importlib.import_module(
+        "preloop.models.alembic.versions.20261224_seal_exec_fp"
+    )
+    context = MigrationContext.configure(db_session.connection())
+    job = inventory.FINGERPRINT_BACKFILL
+    row_id = rows["flow_execution"].id
+    target = next(t for t in TARGETS if t.name == job)
+
+    def read_old(key: str) -> bool:
+        # The previous release parsed the raw JSON without an ORM converter.
+        entries = _raw(db_session, target.table, target.column, row_id)
+        raw = key.encode()
+        return any(
+            raw.startswith(bytes.fromhex(i["prefix"]))
+            and len(raw) == i["length"]
+            and hashlib.sha256(raw).hexdigest() == i["sha256"]
+            for i in entries
+        )
+
+    with Operations.context(context):
+        revision.downgrade()
+        assert db_session.get(models.AgentUsageBackfill, job) is None
+        revision.upgrade()
+        assert db_session.get(models.AgentUsageBackfill, job).ready
+        assert job in REGISTERED_STEPS
+        assert not inventory.protection_enabled(db_session)
+        # Clear this fixture's unrelated inventory written before the simulated upgrade.
+        inventory.save_inventory(db_session, row_id, [], protected=False)
+        inventory.register(db_session, row_id, ["first-example"])
+        assert read_old("first-example")
+        assert REGISTERED_STEPS[job](db_session)
+        assert read_old("first-example")
+
+        inventory.set_protection(db_session, True)
+        assert not db_session.get(models.AgentUsageBackfill, job).ready
+        inventory.register(db_session, row_id, ["second-example"])
+        sealed = _raw(db_session, target.table, target.column, row_id)
+        assert all(is_sealed(i["prefix"]) and is_sealed(i["sha256"]) for i in sealed)
+        assert (
+            inventory.for_execution(db_session, row_id).mask(
+                "first-example second-example"
+            )
+            == "[REDACTED] [REDACTED]"
+        )
+
+        inventory.set_protection(db_session, False)
+        run_all(db_session, targets=(target,), decrypt=True)
+        assert read_old("first-example") and read_old("second-example")
+        revision.downgrade()
+        db_session.expire_all()
+        assert db_session.get(models.AgentUsageBackfill, job) is None
+        assert (
+            db_session.get(models.AgentUsageBackfill, inventory.FINGERPRINT_MODE)
+            is None
+        )
+        assert read_old("second-example")
 
 
 def test_registry_step_advances_cursor_and_finishes(db_session, rows) -> None:

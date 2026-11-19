@@ -8,16 +8,11 @@ import hmac
 import io
 import json
 import re
+import secrets
 import tarfile
 from collections.abc import Iterable, Mapping
 from typing import Any
 from urllib.parse import quote, quote_plus, unquote, urlsplit
-
-from preloop.utils.encryption import (
-    credential_fingerprint_key,
-    decrypt_value,
-    encrypt_value,
-)
 
 REDACTED = "[REDACTED]"
 _SECRET_NAME = re.compile(
@@ -80,27 +75,42 @@ def _variants(value: str) -> set[str]:
     return variants
 
 
+def credential_variants(values: Iterable[str]) -> Iterable[bytes]:
+    """Yield the byte sequences that can appear in captured output."""
+    for value in values:
+        if value:
+            for variant in _variants(value):
+                yield variant.encode()
+
+
+def matching_prefix(raw: bytes) -> str:
+    """Return the bounded prefix used by both persisted and ephemeral matchers."""
+    return raw[: min(4, max(1, len(raw) // 4))].hex()
+
+
 class CredentialMasker:
     """Match exact values without persisting recoverable credential material.
 
-    A short encrypted prefix finds candidates and an HMAC confirms each
-    complete value. Longer overlapping matches win. Fingerprints remain useful
-    for late output after credentials have expired or been revoked.
+    In-container masks use a process-local random key. Server readers supply
+    their deployment key when matching persisted HMACs.
     """
 
-    def __init__(self, fingerprints: Iterable[dict[str, Any]] = ()) -> None:
+    def __init__(
+        self, fingerprints: Iterable[dict[str, Any]] = (), *, key: bytes = b""
+    ) -> None:
         self.fingerprints = list(fingerprints)
         self._candidates: dict[bytes, list[tuple[int, str]]] = {}
-        self._key = b""
+        self._key = key
         for item in self.fingerprints:
-            if "hmac_sha256" in item:
-                if not self._key:
-                    self._key = credential_fingerprint_key()
-                prefix = bytes.fromhex(decrypt_value(item["encrypted_prefix"]))
+            if "prefix" not in item or "length" not in item:
+                raise ValueError("Cannot mask output using an unsupported fingerprint")
+            prefix = bytes.fromhex(item["prefix"])
+            if "hmac_sha256" in item and key:
                 digest = "hmac:" + item["hmac_sha256"]
-            else:
-                prefix = bytes.fromhex(item["prefix"])
+            elif "sha256" in item:
                 digest = item["sha256"]
+            else:
+                raise ValueError("Cannot mask output using an unsupported fingerprint")
             self._candidates.setdefault(prefix, []).append((item["length"], digest))
         for candidates in self._candidates.values():
             candidates.sort(reverse=True)
@@ -119,23 +129,17 @@ class CredentialMasker:
 
     @classmethod
     def from_values(cls, values: Iterable[str]) -> CredentialMasker:
-        """Fingerprint trusted issued values and their common encodings."""
-        fingerprints: dict[str, dict[str, Any]] = {}
-        key = credential_fingerprint_key()
-        for value in values:
-            if not value:
-                continue
-            for variant in _variants(value):
-                raw = variant.encode()
-                digest = hmac.digest(key, raw, "sha256").hex()
-                fingerprints[digest] = {
-                    "encrypted_prefix": encrypt_value(
-                        raw[: min(4, max(1, len(raw) // 4))].hex()
-                    ),
-                    "length": len(raw),
-                    "hmac_sha256": digest,
-                }
-        return cls(fingerprints.values())
+        """Build an in-memory masker without importing server code or secrets."""
+        key = secrets.token_bytes(32)
+        fingerprints = {}
+        for raw in credential_variants(values):
+            digest = hmac.digest(key, raw, "sha256").hex()
+            fingerprints[digest] = {
+                "prefix": matching_prefix(raw),
+                "length": len(raw),
+                "hmac_sha256": digest,
+            }
+        return cls(fingerprints.values(), key=key)
 
     def _matches(self, value: bytes, digest: str) -> bool:
         """Confirm a candidate using its stored fingerprint format."""

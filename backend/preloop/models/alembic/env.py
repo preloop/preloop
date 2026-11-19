@@ -2,7 +2,7 @@ import os
 from logging.config import fileConfig
 
 from dotenv import load_dotenv
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, inspect, pool
 
 from alembic import context
 
@@ -125,6 +125,12 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        # A pre-upgrade hook runs while old workers still serve. Only a fresh
+        # database can start writing new storage formats without a cutover.
+        with connection.begin():
+            config.attributes["fresh_database"] = not inspect(connection).has_table(
+                "alembic_version"
+            ) and not inspect(connection).has_table("account")
         configure_online_context(
             context, connection=connection, target_metadata=target_metadata
         )
