@@ -29,6 +29,8 @@ The tool configuration system has been expanded with a **ToolAccessRule** model 
 
 **Evaluation:** Rules are evaluated at runtime in `DynamicFastMCP._evaluate_policy()`: the first matching enabled rule determines the action. If no rules match, the tool call is allowed by default and audited in every edition.
 
+A native permission check records the decision that took effect, one row per check. When it evaluates a require-approval result and does not apply it (a tool configuration that names a workflow but has no access rules, or a subject-scoped rule stored for a different tool source), the row's action and status are `policy_allow` / `allow`. `details.evaluated_decision` keeps `require_approval` and `details.not_applied_reason` says why (`legacy_tool_approval_not_applied_to_native_checks` or `rule_source_not_agent`). A result that creates an approval or parks the run is recorded as `policy_require_approval`, as before. Existing rows are not rewritten.
+
 **Access Rule API Endpoints:**
 - `POST /api/v1/tool-configurations/{config_id}/access-rules` - Create access rule
 - `PUT /api/v1/access-rules/{rule_id}` - Update access rule

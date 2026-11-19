@@ -2133,4 +2133,117 @@ describe('AuditView', () => {
       element.remove();
     });
   });
+
+  it('narrates an unhonoured require-approval as the allow that took effect', async () => {
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    await waitUntil(
+      () => !(element as any)._loading,
+      'Audit view did not finish loading'
+    );
+    const details = {
+      tool_name: 'Bash',
+      decision: 'allow',
+      rule_description: 'Tool has approval workflow configured (legacy mode)',
+      evaluated_decision: 'require_approval',
+      not_applied_reason: 'legacy_tool_approval_not_applied_to_native_checks',
+    };
+    const primary = {
+      id: 'native-allow',
+      account_id: 'account-1',
+      user_id: 'user-1',
+      action: 'policy_allow',
+      resource_type: 'policy',
+      resource_id: 'Bash',
+      status: 'allow',
+      ip_address: null,
+      user_agent: null,
+      timestamp: '2026-03-10T10:00:00Z',
+      details,
+    };
+    (element as any)._groups = [
+      {
+        correlation_id: 'corr-native',
+        outcome: 'allow',
+        primary_event: {
+          id: 'tool-bash',
+          account_id: 'account-1',
+          user_id: 'user-1',
+          action: 'tool_call',
+          resource_type: 'tool',
+          resource_id: 'Bash',
+          status: 'executed',
+          ip_address: null,
+          user_agent: null,
+          timestamp: '2026-03-10T10:00:00Z',
+          details: { tool_name: 'Bash', correlation_id: 'corr-native' },
+        },
+        sub_events: [
+          {
+            id: 'native-allow',
+            action: 'policy_allow',
+            status: 'allow',
+            timestamp: primary.timestamp,
+            details,
+          },
+        ],
+      },
+    ];
+    await element.updateComplete;
+
+    expect((element as any)._getPrimaryLabel(primary)).to.equal(
+      'Allowed by policy: Bash'
+    );
+    expect(
+      (element as any)._getSubEventLabel({
+        id: 'sub',
+        action: 'policy_allow',
+        status: 'allow',
+        timestamp: primary.timestamp,
+        details,
+      })
+    ).to.equal(
+      'Policy: Allow — evaluated as approval required; the tool approval workflow is not applied to native checks'
+    );
+    expect(
+      (element as any)._getSubEventLabel({
+        id: 'scoped',
+        action: 'policy_allow',
+        status: 'allow',
+        timestamp: primary.timestamp,
+        details: {
+          evaluated_decision: 'require_approval',
+          not_applied_reason: 'rule_source_not_agent',
+        },
+      })
+    ).to.equal(
+      'Policy: Allow — evaluated as approval required; the rule is not for native agent tools'
+    );
+    expect(
+      (element as any)._getSubEventLabel({
+        id: 'honoured',
+        action: 'policy_require_approval',
+        status: 'require_approval',
+        timestamp: primary.timestamp,
+        details: { rule_description: 'Force-push needs a human' },
+      })
+    ).to.equal('Policy: require approval — Force-push needs a human');
+
+    (element.shadowRoot!.querySelector('.primary-row') as HTMLElement).click();
+    await element.updateComplete;
+    const text = (element.shadowRoot!.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain(
+      'Policy: Allow — evaluated as approval required; the tool approval workflow is not applied to native checks'
+    );
+    expect(text).to.contain(
+      'The check allowed the command (evaluated as approval required; the tool approval workflow is not applied to native checks).'
+    );
+    expect(text).to.contain('Evaluated decision');
+    expect(text).to.contain(
+      'The tool approval workflow is not applied to native checks'
+    );
+    expect(text).to.not.contain('required approval');
+
+    element.remove();
+  });
 });

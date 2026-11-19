@@ -498,7 +498,9 @@ async def apply_native_access_rules(
     honoured as deny. Scoped rules with a stored ``source`` other than the
     call's tool source (``agent``, or ``mcp`` for ``mcp__`` hook calls) are
     ignored. An absent stored source matches either. Returns ``None`` when
-    no rule matched so the caller keeps the legacy path.
+    no rule matched so the caller keeps the legacy path. A require-approval
+    result this check does not apply is recorded as the allow that takes
+    effect; the returned decision is still no match.
     """
     from preloop.services.policy_evaluator import evaluate_policy_async
 
@@ -520,6 +522,7 @@ async def apply_native_access_rules(
         record_denials=False,
         tool_configuration_id=config.id if config is not None else None,
         tool_source="mcp" if mcp_identity else AGENT_TOOL_SOURCE,
+        native_check_tool_source="mcp" if mcp_identity else AGENT_TOOL_SOURCE,
         server_label=mcp_identity[0] if mcp_identity else None,
         user_id=user_id,
         execution_id=flow_execution_id,
