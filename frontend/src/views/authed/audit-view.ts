@@ -1024,8 +1024,56 @@ export class AuditView extends AuthedElement {
     `;
   }
 
+  /**
+   * Plain sentence for a require-approval result a native check did not apply.
+   */
+  private _notAppliedReasonSentence(reason: unknown): string {
+    switch (reason) {
+      case 'legacy_tool_approval_not_applied_to_native_checks':
+        return 'the tool approval workflow is not applied to native checks';
+      case 'rule_source_not_agent':
+        return 'the rule is not for native agent tools';
+      case 'rule_source_not_mcp':
+        return 'the rule is not for MCP tools';
+      default:
+        return typeof reason === 'string' && reason
+          ? reason.replace(/_/g, ' ')
+          : '';
+    }
+  }
+
+  /**
+   * How to say that the stored decision is allow and an evaluated
+   * require-approval result was not applied. Empty when this row is the
+   * decision that took effect.
+   */
+  private _evaluatedDecisionNote(
+    details: Record<string, unknown> | null | undefined
+  ): string {
+    if (!details || details.evaluated_decision !== 'require_approval') {
+      return '';
+    }
+    const reason = this._notAppliedReasonSentence(details.not_applied_reason);
+    if (reason) return `evaluated as approval required; ${reason}`;
+    return 'evaluated as approval required, and that result was not applied';
+  }
+
   /** An id field gets the id treatment; everything else is printed. */
   private _renderDetailField(key: string, value: unknown) {
+    if (key === 'evaluated_decision') {
+      const shown =
+        value === 'require_approval'
+          ? 'Approval required'
+          : String(value ?? '');
+      return this._renderDetailItem('Evaluated decision', shown);
+    }
+    if (key === 'not_applied_reason') {
+      const sentence = this._notAppliedReasonSentence(value);
+      const shown = sentence
+        ? sentence.charAt(0).toUpperCase() + sentence.slice(1)
+        : String(value ?? '');
+      return this._renderDetailItem('Not applied because', shown);
+    }
     const label = this._prettyDetailLabel(key);
     return this._isUuid(value)
       ? this._renderIdDetail(key, label, value)
@@ -1094,6 +1142,8 @@ export class AuditView extends AuthedElement {
       'correlation_id',
       'execution_id',
       'rule_description',
+      'evaluated_decision',
+      'not_applied_reason',
       'permission',
       'config_type',
       'method',
@@ -1283,8 +1333,11 @@ export class AuditView extends AuthedElement {
   private _getSubEventLabel(sub: SubEvent): string {
     const d = sub.details || {};
     switch (sub.action) {
-      case 'policy_allow':
+      case 'policy_allow': {
+        const note = this._evaluatedDecisionNote(d);
+        if (note) return `Policy: Allow — ${note}`;
         return `Policy: Allow${d.rule_description ? ` — ${d.rule_description}` : ''}`;
+      }
       case 'policy_deny':
         return `Policy: Deny${d.rule_description ? ` — ${d.rule_description}` : ''}`;
       case 'policy_require_approval': {
@@ -2010,7 +2063,10 @@ export class AuditView extends AuthedElement {
       const ruleDesc = isNone ? 'Default fallback policy' : rd || 'Policy';
 
       if (policySubevent.action === 'policy_allow') {
-        story += `${ruleDesc} automatically allowed the request. `;
+        const note = this._evaluatedDecisionNote(policySubevent.details);
+        story += note
+          ? `The check allowed the command (${note}). `
+          : `${ruleDesc} automatically allowed the request. `;
       } else if (policySubevent.action === 'policy_deny') {
         story += `${ruleDesc} denied the request. `;
       } else if (policySubevent.action === 'policy_require_approval') {

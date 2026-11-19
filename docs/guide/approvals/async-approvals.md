@@ -224,3 +224,21 @@ Ending an already-ended runtime session returns its existing summary without
 another lifecycle audit row or session-ended event. A turn's Stop event does not
 end the conversation. Native terminal hooks suppress successful repeat delivery;
 failed delivery can be retried safely.
+
+## What a native permission check records
+
+A native permission check records one policy row for the decision that took
+effect. The row's action and status are that decision: `policy_allow` /
+`allow` when the command runs, `policy_deny` / `deny` when a rule blocks it,
+and `policy_require_approval` / `require_approval` when an approval is created
+or the run is parked. A pre-tool check that evaluates a tool configuration
+with an approval workflow and no access rules, then allows the command
+without creating an approval, records allow. `details` keeps
+`evaluated_decision` (`require_approval`) and `not_applied_reason`
+(`legacy_tool_approval_not_applied_to_native_checks`). A permission request
+that still asks for approval, and a permission prompt, keep that row as
+approval required. A permission request whose client already allowed the
+command records allow and creates no approval. A subject-scoped rule
+stored for a different tool source is dropped before evaluation and
+does not produce an approval-required row. Rows already in the log are
+not rewritten.

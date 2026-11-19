@@ -509,6 +509,59 @@ def _log_policy_decision_async(
         logger.debug(f"Failed to log policy decision to audit: {e}")
 
 
+#: A tool configuration pins a workflow and has no access rules. Native
+#: permission checks do not apply that result.
+NOT_APPLIED_LEGACY_TOOL_APPROVAL = "legacy_tool_approval_not_applied_to_native_checks"
+
+
+def _scoped_rule_stored_source(rule: Any) -> Optional[str]:
+    """Return a subject-scoped rule's stored ``source``, if it has one."""
+    if not isinstance(rule, dict):
+        return None
+    raw_source = rule.get("source")
+    if isinstance(raw_source, str) and raw_source:
+        return raw_source
+    return None
+
+
+def _native_check_audit_fields(
+    *,
+    action: str,
+    native_check_tool_source: Optional[str],
+    not_applied_reason: Optional[str],
+    extra_details: Optional[Dict[str, Any]],
+) -> tuple[str, Optional[Dict[str, Any]]]:
+    """Action and details to store for one policy evaluation.
+
+    Native permission checks do not apply every require-approval result
+    they evaluate. When ``not_applied_reason`` is set, the row's action is
+    the allow that takes effect, and the evaluated result stays in
+    details. Every other caller, and every honoured decision, is stored
+    exactly as evaluated: ``extra_details`` is returned unchanged.
+
+    Args:
+        action: Evaluated policy action.
+        native_check_tool_source: ``agent`` or ``mcp`` when this check will
+            allow an unapplied require-approval result, otherwise None.
+        not_applied_reason: Why a require-approval result is not applied,
+            or None when the evaluated action takes effect.
+        extra_details: Details the evaluator would otherwise store.
+
+    Returns:
+        The action and details to pass to the audit log.
+    """
+    if (
+        not native_check_tool_source
+        or action != "require_approval"
+        or not not_applied_reason
+    ):
+        return action, extra_details
+    details = dict(extra_details or {})
+    details["evaluated_decision"] = "require_approval"
+    details["not_applied_reason"] = not_applied_reason
+    return "allow", details
+
+
 def _evaluate_rule_candidates(
     *,
     rules: list[Any],
@@ -574,6 +627,7 @@ def _evaluate_rule_candidates(
             rule_desc = (
                 description or condition_expression or f"Scoped rule {index + 1}"
             )
+            stored_source = _scoped_rule_stored_source(rule)
             if record:
                 _log_policy_decision_async(
                     account_id=account_id,
@@ -606,11 +660,6 @@ def _evaluate_rule_candidates(
                         else getattr(rule, "priority", None)
                     ),
                 )
-            stored_source = None
-            if isinstance(rule, dict):
-                raw_source = rule.get("source")
-                if isinstance(raw_source, str) and raw_source:
-                    stored_source = raw_source
             decision = PolicyDecision(
                 action,
                 approval_workflow_id,
@@ -690,6 +739,7 @@ def _evaluate_loaded_access_rules(
     extra_details: Optional[Dict[str, Any]] = None,
     record: bool = True,
     trace: Optional[list[dict[str, Any]]] = None,
+    native_check_tool_source: Optional[str] = None,
 ) -> PolicyDecision:
     """Evaluate already-loaded ToolAccessRule rows.
 
@@ -709,17 +759,25 @@ def _evaluate_loaded_access_rules(
                 f"ALL calls will require approval regardless of arguments. "
                 f"Add access rules with conditions to enable conditional approval."
             )
+            audit_action, audit_details = _native_check_audit_fields(
+                action="require_approval",
+                native_check_tool_source=native_check_tool_source,
+                not_applied_reason=NOT_APPLIED_LEGACY_TOOL_APPROVAL,
+                extra_details=extra_details,
+            )
             if record:
                 _log_policy_decision_async(
                     account_id=account_id,
                     tool_name=tool_name,
-                    action="require_approval",
-                    rule_description="Tool has approval workflow configured (legacy mode)",
+                    action=audit_action,
+                    rule_description=(
+                        "Tool has approval workflow configured (legacy mode)"
+                    ),
                     tool_args=tool_args,
                     user_id=user_id,
                     execution_id=execution_id,
                     correlation_id=correlation_id,
-                    extra_details=extra_details,
+                    extra_details=audit_details,
                 )
             return PolicyDecision(
                 "require_approval",
@@ -1758,12 +1816,20 @@ async def evaluate_policy_async(
     tool_source: Optional[str] = None,
     mcp_server_id: Optional[uuid.UUID] = None,
     server_label: Optional[str] = None,
+    native_check_tool_source: Optional[str] = None,
 ) -> PolicyDecision:
     """Async version of evaluate_policy.
 
     See evaluate_policy for full documentation. ``extra_bindings`` adds
     roots next to ``args`` for conditions (``pii.found``, ``pii.types_found``,
     ``pii.paths`` from the sensitive-data scan).
+
+    ``native_check_tool_source`` is set only when a native permission check
+    will allow the command without creating an approval. A legacy tool
+    workflow (a configuration that names a workflow and has no access
+    rules) is then recorded as allow, with the evaluated result in
+    details. Callers that still create an approval leave it unset, so
+    that row stays require_approval. The returned decision is unchanged.
     """
     writes: list[Callable[[Session], None]] = []
     denial_token = _record_policy_denials.set(record_denials)
@@ -1937,6 +2003,7 @@ async def evaluate_policy_async(
                 default_workflow_id_for_account=default_workflow_id_for_account,
                 correlation_id=correlation_id,
                 extra_details=extra_details,
+                native_check_tool_source=native_check_tool_source,
             )
 
         if decision.matched:

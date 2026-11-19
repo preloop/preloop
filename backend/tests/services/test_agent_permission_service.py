@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import nullcontext
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1575,3 +1578,543 @@ async def test_origin_snapshot_does_not_enter_native_policy_arguments() -> None:
         await apply_native_access_rules(AsyncMock(), config=config, **call_kwargs)
     assert evaluate.await_args.args[2] == {"command": "ls"}
     assert tool_input["_preloop_origin"]["model"] == "gpt-alpha"
+
+
+def _stored_policy_row(audit_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Map one evaluator audit payload to the row the audit service stores."""
+    stored: dict[str, Any] = {}
+
+    def _log_action(**kwargs: Any) -> MagicMock:
+        stored.update(kwargs)
+        row = MagicMock()
+        row.id = uuid.uuid4()
+        return row
+
+    from preloop.services.audit.service import AuditService
+
+    with (
+        patch(
+            "preloop.services.audit.service.crud_audit_log.log_action",
+            _log_action,
+        ),
+        patch("preloop.services.audit.service._broadcast_audit_event"),
+    ):
+        AuditService().log_policy_decision(
+            db=MagicMock(),
+            account_id=audit_kwargs["account_id"],
+            tool_name=audit_kwargs["tool_name"],
+            action=audit_kwargs["action"],
+            rule_description=audit_kwargs.get("rule_description"),
+            condition_matched=audit_kwargs.get("condition_matched"),
+            tool_args=audit_kwargs.get("tool_args"),
+            user_id=audit_kwargs.get("user_id"),
+            execution_id=audit_kwargs.get("execution_id"),
+            correlation_id=audit_kwargs.get("correlation_id"),
+            extra_details=audit_kwargs.get("extra_details"),
+        )
+    return stored
+
+
+async def _run_native_hook(
+    *,
+    tool_config: Any,
+    scoped_rules: list[Any] | None = None,
+    access_rules: list[Any] | None = None,
+    db: Any | None = None,
+    approval_status: str | None = None,
+    evaluation_phase: str = "pre_tool_use",
+    client_decision: str | None = None,
+    account_meta: dict[str, Any] | None = None,
+    managed_agent_id: uuid.UUID | None = None,
+    use_real_scoped_loader: bool = False,
+) -> tuple[tuple[Any, ...], list[dict[str, Any]], AsyncMock]:
+    """Run a native permission check through the real evaluator.
+
+    Returns the hook answer, the policy rows the evaluator asked to store,
+    and the approval service mock. ``use_real_scoped_loader`` leaves
+    ``get_scoped_tool_rules`` in place so account metadata is filtered the
+    way production does.
+    """
+    audit_calls: list[dict[str, Any]] = []
+
+    def _record(**kwargs: Any) -> None:
+        audit_calls.append(kwargs)
+
+    account_id = str(uuid.uuid4())
+    approval = MagicMock()
+    approval.id = uuid.uuid4()
+    approval.status = approval_status or "approved"
+    approval.approver_comment = "Synthetic decision"
+    session_db = db if db is not None else AsyncMock()
+    scoped_patch = (
+        nullcontext()
+        if use_real_scoped_loader
+        else patch(
+            "preloop.services.policy_evaluator.get_scoped_tool_rules",
+            return_value=list(scoped_rules or []),
+        )
+    )
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as session,
+        patch(
+            "preloop.models.crud.tool_configuration.get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+        patch("preloop.services.approval_service.ApprovalService") as service_cls,
+        patch(
+            "preloop.services.policy_evaluator.get_meta_data_async",
+            new=AsyncMock(return_value=account_meta or {}),
+        ),
+        scoped_patch,
+        patch(
+            "preloop.services.policy_evaluator.get_tool_config_by_id_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_default_approval_workflow_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_multi_by_config_async",
+            new=AsyncMock(return_value=list(access_rules or [])),
+        ),
+        patch(
+            "preloop.services.policy_evaluator._log_policy_decision_async",
+            _record,
+        ),
+    ):
+        session.return_value.__aenter__.return_value = session_db
+        service = AsyncMock()
+        service.create_and_notify = AsyncMock(return_value=approval)
+        service_cls.return_value = service
+        result = await request_agent_permission(
+            **_permission_kwargs(
+                account_id=account_id,
+                source="codex_cli",
+                tool_name="Bash",
+                tool_input={"command": "git status"},
+                client_decision=client_decision,
+                **(
+                    {"managed_agent_id": managed_agent_id}
+                    if managed_agent_id is not None
+                    else {}
+                ),
+            ),
+            evaluation_phase=evaluation_phase,
+        )
+    return result, audit_calls, service
+
+
+def _scoped_shell_meta(agent_id: uuid.UUID, *, source: str) -> dict[str, Any]:
+    """Account metadata with one Bash rule stored for ``source``."""
+    return {
+        "subject_governance": {
+            "managed_agents": {
+                str(agent_id): {
+                    "tool_rules": {
+                        "Bash": [
+                            {
+                                "action": "require_approval",
+                                "condition_expression": "",
+                                "condition_type": "simple",
+                                "description": "Shell needs approval",
+                                "source": source,
+                                "is_enabled": True,
+                                "priority": 1,
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
+
+
+def _bash_config(*, workflow_id: uuid.UUID | None) -> MagicMock:
+    tool_config = MagicMock()
+    tool_config.id = uuid.uuid4()
+    tool_config.is_enabled = True
+    tool_config.approval_workflow_id = workflow_id
+    tool_config.tool_source = "agent"
+    return tool_config
+
+
+@pytest.mark.asyncio
+async def test_native_hook_records_legacy_workflow_as_the_allow_that_took_effect() -> (
+    None
+):
+    """A legacy tool workflow is not applied, and the audit row says allow.
+
+    The evaluated require-approval result stays in details. No approval is
+    created, and the hook allows the command.
+    """
+    result, calls, service = await _run_native_hook(
+        tool_config=_bash_config(workflow_id=uuid.uuid4())
+    )
+
+    assert result[0] == "allow"
+    assert result[2] is None
+    service.create_and_notify.assert_not_awaited()
+    assert len(calls) == 1
+    row = _stored_policy_row(calls[0])
+    assert row["action"] == "policy_allow"
+    assert row["status"] == "allow"
+    assert row["details"]["decision"] == "allow"
+    assert row["details"]["evaluated_decision"] == "require_approval"
+    assert (
+        row["details"]["not_applied_reason"]
+        == "legacy_tool_approval_not_applied_to_native_checks"
+    )
+    assert (
+        row["details"]["rule_description"]
+        == "Tool has approval workflow configured (legacy mode)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_hook_drops_foreign_scoped_rule_before_recording() -> None:
+    """A subject-scoped rule for another tool source never reaches the log.
+
+    The loader drops it before evaluation. The hook allows the command,
+    creates no approval, and the row is the plain allow for no matching
+    rule. It is not recorded as approval required.
+    """
+    agent_id = uuid.uuid4()
+    result, calls, service = await _run_native_hook(
+        tool_config=_bash_config(workflow_id=None),
+        account_meta=_scoped_shell_meta(agent_id, source="mcp"),
+        managed_agent_id=agent_id,
+        use_real_scoped_loader=True,
+    )
+
+    assert result[0] == "allow"
+    assert result[2] is None
+    service.create_and_notify.assert_not_awaited()
+    assert len(calls) == 1
+    assert calls[0]["action"] == "allow"
+    assert calls[0]["rule_description"] == "No access rules defined"
+    extra = calls[0].get("extra_details") or {}
+    assert "evaluated_decision" not in extra
+    assert "not_applied_reason" not in extra
+    row = _stored_policy_row(calls[0])
+    assert row["action"] == "policy_allow"
+    assert row["status"] == "allow"
+    assert "evaluated_decision" not in row["details"]
+    assert row["details"]["rule_description"] == "No access rules defined"
+
+
+@pytest.mark.asyncio
+async def test_native_hook_honours_agent_scoped_rule_through_the_loader() -> None:
+    """A subject-scoped rule stored for agent tools still asks for approval."""
+    account_id = str(uuid.uuid4())
+    agent_id = uuid.uuid4()
+    workflow = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Synthetic workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+        is_default=True,
+        timeout_seconds=300,
+    )
+    result, calls, service = await _run_native_hook(
+        tool_config=_bash_config(workflow_id=None),
+        account_meta=_scoped_shell_meta(agent_id, source="agent"),
+        managed_agent_id=agent_id,
+        use_real_scoped_loader=True,
+        db=_enforced_db(workflow),
+        approval_status="approved",
+    )
+
+    assert result[0] == "allow"
+    assert result[2] is not None
+    service.create_and_notify.assert_awaited_once()
+    assert len(calls) == 1
+    assert calls[0]["action"] == "require_approval"
+    assert calls[0]["rule_description"] == "Shell needs approval"
+    row = _stored_policy_row(calls[0])
+    assert row["action"] == "policy_require_approval"
+    assert row["status"] == "require_approval"
+    assert "evaluated_decision" not in row["details"]
+
+
+@pytest.mark.asyncio
+async def test_native_hook_honoured_require_approval_is_recorded_unchanged() -> None:
+    """A matching access rule still records require_approval and asks."""
+    account_id = str(uuid.uuid4())
+    workflow = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Synthetic workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+        is_default=True,
+        timeout_seconds=300,
+    )
+    rule = SimpleNamespace(
+        id=uuid.uuid4(),
+        priority=1,
+        action="require_approval",
+        condition_type="simple",
+        condition_expression=None,
+        description="Force-push needs a human",
+        approval_workflow_id=None,
+        is_enabled=True,
+    )
+    result, calls, service = await _run_native_hook(
+        tool_config=_bash_config(workflow_id=None),
+        access_rules=[rule],
+        db=_enforced_db(workflow),
+        approval_status="approved",
+    )
+
+    assert result[0] == "allow"
+    assert result[2] is not None
+    service.create_and_notify.assert_awaited_once()
+    assert len(calls) == 1
+    assert calls[0]["action"] == "require_approval"
+    extra = calls[0].get("extra_details") or {}
+    assert "evaluated_decision" not in extra
+    assert "not_applied_reason" not in extra
+    row = _stored_policy_row(calls[0])
+    assert row["action"] == "policy_require_approval"
+    assert row["status"] == "require_approval"
+    assert row["details"]["decision"] == "require_approval"
+    assert "evaluated_decision" not in row["details"]
+    assert "not_applied_reason" not in row["details"]
+    assert row["details"]["rule_description"] == "Force-push needs a human"
+
+
+@pytest.mark.asyncio
+async def test_native_hook_plain_allow_still_records_one_allow_row() -> None:
+    """No matching rule still writes one allow row, as it does today."""
+    result, calls, service = await _run_native_hook(
+        tool_config=_bash_config(workflow_id=None)
+    )
+
+    assert result[0] == "allow"
+    assert result[2] is None
+    service.create_and_notify.assert_not_awaited()
+    assert len(calls) == 1
+    assert calls[0]["action"] == "allow"
+    extra = calls[0].get("extra_details") or {}
+    assert "evaluated_decision" not in extra
+    assert "not_applied_reason" not in extra
+    row = _stored_policy_row(calls[0])
+    assert row["action"] == "policy_allow"
+    assert row["status"] == "allow"
+
+
+@pytest.mark.asyncio
+async def test_permission_request_legacy_workflow_still_records_require_approval() -> (
+    None
+):
+    """A permission request still creates an approval for a legacy workflow.
+
+    The audit row stays require_approval. Allow is recorded only when the
+    check lets the command run without an approval.
+    """
+    account_id = str(uuid.uuid4())
+    workflow = models.ApprovalWorkflow(
+        id=uuid.uuid4(),
+        account_id=account_id,
+        name="Synthetic workflow",
+        approval_type=DEFAULT_APPROVAL_TYPE,
+        is_default=True,
+        timeout_seconds=300,
+    )
+    result, calls, service = await _run_native_hook(
+        tool_config=_bash_config(workflow_id=workflow.id),
+        db=_enforced_db(workflow),
+        approval_status="approved",
+        evaluation_phase="permission_request",
+    )
+
+    assert result[0] == "allow"
+    assert result[2] is not None
+    service.create_and_notify.assert_awaited_once()
+    assert len(calls) == 1
+    assert calls[0]["action"] == "require_approval"
+    extra = calls[0].get("extra_details") or {}
+    assert "evaluated_decision" not in extra
+    assert "not_applied_reason" not in extra
+    row = _stored_policy_row(calls[0])
+    assert row["action"] == "policy_require_approval"
+    assert row["status"] == "require_approval"
+    assert row["details"]["decision"] == "require_approval"
+
+
+@pytest.mark.asyncio
+async def test_permission_request_client_allow_records_legacy_workflow_as_allow() -> (
+    None
+):
+    """A host that already allowed the command does not create an approval.
+
+    The legacy workflow was evaluated and not applied, so the row is the
+    allow that took effect.
+    """
+    result, calls, service = await _run_native_hook(
+        tool_config=_bash_config(workflow_id=uuid.uuid4()),
+        evaluation_phase="permission_request",
+        client_decision="allow",
+    )
+
+    assert result[0] == "allow"
+    assert result[2] is None
+    service.create_and_notify.assert_not_awaited()
+    assert len(calls) == 1
+    row = _stored_policy_row(calls[0])
+    assert row["action"] == "policy_allow"
+    assert row["status"] == "allow"
+    assert row["details"]["evaluated_decision"] == "require_approval"
+    assert (
+        row["details"]["not_applied_reason"]
+        == "legacy_tool_approval_not_applied_to_native_checks"
+    )
+
+
+@pytest.mark.asyncio
+async def test_permission_prompt_legacy_workflow_still_records_require_approval() -> (
+    None
+):
+    """A permission prompt creates an approval and keeps the evaluated row.
+
+    The prompt does not record allow for a command that waits on approval.
+    """
+    from preloop.services.permission_prompt import evaluate_permission_prompt
+
+    tool_config = _bash_config(workflow_id=uuid.uuid4())
+    workflow = MagicMock()
+    workflow.id = tool_config.approval_workflow_id
+    approval = MagicMock()
+    approval.id = uuid.uuid4()
+    approval.status = "approved"
+    approval.approver_comment = "Synthetic decision"
+    calls: list[dict[str, Any]] = []
+
+    def _record(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    empty = MagicMock()
+    empty.scalars.return_value.all.return_value = []
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=empty)
+    with (
+        patch("preloop.services.permission_prompt.get_async_db_session") as session,
+        patch(
+            "preloop.services.permission_prompt.resolve_workflow",
+            new=AsyncMock(return_value=workflow),
+        ),
+        patch(
+            "preloop.services.permission_prompt.resolve_tool_config",
+            new=AsyncMock(return_value=tool_config),
+        ),
+        patch(
+            "preloop.services.permission_prompt._mark_consumed",
+            new=AsyncMock(),
+        ),
+        patch("preloop.services.approval_service.ApprovalService") as service_cls,
+        patch(
+            "preloop.services.policy_evaluator.get_meta_data_async",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_scoped_tool_rules",
+            return_value=[],
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_tool_config_by_id_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_default_approval_workflow_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_multi_by_config_async",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "preloop.services.policy_evaluator._log_policy_decision_async",
+            _record,
+        ),
+    ):
+        session.return_value.__aenter__.return_value = db
+        service = AsyncMock()
+        service.create_and_notify = AsyncMock(return_value=approval)
+        service_cls.return_value = service
+        behavior = await evaluate_permission_prompt(
+            base_url="http://localhost",
+            account_id=str(uuid.uuid4()),
+            user_id=uuid.uuid4(),
+            managed_agent_id=None,
+            runtime_session_id=None,
+            managed_agent_name="Claude Code",
+            source="claude_code",
+            tool_name="Bash",
+            tool_input={"command": "git status"},
+            wait_seconds=0,
+        )
+
+    assert behavior["behavior"] == "allow"
+    service.create_and_notify.assert_awaited_once()
+    assert len(calls) == 1
+    assert calls[0]["action"] == "require_approval"
+    extra = calls[0].get("extra_details") or {}
+    assert "evaluated_decision" not in extra
+    assert "not_applied_reason" not in extra
+    row = _stored_policy_row(calls[0])
+    assert row["action"] == "policy_require_approval"
+    assert row["status"] == "require_approval"
+
+
+@pytest.mark.asyncio
+async def test_legacy_workflow_outside_native_checks_still_records_require_approval() -> (
+    None
+):
+    """The MCP path still records a legacy workflow as require_approval."""
+    from preloop.services.policy_evaluator import evaluate_policy_async
+
+    workflow_id = uuid.uuid4()
+    tool_config = _bash_config(workflow_id=workflow_id)
+    account_id = uuid.uuid4()
+    calls: list[dict[str, Any]] = []
+
+    def _record(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    with (
+        patch(
+            "preloop.services.policy_evaluator.get_meta_data_async",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_scoped_tool_rules",
+            return_value=[],
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_tool_config_by_id_async",
+            new=AsyncMock(return_value=tool_config),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_default_approval_workflow_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_multi_by_config_async",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch("preloop.services.policy_evaluator._log_policy_decision_async", _record),
+    ):
+        decision = await evaluate_policy_async(
+            AsyncMock(),
+            tool_name="Bash",
+            tool_args={"command": "git status"},
+            account_id=account_id,
+            tool_configuration_id=tool_config.id,
+        )
+
+    assert decision.action == "require_approval"
+    assert len(calls) == 1
+    assert calls[0]["action"] == "require_approval"
+    assert calls[0].get("extra_details") in (None, {})

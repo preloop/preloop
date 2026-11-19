@@ -488,6 +488,7 @@ async def apply_native_access_rules(
     api_key_id: Optional[uuid.UUID] = None,
     flow_id: Optional[uuid.UUID] = None,
     flow_execution_id: Optional[uuid.UUID] = None,
+    record_unapplied_approval_as_allow: bool = False,
 ) -> Optional[Tuple[str, str, Optional[Any], Optional[dict]]]:
     """Evaluate blocked-tool and access rules for a native call.
 
@@ -498,7 +499,11 @@ async def apply_native_access_rules(
     honoured as deny. Scoped rules with a stored ``source`` other than the
     call's tool source (``agent``, or ``mcp`` for ``mcp__`` hook calls) are
     ignored. An absent stored source matches either. Returns ``None`` when
-    no rule matched so the caller keeps the legacy path.
+    no rule matched so the caller keeps its own path. A legacy tool
+    workflow is recorded as the allow that takes effect only when
+    ``record_unapplied_approval_as_allow`` is set, because that caller
+    will let the command run without creating an approval. The returned
+    decision is still no match.
     """
     from preloop.services.policy_evaluator import evaluate_policy_async
 
@@ -508,6 +513,7 @@ async def apply_native_access_rules(
     if config is None and mcp_identity is None:
         return None
 
+    tool_source = "mcp" if mcp_identity else AGENT_TOOL_SOURCE
     decision = await evaluate_policy_async(
         db,
         tool_name,
@@ -519,7 +525,10 @@ async def apply_native_access_rules(
         account_id,
         record_denials=False,
         tool_configuration_id=config.id if config is not None else None,
-        tool_source="mcp" if mcp_identity else AGENT_TOOL_SOURCE,
+        tool_source=tool_source,
+        native_check_tool_source=(
+            tool_source if record_unapplied_approval_as_allow else None
+        ),
         server_label=mcp_identity[0] if mcp_identity else None,
         user_id=user_id,
         execution_id=flow_execution_id,
@@ -530,12 +539,10 @@ async def apply_native_access_rules(
             "runtime_session_id": str(runtime_session_id)
             if runtime_session_id
             else None,
-            "tool_source": "mcp" if mcp_identity else AGENT_TOOL_SOURCE,
+            "tool_source": tool_source,
         },
     )
-    if not _honour_native_policy_decision(
-        decision, tool_source="mcp" if mcp_identity else AGENT_TOOL_SOURCE
-    ):
+    if not _honour_native_policy_decision(decision, tool_source=tool_source):
         return None
     ctx = getattr(decision, "rule_context", None)
     action, approval_workflow_id, rule_description = decision
@@ -683,6 +690,10 @@ async def request_agent_permission(
                 tool_name=tool_name,
                 tool_source=AGENT_TOOL_SOURCE,
             )
+        # A pre-tool check, and a host that already allowed the command,
+        # let it run when no rule is honoured. A permission request that
+        # still asks, and the permission prompt, create an approval, so
+        # they keep the evaluated require-approval row.
         rule_outcome = await apply_native_access_rules(
             db,
             config=existing,
@@ -695,6 +706,9 @@ async def request_agent_permission(
             flow_id=flow_id,
             flow_execution_id=flow_execution_id,
             api_key_id=api_key_id,
+            record_unapplied_approval_as_allow=(
+                evaluation_phase == "pre_tool_use" or decision == "allow"
+            ),
         )
         from preloop.services.audit.async_writer import outbox_enabled
 

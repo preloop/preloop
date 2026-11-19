@@ -33,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A pre-tool permission check that allows a command after evaluating a
+  tool approval workflow with no access rules records the allow that took
+  effect. The audit row's action and status are allow. The details keep
+  what was evaluated (`evaluated_decision`) and why it was not applied
+  (`not_applied_reason`). A permission request that still asks for
+  approval, and a permission prompt, are recorded as approval required,
+  as before. A permission request whose client already allowed the
+  command records allow and creates no approval. A subject-scoped rule
+  stored for another tool source is left out before evaluation, so it
+  does not add an approval-required row. Rows already in the log are
+  left as they are.
 - Tool evidence no longer treats ordinary source as a secret. A GitHub Actions
   permission such as `id-token: write`, a call such as `token = name(...)`, a
   colon at the end of a line, or a string joined with `+` stays intact, so a
