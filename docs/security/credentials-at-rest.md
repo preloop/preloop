@@ -29,37 +29,31 @@ Three forms of encryption are in use:
 
 ### Execution fingerprint rollout
 
-Fresh installations write HMAC-only fingerprints immediately. Existing
-installations use a two-stage rolling upgrade so running flows can continue
-to obtain credentials. Use the same deployment encryption key at every stage.
+Revision `20261224_seal_exec_fp` registers the inventory backfill. Fresh
+databases enable protected writes immediately. Existing installations stay
+in compatibility mode during a rolling upgrade. Old and new workers can
+read newly issued credentials' masking inventories during that transition.
+The previous unkeyed digests remain readable in storage during this window.
 
-1. Build and deploy the dual-reader revision
-   `760d09c1c3e611153f705719d4dc16d1924a6ed1` from this repository
-   (branch `compat/execution-fingerprint-reader`) using your normal build
-   process. Pin that OSS revision for EE builds.
-   Its migration is `20261224_seal_exec_fp`. While original readers still
-   serve, this intermediate build uses their existing fingerprint format.
-   During this stage a database copy can expose unkeyed verifiers.
-2. Verify that all API, gateway, worker and scheduler processes using the
-   database, including terminating replicas, have moved to the dual reader.
-   On that build run
-   `python -m preloop.models.credential_encryption --enable-execution-fingerprints`.
-   This seals new legacy verifiers and queues sealing for existing rows.
-3. Deploy the final release normally. Its pre-upgrade migration checks the
-   activation flag before admitting HMAC-only writers. Both versions can
-   extend the same live execution and mask credentials from either writer.
-   New writers only emit a deployment-keyed HMAC and encrypt the matching
-   prefix. Historical SHA-256 entries still mask previously issued secrets.
+Once all APIs, workers and schedulers are on the new release, run the following
+from an upgraded server with the deployment key. This switches writers together
+and releases the scheduler to seal historical prefixes and digests in batches.
 
-For rollback, use the final image to run `alembic downgrade 20261224_seal_exec_fp`
-from `backend/preloop/models` so the dual reader recognizes the schema.
-Then roll out the pinned dual reader with protection enabled.
-It can serve and extend every inventory created by the final release.
-Once an HMAC-only entry exists, the original SHA-only binary cannot mask it.
-The restore command refuses that downgrade to preserve redaction. Before any
-HMAC-only entries exist, you can revert the final migration, run
-`python -m preloop.models.credential_encryption --restore-execution-fingerprints`
-on the dual reader, wait for completion, then roll back to the original build.
+```bash
+python -m preloop.models.credential_encryption --enable-execution-fingerprints
+```
+
+New records retain their previous reader's digest and prefix under Fernet
+encryption alongside the deployment-keyed HMAC. Before starting older workers,
+run the following on the new release and let it finish. It switches writers
+back to compatibility mode, parks the background backfill, and unseals the
+legacy verifier. Old readers ignore the additional HMAC field. The global
+`--decrypt` command performs the same cutover while also unsealing other
+credential columns. Both procedures require the original deployment key.
+
+```bash
+python -m preloop.models.credential_encryption --restore-execution-fingerprints
+```
 
 ## Sealing existing rows
 
@@ -81,8 +75,7 @@ The manual run scans every row, so it also seals values that a previous
 release wrote during a rolling upgrade. Before rolling back to a release
 without encryption at rest, run
 `python -m preloop.models.credential_encryption --decrypt`; that release
-cannot read sealed values. The execution fingerprint rollback limit above also
-applies to `--decrypt`.
+cannot read sealed values.
 
 ## Credentials inside JSON documents
 
@@ -171,7 +164,7 @@ tracked as follow-up work.
 | `fleet_finding.device_key` | Not a secret: identifier, dedupe or lookup key | `20261021_device_fleet` |
 | `flow.webhook_secret_rotated_at` | Not a secret: rotation timestamp | `20261210_flow_webhook_rotation` |
 | `flow_execution.initiating_ci_key_id` | Not a secret: foreign key | `20261004_ci_principal` |
-| `flow_execution.credential_fingerprints` | HMAC-SHA256 with a deployment-derived key, Fernet-encrypted matching prefixes and byte lengths. Historical SHA-256 digests are Fernet-sealed. | `20261220_exec_credentials`, `20261224_seal_exec_fp`, `20261225_exec_hmac_only` |
+| `flow_execution.credential_fingerprints` | HMAC-SHA256 with a deployment-derived key, Fernet-encrypted matching prefixes and byte lengths. Rollback and legacy SHA-256 digests and prefixes are Fernet-sealed. | `20261220_exec_credentials`, `20261224_seal_exec_fp` |
 | `flow_execution.webhook_delivery_key` | Not a secret: identifier, dedupe or lookup key | `20260908_webhook_delivery_key` |
 | `flow_execution.total_tokens` | Not a secret: count, type or timestamp | `20251118_add_execution_metrics_to_flow_execution` |
 | `flow_feedback.event_key` | Not a secret: identifier, dedupe or lookup key | `20260906_flow_feedback` |

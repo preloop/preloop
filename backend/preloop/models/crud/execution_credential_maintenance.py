@@ -192,12 +192,13 @@ def redact_stored_execution_credentials(
                             execution_id=UUID(str(execution.id)),
                         )
                     )
+            protected = inventory.protection_enabled(db)
             if apply:
                 db.refresh(execution, ["credential_fingerprints"], with_for_update=True)
             masker = inventory.stored_masker(
                 [
                     *(execution.credential_fingerprints or []),
-                    *inventory.issued_fingerprints(values),
+                    *inventory.issued_fingerprints(values, protected=protected),
                 ]
             )
             changed_execution = False
@@ -225,7 +226,9 @@ def redact_stored_execution_credentials(
             if changed_execution:
                 counts["executions_changed"] += 1
             if apply:
-                inventory.save_inventory(db, execution.id, masker.fingerprints)
+                inventory.save_inventory(
+                    db, execution.id, masker.fingerprints, protected=protected
+                )
                 db.commit()
         after = executions[-1].id
     return dict(counts)
