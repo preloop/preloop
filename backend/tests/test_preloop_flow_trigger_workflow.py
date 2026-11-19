@@ -315,10 +315,22 @@ def test_label_events_only_retrigger_for_the_two_owned_labels() -> None:
         "github.event.action != 'unlabeled' || github.event.label.name == 'preloop-skip-review'"
         in condition
     )
-    # Adding preloop-review to a same-repo PR must also start a review.
-    assert "github.event.action == 'labeled'" in condition
+    # Same-repo PRs: adding preloop-review or removing preloop-skip-review
+    # starts a review (the clauses above already limit which labels).
+    assert "github.event.action == 'labeled' ||" in condition
+    assert "github.event.action == 'unlabeled'" in condition
+    # Only those two label changes may join the review concurrency group;
+    # any other label would cancel a running review and then skip itself.
     group = doc["concurrency"]["group"]
-    assert "github.event.action == 'labeled'" in group
+    assert (
+        "(github.event.action == 'labeled' && "
+        "github.event.label.name == 'preloop-review')" in group
+    )
+    assert (
+        "(github.event.action == 'unlabeled' && "
+        "github.event.label.name == 'preloop-skip-review')" in group
+    )
+    assert "github.event.action == 'labeled' ||" not in group
 
 
 EXEC_ID = "11111111-2222-4333-8444-555555555555"
@@ -519,7 +531,7 @@ def test_fast_admission_rejects_a_run_for_another_head(tmp_path: Path) -> None:
 def test_fast_admission_dedups_only_on_bot_reviews(tmp_path: Path) -> None:
     """A human review is not a Preloop review; a bot review of the head is."""
     _, human = _run_fast_admission(
-        tmp_path / "h", fast="success", reviews=[_review("User", login="d-mo")]
+        tmp_path / "h", fast="success", reviews=[_review("User", login="octocat")]
     )
     assert "reviewed=true" not in human
     # CodeQL posts a COMMENTED review on the head; it is not a Preloop review.
