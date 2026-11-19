@@ -6,7 +6,11 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from preloop.models.crud.execution_tool_evidence import persist_tool_evidence
-from preloop.services.execution_tool_evidence import capture_tools, digest
+from preloop.services.execution_tool_evidence import (
+    _redact_value,
+    capture_tools,
+    digest,
+)
 
 
 def response(arguments: str) -> dict:
@@ -181,6 +185,42 @@ def test_ordinary_source_is_stored_complete_and_byte_identical() -> None:
     assert stored["capture_complete"] is True
     assert stored["storage_redacted"] is False
     assert stored["redaction_ruleset"] == "2026-11-19"
+
+
+def test_placeholder_url_is_stored_complete() -> None:
+    """A format placeholder in a URL is not a userinfo secret."""
+    source = 'f"https://x-access-token:{token}@github.com/Org/repo.git"'
+    document = capture_tools({}, _tool_result(source), capture_content=True)
+    assert document["observations"][0]["value"] == source
+    assert document["capture_complete"] is True
+    assert document["storage_redacted"] is False
+    assert "redactions" not in document["observations"][0]
+    stored = _stored_document(document)
+    assert stored["observations"][0]["value"] == source
+    assert stored["capture_complete"] is True
+    assert stored["storage_redacted"] is False
+
+
+def test_one_bearer_counts_once_on_gateway_and_native_paths() -> None:
+    """One header is one hit, including after the storage scrubber."""
+    source = "Authorization: Bearer ${GITHUB_TOKEN}"
+    document = capture_tools({}, _tool_result(source), capture_content=True)
+    assert document["observations"][0]["redactions"] == [
+        {"rule": "authorization_bearer", "count": 1}
+    ]
+    assert "${GITHUB_TOKEN}" not in document["observations"][0]["value"]
+    _, facts = _redact_value(source)
+    assert facts == [{"rule": "authorization_bearer", "count": 1}]
+
+
+def test_already_masked_sensitive_field_is_not_a_new_redaction() -> None:
+    """Replacing ``[REDACTED]`` with itself does not flag the observation."""
+    source = '{"password": "[REDACTED]"}'
+    document = capture_tools({}, _tool_result(source), capture_content=True)
+    record = document["observations"][0]
+    assert record["value"] == source
+    assert record["redacted"] is False
+    assert "redactions" not in record
 
 
 def test_real_looking_key_is_masked_and_records_the_rule() -> None:

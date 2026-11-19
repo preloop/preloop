@@ -118,6 +118,21 @@ _CASES: list[tuple[str, str, list[tuple[str, int]]]] = [
         f"token={_REDACTED}",
         [("keyword_assignment", 1)],
     ),
+    (
+        'password = "changeme" + suffix',
+        f'password = "{_REDACTED}" + suffix',
+        [("keyword_assignment", 1)],
+    ),
+    (
+        'password = "hunter2" + salt',
+        f'password = "{_REDACTED}" + salt',
+        [("keyword_assignment", 1)],
+    ),
+    (
+        """log.info("don't log password: 'hunter2'")""",
+        f"""log.info("don't log password: '{_REDACTED}'")""",
+        [("keyword_assignment", 1)],
+    ),
     ("password: hunter2", f"password: {_REDACTED}", [("keyword_assignment", 1)]),
     ('password: "hunter2"', f'password: "{_REDACTED}"', [("keyword_assignment", 1)]),
     ("password: 'hunter2'", f"password: '{_REDACTED}'", [("keyword_assignment", 1)]),

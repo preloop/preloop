@@ -85,8 +85,12 @@ _KEYWORD_ASSIGNMENT = re.compile(
     r"(?P=q)"
     r"[ \t]*[=:][ \t]*"
     r")"
-    r"(?P<value>\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'|[^\s,;&]+)"
-    r"(?![ \t]*\+)"
+    # A finished quoted literal is one value even when `+` follows it.
+    # The `+` exclusion is only on the bare alternative, so
+    # `password = "changeme" + suffix` still masks the literal, while
+    # `'...token:' + name` is not treated as a bare partial token.
+    r"(?P<value>\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'"
+    r"|[^\s,;&]+(?![ \t]*\+))"
 )
 # token_urlsafe bodies contain an uppercase letter or a digit. The lookahead
 # stops at the token so a following word cannot satisfy it. Lengths match
@@ -141,31 +145,21 @@ def _tight_env_equals(match: re.Match[str]) -> bool:
     return match.group("prefix") == f"{quote}{key}{quote}="
 
 
-def _opening_quote_closes_string(match: re.Match[str]) -> bool:
-    """True when the value's first quote ends the string that holds the key.
+def _replaced_span_is_marker(match: re.Match[str]) -> bool:
+    """True when the rule would only rewrite an existing redaction marker.
 
-    ``'https://x-access-token:' + token`` puts the key inside a string. The
-    quote after the colon closes that string, and the next quote makes the
-    value pattern swallow `` + token + ``. An odd quote count on the line
-    before the key means that first quote is a closer, so the span is code.
+    A second pass over ``Authorization: Bearer [REDACTED]`` must not count
+    as another secret. A prefix group, when the pattern keeps one, is the
+    label; the rest of the match is the value.
     """
-    raw_value = match.group("value")
-    if not raw_value or raw_value[0] not in "\"'":
-        return False
-    quote = raw_value[0]
-    line = match.string[: match.start()].rsplit("\n", 1)[-1]
-    count = 0
-    escaped = False
-    for char in line:
-        if escaped:
-            escaped = False
-            continue
-        if char == "\\":
-            escaped = True
-            continue
-        if char == quote:
-            count += 1
-    return count % 2 == 1
+    text = match.group(0)
+    prefix = ""
+    if match.lastindex:
+        first = match.group(1)
+        if isinstance(first, str) and text.startswith(first) and len(first) < len(text):
+            prefix = first
+    secret = text[len(prefix) :].strip().strip("\"'")
+    return secret in _REDACTION_MARKERS
 
 
 def _credential_shape(text: str) -> bool:
@@ -215,9 +209,10 @@ def _assignment_is_secret(match: re.Match[str]) -> bool:
         return False
     if _is_expression(body):
         return False
-    # The quote after the key closed the string that contains the key, or
-    # the quoted text is `+ name`. Both are source, not a literal.
-    if _opening_quote_closes_string(match) or _OPERATOR_IDENT.match(body):
+    # `+ name` is source that a closing quote pulled into the value, as in
+    # `'https://x-access-token:' + token`. Quote parity is not used: an
+    # apostrophe in a word (`don't`) would hide a real `'hunter2'`.
+    if _OPERATOR_IDENT.match(body):
         return False
     family = _keyword_family(key)
     # A quoted literal was written as a value. Mask it, including a short
@@ -348,7 +343,7 @@ def redact_sensitive_text(value: str) -> tuple[str, list[dict[str, Any]]]:
                 if callable(replacement)
                 else match.expand(replacement)
             )
-            if updated != match.group(0):
+            if updated != match.group(0) and not _replaced_span_is_marker(match):
                 hits += 1
             return updated
 

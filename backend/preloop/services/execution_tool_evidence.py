@@ -72,8 +72,12 @@ def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]]]:
         field_hits = 0
         for key, item in value.items():
             if _sensitive_field(key):
-                redacted[key] = "[REDACTED]"
-                field_hits += 1
+                # An already-masked value is not a new redaction.
+                if item == "[REDACTED]":
+                    redacted[key] = item
+                else:
+                    redacted[key] = "[REDACTED]"
+                    field_hits += 1
                 continue
             child, child_facts = _redact_value(item)
             redacted[key] = child

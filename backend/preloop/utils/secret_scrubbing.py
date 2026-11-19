@@ -97,12 +97,30 @@ _NON_SECRET_USERINFO = {
     "user",
     "username",
 }
+# A userinfo or query value that is only a reference, not a credential.
+# `{token}` in `https://x-access-token:{token}@host` is source, not a secret.
+_PLACEHOLDER_REFERENCE = re.compile(
+    r"^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}"
+    r"|\$[A-Za-z_][A-Za-z0-9_]*"
+    r"|\{\{[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\}\}"
+    r"|\{[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\}"
+    r"|%\([A-Za-z_][A-Za-z0-9_]*\)s"
+    r"|%s"
+    r"|<[A-Za-z_][A-Za-z0-9_]*>)$"
+)
+
+
+def _is_placeholder_reference(value: str) -> bool:
+    """True when the whole value is a format or environment reference."""
+    return _PLACEHOLDER_REFERENCE.match(value) is not None
 
 
 def _redact_url_credentials(text: str) -> str:
     """Blank the userinfo portion of any URL that carries a credential."""
 
     def _password_sub(match: Match[str]) -> str:
+        if _is_placeholder_reference(match.group("password")):
+            return match.group(0)
         return f"{match.group('scheme')}{match.group('user')}:{REDACTED}"
 
     text = _URL_USERINFO_WITH_PASSWORD.sub(_password_sub, text)
@@ -110,7 +128,11 @@ def _redact_url_credentials(text: str) -> str:
     def _token_only_sub(match: Match[str]) -> str:
         user = match.group("user")
         # Already handled above, or a bare username with no secret in it.
-        if user == REDACTED or user.lower() in _NON_SECRET_USERINFO:
+        if (
+            user == REDACTED
+            or user.lower() in _NON_SECRET_USERINFO
+            or _is_placeholder_reference(user)
+        ):
             return match.group(0)
         return f"{match.group('scheme')}{REDACTED}"
 
@@ -121,6 +143,8 @@ def _redact_query_param_secrets(text: str) -> str:
     """Blank the value of credential-bearing URL query parameters."""
 
     def _sub(match: Match[str]) -> str:
+        if _is_placeholder_reference(match.group("value")):
+            return match.group(0)
         return (
             f"{match.group('prefix')}{match.group('param')}"
             f"{match.group('eq')}{REDACTED}"
