@@ -2,6 +2,7 @@
 
 import json
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -211,6 +212,115 @@ def test_one_bearer_counts_once_on_gateway_and_native_paths() -> None:
     assert "${GITHUB_TOKEN}" not in document["observations"][0]["value"]
     _, facts = _redact_value(source)
     assert facts == [{"rule": "authorization_bearer", "count": 1}]
+
+
+def test_nested_sensitive_value_is_masked_on_the_gateway_path() -> None:
+    """A dict or list under a sensitive key must not drop the document.
+
+    A real mask on a gateway observation stays incomplete. A gateway tool
+    observation that matches a rule sets ``capture_complete`` false.
+    """
+    payloads = (
+        {"command": "echo safe", "credentials": {"password": "hunter2"}},
+        {"command": "echo safe", "token": ["hunter2"]},
+    )
+    for payload in payloads:
+        document = capture_tools(
+            {},
+            {
+                "output": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call-nested",
+                        "output": payload,
+                    }
+                ]
+            },
+            capture_content=True,
+        )
+        record = document["observations"][0]
+        masked_key = "credentials" if "credentials" in payload else "token"
+        assert record["redactions"] == [{"rule": "sensitive_field", "count": 1}]
+        assert "hunter2" not in json.dumps(record["value"])
+        assert record["value"]["command"] == "echo safe"
+        assert record["value"][masked_key] == "[REDACTED]"
+        assert record["redacted"] is True
+        assert document["capture_complete"] is False
+        assert document["storage_redacted"] is True
+        stored = _stored_document(document)
+        assert "hunter2" not in json.dumps(stored["observations"][0]["value"])
+        assert stored["capture_complete"] is False
+
+
+def _keep_native_document(
+    db: object,
+    *,
+    execution_id: object,
+    source: str,
+    source_id: str,
+    document: dict[str, Any],
+    captured: dict[str, dict[str, Any]],
+) -> None:
+    """Record the document the native path was about to store."""
+    del db, execution_id, source, source_id
+    captured["document"] = document
+
+
+def _native_document(command: dict[str, Any]) -> dict[str, Any]:
+    """Run native command capture and return the document it would store."""
+    from preloop.models.crud.execution_tool_evidence import (
+        _persist_native_command_evidence,
+    )
+
+    captured: dict[str, dict[str, Any]] = {}
+    line = json.dumps(
+        {
+            "type": "item.started",
+            "item": {
+                "id": "item-nested",
+                "type": "command_execution",
+                "command": command,
+            },
+        }
+    )
+    with (
+        patch(
+            "preloop.models.crud.flow_execution_log._account_for_execution",
+            return_value=uuid4(),
+        ),
+        patch(
+            "preloop.services.sensitive_data.storage.apply_storage_redaction",
+            side_effect=lambda account, value: value,
+        ),
+        patch(
+            "preloop.models.crud.execution_tool_evidence._persist_document",
+            lambda db, **kwargs: _keep_native_document(db, captured=captured, **kwargs),
+        ),
+    ):
+        _persist_native_command_evidence(
+            MagicMock(), execution_id=str(uuid4()), line=line
+        )
+    return captured["document"]
+
+
+def test_nested_sensitive_value_is_masked_on_the_native_path() -> None:
+    """Native capture uses the same mask and keeps the size and JSONB check.
+
+    A native command records the same rule facts. Its completeness stays the
+    existing size and JSONB check, so a field mask does not clear it.
+    """
+    payloads = (
+        {"command": "echo safe", "credentials": {"password": "hunter2"}},
+        {"command": "echo safe", "token": ["hunter2"]},
+    )
+    for payload in payloads:
+        document = _native_document(payload)
+        record = document["observations"][0]
+        assert record["redactions"] == [{"rule": "sensitive_field", "count": 1}]
+        assert "hunter2" not in json.dumps(record["value"])
+        assert record["redacted"] is True
+        assert document["capture_complete"] is True
+        assert document["storage_redacted"] is False
 
 
 def test_already_masked_sensitive_field_is_not_a_new_redaction() -> None:
