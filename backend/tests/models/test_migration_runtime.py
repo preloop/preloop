@@ -66,8 +66,9 @@ class TestPerRevisionTransactions:
         assert context.configure_kwargs["connection"] == "conn"
         assert context.configure_kwargs["target_metadata"] == "metadata"
 
+    @pytest.mark.parametrize("existing_table", [None, "alembic_version", "account"])
     def test_env_py_uses_the_shared_policy(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, existing_table: str | None
     ) -> None:
         """Load the real env.py online path with the database stubbed out.
 
@@ -106,20 +107,19 @@ class TestPerRevisionTransactions:
 
         engine_kwargs: dict[str, Any] = {}
 
-        class _Connection:
-            def __enter__(self) -> "_Connection":
-                return self
+        engine = sqlalchemy.create_engine("sqlite://")
+        if existing_table is not None:
+            metadata = sqlalchemy.MetaData()
+            sqlalchemy.Table(
+                existing_table, metadata, sqlalchemy.Column("id", sqlalchemy.Integer)
+            )
+            metadata.create_all(engine)
 
-            def __exit__(self, *exc_info: object) -> bool:
-                return False
-
-        class _Engine:
-            def connect(self) -> _Connection:
-                return _Connection()
-
-        def fake_engine_from_config(configuration: Any, **kwargs: Any) -> _Engine:
+        def fake_engine_from_config(
+            configuration: Any, **kwargs: Any
+        ) -> sqlalchemy.Engine:
             engine_kwargs.update(kwargs)
-            return _Engine()
+            return engine
 
         monkeypatch.setattr(
             sqlalchemy, "engine_from_config", fake_engine_from_config, raising=True
@@ -137,6 +137,10 @@ class TestPerRevisionTransactions:
 
         assert context.configure_kwargs["transaction_per_migration"] is True
         assert engine_kwargs["connect_args"] == {"options": "-c lock_timeout=5s"}
+        assert alembic_context.config.attributes["fresh_database"] is (
+            existing_table is None
+        )
+        engine.dispose()
 
 
 class TestLockTimeout:
