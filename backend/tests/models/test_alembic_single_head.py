@@ -667,4 +667,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert revisions.down_revision == records.revision
     traffic = script.get_revision("20261223_api_traffic")
     assert traffic.down_revision == revisions.revision
-    assert script.get_heads() == [traffic.revision]
+    fingerprints = script.get_revision("20261224_seal_exec_fp")
+    assert fingerprints.down_revision == traffic.revision
+    keyed = script.get_revision("20261225_exec_hmac_only")
+    assert keyed.down_revision == fingerprints.revision
+    assert script.get_heads() == [keyed.revision]

@@ -704,6 +704,18 @@ gateway_proxy_locations() {
 GATE
 }
 
+TLS_PROXY_IMAGE='nginx:1.30.7-alpine@sha256:bef154735288bc38d99fac41ae63730684bcc661503673a04a0f9bc526ba8598'
+
+upgrade_tls_proxy_image() {
+  # Preserve local settings and the active certificate configuration while
+  # replacing the vulnerable image written by previous installers.
+  overlay="${INSTALL_DIR}/docker-compose.tls.yaml"
+  if grep -qx '    image: nginx:1\.27-alpine' "$overlay"; then
+    sed "s|^    image: nginx:1\.27-alpine$|    image: ${TLS_PROXY_IMAGE}|" "$overlay" > "${overlay}.tmp"
+    mv "${overlay}.tmp" "$overlay"
+  fi
+}
+
 write_tls_assets() {
   host="$1"
   mkdir -p "${INSTALL_DIR}/tls" "${INSTALL_DIR}/certbot/www" "${INSTALL_DIR}/certbot/conf"
@@ -786,10 +798,10 @@ EOF
 
   # Compose overlay: a TLS-terminating proxy in front of the console, plus a
   # certbot sidecar that renews every 12h and reloads nginx.
-  cat > "${INSTALL_DIR}/docker-compose.tls.yaml" <<'EOF'
+  cat > "${INSTALL_DIR}/docker-compose.tls.yaml" <<EOF
 services:
   proxy:
-    image: nginx:1.27-alpine
+    image: ${TLS_PROXY_IMAGE}
     restart: unless-stopped
     depends_on:
       - console
@@ -802,7 +814,7 @@ services:
       - ./certbot/conf:/etc/letsencrypt:ro
       - ./certbot/www:/var/www/certbot:ro
     command: >-
-      sh -c "while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g 'daemon off;'"
+      sh -c "while :; do sleep 6h & wait \$\${!}; nginx -s reload; done & nginx -g 'daemon off;'"
 
   certbot:
     image: certbot/certbot:latest
@@ -811,7 +823,7 @@ services:
       - ./certbot/conf:/etc/letsencrypt
       - ./certbot/www:/var/www/certbot
     entrypoint: >-
-      sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
+      sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait \$\${!}; done"
 
   # Public traffic reaches the console through the TLS proxy; keep 3000 for
   # local debugging only.
@@ -1067,6 +1079,7 @@ EOF
     # TLS was configured previously but this run did not ask for it (e.g. an
     # upgrade run without PRELOOP_URL). Keep managing the proxy/certbot services
     # rather than orphaning them.
+    upgrade_tls_proxy_image
     echo "Keeping the existing TLS proxy (set PRELOOP_SKIP_TLS=1 to stop using it)."
     COMPOSE_ARGS="-f docker-compose.yaml -f docker-compose.auth.yaml -f docker-compose.tls.yaml"
   fi

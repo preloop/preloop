@@ -13,6 +13,7 @@ Generate with: python -c 'from cryptography.fernet import Fernet; print(Fernet.g
 
 import base64
 import hashlib
+import hmac
 import logging
 from functools import lru_cache
 
@@ -52,6 +53,15 @@ def _get_encryption_key() -> str:
     raise ValueError(
         "No encryption key available. "
         "Set SECURITY__ENCRYPTION_KEY or SECURITY__SECRET_KEY."
+    )
+
+
+def credential_fingerprint_key() -> bytes:
+    """Derive a domain-separated HMAC key from the deployment encryption key."""
+    return hmac.digest(
+        base64.urlsafe_b64decode(_get_encryption_key()),
+        b"preloop/execution-credential-mask/v1",
+        "sha256",
     )
 
 

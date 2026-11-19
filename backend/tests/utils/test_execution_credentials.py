@@ -1,6 +1,7 @@
 """Execution credential masking across output representations."""
 
 import base64
+import hashlib
 from collections.abc import Callable
 import io
 import json
@@ -14,6 +15,41 @@ import pytest
 from preloop.utils.execution_credentials import CredentialMasker, credential_values
 
 TOKEN = "synthetic-execution/credential+with=punctuation 123456"
+
+
+def test_mixed_inventory_masks_legacy_and_keyed_fingerprints() -> None:
+    """Stored inventories from a rolling upgrade redact buffered and streamed output."""
+    from preloop.utils.execution_credentials import CredentialStream
+
+    old = b"legacy-secret"
+    legacy = {
+        "length": len(old),
+        "prefix": old[:3].hex(),
+        "sha256": hashlib.sha256(old).hexdigest(),
+    }
+    from preloop.models.crud.execution_credentials import (
+        issued_fingerprints,
+        stored_masker,
+    )
+
+    new = issued_fingerprints([TOKEN])
+    assert new and all(set(item) == {"hmac_sha256", "prefix", "length"} for item in new)
+    masker = stored_masker(json.loads(json.dumps([legacy, *new])))
+    assert masker.mask_bytes(old + TOKEN.encode()) == b"[REDACTED][REDACTED]"
+    stream = CredentialStream(masker)
+    assert (
+        stream.feed(old[:5])
+        + stream.feed(old[5:] + TOKEN[:8].encode())
+        + stream.feed(TOKEN[8:].encode())
+        + stream.finish()
+        == b"[REDACTED][REDACTED]"
+    )
+
+
+def test_unknown_fingerprint_cannot_silently_release_output() -> None:
+    """Future formats must provide a recognized verifier or stop publication."""
+    with pytest.raises(ValueError, match="unsupported fingerprint"):
+        CredentialMasker([{"future_digest": "example"}])
 
 
 def test_agent_environment_and_file_output(tmp_path: Path) -> None:

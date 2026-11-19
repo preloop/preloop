@@ -18,7 +18,7 @@ ENV VITE_SENTRY_DSN=${VITE_SENTRY_DSN}
 RUN npm run build
 
 # Stage 2: Serve with nginx
-FROM nginx:alpine@sha256:54f2a904c251d5a34adf545a72d32515a15e08418dae0266e23be2e18c66fefa
+FROM nginx:1.30.7-alpine@sha256:bef154735288bc38d99fac41ae63730684bcc661503673a04a0f9bc526ba8598
 
 # Copy nginx configuration
 COPY docker/nginx.conf /etc/nginx/nginx.conf

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 # One list member: optional weak prefix, quoted opaque tag, then a comma or end.
-_ENTITY_TAG = re.compile(r'\s*(W/)?"([\x21\x23-\x7e\x80-\xff]*)"\s*(?:,|$)')
+_ENTITY_TAG = re.compile(r'\s*+(W/)?"([\x21\x23-\x7e\x80-\xff]*)"\s*+(?:,|$)')
 
 
 def flow_etag(revision: int) -> str:

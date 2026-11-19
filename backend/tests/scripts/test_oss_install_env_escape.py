@@ -213,3 +213,20 @@ def test_compose_config_keeps_literal_leading_dollar_password(tmp_path: Path) ->
     raw = data["services"]["probe"]["environment"]["SMTP_PASSWORD"]
     assert raw, "SMTP_PASSWORD was interpolated to empty"
     assert compose_env_unescape(raw) == LEADING_DOLLAR_PASSWORD
+
+
+def test_tls_proxy_image_upgrade_preserves_overlay(tmp_path: Path) -> None:
+    """An existing generated overlay gets the same patched image as a new one."""
+    proc = _run_installer_sh("write_tls_assets example.com", install_dir=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    overlay = tmp_path / "docker-compose.tls.yaml"
+    rendered = overlay.read_text()
+    image = next(line for line in rendered.splitlines() if "image: nginx:" in line)
+    assert image.split("@")[0] == "    image: nginx:1.30.7-alpine"
+    assert "wait $${!}" in rendered
+    overlay.write_text(
+        rendered.replace(image, "    image: nginx:1.27-alpine") + "# local setting\n"
+    )
+    proc = _run_installer_sh("upgrade_tls_proxy_image", install_dir=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert overlay.read_text() == rendered + "# local setting\n"
