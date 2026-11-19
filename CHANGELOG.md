@@ -13,11 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vulnerabilities CVE-2026-123633 and CVE-2026-123007. Kubernetes ingress
   controllers need a separate patch. The hosted ingress received both fixes
   with HTTP/2 enabled.
-- Fresh databases protect execution credential fingerprints immediately. On
-  existing databases, finish the rolling upgrade, then run
-  `python -m preloop.models.credential_encryption --enable-execution-fingerprints`.
-  Before downgrading, run the same module with `--restore-execution-fingerprints`
-  so older workers can read every fingerprint.
+- New execution credentials use deployment-keyed HMAC fingerprints. For an
+  existing installation, deploy dual-reader revision `760d09c1c` first,
+  run `python -m preloop.models.credential_encryption --enable-execution-fingerprints`
+  after all old readers exit, then deploy the final release. Running flows
+  can continue on either version during this second rollout. Roll back to
+  the dual reader. See the [upgrade and restore procedure](docs/security/credentials-at-rest.md#execution-fingerprint-rollout).
 
 ### Added
 

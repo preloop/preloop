@@ -243,6 +243,10 @@ def test_batch_seals_in_place_is_idempotent_and_reversible(db_session, rows) -> 
         if target.name == "cred_execution_fingerprints":
             from preloop.models.crud.execution_credentials import set_protection
 
+            # Simulate rollback to the dual reader before restoring this legacy row.
+            db_session.execute(
+                text("DELETE FROM agent_usage_backfill WHERE name='exec_hmac_writers'")
+            )
             set_protection(db_session, False)
         back = process_batch(
             db_session, target, after=after, batch_size=1, decrypt=True
@@ -313,7 +317,6 @@ def test_dual_reader_extends_keyed_only_inventory(
                 ).hex(),
             }
         ],
-        protected=True,
     )
     masker = inventory.register(db_session, row_id, ["next-synthetic"])
     assert masker.mask(value + " next-synthetic") == "[REDACTED] [REDACTED]"
@@ -356,24 +359,56 @@ def test_fingerprint_migration_and_rolling_cutover(
             for i in entries
         )
 
-    inventory.save_inventory(db_session, row_id, [], protected=False)
+    keyed = importlib.import_module(
+        "preloop.models.alembic.versions.20261225_exec_hmac_only"
+    )
+    inventory.save_inventory(db_session, row_id, [])
     with Operations.context(context):
+        keyed.downgrade()
         revision.downgrade()
         assert db_session.get(models.AgentUsageBackfill, job) is None
         revision.upgrade()
         assert db_session.get(models.AgentUsageBackfill, job).ready
         assert job in REGISTERED_STEPS
         assert not inventory.protection_enabled(db_session)
-        inventory.register(db_session, row_id, ["first-example"])
+        with pytest.raises(DBAPIError, match="dual-reader build"):
+            with context.bind.begin_nested():
+                keyed.upgrade()
+        # Simulate the inventory already issued by the older serving worker.
+        import json
+
+        first = b"first-example"
+        db_session.execute(
+            text(
+                "UPDATE flow_execution SET credential_fingerprints=CAST(:fp AS jsonb) WHERE id=:id"
+            ),
+            {
+                "id": row_id,
+                "fp": json.dumps(
+                    [
+                        {
+                            "prefix": inventory.matching_prefix(first),
+                            "length": len(first),
+                            "sha256": hashlib.sha256(first).hexdigest(),
+                        }
+                    ]
+                ),
+            },
+        )
         assert read_old("first-example")
         assert REGISTERED_STEPS[job](db_session)
         assert read_old("first-example")
 
         inventory.set_protection(db_session, True)
         assert not db_session.get(models.AgentUsageBackfill, job).ready
+        keyed.upgrade()
+        with pytest.raises(RuntimeError, match="dual-reader release"):
+            inventory.set_protection(db_session, False)
         inventory.register(db_session, row_id, ["second-example"])
         sealed = _raw(db_session, target.table, target.column, row_id)
-        assert all(is_sealed(i["prefix"]) and is_sealed(i["sha256"]) for i in sealed)
+        assert all(is_sealed(i["prefix"]) for i in sealed)
+        assert is_sealed(sealed[0]["sha256"])
+        assert all("sha256" not in i and "hmac_sha256" in i for i in sealed[1:])
         assert (
             inventory.for_execution(db_session, row_id).mask(
                 "first-example second-example"
@@ -385,17 +420,27 @@ def test_fingerprint_migration_and_rolling_cutover(
             with context.bind.begin_nested():
                 revision.downgrade()
 
+        keyed.downgrade()
+        with pytest.raises(RuntimeError, match="dual-reader release"):
+            inventory.set_protection(db_session, False)
+        assert (
+            inventory.for_execution(db_session, row_id).mask("second-example")
+            == "[REDACTED]"
+        )
+
+        # Legacy-only installations can still restore and downgrade fully.
+        historical = db_session.get(
+            models.FlowExecution, row_id
+        ).credential_fingerprints
+        inventory.save_inventory(
+            db_session, row_id, [i for i in historical if "sha256" in i]
+        )
         inventory.set_protection(db_session, False)
         run_all(db_session, targets=(target,), decrypt=True)
-        assert read_old("first-example") and read_old("second-example")
+        assert read_old("first-example")
         revision.downgrade()
         db_session.expire_all()
         assert db_session.get(models.AgentUsageBackfill, job) is None
-        assert (
-            db_session.get(models.AgentUsageBackfill, inventory.FINGERPRINT_MODE)
-            is None
-        )
-        assert read_old("second-example")
 
     config = Config()
     config.attributes["fresh_database"] = True
@@ -404,6 +449,7 @@ def test_fingerprint_migration_and_rolling_cutover(
     )
     with Operations.context(fresh_context):
         revision.upgrade()
+        keyed.upgrade()
         assert db_session.get(
             models.AgentUsageBackfill, inventory.FINGERPRINT_MODE
         ).ready

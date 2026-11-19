@@ -1,13 +1,11 @@
 """Persist only execution credential fingerprints and apply them at boundaries."""
 
-import hashlib
 import hmac
 from collections.abc import Iterable
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, text, type_coerce, update
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -74,39 +72,28 @@ def stored_masker(fingerprints: Iterable[dict[str, Any]]) -> CredentialMasker:
     return CredentialMasker(items, key=key)
 
 
-def issued_fingerprints(
-    values: Iterable[str], *, protected: bool
-) -> list[dict[str, Any]]:
-    """Retain the previous reader's verifier for lossless downgrade.
-
-    In protected mode the ORM encrypts the prefix and rollback digest at rest.
-    The public matching tag is keyed with a separate deployment-derived key.
-    """
-    key = credential_fingerprint_key() if protected else b""
+def issued_fingerprints(values: Iterable[str]) -> list[dict[str, Any]]:
+    """Generate only deployment-keyed tags for newly registered credentials."""
+    key = credential_fingerprint_key()
     result = {}
     for raw in credential_variants(values):
-        legacy = hashlib.sha256(raw).hexdigest()
-        item: dict[str, Any] = {
+        digest = hmac.digest(key, raw, "sha256").hex()
+        result[digest] = {
             "prefix": matching_prefix(raw),
             "length": len(raw),
-            "sha256": legacy,
+            "hmac_sha256": digest,
         }
-        if protected:
-            item["hmac_sha256"] = hmac.digest(key, raw, "sha256").hex()
-        result[legacy] = item
     return list(result.values())
 
 
 def save_inventory(
-    db: Session, execution_id: UUID, items: list[dict[str, Any]], *, protected: bool
+    db: Session, execution_id: UUID, items: list[dict[str, Any]]
 ) -> None:
-    """Write through the sealing type, or use previous-reader JSON during rollout."""
+    """Seal matching prefixes and any inherited legacy digests before storage."""
     db.execute(
         update(models.FlowExecution)
         .where(models.FlowExecution.id == execution_id)
-        .values(
-            credential_fingerprints=items if protected else type_coerce(items, JSONB)
-        )
+        .values(credential_fingerprints=items)
         .execution_options(synchronize_session=False)
     )
 
@@ -122,8 +109,7 @@ def register(db: Session, execution_id: Any, values: Iterable[str]) -> Credentia
     Returns:
         Masker covering every credential issued to this execution.
     """
-    protected = protection_enabled(db)
-    added = issued_fingerprints(values, protected=protected)
+    added = issued_fingerprints(values)
     if not added:
         return for_execution(db, execution_id)
     execution_uuid = UUID(str(execution_id))
@@ -137,7 +123,7 @@ def register(db: Session, execution_id: Any, values: Iterable[str]) -> Credentia
         for item in [*(previous or []), *added]
     }
     items = list(fingerprints.values())
-    save_inventory(db, execution_uuid, items, protected=protected)
+    save_inventory(db, execution_uuid, items)
     db.commit()
     return stored_masker(items)
 

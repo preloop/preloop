@@ -32,8 +32,8 @@ def test_mixed_inventory_masks_legacy_and_keyed_fingerprints() -> None:
         stored_masker,
     )
 
-    new = issued_fingerprints([TOKEN], protected=True)
-    assert all("hmac_sha256" in item and "prefix" in item for item in new)
+    new = issued_fingerprints([TOKEN])
+    assert new and all(set(item) == {"hmac_sha256", "prefix", "length"} for item in new)
     masker = stored_masker(json.loads(json.dumps([legacy, *new])))
     assert masker.mask_bytes(old + TOKEN.encode()) == b"[REDACTED][REDACTED]"
     stream = CredentialStream(masker)
