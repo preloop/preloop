@@ -2138,6 +2138,12 @@ def get_execution_tool_evidence(
     A page holds at most 10 records and at most 8 MiB of encoded records; the
     first record is always returned. When the byte budget cuts a page short,
     ``has_more`` is true and ``next_skip`` gives the offset of the next page.
+
+    Each stored document includes ``redaction_ruleset``, the text-redaction
+    rules that produced it. An observation whose text matched a rule also
+    includes ``redactions``: ``{"rule": "<category>", "count": <n>}`` entries.
+    The category is a fixed name, not the matched text and not a hash of it.
+    Documents stored before these fields existed omit them and are not rewritten.
     """
     from preloop.models.crud.execution_tool_evidence import (
         callback_diagnostics,

@@ -33,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tool evidence no longer treats ordinary source as a secret. A GitHub Actions
+  permission such as `id-token: write`, a call such as `token = name(...)`, a
+  colon at the end of a line, or a string joined with `+` stays intact, so a
+  review of a normal repository can be stored as complete. A value that still
+  looks like a credential is masked, that record stays incomplete, and the
+  record names which redaction rule fired (`redactions` on the observation,
+  `redaction_ruleset` on the document). Records already stored are left as
+  they are. See issue #2393.
+
 - A gateway request with zero tokens and no provider cost (a failed or
   cancelled upstream request) no longer pages admins about a missing catalog
   price or makes an execution's cost look partial. The budget pre-check no

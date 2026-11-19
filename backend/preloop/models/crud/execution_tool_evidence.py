@@ -359,30 +359,37 @@ def _persist_native_command_evidence(
     account_id = _account_for_execution(db, execution_id)
     if account_id is None:
         return
+    from preloop.services.model_gateway_events import REDACTION_RULESET
+
     raw = item.get("command")
-    value = _redact_value(raw) if settings.model_gateway_capture_content else None
+    if settings.model_gateway_capture_content:
+        value, redaction_facts = _redact_value(raw)
+    else:
+        value, redaction_facts = None, []
     bounded = len(canonical_bytes(value)) <= MAX_EVIDENCE_BYTES
     storage_redacted = sanitize_for_jsonb(raw) != raw
     complete = bounded and not storage_redacted
+    observation: dict[str, Any] = {
+        "source": "native",
+        "kind": "command",
+        "event": event["type"],
+        "item_id": item_id,
+        "value": value if bounded else None,
+        "exit_code": item.get("exit_code")
+        if type(item.get("exit_code")) is int
+        else None,
+        "redacted": raw != value,
+        "truncated": not bounded,
+    }
+    if redaction_facts:
+        observation["redactions"] = redaction_facts
     document = {
         "version": 1,
         "execution_id": str(execution_id),
         "capture_complete": complete,
         "storage_redacted": storage_redacted,
-        "observations": [
-            {
-                "source": "native",
-                "kind": "command",
-                "event": event["type"],
-                "item_id": item_id,
-                "value": value if bounded else None,
-                "exit_code": item.get("exit_code")
-                if type(item.get("exit_code")) is int
-                else None,
-                "redacted": raw != value,
-                "truncated": not bounded,
-            }
-        ],
+        "redaction_ruleset": REDACTION_RULESET,
+        "observations": [observation],
     }
     sanitized = apply_storage_redaction(account_id, document)
     sanitized["storage_redacted"] = (
