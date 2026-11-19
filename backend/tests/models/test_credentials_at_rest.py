@@ -296,6 +296,9 @@ def test_fingerprint_migration_and_rolling_cutover(
     import hashlib
     import importlib
 
+    from alembic.config import Config
+    from alembic.runtime.environment import EnvironmentContext
+    from sqlalchemy.exc import DBAPIError
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
     from preloop.models.crud import execution_credentials as inventory
@@ -320,6 +323,7 @@ def test_fingerprint_migration_and_rolling_cutover(
             for i in entries
         )
 
+    inventory.save_inventory(db_session, row_id, [], protected=False)
     with Operations.context(context):
         revision.downgrade()
         assert db_session.get(models.AgentUsageBackfill, job) is None
@@ -327,8 +331,6 @@ def test_fingerprint_migration_and_rolling_cutover(
         assert db_session.get(models.AgentUsageBackfill, job).ready
         assert job in REGISTERED_STEPS
         assert not inventory.protection_enabled(db_session)
-        # Clear this fixture's unrelated inventory written before the simulated upgrade.
-        inventory.save_inventory(db_session, row_id, [], protected=False)
         inventory.register(db_session, row_id, ["first-example"])
         assert read_old("first-example")
         assert REGISTERED_STEPS[job](db_session)
@@ -346,6 +348,10 @@ def test_fingerprint_migration_and_rolling_cutover(
             == "[REDACTED] [REDACTED]"
         )
 
+        with pytest.raises(DBAPIError, match="--restore-execution-fingerprints"):
+            with context.bind.begin_nested():
+                revision.downgrade()
+
         inventory.set_protection(db_session, False)
         run_all(db_session, targets=(target,), decrypt=True)
         assert read_old("first-example") and read_old("second-example")
@@ -357,6 +363,19 @@ def test_fingerprint_migration_and_rolling_cutover(
             is None
         )
         assert read_old("second-example")
+
+    config = Config()
+    config.attributes["fresh_database"] = True
+    fresh_context = MigrationContext.configure(
+        db_session.connection(), environment_context=EnvironmentContext(config, None)
+    )
+    with Operations.context(fresh_context):
+        revision.upgrade()
+        assert db_session.get(
+            models.AgentUsageBackfill, inventory.FINGERPRINT_MODE
+        ).ready
+        assert not db_session.get(models.AgentUsageBackfill, job).ready
+        assert inventory.protection_enabled(db_session)
 
 
 def test_registry_step_advances_cursor_and_finishes(db_session, rows) -> None:

@@ -23,6 +23,25 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Remove both registry entries after the operator restores the legacy form."""
     op.execute(
+        "SELECT name FROM agent_usage_backfill "
+        "WHERE name = 'exec_fingerprint_protection' FOR UPDATE"
+    )
+    op.execute(
+        """
+        DO $guard$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM flow_execution
+                WHERE credential_fingerprints @?
+                    '$[*] ? (@.prefix starts with "enc:v1:" || @.sha256 starts with "enc:v1:")'
+            ) THEN
+                RAISE EXCEPTION 'Run --restore-execution-fingerprints before downgrading';
+            END IF;
+        END
+        $guard$
+        """
+    )
+    op.execute(
         "DELETE FROM agent_usage_backfill WHERE name IN "
         "('cred_execution_fingerprints', 'exec_fingerprint_protection')"
     )

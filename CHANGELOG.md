@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- The console and installer TLS proxy use NGINX 1.30.7 to address HTTP/2
+  vulnerabilities CVE-2026-123633 and CVE-2026-123007. Kubernetes ingress
+  controllers need a separate patch. The hosted ingress received both fixes
+  with HTTP/2 enabled.
+- Fresh databases protect execution credential fingerprints immediately. On
+  existing databases, finish the rolling upgrade, then run
+  `python -m preloop.models.credential_encryption --enable-execution-fingerprints`.
+  Before downgrading, run the same module with `--restore-execution-fingerprints`
+  so older workers can read every fingerprint.
+
 ### Fixed
 
 - Account deletion requests are now checked before they reach the team that
