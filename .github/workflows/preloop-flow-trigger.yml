@@ -102,7 +102,7 @@ permissions:
 # one of them reviews (see the job condition). Keep the other one in a
 # separate group, or it would cancel the reviewing run for the same PR.
 concurrency:
-  group: preloop-flow-${{ github.event.pull_request.number || inputs.pr }}-${{ (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request') == (github.event.pull_request.head.repo.full_name == github.repository)) && 'review' || 'noop' }}
+  group: preloop-flow-${{ github.event.pull_request.number || inputs.pr }}-${{ (github.event_name == 'workflow_dispatch' || (((github.event.action != 'labeled' && github.event.action != 'unlabeled') || (github.event.action == 'labeled' && github.event.label.name == 'preloop-review') || (github.event.action == 'unlabeled' && github.event.label.name == 'preloop-skip-review')) && ((github.event_name == 'pull_request') == (github.event.pull_request.head.repo.full_name == github.repository) || github.event.action == 'labeled' || github.event.action == 'unlabeled'))) && 'review' || 'noop' }}
   cancel-in-progress: true
 
 jobs:
@@ -133,7 +133,11 @@ jobs:
           ) ||
           (
             github.event_name == 'pull_request_target' &&
-            github.event.pull_request.head.repo.full_name != github.repository
+            (
+              github.event.pull_request.head.repo.full_name != github.repository ||
+              github.event.action == 'labeled' ||
+              github.event.action == 'unlabeled'
+            )
           )
         )
       )
@@ -221,9 +225,9 @@ jobs:
           done
           echo "head=$head" >> "$GITHUB_OUTPUT"
           # A completed review of this exact head is the durable dedup receipt.
-          # Only the reviewer bot's own reviews count (a human review of the
+          # Only preloop[bot]'s reviews count (CodeQL and humans also review; a
           # head is not a Preloop review), and a manual dispatch always runs.
-          reviewed=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/reviews" --jq ".[] | select(.commit_id == \"$head\" and .user.type == \"Bot\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\" or .state == \"COMMENTED\")) | .id")
+          reviewed=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/reviews" --jq ".[] | select(.commit_id == \"$head\" and .user.login == \"preloop[bot]\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\" or .state == \"COMMENTED\")) | .id")
           if [ -n "$reviewed" ] && [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then
             echo "reviewed=true" >> "$GITHUB_OUTPUT"
           fi
