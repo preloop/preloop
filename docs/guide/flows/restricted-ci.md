@@ -1111,16 +1111,24 @@ the `=` or `:` stays on the same line, and the value is a literal that looks
 like a credential. It does not mask a permission or boolean word (`write`,
 `read`, `none`, `true`, `false`, `null`), an empty value, a call, an attribute
 or subscript, a `$VAR` / `${VAR}` / `${{ ... }}` reference, a bare variable
-name, a type annotation, or a string joined with `+`. A quoted literal is
-masked, including a short password such as `"hunter2"` or `"changeme"`. A bare
-`password: hunter2` or `secret: hunter2` is masked because the value has a
-letter and a digit; that also masks `password = sha256`, which has the same
-shape. A bare `token: hunter2` or `api_key: hunter2` is left as written,
-because a short unquoted word after `token` is usually a name. An unquoted
-single-case word with no digit, such as `password: changeme`, is left as
-written. A longer bare literal is masked from 16 characters when it mixes
-two of lowercase, uppercase, and digits, or from 20 characters when it
-contains a digit.
+name, a type annotation, or a string joined with `+`. A quote that closes
+the string containing the key is left, as in
+`'https://x-access-token:' + token`, and so is a value whose text is an
+operator and an identifier. A value that starts with a placeholder
+(`{name}`, `{{ name }}`, `%s`, `%(name)s`, `<name>`) is left. A quoted
+literal is masked, including a short password such as `"hunter2"` or
+`"changeme"`. A bare `password: hunter2` or `secret: hunter2` is masked
+because the value has a letter and a digit; that also masks
+`password = sha256`, which has the same shape. A bare `token: hunter2` or
+`api_key: hunter2` is left as written, because a short unquoted word after
+`token` is usually a name. An unquoted single-case word with no digit, such
+as `password: changeme`, is left as written, unless the key is upper case
+and glued to `=` with no spaces (`PASSWORD=opensesame`,
+`DB_PASSWORD=correcthorsebatterystaple`). A bare hex value of 24 or more
+characters is masked (`token=deadbeefcafebabedeadbeefcafebabe`). A call such
+as `connect(user=user, password=password)` is left. A longer bare literal is
+masked from 16 characters when it mixes two of lowercase, uppercase, and
+digits, or from 20 characters when it contains a digit.
 
 Other rules do not need that keyword. They mask a PEM private key, a bearer
 token, an `sk-` key (including `sk-proj-` and `sk-ant-`), a GitHub

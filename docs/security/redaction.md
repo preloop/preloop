@@ -42,7 +42,9 @@ Free text has no field names, so it is scanned for credential shapes:
   tokens, and Preloop `preloop_` / `ci_` / `agt_` / `enr_` / `whsec_` keys
   and `flow_` run tokens. `api_key`, `token`, `secret`, or `password`
   followed by `=` or `:` is masked only when the value looks like a
-  credential literal on the same line, not when it is ordinary source.
+  credential literal on the same line, or when an upper-case key is glued
+  to `=` with no spaces. Ordinary source, including a string joined with
+  `+` and a format placeholder, is left as written.
   Matches become `***REDACTED***`. Tool evidence records which of these
   rules fired; see the evidence section of the restricted CI guide.
 - **Flow execution logs** (`backend/preloop/utils/secret_scrubbing.py`):

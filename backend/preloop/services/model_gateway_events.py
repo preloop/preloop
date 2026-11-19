@@ -57,6 +57,22 @@ _ENUM_WORDS = frozenset({"write", "read", "none", "true", "false", "null"})
 _REDACTION_MARKERS = frozenset({_REDACTED_TEXT, "[REDACTED]"})
 _BARE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _DOTTED_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$")
+# A value that starts with one of these is a format reference, not a literal.
+_PLACEHOLDER = re.compile(
+    r"^(?:\{\{[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\}\}"
+    r"|\{[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\}"
+    r"|%\([A-Za-z_][A-Za-z0-9_]*\)s"
+    r"|%s"
+    r"|<[A-Za-z_][A-Za-z0-9_]*>)"
+)
+# Inner text of a quote that actually closed the string holding the key:
+# `+ token` or `+ token +`.
+_OPERATOR_IDENT = re.compile(
+    r"^[+\-*/%&|^]+[ \t]*[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:[ \t]*[+\-*/%&|^]+[ \t]*[A-Za-z_][A-Za-z0-9_]*)*"
+    r"[ \t]*[+\-*/%&|^]*$"
+)
+_HEX_LITERAL = re.compile(r"^[0-9a-fA-F]{24,}$")
 # Horizontal whitespace only, so `token:` at the end of a line cannot consume
 # the next line. The key is the keyword itself or a key that ends in it
 # (`github_token`, `client_secret`, `x-api-key`), not a longer camel-case word.
@@ -101,6 +117,8 @@ def _is_expression(text: str) -> bool:
     """True when the value is code or a reference, not a credential literal."""
     if text.startswith("$") or "${" in text:
         return True
+    if _PLACEHOLDER.match(text):
+        return True
     if text.startswith(("os.environ", "process.env")):
         return True
     if "(" in text or "[" in text:
@@ -108,6 +126,46 @@ def _is_expression(text: str) -> bool:
     if _DOTTED_IDENT.match(text) and not any(char.isdigit() for char in text):
         return True
     return "://" in text
+
+
+def _upper_env_key(key: str) -> bool:
+    """True when every letter in the key is uppercase, as in ``DB_PASSWORD``."""
+    letters = [char for char in key if char.isalpha()]
+    return bool(letters) and all(char.isupper() for char in letters)
+
+
+def _tight_env_equals(match: re.Match[str]) -> bool:
+    """True when the key is glued to ``=`` with no spaces, as in a ``.env`` line."""
+    key = match.group("key")
+    quote = match.group("q") or ""
+    return match.group("prefix") == f"{quote}{key}{quote}="
+
+
+def _opening_quote_closes_string(match: re.Match[str]) -> bool:
+    """True when the value's first quote ends the string that holds the key.
+
+    ``'https://x-access-token:' + token`` puts the key inside a string. The
+    quote after the colon closes that string, and the next quote makes the
+    value pattern swallow `` + token + ``. An odd quote count on the line
+    before the key means that first quote is a closer, so the span is code.
+    """
+    raw_value = match.group("value")
+    if not raw_value or raw_value[0] not in "\"'":
+        return False
+    quote = raw_value[0]
+    line = match.string[: match.start()].rsplit("\n", 1)[-1]
+    count = 0
+    escaped = False
+    for char in line:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == quote:
+            count += 1
+    return count % 2 == 1
 
 
 def _credential_shape(text: str) -> bool:
@@ -145,8 +203,10 @@ def _short_password(family: str, text: str) -> bool:
     return has_letter and has_digit
 
 
-def _assignment_is_secret(key: str, raw_value: str) -> bool:
+def _assignment_is_secret(match: re.Match[str]) -> bool:
     """True when an assignment value should be replaced."""
+    key = match.group("key")
+    raw_value = match.group("value")
     inner, quoted = _unquote_assignment(raw_value)
     body = inner.strip()
     if body == "" or body in _REDACTION_MARKERS or raw_value in _REDACTION_MARKERS:
@@ -155,10 +215,21 @@ def _assignment_is_secret(key: str, raw_value: str) -> bool:
         return False
     if _is_expression(body):
         return False
+    # The quote after the key closed the string that contains the key, or
+    # the quoted text is `+ name`. Both are source, not a literal.
+    if _opening_quote_closes_string(match) or _OPERATOR_IDENT.match(body):
+        return False
     family = _keyword_family(key)
     # A quoted literal was written as a value. Mask it, including a short
     # human password. The enumerated words above are the exception.
     if quoted:
+        return True
+    # `.env` form: PASSWORD=opensesame. Upper-case key, `=` with no spaces,
+    # and any value that is not an expression. A lower-case `password=name`
+    # inside a call stays visible.
+    if _upper_env_key(key) and _tight_env_equals(match):
+        return True
+    if _HEX_LITERAL.match(body):
         return True
     if _BARE_IDENT.match(body):
         if _short_password(family, body):
@@ -174,7 +245,7 @@ def _assignment_is_secret(key: str, raw_value: str) -> bool:
 def _redact_assignment(match: re.Match[str]) -> str:
     """Replace a credential assignment and keep the key and the quotes."""
     raw_value = match.group("value")
-    if not _assignment_is_secret(match.group("key"), raw_value):
+    if not _assignment_is_secret(match):
         return match.group(0)
     if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in "\"'":
         quote = raw_value[0]
