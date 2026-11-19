@@ -131,6 +131,39 @@ const PRICING_SOURCE_LABEL: Record<string, string> = {
 /** Stored overrides are per 1,000 tokens; providers publish per 1,000,000. */
 const PER_1K_TO_PER_1M = 1000;
 
+/** Guide section on pinning an OpenRouter upstream for structured results. */
+const STRUCTURED_RESULTS_DOCS_HREF =
+  'https://docs.preloop.ai/guide/providers/openrouter/#structured-results-and-upstream-providers';
+
+/** Whether a model's traffic terminates at OpenRouter. */
+export function isOpenRouterRouted(model: {
+  provider_name?: string | null;
+  api_endpoint?: string | null;
+}): boolean {
+  if ((model.provider_name || '').toLowerCase() === 'openrouter') return true;
+  try {
+    const host = new URL(model.api_endpoint || '').hostname;
+    return host === 'openrouter.ai' || host.endsWith('.openrouter.ai');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a saved OpenRouter provider preference selects the upstream:
+ * `only`, or `order` with fallbacks off.
+ */
+export function pinsUpstreamProvider(routing: unknown): boolean {
+  if (!routing || typeof routing !== 'object') return false;
+  const value = routing as Record<string, unknown>;
+  if (Array.isArray(value.only) && value.only.length > 0) return true;
+  return (
+    Array.isArray(value.order) &&
+    value.order.length > 0 &&
+    value.allow_fallbacks === false
+  );
+}
+
 @customElement('ai-model-detail-view')
 export class AIModelDetailView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
@@ -1258,6 +1291,34 @@ export class AIModelDetailView extends LitElement {
     } finally {
       this.ownerFlowUseSaving = false;
     }
+  }
+
+  /**
+   * OpenRouter may send each request to a different upstream provider, and
+   * structured results depend on which one answers. Shown for an
+   * OpenRouter-routed model whose provider preference pins no upstream.
+   */
+  private renderStructuredResultHint() {
+    const model = this.model as any;
+    if (!model || !isOpenRouterRouted(model)) return nothing;
+    if (pinsUpstreamProvider(model.model_parameters?.provider)) return nothing;
+    return html`<sl-alert
+      variant="warning"
+      open
+      data-testid="model-structured-result-hint"
+    >
+      <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+      Structured results on OpenRouter depend on the upstream provider that
+      serves each request. Flows with a result schema on this model can end
+      without a usable result when OpenRouter picks a different provider. Set a
+      provider preference (only, or order with fallbacks off) to pin one.
+      <a
+        href=${STRUCTURED_RESULTS_DOCS_HREF}
+        target="_blank"
+        rel="noopener noreferrer"
+        >Structured results and upstream providers</a
+      >
+    </sl-alert>`;
   }
 
   /**
@@ -3310,7 +3371,7 @@ export class AIModelDetailView extends LitElement {
                  and gateway checks sit below it in one Settings section. -->
             <section class="model-settings" data-model-settings>
               <h2 class="section-title">Settings</h2>
-              ${this.renderOwnerFlowUse()}
+              ${this.renderOwnerFlowUse()} ${this.renderStructuredResultHint()}
               <!-- #1692: identifiers and credentials are reference, not the
                    reason to open the page; they sit with the settings. -->
               <sl-card data-model-details>

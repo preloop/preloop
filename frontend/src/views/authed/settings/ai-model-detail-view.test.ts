@@ -496,6 +496,53 @@ describe('AIModelDetailView', () => {
     localStorage.clear();
   });
 
+  it('suggests a provider preference on an unpinned OpenRouter model', async () => {
+    modelPayload.provider_name = 'openrouter';
+    modelPayload.model_identifier = 'example/model-flash';
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+    const root = element.shadowRoot!;
+    await waitUntil(
+      () => root.querySelector('[data-testid="model-structured-result-hint"]'),
+      'structured-result hint did not render',
+      { timeout: 5000 }
+    );
+    const hint = root.querySelector(
+      '[data-testid="model-structured-result-hint"]'
+    )!;
+    expect(hint.textContent).to.contain('provider preference');
+    expect(hint.textContent).to.not.contain('require_parameters');
+    expect(hint.querySelector('a')!.getAttribute('href')).to.contain(
+      '#structured-results-and-upstream-providers'
+    );
+  });
+
+  it('does not suggest a preference when pinned or not on OpenRouter', async () => {
+    for (const payload of [
+      {
+        provider_name: 'openrouter',
+        model_parameters: { provider: { only: ['provider-a'] } },
+      },
+      { provider_name: 'Anthropic', model_parameters: null },
+    ]) {
+      Object.assign(modelPayload, payload);
+      const element = (await fixture(
+        html`<ai-model-detail-view
+          .modelId=${'model-1'}
+        ></ai-model-detail-view>`
+      )) as AIModelDetailView;
+      const root = element.shadowRoot!;
+      await waitUntil(
+        () => root.querySelector('[data-model-details]'),
+        'details did not render',
+        { timeout: 5000 }
+      );
+      expect(root.querySelector('[data-testid="model-structured-result-hint"]'))
+        .to.not.exist;
+    }
+  });
+
   it('shows the flow opt-in only to the subscription owner and saves it', async () => {
     modelPayload.provider_name = 'openai-codex';
     ownerFlowBody = {

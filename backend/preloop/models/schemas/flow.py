@@ -2067,8 +2067,25 @@ class FlowModelHealth(BaseModel):
     model_id: Optional[str] = None
 
 
+class FlowConfigWarning(BaseModel):
+    """Non-blocking advice about a saved flow's configuration."""
+
+    code: str
+    message: str
+    ai_model_id: Optional[str] = None
+    docs_url: Optional[str] = None
+
+
 class FlowResponse(FlowBase):
     id: UUID
+    config_warnings: List[FlowConfigWarning] = Field(
+        default_factory=list,
+        description=(
+            "Non-blocking advice for this configuration, for example a "
+            "schema-bound result on an OpenRouter model with no provider "
+            "preference. Never prevents a save."
+        ),
+    )
     account_id: Optional[UUID] = None
     # User who created the flow (its owner for subscription opt-in checks).
     # Null when no owner was recorded.

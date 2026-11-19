@@ -30,6 +30,41 @@ See [OpenRouter provider routing](https://openrouter.ai/docs/guides/routing/prov
 [zero data retention](https://openrouter.ai/docs/guides/features/zdr), and
 [in-region routing](https://openrouter.ai/docs/guides/privacy/in-region-routing).
 
+## Structured results and upstream providers
+
+One OpenRouter model id is often served by several upstream providers, and
+OpenRouter can spread the requests of a single run across them. A flow that ends
+with a result schema (for example a native-result review) depends on the
+provider that serves the final answer: in our tests some providers returned tool
+calls written as text, JSON fragments or fenced JSON instead of the result,
+while the same model pinned to one provider finished reliably.
+
+**See which provider answered.** The execution page shows **Served by**: the
+upstream provider of the final answer, with every provider the run used and its
+request count in the tooltip. The same facts are in the execution's timings
+(`upstream_providers`, `final_answer_upstream_provider`) for CI readers. When a
+native-result run fails with `no_confirmation`, `result_schema_invalid` or
+`review_not_inspected` on a route that used more than one provider, or has no
+provider preference, the failure names the provider that served the final answer.
+
+**Pin a provider.** Set **Only these providers** on the model (or `order` with
+`allow_fallbacks: false`):
+
+```json
+{ "model_parameters": { "provider": { "only": ["provider-slug"] } } }
+```
+
+Saving a flow with a result schema on an OpenRouter model without such a
+preference returns a warning in `config_warnings`; the flow page and the model
+page show it. The warning never blocks a save.
+
+Trade-offs: with one provider and no fallbacks, requests fail while that
+provider is down or rate limited instead of moving elsewhere. Price, context
+length and data policy differ per provider, so check the provider's terms on the
+model's OpenRouter page before pinning. `require_parameters: true` only filters
+providers that accept the request's parameters; it does not select for
+structured-output quality, and in our tests it made results worse.
+
 ## API and advanced preferences
 
 Save the object at `model_parameters.provider` using the model create or update API:
@@ -42,8 +77,7 @@ Save the object at `model_parameters.provider` using the model create or update 
       "ignore": ["openai"],
       "allow_fallbacks": false,
       "data_collection": "deny",
-      "zdr": true,
-      "require_parameters": true
+      "zdr": true
     }
   }
 }

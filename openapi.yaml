@@ -39104,6 +39104,47 @@ components:
         never added together: "this run cost X, the work it delegated cost Y" is
 
         the question the tree exists to answer, and one number would hide it.'
+    ExecutionUpstreamProvider:
+      properties:
+        provider:
+          type: string
+          title: Provider
+        request_count:
+          type: integer
+          title: Request Count
+      type: object
+      required:
+      - provider
+      - request_count
+      title: ExecutionUpstreamProvider
+      description: One OpenRouter upstream provider and the requests it served.
+    ExecutionUpstreamRoute:
+      properties:
+        upstream_providers:
+          items:
+            $ref: '#/components/schemas/ExecutionUpstreamProvider'
+          type: array
+          title: Upstream Providers
+        final_answer_upstream_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Final Answer Upstream Provider
+          description: Upstream provider of the last request that ended with stop.
+        upstream_provider_pinned:
+          type: boolean
+          title: Upstream Provider Pinned
+          default: false
+        upstream_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Upstream Hint
+          description: One sentence added to a native-result failure on an unpinned
+            or multi-provider OpenRouter route.
+      type: object
+      title: ExecutionUpstreamRoute
+      description: Which upstream providers served an OpenRouter-routed execution.
     ExtensionAggregate:
       properties:
         agent_kind:
@@ -40446,6 +40487,30 @@ components:
         A separate pool from session artifacts: this is what a checkpoint or
 
         evidence capture is admitted against.'
+    FlowConfigWarning:
+      properties:
+        code:
+          type: string
+          title: Code
+        message:
+          type: string
+          title: Message
+        ai_model_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ai Model Id
+        docs_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Docs Url
+      type: object
+      required:
+      - code
+      - message
+      title: FlowConfigWarning
+      description: Non-blocking advice about a saved flow's configuration.
     FlowCreate:
       properties:
         name:
@@ -41315,6 +41380,12 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ExecutionContinuationNavigation'
           - type: 'null'
+        upstream_route:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutionUpstreamRoute'
+          - type: 'null'
+          description: Upstream providers recorded for this execution's model requests.
+            Set on the execution detail read; null in lists.
         park:
           anyOf:
           - $ref: '#/components/schemas/ExecutionPark'
@@ -41766,6 +41837,14 @@ components:
           - type: string
           - type: 'null'
           title: Id
+        config_warnings:
+          items:
+            $ref: '#/components/schemas/FlowConfigWarning'
+          type: array
+          title: Config Warnings
+          description: Non-blocking advice for this configuration, for example a schema-bound
+            result on an OpenRouter model with no provider preference. Never prevents
+            a save.
         created_by_user_id:
           anyOf:
           - type: string
@@ -51902,6 +51981,31 @@ components:
             $ref: '#/components/schemas/ReviewEffectiveRequest'
           type: array
           title: Effective Requests
+        upstream_providers:
+          items:
+            $ref: '#/components/schemas/UpstreamProviderCount'
+          type: array
+          title: Upstream Providers
+          description: OpenRouter upstream providers that served this execution's
+            model requests, with request counts, first seen first.
+        final_answer_upstream_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Final Answer Upstream Provider
+          description: Upstream provider of the last request that ended with stop.
+        upstream_provider_pinned:
+          type: boolean
+          title: Upstream Provider Pinned
+          description: Whether the recorded routing preference pinned a provider.
+          default: false
+        upstream_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Upstream Hint
+          description: One sentence for a native-result failure on an unpinned or
+            multi-provider OpenRouter route, naming the final answer's host.
       type: object
       required:
       - queue_wait_seconds
@@ -59172,6 +59276,20 @@ components:
       - tag
       title: UpdateTagRequest
       description: Request to update a version's tag.
+    UpstreamProviderCount:
+      properties:
+        provider:
+          type: string
+          title: Provider
+        request_count:
+          type: integer
+          title: Request Count
+      type: object
+      required:
+      - provider
+      - request_count
+      title: UpstreamProviderCount
+      description: One upstream provider and how many recorded requests it served.
     UsageImportCsvResponse:
       properties:
         imported:

@@ -423,6 +423,30 @@ class ExecutionContinuationNavigation(BaseModel):
     follow_ups_truncated: bool = False
 
 
+class ExecutionUpstreamProvider(BaseModel):
+    """One OpenRouter upstream provider and the requests it served."""
+
+    provider: str
+    request_count: int
+
+
+class ExecutionUpstreamRoute(BaseModel):
+    """Which upstream providers served an OpenRouter-routed execution."""
+
+    upstream_providers: List[ExecutionUpstreamProvider] = Field(default_factory=list)
+    final_answer_upstream_provider: Optional[str] = Field(
+        None, description="Upstream provider of the last request that ended with stop."
+    )
+    upstream_provider_pinned: bool = False
+    upstream_hint: Optional[str] = Field(
+        None,
+        description=(
+            "One sentence added to a native-result failure on an unpinned or "
+            "multi-provider OpenRouter route."
+        ),
+    )
+
+
 class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
     pull_request: Optional[ExecutionPullRequest] = None
     runtime_session_id: Optional[str] = Field(
@@ -442,6 +466,13 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
     # Include flow name for display purposes
     flow_name: Optional[str] = None
     continuation_navigation: Optional[ExecutionContinuationNavigation] = None
+    upstream_route: Optional[ExecutionUpstreamRoute] = Field(
+        None,
+        description=(
+            "Upstream providers recorded for this execution's model requests. "
+            "Set on the execution detail read; null in lists."
+        ),
+    )
     park: Optional[ExecutionPark] = Field(
         None,
         description=(

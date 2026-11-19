@@ -62,6 +62,26 @@ logger = logging.getLogger(__name__)
 UNPRICED_BUDGET_WARNING_CODE = "budget_pricing_unavailable"
 
 
+def _priced_from_provider_cost(ai_model: Any) -> bool:
+    """Whether this route's usage is priced from the upstream's reported cost.
+
+    OpenRouter returns each request's cost when usage accounting is on, so a
+    model missing from the catalog is still priced once the request is
+    recorded. A pre-request "no catalog price" is not a pricing gap there.
+    """
+    from preloop.services.openai_gateway import (
+        _is_openrouter_upstream,
+        _openrouter_usage_accounting_enabled,
+    )
+
+    try:
+        return bool(
+            _is_openrouter_upstream(ai_model) and _openrouter_usage_accounting_enabled()
+        )
+    except Exception:  # noqa: BLE001 - classification must not break alerting
+        return False
+
+
 def unpriced_budget_warning(model_alias: Optional[str]) -> str:
     """Warning text for an unpriced request under a hard-limit policy.
 
@@ -594,6 +614,11 @@ class ModelGatewayBudgetEnforcer:
             )
 
             if not should_page_unpriced_model(ai_model):
+                return
+            if _priced_from_provider_cost(ai_model):
+                # No catalog price before the request is expected here: the
+                # recording path prices the row from the provider's reported
+                # cost and pages only if a request with tokens stays unpriced.
                 return
             notify_unpriced_model(
                 db,

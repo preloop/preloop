@@ -132,6 +132,18 @@ function executionLogIdentity(log: FlowExecutionUpdate): string {
   return JSON.stringify([log.type, log.timestamp, log.payload]);
 }
 
+/** Guide section on pinning an OpenRouter upstream for structured results. */
+const STRUCTURED_RESULTS_DOCS_HREF =
+  'https://docs.preloop.ai/guide/providers/openrouter/#structured-results-and-upstream-providers';
+
+interface ExecutionUpstreamRoute {
+  upstream_providers: { provider: string; request_count: number }[];
+  final_answer_upstream_provider?: string | null;
+  upstream_provider_pinned?: boolean;
+  /** One sentence for a native-result failure that may depend on the host. */
+  upstream_hint?: string | null;
+}
+
 interface FlowExecution {
   pull_request?:
     import('../../delivery-reports-api').ExecutionPullRequest | null;
@@ -146,6 +158,11 @@ interface FlowExecution {
   model_alias?: string | null;
   provider_name?: string | null;
   models_used?: ExecutionModelUsage[] | null;
+  /**
+   * OpenRouter upstream providers that served this run's requests. Absent
+   * for other routes and on older servers.
+   */
+  upstream_route?: ExecutionUpstreamRoute | null;
   runner?: ExecutionRunner | null;
   actions_taken_summary?: any[];
   model_output_summary?: string;
@@ -632,6 +649,10 @@ export class FlowExecutionView extends LitElement {
         overflow-wrap: anywhere;
       }
       .strip-note {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+      }
+      .upstream-hint {
         color: var(--console-meta-color);
         font-size: var(--console-text-meta);
       }
@@ -3704,6 +3725,22 @@ export class FlowExecutionView extends LitElement {
               `
             : ''
         }
+        ${
+          execution.upstream_route?.upstream_hint
+            ? html`<p class="upstream-hint" data-testid="upstream-hint">
+                ${execution.upstream_route.upstream_hint.replace(
+                  /:\s*https:\S+$/,
+                  '.'
+                )}
+                <a
+                  href=${STRUCTURED_RESULTS_DOCS_HREF}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Structured results and upstream providers</a
+                >
+              </p>`
+            : ''
+        }
         ${renderResultSchemaErrors(execution.result_schema_validation)}
         ${
           execution.platform_review
@@ -4035,6 +4072,48 @@ ${execution.resolved_input_prompt}</pre>
   }
 
   /**
+   * Which OpenRouter upstream served the final answer, with every upstream
+   * the run used and its request count in the title. Labelled "Providers"
+   * when no request finished with stop, and hidden when the route recorded
+   * no upstream.
+   */
+  private renderUpstreamStripItem(execution: FlowExecution) {
+    const providers = execution.upstream_route?.upstream_providers ?? [];
+    if (providers.length === 0) {
+      return '';
+    }
+    const finalAnswer =
+      execution.upstream_route?.final_answer_upstream_provider ?? null;
+    const title = providers
+      .map(
+        (entry) =>
+          `${entry.provider}: ${entry.request_count} request${
+            entry.request_count === 1 ? '' : 's'
+          }`
+      )
+      .join(', ');
+    // With no request ending in stop there is no final answer to attribute,
+    // so the item names the providers instead of crediting the first one.
+    return html`<div class="strip-item">
+      <span class="strip-label"
+        >${finalAnswer ? 'Served by' : 'Providers'}</span
+      >
+      <span
+        class="strip-value"
+        data-testid="strip-upstream"
+        title=${finalAnswer ? `Final answer: ${finalAnswer}. ${title}` : title}
+        >${finalAnswer ?? providers[0].provider}${
+          providers.length > 1
+            ? html`<span class="strip-note"
+                >(+${providers.length - 1} more)</span
+              >`
+            : ''
+        }</span
+      >
+    </div>`;
+  }
+
+  /**
    * CLI sessions the runner's usage hook linked to this host run. Hidden for
    * container runs and for host runs whose hook reported nothing.
    */
@@ -4227,6 +4306,7 @@ ${execution.resolved_input_prompt}</pre>
             >${renderExecutionModel(this.getExecutionModelSource(execution))}</span
           >
         </div>
+        ${this.renderUpstreamStripItem(execution)}
         <div class="strip-item">
           <span class="strip-label">Tokens</span>
           <!-- Compact at console scale: "1.4M" is the figure to compare,

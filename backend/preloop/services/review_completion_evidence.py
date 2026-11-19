@@ -9,6 +9,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from preloop.models import crud
+from preloop.schemas.openrouter import (
+    STRUCTURED_RESULTS_DOCS_URL,
+    pins_upstream_provider,
+)
 from preloop.services.execution_tool_evidence import digest
 from preloop.services.upstream_request_summary import public_upstream_summary
 
@@ -286,6 +290,88 @@ def _identifier(value: Any) -> str | None:
     )
 
 
+#: Failure categories where a native-result run produced no usable answer.
+UPSTREAM_HINT_CATEGORIES = frozenset(
+    {"no_confirmation", "result_schema_invalid", "review_not_inspected"}
+)
+#: Distinct upstream providers listed per execution; the rest are counted.
+MAX_UPSTREAM_PROVIDERS = 20
+_UPSTREAM_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ./_-]{0,199}")
+
+
+def _upstream_name(value: Any) -> str | None:
+    """A recorded upstream host name, or None when absent or unsafe."""
+    return value if isinstance(value, str) and _UPSTREAM_NAME.fullmatch(value) else None
+
+
+def upstream_route_summary(
+    execution: Any, requests: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Which upstream providers served an execution's model requests.
+
+    Only OpenRouter-routed requests record an upstream provider, so an empty
+    list means the route has no upstream choice or none was reported.
+
+    Args:
+        execution: Authorized execution row.
+        requests: Recorded request facts in completion order.
+
+    Returns:
+        ``upstream_providers`` (name and request count, first seen first,
+        at most :data:`MAX_UPSTREAM_PROVIDERS`), the upstream of the final
+        answer (last request that finished with ``stop``), whether the
+        recorded routing pinned a provider, and ``upstream_hint``: one
+        sentence for a native-result failure that may depend on the host.
+    """
+    counts: Counter[str] = Counter()
+    final_answer: str | None = None
+    pinned = False
+    for request in requests:
+        name = _upstream_name(request.get("upstream_provider"))
+        if name is None:
+            continue
+        counts[name] += 1
+        if request.get("finish_reason") == "stop":
+            final_answer = name
+        params = request.get("upstream_parameters")
+        if isinstance(params, dict):
+            pinned = pins_upstream_provider(params.get("provider"))
+    providers = [
+        {"provider": name, "request_count": count} for name, count in counts.items()
+    ][:MAX_UPSTREAM_PROVIDERS]
+    details = getattr(execution, "trigger_event_details", None)
+    native = details.get("_native_result") if isinstance(details, dict) else None
+    hint = None
+    if (
+        counts
+        and isinstance(native, dict)
+        and native.get("value") is True
+        and getattr(execution, "failure_category", None) in UPSTREAM_HINT_CATEGORIES
+        and (len(counts) > 1 or not pinned)
+    ):
+        served = (
+            f"{final_answer} served the final answer"
+            if final_answer
+            else "No request finished with a final answer"
+        )
+        spread = (
+            f"this run used {len(counts)} upstream providers"
+            if len(counts) > 1
+            else "the model sets no provider preference"
+        )
+        hint = (
+            f"{served} on OpenRouter and {spread}; a provider preference on "
+            "the model (only, or order with allow_fallbacks false) can pin "
+            f"one provider: {STRUCTURED_RESULTS_DOCS_URL}"
+        )
+    return {
+        "upstream_providers": providers,
+        "final_answer_upstream_provider": final_answer,
+        "upstream_provider_pinned": pinned,
+        "upstream_hint": hint,
+    }
+
+
 def timings_projection(
     execution: Any, requests: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -334,15 +420,7 @@ def timings_projection(
                 effort,
                 limit,
                 json.dumps(public_upstream_summary(params), sort_keys=True),
-                (
-                    request.get("upstream_provider")
-                    if isinstance(request.get("upstream_provider"), str)
-                    and re.fullmatch(
-                        r"[A-Za-z0-9][A-Za-z0-9 ./_-]{0,199}",
-                        request["upstream_provider"],
-                    )
-                    else None
-                ),
+                _upstream_name(request.get("upstream_provider")),
             )
         ] += 1
         duration = request.get("duration")
@@ -399,6 +477,7 @@ def timings_projection(
             }
             for key, count in effective.items()
         ],
+        **upstream_route_summary(execution, requests),
     }
 
 
