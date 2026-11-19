@@ -143,6 +143,14 @@ function flowDurationText(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
 
+/** Non-blocking advice returned with a saved flow (`config_warnings`). */
+interface FlowConfigWarning {
+  code: string;
+  message: string;
+  ai_model_id?: string | null;
+  docs_url?: string | null;
+}
+
 @customElement('flow-view')
 export class FlowView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
@@ -914,7 +922,8 @@ export class FlowView extends LitElement {
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
-          ${this.renderForm()} ${this.isNew ? '' : this.renderGovernanceCard()}
+          ${this.isNew ? '' : this.renderConfigWarnings()} ${this.renderForm()}
+          ${this.isNew ? '' : this.renderGovernanceCard()}
         </div>
       </div>
     `;
@@ -1068,6 +1077,42 @@ export class FlowView extends LitElement {
     `;
   }
 
+  /**
+   * Non-blocking advice the server returned with the saved flow, for example
+   * a structured result on an OpenRouter model with no provider preference.
+   */
+  private renderConfigWarnings() {
+    const warnings: FlowConfigWarning[] = Array.isArray(
+      (this.flow as any)?.config_warnings
+    )
+      ? (this.flow as any).config_warnings
+      : [];
+    if (warnings.length === 0) return nothing;
+    return html`${warnings.map(
+      (warning) => html`
+        <sl-alert
+          variant="warning"
+          open
+          data-testid="flow-config-warning"
+          data-code=${warning.code}
+        >
+          <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+          ${warning.message}
+          ${
+            warning.docs_url
+              ? html`<a
+                  href=${warning.docs_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  >Structured results and upstream providers</a
+                >`
+              : nothing
+          }
+        </sl-alert>
+      `
+    )}`;
+  }
+
   /** Inline warning naming the reference lists that could not be loaded. */
   private renderReferenceDataWarning() {
     if (this.referenceListsFailed.length === 0) return nothing;
@@ -1190,7 +1235,8 @@ export class FlowView extends LitElement {
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
-          ${this.renderReferenceDataWarning()} ${this.renderSummaryStrip()}
+          ${this.renderReferenceDataWarning()} ${this.renderConfigWarnings()}
+          ${this.renderSummaryStrip()}
           ${
             this.flow?.agent_config?.native_result === true &&
             (!this.flow.result_schema || this.flow.validate_result === false)

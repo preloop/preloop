@@ -46,6 +46,29 @@ def _effective_gateway_alias_from_fields(
 class CRUDAIModel(CRUDBase[AIModel]):
     """CRUD class for AIModel operations."""
 
+    def get_by_ids(self, db: Session, ids: Sequence[Any]) -> Dict[str, AIModel]:
+        """Load several models in one query, keyed by string id.
+
+        Args:
+            db: Database session.
+            ids: Model ids; unparseable ids are ignored.
+
+        Returns:
+            The models found, keyed by ``str(model.id)``.
+        """
+        parsed = []
+        for value in ids:
+            try:
+                parsed.append(
+                    value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+                )
+            except (TypeError, ValueError):
+                continue
+        if not parsed:
+            return {}
+        rows = db.query(AIModel).filter(AIModel.id.in_(parsed)).all()
+        return {str(row.id): row for row in rows}
+
     def _inherit_reused_credential_routing(
         self,
         db: Session,

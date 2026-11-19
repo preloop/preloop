@@ -1546,3 +1546,60 @@ describe('FlowView invalid native results', () => {
     });
   }
 });
+
+describe('FlowView configuration warnings', () => {
+  const WARNING = {
+    code: 'openrouter_unpinned_structured_result',
+    message:
+      'Structured results on OpenRouter depend on the upstream provider that serves each request.',
+    ai_model_id: 'model-1',
+    docs_url:
+      'https://docs.preloop.ai/guide/providers/openrouter/#structured-results-and-upstream-providers',
+  };
+
+  async function mount(warnings: unknown[]) {
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flowId = 'flow-1';
+    element.flow = {
+      id: 'flow-1',
+      name: 'Native review',
+      agent_type: 'codex',
+      config_warnings: warnings,
+    };
+    document.body.appendChild(element);
+    await element.updateComplete;
+    return element;
+  }
+
+  it('shows each server warning with its guide link, without blocking', async () => {
+    const element = await mount([WARNING]);
+    try {
+      const alert = element.shadowRoot!.querySelector(
+        '[data-testid="flow-config-warning"]'
+      ) as HTMLElement;
+      expect(alert).to.exist;
+      expect(alert.getAttribute('variant')).to.equal('warning');
+      expect(alert.textContent).to.contain('depend on the upstream provider');
+      expect(alert.querySelector('a')!.getAttribute('href')).to.equal(
+        WARNING.docs_url
+      );
+    } finally {
+      element.remove();
+    }
+  });
+
+  it('shows nothing when the flow has no warnings', async () => {
+    const element = await mount([]);
+    try {
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="flow-config-warning"]')
+      ).to.not.exist;
+    } finally {
+      element.remove();
+    }
+  });
+});

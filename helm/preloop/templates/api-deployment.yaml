@@ -63,6 +63,10 @@ spec:
               value: {{ .Values.environment.preloopUrl | quote }}
             {{- include "preloop.hstsEnv" . | nindent 12 }}
             {{- include "preloop.ssoEnv" . | nindent 12 }}
+            {{- if eq (toString ((.Values.trackers | default dict).blockPrivateTargets)) "true" }}
+            - name: TRACKER_BLOCK_PRIVATE_TARGETS
+              value: "true"
+            {{- end }}
             - name: HOST
               value: "0.0.0.0"
             - name: PORT

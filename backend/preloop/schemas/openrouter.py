@@ -116,3 +116,33 @@ def validate_model_routing(parameters: dict[str, Any] | None) -> dict[str, Any] 
             "provider": validate_provider_preferences(parameters["provider"]),
         }
     return parameters
+
+
+#: Guide section explaining why structured results depend on the upstream host.
+STRUCTURED_RESULTS_DOCS_URL = (
+    "https://docs.preloop.ai/guide/providers/openrouter/"
+    "#structured-results-and-upstream-providers"
+)
+
+
+def pins_upstream_provider(value: Any) -> bool:
+    """Whether a saved provider preference selects the upstream host.
+
+    ``only`` restricts the eligible hosts. ``order`` selects a host only when
+    fallbacks are off; otherwise it is a preference OpenRouter may leave.
+
+    Args:
+        value: The ``model_parameters.provider`` object, or anything else.
+
+    Returns:
+        True when the preference pins which provider serves the request.
+    """
+    if not isinstance(value, dict):
+        return False
+    if isinstance(value.get("only"), list) and value["only"]:
+        return True
+    return (
+        isinstance(value.get("order"), list)
+        and bool(value["order"])
+        and value.get("allow_fallbacks") is False
+    )

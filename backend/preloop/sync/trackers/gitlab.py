@@ -19,6 +19,8 @@ from ..exceptions import (
     TrackerRateLimitError,
     TrackerResponseError,
 )
+from preloop.services.tracker_probe import probe_timeout
+
 from .base import BaseTracker
 from .utils import (
     is_not_found_error,
@@ -114,7 +116,12 @@ class GitLabTracker(BaseTracker):
             self.gl = None
             return
         try:
-            self.gl = gitlab.Gitlab(self.url, private_token=api_key)
+            # Inside a connection test the constructor's auth call (and every
+            # later call) is bounded; saved-tracker sync keeps the default.
+            bounded: Dict[str, Any] = {}
+            if probe_timeout() is not None:
+                bounded["timeout"] = probe_timeout()
+            self.gl = gitlab.Gitlab(self.url, private_token=api_key, **bounded)
             self.gl.auth()
         except gitlab.exceptions.GitlabAuthenticationError as e:
             raise TrackerAuthenticationError("GitLab authentication failed") from e

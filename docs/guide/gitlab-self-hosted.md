@@ -55,6 +55,14 @@ failure, not the CE detection signal.
    GitLab project and verify the callback. Check the group hooks instead if
    you use group hooks on a supported edition.
 
+The connection test must finish within 8 seconds (3 seconds to connect, 5
+seconds per read). An instance that answers more slowly fails the test with
+"did not respond"; check the URL and the network path from the API. A private
+instance URL works unless the operator set `TRACKER_BLOCK_PRIVATE_TARGETS`
+(Helm `trackers.blockPrivateTargets`), which multi-tenant instances use to
+refuse private and cluster-internal addresses. Link-local and cloud metadata
+addresses are always refused.
+
 Preloop's general URL classifier recognizes GitLab.com and hostnames with a
 complete `gitlab` label, such as `gitlab.example.com`. An arbitrary instance
 name such as `code.example.com` does not identify its platform by URL alone.

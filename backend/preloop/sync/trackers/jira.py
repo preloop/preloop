@@ -50,6 +50,8 @@ from preloop.services.managed_credentials import (
     is_managed_auth_type,
 )
 
+from preloop.services.tracker_probe import probe_httpx_timeout, probe_timeout
+
 from .base import BaseTracker
 from .utils import (
     HTTP_STATUS_NO_CONTENT,
@@ -370,8 +372,8 @@ class JiraTracker(BaseTracker):
                 self.jira_client = JIRA(
                     server=self.jira_url,
                     basic_auth=(self.username, api_key),
-                    timeout=20,
-                    max_retries=3,
+                    timeout=probe_timeout() or 20,
+                    max_retries=0 if probe_timeout() else 3,
                 )
             except JIRAError as e:
                 # A scoped token is rejected by the site during the library
@@ -458,6 +460,8 @@ class JiraTracker(BaseTracker):
         kwargs: Dict[str, Any] = {"follow_redirects": False}
         if self._scoped_gateway:
             kwargs["timeout"] = MANAGED_HTTP_TIMEOUT_SECONDS
+        if probe_timeout() is not None:
+            kwargs["timeout"] = probe_httpx_timeout(None)
         if self._transport is not None:
             kwargs["transport"] = self._transport
         return kwargs
@@ -495,6 +499,8 @@ class JiraTracker(BaseTracker):
         # tenant_info is public. Do not attach the Basic header, and do not
         # follow a redirect that could carry a later retry somewhere else.
         kwargs.pop("timeout", None)
+        if probe_timeout() is not None:
+            kwargs["timeout"] = probe_httpx_timeout(None)
         async with httpx.AsyncClient(**kwargs) as client:
             response = await client.get(url, headers={"Accept": "application/json"})
         if response.status_code != 200:

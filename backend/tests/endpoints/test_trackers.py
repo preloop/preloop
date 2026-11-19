@@ -1527,7 +1527,6 @@ def test_gitlab_rejected_token_has_actionable_error(
     ("failure", "expected"),
     [
         ("connection", "Check the URL"),
-        ("timeout", "Check the URL"),
         ("not_found", "Check the URL"),
         ("auth_forbidden", "api scope"),
         ("groups_forbidden", "api scope"),
@@ -1582,3 +1581,26 @@ def test_gitlab_validation_translates_provider_failures(
     assert "private-token-sentinel" not in result["message"]
     assert "Tracker validation failed" in caplog.text
     assert "private-token-sentinel" not in caplog.text
+
+
+def test_gitlab_validation_timeout_is_a_bounded_400(client: TestClient) -> None:
+    """A tracker that times out gets the plain bound message, not a 200."""
+    import requests
+
+    with patch("preloop.sync.trackers.gitlab.gitlab.Gitlab") as gitlab_client:
+        gitlab_client.return_value.auth.side_effect = requests.Timeout(
+            "upstream error containing private-token-sentinel"
+        )
+        response = client.post(
+            "/api/v1/trackers/test-and-list-orgs",
+            json={
+                "tracker_type": "gitlab",
+                "url": "https://gitlab.com",
+                "api_key": "private-token-sentinel",
+            },
+        )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "did not respond" in detail
+    assert "private-token-sentinel" not in detail

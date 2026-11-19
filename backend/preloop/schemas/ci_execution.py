@@ -205,6 +205,13 @@ class ReviewEffectiveRequest(BaseModel):
     upstream_provider: str | None = None
 
 
+class UpstreamProviderCount(BaseModel):
+    """One upstream provider and how many recorded requests it served."""
+
+    provider: str
+    request_count: int
+
+
 class ReviewTimings(BaseModel):
     """Recorded durations in seconds; absent observations remain null."""
 
@@ -233,6 +240,28 @@ class ReviewTimings(BaseModel):
     )
     first_causal_upstream_error_class: str | None
     effective_requests: list[ReviewEffectiveRequest]
+    upstream_providers: list[UpstreamProviderCount] = Field(
+        default_factory=list,
+        description=(
+            "OpenRouter upstream providers that served this execution's model "
+            "requests, with request counts, first seen first."
+        ),
+    )
+    final_answer_upstream_provider: str | None = Field(
+        default=None,
+        description="Upstream provider of the last request that ended with stop.",
+    )
+    upstream_provider_pinned: bool = Field(
+        default=False,
+        description="Whether the recorded routing preference pinned a provider.",
+    )
+    upstream_hint: str | None = Field(
+        default=None,
+        description=(
+            "One sentence for a native-result failure on an unpinned or "
+            "multi-provider OpenRouter route, naming the final answer's host."
+        ),
+    )
 
 
 class ReviewCapturedResult(BaseModel):

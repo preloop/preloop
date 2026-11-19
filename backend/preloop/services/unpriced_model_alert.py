@@ -213,6 +213,37 @@ def should_notify_unpriced_model(
     return False
 
 
+def has_billable_usage(
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    usage_details: Optional[Dict[str, Any]],
+) -> bool:
+    """Return True when a recorded request carries something to price.
+
+    A failed or cancelled upstream request can be recorded with zero tokens
+    and no provider cost. Such a row has nothing a catalog price could
+    change, so it is not a pricing gap and must not page anyone.
+
+    Args:
+        prompt_tokens: Prompt tokens on the row.
+        completion_tokens: Completion tokens on the row.
+        total_tokens: Total tokens on the row.
+        usage_details: Raw provider usage dict from the response.
+
+    Returns:
+        True when any token count is positive or the provider reported a cost.
+    """
+    if any(int(value or 0) > 0 for value in (prompt_tokens, completion_tokens)):
+        return True
+    if int(total_tokens or 0) > 0:
+        return True
+    return isinstance(usage_details, dict) and (
+        "cost" in usage_details or "cost_details" in usage_details
+    )
+
+
 def reset_alert_state_for_tests() -> None:
     """Clear the in-process fast-path cache (test isolation only)."""
     with _local_lock:
@@ -388,6 +419,13 @@ def notify_unpriced_usage_row(api_usage_id: str, *, refresh_status: str) -> bool
         model = crud_ai_model.get(db, id=row.ai_model_id) if row.ai_model_id else None
         meta = row.meta_data if isinstance(row.meta_data, dict) else {}
         usage = meta.get("usage_details")
+        if not has_billable_usage(
+            prompt_tokens=int(row.prompt_tokens or 0),
+            completion_tokens=int(row.completion_tokens or 0),
+            total_tokens=int(row.total_tokens or 0),
+            usage_details=usage if isinstance(usage, dict) else None,
+        ):
+            return False
         return notify_unpriced_model(
             db,
             account_id=str(row.account_id),
