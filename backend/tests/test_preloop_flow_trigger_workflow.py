@@ -319,18 +319,6 @@ def test_label_events_only_retrigger_for_the_two_owned_labels() -> None:
     # starts a review (the clauses above already limit which labels).
     assert "github.event.action == 'labeled' ||" in condition
     assert "github.event.action == 'unlabeled'" in condition
-    # Only those two label changes may join the review concurrency group;
-    # any other label would cancel a running review and then skip itself.
-    group = doc["concurrency"]["group"]
-    assert (
-        "(github.event.action == 'labeled' && "
-        "github.event.label.name == 'preloop-review')" in group
-    )
-    assert (
-        "(github.event.action == 'unlabeled' && "
-        "github.event.label.name == 'preloop-skip-review')" in group
-    )
-    assert "github.event.action == 'labeled' ||" not in group
 
 
 EXEC_ID = "11111111-2222-4333-8444-555555555555"
@@ -552,3 +540,63 @@ def test_fast_admission_dedups_only_on_bot_reviews(tmp_path: Path) -> None:
         event_name="workflow_dispatch",
     )
     assert "reviewed=true" not in dispatched
+
+
+def _concurrency_lane(event: str, action: str, label: str, fork: bool) -> str:
+    """Evaluate the concurrency-group lane expression for one event.
+
+    The expression only uses ``==``, ``!=``, ``&&``, ``||``, parentheses,
+    string literals and ``github.*`` lookups, so a token rewrite into Python
+    evaluates it faithfully (``a && b || c`` keeps Actions' value semantics).
+    """
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    group = doc["concurrency"]["group"]
+    expression = group.rsplit("${{", 1)[1].rsplit("}}", 1)[0]
+    values = {
+        "github.event_name": event,
+        "github.event.action": action,
+        "github.event.label.name": label,
+        "github.event.pull_request.head.repo.full_name": (
+            "someone/preloop" if fork else "preloop/preloop"
+        ),
+        "github.repository": "preloop/preloop",
+    }
+    python = expression.replace("&&", " and ").replace("||", " or ")
+    for name in sorted(values, key=len, reverse=True):
+        python = python.replace(name, repr(values[name]))
+    assert "github." not in python, python
+    return eval(python)  # noqa: S307 - expression read from our own workflow
+
+
+@pytest.mark.parametrize("fork", [False, True])
+@pytest.mark.parametrize(
+    ("action", "label", "lane"),
+    [
+        ("labeled", "preloop-review", "review"),
+        ("unlabeled", "preloop-skip-review", "review"),
+        ("labeled", "needs-triage", "noop"),
+        ("unlabeled", "needs-triage", "noop"),
+        ("labeled", "preloop-skip-review", "noop"),
+    ],
+)
+def test_only_owned_label_changes_join_the_review_lane(
+    fork: bool, action: str, label: str, lane: str
+) -> None:
+    """Any other label change must not cancel a running review, fork or not."""
+    assert _concurrency_lane("pull_request_target", action, label, fork) == lane
+
+
+@pytest.mark.parametrize(
+    ("event", "fork", "lane"),
+    [
+        ("pull_request", False, "review"),
+        ("pull_request_target", True, "review"),
+        ("pull_request_target", False, "noop"),
+        ("pull_request", True, "noop"),
+    ],
+)
+def test_push_events_keep_one_review_lane_per_pr(
+    event: str, fork: bool, lane: str
+) -> None:
+    """Same-repo pushes review via CI, fork pushes via pull_request_target."""
+    assert _concurrency_lane(event, "synchronize", "", fork) == lane
