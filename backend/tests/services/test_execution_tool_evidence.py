@@ -214,13 +214,16 @@ def test_one_bearer_counts_once_on_gateway_and_native_paths() -> None:
 
 
 def test_already_masked_sensitive_field_is_not_a_new_redaction() -> None:
-    """Replacing ``[REDACTED]`` with itself does not flag the observation."""
-    source = '{"password": "[REDACTED]"}'
-    document = capture_tools({}, _tool_result(source), capture_content=True)
-    record = document["observations"][0]
-    assert record["value"] == source
-    assert record["redacted"] is False
-    assert "redactions" not in record
+    """Replacing a marker with itself does not flag the observation."""
+    for source in (
+        '{"password": "[REDACTED]"}',
+        '{"password": "***REDACTED***"}',
+    ):
+        document = capture_tools({}, _tool_result(source), capture_content=True)
+        record = document["observations"][0]
+        assert record["value"] == source
+        assert record["redacted"] is False
+        assert "redactions" not in record
 
 
 def test_real_looking_key_is_masked_and_records_the_rule() -> None:

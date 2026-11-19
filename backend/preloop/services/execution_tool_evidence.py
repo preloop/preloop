@@ -61,6 +61,7 @@ def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]]]:
         scrubber, so a match is counted even when both would mask it.
     """
     from preloop.services.model_gateway_events import (
+        _REDACTION_MARKERS,
         merge_redactions,
         redact_sensitive_text,
     )
@@ -72,8 +73,9 @@ def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]]]:
         field_hits = 0
         for key, item in value.items():
             if _sensitive_field(key):
-                # An already-masked value is not a new redaction.
-                if item == "[REDACTED]":
+                # An already-masked value is not a new redaction. Both marker
+                # spellings show up: field redaction and text redaction.
+                if item in _REDACTION_MARKERS:
                     redacted[key] = item
                 else:
                     redacted[key] = "[REDACTED]"

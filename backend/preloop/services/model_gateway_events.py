@@ -65,11 +65,12 @@ _PLACEHOLDER = re.compile(
     r"|%s"
     r"|<[A-Za-z_][A-Za-z0-9_]*>)"
 )
-# Inner text of a quote that actually closed the string holding the key:
-# `+ token` or `+ token +`.
+# Inner text of a quote that closed the string holding the key:
+# `+ token`, `+ obj.attr +`, `+ self.token +`.
+_DOTTED_NAME = r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
 _OPERATOR_IDENT = re.compile(
-    r"^[+\-*/%&|^]+[ \t]*[A-Za-z_][A-Za-z0-9_]*"
-    r"(?:[ \t]*[+\-*/%&|^]+[ \t]*[A-Za-z_][A-Za-z0-9_]*)*"
+    rf"^[+\-*/%&|^]+[ \t]*{_DOTTED_NAME}"
+    rf"(?:[ \t]*[+\-*/%&|^]+[ \t]*{_DOTTED_NAME})*"
     r"[ \t]*[+\-*/%&|^]*$"
 )
 _HEX_LITERAL = re.compile(r"^[0-9a-fA-F]{24,}$")

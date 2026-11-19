@@ -53,6 +53,16 @@ _CASES: list[tuple[str, str, list[tuple[str, int]]]] = [
         [],
     ),
     (
+        "url = 'https://x-access-token:' + obj.attr + '@github.com/o/r.git'",
+        "url = 'https://x-access-token:' + obj.attr + '@github.com/o/r.git'",
+        [],
+    ),
+    (
+        "url = 'https://x-access-token:' + self.token + '@github.com/o/r.git'",
+        "url = 'https://x-access-token:' + self.token + '@github.com/o/r.git'",
+        [],
+    ),
+    (
         'url = "https://x-access-token:" + token + "@github.com/o/r.git"',
         'url = "https://x-access-token:" + token + "@github.com/o/r.git"',
         [],

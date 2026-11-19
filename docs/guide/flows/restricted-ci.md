@@ -1114,7 +1114,7 @@ or subscript, a `$VAR` / `${VAR}` / `${{ ... }}` reference, a bare variable
 name, a type annotation, or a string joined with `+`. A quote that closes
 the string containing the key is left, as in
 `'https://x-access-token:' + token`, and so is a value whose text is an
-operator and an identifier. A value that starts with a placeholder
+operator and an identifier or dotted name (`obj.attr`, `self.token`). A value that starts with a placeholder
 (`{name}`, `{{ name }}`, `%s`, `%(name)s`, `<name>`) is left. A quoted
 literal is masked, including a short password such as `"hunter2"` or
 `"changeme"`. A bare `password: hunter2` or `secret: hunter2` is masked
