@@ -289,6 +289,39 @@ def test_execution_masking_survives_sealing_and_registration(
     )
 
 
+def test_dual_reader_extends_keyed_only_inventory(
+    db_session: Session, rows: dict[str, Any]
+) -> None:
+    """An upgraded reader can adopt, extend and safely roll back a live run."""
+    import hmac
+
+    from preloop.models.crud import execution_credentials as inventory
+    from preloop.utils.encryption import credential_fingerprint_key
+
+    row_id = rows["flow_execution"].id
+    value = "adopted-synthetic"
+    raw = value.encode()
+    inventory.save_inventory(
+        db_session,
+        row_id,
+        [
+            {
+                "prefix": inventory.matching_prefix(raw),
+                "length": len(raw),
+                "hmac_sha256": hmac.digest(
+                    credential_fingerprint_key(), raw, "sha256"
+                ).hex(),
+            }
+        ],
+        protected=True,
+    )
+    masker = inventory.register(db_session, row_id, ["next-synthetic"])
+    assert masker.mask(value + " next-synthetic") == "[REDACTED] [REDACTED]"
+    with pytest.raises(RuntimeError, match="dual-reader release"):
+        inventory.set_protection(db_session, False)
+    assert inventory.protection_enabled(db_session)
+
+
 def test_fingerprint_migration_and_rolling_cutover(
     db_session: Session, rows: dict[str, Any]
 ) -> None:

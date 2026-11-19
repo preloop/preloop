@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, type_coerce, update
+from sqlalchemy import select, text, type_coerce, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
@@ -40,6 +40,19 @@ def set_protection(db: Session, enabled: bool) -> None:
         .where(models.AgentUsageBackfill.id == FINGERPRINT_MODE)
         .with_for_update()
     ).scalar_one()
+    if not enabled and db.scalar(
+        text(
+            "SELECT EXISTS (SELECT 1 FROM agent_usage_backfill "
+            "WHERE name = 'exec_hmac_writers') OR EXISTS (SELECT 1 FROM flow_execution "
+            "WHERE credential_fingerprints @? "
+            """'$[*] ? (exists(@.hmac_sha256) && !(exists(@.sha256)))'"""
+            ")"
+        )
+    ):
+        raise RuntimeError(
+            "Keyed-only fingerprints require the dual-reader release or newer. "
+            "Keep protection enabled when rolling back to that release."
+        )
     if mode.ready == enabled:
         db.commit()
         return
@@ -119,7 +132,10 @@ def register(db: Session, execution_id: Any, values: Iterable[str]) -> Credentia
         .where(models.FlowExecution.id == execution_uuid)
         .with_for_update()
     ).scalar_one()
-    fingerprints = {item["sha256"]: item for item in [*(previous or []), *added]}
+    fingerprints = {
+        (item.get("hmac_sha256") or item["sha256"]): item
+        for item in [*(previous or []), *added]
+    }
     items = list(fingerprints.values())
     save_inventory(db, execution_uuid, items, protected=protected)
     db.commit()
