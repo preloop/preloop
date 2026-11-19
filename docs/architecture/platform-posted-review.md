@@ -153,6 +153,10 @@ provisioning snapshot still matches the flow, and its grant still holds
 and requires the provider's pull request id, repository id and repository
 name to equal the binding.
 
+What must still be in place for that check, and the response for each
+refusal, is in the user guide:
+[What must still be in place when you publish](../guide/flows/restricted-ci.md#what-must-still-be-in-place-when-you-publish).
+
 In a shared flow, execution A cannot post on project B: A's binding names A's
 project, the lease is minted for A's repository only, and GitHub enforces the
 repository on the token.

@@ -1703,7 +1703,7 @@ optional; send the ones you want enforced:
 | `expected_head_sha` | Full commit SHA (40 or 64 hex characters, any case). Equals the head the execution is bound to **and** the live head of the pull request. |
 | `expected_base_sha` | Full commit SHA. Equals the bound base, when the binding records one, **and** the live base of the pull request. |
 | `expected_result_sha256` | 64 hex characters. Equals the digest of the stored result (below). |
-| `expected_flow_revision` | Positive integer. Equals the flow's current configuration `revision`. Send the execution's `flow_revision` to refuse posting if the flow was changed after this run started: posting reads the flow (verdict mapping, review actions, status) at post time. |
+| `expected_flow_revision` | Positive integer. The integer you send is compared with the flow's configuration `revision` at publish time. The execution's `flow_revision` is the revision from when the run was created; send it to refuse the post after a later configuration change. Posting reads the flow (verdict mapping, review actions, status) at post time. See [What must still be in place when you publish](#what-must-still-be-in-place-when-you-publish). |
 
 Each supplied precondition is checked before anything is posted, again on
 the flow and execution as they are read for the post, and the commit SHAs
@@ -1796,10 +1796,13 @@ status=$(curl -sS -o posted.json -w '%{http_code}' -X POST -H "$AUTH" \
   -H "Content-Type: application/json" --data @preconditions.json \
   "$API/platform-review")
 
-# 4. 200: posted (or already posted). 412: something changed; nothing was
-#    posted. detail.failed says what, with the current value.
+# 4. Read a 200 from the body. platform_review.status posted (or
+#    status_only) means the review is on the pull request. status failed
+#    and reason admission_revoked means nothing was posted. 412: a
+#    precondition did not hold; nothing was posted. detail.failed says
+#    what, with the current value.
 case "$status" in
-  200) jq '.platform_review | {status, posted_by, review_id}' posted.json ;;
+  200) jq '.platform_review | {status, reason, posted_by, review_id}' posted.json ;;
   412) jq '.detail.failed' posted.json; exit 1 ;;
   *) cat posted.json; exit 1 ;;
 esac
@@ -1812,7 +1815,83 @@ whose result is not valid, whose binding or inspection check failed, or whose
 identity was disabled is never published by this call either. Without
 `expected_head_sha`, a head that moved while the review ran still gets the
 status on the reviewed commit and no review (`review_reason:
-"head_moved"`); with it, the call answers 412 and posts nothing.
+"head_moved"`); with it, the call answers 412 and posts nothing. The full
+set, including a refusal that answers HTTP 200, is in
+[What must still be in place when you publish](#what-must-still-be-in-place-when-you-publish).
+
+#### What must still be in place when you publish
+
+The publish call reads the flow and the CI identity that triggered the run
+as they are when you publish. The execution does not store the posting mode
+from when the run started.
+
+At publish time the call reads:
+
+- the flow's current posting mode (off answers 409
+  `platform_review_disabled`, and that refusal writes no
+  `platform_review_publish` audit row);
+- the flow's current configuration revision, when you send
+  `expected_flow_revision`;
+- whether the flow is enabled;
+- whether the triggering identity is still active, still bound to the same
+  flow and project with the same provisioning snapshot, and still holds
+  `flow:trigger` or `execution:review:publish`.
+
+That identity check applies to every caller that reaches publication,
+including an account user. Revoking the identity's key stops requests that
+present the key. An account user who may edit flows can still publish.
+Disabling the identity stops the publish, and you can enable it again while
+it is still bound to the flow. Retiring the identity stops the publish, and
+retirement cannot be undone. A different identity, including one you
+provision afterwards, does not own the execution, so its publish call
+answers 404.
+
+`expected_flow_revision` is the integer in your request, compared with the
+flow's configuration revision at publish time. `flow_revision` on the
+execution is the revision from when the run was created. Sending that
+recorded value refuses the post once a later configuration change has moved
+the flow's revision. A change to the flow's configuration moves the
+revision. Turning posting on, switching between automatic and manual, and
+enabling or disabling the flow are configuration changes. A save that
+writes the values already stored leaves the revision unchanged.
+
+To use `expected_flow_revision` as a check that the flow is unchanged since
+the run, configure posting before you trigger, and send the execution's
+`flow_revision`. A run that finished while posting was off cannot be
+published with `expected_flow_revision` set to that execution's
+`flow_revision`. Turning posting on moves the revision, so the call answers
+412. Publish that run by omitting `expected_flow_revision`, or by sending
+the flow's revision from after the save that turned posting on.
+
+Configure posting (manual or automatic) and leave the flow enabled, then
+trigger, then validate, then publish. Retire the identity or disable the
+flow only after that publish has succeeded.
+
+A finished run whose triggering identity has been retired cannot be
+published; run the review again with posting configured first.
+
+| Situation | Response |
+| --- | --- |
+| Posting is off | 409, `detail.code` `platform_review_disabled`. No `platform_review_publish` audit row. |
+| The run has not finished, or it has no review binding | 409, `detail.code` `execution_not_finished` or `no_review_binding`. |
+| The body is not an object, names an unknown field, or a value is malformed | 400, `detail.code` `review_precondition_malformed`. `detail.precondition` names the member. |
+| A stored precondition does not match | 412, `detail.code` `review_precondition_failed`. Audit action `platform_review_publish`, status `denied`. Nothing is posted. |
+| Posting is still on, and the caller reached publication. The triggering identity is retired or disabled, its binding no longer matches, its grant holds neither `flow:trigger` nor `execution:review:publish`, or the flow is disabled | HTTP **200**. Read the body: `platform_review.status` is `failed` and `platform_review.reason` is `admission_revoked`. Audit action `platform_review_publish`, status `failure`. |
+| A CI identity publishes an execution it did not trigger | 404. |
+| A CI credential calls while its flow is disabled | 401, `{"detail": "Restricted CI authorization denied"}`. The publish call does not run. |
+
+Disabling the flow moves the configuration revision. A publish that also
+sends the execution's `flow_revision` then answers 412, and the admission
+check does not run. The 200 body above is the answer when `expected_flow_revision`
+is omitted or equals the revision after the disable. Retiring the identity
+leaves the flow's revision unchanged, so the same precondition still holds
+and the answer is the 200 body.
+
+A CI credential whose identity is inactive, or whose key is revoked, is
+refused before publication with the same 401 detail. When the key is valid
+and the flow is enabled, but the key does not hold
+`execution:review:publish`, the detail text is the same and the status is
+403.
 
 ### Worked example: one flow for an organisation, two repositories
 
