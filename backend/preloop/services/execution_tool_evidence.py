@@ -35,44 +35,77 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
-def _redact_value(value: Any) -> Any:
-    """Keep exact nonsecret wire strings while scrubbing structured secrets."""
-    from preloop.services.model_gateway_events import ModelGatewayEventEmitter
+def _sensitive_field(key: Any) -> bool:
+    """True when a structured key's value is replaced wholesale."""
+    if not isinstance(key, str):
+        return False
+    lowered = key.lower()
+    return any(
+        word in lowered
+        for word in (
+            "api_key",
+            "authorization",
+            "password",
+            "secret",
+            "credential",
+        )
+    ) or ("token" in lowered and "tokens" not in lowered)
+
+
+def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]]]:
+    """Scrub one observation value.
+
+    Returns:
+        The stored value and the rule counts that fired while producing it.
+        Pattern rules run on the original string before the known-token
+        scrubber, so a match is counted even when both would mask it.
+    """
+    from preloop.services.model_gateway_events import (
+        merge_redactions,
+        redact_sensitive_text,
+    )
 
     value = sanitize_for_jsonb(value)
     if isinstance(value, dict):
-        return {
-            key: "[REDACTED]"
-            if any(
-                word in key.lower()
-                for word in (
-                    "api_key",
-                    "authorization",
-                    "password",
-                    "secret",
-                    "credential",
-                )
+        redacted: dict[Any, Any] = {}
+        facts: list[dict[str, Any]] = []
+        field_hits = 0
+        for key, item in value.items():
+            if _sensitive_field(key):
+                redacted[key] = "[REDACTED]"
+                field_hits += 1
+                continue
+            child, child_facts = _redact_value(item)
+            redacted[key] = child
+            facts = merge_redactions(facts, child_facts)
+        if field_hits:
+            facts = merge_redactions(
+                [{"rule": "sensitive_field", "count": field_hits}], facts
             )
-            or ("token" in key.lower() and "tokens" not in key.lower())
-            else _redact_value(item)
-            for key, item in value.items()
-        }
+        return redacted, facts
     if isinstance(value, list):
-        return [_redact_value(item) for item in value]
+        items: list[Any] = []
+        facts = []
+        for item in value:
+            child, child_facts = _redact_value(item)
+            items.append(child)
+            facts = merge_redactions(facts, child_facts)
+        return items, facts
     if isinstance(value, str):
-        scrubbed = ModelGatewayEventEmitter._redact_for_tool_activity(
-            scrub_structure(value)
-        )
+        redacted_text, facts = redact_sensitive_text(value)
+        scrubbed = scrub_structure(redacted_text)
+        text = scrubbed if isinstance(scrubbed, str) else redacted_text
         try:
-            parsed = json.loads(scrubbed)
+            parsed = json.loads(text)
         except ValueError:
-            return scrubbed
+            return text, facts
         if isinstance(parsed, (dict, list)):
-            clean = _redact_value(parsed)
+            clean, nested = _redact_value(parsed)
+            facts = merge_redactions(facts, nested)
             if clean != parsed:
-                return canonical_bytes(clean).decode("utf-8")
-        return scrubbed
-    return value
+                return canonical_bytes(clean).decode("utf-8"), facts
+        return text, facts
+    return value, []
 
 
 def capture_tools(
@@ -110,17 +143,25 @@ def capture_tools(
         safe_raw = sanitize_for_jsonb(raw)
         if safe_raw != raw:
             incomplete = storage_redacted = True
-        value = _redact_value(safe_raw) if capture_content else None
-        if isinstance(value, str):
-            # Keep exact wire argument strings. This redacts recognized secrets
-            # without reserializing JSON or applying the 8KiB preview limit.
-            from preloop.services.model_gateway_events import ModelGatewayEventEmitter
+        facts: list[dict[str, Any]] = []
+        if capture_content:
+            from preloop.services.model_gateway_events import (
+                merge_redactions,
+                redact_sensitive_text,
+            )
 
-            value = ModelGatewayEventEmitter._redact_for_tool_activity(value)
+            value, facts = _redact_value(safe_raw)
+            if isinstance(value, str):
+                # Keep exact wire argument strings. This redacts recognized
+                # secrets without reserializing JSON or applying the preview cap.
+                value, more = redact_sensitive_text(value)
+                facts = merge_redactions(facts, more)
+        else:
+            value = None
         redacted = not capture_content or value != raw
         if capture_content and value != raw:
             incomplete = storage_redacted = True
-        record = {
+        record: dict[str, Any] = {
             "source": source,
             "kind": kind,
             "call_id": identity,
@@ -129,6 +170,8 @@ def capture_tools(
             "redacted": redacted,
             "truncated": False,
         }
+        if facts:
+            record["redactions"] = facts
         safe_record = sanitize_for_jsonb(record)
         if safe_record != record:
             incomplete = storage_redacted = True
@@ -174,10 +217,13 @@ def capture_tools(
     if isinstance(request, dict):
         scan(_latest_tool_exchange(request.get("messages")), "request")
         scan(_latest_tool_exchange(request.get("input")), "request")
+    from preloop.services.model_gateway_events import REDACTION_RULESET
+
     return {
         "version": 1,
         "request_scope": "latest_tool_exchange",
         "storage_redacted": storage_redacted,
+        "redaction_ruleset": REDACTION_RULESET,
         "observations": observations,
         "capture_complete": not incomplete,
         "content_capture_enabled": capture_content,

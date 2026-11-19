@@ -36,9 +36,15 @@ Free text has no field names, so it is scanned for credential shapes:
 
 - **Model gateway content** (`backend/preloop/services/model_gateway_events.py`):
   PEM private key blocks, `Authorization: Bearer ...` headers, bare
-  `bearer <token>` values, `api_key`, `token`, `secret` or `password`
-  followed by `=` or `:` and a value, `sk-...` keys, and GitHub `ghp_`,
-  `gho_`, `ghu_`, `ghs_`, `ghr_` tokens. Matches become `***REDACTED***`.
+  `bearer <token>` values, and `sk-` keys (including `sk-proj-` and
+  `sk-ant-`), GitHub `ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_` and
+  `github_pat_` tokens, GitLab `glpat-`, JWTs, AWS access key ids, Slack
+  tokens, and Preloop `preloop_` / `ci_` / `agt_` / `enr_` / `whsec_` keys
+  and `flow_` run tokens. `api_key`, `token`, `secret`, or `password`
+  followed by `=` or `:` is masked only when the value looks like a
+  credential literal on the same line, not when it is ordinary source.
+  Matches become `***REDACTED***`. Tool evidence records which of these
+  rules fired; see the evidence section of the restricted CI guide.
 - **Flow execution logs** (`backend/preloop/utils/secret_scrubbing.py`):
   every agent log line is scrubbed for known token formats (for example
   GitHub fine-grained and classic tokens), credentials embedded in URLs, and

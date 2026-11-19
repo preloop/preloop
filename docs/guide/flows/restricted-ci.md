@@ -1099,6 +1099,46 @@ credential and account storage-redaction rules still apply. JSONB-unsafe control
 and lone surrogates are removed before encoding; altered content sets `redacted`,
 `storage_redacted`, and `capture_complete: false`.
 
+Text redaction uses ruleset `2026-11-19`. Every new document stores that
+version in `redaction_ruleset`. An observation that matched a rule also stores
+`redactions`, a list of `{"rule": "<category>", "count": <n>}`. The category is
+a fixed name. It is not the matched text and not a hash of it. Documents
+already stored do not gain these fields; nothing rewrites them.
+
+A keyword rule masks `api_key`, `token`, `secret`, or `password` only when that
+word is the whole key or the key ends with it (`github_token`, `client_secret`),
+the `=` or `:` stays on the same line, and the value is a literal that looks
+like a credential. It does not mask a permission or boolean word (`write`,
+`read`, `none`, `true`, `false`, `null`), an empty value, a call, an attribute
+or subscript, a `$VAR` / `${VAR}` / `${{ ... }}` reference, a bare variable
+name, a type annotation, or a string joined with `+`. A quoted literal is
+masked, including a short password such as `"hunter2"` or `"changeme"`. A bare
+`password: hunter2` or `secret: hunter2` is masked because the value has a
+letter and a digit; that also masks `password = sha256`, which has the same
+shape. A bare `token: hunter2` or `api_key: hunter2` is left as written,
+because a short unquoted word after `token` is usually a name. An unquoted
+single-case word with no digit, such as `password: changeme`, is left as
+written. A longer bare literal is masked from 16 characters when it mixes
+two of lowercase, uppercase, and digits, or from 20 characters when it
+contains a digit.
+
+Other rules do not need that keyword. They mask a PEM private key, a bearer
+token, an `sk-` key (including `sk-proj-` and `sk-ant-`), a GitHub
+`ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_` token, a GitHub fine-grained
+`github_pat_`, a GitLab `glpat-`, a JWT (`eyJ` plus two further segments), an
+AWS access key id (`AKIA`, `ASIA`, `AIDA`, `AROA`), a Slack
+`xoxb` / `xoxa` / `xoxp` / `xoxr` / `xoxs` token, a Preloop `preloop_`, `ci_`,
+`agt_`, `enr_`, or `whsec_` key, and a Preloop `flow_` run token. The category
+names are `private_key`, `authorization_bearer`, `bearer_token`,
+`keyword_assignment`, `sk_key`, `github_token`, `github_fine_grained_pat`,
+`gitlab_pat`, `jwt`, `aws_access_key_id`, `slack_token`, `preloop_key`,
+`preloop_run_token`, and `sensitive_field` (a structured key such as
+`password` whose whole value is replaced).
+
+A real match still sets `redacted`, `storage_redacted`, and
+`capture_complete: false`. Ordinary source that matches none of these stays
+byte for byte, with `capture_complete: true` and `storage_redacted: false`.
+
 Each record's `sha256` hashes its `document` encoded as compact JSON with sorted
 keys, UTF-8, `ensure_ascii=false`, and no nonfinite numbers. Execution and gateway
 usage IDs are inside that document. `page_sha256` hashes the returned `records`
