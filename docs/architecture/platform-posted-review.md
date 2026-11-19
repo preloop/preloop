@@ -142,8 +142,9 @@ comments, the same review is sent once more without them.
 
 Repository, pull request number and head SHA come from the execution's own
 `ci_review_binding`, written by the controller when the trigger was accepted.
-They never come from the result, the prompt, the flow text or the caller: the
-publish endpoint has no request body.
+They never come from the result, the prompt, the flow text or the caller.
+The request body cannot name the repository, pull request or commit; it
+carries only optional preconditions.
 
 Before any write the step re-runs the dispatch authorization of the
 execution's own identity (`authorize_dispatch`): the identity is active, its

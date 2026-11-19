@@ -1815,8 +1815,8 @@ whose result is not valid, whose binding or inspection check failed, or whose
 identity was disabled is never published by this call either. Without
 `expected_head_sha`, a head that moved while the review ran still gets the
 status on the reviewed commit and no review (`review_reason:
-"head_moved"`); with it, the call answers 412 and posts nothing. The full
-set, including a refusal that answers HTTP 200, is in
+"head_moved"`); with it, the call answers 412 and posts nothing. What must
+still be in place, and how the call refuses when it is not, is in
 [What must still be in place when you publish](#what-must-still-be-in-place-when-you-publish).
 
 #### What must still be in place when you publish
@@ -1870,13 +1870,21 @@ flow only after that publish has succeeded.
 A finished run whose triggering identity has been retired cannot be
 published; run the review again with posting configured first.
 
+The identity's provisioning binding (project, flow and snapshot) produces
+`admission_revoked`. A live pull request whose id, repository id or name no
+longer matches the execution's binding produces `binding_changed`. Both
+answer HTTP 200. Read `platform_review.status` and `platform_review.reason`.
+
 | Situation | Response |
 | --- | --- |
 | Posting is off | 409, `detail.code` `platform_review_disabled`. No `platform_review_publish` audit row. |
 | The run has not finished, or it has no review binding | 409, `detail.code` `execution_not_finished` or `no_review_binding`. |
 | The body is not an object, names an unknown field, or a value is malformed | 400, `detail.code` `review_precondition_malformed`. `detail.precondition` names the member. |
 | A stored precondition does not match | 412, `detail.code` `review_precondition_failed`. Audit action `platform_review_publish`, status `denied`. Nothing is posted. |
-| Posting is still on, and the caller reached publication. The triggering identity is retired or disabled, its binding no longer matches, its grant holds neither `flow:trigger` nor `execution:review:publish`, or the flow is disabled | HTTP **200**. Read the body: `platform_review.status` is `failed` and `platform_review.reason` is `admission_revoked`. Audit action `platform_review_publish`, status `failure`. |
+| Posting is still on, and the caller reached publication. The triggering identity is retired or disabled, its provisioning snapshot no longer matches, its grant holds neither `flow:trigger` nor `execution:review:publish`, or the flow is disabled | HTTP **200**. Read the body: `platform_review.status` is `failed` and `platform_review.reason` is `admission_revoked`. Audit action `platform_review_publish`, status `failure`. |
+| The live pull request's id, repository id or name no longer matches the execution's binding | HTTP **200**. `platform_review.status` is `failed` and `platform_review.reason` is `binding_changed`. Audit status `failure`. |
+| The flow's posting settings no longer validate, for example result validation was turned off | HTTP **200**. `platform_review.status` is `failed` and `platform_review.reason` is `configuration_invalid`. Audit status `failure`. |
+| The repository's tracker is missing or is no longer a supported GitHub App | HTTP **200**. `platform_review.status` is `failed` and `platform_review.reason` is `tracker_unsupported`. Audit status `failure`. |
 | A CI identity publishes an execution it did not trigger | 404. |
 | A CI credential calls while its flow is disabled | 401, `{"detail": "Restricted CI authorization denied"}`. The publish call does not run. |
 
