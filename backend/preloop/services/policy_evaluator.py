@@ -541,8 +541,8 @@ def _native_check_audit_fields(
 
     Args:
         action: Evaluated policy action.
-        native_check_tool_source: ``agent`` or ``mcp`` when this evaluation
-            is a native permission check, otherwise None.
+        native_check_tool_source: ``agent`` or ``mcp`` when this check will
+            allow an unapplied require-approval result, otherwise None.
         not_applied_reason: Why a require-approval result is not applied,
             or None when the evaluated action takes effect.
         extra_details: Details the evaluator would otherwise store.
@@ -576,7 +576,6 @@ def _evaluate_rule_candidates(
     default_approval_workflow_id: Optional[Any] = None,
     record: bool = True,
     trace: Optional[list[dict[str, Any]]] = None,
-    native_check_tool_source: Optional[str] = None,
 ) -> Optional[PolicyDecision]:
     for index, rule in enumerate(rules):
         is_enabled = (
@@ -629,31 +628,18 @@ def _evaluate_rule_candidates(
                 description or condition_expression or f"Scoped rule {index + 1}"
             )
             stored_source = _scoped_rule_stored_source(rule)
-            not_applied_reason = None
-            if native_check_tool_source and stored_source not in (
-                None,
-                "",
-                native_check_tool_source,
-            ):
-                not_applied_reason = f"rule_source_not_{native_check_tool_source}"
-            audit_action, audit_details = _native_check_audit_fields(
-                action=action,
-                native_check_tool_source=native_check_tool_source,
-                not_applied_reason=not_applied_reason,
-                extra_details=extra_details,
-            )
             if record:
                 _log_policy_decision_async(
                     account_id=account_id,
                     tool_name=tool_name,
-                    action=audit_action,
+                    action=action,
                     rule_description=rule_desc,
                     condition_matched=condition_expression,
                     tool_args=tool_args,
                     user_id=user_id,
                     execution_id=execution_id,
                     correlation_id=correlation_id,
-                    extra_details=audit_details,
+                    extra_details=extra_details,
                 )
             rule_context = None
             if action == "require_approval":
@@ -1838,10 +1824,12 @@ async def evaluate_policy_async(
     roots next to ``args`` for conditions (``pii.found``, ``pii.types_found``,
     ``pii.paths`` from the sensitive-data scan).
 
-    ``native_check_tool_source`` is set only by a native permission check
-    (``agent`` or ``mcp``). A require-approval result that check does not
-    apply is recorded as allow, with the evaluated result in details.
-    The returned decision is unchanged.
+    ``native_check_tool_source`` is set only when a native permission check
+    will allow the command without creating an approval. A legacy tool
+    workflow (a configuration that names a workflow and has no access
+    rules) is then recorded as allow, with the evaluated result in
+    details. Callers that still create an approval leave it unset, so
+    that row stays require_approval. The returned decision is unchanged.
     """
     writes: list[Callable[[Session], None]] = []
     denial_token = _record_policy_denials.set(record_denials)
@@ -1974,7 +1962,6 @@ async def evaluate_policy_async(
                 (tool_config.approval_workflow_id if tool_config else None)
                 or default_workflow_id_for_account
             ),
-            native_check_tool_source=native_check_tool_source,
         )
         if scoped_decision is not None:
             return scoped_decision

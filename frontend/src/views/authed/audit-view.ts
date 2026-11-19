@@ -2053,23 +2053,6 @@ export class AuditView extends AuthedElement {
       }
     }
 
-    // A native check that allows the command writes one policy row and no
-    // tool call, so that row is the group itself. Read it the same way as a
-    // policy sub-event when it carries an evaluated result that was not applied.
-    if (
-      !policySubevent &&
-      group.primary_event.action.startsWith('policy_') &&
-      group.primary_event.details?.evaluated_decision
-    ) {
-      policySubevent = {
-        id: group.primary_event.id,
-        action: group.primary_event.action,
-        status: group.primary_event.status,
-        details: group.primary_event.details,
-        timestamp: group.primary_event.timestamp,
-      };
-    }
-
     if (policySubevent) {
       const rd = policySubevent.details?.rule_description;
       const isNone =

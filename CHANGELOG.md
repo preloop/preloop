@@ -33,14 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A native permission check that evaluates "approval required" and then
-  allows the command records the allow that took effect. The audit row's
-  action and status are allow. The details keep what was evaluated
-  (`evaluated_decision`) and why it was not applied (`not_applied_reason`):
-  a tool that has an approval workflow but no access rules, or a rule stored
-  for a different tool source. A check that does ask for approval is recorded
-  as approval required, as before. Rows already in the log are left as they
-  are.
+- A pre-tool permission check that allows a command after evaluating a
+  tool approval workflow with no access rules records the allow that took
+  effect. The audit row's action and status are allow. The details keep
+  what was evaluated (`evaluated_decision`) and why it was not applied
+  (`not_applied_reason`). A permission request or permission prompt that
+  still asks for approval on that configuration is recorded as approval
+  required, as before. A subject-scoped rule stored for another tool
+  source is left out before evaluation, so it does not add an
+  approval-required row. Rows already in the log are left as they are.
 - A gateway request with zero tokens and no provider cost (a failed or
   cancelled upstream request) no longer pages admins about a missing catalog
   price or makes an execution's cost look partial. The budget pre-check no

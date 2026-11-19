@@ -2244,6 +2244,25 @@ describe('AuditView', () => {
     );
     expect(text).to.not.contain('required approval');
 
+    (element as any)._groups = [
+      {
+        correlation_id: 'corr-standalone',
+        outcome: 'allow',
+        primary_event: primary,
+        sub_events: [],
+      },
+    ];
+    await element.updateComplete;
+    (element.shadowRoot!.querySelector('.primary-row') as HTMLElement).click();
+    await element.updateComplete;
+    const standalone = (element.shadowRoot!.textContent || '').replace(
+      /\s+/g,
+      ' '
+    );
+    expect(standalone).to.contain('Allowed by policy: Bash');
+    expect(standalone).to.contain('Evaluated decision');
+    expect(standalone).to.not.contain('The check allowed the command');
+
     element.remove();
   });
 });
