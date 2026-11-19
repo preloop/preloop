@@ -1099,6 +1099,57 @@ credential and account storage-redaction rules still apply. JSONB-unsafe control
 and lone surrogates are removed before encoding; altered content sets `redacted`,
 `storage_redacted`, and `capture_complete: false`.
 
+Text redaction uses ruleset `2026-11-19`. Every new document stores that
+version in `redaction_ruleset`. An observation that matched a rule also stores
+`redactions`, a list of `{"rule": "<category>", "count": <n>}`. The category is
+a fixed name. It is not the matched text and not a hash of it. Documents
+already stored do not gain these fields; nothing rewrites them.
+
+A keyword rule masks `api_key`, `token`, `secret`, or `password` only when that
+word is the whole key or the key ends with it (`github_token`, `client_secret`),
+the `=` or `:` stays on the same line, and the value is a literal that looks
+like a credential. It does not mask a permission or boolean word (`write`,
+`read`, `none`, `true`, `false`, `null`), an empty value, a call, an attribute
+or subscript, a `$VAR` / `${VAR}` / `${{ ... }}` reference, a bare variable
+name, a type annotation, or a string joined with `+`. A quote that closes
+the string containing the key is left, as in
+`'https://x-access-token:' + token`, and so is a value whose text is an
+operator and an identifier or dotted name (`obj.attr`, `self.token`). A value that starts with a placeholder
+(`{name}`, `{{ name }}`, `%s`, `%(name)s`, `<name>`) is left. A quoted
+literal is masked, including a short password such as `"hunter2"` or
+`"changeme"`. A bare `password: hunter2` or `secret: hunter2` is masked
+because the value has a letter and a digit; that also masks
+`password = sha256`, which has the same shape. A bare `token: hunter2` or
+`api_key: hunter2` is left as written, because a short unquoted word after
+`token` is usually a name. An unquoted single-case word with no digit, such
+as `password: changeme`, is left as written, unless the key is upper case
+and glued to `=` with no spaces (`PASSWORD=opensesame`,
+`DB_PASSWORD=correcthorsebatterystaple`). A bare hex value of 24 or more
+characters is masked (`token=deadbeefcafebabedeadbeefcafebabe`). A call such
+as `connect(user=user, password=password)` is left. A longer bare literal is
+masked from 16 characters when it mixes two of lowercase, uppercase, and
+digits, or from 20 characters when it contains a digit.
+
+Other rules do not need that keyword. They mask a PEM private key, a bearer
+token, an `sk-` key (including `sk-proj-` and `sk-ant-`), a GitHub
+`ghp_` / `gho_` / `ghu_` / `ghs_` / `ghr_` token, a GitHub fine-grained
+`github_pat_`, a GitLab `glpat-`, a JWT (`eyJ` plus two further segments), an
+AWS access key id (`AKIA`, `ASIA`, `AIDA`, `AROA`), a Slack
+`xoxb` / `xoxa` / `xoxp` / `xoxr` / `xoxs` token, a Preloop `preloop_`, `ci_`,
+`agt_`, `enr_`, or `whsec_` key, and a Preloop `flow_` run token. The category
+names are `private_key`, `authorization_bearer`, `bearer_token`,
+`keyword_assignment`, `sk_key`, `github_token`, `github_fine_grained_pat`,
+`gitlab_pat`, `jwt`, `aws_access_key_id`, `slack_token`, `preloop_key`,
+`preloop_run_token`, and `sensitive_field` (a structured key such as
+`password` whose whole value is replaced).
+
+On a gateway tool observation, a real match still sets `redacted`,
+`storage_redacted`, and `capture_complete: false`. Ordinary source that
+matches none of these stays byte for byte, with `capture_complete: true`
+and `storage_redacted: false`. A native command observation records the
+same rule facts when its text matches. Its completeness stays the existing
+size and JSONB check.
+
 Each record's `sha256` hashes its `document` encoded as compact JSON with sorted
 keys, UTF-8, `ensure_ascii=false`, and no nonfinite numbers. Execution and gateway
 usage IDs are inside that document. `page_sha256` hashes the returned `records`
@@ -1703,7 +1754,7 @@ optional; send the ones you want enforced:
 | `expected_head_sha` | Full commit SHA (40 or 64 hex characters, any case). Equals the head the execution is bound to **and** the live head of the pull request. |
 | `expected_base_sha` | Full commit SHA. Equals the bound base, when the binding records one, **and** the live base of the pull request. |
 | `expected_result_sha256` | 64 hex characters. Equals the digest of the stored result (below). |
-| `expected_flow_revision` | Positive integer. Equals the flow's current configuration `revision`. Send the execution's `flow_revision` to refuse posting if the flow was changed after this run started: posting reads the flow (verdict mapping, review actions, status) at post time. |
+| `expected_flow_revision` | Positive integer. The integer you send is compared with the flow's configuration `revision` at publish time. The execution's `flow_revision` is the revision from when the run was created; send it to refuse the post after a later configuration change. Posting reads the flow (verdict mapping, review actions, status) at post time. See [What must still be in place when you publish](#what-must-still-be-in-place-when-you-publish). |
 
 Each supplied precondition is checked before anything is posted, again on
 the flow and execution as they are read for the post, and the commit SHAs
@@ -1796,10 +1847,13 @@ status=$(curl -sS -o posted.json -w '%{http_code}' -X POST -H "$AUTH" \
   -H "Content-Type: application/json" --data @preconditions.json \
   "$API/platform-review")
 
-# 4. 200: posted (or already posted). 412: something changed; nothing was
-#    posted. detail.failed says what, with the current value.
+# 4. Read a 200 from the body. platform_review.status posted (or
+#    status_only) means the review is on the pull request. status failed
+#    and reason admission_revoked means nothing was posted. 412: a
+#    precondition did not hold; nothing was posted. detail.failed says
+#    what, with the current value.
 case "$status" in
-  200) jq '.platform_review | {status, posted_by, review_id}' posted.json ;;
+  200) jq '.platform_review | {status, reason, posted_by, review_id}' posted.json ;;
   412) jq '.detail.failed' posted.json; exit 1 ;;
   *) cat posted.json; exit 1 ;;
 esac
@@ -1812,7 +1866,91 @@ whose result is not valid, whose binding or inspection check failed, or whose
 identity was disabled is never published by this call either. Without
 `expected_head_sha`, a head that moved while the review ran still gets the
 status on the reviewed commit and no review (`review_reason:
-"head_moved"`); with it, the call answers 412 and posts nothing.
+"head_moved"`); with it, the call answers 412 and posts nothing. What must
+still be in place, and how the call refuses when it is not, is in
+[What must still be in place when you publish](#what-must-still-be-in-place-when-you-publish).
+
+#### What must still be in place when you publish
+
+The publish call reads the flow and the CI identity that triggered the run
+as they are when you publish. The execution does not store the posting mode
+from when the run started.
+
+At publish time the call reads:
+
+- the flow's current posting mode (off answers 409
+  `platform_review_disabled`, and that refusal writes no
+  `platform_review_publish` audit row);
+- the flow's current configuration revision, when you send
+  `expected_flow_revision`;
+- whether the flow is enabled;
+- whether the triggering identity is still active, still bound to the same
+  flow and project with the same provisioning snapshot, and still holds
+  `flow:trigger` or `execution:review:publish`.
+
+That identity check applies to every caller that reaches publication,
+including an account user. Revoking the identity's key stops requests that
+present the key. An account user who may edit flows can still publish.
+Disabling the identity stops the publish, and you can enable it again while
+it is still bound to the flow. Retiring the identity stops the publish, and
+retirement cannot be undone. A different identity, including one you
+provision afterwards, does not own the execution, so its publish call
+answers 404.
+
+`expected_flow_revision` is the integer in your request, compared with the
+flow's configuration revision at publish time. `flow_revision` on the
+execution is the revision from when the run was created. Sending that
+recorded value refuses the post once a later configuration change has moved
+the flow's revision. A change to the flow's configuration moves the
+revision. Turning posting on, switching between automatic and manual, and
+enabling or disabling the flow are configuration changes. A save that
+writes the values already stored leaves the revision unchanged.
+
+To use `expected_flow_revision` as a check that the flow is unchanged since
+the run, configure posting before you trigger, and send the execution's
+`flow_revision`. A run that finished while posting was off cannot be
+published with `expected_flow_revision` set to that execution's
+`flow_revision`. Turning posting on moves the revision, so the call answers
+412. Publish that run by omitting `expected_flow_revision`, or by sending
+the flow's revision from after the save that turned posting on.
+
+Configure posting (manual or automatic) and leave the flow enabled, then
+trigger, then validate, then publish. Retire the identity or disable the
+flow only after that publish has succeeded.
+
+A finished run whose triggering identity has been retired cannot be
+published; run the review again with posting configured first.
+
+The identity's provisioning binding (project, flow and snapshot) produces
+`admission_revoked`. A live pull request whose id, repository id or name no
+longer matches the execution's binding produces `binding_changed`. Both
+answer HTTP 200. Read `platform_review.status` and `platform_review.reason`.
+
+| Situation | Response |
+| --- | --- |
+| Posting is off | 409, `detail.code` `platform_review_disabled`. No `platform_review_publish` audit row. |
+| The run has not finished, or it has no review binding | 409, `detail.code` `execution_not_finished` or `no_review_binding`. |
+| The body is not an object, names an unknown field, or a value is malformed | 400, `detail.code` `review_precondition_malformed`. `detail.precondition` names the member. |
+| A stored precondition does not match | 412, `detail.code` `review_precondition_failed`. Audit action `platform_review_publish`, status `denied`. Nothing is posted. |
+| Posting is still on, and the caller reached publication. The triggering identity is retired or disabled, its provisioning snapshot no longer matches, its grant holds neither `flow:trigger` nor `execution:review:publish`, or the flow is disabled | HTTP **200**. Read the body: `platform_review.status` is `failed` and `platform_review.reason` is `admission_revoked`. Audit action `platform_review_publish`, status `failure`. |
+| The live pull request's id, repository id or name no longer matches the execution's binding | HTTP **200**. `platform_review.status` is `failed` and `platform_review.reason` is `binding_changed`. Audit status `failure`. |
+| The flow's posting settings no longer validate, for example result validation was turned off | HTTP **200**. `platform_review.status` is `failed` and `platform_review.reason` is `configuration_invalid`. Audit status `failure`. |
+| The repository's tracker is missing or is no longer a supported GitHub App | HTTP **200**. `platform_review.status` is `failed` and `platform_review.reason` is `tracker_unsupported`. Audit status `failure`. |
+| A CI identity publishes an execution it did not trigger | 404. |
+| A CI credential calls while its flow is disabled | 401, `{"detail": "Restricted CI authorization denied"}`. The publish call does not run. |
+
+Disabling the flow moves the configuration revision. A publish that also
+sends the execution's `flow_revision` then answers 412, and the admission
+check does not run. The 200 body above is the answer when `expected_flow_revision`
+is omitted or equals the revision after the disable. Retiring the identity
+leaves the flow's revision unchanged, so the same precondition still holds
+and the answer is the 200 body.
+
+A CI credential whose identity is inactive, or whose key is revoked, is
+refused before publication with the same 401 detail. When the key is valid
+and the flow is enabled, but the key does not hold
+`execution:review:publish`, the detail text is the same and the status is
+403.
 
 ### Worked example: one flow for an organisation, two repositories
 

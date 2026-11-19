@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -33,36 +34,352 @@ from preloop.utils.request_fingerprint import public_request_fingerprint
 
 logger = logging.getLogger(__name__)
 _REDACTED_TEXT = "***REDACTED***"
-_SENSITIVE_TEXT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+# Bump when a rule starts or stops masking a shape. Stored records keep the
+# version they were written with; they are not rewritten.
+REDACTION_RULESET = "2026-11-19"
+REDACTION_RULE_ORDER: tuple[str, ...] = (
+    "private_key",
+    "authorization_bearer",
+    "bearer_token",
+    "keyword_assignment",
+    "sk_key",
+    "github_token",
+    "github_fine_grained_pat",
+    "gitlab_pat",
+    "jwt",
+    "aws_access_key_id",
+    "slack_token",
+    "preloop_key",
+    "preloop_run_token",
+    "sensitive_field",
+)
+_ENUM_WORDS = frozenset({"write", "read", "none", "true", "false", "null"})
+_REDACTION_MARKERS = frozenset({_REDACTED_TEXT, "[REDACTED]"})
+_BARE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DOTTED_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$")
+# A value that starts with one of these is a format reference, not a literal.
+_PLACEHOLDER = re.compile(
+    r"^(?:\{\{[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\}\}"
+    r"|\{[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\}"
+    r"|%\([A-Za-z_][A-Za-z0-9_]*\)s"
+    r"|%s"
+    r"|<[A-Za-z_][A-Za-z0-9_]*>)"
+)
+# Inner text of a quote that closed the string holding the key:
+# `+ token`, `+ obj.attr +`, `+ self.token +`.
+_DOTTED_NAME = r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+_OPERATOR_IDENT = re.compile(
+    rf"^[+\-*/%&|^]+[ \t]*{_DOTTED_NAME}"
+    rf"(?:[ \t]*[+\-*/%&|^]+[ \t]*{_DOTTED_NAME})*"
+    r"[ \t]*[+\-*/%&|^]*$"
+)
+_HEX_LITERAL = re.compile(r"^[0-9a-fA-F]{24,}$")
+# Horizontal whitespace only, so `token:` at the end of a line cannot consume
+# the next line. The key is the keyword itself or a key that ends in it
+# (`github_token`, `client_secret`, `x-api-key`), not a longer camel-case word.
+_KEYWORD_ASSIGNMENT = re.compile(
+    r"(?i)(?<![A-Za-z0-9])"
+    r"(?P<prefix>"
+    r"(?P<q>[\"']?)"
+    r"(?P<key>(?:[A-Za-z0-9]+[_-]){0,8}"
+    r"(?:api[_-]?key|token|secret|password))"
+    r"(?P=q)"
+    r"[ \t]*[=:][ \t]*"
+    r")"
+    # A finished quoted literal is one value even when `+` follows it.
+    # The `+` exclusion is only on the bare alternative, so
+    # `password = "changeme" + suffix` still masks the literal, while
+    # `'...token:' + name` is not treated as a bare partial token.
+    r"(?P<value>\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'"
+    r"|[^\s,;&]+(?![ \t]*\+))"
+)
+# token_urlsafe bodies contain an uppercase letter or a digit. The lookahead
+# stops at the token so a following word cannot satisfy it. Lengths match
+# token_urlsafe(24) (32 chars) and token_urlsafe(32) (43 chars).
+_TOKEN_BODY = r"(?=[A-Za-z0-9_-]*[A-Z0-9][A-Za-z0-9_-]*\b)"
+_TextReplacement = str | Callable[[re.Match[str]], str]
+
+
+def _keyword_family(key: str) -> str:
+    """Return which secret keyword a matched key ends with."""
+    lowered = key.lower().replace("-", "_")
+    for name in ("api_key", "password", "secret", "token"):
+        if lowered == name or lowered.endswith("_" + name):
+            return name
+    if lowered.endswith("apikey"):
+        return "api_key"
+    return ""
+
+
+def _unquote_assignment(value: str) -> tuple[str, bool]:
+    """Split one matched value into its inner text and whether it was quoted."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1], True
+    return value, False
+
+
+def _is_expression(text: str) -> bool:
+    """True when the value is code or a reference, not a credential literal."""
+    if text.startswith("$") or "${" in text:
+        return True
+    if _PLACEHOLDER.match(text):
+        return True
+    if text.startswith(("os.environ", "process.env")):
+        return True
+    if "(" in text or "[" in text:
+        return True
+    if _DOTTED_IDENT.match(text) and not any(char.isdigit() for char in text):
+        return True
+    return "://" in text
+
+
+def _upper_env_key(key: str) -> bool:
+    """True when every letter in the key is uppercase, as in ``DB_PASSWORD``."""
+    letters = [char for char in key if char.isalpha()]
+    return bool(letters) and all(char.isupper() for char in letters)
+
+
+def _tight_env_equals(match: re.Match[str]) -> bool:
+    """True when the key is glued to ``=`` with no spaces, as in a ``.env`` line."""
+    key = match.group("key")
+    quote = match.group("q") or ""
+    return match.group("prefix") == f"{quote}{key}{quote}="
+
+
+def _replaced_span_is_marker(match: re.Match[str]) -> bool:
+    """True when the rule would only rewrite an existing redaction marker.
+
+    A second pass over ``Authorization: Bearer [REDACTED]`` must not count
+    as another secret. A prefix group, when the pattern keeps one, is the
+    label; the rest of the match is the value.
+    """
+    text = match.group(0)
+    prefix = ""
+    if match.lastindex:
+        first = match.group(1)
+        if isinstance(first, str) and text.startswith(first) and len(first) < len(text):
+            prefix = first
+    secret = text[len(prefix) :].strip().strip("\"'")
+    return secret in _REDACTION_MARKERS
+
+
+def _credential_shape(text: str) -> bool:
+    """True when a bare literal is long enough and mixed enough to mask.
+
+    Sixteen characters and two of lowercase, uppercase, and digits is the
+    floor for an unquoted API-key-like literal. A 20-character value that
+    also contains a digit covers a long single-case token. A single-case
+    phrase with no digit is left alone: it is the same shape as a variable
+    name, and a quoted literal is masked instead.
+    """
+    has_lower = any(char.islower() for char in text)
+    has_upper = any(char.isupper() for char in text)
+    has_digit = any(char.isdigit() for char in text)
+    classes = sum((has_lower, has_upper, has_digit))
+    if len(text) >= 16 and classes >= 2:
+        return True
+    return len(text) >= 20 and has_digit
+
+
+def _short_password(family: str, text: str) -> bool:
+    """True for a bare ``password: hunter2`` style value.
+
+    Limited to ``password`` and ``secret`` keys. The value needs a letter and
+    a digit and at least six characters, which masks ``hunter2`` and also
+    ``sha256`` when it is assigned to ``password``. The same token after
+    ``token`` stays visible, because that is usually a function name.
+    """
+    if family not in {"password", "secret"}:
+        return False
+    if not 6 <= len(text) <= 128:
+        return False
+    has_letter = any(char.isalpha() for char in text)
+    has_digit = any(char.isdigit() for char in text)
+    return has_letter and has_digit
+
+
+def _assignment_is_secret(match: re.Match[str]) -> bool:
+    """True when an assignment value should be replaced."""
+    key = match.group("key")
+    raw_value = match.group("value")
+    inner, quoted = _unquote_assignment(raw_value)
+    body = inner.strip()
+    if body == "" or body in _REDACTION_MARKERS or raw_value in _REDACTION_MARKERS:
+        return False
+    if body.lower() in _ENUM_WORDS:
+        return False
+    if _is_expression(body):
+        return False
+    # `+ name` is source that a closing quote pulled into the value, as in
+    # `'https://x-access-token:' + token`. Quote parity is not used: an
+    # apostrophe in a word (`don't`) would hide a real `'hunter2'`.
+    if _OPERATOR_IDENT.match(body):
+        return False
+    family = _keyword_family(key)
+    # A quoted literal was written as a value. Mask it, including a short
+    # human password. The enumerated words above are the exception.
+    if quoted:
+        return True
+    # `.env` form: PASSWORD=opensesame. Upper-case key, `=` with no spaces,
+    # and any value that is not an expression. A lower-case `password=name`
+    # inside a call stays visible.
+    if _upper_env_key(key) and _tight_env_equals(match):
+        return True
+    if _HEX_LITERAL.match(body):
+        return True
+    if _BARE_IDENT.match(body):
+        if _short_password(family, body):
+            return True
+        return (
+            len(body) >= 16
+            and any(char.isdigit() for char in body)
+            and any(char.isalpha() for char in body)
+        )
+    return _credential_shape(body) or _short_password(family, body)
+
+
+def _redact_assignment(match: re.Match[str]) -> str:
+    """Replace a credential assignment and keep the key and the quotes."""
+    raw_value = match.group("value")
+    if not _assignment_is_secret(match):
+        return match.group(0)
+    if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in "\"'":
+        quote = raw_value[0]
+        return f"{match.group('prefix')}{quote}{_REDACTED_TEXT}{quote}"
+    return f"{match.group('prefix')}{_REDACTED_TEXT}"
+
+
+_TEXT_RULES: tuple[tuple[str, re.Pattern[str], _TextReplacement], ...] = (
     (
+        "private_key",
         re.compile(
-            r"(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----"
+            r"(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----"
+            r".*?-----END [A-Z ]*PRIVATE KEY-----"
         ),
         _REDACTED_TEXT,
     ),
     (
+        "authorization_bearer",
         re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+"),
         rf"\1{_REDACTED_TEXT}",
     ),
     (
+        "bearer_token",
         re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}\b"),
         rf"\1 {_REDACTED_TEXT}",
     ),
+    ("keyword_assignment", _KEYWORD_ASSIGNMENT, _redact_assignment),
+    # sk-proj- and sk-ant- use this same prefix, so they need no extra rule.
+    ("sk_key", re.compile(r"\bsk-[A-Za-z0-9_-]{10,}\b"), _REDACTED_TEXT),
     (
-        re.compile(
-            r"(?i)\b((?:api[_-]?key|token|secret|password)\s*[=:]\s*)([^\s,;]+)"
-        ),
-        rf"\1{_REDACTED_TEXT}",
-    ),
-    (
-        re.compile(r"\bsk-[A-Za-z0-9_-]{10,}\b"),
-        _REDACTED_TEXT,
-    ),
-    (
+        "github_token",
         re.compile(r"\bgh[pousr]_[A-Za-z0-9]{10,}\b"),
         _REDACTED_TEXT,
     ),
+    (
+        "github_fine_grained_pat",
+        re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+        _REDACTED_TEXT,
+    ),
+    (
+        "gitlab_pat",
+        re.compile(r"\bglpat-[A-Za-z0-9_-]{16,}\b"),
+        _REDACTED_TEXT,
+    ),
+    (
+        "jwt",
+        re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+        _REDACTED_TEXT,
+    ),
+    (
+        "aws_access_key_id",
+        re.compile(r"\b(?:AKIA|ASIA|AIDA|AROA)[A-Z0-9]{16}\b"),
+        _REDACTED_TEXT,
+    ),
+    (
+        "slack_token",
+        re.compile(r"\bxox[baprs]-[0-9]{8,}-[0-9]{8,}-[A-Za-z0-9]{16,}\b"),
+        _REDACTED_TEXT,
+    ),
+    (
+        "preloop_key",
+        re.compile(
+            rf"\b(?:preloop_{_TOKEN_BODY}[A-Za-z0-9_-]{{32,}}"
+            rf"|(?:ci|agt|enr|whsec)_{_TOKEN_BODY}[A-Za-z0-9_-]{{43}})\b"
+        ),
+        _REDACTED_TEXT,
+    ),
+    (
+        "preloop_run_token",
+        re.compile(rf"\bflow_{_TOKEN_BODY}[A-Za-z0-9_-]{{43}}\b"),
+        _REDACTED_TEXT,
+    ),
 )
+
+
+def redact_sensitive_text(value: str) -> tuple[str, list[dict[str, Any]]]:
+    """Mask credential-shaped text and report which rules fired.
+
+    Args:
+        value: Tool text, gateway content, or any other string.
+
+    Returns:
+        The masked text and one ``{"rule", "count"}`` entry per rule that
+        replaced something, in rule order. Counts are replacements, not
+        characters. Names are fixed categories and do not contain the text
+        that was masked.
+    """
+    counts: dict[str, int] = {}
+    redacted = value
+    for name, pattern, replacement in _TEXT_RULES:
+        hits = 0
+
+        def replace(
+            match: re.Match[str],
+            replacement: _TextReplacement = replacement,
+        ) -> str:
+            nonlocal hits
+            updated = (
+                replacement(match)
+                if callable(replacement)
+                else match.expand(replacement)
+            )
+            if updated != match.group(0) and not _replaced_span_is_marker(match):
+                hits += 1
+            return updated
+
+        redacted = pattern.sub(replace, redacted)
+        if hits:
+            counts[name] = hits
+    facts = [
+        {"rule": name, "count": counts[name]}
+        for name, _, _ in _TEXT_RULES
+        if name in counts
+    ]
+    return redacted, facts
+
+
+def merge_redactions(
+    *groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Add rule counts and return them in the fixed category order."""
+    totals: dict[str, int] = {}
+    for group in groups:
+        for item in group:
+            rule = str(item["rule"])
+            totals[rule] = totals.get(rule, 0) + int(item["count"])
+    ordered = [
+        {"rule": name, "count": totals[name]}
+        for name in REDACTION_RULE_ORDER
+        if name in totals
+    ]
+    extras = [
+        {"rule": name, "count": totals[name]}
+        for name in totals
+        if name not in REDACTION_RULE_ORDER
+    ]
+    return ordered + extras
+
 
 crud_flow_execution = CRUDFlowExecution()
 crud_runtime_session_activity = CRUDRuntimeSessionActivity(RuntimeSessionActivity)
@@ -466,7 +783,7 @@ class ModelGatewayEventEmitter:
         activity row untouched. Reusing the emitter's patterns here keeps one
         definition of "sensitive" for the whole event.
         """
-        redacted, _ = ModelGatewayEventEmitter._redact_sensitive_text(value)
+        redacted, _facts = redact_sensitive_text(value)
         return redacted
 
     def _resolve_managed_agent_id(
@@ -920,14 +1237,9 @@ class ModelGatewayEventEmitter:
 
     @staticmethod
     def _redact_sensitive_text(value: str) -> tuple[str, bool]:
-        redacted = value
-        changed = False
-        for pattern, replacement in _SENSITIVE_TEXT_PATTERNS:
-            updated = pattern.sub(replacement, redacted)
-            if updated != redacted:
-                changed = True
-                redacted = updated
-        return redacted, changed
+        """Return masked text and whether any rule replaced a span."""
+        redacted, facts = redact_sensitive_text(value)
+        return redacted, bool(facts)
 
     @staticmethod
     def _truncate_text_with_meta(value: str) -> tuple[str, bool]:

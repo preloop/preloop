@@ -68,6 +68,14 @@ class TestIssue173Samples:
         assert GITLAB_PAT not in scrubbed
         assert "oauth2" in scrubbed, "username is not a secret and aids debugging"
 
+    def test_placeholder_userinfo_is_kept(self) -> None:
+        line = 'f"https://x-access-token:{token}@github.com/Org/repo.git"'
+        assert scrub_secrets(line) == line
+        assert (
+            scrub_secrets("https://user:{token}@github.com/org/repo.git")
+            == "https://user:{token}@github.com/org/repo.git"
+        )
+
     def test_credential_helper_user_is_kept(self) -> None:
         line = f"https://x-access-token:{GITHUB_PAT}@github.com/acme/private.git"
         scrubbed = scrub_secrets(line)
@@ -247,6 +255,10 @@ class TestQueryParameterSecrets:
         scrubbed = scrub_secrets(line)
         assert secret not in scrubbed
         assert "?api_key=[REDACTED]" in scrubbed
+
+    def test_placeholder_query_value_is_kept(self) -> None:
+        line = "https://example.com/cb?access_token=${TOKEN}&x=1"
+        assert scrub_secrets(line) == line
 
     def test_access_token_query_param(self) -> None:
         token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret"

@@ -142,8 +142,9 @@ comments, the same review is sent once more without them.
 
 Repository, pull request number and head SHA come from the execution's own
 `ci_review_binding`, written by the controller when the trigger was accepted.
-They never come from the result, the prompt, the flow text or the caller: the
-publish endpoint has no request body.
+They never come from the result, the prompt, the flow text or the caller.
+The request body cannot name the repository, pull request or commit; it
+carries only optional preconditions.
 
 Before any write the step re-runs the dispatch authorization of the
 execution's own identity (`authorize_dispatch`): the identity is active, its
@@ -152,6 +153,10 @@ provisioning snapshot still matches the flow, and its grant still holds
 `flow:trigger` or `execution:review:publish`. It then reads the pull request
 and requires the provider's pull request id, repository id and repository
 name to equal the binding.
+
+What must still be in place for that check, and the response for each
+refusal, is in the user guide:
+[What must still be in place when you publish](../guide/flows/restricted-ci.md#what-must-still-be-in-place-when-you-publish).
 
 In a shared flow, execution A cannot post on project B: A's binding names A's
 project, the lease is minted for A's repository only, and GitHub enforces the
