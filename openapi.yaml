@@ -38615,6 +38615,49 @@ components:
       - original_execution_id
       title: ExecutionContinuationNavigation
       description: Navigation shared by a publisher and its review/CI continuations.
+    ExecutionEffectiveRequest:
+      properties:
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider
+        reasoning_effort:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reasoning Effort
+          description: Reasoning effort sent to the provider; null when none was sent
+            and the provider used its own default.
+        max_output_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Output Tokens
+        request_count:
+          type: integer
+          title: Request Count
+        upstream_parameters:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Upstream Parameters
+        upstream_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Upstream Provider
+      type: object
+      required:
+      - request_count
+      title: ExecutionEffectiveRequest
+      description: Controls that reached the model provider, grouped across requests.
     ExecutionFollowUp:
       properties:
         id:
@@ -41409,6 +41452,16 @@ components:
           - type: 'null'
           description: Upstream providers recorded for this execution's model requests.
             Set on the execution detail read; null in lists.
+        effective_requests:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ExecutionEffectiveRequest'
+            type: array
+          - type: 'null'
+          title: Effective Requests
+          description: What reached the model provider for this execution's recorded
+            requests (model, reasoning effort, output cap), grouped. Set on the execution
+            detail read; null in lists.
         park:
           anyOf:
           - $ref: '#/components/schemas/ExecutionPark'
@@ -59619,7 +59672,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

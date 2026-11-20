@@ -447,6 +447,24 @@ class ExecutionUpstreamRoute(BaseModel):
     )
 
 
+class ExecutionEffectiveRequest(BaseModel):
+    """Controls that reached the model provider, grouped across requests."""
+
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    reasoning_effort: Optional[str] = Field(
+        None,
+        description=(
+            "Reasoning effort sent to the provider; null when none was sent "
+            "and the provider used its own default."
+        ),
+    )
+    max_output_tokens: Optional[int] = None
+    request_count: int
+    upstream_parameters: Optional[Dict[str, Any]] = None
+    upstream_provider: Optional[str] = None
+
+
 class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
     pull_request: Optional[ExecutionPullRequest] = None
     runtime_session_id: Optional[str] = Field(
@@ -471,6 +489,14 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
         description=(
             "Upstream providers recorded for this execution's model requests. "
             "Set on the execution detail read; null in lists."
+        ),
+    )
+    effective_requests: Optional[List[ExecutionEffectiveRequest]] = Field(
+        None,
+        description=(
+            "What reached the model provider for this execution's recorded "
+            "requests (model, reasoning effort, output cap), grouped. Set on "
+            "the execution detail read; null in lists."
         ),
     )
     park: Optional[ExecutionPark] = Field(

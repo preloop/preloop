@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A flow can set `agent_config.reasoning_effort` (`low`, `medium` or `high`)
+  to change how hard its model thinks, without label rules. A label rule
+  that sets an effort still wins. For DeepSeek models, the gateway now sends
+  the effort as DeepSeek's documented `reasoning_effort` field. The execution
+  detail now includes `effective_requests`, which shows the effort that
+  actually reached the provider. Nothing changes for flows that set no
+  effort.
+
 ### Security
 
 - The console and installer TLS proxy use NGINX 1.30.7 to address HTTP/2

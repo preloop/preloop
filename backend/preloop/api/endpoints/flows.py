@@ -1667,8 +1667,46 @@ def read_flow_execution(
     execution.upstream_route = _execution_upstream_route(
         db, execution, account_id=current_user.account_id
     )
+    execution.effective_requests = _execution_effective_requests(
+        db, execution, account_id=current_user.account_id
+    )
 
     return execution
+
+
+def _execution_effective_requests(
+    db: Session, execution: Any, *, account_id: Any
+) -> Optional[List[Dict[str, Any]]]:
+    """What this execution's recorded model requests sent to the provider.
+
+    Lets the owning account check, for example, that a configured reasoning
+    effort reached the provider.
+
+    Args:
+        db: Database session.
+        execution: Execution already authorized for ``account_id``.
+        account_id: Caller's account, enforced again by the query.
+
+    Returns:
+        Grouped effective controls, or None when no request was recorded.
+    """
+    from preloop.services.review_completion_evidence import (
+        effective_requests_projection,
+    )
+
+    try:
+        requests = crud_api_usage.review_request_facts(
+            db, execution_id=execution.id, account_id=account_id
+        )
+    except Exception:  # noqa: BLE001 - a missing summary must not fail the read
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Effective request summary failed for %s", execution.id
+        )
+        db.rollback()
+        return None
+    return effective_requests_projection(requests) or None
 
 
 def _execution_upstream_route(
