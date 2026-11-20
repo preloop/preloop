@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A posted review shows a finding's line range (`path:23-25`), not only
+  the first line.
 - A review posted by Preloop includes the finding text the validated result
   actually holds. Besides `title`, `body` (`description`, `message`,
   `detail`), `path` (`file`) and `line`, the review shows `problem`,
