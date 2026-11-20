@@ -1821,7 +1821,10 @@ null when the last attempt did not fail a read-back. It is one of
 `review_absent`, `review_actor`, `review_commit`, `review_state`,
 `review_body`, `status_absent`, `status_state`, `status_context` and
 `status_target_url`. The log line for the attempt carries the execution id
-and that value, and neither carries the review text.
+and that value, and neither carries the review text. A record written
+before this field existed can show `readback_check` null with `reason`
+`readback_mismatch`. The publish call still reads the recorded ids and does
+not mark that record posted without the comparison.
 
 | `reason` | What it means | What to do |
 | --- | --- | --- |

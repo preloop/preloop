@@ -2211,9 +2211,14 @@ async def _publish_claimed(
     # Re-read ids only while a read-back comparison is still open. A review
     # or status that was already confirmed stays as recorded, so a later
     # status does not request pull requests and a later review does not
-    # request statuses. The claim clears ``reason``; ``readback_check`` is
-    # what says the read is still owed. That pass never creates.
-    owed = bool(row.readback_check)
+    # request statuses. ``readback_check`` names the comparison. A row
+    # recorded before that column existed keeps ``readback_mismatch`` or
+    # ``readback_pending`` in ``reason`` (the claim does not clear those),
+    # and that is enough to owe the read. The pass never creates.
+    owed = bool(row.readback_check) or row.reason in {
+        "readback_mismatch",
+        "readback_pending",
+    }
     confirm_review = (
         owed
         and not want_review

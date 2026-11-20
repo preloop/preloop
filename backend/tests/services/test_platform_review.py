@@ -2915,3 +2915,78 @@ async def test_explicit_repair_of_a_different_body_stays_failed(
     assert again is not None and again["reason"] == "readback_mismatch"
     assert again["readback_check"] == "review_body"
     assert _provider_creates(world.github) == created
+
+
+def _legacy_mismatch(world: SimpleNamespace, execution: Any) -> None:
+    """A mismatch recorded before ``readback_check`` existed."""
+    store = crud.crud_platform_review_publication
+    row = store.get_for_execution(world.db, execution_id=execution.id)
+    store.record(
+        world.db,
+        row=row,
+        state="failed",
+        reason="readback_mismatch",
+        retryable=False,
+        posted_at=None,
+        next_attempt_at=None,
+        readback_check=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_mismatch_without_a_check_is_verified_when_it_matches(
+    world: SimpleNamespace,
+) -> None:
+    """A pre-change mismatch row has no readback_check and must still be read."""
+    project = world.projects[0]
+    execution = finished(world, identity(world, project))
+    posted = await publish(world, execution)
+    assert posted is not None and posted["status"] == "posted"
+    _legacy_mismatch(world, execution)
+    created = _provider_creates(world.github)
+    seen = len(world.github.calls)
+    repaired = await publish(world, execution, explicit=True)
+    fresh = world.github.calls[seen:]
+    assert any(method == "GET" and "/reviews/" in path for method, path in fresh)
+    assert any(method == "GET" and path.endswith("/statuses") for method, path in fresh)
+    assert repaired is not None and repaired["status"] == "posted"
+    assert repaired["posted_at"] is not None
+    assert repaired["readback_check"] is None
+    assert _provider_creates(world.github) == created
+
+
+@pytest.mark.asyncio
+async def test_legacy_mismatch_with_a_different_body_stays_failed(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    execution = finished(world, identity(world, project))
+    await publish(world, execution)
+    world.github.reviews[(project.slug, 7)][0]["body"] = "different"
+    _legacy_mismatch(world, execution)
+    created = _provider_creates(world.github)
+    repaired = await publish(world, execution, explicit=True)
+    assert repaired is not None
+    assert repaired["status"] == "failed"
+    assert repaired["reason"] == "readback_mismatch"
+    assert repaired["readback_check"] == "review_body"
+    assert _provider_creates(world.github) == created
+
+
+@pytest.mark.asyncio
+async def test_legacy_mismatch_whose_review_is_missing_is_not_posted(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    execution = finished(world, identity(world, project))
+    await publish(world, execution)
+    _legacy_mismatch(world, execution)
+    store = crud.crud_platform_review_publication
+    row = store.get_for_execution(world.db, execution_id=execution.id)
+    store.record(world.db, row=row, review_id="424242")
+    created = _provider_creates(world.github)
+    repaired = await publish(world, execution, explicit=True)
+    assert repaired is not None
+    assert repaired["status"] != "posted"
+    assert repaired["posted_at"] is None
+    assert _provider_creates(world.github) == created

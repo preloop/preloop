@@ -254,7 +254,9 @@ does not call a create endpoint. A `readback_mismatch` row that already
 holds an id is not swept. An explicit publish call (a person, or an identity
 with `execution:review:publish`) runs the same verification. A match
 completes the record as posted. A present difference stays failed and names
-the check.
+the check. A mismatch recorded before `readback_check` existed has a null
+check. The claim keeps that reason, and the explicit call still reads the
+ids rather than marking the row posted.
 
 ## Posting modes and caller preconditions
 

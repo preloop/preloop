@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import DateTime, cast, func, or_
+from sqlalchemy import DateTime, case, cast, func, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -153,7 +153,19 @@ class CRUDPlatformReviewPublication:
                         model.state: STATE_PUBLISHING,
                         model.claimed_at: now,
                         model.attempts: model.attempts + 1,
-                        model.reason: None,
+                        # A read-back reason is the only record a row from
+                        # before readback_check has that the attempt must
+                        # re-read and must not mark the row posted. Any other
+                        # reason is cleared for the attempt.
+                        model.reason: case(
+                            (
+                                model.reason.in_(
+                                    ("readback_mismatch", "readback_pending")
+                                ),
+                                model.reason,
+                            ),
+                            else_=None,
+                        ),
                         model.retryable: False,
                         model.next_attempt_at: None,
                     },
