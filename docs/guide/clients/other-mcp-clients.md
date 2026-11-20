@@ -46,7 +46,7 @@ preloop usage import cursor-usage.csv
 
 Imported records show up in Cost analytics as their own block, labeled as imported and kept out of gateway budgets, so metered and imported spend stay separately auditable. Re-importing the same export is safe. See [Importing usage from Cursor](../cost/importing-cursor-usage.md) for the full walkthrough, including the API endpoints and custom column mapping.
 
-Cursor is also one of the clients that supports the native tool-approval hook: `preloop agents onboard cursor --approvals` routes tool calls that would have prompted you locally to Preloop approvals instead.
+Cursor is also one of the clients that supports the native tool-approval hook: `preloop agents onboard cursor --approvals` routes tool calls that would have prompted you locally to Preloop approvals instead. If that hook cannot reach Preloop, see [If approvals cannot reach Preloop](../cli.md#if-approvals-cannot-reach-preloop).
 
 ### Route Cursor model traffic through Preloop
 

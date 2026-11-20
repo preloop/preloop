@@ -210,7 +210,9 @@ native tools, which is a separate mechanism from MCP governance.
 `allow_all_tools` is refused unless
 `preloop agents onboard "Copilot CLI" --approvals` has installed the
 `preToolUse` approval hook. That hook gates native tool calls; it is not
-MCP governance, and MCP governance is not native-tool approval.
+MCP governance, and MCP governance is not native-tool approval. If that
+hook cannot reach Preloop, see
+[If approvals cannot reach Preloop](cli.md#if-approvals-cannot-reach-preloop).
 
 Model calls are not gateway metered: Copilot has no route through the
 Preloop gateway for GitHub-hosted models. The server records

@@ -20,7 +20,8 @@ legacy fallback) and adds a managed `[mcp_servers.preloop]` entry that points
 at the Preloop MCP endpoint. `--approvals` adds hooks to `~/.codex/hooks.json`:
 `PreToolUse` evaluates your central tool rules, and `PermissionRequest` turns
 the prompts Codex would show you into Preloop approval requests you can answer
-from mobile, watch, or the web console.
+from mobile, watch, or the web console. If those hooks cannot reach Preloop,
+see [If approvals cannot reach Preloop](cli.md#if-approvals-cannot-reach-preloop).
 
 ```bash
 preloop agents status "Codex CLI"
