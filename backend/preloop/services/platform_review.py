@@ -189,7 +189,17 @@ PRECONDITION_FIELDS: tuple[str, ...] = (
     "expected_base_sha",
     "expected_result_sha256",
     "expected_flow_revision",
+    "expected_evidence",
 )
+#: How complete the stored tool evidence must be before a review is posted.
+EVIDENCE_LEVELS: tuple[str, ...] = ("any", "captured", "complete")
+#: Caller preconditions may only name the two levels that tighten posting.
+EVIDENCE_PRECONDITIONS: tuple[str, ...] = ("captured", "complete")
+_EVIDENCE_RANK = {"any": 0, "captured": 1, "complete": 2}
+#: Streaming gateway evidence is written after the response body, so a
+#: publication in this window can see a run whose last request has not
+#: landed. Same deferral as result-capture delivery.
+EVIDENCE_SETTLE_AFTER = timedelta(seconds=30)
 _RESULT_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -227,6 +237,7 @@ class ReviewPreconditions:
     base_sha: str | None = None
     result_sha256: str | None = None
     flow_revision: int | None = None
+    evidence: str | None = None
 
     @property
     def any(self) -> bool:
@@ -238,6 +249,7 @@ class ReviewPreconditions:
                 self.base_sha,
                 self.result_sha256,
                 self.flow_revision,
+                self.evidence,
             )
         )
 
@@ -292,11 +304,20 @@ def parse_preconditions(body: Any) -> ReviewPreconditions:
                 "expected_flow_revision must be a positive integer",
             )
         values["expected_flow_revision"] = revision
+    evidence = body.get("expected_evidence")
+    if evidence is not None:
+        if evidence not in EVIDENCE_PRECONDITIONS:
+            raise PreconditionMalformedError(
+                "expected_evidence",
+                "expected_evidence must be captured or complete",
+            )
+        values["expected_evidence"] = evidence
     return ReviewPreconditions(
         head_sha=values.get("expected_head_sha"),
         base_sha=values.get("expected_base_sha"),
         result_sha256=values.get("expected_result_sha256"),
         flow_revision=values.get("expected_flow_revision"),
+        evidence=values.get("expected_evidence"),
     )
 
 
@@ -322,12 +343,141 @@ def _failure(field: str, expected: Any, current: Any, source: str) -> dict[str, 
     }
 
 
+def _block_evidence_level(block: Mapping[str, Any]) -> str:
+    """The evidence value of an already enabled posting block."""
+    value = block.get("evidence", "any")
+    if value is None or value not in EVIDENCE_LEVELS:
+        return "any"
+    return str(value)
+
+
+def evidence_level(config: Any) -> str:
+    """The flow's evidence gate: any, captured or complete.
+
+    Args:
+        config: The flow's ``git_clone_config``.
+
+    Returns:
+        ``any`` when posting is off, the key is absent, or the value is
+        ``any``.
+    """
+    return _block_evidence_level(platform_review_block(config) or {})
+
+
+def stricter_evidence(flow_level: str, caller_level: str | None) -> str:
+    """The tighter of the flow setting and a caller precondition.
+
+    A caller can require more evidence. A weaker precondition does not
+    lower the flow setting.
+
+    Args:
+        flow_level: Stored ``platform_review.evidence``.
+        caller_level: ``expected_evidence``, or None.
+
+    Returns:
+        The higher of the two ranks.
+    """
+    caller = caller_level if caller_level in _EVIDENCE_RANK else "any"
+    if _EVIDENCE_RANK[flow_level] >= _EVIDENCE_RANK[caller]:
+        return flow_level
+    return caller
+
+
+def evidence_met_level(summary: Mapping[str, Any] | None) -> str:
+    """The strongest evidence level the stored summary meets.
+
+    Args:
+        summary: :func:`tool_evidence_summary` output.
+
+    Returns:
+        ``complete``, ``captured`` or ``any`` (does not meet ``captured``).
+    """
+    if evidence_satisfied(summary, "complete"):
+        return "complete"
+    if evidence_satisfied(summary, "captured"):
+        return "captured"
+    return "any"
+
+
+def evidence_satisfied(summary: Mapping[str, Any] | None, level: str) -> bool:
+    """Whether stored counts meet ``level``.
+
+    ``captured`` allows records that are incomplete only because a named
+    masking rule fired. ``complete`` allows no incomplete record. ``any``
+    does not look.
+
+    Args:
+        summary: Counts from stored evidence. None does not meet a gate.
+        level: ``any``, ``captured`` or ``complete``.
+
+    Returns:
+        Whether the level is met.
+    """
+    if level == "any":
+        return True
+    if not isinstance(summary, Mapping) or level not in _EVIDENCE_RANK:
+        return False
+    if summary.get("missing_records"):
+        return False
+    incomplete = summary.get("incomplete_records")
+    masking = summary.get("masking_only_records")
+    if type(incomplete) is not int or type(masking) is not int:
+        return False
+    if level == "complete":
+        return incomplete == 0
+    return incomplete == masking
+
+
+def stored_tool_evidence(db: Session, execution: Any) -> dict[str, Any]:
+    """The public tool-evidence counts for one execution.
+
+    Args:
+        db: Database session.
+        execution: Execution whose records are counted.
+
+    Returns:
+        Counts with no observation values, paths or text.
+    """
+    from preloop.models.crud.execution_tool_evidence import tool_evidence_summary
+
+    return tool_evidence_summary(db, execution_id=execution.id)
+
+
+def evidence_may_still_arrive(execution: Any) -> bool:
+    """Whether the last gateway request can still be written.
+
+    Streaming usage and its tool evidence are committed after the response
+    body, in the same transaction, and that write can outlast the moment
+    the execution is marked terminal (the record waits up to the gateway
+    pool timeout). A publication inside :data:`EVIDENCE_SETTLE_AFTER` of
+    ``end_time`` therefore waits, the way result delivery waits while
+    artifact capture is pending, instead of posting or refusing on a
+    partial record.
+
+    Args:
+        execution: A terminal execution.
+
+    Returns:
+        True when ``end_time`` is within the settle window.
+    """
+    end = getattr(execution, "end_time", None)
+    if not isinstance(end, datetime):
+        return False
+    # Timestamp columns are naive UTC. An aware value is converted; a naive
+    # one is already that convention, including after a round trip.
+    if end.tzinfo is not None:
+        end = end.astimezone(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return now - end < EVIDENCE_SETTLE_AFTER
+
+
 def check_stored_preconditions(
     pre: ReviewPreconditions,
     *,
     flow: Any,
     execution: Any,
     binding: CiReviewBinding,
+    evidence: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Compare the preconditions with what Preloop stores.
 
@@ -336,6 +486,8 @@ def check_stored_preconditions(
         flow: The execution's flow, as it will be read for posting.
         execution: The execution, as it will be read for posting.
         binding: The execution's review binding.
+        evidence: Stored tool-evidence counts, required when the caller
+            set ``expected_evidence``.
 
     Returns:
         Failures, empty when every supplied precondition holds.
@@ -367,6 +519,14 @@ def check_stored_preconditions(
                     current_revision,
                     "flow",
                 )
+            )
+    if pre.evidence is not None:
+        # The flow setting is not applied here. A weaker precondition must
+        # not lower it; the publication plan enforces the stored level.
+        current = evidence_met_level(evidence)
+        if _EVIDENCE_RANK[current] < _EVIDENCE_RANK[pre.evidence]:
+            failures.append(
+                _failure("expected_evidence", pre.evidence, current, "tool_evidence")
             )
     return failures
 
@@ -459,11 +619,19 @@ def validate_platform_review_block(block: Any) -> None:
         "verdict_actions",
         "status",
         "enabled_at",
+        "evidence",
     }
     if unknown:
         raise ValueError("platform_review has unsupported keys")
     if block.get("mode", MODE_AUTOMATIC) not in STORED_MODES:
         raise ValueError("platform_review.mode must be automatic or manual")
+    # A dumped block carries evidence: null when the key was omitted. That is
+    # the same as any, not a stored gate.
+    evidence = block.get("evidence", "any")
+    if evidence is None:
+        evidence = "any"
+    if evidence not in EVIDENCE_LEVELS:
+        raise ValueError("platform_review.evidence must be any, captured or complete")
     if block.get("action", "comment") != "comment":
         raise ValueError(
             "platform_review.action must be comment; other review actions "
@@ -576,11 +744,19 @@ def verdict_enum(schema: Any) -> list[str] | None:
     return list(values)
 
 
-def validate_platform_review_flow(flow: Any) -> None:
+def validate_platform_review_flow(
+    flow: Any, *, enforce_content_capture: bool = False
+) -> None:
     """Require a validated result with a closed, fully mapped verdict.
 
     Args:
         flow: Flow row or namespace.
+        enforce_content_capture: When True (the save path), reject
+            ``captured`` or ``complete`` while model-gateway content capture
+            is off. Publish does not pass this: a record stored with content
+            capture off already fails the gate, and turning the instance flag
+            off later must not refuse a run whose records were captured
+            while it was on.
 
     Raises:
         ValueError: The flow opts in but its result is not validated, its
@@ -594,6 +770,19 @@ def validate_platform_review_flow(flow: Any) -> None:
     block = platform_review_block(config)
     if block is None or not isinstance(config, Mapping):
         return
+    if enforce_content_capture and block.get("evidence") in {"captured", "complete"}:
+        from preloop.config import settings
+
+        # Content capture is the instance setting that writes
+        # content_capture_enabled on each record. With it off, gateway
+        # observations store no values, so captured and complete cannot pass
+        # for a run that called the model. Rejecting the save matches the
+        # other posting checks: a gate that cannot succeed is not stored.
+        if not settings.model_gateway_capture_content:
+            raise ValueError(
+                "platform_review.evidence requires content capture to be on "
+                "(MODEL_GATEWAY_CAPTURE_CONTENT); without it the gate cannot pass"
+            )
     if config.get("publication_mode") != "read_only":
         raise ValueError("platform_review requires read_only publication mode")
     schema = getattr(flow, "result_schema", None)
@@ -1421,7 +1610,10 @@ class PublicationPlan:
 
 
 def plan_publication(
-    flow: Any, execution: Any, integrity: Mapping[str, Any] | None = None
+    flow: Any,
+    execution: Any,
+    integrity: Mapping[str, Any] | None = None,
+    evidence: Mapping[str, Any] | None = None,
 ) -> PublicationPlan:
     """Decide the writes from the flow configuration and the stored outcome.
 
@@ -1437,10 +1629,17 @@ def plan_publication(
     is planned and the commit status, when configured, is the flow's
     ``incomplete_state`` or ``error``: never the verdict's state.
 
+    When the flow's ``evidence`` is ``captured`` or ``complete``, the stored
+    tool-evidence counts (``evidence``) are checked after the result is
+    otherwise postable. A miss is ``evidence_incomplete`` and uses the same
+    neutral status as an integrity refusal.
+
     Args:
         flow: The execution's flow.
         execution: A terminal execution.
         integrity: The controller's integrity outcome; None means unverified.
+        evidence: Stored tool-evidence counts. Required when the flow sets
+            an evidence gate.
 
     Returns:
         The plan. ``review_action`` and ``status_value`` may both be None.
@@ -1502,6 +1701,9 @@ def plan_publication(
                 }
                 else "review_unverified"
             )
+            rejected = True
+        elif not evidence_satisfied(evidence, _block_evidence_level(block)):
+            reason = "evidence_incomplete"
             rejected = True
         else:
             verdict = candidate
@@ -2131,6 +2333,7 @@ async def _publish_claimed(
     flow: models.Flow,
     execution: models.FlowExecution,
     preconditions: ReviewPreconditions | None = None,
+    evidence: Mapping[str, Any] | None = None,
 ) -> None:
     """Run one attempt for a claimed row and record its outcome.
 
@@ -2173,7 +2376,11 @@ async def _publish_claimed(
         db.refresh(flow)
         db.refresh(execution)
         failures = check_stored_preconditions(
-            pre, flow=flow, execution=execution, binding=binding
+            pre,
+            flow=flow,
+            execution=execution,
+            binding=binding,
+            evidence=evidence,
         )
         if failures:
             raise PreconditionFailedError(failures)
@@ -2211,7 +2418,26 @@ async def _publish_claimed(
         flow,
         execution,
         integrity=evaluate_execution(db, flow, execution, require_head=True),
+        evidence=evidence,
     )
+    if (
+        plan.review_action is not None
+        and row.review_state == STATE_SKIPPED
+        and row.review_reason == "evidence_incomplete"
+    ):
+        # The refusal posted no review. A later call, once the stored
+        # records meet the gate, posts it. The incomplete commit status is
+        # replaced by the verdict's state.
+        reopen: dict[str, Any] = {"review_state": None, "review_reason": None}
+        if (
+            plan.status_value is not None
+            and row.status_state == STATE_POSTED
+            and row.status_value != plan.status_value
+        ):
+            reopen["status_state"] = None
+            reopen["status_reason"] = None
+            reopen["status_value"] = None
+        row = record(db, row=row, **reopen)
     if row.status_reason == "statuses_permission_missing":
         # Only an explicit call reaches here again; the permission may have
         # been approved on the App installation since.
@@ -2292,7 +2518,13 @@ async def _publish_claimed(
                     number=binding.pr_number,
                     sha=binding.head_sha,
                 )
-                if pre.any:
+                if want_review and (
+                    pre.head_sha is not None or pre.base_sha is not None
+                ):
+                    # The status-only lease cannot read the pull request.
+                    # Commit preconditions are checked here only when a review
+                    # is about to be posted; a refusal writes the status on
+                    # the bound commit either way.
                     failures = check_live_preconditions(pre, await github.pull())
                     if failures:
                         raise PreconditionFailedError(failures)
@@ -2492,9 +2724,30 @@ async def publish_platform_review(
         if explicit:
             raise PlatformReviewRefusedError("execution_not_finished")
         return None
+    # The last streaming gateway request can still be committing its evidence.
+    # Do not post, and do not record evidence_incomplete, until that window
+    # has passed. The sweep publishes an unclaimed automatic run afterwards.
+    if (
+        evidence_may_still_arrive(execution)
+        and stricter_evidence(evidence_level(flow.git_clone_config), pre.evidence)
+        != "any"
+    ):
+        if explicit:
+            raise PlatformReviewRefusedError("evidence_pending")
+        return None
+    # One read of the stored records serves the precondition, the plan and
+    # the record returned to the caller. A flow with the gate off, and a
+    # publish call that does not ask for evidence, does not read them.
+    counts: dict[str, Any] | None = None
+    if pre.evidence is not None or evidence_level(flow.git_clone_config) != "any":
+        counts = stored_tool_evidence(db, execution)
     if pre.any:
         failures = check_stored_preconditions(
-            pre, flow=flow, execution=execution, binding=binding
+            pre,
+            flow=flow,
+            execution=execution,
+            binding=binding,
+            evidence=counts,
         )
         if failures:
             _audit_attempt(
@@ -2520,7 +2773,13 @@ async def publish_platform_review(
         retryable_only=not explicit,
     )
     if row is None:
-        return platform_review_projection(db, execution, flow=flow)
+        return platform_review_projection(
+            db,
+            execution,
+            flow=flow,
+            evidence=counts,
+            with_evidence=counts is not None,
+        )
     # Manual mode never retries on its own: a failed explicit attempt waits
     # for the caller, who may want to check again before posting.
     automatic_retry = mode == MODE_AUTOMATIC
@@ -2529,7 +2788,12 @@ async def publish_platform_review(
     details: dict[str, Any] = {}
     try:
         await _publish_claimed(
-            db, row, flow=flow, execution=execution, preconditions=pre
+            db,
+            row,
+            flow=flow,
+            execution=execution,
+            preconditions=pre,
+            evidence=counts,
         )
     except asyncio.CancelledError:
         # Cut short by the caller's time limit: hand the row to the monitor
@@ -2593,7 +2857,9 @@ async def publish_platform_review(
         status=outcome,
         details=details,
     )
-    return platform_review_projection(db, execution, flow=flow)
+    return platform_review_projection(
+        db, execution, flow=flow, evidence=counts, with_evidence=counts is not None
+    )
 
 
 def _record_posted_by(db: Session, execution_id: Any, posted_by: str) -> None:
@@ -2715,7 +2981,12 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def platform_review_projection(
-    db: Session, execution: Any, *, flow: Any = None
+    db: Session,
+    execution: Any,
+    *,
+    flow: Any = None,
+    evidence: Mapping[str, Any] | None = None,
+    with_evidence: bool = False,
 ) -> dict[str, Any] | None:
     """What was posted for an execution, safe for its restricted CI identity.
 
@@ -2723,6 +2994,10 @@ def platform_review_projection(
         db: Database session.
         execution: Flow execution row.
         flow: The execution's flow, when the caller holds it.
+        evidence: Counts already computed for this request.
+        with_evidence: Attach ``tool_evidence``. Left off for the execution
+            list, a status poll and the finished event, which would otherwise
+            decode every stored record.
 
     Returns:
         None when the flow has not opted in and nothing was ever claimed;
@@ -2731,12 +3006,14 @@ def platform_review_projection(
         ``posted_by`` says how the review reached the pull request:
         ``automatic`` (when the execution finished, or by an automatic
         retry), ``manual`` (the explicit publish call) or ``none``; null for
-        a review posted before the record existed.         Contains
-        no credential and no provider response. ``readback_check`` names the
-        last comparison that failed (``review_body``, ``status_absent``, and
-        the other read-back checks). It can stay set when a later attempt
-        fails for another reason while that read-back is still owed, and is
-        null once the publication is posted or no read-back has failed.
+        a review posted before the record existed. ``tool_evidence``, when
+        requested, is the count summary of the stored records. Contains no
+        credential, no provider response and no evidence values.
+        ``readback_check`` names the last comparison that failed
+        (``review_body``, ``status_absent``, and the other read-back checks).
+        It can stay set when a later attempt fails for another reason while
+        that read-back is still owed, and is null once the publication is
+        posted or no read-back has failed.
     """
     row = crud.crud_platform_review_publication.get_for_execution(
         db, execution_id=execution.id
@@ -2745,11 +3022,18 @@ def platform_review_projection(
         flow = getattr(execution, "flow", None)
     mode = platform_review_mode(getattr(flow, "git_clone_config", None))
     how = posted_by(execution)
+    if row is None and mode == MODE_OFF:
+        return None
+    counts: Mapping[str, Any] | None
+    if not with_evidence:
+        counts = None
+    elif evidence is not None:
+        counts = evidence
+    else:
+        counts = stored_tool_evidence(db, execution)
     if row is None:
-        if mode == MODE_OFF:
-            return None
         binding = getattr(execution, "ci_review_binding", None)
-        return {
+        payload = {
             "mode": mode,
             "posted_by": NOT_POSTED,
             "status": "pending",
@@ -2767,26 +3051,29 @@ def platform_review_projection(
             "posted_at": None,
             "attempts": 0,
             "retry_scheduled": False,
-            "readback_check": None,
         }
-    return {
-        "mode": mode,
-        "posted_by": how if row.review_state == STATE_POSTED else NOT_POSTED,
-        "status": row.state,
-        "reason": row.reason,
-        "head_sha": row.head_sha,
-        "review": row.review_state,
-        "review_id": row.review_id,
-        "review_action": row.review_action,
-        "review_reason": row.review_reason,
-        "commit_status": row.status_value,
-        "status_context": row.status_context,
-        "status_reason": row.status_reason,
-        "posted_at": _iso(row.posted_at),
-        "attempts": row.attempts,
-        "retry_scheduled": bool(row.retryable and row.next_attempt_at is not None),
-        "readback_check": row.readback_check,
-    }
+    else:
+        payload = {
+            "mode": mode,
+            "posted_by": how if row.review_state == STATE_POSTED else NOT_POSTED,
+            "status": row.state,
+            "reason": row.reason,
+            "head_sha": row.head_sha,
+            "review": row.review_state,
+            "review_id": row.review_id,
+            "review_action": row.review_action,
+            "review_reason": row.review_reason,
+            "commit_status": row.status_value,
+            "status_context": row.status_context,
+            "status_reason": row.status_reason,
+            "posted_at": _iso(row.posted_at),
+            "attempts": row.attempts,
+            "retry_scheduled": bool(row.retryable and row.next_attempt_at is not None),
+        }
+    if with_evidence:
+        payload["tool_evidence"] = counts
+    payload["readback_check"] = None if row is None else row.readback_check
+    return payload
 
 
 async def publish_finished_execution(*, account_id: Any, execution_id: Any) -> None:

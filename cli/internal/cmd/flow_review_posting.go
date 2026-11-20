@@ -36,6 +36,7 @@ type reviewPostingFlags struct {
 	states          []string
 	context         string
 	incompleteState string
+	evidence        string
 	noStatus        bool
 	asJSON          bool
 }
@@ -143,6 +144,7 @@ func newReviewPostingWriteCmd(operation string) *cobra.Command {
 	cmd.Flags().StringArrayVar(&flags.states, "state", nil, "verdict=state, repeatable; state is success, failure or error")
 	cmd.Flags().StringVar(&flags.context, "status-context", "", "commit status name (default preloop/review); keep it stable for branch protection")
 	cmd.Flags().StringVar(&flags.incompleteState, "incomplete-state", "", "status for a run that stopped, failed or has no valid result: error, failure, or none")
+	cmd.Flags().StringVar(&flags.evidence, "evidence", "", "which stored tool evidence may be posted: any, captured or complete")
 	if operation == "enable" {
 		cmd.Flags().BoolVar(&flags.noStatus, "no-status", false, "post the review only, no commit status")
 	}
@@ -197,6 +199,10 @@ func runReviewPostingWrite(cmd *cobra.Command, operation, nameOrID string, flags
 	if incomplete != "" && incomplete != "none" && incomplete != "error" && incomplete != "failure" {
 		return fmt.Errorf("--incomplete-state must be error, failure or none")
 	}
+	evidence := strings.ToLower(strings.TrimSpace(flags.evidence))
+	if evidence != "" && evidence != "any" && evidence != "captured" && evidence != "complete" {
+		return fmt.Errorf("--evidence must be any, captured or complete")
+	}
 	if flags.noStatus && (len(states) > 0 || flags.context != "" || incomplete != "") {
 		return fmt.Errorf("--no-status cannot be combined with --state, --status-context or --incomplete-state")
 	}
@@ -218,58 +224,70 @@ func runReviewPostingWrite(cmd *cobra.Command, operation, nameOrID string, flags
 	if operation == "enable" {
 		block["enabled"] = true
 	}
+	switch evidence {
+	case "":
+	case "any":
+		delete(block, "evidence")
+	default:
+		block["evidence"] = evidence
+	}
 	if flags.noStatus {
 		delete(block, "status")
 	} else {
 		status, _ := block["status"].(map[string]any)
-		if status == nil {
-			if operation == "set-states" && len(states) == 0 && flags.context == "" && incomplete == "" {
-				return fmt.Errorf("nothing to change: pass --state, --status-context or --incomplete-state")
+		statusFlags := len(states) > 0 || flags.context != "" || incomplete != ""
+		// Evidence on its own must not create a commit-status block.
+		evidenceOnly := status == nil && operation == "set-states" && !statusFlags
+		if evidenceOnly && evidence == "" {
+			return fmt.Errorf("nothing to change: pass --state, --status-context, --incomplete-state or --evidence")
+		}
+		if !evidenceOnly {
+			if status == nil {
+				status = map[string]any{}
 			}
-			status = map[string]any{}
-		}
-		verdictStates, _ := status["verdict_states"].(map[string]any)
-		if verdictStates == nil {
-			verdictStates = map[string]any{}
-		}
-		for verdict, state := range states {
-			verdictStates[verdict] = state
-		}
-		verdicts := verdictEnumOf(flow["result_schema"])
-		if len(verdictStates) == 0 && len(verdicts) > 0 {
-			return fmt.Errorf("set a commit status for every verdict with --state (verdicts: %s), or pass --no-status", strings.Join(verdicts, ", "))
-		}
-		for verdict := range states {
-			if len(verdicts) > 0 && !containsString(verdicts, verdict) {
-				return fmt.Errorf("verdict %q is not in the result schema (verdicts: %s)", verdict, strings.Join(verdicts, ", "))
+			verdictStates, _ := status["verdict_states"].(map[string]any)
+			if verdictStates == nil {
+				verdictStates = map[string]any{}
 			}
-		}
-		var unmapped []string
-		for _, verdict := range verdicts {
-			if _, ok := verdictStates[verdict]; !ok {
-				unmapped = append(unmapped, verdict)
+			for verdict, state := range states {
+				verdictStates[verdict] = state
 			}
+			verdicts := verdictEnumOf(flow["result_schema"])
+			if len(verdictStates) == 0 && len(verdicts) > 0 {
+				return fmt.Errorf("set a commit status for every verdict with --state (verdicts: %s), or pass --no-status", strings.Join(verdicts, ", "))
+			}
+			for verdict := range states {
+				if len(verdicts) > 0 && !containsString(verdicts, verdict) {
+					return fmt.Errorf("verdict %q is not in the result schema (verdicts: %s)", verdict, strings.Join(verdicts, ", "))
+				}
+			}
+			var unmapped []string
+			for _, verdict := range verdicts {
+				if _, ok := verdictStates[verdict]; !ok {
+					unmapped = append(unmapped, verdict)
+				}
+			}
+			if len(unmapped) > 0 {
+				return fmt.Errorf("no commit status for verdict %s; add --state %s=<success|failure|error>", strings.Join(unmapped, ", "), unmapped[0])
+			}
+			status["verdict_states"] = verdictStates
+			if flags.context != "" {
+				status["context"] = flags.context
+			} else if _, ok := status["context"]; !ok || status["context"] == nil {
+				status["context"] = defaultReviewStatusContext
+			}
+			switch incomplete {
+			case "":
+			case "none":
+				delete(status, "incomplete_state")
+			default:
+				status["incomplete_state"] = incomplete
+			}
+			if status["incomplete_state"] == nil {
+				delete(status, "incomplete_state")
+			}
+			block["status"] = status
 		}
-		if len(unmapped) > 0 {
-			return fmt.Errorf("no commit status for verdict %s; add --state %s=<success|failure|error>", strings.Join(unmapped, ", "), unmapped[0])
-		}
-		status["verdict_states"] = verdictStates
-		if flags.context != "" {
-			status["context"] = flags.context
-		} else if _, ok := status["context"]; !ok || status["context"] == nil {
-			status["context"] = defaultReviewStatusContext
-		}
-		switch incomplete {
-		case "":
-		case "none":
-			delete(status, "incomplete_state")
-		default:
-			status["incomplete_state"] = incomplete
-		}
-		if status["incomplete_state"] == nil {
-			delete(status, "incomplete_state")
-		}
-		block["status"] = status
 	}
 	saved, err := saveReviewPostingBlock(client, flowID, flow, block)
 	if err != nil {
@@ -283,6 +301,7 @@ func runReviewPostingWrite(cmd *cobra.Command, operation, nameOrID string, flags
 		verb = "on"
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Posting is %s for flow %s.\n", verb, flowID)
+	printEvidenceLevel(cmd.OutOrStdout(), saved)
 	printVerdictStates(cmd.OutOrStdout(), saved)
 	return nil
 }
@@ -699,6 +718,7 @@ func printReviewPostingConfig(out io.Writer, flowID string, block map[string]any
 		state = "on"
 	}
 	fmt.Fprintf(out, "Flow:     %s\nPosting:  %s\n", flowID, state)
+	printEvidenceLevel(out, block)
 	if block != nil {
 		printVerdictStates(out, block)
 	}
@@ -713,6 +733,16 @@ func printReviewPostingConfig(out io.Writer, flowID string, block map[string]any
 		fmt.Fprintf(out, "  [%s] %s%s\n", mark, check.label, detail)
 	}
 	fmt.Fprintln(out, "  [check in GitHub] App permissions: Pull requests: Read and write; Commit statuses: Read and write (for a status)")
+}
+
+func printEvidenceLevel(out io.Writer, block map[string]any) {
+	value := "any"
+	if block != nil {
+		if stored, _ := block["evidence"].(string); stored == "captured" || stored == "complete" {
+			value = stored
+		}
+	}
+	fmt.Fprintf(out, "Evidence: %s\n", value)
 }
 
 func printVerdictStates(out io.Writer, block map[string]any) {
@@ -785,8 +815,50 @@ func printPublicationRecord(out io.Writer, record map[string]any) {
 	if retry, _ := record["retry_scheduled"].(bool); retry {
 		fmt.Fprintln(out, "Preloop will retry on its own.")
 	}
+	printToolEvidence(out, record["tool_evidence"])
 	if check := str("readback_check"); check != "" {
 		fmt.Fprintf(out, "Read-back:   %s\n", check)
+	}
+}
+
+func printToolEvidence(out io.Writer, raw any) {
+	counts, _ := raw.(map[string]any)
+	if counts == nil {
+		return
+	}
+	fmt.Fprintf(
+		out,
+		"Tool evidence: %s model requests, %s missing, %s records, %s incomplete, %s incomplete only because a credential was masked\n",
+		reviewCount(counts["gateway_requests"]),
+		reviewCount(counts["missing_records"]),
+		reviewCount(counts["records"]),
+		reviewCount(counts["incomplete_records"]),
+		reviewCount(counts["masking_only_records"]),
+	)
+	rules, _ := counts["masking_by_rule"].(map[string]any)
+	if len(rules) == 0 {
+		return
+	}
+	names := make([]string, 0, len(rules))
+	for name := range rules {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+": "+reviewCount(rules[name]))
+	}
+	fmt.Fprintf(out, "  masking rules: %s\n", strings.Join(parts, ", "))
+}
+
+func reviewCount(value any) string {
+	switch n := value.(type) {
+	case float64:
+		return strconv.FormatInt(int64(n), 10)
+	case json.Number:
+		return n.String()
+	default:
+		return fmt.Sprint(value)
 	}
 }
 
@@ -811,6 +883,8 @@ var reviewReasons = map[string]string{
 	"no_review_binding":           "the run was not started by a restricted CI review",
 	"execution_not_finished":      "the run has not finished",
 	"attempt_interrupted":         "the attempt was interrupted; Preloop retries",
+	"evidence_incomplete":         "the stored tool evidence is not complete enough for this flow to post a review",
+	"evidence_pending":            "tool evidence for the last model request may still be recording; retry in a moment",
 }
 
 func reviewReasonText(code string) string {

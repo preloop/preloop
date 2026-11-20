@@ -19102,13 +19102,19 @@ paths:
         \ the bound base (when the binding has one) and\n  the live base.\n- ``expected_result_sha256``:\
         \ ``result_sha256`` of the stored result, as\n  returned by ``GET /flows/executions/{id}/result``.\n\
         - ``expected_flow_revision``: the flow's current configuration revision.\n\
-        \nA failed precondition returns 412, posts nothing and records nothing as\n\
-        posted; the call can be repeated with corrected values.\n\nThe call is idempotent.\
-        \ A review or status that was already posted for\nthe execution is not posted\
-        \ again; the response is the current\n``platform_review`` record. Use it after\
-        \ a posting failure, or when a run\nfinished while posting was unavailable.\n\
-        \nAllowed for an account user who may edit flows, and for the execution's\n\
-        own restricted CI identity when it holds ``execution:review:publish``."
+        - ``expected_evidence``: ``captured`` or ``complete``. The stored tool\n \
+        \ evidence must meet that level. It can require more than the flow's\n  ``platform_review.evidence``;\
+        \ it never lowers a stricter flow setting.\n\nA failed precondition returns\
+        \ 412, posts nothing and records nothing as\nposted; the call can be repeated\
+        \ with corrected values. While the last\ngateway request can still be recording\
+        \ (a short window after the run\nfinishes) and the flow or the caller requires\
+        \ captured or complete\nevidence, the call returns 409 ``evidence_pending``\
+        \ and posts nothing.\n\nThe call is idempotent. A review or status that was\
+        \ already posted for\nthe execution is not posted again; the response is the\
+        \ current\n``platform_review`` record. Use it after a posting failure, or\
+        \ when a run\nfinished while posting was unavailable.\n\nAllowed for an account\
+        \ user who may edit flows, and for the execution's\nown restricted CI identity\
+        \ when it holds ``execution:review:publish``."
       operationId: publish_execution_platform_review_api_v1_flows_executions__execution_id__platform_review_post
       security:
       - bearerAuth: []
@@ -19126,8 +19132,9 @@ paths:
             schema:
               description: 'Optional preconditions, each optional: expected_head_sha,
                 expected_base_sha (full commit SHAs), expected_result_sha256 (64 hex
-                characters, as on GET .../result) and expected_flow_revision (positive
-                integer).'
+                characters, as on GET .../result), expected_flow_revision (positive
+                integer) and expected_evidence (captured or complete; can only tighten
+                the flow setting).'
               examples:
               - expected_head_sha: '0000000000000000000000000000000000000000'
                 expected_result_sha256: '0000000000000000000000000000000000000000000000000000000000000000'
@@ -35376,6 +35383,10 @@ components:
           title: Schema Validation
         completion:
           $ref: '#/components/schemas/ReviewCompletion'
+        tool_evidence:
+          $ref: '#/components/schemas/ToolEvidenceSummary'
+          description: Stored tool-evidence counts for this execution. The same object
+            is on platform_review.tool_evidence. No observation values, paths or text.
       additionalProperties: false
       type: object
       required:
@@ -35396,6 +35407,7 @@ components:
       - result_sha256
       - schema_validation
       - completion
+      - tool_evidence
       title: CiExecutionResultResponse
       description: Restricted result envelope, including independent completion facts.
     CiGrant:
@@ -49477,6 +49489,20 @@ components:
           - $ref: '#/components/schemas/PlatformReviewStatus'
           - type: 'null'
           description: Commit status to set; omit for none
+        evidence:
+          anyOf:
+          - type: string
+            enum:
+            - any
+            - captured
+            - complete
+          - type: 'null'
+          title: Evidence
+          description: Which stored tool evidence may be posted. Omit or any to post
+            as today. captured posts only when every gateway request has a record,
+            none failed to capture, and every incomplete record is incomplete only
+            because a named credential mask fired. complete also refuses a masked
+            credential. Requires model gateway content capture to be on.
         enabled_at:
           anyOf:
           - type: string
@@ -58527,6 +58553,47 @@ components:
       type: object
       title: ToolConfigurationUpdate
       description: Schema for updating tool configuration.
+    ToolEvidenceSummary:
+      properties:
+        gateway_requests:
+          type: integer
+          title: Gateway Requests
+          description: Gateway requests for this execution.
+        missing_records:
+          type: integer
+          title: Missing Records
+          description: Gateway requests with no stored evidence record.
+        records:
+          type: integer
+          title: Records
+          description: Stored evidence records, gateway and native.
+        incomplete_records:
+          type: integer
+          title: Incomplete Records
+          description: Records that are incomplete, unreadable, a capture failure,
+            or stored with content capture off.
+        masking_only_records:
+          type: integer
+          title: Masking Only Records
+          description: Incomplete records whose only stored reason is a named credential-masking
+            rule.
+        masking_by_rule:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Masking By Rule
+          description: How many times each named masking rule fired. Rule ids only.
+      additionalProperties: false
+      type: object
+      required:
+      - gateway_requests
+      - missing_records
+      - records
+      - incomplete_records
+      - masking_only_records
+      - masking_by_rule
+      title: ToolEvidenceSummary
+      description: Counts of stored tool evidence. No values, paths or text.
     ToolRuleIndexRow:
       properties:
         name:

@@ -702,7 +702,10 @@ def test_completion_points_to_the_publication_packages_projection(
     monkeypatch.setattr(
         flows,
         "execution_projection",
-        lambda row: {**project(row), "platform_review": {"status": "failed"}},
+        lambda row, **kwargs: {
+            **project(row, **kwargs),
+            "platform_review": {"status": "failed"},
+        },
     )
     response = client.get(url, headers=headers)
     assert response.status_code == 200, response.text

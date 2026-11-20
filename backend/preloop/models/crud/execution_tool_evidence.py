@@ -1,6 +1,7 @@
 """Scoped durable tool evidence and safe terminal-delivery diagnostics."""
 
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 from uuid import UUID, NAMESPACE_URL, uuid5
@@ -15,8 +16,10 @@ from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
 from preloop.models import models
 from preloop.services.execution_tool_evidence import (
     EVIDENCE_TYPE,
+    REASON_MASKING,
     canonical_bytes,
     digest,
+    note_incomplete,
 )
 
 
@@ -195,7 +198,7 @@ def _persist_document(
     safe = sanitize_for_jsonb(document)
     if safe != document:
         safe["storage_redacted"] = True
-        safe["capture_complete"] = False
+        note_incomplete(safe, "unsafe_text")
     cleaned = scrub_structure(safe)
     if cleaned != document:
         cleaned["storage_redacted"] = True
@@ -335,6 +338,8 @@ def _persist_native_command_evidence(
     from preloop.models.crud.flow_execution_log import _account_for_execution
     from preloop.services.execution_tool_evidence import (
         MAX_EVIDENCE_BYTES,
+        REASON_TRUNCATED,
+        REASON_UNSAFE_TEXT,
         _redact_value,
     )
     from preloop.services.sensitive_data.storage import apply_storage_redaction
@@ -363,7 +368,7 @@ def _persist_native_command_evidence(
 
     raw = item.get("command")
     if settings.model_gateway_capture_content:
-        value, redaction_facts = _redact_value(raw)
+        value, redaction_facts, _unexplained = _redact_value(raw)
     else:
         value, redaction_facts = None, []
     bounded = len(canonical_bytes(value)) <= MAX_EVIDENCE_BYTES
@@ -383,14 +388,22 @@ def _persist_native_command_evidence(
     }
     if redaction_facts:
         observation["redactions"] = redaction_facts
+    reasons: list[str] = []
+    if not bounded:
+        reasons.append(REASON_TRUNCATED)
+    if storage_redacted:
+        reasons.append(REASON_UNSAFE_TEXT)
     document = {
         "version": 1,
         "execution_id": str(execution_id),
         "capture_complete": complete,
         "storage_redacted": storage_redacted,
         "redaction_ruleset": REDACTION_RULESET,
+        "content_capture_enabled": bool(settings.model_gateway_capture_content),
         "observations": [observation],
     }
+    if reasons:
+        document["incomplete_reasons"] = sorted(reasons)
     sanitized = apply_storage_redaction(account_id, document)
     sanitized["storage_redacted"] = (
         document.get("storage_redacted", False) or sanitized != document
@@ -500,6 +513,167 @@ def inspection_summary(
     return counter.counts()
 
 
+def _gateway_coverage(db: Session, execution_id: UUID) -> tuple[int, int]:
+    """Count gateway usage rows and how many have no evidence record.
+
+    Args:
+        db: Database session.
+        execution_id: Execution whose usage rows are the expected requests.
+
+    Returns:
+        ``(gateway_requests, missing_records)``.
+    """
+    expected_query = db.query(models.ApiUsage).filter(
+        models.ApiUsage.flow_execution_id == execution_id
+    )
+    expected = expected_query.count()
+    captured_ids = db.query(
+        models.FlowExecutionLog.metadata_["api_usage_id"].astext
+    ).filter(
+        models.FlowExecutionLog.execution_id == execution_id,
+        models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
+        models.FlowExecutionLog.metadata_["source"].astext == "gateway",
+    )
+    missing = expected_query.filter(
+        ~cast(models.ApiUsage.id, String).in_(captured_ids)
+    ).count()
+    return expected, missing
+
+
+_RULE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _masking_counts(document: dict[str, Any]) -> dict[str, int]:
+    """Named masking rules on one document. Rule ids only, never values."""
+    totals: dict[str, int] = {}
+    observations = document.get("observations")
+    if not isinstance(observations, list):
+        return totals
+    for observation in observations:
+        if not isinstance(observation, dict):
+            continue
+        redactions = observation.get("redactions")
+        if not isinstance(redactions, list):
+            continue
+        for item in redactions:
+            if not isinstance(item, dict):
+                continue
+            rule = item.get("rule")
+            count = item.get("count")
+            if (
+                not isinstance(rule, str)
+                or _RULE_NAME.fullmatch(rule) is None
+                or type(count) is not int
+                or count < 1
+            ):
+                continue
+            totals[rule] = totals.get(rule, 0) + count
+    return totals
+
+
+def _record_class(document: Any, *, valid: bool) -> str:
+    """Classify one stored record for the evidence gate.
+
+    Returns:
+        ``ok``, ``masking_only`` or ``incomplete``. An unreadable record,
+        a capture-failure marker, content capture turned off, or an
+        incomplete record with no reason list is ``incomplete``.
+    """
+    if not valid or not isinstance(document, dict):
+        return "incomplete"
+    if document.get("capture_failed") is True:
+        return "incomplete"
+    if document.get("content_capture_enabled") is False:
+        return "incomplete"
+    raw_reasons = document.get("incomplete_reasons")
+    reasons = (
+        {item for item in raw_reasons if isinstance(item, str)}
+        if isinstance(raw_reasons, list)
+        else set()
+    )
+    if document.get("capture_complete") is True and not reasons:
+        return "ok"
+    if reasons == {REASON_MASKING} and _masking_counts(document):
+        return "masking_only"
+    return "incomplete"
+
+
+def tool_evidence_summary(db: Session, *, execution_id: Any) -> dict[str, Any]:
+    """Count stored tool evidence without returning its contents.
+
+    The same coverage figures as :func:`evidence_page`. Counts are safe for
+    a CI identity that can read its own result: no observation values, paths
+    or text.
+
+    Args:
+        db: Database session.
+        execution_id: Execution to summarise.
+
+    Returns:
+        Gateway requests, missing records, records, incomplete records,
+        records incomplete only because a named masking rule fired, and
+        masking counts by rule.
+    """
+    import json
+
+    execution = UUID(str(execution_id))
+    gateway_requests, missing_records = _gateway_coverage(db, execution)
+    query = db.query(
+        models.FlowExecutionLog.id,
+        models.FlowExecutionLog.timestamp,
+        models.FlowExecutionLog.metadata_,
+    ).filter(
+        models.FlowExecutionLog.execution_id == execution,
+        models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
+    )
+    records = 0
+    incomplete_records = 0
+    masking_only_records = 0
+    masking: dict[str, int] = {}
+    cursor = None
+    while True:
+        page = query
+        if cursor is not None:
+            page = page.filter(
+                tuple_(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
+                > cursor
+            )
+        rows = (
+            page.order_by(models.FlowExecutionLog.timestamp, models.FlowExecutionLog.id)
+            .limit(32)
+            .all()
+        )
+        if not rows:
+            break
+        for row_id, timestamp, stored in rows:
+            cursor = (timestamp, row_id)
+            records += 1
+            meta = stored or {}
+            try:
+                document = json.loads("".join(meta["chunks"]))
+                valid = digest(document) == meta.get("sha256")
+            except (KeyError, TypeError, ValueError):
+                document, valid = None, False
+            kind = _record_class(document, valid=valid)
+            if kind != "ok":
+                incomplete_records += 1
+            if kind == "masking_only":
+                masking_only_records += 1
+            if valid and isinstance(document, dict):
+                for rule, count in _masking_counts(document).items():
+                    masking[rule] = masking.get(rule, 0) + count
+        if len(rows) < 32:
+            break
+    return {
+        "gateway_requests": gateway_requests,
+        "missing_records": missing_records,
+        "records": records,
+        "incomplete_records": incomplete_records,
+        "masking_only_records": masking_only_records,
+        "masking_by_rule": dict(sorted(masking.items())),
+    }
+
+
 def evidence_page(
     db: Session, *, execution: models.FlowExecution, skip: int, limit: int
 ) -> dict[str, Any]:
@@ -540,20 +714,7 @@ def evidence_page(
             break
         records.append(record)
         page_bytes += record_bytes
-    expected_query = db.query(models.ApiUsage).filter(
-        models.ApiUsage.flow_execution_id == execution.id
-    )
-    expected = expected_query.count()
-    captured_ids = db.query(
-        models.FlowExecutionLog.metadata_["api_usage_id"].astext
-    ).filter(
-        models.FlowExecutionLog.execution_id == execution.id,
-        models.FlowExecutionLog.log_type == EVIDENCE_TYPE,
-        models.FlowExecutionLog.metadata_["source"].astext == "gateway",
-    )
-    missing = expected_query.filter(
-        ~cast(models.ApiUsage.id, String).in_(captured_ids)
-    ).count()
+    expected, missing = _gateway_coverage(db, execution.id)
     return {
         "records": records,
         "skip": skip,

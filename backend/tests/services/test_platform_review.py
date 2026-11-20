@@ -1539,11 +1539,19 @@ def test_ci_identity_publishes_its_own_execution_and_reads_the_record(
     assert record["status"] == "posted" and record["head_sha"] == HEAD
     again = client.post(path + "/platform-review", headers=headers)
     assert again.json()["platform_review"] == record
+    assert "tool_evidence" not in record
     assert len(world.github.reviews[(project.slug, 7)]) == 1
-    for suffix in ("", "/result"):
-        read = client.get(path + suffix, headers=headers)
-        assert read.status_code == 200, read.text
-        assert read.json()["platform_review"] == record
+    status = client.get(path, headers=headers)
+    assert status.status_code == 200, status.text
+    # A status poll does not decode the evidence records.
+    assert status.json()["platform_review"] == record
+    result = client.get(path + "/result", headers=headers)
+    assert result.status_code == 200, result.text
+    result_record = result.json()["platform_review"]
+    assert result.json()["tool_evidence"] == result_record["tool_evidence"]
+    assert {
+        key: value for key, value in result_record.items() if key != "tool_evidence"
+    } == record
     assert "lease-" not in posted.text
 
 
@@ -3049,3 +3057,420 @@ async def test_mismatch_without_a_stored_digest_stays_failed_when_rerender_diffe
     assert repaired["reason"] == "readback_mismatch"
     assert repaired["readback_check"] == "review_body"
     assert _provider_creates(world.github) == created
+
+
+# --- evidence gate ----------------------------------------------------------
+
+
+def _set_evidence(world: SimpleNamespace, level: str | None) -> None:
+    """Store platform_review.evidence. None leaves the key absent."""
+    block = {**OPT_IN}
+    if level is not None:
+        block["evidence"] = level
+    config = {**world.flow.git_clone_config, "platform_review": block}
+    CRUDBase(models.Flow).update(
+        world.db, db_obj=world.flow, obj_in={"git_clone_config": config}
+    )
+    world.db.refresh(world.flow)
+
+
+def _age(world: SimpleNamespace, execution: Any, *, seconds: int = 31) -> None:
+    """Move end_time outside the late-evidence window.
+
+    The column is naive UTC. An aware value is shifted into the session time
+    zone on the way in, which would leave the run inside the window.
+    """
+    execution.end_time = (
+        datetime.now(timezone.utc) - timedelta(seconds=seconds)
+    ).replace(tzinfo=None)
+    world.db.commit()
+    world.db.refresh(execution)
+
+
+def _gateway_usage(world: SimpleNamespace, execution: Any) -> models.ApiUsage:
+    """One gateway request row, with no evidence until a test stores it."""
+    usage = models.ApiUsage(
+        account_id=world.account.id,
+        endpoint="/v1/responses",
+        method="POST",
+        status_code=200,
+        duration=0.01,
+        action_type="model_gateway",
+        flow_id=world.flow.id,
+        flow_execution_id=execution.id,
+    )
+    world.db.add(usage)
+    world.db.commit()
+    world.db.refresh(usage)
+    return usage
+
+
+def _store_gateway(
+    world: SimpleNamespace, execution: Any, usage: Any, document: dict[str, Any]
+) -> None:
+    from preloop.models.crud.execution_tool_evidence import persist_tool_evidence
+
+    persist_tool_evidence(world.db, usage=usage, document=document)
+    world.db.commit()
+
+
+def _complete_tool_document() -> dict[str, Any]:
+    from preloop.services.execution_tool_evidence import capture_tools
+
+    return capture_tools(
+        {},
+        {
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "exec_command",
+                    "arguments": '{"command":"git diff"}',
+                }
+            ]
+        },
+        capture_content=True,
+    )
+
+
+def _masked_tool_document() -> dict[str, Any]:
+    from preloop.services.execution_tool_evidence import capture_tools
+
+    return capture_tools(
+        {},
+        {
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "exec_command",
+                    "arguments": '{"command":"echo sk-1234567890abcd"}',
+                }
+            ]
+        },
+        capture_content=True,
+    )
+
+
+def _ready(
+    world: SimpleNamespace,
+    *,
+    evidence: str | None = "captured",
+    document: dict[str, Any] | None = None,
+    usage: bool = True,
+) -> tuple[Any, Any]:
+    """A finished run, aged past the settle window, with optional evidence."""
+    if evidence is not None:
+        _set_evidence(world, evidence)
+    project = world.projects[0]
+    execution = finished(world, identity(world, project))
+    _age(world, execution)
+    row = _gateway_usage(world, execution) if usage else None
+    if document is not None and row is not None:
+        _store_gateway(world, execution, row, document)
+    return project, execution
+
+
+@pytest.mark.asyncio
+async def test_absent_evidence_setting_posts_as_before(world: SimpleNamespace) -> None:
+    """A missing gateway record does not matter until the setting is on."""
+    project, execution = _ready(world, evidence=None, document=None, usage=True)
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert outcome["review"] == "posted"
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_reads_the_stored_records_once(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The precondition, the plan and the returned record share one read."""
+    _project, execution = _ready(world, document=_complete_tool_document())
+    calls = 0
+    real = platform_review.stored_tool_evidence
+
+    def counted(db: Any, row: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return real(db, row)
+
+    monkeypatch.setattr(platform_review, "stored_tool_evidence", counted)
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_captured_posts_when_records_are_complete(world: SimpleNamespace) -> None:
+    project, execution = _ready(world, document=_complete_tool_document())
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert outcome["review"] == "posted"
+    assert outcome["commit_status"] == "failure"
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+
+
+@pytest.mark.asyncio
+async def test_captured_posts_when_the_only_incomplete_record_is_a_masked_credential(
+    world: SimpleNamespace,
+) -> None:
+    document = _masked_tool_document()
+    assert document["capture_complete"] is False
+    assert document["incomplete_reasons"] == ["masking"]
+    project, execution = _ready(world, document=document)
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert outcome["review"] == "posted"
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutate", "label"),
+    [
+        ("missing", "missing gateway record"),
+        ("failed", "capture-failure marker"),
+        ("truncated", "truncated record"),
+        ("legacy", "old incomplete record"),
+    ],
+)
+async def test_captured_refuses_incomplete_evidence(
+    world: SimpleNamespace, mutate: str, label: str
+) -> None:
+    """Each non-masking gap refuses the review and sets the incomplete status."""
+    del label
+    document = _complete_tool_document()
+    store = mutate != "missing"
+    if mutate == "failed":
+        document = {
+            "version": 1,
+            "capture_complete": False,
+            "capture_failed": True,
+            "content_capture_enabled": True,
+            "observations": [],
+        }
+    elif mutate == "truncated":
+        document = {
+            **document,
+            "capture_complete": False,
+            "incomplete_reasons": ["truncated"],
+        }
+    elif mutate == "legacy":
+        document = {**document, "capture_complete": False}
+        document.pop("incomplete_reasons", None)
+    project, execution = _ready(world, document=document if store else None)
+    outcome = await publish(world, execution)
+    assert outcome is not None
+    assert outcome["review"] == "skipped"
+    assert outcome["review_reason"] == "evidence_incomplete"
+    assert outcome["reason"] == "evidence_incomplete"
+    assert outcome["commit_status"] == "error"
+    assert world.github.reviews == {}
+    assert world.github.statuses[(project.slug, HEAD)][0]["state"] == "error"
+    counts = outcome["tool_evidence"]
+    assert set(counts) == {
+        "gateway_requests",
+        "missing_records",
+        "records",
+        "incomplete_records",
+        "masking_only_records",
+        "masking_by_rule",
+    }
+    if mutate == "missing":
+        assert counts["missing_records"] == 1
+
+
+@pytest.mark.asyncio
+async def test_complete_refuses_a_masked_credential(world: SimpleNamespace) -> None:
+    project, execution = _ready(
+        world, evidence="complete", document=_masked_tool_document()
+    )
+    del project
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["reason"] == "evidence_incomplete"
+    assert outcome["review"] == "skipped"
+    assert world.github.reviews == {}
+    assert world.github.statuses[(world.projects[0].slug, HEAD)][0]["state"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_automatic_sweep_and_explicit_publish_agree_on_the_evidence_gate(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Automatic, the sweep and an explicit call apply the same refusal."""
+    from preloop.models.db import session as db_session_module
+
+    _set_evidence(world, "captured")
+    project = world.projects[0]
+    who = identity(world, project)
+    document = {**_complete_tool_document(), "capture_complete": False}
+    document["incomplete_reasons"] = ["truncated"]
+
+    async def refused(explicit: bool = False) -> dict[str, Any]:
+        execution = finished(world, who)
+        _age(world, execution, seconds=180)
+        usage = _gateway_usage(world, execution)
+        _store_gateway(world, execution, usage, document)
+        outcome = await publish(world, execution, explicit=explicit)
+        assert outcome is not None and outcome["reason"] == "evidence_incomplete"
+        assert outcome["review"] == "skipped"
+        return outcome
+
+    await refused(False)
+    await refused(True)
+    execution = finished(world, who)
+    _age(world, execution, seconds=180)
+    usage = _gateway_usage(world, execution)
+    _store_gateway(world, execution, usage, document)
+    world.flow.updated_at = datetime(2020, 1, 1)
+    world.db.commit()
+    close = world.db.close
+    monkeypatch.setattr(world.db, "close", lambda: None)
+    monkeypatch.setattr(db_session_module, "get_db_session", lambda: iter([world.db]))
+    from preloop.services.platform_review import sweep_platform_reviews
+
+    await sweep_platform_reviews()
+    monkeypatch.setattr(world.db, "close", close)
+    row = crud.crud_platform_review_publication.get_for_execution(
+        world.db, execution_id=execution.id
+    )
+    assert row is not None and row.reason == "evidence_incomplete"
+    assert row.review_state == "skipped"
+    assert world.github.reviews == {}
+
+
+@pytest.mark.asyncio
+async def test_later_publish_succeeds_once_nothing_is_missing(
+    world: SimpleNamespace,
+) -> None:
+    project, execution = _ready(world, document=None, usage=True)
+    refused = await publish(world, execution, explicit=True)
+    assert refused is not None and refused["reason"] == "evidence_incomplete"
+    assert world.github.reviews == {}
+    usage = (
+        world.db.query(models.ApiUsage)
+        .filter(models.ApiUsage.flow_execution_id == execution.id)
+        .one()
+    )
+    _store_gateway(world, execution, usage, _complete_tool_document())
+    posted = await publish(world, execution, explicit=True)
+    assert posted is not None and posted["status"] == "posted"
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+
+
+@pytest.mark.asyncio
+async def test_late_gateway_evidence_is_not_refused_or_posted_early(
+    world: SimpleNamespace,
+) -> None:
+    """A run that just finished is neither posted nor refused as incomplete.
+
+    Streaming evidence is committed after the body, so it can land after
+    end_time. The gate waits out that window.
+    """
+    _set_evidence(world, "captured")
+    project = world.projects[0]
+    execution = finished(world, identity(world, project))
+    usage = _gateway_usage(world, execution)
+    early = await publish(world, execution)
+    assert early is None
+    assert world.github.reviews == {}
+    assert (
+        crud.crud_platform_review_publication.get_for_execution(
+            world.db, execution_id=execution.id
+        )
+        is None
+    )
+    _store_gateway(world, execution, usage, _complete_tool_document())
+    _age(world, execution)
+    posted = await publish(world, execution)
+    assert posted is not None and posted["status"] == "posted"
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+
+
+def test_status_projection_does_not_read_tool_evidence(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The list and a status poll must not decode the stored records."""
+    execution = finished(world, identity(world, world.projects[0]))
+
+    def scanned(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args, kwargs
+        raise AssertionError("tool evidence was read")
+
+    monkeypatch.setattr(platform_review, "stored_tool_evidence", scanned)
+    record = platform_review.platform_review_projection(
+        world.db, execution, flow=world.flow
+    )
+    assert record is not None
+    assert "tool_evidence" not in record
+
+
+def test_tool_evidence_summary_counts_match(
+    world: SimpleNamespace, client: TestClient
+) -> None:
+    """One call returns the counts, and another identity cannot read them."""
+    _set_evidence(world, "captured")
+    project_a, project_b = world.projects
+    who = identity(world, project_a)
+    other = identity(world, project_b)
+    execution = finished(world, who)
+    _age(world, execution)
+    first = _gateway_usage(world, execution)
+    _gateway_usage(world, execution)
+    _store_gateway(world, execution, first, _masked_tool_document())
+    headers = {"Authorization": f"Bearer {who.token}"}
+    response = client.get(
+        f"/api/v1/flows/executions/{execution.id}/result", headers=headers
+    )
+    assert response.status_code == 200, response.text
+    counts = response.json()["tool_evidence"]
+    assert counts["gateway_requests"] == 2
+    assert counts["missing_records"] == 1
+    # The inspecting native command plus the one gateway record.
+    assert counts["records"] == 2
+    assert counts["incomplete_records"] == 1
+    assert counts["masking_only_records"] == 1
+    assert counts["masking_by_rule"]
+    assert response.json()["platform_review"]["tool_evidence"] == counts
+    blob = json.dumps(counts)
+    assert "sk-" not in blob and "git diff" not in blob and "/" not in blob
+    denied = client.get(
+        f"/api/v1/flows/executions/{execution.id}/result",
+        headers={"Authorization": f"Bearer {other.token}"},
+    )
+    assert denied.status_code == 404
+    assert "masking_by_rule" not in denied.text
+
+
+def test_evidence_values_are_validated_and_content_capture_is_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown values are rejected. The gate is rejected when it cannot pass."""
+    from preloop.config import settings
+
+    with pytest.raises(ValueError):
+        GitCloneConfig.model_validate(
+            _clone(platform_review={**OPT_IN, "evidence": "sometimes"})
+        )
+    with pytest.raises(ValueError, match="evidence"):
+        platform_review.validate_platform_review_block({**OPT_IN, "evidence": "full"})
+    accepted = GitCloneConfig.model_validate(
+        _clone(platform_review={**OPT_IN, "evidence": "captured"})
+    )
+    assert accepted.platform_review.evidence == "captured"
+    flow = SimpleNamespace(
+        git_clone_config=_clone(platform_review={**OPT_IN, "evidence": "complete"}),
+        result_schema=SCHEMA,
+        validate_result=True,
+    )
+    monkeypatch.setattr(settings, "model_gateway_capture_content", False)
+    # Publish keeps evaluating the stored records. Only the save path
+    # rejects a gate that the instance cannot satisfy.
+    platform_review.validate_platform_review_flow(flow)
+    with pytest.raises(ValueError, match="content capture"):
+        platform_review.validate_platform_review_flow(
+            flow, enforce_content_capture=True
+        )
+    monkeypatch.setattr(settings, "model_gateway_capture_content", True)
+    platform_review.validate_platform_review_flow(flow, enforce_content_capture=True)

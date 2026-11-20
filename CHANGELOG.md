@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A read-only review flow can require stored tool evidence before Preloop
+  posts the review. `platform_review.evidence` is `any` (today's behaviour),
+  `captured` (every model request has a record, and the only incomplete
+  records are masked credentials) or `complete` (no incomplete record,
+  masking included). A refusal posts no review, records `evidence_incomplete`
+  and sets the flow's incomplete commit status. The execution result and the
+  publication record include the counts in one call. A manual publish can
+  send `expected_evidence` of `captured` or `complete`; it can only tighten
+  the flow setting.
 - OpenRouter-routed executions show which upstream provider served the final
   answer (**Served by** on the execution page, `upstream_route` on the
   execution detail and `upstream_providers` / `final_answer_upstream_provider`
