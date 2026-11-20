@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The guide documents `preloop agents pause` and `preloop agents resume`
+  for when an approval hook cannot reach Preloop. See
+  [If approvals cannot reach Preloop](docs/guide/cli.md#if-approvals-cannot-reach-preloop).
 - A read-only review flow can require stored tool evidence before Preloop
   posts the review. `platform_review.evidence` is `any` (today's behaviour),
   `captured` (every model request has a record, and the only incomplete

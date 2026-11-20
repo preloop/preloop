@@ -287,6 +287,8 @@ preloop agents install-runtime openclaw -y --model openai/gpt-5.4
 preloop agents install-runtime hermes --skip-install -y  # Onboard an existing install
 preloop agents status openclaw         # Show local/remote managed state
 preloop agents status hermes
+preloop agents pause [agent]           # Pause CLI approval hooks on this machine
+preloop agents resume [agent]          # End that pause
 preloop agents validate openclaw       # Validate the managed config
 preloop agents validate hermes
 preloop agents restore openclaw        # Restore the most recent local backup

@@ -102,6 +102,8 @@ preloop agents onboard <agent> --approvals  # + native action gates (Claude Code
 preloop agents onboard <agent> --tags env=prod,team=infra
 preloop agents status <agent>            # local + remote enrollment state
 preloop agents status <agent> --json     # allowlisted status, no credentials
+preloop agents pause [agent]             # pause CLI approval hooks on this machine
+preloop agents resume [agent]            # end that pause
 preloop agents list                      # managed agents in the account
 preloop agents validate <agent>          # config validation
 preloop agents validate <agent> --live   # + a direct gateway route/accounting probe
@@ -123,6 +125,27 @@ preloop agents onboard --unattended \
   --apps claude_code,codex \
   --url https://preloop.example.com
 ```
+
+### If approvals cannot reach Preloop
+
+When an approval hook cannot reach Preloop, every tool call is refused, or it waits until the hook gives up. The agent cannot run a tool, so it cannot repair the hook.
+
+Run this in a normal terminal, outside the agent:
+
+```bash
+preloop agents pause                  # Claude Code, Codex CLI, Cursor, Copilot CLI, and Devin
+preloop agents pause "Codex CLI" --for 30m
+preloop agents resume                 # end every pause
+preloop agents resume "Codex CLI"     # end that agent's pause
+```
+
+With no agent name, `preloop agents pause` pauses the CLI approval hooks for Claude Code, Codex CLI, Cursor, Copilot CLI, and Devin. Name one of those agents to pause only that hook (`Codex CLI` or `codex`). Any other agent is rejected. The pause lasts 1 hour unless you set `--for`. The longest pause is 24 hours. It ends by itself.
+
+The hooks stay installed. The agent's own configuration is not edited. While the pause is active, the hook lets the call through and does not ask Preloop. Claude Code, Codex CLI, Cursor, and Copilot CLI then use their own permission prompts. Devin's hook requires a verdict, so that call is approved. Tool calls made during a pause are not sent to Preloop and are not audited.
+
+`preloop agents resume` ends the pause early. With no agent name it ends every pause. With an agent name it ends that agent's pause. A pause of every hook stays active until you run `preloop agents resume` with no name, and the command says so. `preloop agents status <agent>` prints `Approvals: paused until ...` when a pause applies to that agent.
+
+Only those CLI approval hooks read the pause. Session hooks from the same onboarding still call Preloop. MCP tool calls still go through the MCP firewall. Gateway model calls still go through the gateway. Runtime-plugin harnesses (OpenCode, Pi, and others) do not read the pause; they call Preloop themselves. A flow whose approval hook was started with `--require-flow-credential` ignores the pause and stays governed. A paused Claude Code or Codex CLI hook can still sync its subscription login with Preloop. That sync is separate from the tool call.
 
 ### Unattended enrollment
 
