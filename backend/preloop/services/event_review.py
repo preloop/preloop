@@ -53,10 +53,6 @@ EVENT_REVIEW_ACTIONS: frozenset[str] = frozenset(
 )
 _SHA_RE = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 _GITHUB_HOSTS = frozenset({"https://github.com", "https://api.github.com"})
-# GitHub documents "Get a pull request" as requiring Pull requests: Read
-# on the installation token. The token is the installation access token
-# (every permission the App was granted), not a contents:read lease.
-ADMISSION_READ_PERMISSION = "pull_requests:read"
 
 
 class EventReviewUnavailableError(RuntimeError):
@@ -505,11 +501,16 @@ def _live_matches(binding: EventReviewBinding, pull: Mapping[str, Any]) -> bool:
         head_repo, binding.repository_identifier, binding.repository_slug
     ):
         return False
+    # The base SHA may advance on the same branch. A different base ref
+    # means the pull request was retargeted, so the stored base is stale.
+    base_ref = base.get("ref") if isinstance(base, Mapping) else None
     return (
         str(pull.get("id")) == binding.provider_pr_id
         and pull.get("number") == binding.pr_number
         and isinstance(head, Mapping)
         and head.get("sha") == binding.head_sha
+        and isinstance(base_ref, str)
+        and base_ref == binding.base_branch
     )
 
 

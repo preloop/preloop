@@ -1482,6 +1482,122 @@ async def test_read_pull_request_uses_the_installation_token_and_retries_5xx(
     assert caught.value.reason == "provider_denied"
 
 
+def _orchestrator(db: Session, world: SimpleNamespace, execution: Any) -> Any:
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    orchestrator = FlowExecutionOrchestrator(
+        db, world.flow.id, {"type": "pull_request_opened"}, SimpleNamespace()
+    )
+    orchestrator.execution_log = execution
+    return orchestrator
+
+
+@pytest.mark.asyncio
+async def test_retargeted_base_at_launch_denies_the_event_run(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+) -> None:
+    """A base branch that changed before launch fails the pending run."""
+    from preloop.services.flow_execution_runner import run_existing_execution
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    world = world_for(db_session, test_user)
+    project = world.projects[0]
+    broker = arm(monkeypatch, world)
+    execution = (await deliver(world, _event(world, project)))[0]
+    document = broker.pulls[(str(project.identifier), 7)]
+    assert isinstance(document, dict)
+    document["base"]["ref"] = "release"
+
+    async def must_not_run(self: Any) -> None:
+        del self
+        raise AssertionError("orchestrator ran after a denied admission")
+
+    monkeypatch.setattr(FlowExecutionOrchestrator, "run", must_not_run)
+    await run_existing_execution(_orchestrator(db_session, world, execution))
+    db_session.refresh(execution)
+    assert execution.status == "FAILED"
+    assert execution.error_message == "Event review admission denied"
+    assert execution.failure_category == "verification_blocked"
+
+
+@pytest.mark.asyncio
+async def test_launch_provider_outage_leaves_the_event_run_pending(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+) -> None:
+    """A 5xx at launch is retried. The row is not failed and not claimed."""
+    from preloop.services.flow_execution_runner import run_existing_execution
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    world = world_for(db_session, test_user)
+    project = world.projects[0]
+    broker = arm(monkeypatch, world)
+    execution = (await deliver(world, _event(world, project)))[0]
+    broker.pulls[(str(project.identifier), 7)] = 503
+
+    async def must_not_run(self: Any) -> None:
+        del self
+        raise AssertionError("orchestrator ran while the provider was down")
+
+    monkeypatch.setattr(FlowExecutionOrchestrator, "run", must_not_run)
+    await run_existing_execution(_orchestrator(db_session, world, execution))
+    db_session.refresh(execution)
+    assert execution.status == "PENDING"
+    assert execution.error_message is None
+    assert (
+        db_session.query(models.PlatformReviewPublication)
+        .filter_by(execution_id=execution.id)
+        .count()
+        == 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_advanced_base_sha_on_the_same_branch_still_posts(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+) -> None:
+    """The base commit may move. Only a different base branch skips the review."""
+    world = world_for(db_session, test_user)
+    project = world.projects[0]
+    arm(monkeypatch, world)
+    execution = finish(world, (await deliver(world, _event(world, project)))[0])
+    github = publish_github(world, monkeypatch)
+    github.pulls[(project.slug, 7)]["base"]["sha"] = OTHER
+    outcome = await post(world, execution)
+    assert outcome is not None and outcome["review"] == "posted"
+    assert github.reviews[(project.slug, 7)][0]["commit_id"] == HEAD
+
+
+@pytest.mark.asyncio
+async def test_retargeted_base_skips_the_review_and_keeps_the_status(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+) -> None:
+    """A retarget after the run skips the review and leaves the status."""
+    world = world_for(db_session, test_user)
+    project = world.projects[0]
+    arm(monkeypatch, world)
+    execution = finish(world, (await deliver(world, _event(world, project)))[0])
+    github = publish_github(world, monkeypatch)
+    github.pulls[(project.slug, 7)]["base"]["ref"] = "release"
+    outcome = await post(world, execution)
+    assert outcome is not None
+    assert outcome["review"] == "skipped"
+    assert outcome["review_reason"] == "base_moved"
+    assert github.reviews == {}
+    assert github.statuses[(project.slug, HEAD)][0]["state"] == "failure"
+
+
 @pytest.mark.asyncio
 async def test_finished_event_run_is_listed_by_the_posting_sweep(
     db_session: Session,

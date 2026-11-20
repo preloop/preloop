@@ -395,7 +395,8 @@ async def prepare_read_only_review(
     context["read_only_head_sha"] = binding.head_sha
     context["read_only_base_sha"] = getattr(binding, "base_sha", None)
     context["read_only_base_ref"] = binding.base_branch
-    context["read_only_fetch_ref"] = f"pull/{binding.pr_number}/head"
+    if isinstance(binding, EventReviewBinding):
+        context["read_only_fetch_ref"] = f"pull/{binding.pr_number}/head"
     context["prompt"] = (
         "Preloop review target (controller-bound):\n"
         f"Head SHA: {binding.head_sha}\n"

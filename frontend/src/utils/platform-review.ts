@@ -237,6 +237,8 @@ export function prerequisitesMet(checks: PrerequisiteCheck[]): boolean {
 const REASONS: Record<string, string> = {
   head_moved:
     'The pull request moved to a newer commit after the review, so no review was posted on it. The status is on the reviewed commit.',
+  base_moved:
+    'The pull request was retargeted onto another branch, so no review was posted. The status is on the reviewed commit.',
   pull_request_closed: 'The pull request was closed or merged before posting.',
   statuses_permission_missing:
     'The GitHub App may not write commit statuses. Grant Commit statuses: Read and write on the App installation, then publish again.',

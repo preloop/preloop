@@ -1461,7 +1461,10 @@ read of the pull request uses the installation token and needs **Pull
 requests: Read**. A failure to mint that token is retried. Ready for
 review is `pull_request_ready_for_review`. `trigger_config: {draft: false}`
 skips drafts. A label on its own does not start a posting run, and a pull
-request opened from a fork does not start one either.
+request opened from a fork does not start one either. A pull request
+retargeted onto another branch is not posted; the status stays on the
+reviewed commit. The base commit advancing on the same branch does not
+skip the review.
 
 The console and the trigger API do not start it. Retries do not post.
 Manual mode is the same publish call, made by an account user who may edit

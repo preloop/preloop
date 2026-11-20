@@ -661,6 +661,7 @@ func printPublicationRecord(out io.Writer, record map[string]any) {
 
 var reviewReasons = map[string]string{
 	"head_moved":                  "the pull request moved to a newer commit; the status is on the reviewed commit",
+	"base_moved":                  "the pull request was retargeted onto another branch; the status is on the reviewed commit",
 	"pull_request_closed":         "the pull request was closed or merged",
 	"statuses_permission_missing": "the GitHub App may not write commit statuses; grant Commit statuses: Read and write, then publish again",
 	"not_configured":              "the flow sets no commit status",

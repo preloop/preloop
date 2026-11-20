@@ -1335,6 +1335,11 @@ async def _post_review(
         # The verdict belongs to the reviewed commit. It is never attached to
         # a head that was not reviewed, and no review is left on a stale one.
         return {"review_state": STATE_SKIPPED, "review_reason": "head_moved"}
+    if not isinstance(base, Mapping) or base.get("ref") != binding.base_branch:
+        # The verdict was computed against the admitted base. A retarget
+        # makes the live diff a different change, so the review is not posted.
+        # The base SHA may advance on the same branch; only the ref is compared.
+        return {"review_state": STATE_SKIPPED, "review_reason": "base_moved"}
     if row.attempts > 1:
         # A previous attempt may have posted and then lost its claim. The
         # nonce is unguessable before the first post, so a match is ours.
