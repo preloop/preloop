@@ -384,6 +384,17 @@ class PlatformReview(BaseModel):
     status: Optional[PlatformReviewStatus] = Field(
         default=None, description="Commit status to set; omit for none"
     )
+    evidence: Optional[Literal["any", "captured", "complete"]] = Field(
+        default=None,
+        description=(
+            "Which stored tool evidence may be posted. Omit or any to post "
+            "as today. captured posts only when every gateway request has a "
+            "record, none failed to capture, and every incomplete record is "
+            "incomplete only because a named credential mask fired. complete "
+            "also refuses a masked credential. Requires model gateway "
+            "content capture to be on."
+        ),
+    )
     enabled_at: Optional[str] = Field(
         default=None,
         pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$",

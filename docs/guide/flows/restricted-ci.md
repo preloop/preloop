@@ -1506,12 +1506,16 @@ request** card under the publication policy:
    **Only when requested** (manual: nothing is posted until the publish call
    is made). **Off** turns posting off. The badge on the card shows the saved
    mode.
-3. To set a commit status, tick **Set a commit status for each verdict** and
+3. Under **Tool evidence**, choose **Any** (post whether or not the run's
+   tool evidence is complete), **Captured** (every model request has an
+   evidence record, and the only incomplete records are masked credentials)
+   or **Complete** (no record is incomplete, including masked credentials).
+4. To set a commit status, tick **Set a commit status for each verdict** and
    choose Success, Failure or Error for every verdict of your schema. Keep
    the status name (`preloop/review` by default) stable if a branch
    protection rule requires it. Optionally choose what to set when a run
    stops, fails or returns no valid result.
-4. **Save**. The card refuses a save the server would refuse and says why;
+5. **Save**. The card refuses a save the server would refuse and says why;
    a refusal from the server is shown as it was returned.
 
 Users who may not edit flows see the card read-only.
@@ -1521,15 +1525,18 @@ Users who may not edit flows see the card read-only.
 ```sh
 preloop flow review-posting show pull-request-reviewer
 preloop flow review-posting enable pull-request-reviewer \
-  --state pass=success --state fail=failure --incomplete-state error
+  --state pass=success --state fail=failure --incomplete-state error \
+  --evidence captured
 preloop flow review-posting enable pull-request-reviewer --no-status   # review only
 preloop flow review-posting set-states pull-request-reviewer --state fail=error
 preloop flow review-posting set-states pull-request-reviewer --status-context ci/review
 preloop flow review-posting disable pull-request-reviewer              # keeps the mapping
 ```
 
-`show` prints whether posting is on, the verdict mapping and the
-prerequisites it can read from the flow. `enable` and `set-states` refuse,
+`show` prints whether posting is on, the evidence level (`any` when the
+key is absent), the verdict mapping and the prerequisites it can read from
+the flow. `--evidence` is `any`, `captured` or `complete` on `enable` and
+`set-states`. `enable` and `set-states` refuse,
 before saving, a verdict that is not in the schema or a schema verdict
 without a state. Each write changes only `git_clone_config.platform_review`.
 Every command takes `--json`. The commands use your saved login or
@@ -1559,24 +1566,146 @@ Every command takes `--json`. The commands use your saved login or
 | `status.context` | Status name, default `preloop/review`. Keep it stable so a branch protection rule can require it. |
 | `status.verdict_states` | `success`, `failure` or `error` for every verdict your schema admits. Saving fails if one is missing. |
 | `status.incomplete_state` | Optional `error` or `failure`, set with a neutral description when the run stopped, failed or returned no valid result, so a required status is not left waiting. Without it nothing is posted for such runs. |
+| `evidence` | Optional. Which stored tool evidence may be posted. See [Tool evidence](#tool-evidence). |
 
-What your result must contain. Preloop reads only these fields of the
-validated result; your schema decides which are required beyond `verdict`:
+### What your result must contain
 
-- `verdict`: the schema must declare it as a required string with an `enum`.
-- `summary`: text.
-- `findings`: a list of objects with `severity`, `title`, `body` (or
-  `description`, `message`, `detail`), `path` (or `file`) and `line`.
-- `checked` (or `checks`): a list of short strings saying what was reviewed.
+`verdict` is the one required field: a required string with an `enum`.
+Everything else below is posted when the validated result carries it. Your
+schema decides which of them are required. Nothing a finding holds is left
+out of the review without the review saying so.
+
+- **Summary.** `summary`, or if that is absent `review`, or else `overview`.
+- **Findings.** A list of objects. For each object:
+  - **Severity** is `severity`, shown in the heading.
+  - **Title** is `title`. When a finding has no title, the heading is the
+    number, the severity and the location. The word "Finding" is not added.
+  - **Text** is the first non-empty string among `body`, `description`,
+    `message`, `detail`, `problem`, `issue`, `finding` and `summary`, in
+    that order.
+  - **Location** is `path` or `file`, together with `line`. A line may be a
+    number or a decimal string such as `"17"`. When there is no path, a
+    string `location` or `where` is read: `path`, `path:LINE`,
+    `path:LINE-LINE` or `path#LLINE`. The path and the first line are used.
+    Anything else is shown as code and is not an inline comment.
+  - **Every other field** is a labelled block under the text, in the order
+    the result schema declares the properties (or the order in the result
+    when the schema does not name them). A string, number or boolean is
+    shown as text. A list of strings is shown as a list. Anything else is
+    counted ("2 fields not shown") and not rendered. A value cut for length
+    says "text shortened". The label is the field name, shown as text, so a
+    name the schema allows cannot become markup.
+- **Checked.** `checked` or `checks`, a list of short strings.
+
+`preloop flow review-posting show` and the **Post review on the pull
+request** card list the finding fields your schema declares and how each
+one appears (severity, title, text, location or a labelled block). When the
+schema declares findings and none of those fields is a text field, the flow's
+`config_warnings` says so. The flow still saves.
+
+A finding becomes an inline comment only when its path and line are in the
+pull request's diff. The comment carries the same blocks as the body. All
+text from the result is shown as literal text: it cannot mention a user,
+link anywhere, reference or close an issue, or carry HTML. File paths are
+shown as code. When the review is cut for size it says how many findings
+are not shown and points at the execution, which holds the full result.
+
+One result in the original field names:
+
+<!-- example: fragment -->
+```json
+{
+  "verdict": "fail",
+  "summary": "One problem in the parser.",
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Unchecked length",
+      "body": "The length is read before it is validated.",
+      "path": "src/parser.py",
+      "line": 12
+    }
+  ]
+}
+```
+
+The review GitHub shows for that result (the hidden marker is omitted):
+
+```text
+### Preloop review: fail
+
+Reviewed commit `<sha>`. This review covers that commit only.
+
+**Summary**
+
+> One problem in the parser.
+
+**Findings (1)**
+
+**1. [high] Unchecked length** (`src/parser.py:12`)
+
+> The length is read before it is validated.
+
+Execution: <link to the execution>
+
+Posted by Preloop from the validated result of a read-only review run.
+```
+
+The same review from `problem`, `evidence`, `fix` and `location`. There is
+no `title` and no `summary`; the narrative is `review`:
+
+<!-- example: fragment -->
+```json
+{
+  "verdict": "changes_requested",
+  "review": "Reserved stock can still be sold.",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "problem": "A sale ignores reservations.",
+      "evidence": "The count is written with no reservation check.",
+      "fix": "Refuse the sale when reserved units cover it.",
+      "location": "shop/inventory.py:17"
+    }
+  ]
+}
+```
+
+```text
+### Preloop review: changes_requested
+
+Reviewed commit `<sha>`. This review covers that commit only.
+
+**Summary**
+
+> Reserved stock can still be sold.
+
+**Findings (1)**
+
+**1. [MEDIUM]** (`shop/inventory.py:17`)
+
+> A sale ignores reservations.
+
+**evidence**
+
+> The count is written with no reservation check.
+
+**fix**
+
+> Refuse the sale when reserved units cover it.
+
+Execution: <link to the execution>
+
+Posted by Preloop from the validated result of a read-only review run.
+```
+
+With line 17 in the pull request diff, that finding is also one inline
+comment with the same problem, evidence and fix.
 
 What gets posted:
 
-- A review with the verdict, the summary, every finding with its severity,
-  file and line, what was checked, the reviewed commit and a link to the
-  execution. A finding whose file and line are in the pull request's diff is
-  also an inline comment. All text from the result is shown as literal text:
-  it cannot mention a user, link anywhere, reference or close an issue, or
-  carry HTML. File paths are shown as code.
+- A review with the verdict, the summary, every finding as above, what was
+  checked, the reviewed commit and a link to the execution.
 - A commit status on the reviewed SHA with the state mapped from the verdict.
 - Nothing from the result chooses the target. Repository, pull request and
   commit are the ones Preloop bound when it accepted the trigger
@@ -1586,6 +1715,63 @@ What gets posted:
   (`review_reason: "head_moved"`). Trigger a review of the new head.
 - A run that stopped, failed or returned an invalid result never posts a
   verdict.
+
+### Tool evidence
+
+`platform_review.evidence` decides whether the stored tool evidence of the
+run is complete enough to post. It is checked when the run finishes, when
+the sweep retries, and on the publish call, from the records stored at that
+moment.
+
+| Value | What may be posted |
+| --- | --- |
+| absent or `any` | Today's behaviour. The records are not consulted. |
+| `captured` | Every model (gateway) request of the run has an evidence record, no record is a capture failure, and no record is incomplete for a reason other than a masked credential. A record that is incomplete only because a named masking rule fired is accepted. An older incomplete record that does not say why is not. |
+| `complete` | The same as `captured`, and no record is incomplete for any reason, including a masked credential. |
+
+A masked credential still marks that gateway record incomplete. `captured`
+accepts that record; `complete` does not. Saving `captured` or `complete`
+requires model-gateway content capture to be on for the instance
+(`MODEL_GATEWAY_CAPTURE_CONTENT`). Without it the setting is rejected,
+because the gate could never pass. That check is only at save. Turning
+content capture off later does not by itself reject a publish: a record
+stored while capture was on can still meet the gate, and a record stored
+with content capture off does not.
+
+When the gate refuses, no review is posted. The publication is recorded with
+`reason: "evidence_incomplete"` and the counts below. The commit status, when
+the flow sets one, is the flow's `incomplete_state`, or `error` when the flow
+sets a status and no incomplete state: never the verdict's state.
+
+The last streaming model request can still be writing its evidence after the
+run is marked finished. For about 30 seconds after the run finishes, a flow
+with `captured` or `complete` (or a publish call that asks for one of those)
+neither posts nor records `evidence_incomplete`. An automatic post is left
+for the sweep. An explicit publish call answers **409** with
+`detail.code` `evidence_pending`.
+
+`GET /api/v1/flows/executions/{id}/result` carries the counts once, both at
+the top level (`tool_evidence`) and on the publication record
+(`platform_review.tool_evidence`). The execution an operator opens carries
+them on its publication record too. The execution list, a CI status poll
+and the `flow.execution.finished` event do not: those reads must not decode
+every evidence record. A CI identity that can read its own result can read
+the counts. They contain no observation values, paths or text:
+
+| Field | Meaning |
+| --- | --- |
+| `gateway_requests` | Model requests recorded for the run. |
+| `missing_records` | Model requests with no evidence record. |
+| `records` | Stored evidence records, model requests and native commands. |
+| `incomplete_records` | Records that are incomplete, unreadable, a capture failure, or stored with content capture off. |
+| `masking_only_records` | Incomplete records whose only stored reason is a named masking rule. |
+| `masking_by_rule` | How many times each masking rule fired. Rule ids only. |
+
+On the publish call, `expected_evidence` of `captured` or `complete` is a
+precondition. It can only tighten the flow setting: `captured` does not post
+a run whose flow requires `complete`. A mismatch answers **412**
+`review_precondition_failed`, with `source: "tool_evidence"`, and posts
+nothing. `any` is not a precondition value.
 
 ### GitHub App permissions
 
@@ -1654,7 +1840,9 @@ the result schema never affect an identity.
 
 `GET /api/v1/flows/executions/{id}`, `GET .../result` and the `data` of
 `flow.execution.finished` carry `platform_review` (`null` when the flow has
-not opted in):
+not opted in). `tool_evidence` is present on the result and on the
+execution an operator opens; the list, a status poll and the finished event
+omit it:
 
 <!-- example: fragment -->
 ```json
@@ -1673,7 +1861,16 @@ not opted in):
   "status_reason": null,
   "posted_at": "2030-01-01T00:00:05+00:00",
   "attempts": 1,
-  "retry_scheduled": false
+  "retry_scheduled": false,
+  "tool_evidence": {
+    "gateway_requests": 2,
+    "missing_records": 0,
+    "records": 2,
+    "incomplete_records": 0,
+    "masking_only_records": 0,
+    "masking_by_rule": {}
+  },
+  "readback_check": null
 }
 ```
 
@@ -1696,7 +1893,8 @@ and reviewed commit. Each is `null` until there is something to link to.
 In the console the execution page shows the record under **Posted on the
 pull request**: posted, skipped (for example because the head moved) or
 failed with the reason in words, such as a missing **Commit statuses**
-permission, with links to the review, the status and the pull request. From
+permission or incomplete tool evidence, with the evidence counts and links
+to the review, the status and the pull request. From
 the CLI:
 
 ```sh
@@ -1730,10 +1928,33 @@ changes the execution's status or result. `reason` values include
 `statuses_permission_missing`, `provider_unavailable`, `provider_denied`,
 `provider_rejected`, `lease_refused`, `lease_unavailable`,
 `attempt_interrupted`, `platform_review_disabled`, `precondition_failed`,
-`manual_mode` and `readback_mismatch`. In automatic mode Preloop retries
-`provider_unavailable` and similar transient failures by itself, up to six
-attempts with growing delays. In manual mode it never retries on its own: a
-failed attempt waits for your next publish call.
+`manual_mode`, `evidence_incomplete`, `readback_pending` and
+`readback_mismatch`. In automatic mode
+Preloop retries `provider_unavailable`, `readback_pending` and similar
+transient failures by itself, up to six attempts with growing delays. In
+manual mode it never retries on its own: a failed attempt waits for your
+next publish call.
+
+`readback_check` on the same record names the last comparison that failed.
+It stays set when a later attempt fails for another reason while that
+read-back is still owed, and it is null once the publication is posted or
+no read-back has failed. It is one of
+`review_absent`, `review_actor`, `review_commit`, `review_state`,
+`review_body`, `status_absent`, `status_state`, `status_context` and
+`status_target_url`. The log line for the attempt carries the execution id
+and that value, and neither carries the review text. A record written
+before this field existed can show `readback_check` null with `reason`
+`readback_mismatch`. The publish call still reads the recorded ids and does
+not mark that record posted without the comparison.
+
+| `reason` | What it means | What to do |
+| --- | --- | --- |
+| `readback_pending` | The review or status was accepted, then was not visible yet (`readback_check` is `review_absent` or `status_absent`). The review id and the status id stay on the record. | Wait. In automatic mode Preloop reads them again and completes the record without posting a second time. In either mode the publish call does the same. |
+| `readback_mismatch` | GitHub has the object and it differs: the actor, commit, state, context, target URL or body (`readback_check` names which). | Look at the pull request. An explicit publish call reads the recorded ids again. When they match what was sent, the record becomes `posted`. When they still differ, it stays `failed` with the same check. Nothing is posted again, and automatic retry does not take the row. A record posted before the sent body and status URL were stored is compared with a fresh render. When that differs, the record stays `failed` with `review_body`. The review and the status are already on the pull request and are listed on the record, so leaving it failed is safe. |
+| `provider_unavailable` | GitHub was unavailable or rate limited. | Automatic mode retries. Otherwise publish again. |
+| `statuses_permission_missing` | The review is posted. The App may not write commit statuses. | Grant **Commit statuses: Read and write**, then publish again. The review is not posted twice. |
+| `head_moved` | The pull request moved on. The status is on the reviewed commit. No review was posted. | Trigger a review of the new head. |
+| `precondition_failed` | A value on the publish call does not match the stored run or the live pull request. Nothing was posted for that call. | Publish again with the current values. |
 
 ### Publish a finished review (manual mode) or again
 
@@ -1787,7 +2008,8 @@ optional; send the ones you want enforced:
   "expected_head_sha": "<head_sha from GET .../result>",
   "expected_base_sha": "<base_sha from GET .../result>",
   "expected_result_sha256": "<result_sha256 from GET .../result>",
-  "expected_flow_revision": 3
+  "expected_flow_revision": 3,
+  "expected_evidence": "captured"
 }
 ```
 
@@ -1797,6 +2019,7 @@ optional; send the ones you want enforced:
 | `expected_base_sha` | Full commit SHA. Equals the bound base, when the binding records one, **and** the live base of the pull request. |
 | `expected_result_sha256` | 64 hex characters. Equals the digest of the stored result (below). |
 | `expected_flow_revision` | Positive integer. The integer you send is compared with the flow's configuration `revision` at publish time. The execution's `flow_revision` is the revision from when the run was created; send it to refuse the post after a later configuration change. Posting reads the flow (verdict mapping, review actions, status) at post time. See [What must still be in place when you publish](#what-must-still-be-in-place-when-you-publish). |
+| `expected_evidence` | `captured` or `complete`. The stored tool evidence meets that level. It can only tighten `platform_review.evidence`; a weaker value does not lower the flow. See [Tool evidence](#tool-evidence). |
 
 Each supplied precondition is checked before anything is posted, again on
 the flow and execution as they are read for the post, and the commit SHAs

@@ -88,11 +88,21 @@ Only fields of the stored result, and only when all of these hold:
 - `verdict` is one of the values the schema's enum admits and the flow maps
   it explicitly.
 
-Fields read: `verdict`, `summary`, `findings[]` (`severity`, `title`, `body`
-or `description` or `message` or `detail`, `path` or `file`, `line`) and
-`checked[]` (or `checks[]`). Nothing else in the result is read. The template
-adds the reviewed commit, a link to the execution built from server
-configuration, and a hidden marker.
+Fields read: `verdict`, the summary (`summary`, else `review`, else
+`overview`), `findings[]` and `checked[]` (or `checks[]`). A finding's text
+is the first non-empty string among `body`, `description`, `message`,
+`detail`, `problem`, `issue`, `finding` and `summary`. Its location is
+`path` or `file` with `line` (a decimal string counts as a line), or, when
+there is no path, a `location` or `where` string of the form `path`,
+`path:LINE`, `path:LINE-LINE` or `path#LLINE`. Every other member of the
+finding is a labelled block, in the order the result schema declares the
+properties. A value that is not a string, number, boolean or list of
+strings is counted in that finding ("2 fields not shown"), and a value cut
+for length says "text shortened". A finding with no title is headed by its
+number, severity and location. Nothing a finding holds is dropped without
+the review saying so. The template adds the reviewed commit, a link to the
+execution built from server configuration, and a hidden marker. The result
+still cannot choose the repository, pull request, commit or review action.
 
 ### Escaping rule
 
@@ -128,14 +138,17 @@ column zero.
 
 Caps: body 60,000 characters, summary 4,000, 50 findings in the body (the
 rest are counted, with a pointer to the execution), title 200, finding body
-2,000, 20 inline comments, 30 checked items of 200.
+2,000, 8 extra fields of 2,000 characters (labels 80), 20 inline comments,
+30 checked items of 200.
 
 ### Inline comments
 
-A finding becomes an inline comment only when its `path` equals a file name
-in the pull request's file list and its `line` is a line of the new side
-inside a diff hunk. Every finding is also in the body, so a rejected inline
-position costs nothing: if GitHub answers 422 to a review with inline
+A finding becomes an inline comment only when its path equals a file name
+in the pull request's file list and its line is a line of the new side
+inside a diff hunk. The path and line come from `path` or `file` with
+`line`, or from a parsed `location` / `where`. The comment carries the same
+blocks as the body entry. Every finding is also in the body, so a rejected
+inline position costs nothing: if GitHub answers 422 to a review with inline
 comments, the same review is sent once more without them.
 
 ## Where
@@ -247,9 +260,30 @@ nonce is unknown to anyone before the first post, so a stranger cannot plant
 a review that suppresses ours.
 
 After each write the step reads it back from GitHub and compares actor (an
-App bot), target (commit, context) and content (body digest, state). A
-mismatch is recorded as `readback_mismatch` and is never cleared by a retry:
-a person has to look at the pull request.
+App bot), target (commit, context, target URL) and content (body digest,
+state). When the object just written is not visible yet (the review read is
+not found or has no body, or the status list does not contain the new id),
+the step reads again a few times over a few seconds
+(`READBACK_RETRY_DELAYS`). Only an object that is present and different is
+`readback_mismatch`. That failure is final for an automatic attempt: it is
+not cleared by retrying, and a person has to look. The record's
+`readback_check` names the comparison (`review_absent`, `review_actor`,
+`review_commit`, `review_state`, `review_body`, `status_absent`,
+`status_state`, `status_context`, `status_target_url`) and the attempt logs
+that value with the execution id, never the body.
+
+Still not visible after the waits is `readback_pending`, which is retryable.
+The review id and the status id stay on the row. The sweep and the publish
+call finish it by reading those ids and comparing them with the body digest
+and the status target URL stored when they were sent. That pass does not
+call a create endpoint. A row posted before those were stored is compared
+with a fresh render, and a difference stays failed. A `readback_mismatch`
+row that already holds an id is not swept. An explicit publish call (a person, or an identity
+with `execution:review:publish`) runs the same verification. A match
+completes the record as posted. A present difference stays failed and names
+the check. A mismatch recorded before `readback_check` existed has a null
+check. The claim keeps that reason, and the explicit call still reads the
+ids rather than marking the row posted.
 
 ## Posting modes and caller preconditions
 
@@ -349,13 +383,13 @@ reading.
 | 1 | The run obtains a write credential | publish lease minted only after the run is terminal, in the control plane; container context holds the read lease only | `test_container_context_of_an_opted_in_flow_has_no_write_credential` |
 | 2 | The lease can push, merge or reach another repository | one repository, no `contents`; GitHub's returned scope must match exactly | `test_publish_lease_is_one_repository_two_permissions_and_revoked`, `test_broader_permission_set_returned_by_github_is_refused`, `test_no_publish_profile_carries_contents`, `test_lease_for_one_repository_cannot_write_to_the_other` |
 | 3 | The lease is used for another call (close, edit, merge) | fixed request allowlist; the tests assert the complete list of writes | `test_valid_result_posts_one_review_and_one_status_on_the_bound_commit` |
-| 4 | A prompt-injected result mentions people, links out, closes issues, hides HTML or commands a bot | fixed template, `plain_text`, caps | `test_plain_text_neutralises_mentions_links_html_and_commands`, `test_rendered_review_contains_no_model_markup_and_respects_caps`, `test_paths_render_in_code_spans_without_backslashes`, `test_path_that_could_leave_a_code_span_is_rendered_as_text`, `test_ordinary_text_is_left_readable` |
+| 4 | A prompt-injected result mentions people, links out, closes issues, hides HTML or commands a bot | fixed template, `plain_text` on finding text, labels and values, caps | `test_plain_text_neutralises_mentions_links_html_and_commands`, `test_rendered_review_contains_no_model_markup_and_respects_caps`, `test_object_field_is_counted_and_labels_are_escaped`, `test_paths_render_in_code_spans_without_backslashes`, `test_path_that_could_leave_a_code_span_is_rendered_as_text`, `test_ordinary_text_is_left_readable` |
 | 5 | The result names another pull request, repository or commit | target only from the binding; unknown result fields are not read | `test_result_naming_another_pull_request_is_ignored`, `test_publish_request_cannot_name_a_target` |
 | 6 | Shared flow: project A's run or key posts on, or reads, project B | binding, per-repository lease, principal-owned queries | `test_two_projects_on_one_shared_flow_never_cross`, `test_ci_identity_cannot_publish_another_principals_execution` |
 | 7 | A verdict lands on a commit that was not reviewed | `commit_id` and status SHA from the binding; moved head skips the review | `test_moved_head_skips_the_review_and_keeps_the_status_on_the_reviewed_sha`, `test_closed_pull_request_gets_no_review`, `test_pull_request_identity_mismatch_is_refused` |
 | 8 | An invalid, stopped or failed run posts a verdict | plan requires SUCCEEDED, stored validity and re-validation | `test_invalid_stopped_and_failed_runs_post_no_verdict`, `test_stored_result_that_no_longer_matches_the_schema_is_not_posted`, `test_incomplete_run_posts_nothing_without_incomplete_state` |
 | 9 | Retries, restarts or republish calls duplicate the review | claim row, recorded writes, nonce adoption | `test_duplicate_delivery_and_republish_post_once`, `test_live_claim_blocks_a_concurrent_attempt`, `test_lost_response_after_posting_is_adopted_not_reposted`, `test_review_with_a_foreign_marker_is_not_adopted` |
-| 10 | What GitHub holds differs from what was sent | read-back of actor, target and content | `test_read_back_mismatch_is_recorded_and_never_cleared_by_a_retry` |
+| 10 | What GitHub holds differs from what was sent | read-back of actor, target and content; a lag is retried, a present difference is final and an explicit call can repair a record whose provider state matches | `test_read_back_mismatch_is_recorded_and_never_cleared_by_a_retry`, `test_present_difference_stays_final`, `test_review_that_stays_invisible_is_pending_then_verified`, `test_explicit_repair_of_a_different_body_stays_failed` |
 | 11 | A posting failure corrupts or hides the review result | isolation, bounded retry, explicit recovery | `test_posting_failure_leaves_status_and_result_untouched_then_recovers`, `test_automatic_retries_are_bounded`, `test_unexpected_error_during_publication_is_recorded_not_raised`, `test_completion_path_swallows_a_publication_crash` |
 | 12 | Enabling posting hands an identity new authority, or breaks it | posting uses the control plane's own token; the snapshot ignores posting settings; republish needs an explicit action added by an administrator | `test_existing_identity_survives_adding_changing_and_removing_posting`, `test_first_run_after_enabling_posts_with_the_existing_identity`, `test_snapshot_written_by_an_earlier_release_is_honoured`, `test_what_must_invalidate_an_identity_still_does`, `test_publish_action_is_added_to_an_existing_key_in_place`, `test_broken_posting_settings_block_posting_but_not_the_identity` |
 | 13 | A CI key turns the opt-in on, or publishes without the action | flow routes deny CI keys; `execution:review:publish` | `test_ci_identity_cannot_enable_the_opt_in`, `test_publish_needs_the_explicit_action` |
@@ -374,6 +408,7 @@ reading.
 | 26 | A fork pull request steers the review onto another repository | Both `head.repo` and `base.repo` must be the bound repository, or no posting run starts. | `test_fork_pull_request_starts_no_posting_run` |
 | 27 | A user who cannot edit the flow causes a post by opening a pull request | The run starts only for a flow an administrator enabled, on a project in `trigger_project_ids`, for an allowlisted action, and only when `trigger_config` matches. Cost is the flow's existing limits and the account kill switch. One active run per pull request and `supersede_on_update` bound how many runs one pull request can start. There is no new rate limit. | `test_opening_a_pull_request_posts_only_inside_the_flow_filters` |
 | 28 | Posting continues after the project is removed or the installation is suspended | `authorize_event_review` before every attempt. Project removed or flow disabled is `admission_revoked`. `suspended_at` set is `installation_suspended` and is not retried. | `test_project_removed_from_the_event_flow_revokes_posting`, `test_suspended_installation_stops_posting_without_a_retry` |
+| 29 | A review is posted for a run whose record of what the reviewer read is incomplete | `platform_review.evidence` is `captured` or `complete`; the publication plan refuses with `evidence_incomplete` and the incomplete commit status, and a caller `expected_evidence` can only tighten that | `test_platform_review.py`: `test_captured_posts_when_records_are_complete`, `test_captured_posts_when_the_only_incomplete_record_is_a_masked_credential`, `test_captured_refuses_incomplete_evidence`, `test_complete_refuses_a_masked_credential`, `test_automatic_sweep_and_explicit_publish_agree_on_the_evidence_gate`, `test_later_publish_succeeds_once_nothing_is_missing`, `test_late_gateway_evidence_is_not_refused_or_posted_early`, `test_publish_reads_the_stored_records_once`, `test_status_projection_does_not_read_tool_evidence`; `test_platform_review_manual.py`: `test_expected_evidence_refuses_with_412_and_cannot_loosen_the_flow_setting`, `test_explicit_publish_answers_409_while_evidence_may_still_arrive` |
 
 ## GitHub App permissions
 

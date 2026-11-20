@@ -23,6 +23,7 @@ import {
   COMMIT_STATES,
   DEFAULT_STATUS_CONTEXT,
   STATUS_CONTEXT_PATTERN,
+  findingFieldAppearances,
   platformReviewMode,
   platformReviewPrerequisites,
   prerequisitesMet,
@@ -53,6 +54,14 @@ const EVENT_REVIEW_TYPES = new Set([
   'pull_request_reopened',
   'pull_request_ready_for_review',
 ]);
+
+const EVIDENCE_HELP: Record<'any' | 'captured' | 'complete', string> = {
+  any: "Post whether or not the run's tool evidence is complete.",
+  captured:
+    'Post only when every model request has an evidence record, and the only incomplete records are masked credentials.',
+  complete:
+    'Post only when every model request has an evidence record and no record is incomplete, including masked credentials.',
+};
 
 const STATE_LABELS: Record<CommitState, string> = {
   success: 'Success (passes)',
@@ -232,6 +241,42 @@ export class FlowPlatformReviewCard extends LitElement {
     return verdictEnum(this.flow?.result_schema);
   }
 
+  private renderFindingFields() {
+    const plan = findingFieldAppearances(this.flow?.result_schema);
+    if (!plan.declared) {
+      return html`<p class="meta" data-finding-fields>
+        The result schema does not declare finding fields. A finding in the
+        result is still posted from the fields it carries.
+      </p>`;
+    }
+    return html`
+      <ul class="checks" data-finding-fields>
+        ${
+          plan.fields.length
+            ? plan.fields.map(
+                (field) =>
+                  html`<li data-finding-field=${field.field}>
+                    <span></span>
+                    <span><code>${field.field}</code> ${field.appearsAs}</span>
+                  </li>`
+              )
+            : html`<li>
+                <span></span><span>No finding fields declared.</span>
+              </li>`
+        }
+      </ul>
+      ${
+        plan.hasText
+          ? nothing
+          : html`<sl-alert variant="warning" open data-finding-text>
+              <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+              The schema declares no text field for a finding, so the review has
+              no problem statement. You can still save.
+            </sl-alert>`
+      }
+    `;
+  }
+
   private get checks(): PrerequisiteCheck[] {
     return platformReviewPrerequisites(
       this.flow || {},
@@ -267,6 +312,12 @@ export class FlowPlatformReviewCard extends LitElement {
         : mode === 'manual'
           ? { ...rest, enabled: true, mode: 'manual' }
           : { ...rest, enabled: true };
+  }
+
+  private setEvidence(value: 'any' | 'captured' | 'complete'): void {
+    this.saved = false;
+    const { evidence: _evidence, ...rest } = this.draft;
+    this.draft = value === 'any' ? { ...rest } : { ...rest, evidence: value };
   }
 
   private setStatusOn(on: boolean): void {
@@ -530,6 +581,8 @@ export class FlowPlatformReviewCard extends LitElement {
           the result schema. The run itself never holds a token that can write
           to GitHub. Turning this on needs no new CI identities.
         </p>
+        <div class="section-title">What the review shows</div>
+        ${this.renderFindingFields()}
         <div class="section-title">What it needs</div>
         ${
           this.loadingTrackers
@@ -564,6 +617,26 @@ export class FlowPlatformReviewCard extends LitElement {
                 A pull request event on this flow's GitHub tracker starts the
                 run. No CI identity is required.
               </p>`
+            : nothing
+        }
+        ${
+          enabled
+            ? html`<sl-select
+                label="Tool evidence"
+                data-field="evidence"
+                help-text=${EVIDENCE_HELP[this.draft.evidence || 'any']}
+                .value=${this.draft.evidence || 'any'}
+                ?disabled=${!this.editable}
+                @sl-change=${(event: Event) =>
+                  this.setEvidence(
+                    (event.target as HTMLInputElement).value as
+                      'any' | 'captured' | 'complete'
+                  )}
+              >
+                <sl-option value="any">Any</sl-option>
+                <sl-option value="captured">Captured</sl-option>
+                <sl-option value="complete">Complete</sl-option>
+              </sl-select>`
             : nothing
         }
         ${
@@ -650,6 +723,9 @@ function normalise(block: PlatformReviewConfig): PlatformReviewConfig {
   const out: PlatformReviewConfig = { enabled: Boolean(block.enabled) };
   // Automatic is what a block without a mode means; only manual is stored.
   if (block.enabled && block.mode === 'manual') out.mode = 'manual';
+  if (block.evidence === 'captured' || block.evidence === 'complete') {
+    out.evidence = block.evidence;
+  }
   if (block.action && block.action !== 'comment') out.action = block.action;
   if (block.verdict_actions && Object.keys(block.verdict_actions).length) {
     out.verdict_actions = block.verdict_actions;

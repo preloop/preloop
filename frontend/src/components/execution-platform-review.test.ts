@@ -170,4 +170,36 @@ describe('execution-platform-review', () => {
     );
     expect(q(element, '[data-action="publish"]')).to.equal(null);
   });
+
+  it('shows an evidence refusal and the counts, with no evidence text', async () => {
+    const element = await mount(
+      record({
+        status: 'skipped',
+        review: 'skipped',
+        review_reason: 'evidence_incomplete',
+        reason: 'evidence_incomplete',
+        commit_status: 'error',
+        tool_evidence: {
+          gateway_requests: 2,
+          missing_records: 1,
+          records: 1,
+          incomplete_records: 1,
+          masking_only_records: 0,
+          masking_by_rule: { sk_key: 1 },
+        },
+      })
+    );
+    const text = element.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(text).to.contain('not complete enough');
+    const evidence = q(element, '[data-tool-evidence]').textContent!.replace(
+      /\s+/g,
+      ' '
+    );
+    expect(evidence).to.contain('2 model requests');
+    expect(evidence).to.contain('1 missing');
+    expect(q(element, '[data-masking-rules]').textContent).to.contain(
+      'sk_key: 1'
+    );
+    expect(text).to.not.contain('sk-');
+  });
 });

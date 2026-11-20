@@ -412,6 +412,33 @@ class ReviewIntegrity(BaseModel):
     inspection: ReviewIntegrityInspection
 
 
+class ToolEvidenceSummary(BaseModel):
+    """Counts of stored tool evidence. No values, paths or text."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gateway_requests: int = Field(description="Gateway requests for this execution.")
+    missing_records: int = Field(
+        description="Gateway requests with no stored evidence record."
+    )
+    records: int = Field(description="Stored evidence records, gateway and native.")
+    incomplete_records: int = Field(
+        description=(
+            "Records that are incomplete, unreadable, a capture failure, or "
+            "stored with content capture off."
+        )
+    )
+    masking_only_records: int = Field(
+        description=(
+            "Incomplete records whose only stored reason is a named "
+            "credential-masking rule."
+        )
+    )
+    masking_by_rule: dict[str, int] = Field(
+        description="How many times each named masking rule fired. Rule ids only."
+    )
+
+
 class ReviewCompletion(BaseModel):
     """Independent completion facts, with later failures named separately."""
 
@@ -491,3 +518,10 @@ class CiExecutionResultResponse(CiExecutionResponse):
     )
     schema_validation: dict[str, Any] | None
     completion: ReviewCompletion
+    tool_evidence: ToolEvidenceSummary = Field(
+        description=(
+            "Stored tool-evidence counts for this execution. The same object "
+            "is on platform_review.tool_evidence. No observation values, "
+            "paths or text."
+        )
+    )

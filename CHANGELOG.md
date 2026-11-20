@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A read-only review flow can be started by a GitHub pull request event and
   Preloop posts the review and the commit status, with no CI identity. The
   run stays read-only.
+- A read-only review flow can require stored tool evidence before Preloop
+  posts the review. `platform_review.evidence` is `any` (today's behaviour),
+  `captured` (every model request has a record, and the only incomplete
+  records are masked credentials) or `complete` (no incomplete record,
+  masking included). A refusal posts no review, records `evidence_incomplete`
+  and sets the flow's incomplete commit status. The execution result and the
+  publication record include the counts in one call. A manual publish can
+  send `expected_evidence` of `captured` or `complete`; it can only tighten
+  the flow setting.
 - OpenRouter-routed executions show which upstream provider served the final
   answer (**Served by** on the execution page, `upstream_route` on the
   execution detail and `upstream_providers` / `final_answer_upstream_provider`
@@ -35,6 +44,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `config_warnings` entry, shown on the flow and model pages.
 
 ### Fixed
+
+- A review posted by Preloop includes the finding text the validated result
+  actually holds. Besides `title`, `body` (`description`, `message`,
+  `detail`), `path` (`file`) and `line`, the review shows `problem`,
+  `issue`, `finding` and `summary` as the finding text, `location` or
+  `where` (`path`, `path:LINE`, `path:LINE-LINE`, `path#LLINE`) as the
+  location, and every other field as a labelled block. The summary is
+  `summary`, otherwise `review`, otherwise `overview`. A finding with no
+  title is not labelled "Finding". When text or findings are cut, the review
+  says so and points at the execution. `preloop flow review-posting show`,
+  the flow card and `config_warnings` say which finding fields the schema
+  declares and how each is shown.
+- A publication GitHub already holds is no longer left failed because the
+  review or status was not visible in the first read-back. A few short
+  re-reads distinguish "not visible yet" (`readback_pending`, retried, and
+  finished by reading the recorded ids without posting again) from a real
+  difference (`readback_mismatch`, still final, and named by
+  `readback_check` on the execution record). An explicit publish call can
+  repair an existing `readback_mismatch` row when GitHub matches what was
+  sent, including a row recorded before the check was stored. The body
+  digest and the status URL that were sent are what a later read compares,
+  so a console URL or schema change does not fail a review GitHub already
+  holds. A present difference stays failed.
 
 - A pre-tool permission check that allows a command after evaluating a
   tool approval workflow with no access rules records the allow that took

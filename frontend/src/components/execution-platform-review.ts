@@ -160,6 +160,28 @@ export class ExecutionPlatformReview extends LitElement {
     return html`<span class="meta">Not posted yet</span>`;
   }
 
+  private renderEvidence(record: PlatformReviewRecord) {
+    const counts = record.tool_evidence;
+    if (!counts) return nothing;
+    const rules = Object.entries(counts.masking_by_rule || []);
+    return html`<dt>Tool evidence</dt>
+      <dd data-tool-evidence>
+        ${counts.gateway_requests} model requests, ${counts.missing_records}
+        missing, ${counts.records} records, ${counts.incomplete_records}
+        incomplete, ${counts.masking_only_records} incomplete only because a
+        credential was masked.
+        ${
+          rules.length
+            ? html`<span class="meta" data-masking-rules
+                >${rules
+                  .map(([rule, count]) => `${rule}: ${count}`)
+                  .join(', ')}</span
+              >`
+            : nothing
+        }
+      </dd>`;
+  }
+
   private renderStatus(record: PlatformReviewRecord) {
     if (record.commit_status) {
       const label = `${record.status_context || 'Status'}: ${record.commit_status}`;
@@ -240,6 +262,7 @@ export class ExecutionPlatformReview extends LitElement {
                   <dd>${record.attempts}</dd>`
               : nothing
           }
+          ${this.renderEvidence(record)}
         </dl>
         ${
           this.error

@@ -408,4 +408,120 @@ describe('flow-platform-review-card', () => {
     const plain = await mount(FLOW);
     expect(q(plain, '[data-event-review]')).to.equal(null);
   });
+
+  it('states how each declared finding field is shown and warns when none is text', async () => {
+    const shown = await mount({
+      ...FLOW,
+      result_schema: {
+        type: 'object',
+        properties: {
+          verdict: { type: 'string', enum: ['pass', 'fail'] },
+          findings: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                severity: { type: 'string' },
+                problem: { type: 'string' },
+                evidence: { type: 'string' },
+                location: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    });
+    const text = shown.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(text).to.contain('problem text');
+    expect(text).to.contain('evidence labelled block');
+    expect(text).to.contain('location location');
+    expect(q(shown, '[data-finding-text]')).to.equal(null);
+
+    const missing = await mount({
+      ...FLOW,
+      result_schema: {
+        type: 'object',
+        properties: {
+          verdict: { type: 'string', enum: ['pass', 'fail'] },
+          findings: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { severity: { type: 'string' }, meta: {} },
+            },
+          },
+        },
+      },
+    });
+    expect(q(missing, '[data-finding-text]').textContent).to.contain(
+      'no text field'
+    );
+    expect(q(missing, '[data-action="save"]')).to.exist;
+  });
+
+  it('reads finding fields wrapped in allOf and does not warn without an item schema', async () => {
+    const wrapped = await mount({
+      ...FLOW,
+      result_schema: {
+        type: 'object',
+        properties: {
+          verdict: { type: 'string', enum: ['pass', 'fail'] },
+          findings: {
+            type: 'array',
+            items: {
+              allOf: [
+                {
+                  type: 'object',
+                  properties: { problem: { type: 'string' } },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    expect(wrapped.shadowRoot!.textContent).to.contain('problem text');
+    expect(q(wrapped, '[data-finding-text]')).to.equal(null);
+
+    const bare = await mount({
+      ...FLOW,
+      result_schema: {
+        type: 'object',
+        properties: {
+          verdict: { type: 'string', enum: ['pass', 'fail'] },
+          findings: { type: 'array' },
+        },
+      },
+    });
+    expect(q(bare, '[data-finding-text]')).to.equal(null);
+    expect(bare.shadowRoot!.textContent).to.contain('does not declare');
+  });
+
+  it('offers the three evidence levels and saves the one that tightens posting', async () => {
+    const element = await mount();
+    await chooseMode(element, 'automatic');
+    const select = q(element, '[data-field="evidence"]');
+    const values = [...select.querySelectorAll('sl-option')].map(
+      (option: Element) => option.getAttribute('value')
+    );
+    expect(values).to.deep.equal(['any', 'captured', 'complete']);
+    expect(select.helpText).to.contain(
+      "whether or not the run's tool evidence"
+    );
+    select.value = 'captured';
+    select.dispatchEvent(new Event('sl-change'));
+    await element.updateComplete;
+    expect(q(element, '[data-field="evidence"]').helpText).to.contain(
+      'masked credentials'
+    );
+    q(element, '[data-action="save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await element.updateComplete;
+    expect(putBodies[0].git_clone_config.platform_review.evidence).to.equal(
+      'captured'
+    );
+    expect(putBodies[0].git_clone_config.platform_review).to.not.have.property(
+      'status'
+    );
+  });
 });

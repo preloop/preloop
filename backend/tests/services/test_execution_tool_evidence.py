@@ -210,7 +210,7 @@ def test_one_bearer_counts_once_on_gateway_and_native_paths() -> None:
         {"rule": "authorization_bearer", "count": 1}
     ]
     assert "${GITHUB_TOKEN}" not in document["observations"][0]["value"]
-    _, facts = _redact_value(source)
+    _, facts, _unexplained = _redact_value(source)
     assert facts == [{"rule": "authorization_bearer", "count": 1}]
 
 

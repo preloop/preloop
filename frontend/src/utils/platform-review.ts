@@ -27,6 +27,8 @@ export interface PlatformReviewConfig {
   action?: 'comment';
   verdict_actions?: Record<string, ReviewAction> | null;
   status?: PlatformReviewStatusConfig | null;
+  /** Which stored tool evidence may be posted. Absent means any. */
+  evidence?: 'any' | 'captured' | 'complete';
 }
 
 /** The record the API returns on an execution (`platform_review`). */
@@ -60,6 +62,19 @@ export interface PlatformReviewRecord {
   pull_request_url?: string | null;
   review_url?: string | null;
   commit_url?: string | null;
+  tool_evidence?: {
+    gateway_requests: number;
+    missing_records: number;
+    records: number;
+    incomplete_records: number;
+    masking_only_records: number;
+    masking_by_rule: Record<string, number>;
+  };
+  /**
+   * The last read-back comparison that failed. It can stay set when a later
+   * attempt fails for another reason while that read is still owed.
+   */
+  readback_check?: string | null;
 }
 
 export const DEFAULT_STATUS_CONTEXT = 'preloop/review';
@@ -72,6 +87,98 @@ export const COMMIT_STATES: CommitState[] = ['success', 'failure', 'error'];
  * The verdicts a result schema admits, or null when it declares no required
  * string `verdict` with an enum (the server's `verdict_enum`).
  */
+export type FindingFieldRole =
+  'severity' | 'title' | 'text' | 'location' | 'labelled block';
+
+export interface FindingFieldAppearance {
+  field: string;
+  appearsAs: FindingFieldRole;
+}
+
+const TEXT_FIELDS = new Set([
+  'body',
+  'description',
+  'message',
+  'detail',
+  'problem',
+  'issue',
+  'finding',
+  'summary',
+]);
+const LOCATION_FIELDS = new Set(['path', 'file', 'line', 'location', 'where']);
+
+/** How one declared finding field is shown in the posted review. */
+export function findingFieldRole(name: string): FindingFieldRole {
+  if (name === 'severity') return 'severity';
+  if (name === 'title') return 'title';
+  if (TEXT_FIELDS.has(name)) return 'text';
+  if (LOCATION_FIELDS.has(name)) return 'location';
+  return 'labelled block';
+}
+
+function isSchemaObject(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** An object schema, following one allOf, anyOf or oneOf. */
+function objectSchema(schema: unknown): Record<string, any> | null {
+  if (!isSchemaObject(schema)) return null;
+  if (isSchemaObject(schema.properties)) return schema;
+  for (const key of ['allOf', 'anyOf', 'oneOf']) {
+    const options = schema[key];
+    if (!Array.isArray(options)) continue;
+    for (const option of options) {
+      const found = objectSchema(option);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findingsItemSchema(schema: unknown): Record<string, any> | null {
+  if (!isSchemaObject(schema)) return null;
+  const findings = isSchemaObject(schema.properties)
+    ? schema.properties.findings
+    : undefined;
+  if (!isSchemaObject(findings)) return null;
+  const items = findings.items;
+  if (Array.isArray(items)) {
+    for (const candidate of items) {
+      const found = objectSchema(candidate);
+      if (found) return found;
+    }
+    return null;
+  }
+  return objectSchema(items);
+}
+
+/**
+ * Finding fields the result schema declares, in schema order, and whether
+ * any of them is the finding text. `declared` is false when the schema has
+ * no findings object.
+ */
+export function findingFieldAppearances(schema: unknown): {
+  declared: boolean;
+  fields: FindingFieldAppearance[];
+  hasText: boolean;
+} {
+  const empty = { declared: false, fields: [], hasText: true };
+  const item = findingsItemSchema(schema);
+  if (!item) return empty;
+  const props = item.properties;
+  const fields: FindingFieldAppearance[] = [];
+  if (isSchemaObject(props)) {
+    for (const field of Object.keys(props)) {
+      fields.push({ field, appearsAs: findingFieldRole(field) });
+    }
+  }
+  return {
+    declared: true,
+    fields,
+    hasText: fields.some((field) => field.appearsAs === 'text'),
+  };
+}
+
 export function verdictEnum(schema: unknown): string[] | null {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
     return null;
@@ -248,8 +355,10 @@ const REASONS: Record<string, string> = {
   provider_rejected: 'GitHub refused the request.',
   provider_denied:
     'GitHub denied the request. Check the App installation and its permissions.',
+  readback_pending:
+    'GitHub had not shown the review or status yet. Preloop reads it again and does not post a second time.',
   readback_mismatch:
-    'What GitHub holds differs from what was sent. Someone has to look at the pull request; this is not retried.',
+    'What GitHub holds differs from what was sent. Publish again to repair the record when GitHub matches; a real difference stays failed.',
   lease_unavailable:
     'Preloop could not get a GitHub App token for the repository.',
   lease_refused:
@@ -271,6 +380,10 @@ const REASONS: Record<string, string> = {
   attempt_interrupted:
     'The attempt was interrupted. Preloop retries on its own.',
   execution_not_finished: 'The run has not finished yet.',
+  evidence_incomplete:
+    'The stored tool evidence is not complete enough for this flow to post a review.',
+  evidence_pending:
+    'Tool evidence for the last model request may still be recording. Retry in a moment.',
   request_not_allowed: 'Preloop refused a request outside what posting may do.',
   internal_error: 'Posting failed inside Preloop.',
 };
@@ -333,7 +446,9 @@ export function publicationSummary(
       return {
         label: 'Failed',
         variant: 'danger',
-        detail: reasonText(record.reason),
+        detail: [reasonText(record.reason), record.readback_check]
+          .filter((part) => part)
+          .join(' '),
       };
     default:
       return {

@@ -19,7 +19,7 @@ import hashlib
 import logging
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -103,6 +103,22 @@ MAX_FINDING_BODY_CHARS = 2000
 MAX_INLINE_COMMENTS = 20
 MAX_CHECKED_ITEMS = 30
 MAX_CHECKED_ITEM_CHARS = 200
+#: Extra finding fields (everything except severity, title, the main text
+#: and the location) rendered under the finding. A longer value is cut and
+#: the finding says so; further fields are counted, not rendered.
+MAX_EXTRA_FIELDS = 8
+MAX_EXTRA_FIELD_CHARS = 2000
+MAX_EXTRA_LABEL_CHARS = 80
+#: Waits between read-backs when the object just written is not visible yet.
+#: A few seconds in total. Tests replace :func:`_pause` and do not sleep.
+READBACK_RETRY_DELAYS: tuple[float, ...] = (0.5, 1.0, 2.0)
+#: Read-back checks that mean the object is not visible yet. Anything else
+#: that fails is present and different, and stays failed.
+READBACK_ABSENT: frozenset[str] = frozenset({"review_absent", "status_absent"})
+#: Guide section for what a posted review shows of a finding.
+REVIEW_FINDING_DOCS_URL = (
+    "https://docs.preloop.ai/guide/flows/restricted-ci/#what-your-result-must-contain"
+)
 #: Pages (of 100) read when listing the files or reviews of a pull request.
 MAX_PAGES = 10
 #: Automatic attempts before a failed publication waits for an explicit call.
@@ -154,10 +170,21 @@ class PlatformReviewError(Exception):
         retryable: Whether a later automatic attempt may succeed.
     """
 
-    def __init__(self, reason: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+        check: str | None = None,
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.retryable = retryable
+        #: HTTP status, when the failure came from the provider.
+        self.status_code = status_code
+        #: Which read-back comparison failed (``review_body``, ``status_absent``).
+        self.check = check
 
 
 # --- caller preconditions --------------------------------------------------
@@ -168,7 +195,17 @@ PRECONDITION_FIELDS: tuple[str, ...] = (
     "expected_base_sha",
     "expected_result_sha256",
     "expected_flow_revision",
+    "expected_evidence",
 )
+#: How complete the stored tool evidence must be before a review is posted.
+EVIDENCE_LEVELS: tuple[str, ...] = ("any", "captured", "complete")
+#: Caller preconditions may only name the two levels that tighten posting.
+EVIDENCE_PRECONDITIONS: tuple[str, ...] = ("captured", "complete")
+_EVIDENCE_RANK = {"any": 0, "captured": 1, "complete": 2}
+#: Streaming gateway evidence is written after the response body, so a
+#: publication in this window can see a run whose last request has not
+#: landed. Same deferral as result-capture delivery.
+EVIDENCE_SETTLE_AFTER = timedelta(seconds=30)
 _RESULT_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -206,6 +243,7 @@ class ReviewPreconditions:
     base_sha: str | None = None
     result_sha256: str | None = None
     flow_revision: int | None = None
+    evidence: str | None = None
 
     @property
     def any(self) -> bool:
@@ -217,6 +255,7 @@ class ReviewPreconditions:
                 self.base_sha,
                 self.result_sha256,
                 self.flow_revision,
+                self.evidence,
             )
         )
 
@@ -271,11 +310,20 @@ def parse_preconditions(body: Any) -> ReviewPreconditions:
                 "expected_flow_revision must be a positive integer",
             )
         values["expected_flow_revision"] = revision
+    evidence = body.get("expected_evidence")
+    if evidence is not None:
+        if evidence not in EVIDENCE_PRECONDITIONS:
+            raise PreconditionMalformedError(
+                "expected_evidence",
+                "expected_evidence must be captured or complete",
+            )
+        values["expected_evidence"] = evidence
     return ReviewPreconditions(
         head_sha=values.get("expected_head_sha"),
         base_sha=values.get("expected_base_sha"),
         result_sha256=values.get("expected_result_sha256"),
         flow_revision=values.get("expected_flow_revision"),
+        evidence=values.get("expected_evidence"),
     )
 
 
@@ -301,12 +349,141 @@ def _failure(field: str, expected: Any, current: Any, source: str) -> dict[str, 
     }
 
 
+def _block_evidence_level(block: Mapping[str, Any]) -> str:
+    """The evidence value of an already enabled posting block."""
+    value = block.get("evidence", "any")
+    if value is None or value not in EVIDENCE_LEVELS:
+        return "any"
+    return str(value)
+
+
+def evidence_level(config: Any) -> str:
+    """The flow's evidence gate: any, captured or complete.
+
+    Args:
+        config: The flow's ``git_clone_config``.
+
+    Returns:
+        ``any`` when posting is off, the key is absent, or the value is
+        ``any``.
+    """
+    return _block_evidence_level(platform_review_block(config) or {})
+
+
+def stricter_evidence(flow_level: str, caller_level: str | None) -> str:
+    """The tighter of the flow setting and a caller precondition.
+
+    A caller can require more evidence. A weaker precondition does not
+    lower the flow setting.
+
+    Args:
+        flow_level: Stored ``platform_review.evidence``.
+        caller_level: ``expected_evidence``, or None.
+
+    Returns:
+        The higher of the two ranks.
+    """
+    caller = caller_level if caller_level in _EVIDENCE_RANK else "any"
+    if _EVIDENCE_RANK[flow_level] >= _EVIDENCE_RANK[caller]:
+        return flow_level
+    return caller
+
+
+def evidence_met_level(summary: Mapping[str, Any] | None) -> str:
+    """The strongest evidence level the stored summary meets.
+
+    Args:
+        summary: :func:`tool_evidence_summary` output.
+
+    Returns:
+        ``complete``, ``captured`` or ``any`` (does not meet ``captured``).
+    """
+    if evidence_satisfied(summary, "complete"):
+        return "complete"
+    if evidence_satisfied(summary, "captured"):
+        return "captured"
+    return "any"
+
+
+def evidence_satisfied(summary: Mapping[str, Any] | None, level: str) -> bool:
+    """Whether stored counts meet ``level``.
+
+    ``captured`` allows records that are incomplete only because a named
+    masking rule fired. ``complete`` allows no incomplete record. ``any``
+    does not look.
+
+    Args:
+        summary: Counts from stored evidence. None does not meet a gate.
+        level: ``any``, ``captured`` or ``complete``.
+
+    Returns:
+        Whether the level is met.
+    """
+    if level == "any":
+        return True
+    if not isinstance(summary, Mapping) or level not in _EVIDENCE_RANK:
+        return False
+    if summary.get("missing_records"):
+        return False
+    incomplete = summary.get("incomplete_records")
+    masking = summary.get("masking_only_records")
+    if type(incomplete) is not int or type(masking) is not int:
+        return False
+    if level == "complete":
+        return incomplete == 0
+    return incomplete == masking
+
+
+def stored_tool_evidence(db: Session, execution: Any) -> dict[str, Any]:
+    """The public tool-evidence counts for one execution.
+
+    Args:
+        db: Database session.
+        execution: Execution whose records are counted.
+
+    Returns:
+        Counts with no observation values, paths or text.
+    """
+    from preloop.models.crud.execution_tool_evidence import tool_evidence_summary
+
+    return tool_evidence_summary(db, execution_id=execution.id)
+
+
+def evidence_may_still_arrive(execution: Any) -> bool:
+    """Whether the last gateway request can still be written.
+
+    Streaming usage and its tool evidence are committed after the response
+    body, in the same transaction, and that write can outlast the moment
+    the execution is marked terminal (the record waits up to the gateway
+    pool timeout). A publication inside :data:`EVIDENCE_SETTLE_AFTER` of
+    ``end_time`` therefore waits, the way result delivery waits while
+    artifact capture is pending, instead of posting or refusing on a
+    partial record.
+
+    Args:
+        execution: A terminal execution.
+
+    Returns:
+        True when ``end_time`` is within the settle window.
+    """
+    end = getattr(execution, "end_time", None)
+    if not isinstance(end, datetime):
+        return False
+    # Timestamp columns are naive UTC. An aware value is converted; a naive
+    # one is already that convention, including after a round trip.
+    if end.tzinfo is not None:
+        end = end.astimezone(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return now - end < EVIDENCE_SETTLE_AFTER
+
+
 def check_stored_preconditions(
     pre: ReviewPreconditions,
     *,
     flow: Any,
     execution: Any,
     binding: ReviewBinding,
+    evidence: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Compare the preconditions with what Preloop stores.
 
@@ -315,6 +492,8 @@ def check_stored_preconditions(
         flow: The execution's flow, as it will be read for posting.
         execution: The execution, as it will be read for posting.
         binding: The execution's review binding.
+        evidence: Stored tool-evidence counts, required when the caller
+            set ``expected_evidence``.
 
     Returns:
         Failures, empty when every supplied precondition holds.
@@ -346,6 +525,14 @@ def check_stored_preconditions(
                     current_revision,
                     "flow",
                 )
+            )
+    if pre.evidence is not None:
+        # The flow setting is not applied here. A weaker precondition must
+        # not lower it; the publication plan enforces the stored level.
+        current = evidence_met_level(evidence)
+        if _EVIDENCE_RANK[current] < _EVIDENCE_RANK[pre.evidence]:
+            failures.append(
+                _failure("expected_evidence", pre.evidence, current, "tool_evidence")
             )
     return failures
 
@@ -438,11 +625,19 @@ def validate_platform_review_block(block: Any) -> None:
         "verdict_actions",
         "status",
         "enabled_at",
+        "evidence",
     }
     if unknown:
         raise ValueError("platform_review has unsupported keys")
     if block.get("mode", MODE_AUTOMATIC) not in STORED_MODES:
         raise ValueError("platform_review.mode must be automatic or manual")
+    # A dumped block carries evidence: null when the key was omitted. That is
+    # the same as any, not a stored gate.
+    evidence = block.get("evidence", "any")
+    if evidence is None:
+        evidence = "any"
+    if evidence not in EVIDENCE_LEVELS:
+        raise ValueError("platform_review.evidence must be any, captured or complete")
     if block.get("action", "comment") != "comment":
         raise ValueError(
             "platform_review.action must be comment; other review actions "
@@ -555,11 +750,19 @@ def verdict_enum(schema: Any) -> list[str] | None:
     return list(values)
 
 
-def validate_platform_review_flow(flow: Any) -> None:
+def validate_platform_review_flow(
+    flow: Any, *, enforce_content_capture: bool = False
+) -> None:
     """Require a validated result with a closed, fully mapped verdict.
 
     Args:
         flow: Flow row or namespace.
+        enforce_content_capture: When True (the save path), reject
+            ``captured`` or ``complete`` while model-gateway content capture
+            is off. Publish does not pass this: a record stored with content
+            capture off already fails the gate, and turning the instance flag
+            off later must not refuse a run whose records were captured
+            while it was on.
 
     Raises:
         ValueError: The flow opts in but its result is not validated, its
@@ -573,6 +776,19 @@ def validate_platform_review_flow(flow: Any) -> None:
     block = platform_review_block(config)
     if block is None or not isinstance(config, Mapping):
         return
+    if enforce_content_capture and block.get("evidence") in {"captured", "complete"}:
+        from preloop.config import settings
+
+        # Content capture is the instance setting that writes
+        # content_capture_enabled on each record. With it off, gateway
+        # observations store no values, so captured and complete cannot pass
+        # for a run that called the model. Rejecting the save matches the
+        # other posting checks: a gate that cannot succeed is not stored.
+        if not settings.model_gateway_capture_content:
+            raise ValueError(
+                "platform_review.evidence requires content capture to be on "
+                "(MODEL_GATEWAY_CAPTURE_CONTENT); without it the gate cannot pass"
+            )
     if config.get("publication_mode") != "read_only":
         raise ValueError("platform_review requires read_only publication mode")
     schema = getattr(flow, "result_schema", None)
@@ -803,9 +1019,32 @@ class Finding:
     severity: str
     title: str
     body: str
+    #: True when the main text was cut to :data:`MAX_FINDING_BODY_CHARS`.
+    body_shortened: bool
     path: str | None
     raw_path: str | None
     line: int | None
+    #: Labelled blocks for every other member, including the cut notes.
+    details: str
+
+
+#: Finding members, in the order a value is chosen when several are present.
+_SEVERITY_FIELDS: tuple[str, ...] = ("severity",)
+_TITLE_FIELDS: tuple[str, ...] = ("title",)
+_TEXT_FIELDS: tuple[str, ...] = (
+    "body",
+    "description",
+    "message",
+    "detail",
+    "problem",
+    "issue",
+    "finding",
+    "summary",
+)
+_LOCATION_FIELDS: tuple[str, ...] = ("path", "file", "line", "location", "where")
+_LOCATION_HASH = re.compile(r"^(.+)#L([0-9]+)$")
+_LOCATION_RANGE = re.compile(r"^(.+):([0-9]+)-([0-9]+)$")
+_LOCATION_LINE = re.compile(r"^(.+):([0-9]+)$")
 
 
 def _first_text(source: Mapping[str, Any], names: tuple[str, ...]) -> Any:
@@ -815,19 +1054,314 @@ def _first_text(source: Mapping[str, Any], names: tuple[str, ...]) -> Any:
     return None
 
 
+def _first_name(source: Mapping[str, Any], names: tuple[str, ...]) -> str | None:
+    """The first of ``names`` that holds a non-empty string."""
+    for name in names:
+        if isinstance(source.get(name), str) and source[name].strip():
+            return name
+    return None
+
+
+def _parse_line(value: Any) -> int | None:
+    """A line number: an int, or a decimal string, inside the accepted range.
+
+    ``True`` is rejected (it is an ``int`` subclass). A string counts only
+    when it is all digits and the value is in ``1 .. 10**7 - 1``.
+    """
+    if type(value) is int:
+        number = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text.isdecimal() or len(text) > 7:
+            return None
+        number = int(text)
+    else:
+        return None
+    if type(number) is bool or not 0 < number < 10**7:
+        return None
+    return number
+
+
+def _parse_location_string(value: str) -> tuple[str, int | None] | None:
+    """Parse ``path``, ``path:LINE``, ``path:LINE-LINE`` or ``path#LLINE``.
+
+    Returns:
+        The path and the first line, or None when the string is not one of
+        those forms. The caller shows an unparsed value as literal code.
+    """
+    text = value.strip()
+    if not text or "\n" in value or "\r" in value:
+        return None
+    for pattern in (_LOCATION_HASH, _LOCATION_RANGE, _LOCATION_LINE):
+        match = pattern.fullmatch(text)
+        if match is None:
+            continue
+        path = match.group(1).strip()
+        line = _parse_line(match.group(2))
+        if not path or line is None:
+            return None
+        return path, line
+    if ":" in text or "#" in text:
+        return None
+    return text, None
+
+
 def _location(path: Any, line: Any) -> str:
     """``path:line`` as a code span (the line only when it is a valid number)."""
     if not isinstance(path, str):
         return ""
-    valid = type(line) is int and 0 < line < 10**7
+    valid = _parse_line(line) is not None and type(line) is int
     return code_span(f"{path.strip()}:{line}" if valid else path, 320)
 
 
-def structured_findings(result: Mapping[str, Any]) -> tuple[list[Finding], int]:
+def _finding_field_role(name: str) -> str:
+    """How a declared finding field is shown: severity, title, text, location
+    or a labelled block.
+    """
+    if name in _SEVERITY_FIELDS:
+        return "severity"
+    if name in _TITLE_FIELDS:
+        return "title"
+    if name in _TEXT_FIELDS:
+        return "text"
+    if name in _LOCATION_FIELDS:
+        return "location"
+    return "labelled block"
+
+
+def _object_schema(schema: Any) -> Mapping[str, Any] | None:
+    """An object schema, following one ``allOf`` / ``anyOf`` / ``oneOf``."""
+    if not isinstance(schema, Mapping):
+        return None
+    if isinstance(schema.get("properties"), Mapping):
+        return schema
+    for key in ("allOf", "anyOf", "oneOf"):
+        options = schema.get(key)
+        if not isinstance(options, list):
+            continue
+        for option in options:
+            found = _object_schema(option)
+            if found is not None:
+                return found
+    return None
+
+
+def _findings_item_schema(schema: Any) -> Mapping[str, Any] | None:
+    """The object schema of ``findings.items``, when the result declares one."""
+    if not isinstance(schema, Mapping):
+        return None
+    properties = schema.get("properties")
+    findings = properties.get("findings") if isinstance(properties, Mapping) else None
+    if not isinstance(findings, Mapping):
+        return None
+    items = findings.get("items")
+    if isinstance(items, list):
+        for candidate in items:
+            found = _object_schema(candidate)
+            if found is not None:
+                return found
+        return None
+    return _object_schema(items)
+
+
+def finding_property_names(schema: Any) -> list[str]:
+    """Finding field names in the order the result schema declares them.
+
+    Args:
+        schema: The flow's ``result_schema``.
+
+    Returns:
+        Property names of the findings item, or an empty list when the
+        schema does not declare an object of finding fields.
+    """
+    item = _findings_item_schema(schema)
+    if item is None:
+        return []
+    props = item.get("properties")
+    if not isinstance(props, Mapping):
+        return []
+    return [name for name in props if isinstance(name, str)]
+
+
+def finding_field_appearances(schema: Any) -> list[dict[str, str]]:
+    """How each declared finding field appears in the posted review.
+
+    Args:
+        schema: The flow's ``result_schema``.
+
+    Returns:
+        ``{"field", "appears_as"}`` in schema order. ``appears_as`` is
+        ``severity``, ``title``, ``text``, ``location`` or ``labelled block``.
+    """
+    return [
+        {"field": name, "appears_as": _finding_field_role(name)}
+        for name in finding_property_names(schema)
+    ]
+
+
+def review_posting_warnings(flow: Any) -> list[dict[str, Any]]:
+    """Save-time description of how finding fields are posted.
+
+    Information only. A flow that declares findings and no text field is
+    warned; the save is not refused.
+
+    Args:
+        flow: Flow row or namespace.
+
+    Returns:
+        Zero or one warning with ``code``, ``message`` and ``docs_url``.
+    """
+    if platform_review_block(getattr(flow, "git_clone_config", None)) is None:
+        return []
+    schema = getattr(flow, "result_schema", None)
+    if _findings_item_schema(schema) is None:
+        return []
+    appearances = finding_field_appearances(schema)
+    listed = (
+        ", ".join(f"{item['field']} ({item['appears_as']})" for item in appearances)
+        or "none"
+    )
+    has_text = any(item["appears_as"] == "text" for item in appearances)
+    if has_text:
+        return [
+            {
+                "code": "review_finding_fields",
+                "message": f"A posted review shows these finding fields: {listed}.",
+                "docs_url": REVIEW_FINDING_DOCS_URL,
+            }
+        ]
+    return [
+        {
+            "code": "review_finding_text_missing",
+            "message": (
+                "A posted review shows these finding fields: "
+                f"{listed}. The schema declares no text field for a finding "
+                "(body, description, message, detail, problem, issue, finding "
+                "or summary), so the review has no problem statement for it."
+            ),
+            "docs_url": REVIEW_FINDING_DOCS_URL,
+        }
+    ]
+
+
+def _limited_plain(
+    value: Any, limit: int, *, single_line: bool = False, code: bool = True
+) -> tuple[str, bool]:
+    """:func:`plain_text` plus whether the cap cut the value."""
+    shown = plain_text(value, limit, single_line=single_line, code=code)
+    if not isinstance(value, str) or len(value) <= limit:
+        return shown, False
+    full = plain_text(value, len(value), single_line=single_line, code=code)
+    return shown, full != shown
+
+
+def _extra_keys(
+    item: Mapping[str, Any], used: set[str], schema_names: list[str]
+) -> list[str]:
+    """Members not used for severity, title, text or location.
+
+    Schema order first, then any key the document carries that the schema
+    does not name.
+    """
+    ordered: list[str] = []
+    for name in schema_names:
+        if name in item and name not in used and name not in ordered:
+            ordered.append(name)
+    for name in item:
+        if name not in used and name not in ordered:
+            ordered.append(name)
+    return ordered
+
+
+def _render_extra_value(value: Any) -> tuple[str, bool] | None:
+    """Literal text for a string, number, boolean or list of strings.
+
+    Returns:
+        ``(markdown, shortened)``, or None when the value is counted instead
+        of rendered.
+    """
+    if isinstance(value, str):
+        shown, shortened = _limited_plain(value, MAX_EXTRA_FIELD_CHARS)
+        return (_quote(shown) if shown else ""), shortened
+    if isinstance(value, bool):
+        return _quote("true" if value else "false"), False
+    if isinstance(value, int):
+        return _quote(str(value)), False
+    if isinstance(value, float) and value == value and abs(value) != float("inf"):
+        shown, shortened = _limited_plain(str(value), 40, single_line=True)
+        return (_quote(shown) if shown else ""), shortened
+    if isinstance(value, list) and all(isinstance(entry, str) for entry in value):
+        lines: list[str] = []
+        shortened = False
+        used = 0
+        for entry in value:
+            line, cut = _limited_plain(entry, MAX_CHECKED_ITEM_CHARS, single_line=True)
+            if cut:
+                shortened = True
+            if not line:
+                continue
+            piece = f"- {line}"
+            if used + len(piece) + 1 > MAX_EXTRA_FIELD_CHARS:
+                shortened = True
+                break
+            lines.append(piece)
+            used += len(piece) + 1
+        if len(lines) < len([entry for entry in value if entry.strip()]):
+            shortened = True
+        return "\n".join(lines), shortened
+    return None
+
+
+def _extra_details(
+    item: Mapping[str, Any], used: set[str], schema_names: list[str]
+) -> str:
+    """Labelled blocks for the finding members that were not otherwise used."""
+    blocks: list[str] = []
+    shown = 0
+    hidden = 0
+    for name in _extra_keys(item, used, schema_names):
+        if shown >= MAX_EXTRA_FIELDS:
+            hidden += 1
+            continue
+        rendered = _render_extra_value(item.get(name))
+        if rendered is None:
+            hidden += 1
+            continue
+        text, shortened = rendered
+        label, label_cut = _limited_plain(name, MAX_EXTRA_LABEL_CHARS, single_line=True)
+        if not label:
+            hidden += 1
+            continue
+        block = f"**{label}**"
+        if text:
+            block += "\n\n" + text
+        if shortened or label_cut:
+            block += "\n\ntext shortened"
+        blocks.append(block)
+        shown += 1
+    if hidden:
+        noun = "field" if hidden == 1 else "fields"
+        blocks.append(f"{hidden} {noun} not shown")
+    return "\n\n".join(blocks)
+
+
+def structured_findings(
+    result: Mapping[str, Any], schema: Mapping[str, Any] | None = None
+) -> tuple[list[Finding], int]:
     """Read ``findings`` from a validated result.
+
+    The main text is the first non-empty string among ``body``,
+    ``description``, ``message``, ``detail``, ``problem``, ``issue``,
+    ``finding`` and ``summary``. A location is ``path`` or ``file`` with
+    ``line`` (a decimal string counts), or, when those name no path, a
+    ``location`` or ``where`` string of the form ``path``, ``path:LINE``,
+    ``path:LINE-LINE`` or ``path#LLINE``. Every other member is a labelled
+    block, in the order the result schema declares the properties, then
+    the order of the document.
 
     Args:
         result: The stored, validated result document.
+        schema: The flow's ``result_schema``, for finding-field order.
 
     Returns:
         The findings rendered (at most :data:`MAX_FINDINGS`) and the number
@@ -839,23 +1373,67 @@ def structured_findings(result: Mapping[str, Any]) -> tuple[list[Finding], int]:
         if isinstance(raw, list)
         else []
     )
+    schema_names = finding_property_names(schema)
     findings: list[Finding] = []
     for item in entries[:MAX_FINDINGS]:
+        used: set[str] = set()
+        severity_name = _first_name(item, _SEVERITY_FIELDS)
+        if severity_name is not None:
+            used.add(severity_name)
+        title_name = _first_name(item, _TITLE_FIELDS)
+        if title_name is not None:
+            used.add(title_name)
+        text_name = _first_name(item, _TEXT_FIELDS)
+        if text_name is not None:
+            used.add(text_name)
+        body, body_shortened = _limited_plain(
+            item.get(text_name) if text_name else None, MAX_FINDING_BODY_CHARS
+        )
         raw_path = _first_text(item, ("path", "file"))
-        line = item.get("line")
+        path_name = _first_name(item, ("path", "file"))
+        line: int | None = None
+        literal: str | None = None
+        if path_name is not None:
+            used.add(path_name)
+            if "line" in item and _parse_line(item.get("line")) is not None:
+                used.add("line")
+                line = _parse_line(item.get("line"))
+        else:
+            where_name = _first_name(item, ("location", "where"))
+            if where_name is not None:
+                used.add(where_name)
+                parsed = _parse_location_string(str(item.get(where_name)))
+                if parsed is None:
+                    literal = str(item.get(where_name))
+                else:
+                    raw_path, line = parsed
+        if literal is not None:
+            path_span = code_span(literal, 320) or None
+            stored_path: str | None = None
+            stored_line: int | None = None
+        else:
+            shown_line = line if type(line) is int else None
+            path_span = _location(raw_path, shown_line) or None
+            stored_path = raw_path if isinstance(raw_path, str) else None
+            stored_line = line
         findings.append(
             Finding(
-                severity=plain_text(item.get("severity"), 32, single_line=True),
+                severity=plain_text(
+                    item.get(severity_name) if severity_name else None,
+                    32,
+                    single_line=True,
+                ),
                 title=plain_text(
-                    item.get("title"), MAX_FINDING_TITLE_CHARS, single_line=True
+                    item.get(title_name) if title_name else None,
+                    MAX_FINDING_TITLE_CHARS,
+                    single_line=True,
                 ),
-                body=plain_text(
-                    _first_text(item, ("body", "description", "message", "detail")),
-                    MAX_FINDING_BODY_CHARS,
-                ),
-                path=_location(raw_path, line) or None,
-                raw_path=raw_path if isinstance(raw_path, str) else None,
-                line=line if type(line) is int and 0 < line < 10**7 else None,
+                body=body,
+                body_shortened=body_shortened,
+                path=path_span,
+                raw_path=stored_path if isinstance(stored_path, str) else None,
+                line=stored_line,
+                details=_extra_details(item, used, schema_names),
             )
         )
     total = len(raw) if isinstance(raw, list) else 0
@@ -877,9 +1455,26 @@ def execution_url(execution_id: Any) -> str:
 
 def _finding_heading(index: int, finding: Finding, *, location: bool) -> str:
     severity = f"&#91;{finding.severity}&#93; " if finding.severity else ""
-    title = finding.title or "Finding"
     where = f" ({finding.path})" if location and finding.path else ""
-    return f"**{index}&#46; {severity}{title}**{where}"
+    if finding.title:
+        return f"**{index}&#46; {severity}{finding.title}**{where}"
+    # No placeholder word. The heading is the number, the severity and the
+    # location; the severity prefix's trailing space is only for a title.
+    if finding.severity:
+        return f"**{index}&#46; {severity.rstrip()}**{where}"
+    return f"**{index}&#46;**{where}"
+
+
+def _finding_block(index: int, finding: Finding, *, location: bool) -> str:
+    """One finding as it appears in the body and in its inline comment."""
+    block = _finding_heading(index, finding, location=location)
+    if finding.body:
+        block += "\n\n" + _quote(finding.body)
+        if finding.body_shortened:
+            block += "\n\ntext shortened"
+    if finding.details:
+        block += "\n\n" + finding.details
+    return block
 
 
 def diff_lines(files: list[Any]) -> dict[str, set[int]]:
@@ -919,12 +1514,15 @@ def render_review(
     head_sha: str,
     nonce: str,
     inline: Mapping[str, set[int]],
+    schema: Mapping[str, Any] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Build the review body and inline comments from a validated result.
 
-    Only ``verdict``, ``summary``, ``findings`` and ``checked`` are read. The
-    target, the commit, the review action and every link come from the
-    caller, never from the result.
+    The summary is ``summary``, else ``review``, else ``overview``. Findings
+    are read by :func:`structured_findings`. ``checked`` (or ``checks``) is
+    unchanged. The target, the commit, the review action and every link come
+    from the caller, never from the result. Nothing a finding holds is
+    dropped without the review saying so.
 
     Args:
         result: The stored, validated result document.
@@ -934,18 +1532,21 @@ def render_review(
         nonce: Random value of the publication row.
         inline: Diff lines per file; a finding becomes an inline comment only
             when its path and line are in it.
+        schema: The flow's ``result_schema``, for the order of extra fields.
 
     Returns:
         ``(body, comments)`` for GitHub's "create a review".
     """
-    findings, omitted = structured_findings(result)
+    findings, omitted = structured_findings(result, schema)
     comments: list[dict[str, Any]] = []
     parts = [
         review_marker(execution_id, head_sha, nonce),
         f"### Preloop review: {plain_text(verdict, 64, single_line=True)}",
         f"Reviewed commit `{head_sha}`. This review covers that commit only.",
     ]
-    summary = plain_text(result.get("summary"), MAX_SUMMARY_CHARS)
+    summary = plain_text(
+        _first_text(result, ("summary", "review", "overview")), MAX_SUMMARY_CHARS
+    )
     if summary:
         parts += ["**Summary**", _quote(summary)]
     raw_checked = result.get("checked", result.get("checks"))
@@ -963,9 +1564,7 @@ def render_review(
     used = sum(len(part) + 2 for part in parts) + len(checked_block)
     rendered = 0
     for index, finding in enumerate(findings, start=1):
-        block = _finding_heading(index, finding, location=True)
-        if finding.body:
-            block += "\n\n" + _quote(finding.body)
+        block = _finding_block(index, finding, location=True)
         if used + len(block) + 2 > MAX_BODY_CHARS - 2000:
             break
         parts.append(block)
@@ -977,22 +1576,19 @@ def render_review(
             and finding.line is not None
             and finding.line in inline.get(finding.raw_path, set())
         ):
-            text = _finding_heading(index, finding, location=False)
-            if finding.body:
-                text += "\n\n" + _quote(finding.body)
             comments.append(
                 {
                     "path": finding.raw_path,
                     "line": finding.line,
                     "side": "RIGHT",
-                    "body": text,
+                    "body": _finding_block(index, finding, location=False),
                 }
             )
     hidden = total - rendered
     if hidden > 0:
         parts.append(
-            f"{hidden} further finding(s) are not shown here; the complete "
-            "result is on the execution."
+            f"{hidden} further finding(s) are not shown here; the execution "
+            "holds the full result."
         )
     if checked_block:
         parts += ["**What was checked**", checked_block]
@@ -1020,7 +1616,10 @@ class PublicationPlan:
 
 
 def plan_publication(
-    flow: Any, execution: Any, integrity: Mapping[str, Any] | None = None
+    flow: Any,
+    execution: Any,
+    integrity: Mapping[str, Any] | None = None,
+    evidence: Mapping[str, Any] | None = None,
 ) -> PublicationPlan:
     """Decide the writes from the flow configuration and the stored outcome.
 
@@ -1036,10 +1635,17 @@ def plan_publication(
     is planned and the commit status, when configured, is the flow's
     ``incomplete_state`` or ``error``: never the verdict's state.
 
+    When the flow's ``evidence`` is ``captured`` or ``complete``, the stored
+    tool-evidence counts (``evidence``) are checked after the result is
+    otherwise postable. A miss is ``evidence_incomplete`` and uses the same
+    neutral status as an integrity refusal.
+
     Args:
         flow: The execution's flow.
         execution: A terminal execution.
         integrity: The controller's integrity outcome; None means unverified.
+        evidence: Stored tool-evidence counts. Required when the flow sets
+            an evidence gate.
 
     Returns:
         The plan. ``review_action`` and ``status_value`` may both be None.
@@ -1101,6 +1707,9 @@ def plan_publication(
                 }
                 else "review_unverified"
             )
+            rejected = True
+        elif not evidence_satisfied(evidence, _block_evidence_level(block)):
+            reason = "evidence_incomplete"
             rejected = True
         else:
             verdict = candidate
@@ -1211,7 +1820,11 @@ class _GitHub:
             raise PlatformReviewError("provider_rejected")
         if code >= 300:
             # 403 covers secondary rate limits as well as missing access.
-            raise PlatformReviewError("provider_denied", retryable=code == 403)
+            # 404 is reported with its status so a review read can tell
+            # "not visible yet" from a denial.
+            raise PlatformReviewError(
+                "provider_denied", retryable=code == 403, status_code=code
+            )
         try:
             return response.json()
         except ValueError:
@@ -1275,24 +1888,200 @@ def _is_bot(entry: Any) -> bool:
     return isinstance(user, Mapping) and user.get("type") == "Bot"
 
 
-def _verify_review(
-    review: Any, *, review_id: str, head_sha: str, event: str, digest: str
-) -> None:
-    """Fail unless the provider holds exactly the review that was sent.
+def _review_check(
+    review: Any,
+    *,
+    review_id: str,
+    head_sha: str,
+    event: str,
+    digests: Collection[str],
+) -> str | None:
+    """The read-back check that failed, or None when the review matches.
 
-    Checks the actor (an App bot), the target commit, the submitted state and
-    the content (digest of the body).
+    Not found and a body-less object are ``review_absent`` (not visible yet).
+    A present review that differs is ``review_actor``, ``review_commit``,
+    ``review_state`` or ``review_body``.
     """
     if (
         not isinstance(review, Mapping)
-        or str(review.get("id")) != review_id
-        or review.get("commit_id") != head_sha
-        or review.get("state") != _SUBMITTED_STATES[event]
+        or str(review.get("id") or "") != str(review_id)
         or not isinstance(review.get("body"), str)
-        or _digest(review["body"]) != digest
-        or not _is_bot(review)
     ):
-        raise PlatformReviewError("readback_mismatch")
+        return "review_absent"
+    if not _is_bot(review):
+        return "review_actor"
+    if review.get("commit_id") != head_sha:
+        return "review_commit"
+    if review.get("state") != _SUBMITTED_STATES.get(event):
+        return "review_state"
+    if _digest(review["body"]) not in digests:
+        return "review_body"
+    return None
+
+
+def _status_check(
+    entries: Any,
+    *,
+    status_id: str,
+    state: str | None,
+    context: str | None,
+    target_url: str,
+) -> str | None:
+    """The read-back check that failed, or None when the status matches."""
+    if not isinstance(entries, list):
+        return "status_absent"
+    found = [
+        entry
+        for entry in entries
+        if isinstance(entry, Mapping) and str(entry.get("id")) == str(status_id)
+    ]
+    if len(found) != 1:
+        return "status_absent"
+    entry = found[0]
+    if entry.get("state") != state:
+        return "status_state"
+    if entry.get("context") != context:
+        return "status_context"
+    if entry.get("target_url") != target_url:
+        return "status_target_url"
+    return None
+
+
+def _readback_error(
+    check: str, *, values: dict[str, Any] | None = None
+) -> PlatformReviewError:
+    """``readback_pending`` while the object is invisible, else a mismatch.
+
+    A pending failure is retryable. A present difference is final.
+    """
+    absent = check in READBACK_ABSENT
+    reason = "readback_pending" if absent else "readback_mismatch"
+    if values is not None:
+        return _RecordedError(reason, values, retryable=absent, check=check)
+    return PlatformReviewError(reason, retryable=absent, check=check)
+
+
+async def _pause(seconds: float) -> None:
+    """Wait before another read-back. Tests replace this so they do not sleep.
+
+    Args:
+        seconds: Delay from :data:`READBACK_RETRY_DELAYS`.
+    """
+    await asyncio.sleep(seconds)
+
+
+async def _reread(load: Any, classify: Any) -> None:
+    """Read until the object matches, differs, or stays invisible.
+
+    Only an absent check is read again. A present difference fails on the
+    first read. After :data:`READBACK_RETRY_DELAYS` the object is still
+    absent and the failure stays pending.
+
+    Args:
+        load: Async callable returning the provider object.
+        classify: Returns a check name, or None when the object matches.
+
+    Raises:
+        PlatformReviewError: The read-back did not match.
+    """
+    check = classify(await load())
+    if check is None:
+        return
+    if check not in READBACK_ABSENT:
+        raise _readback_error(check)
+    for delay in READBACK_RETRY_DELAYS:
+        await _pause(delay)
+        check = classify(await load())
+        if check is None:
+            return
+        if check not in READBACK_ABSENT:
+            raise _readback_error(check)
+    raise _readback_error(check)
+
+
+async def _load_review(github: _GitHub, review_id: str) -> Any:
+    """One review, or None when the provider has not shown it yet."""
+    if not str(review_id).isdecimal():
+        raise PlatformReviewError("readback_mismatch", check="review_absent")
+    try:
+        return await github.review(review_id)
+    except PlatformReviewError as error:
+        if error.status_code == 404:
+            return None
+        raise
+
+
+async def _confirm_review(
+    github: _GitHub,
+    *,
+    review_id: str,
+    head_sha: str,
+    event: str,
+    digests: Collection[str],
+) -> None:
+    """Re-read one review until it matches or the difference is decided.
+
+    Raises:
+        PlatformReviewError: Absent after the waits, or present and different.
+    """
+
+    def classify(review: Any) -> str | None:
+        return _review_check(
+            review,
+            review_id=review_id,
+            head_sha=head_sha,
+            event=event,
+            digests=digests,
+        )
+
+    async def load() -> Any:
+        return await _load_review(github, review_id)
+
+    await _reread(load, classify)
+
+
+async def _confirm_status(
+    github: _GitHub,
+    *,
+    status_id: str,
+    state: str | None,
+    context: str | None,
+    target_url: str,
+    values: dict[str, Any],
+) -> None:
+    """Re-read the status list until the new id matches or the difference is decided.
+
+    Args:
+        values: Columns to keep on the row when the check fails. The id is
+            already known, so a later attempt can read it without creating.
+
+    Raises:
+        _RecordedError: Absent after the waits, or present and different.
+    """
+    if not str(status_id).isdecimal():
+        raise _RecordedError("readback_mismatch", values, check="status_absent")
+
+    def classify(entries: Any) -> str | None:
+        return _status_check(
+            entries,
+            status_id=status_id,
+            state=state,
+            context=context,
+            target_url=target_url,
+        )
+
+    async def load() -> Any:
+        return await github.statuses()
+
+    try:
+        await _reread(load, classify)
+    except PlatformReviewError as error:
+        raise _RecordedError(
+            error.reason,
+            values,
+            retryable=error.retryable,
+            check=error.check,
+        ) from None
 
 
 async def _post_review(
@@ -1302,6 +2091,7 @@ async def _post_review(
     binding: ReviewBinding,
     execution: Any,
     plan: PublicationPlan,
+    schema: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Post the review of one claimed publication, or decide to skip it.
 
@@ -1355,6 +2145,7 @@ async def _post_review(
                     "review_state": STATE_POSTED,
                     "review_action": plan.review_action,
                     "review_id": str(existing.get("id")),
+                    "body_digest": _digest(existing["body"]),
                     "_verify": None,
                 }
     body, comments = render_review(
@@ -1364,6 +2155,7 @@ async def _post_review(
         head_sha=binding.head_sha,
         nonce=row.nonce,
         inline=diff_lines(await github.files()),
+        schema=schema,
     )
     payload: dict[str, Any] = {
         "commit_id": binding.head_sha,
@@ -1380,12 +2172,14 @@ async def _post_review(
         created = await github.create_review(payload)
     review_id = str(created.get("id")) if isinstance(created, Mapping) else ""
     if not review_id.isdecimal():
-        raise PlatformReviewError("readback_mismatch")
+        raise PlatformReviewError("readback_mismatch", check="review_absent")
+    digest = _digest(body)
     return {
         "review_state": STATE_POSTED,
         "review_action": plan.review_action,
         "review_id": review_id,
-        "_verify": {"event": event, "digest": _digest(body)},
+        "body_digest": digest,
+        "_verify": {"event": event, "digest": digest},
     }
 
 
@@ -1393,42 +2187,47 @@ async def _post_status(
     github: _GitHub, *, execution: Any, plan: PublicationPlan
 ) -> dict[str, Any]:
     """Create the commit status on the reviewed commit and read it back."""
+    target_url = execution_url(execution.id)
     payload = {
         "state": plan.status_value,
         "context": plan.status_context,
         "description": (plan.status_description or "")[:140],
-        "target_url": execution_url(execution.id),
+        "target_url": target_url,
     }
     created = await github.create_status(payload)
     status_id = str(created.get("id")) if isinstance(created, Mapping) else ""
     if not status_id.isdecimal():
-        raise PlatformReviewError("readback_mismatch")
+        raise PlatformReviewError("readback_mismatch", check="status_absent")
     values = {
         "status_state": STATE_POSTED,
         "status_value": plan.status_value,
         "status_context": plan.status_context,
         "status_id": status_id,
+        "status_target_url": target_url,
     }
-    found = [
-        entry
-        for entry in await github.statuses()
-        if isinstance(entry, Mapping) and str(entry.get("id")) == status_id
-    ]
-    if (
-        len(found) != 1
-        or found[0].get("state") != plan.status_value
-        or found[0].get("context") != plan.status_context
-        or found[0].get("target_url") != payload["target_url"]
-    ):
-        raise _RecordedError("readback_mismatch", values)
+    await _confirm_status(
+        github,
+        status_id=status_id,
+        state=plan.status_value,
+        context=plan.status_context,
+        target_url=str(payload["target_url"]),
+        values=values,
+    )
     return values
 
 
 class _RecordedError(PlatformReviewError):
     """A failure after the provider accepted a write that must be recorded."""
 
-    def __init__(self, reason: str, values: dict[str, Any]) -> None:
-        super().__init__(reason)
+    def __init__(
+        self,
+        reason: str,
+        values: dict[str, Any],
+        *,
+        retryable: bool = False,
+        check: str | None = None,
+    ) -> None:
+        super().__init__(reason, retryable=retryable, check=check)
         self.values = values
 
 
@@ -1465,6 +2264,79 @@ def _http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient()
 
 
+async def _confirm_recorded_review(
+    github: _GitHub,
+    row: models.PlatformReviewPublication,
+    *,
+    execution: Any,
+    plan: PublicationPlan,
+    binding: CiReviewBinding,
+    schema: Any,
+) -> None:
+    """Re-read a review this row already recorded. Does not create one.
+
+    The comparison uses the body digest stored when the review was sent.
+    A row posted before that digest was stored is compared with a fresh
+    render. When that differs, the row stays failed.
+
+    Raises:
+        PlatformReviewError: The review is still absent, or present and
+            different.
+    """
+    result = execution.result if isinstance(execution.result, Mapping) else {}
+    verdict = plan.verdict
+    if not isinstance(verdict, str):
+        stored = result.get("verdict")
+        verdict = stored if isinstance(stored, str) else ""
+    if row.body_digest:
+        digests = {row.body_digest}
+    else:
+        current, _comments = render_review(
+            result,
+            verdict=verdict,
+            execution_id=execution.id,
+            head_sha=binding.head_sha,
+            nonce=row.nonce,
+            inline={},
+            schema=schema if isinstance(schema, Mapping) else None,
+        )
+        digests = {_digest(current)}
+    await _confirm_review(
+        github,
+        review_id=str(row.review_id),
+        head_sha=binding.head_sha,
+        event=REVIEW_EVENTS.get(row.review_action or "comment", "COMMENT"),
+        digests=digests,
+    )
+
+
+async def _confirm_recorded_status(
+    github: _GitHub,
+    row: models.PlatformReviewPublication,
+    *,
+    execution: Any,
+) -> None:
+    """Re-read a status this row already recorded. Does not create one.
+
+    Raises:
+        PlatformReviewError: The status is still absent, or present and
+            different. The recorded id is left as it is.
+    """
+    try:
+        await _confirm_status(
+            github,
+            status_id=str(row.status_id),
+            state=row.status_value,
+            context=row.status_context,
+            target_url=row.status_target_url or execution_url(execution.id),
+            values={},
+        )
+    except _RecordedError as error:
+        raise PlatformReviewError(
+            error.reason, retryable=error.retryable, check=error.check
+        ) from None
+
+
 async def _publish_claimed(
     db: Session,
     row: models.PlatformReviewPublication,
@@ -1472,6 +2344,7 @@ async def _publish_claimed(
     flow: models.Flow,
     execution: models.FlowExecution,
     preconditions: ReviewPreconditions | None = None,
+    evidence: Mapping[str, Any] | None = None,
 ) -> None:
     """Run one attempt for a claimed row and record its outcome.
 
@@ -1523,7 +2396,11 @@ async def _publish_claimed(
         db.refresh(flow)
         db.refresh(execution)
         failures = check_stored_preconditions(
-            pre, flow=flow, execution=execution, binding=binding
+            pre,
+            flow=flow,
+            execution=execution,
+            binding=binding,
+            evidence=evidence,
         )
         if failures:
             raise PreconditionFailedError(failures)
@@ -1561,7 +2438,26 @@ async def _publish_claimed(
         flow,
         execution,
         integrity=evaluate_execution(db, flow, execution, require_head=True),
+        evidence=evidence,
     )
+    if (
+        plan.review_action is not None
+        and row.review_state == STATE_SKIPPED
+        and row.review_reason == "evidence_incomplete"
+    ):
+        # The refusal posted no review. A later call, once the stored
+        # records meet the gate, posts it. The incomplete commit status is
+        # replaced by the verdict's state.
+        reopen: dict[str, Any] = {"review_state": None, "review_reason": None}
+        if (
+            plan.status_value is not None
+            and row.status_state == STATE_POSTED
+            and row.status_value != plan.status_value
+        ):
+            reopen["status_state"] = None
+            reopen["status_reason"] = None
+            reopen["status_value"] = None
+        row = record(db, row=row, **reopen)
     if row.status_reason == "statuses_permission_missing":
         # Only an explicit call reaches here again; the permission may have
         # been approved on the App installation since.
@@ -1579,15 +2475,40 @@ async def _publish_claimed(
             if plan.review_action is not None
             else (plan.reason or "not_configured"),
         )
+    # Re-read ids only while a read-back comparison is still open. A review
+    # or status that was already confirmed stays as recorded, so a later
+    # status does not request pull requests and a later review does not
+    # request statuses. ``readback_check`` names the comparison. A row
+    # recorded before that column existed keeps ``readback_mismatch`` or
+    # ``readback_pending`` in ``reason`` (the claim does not clear those),
+    # and that is enough to owe the read. The pass never creates.
+    owed = bool(row.readback_check) or row.reason in {
+        "readback_mismatch",
+        "readback_pending",
+    }
+    confirm_review = (
+        owed
+        and not want_review
+        and row.review_state == STATE_POSTED
+        and bool(row.review_id)
+    )
+    confirm_status = (
+        owed
+        and not want_status
+        and row.status_state == STATE_POSTED
+        and bool(row.status_id)
+    )
     failure: PlatformReviewError | None = None
-    if want_review or want_status:
+    need_review = want_review or confirm_review
+    need_status = want_status or confirm_status
+    if need_review or need_status:
         url = f"https://github.com/{binding.repository_slug}.git"
         try:
             lease, has_status = await _mint(
-                tracker, url, review=want_review, status=want_status
+                tracker, url, review=need_review, status=need_status
             )
         except LeaseRefusedError as error:
-            if error.status_code == 422 and not want_review:
+            if error.status_code == 422 and not need_review:
                 raise PlatformReviewError("statuses_permission_missing") from None
             raise PlatformReviewError(
                 "lease_refused", retryable=error.status_code >= 500
@@ -1617,14 +2538,25 @@ async def _publish_claimed(
                     number=binding.pr_number,
                     sha=binding.head_sha,
                 )
-                if pre.any:
+                if want_review and (
+                    pre.head_sha is not None or pre.base_sha is not None
+                ):
+                    # The status-only lease cannot read the pull request.
+                    # Commit preconditions are checked here only when a review
+                    # is about to be posted; a refusal writes the status on
+                    # the bound commit either way.
                     failures = check_live_preconditions(pre, await github.pull())
                     if failures:
                         raise PreconditionFailedError(failures)
                 if want_review:
                     try:
                         values = await _post_review(
-                            github, row, binding=binding, execution=execution, plan=plan
+                            github,
+                            row,
+                            binding=binding,
+                            execution=execution,
+                            plan=plan,
+                            schema=getattr(flow, "result_schema", None),
                         )
                         posted = "_verify" in values
                         verify = values.pop("_verify", None)
@@ -1632,13 +2564,25 @@ async def _publish_claimed(
                         if posted:
                             _record_receipt(db, row, binding=binding)
                         if verify is not None:
-                            _verify_review(
-                                await github.review(str(row.review_id)),
+                            await _confirm_review(
+                                github,
                                 review_id=str(row.review_id),
                                 head_sha=binding.head_sha,
                                 event=verify["event"],
-                                digest=verify["digest"],
+                                digests={verify["digest"]},
                             )
+                    except PlatformReviewError as error:
+                        failure = error
+                elif confirm_review:
+                    try:
+                        await _confirm_recorded_review(
+                            github,
+                            row,
+                            execution=execution,
+                            plan=plan,
+                            binding=binding,
+                            schema=getattr(flow, "result_schema", None),
+                        )
                     except PlatformReviewError as error:
                         failure = error
                 if want_status:
@@ -1655,6 +2599,11 @@ async def _publish_claimed(
                         failure = failure or error
                     except PlatformReviewError as error:
                         failure = failure or error
+                elif confirm_status and failure is None:
+                    try:
+                        await _confirm_recorded_status(github, row, execution=execution)
+                    except PlatformReviewError as error:
+                        failure = error
             finally:
                 try:
                     await revoke_repository_lease(lease, client)
@@ -1687,6 +2636,7 @@ async def _publish_claimed(
         or (row.status_reason if row.status_reason != "not_configured" else None),
         retryable=False,
         next_attempt_at=None,
+        readback_check=None,
         posted_at=datetime.now(timezone.utc).replace(tzinfo=None) if wrote else None,
     )
 
@@ -1793,9 +2743,30 @@ async def publish_platform_review(
         if explicit:
             raise PlatformReviewRefusedError("execution_not_finished")
         return None
+    # The last streaming gateway request can still be committing its evidence.
+    # Do not post, and do not record evidence_incomplete, until that window
+    # has passed. The sweep publishes an unclaimed automatic run afterwards.
+    if (
+        evidence_may_still_arrive(execution)
+        and stricter_evidence(evidence_level(flow.git_clone_config), pre.evidence)
+        != "any"
+    ):
+        if explicit:
+            raise PlatformReviewRefusedError("evidence_pending")
+        return None
+    # One read of the stored records serves the precondition, the plan and
+    # the record returned to the caller. A flow with the gate off, and a
+    # publish call that does not ask for evidence, does not read them.
+    counts: dict[str, Any] | None = None
+    if pre.evidence is not None or evidence_level(flow.git_clone_config) != "any":
+        counts = stored_tool_evidence(db, execution)
     if pre.any:
         failures = check_stored_preconditions(
-            pre, flow=flow, execution=execution, binding=binding
+            pre,
+            flow=flow,
+            execution=execution,
+            binding=binding,
+            evidence=counts,
         )
         if failures:
             _audit_attempt(
@@ -1821,7 +2792,13 @@ async def publish_platform_review(
         retryable_only=not explicit,
     )
     if row is None:
-        return platform_review_projection(db, execution, flow=flow)
+        return platform_review_projection(
+            db,
+            execution,
+            flow=flow,
+            evidence=counts,
+            with_evidence=counts is not None,
+        )
     # Manual mode never retries on its own: a failed explicit attempt waits
     # for the caller, who may want to check again before posting.
     automatic_retry = mode == MODE_AUTOMATIC
@@ -1830,7 +2807,12 @@ async def publish_platform_review(
     details: dict[str, Any] = {}
     try:
         await _publish_claimed(
-            db, row, flow=flow, execution=execution, preconditions=pre
+            db,
+            row,
+            flow=flow,
+            execution=execution,
+            preconditions=pre,
+            evidence=counts,
         )
     except asyncio.CancelledError:
         # Cut short by the caller's time limit: hand the row to the monitor
@@ -1853,8 +2835,21 @@ async def publish_platform_review(
         )
         raise
     except PlatformReviewError as error:
-        _fail(db, execution.id, error.reason, error.retryable and automatic_retry)
+        _fail(
+            db,
+            execution.id,
+            error.reason,
+            error.retryable and automatic_retry,
+            check=error.check,
+        )
         outcome, details = "failure", {"reason": error.reason}
+        if error.check:
+            details["readback_check"] = error.check
+            logger.warning(
+                "Platform review read-back %s for execution %s",
+                error.check,
+                execution.id,
+            )
     except Exception:
         # A posting failure never reaches the execution's status or result.
         logger.error("Platform review publication failed for %s", execution.id)
@@ -1881,7 +2876,9 @@ async def publish_platform_review(
         status=outcome,
         details=details,
     )
-    return platform_review_projection(db, execution, flow=flow)
+    return platform_review_projection(
+        db, execution, flow=flow, evidence=counts, with_evidence=counts is not None
+    )
 
 
 def review_source(execution: Any) -> str | None:
@@ -1992,7 +2989,14 @@ def _stop_retrying(db: Session, execution_id: Any, reason: str) -> None:
         logger.error("Could not close the publication retry of %s", execution_id)
 
 
-def _fail(db: Session, execution_id: Any, reason: str, retryable: bool) -> None:
+def _fail(
+    db: Session,
+    execution_id: Any,
+    reason: str,
+    retryable: bool,
+    *,
+    check: str | None = None,
+) -> None:
     store = crud.crud_platform_review_publication
     try:
         db.rollback()
@@ -2000,6 +3004,9 @@ def _fail(db: Session, execution_id: Any, reason: str, retryable: bool) -> None:
         if row is None:
             return
         again = retryable and row.attempts < MAX_AUTOMATIC_ATTEMPTS
+        # A failure that does not name a comparison keeps the one already
+        # recorded, so a provider error cannot forget an open read-back.
+        stored_check = check[:32] if check else row.readback_check
         store.record(
             db,
             row=row,
@@ -2007,6 +3014,7 @@ def _fail(db: Session, execution_id: Any, reason: str, retryable: bool) -> None:
             reason=reason[:64],
             retryable=again,
             next_attempt_at=_backoff(row.attempts) if again else None,
+            readback_check=stored_check,
         )
     except Exception:
         db.rollback()
@@ -2020,7 +3028,12 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def platform_review_projection(
-    db: Session, execution: Any, *, flow: Any = None
+    db: Session,
+    execution: Any,
+    *,
+    flow: Any = None,
+    evidence: Mapping[str, Any] | None = None,
+    with_evidence: bool = False,
 ) -> dict[str, Any] | None:
     """What was posted for an execution, safe for its restricted CI identity.
 
@@ -2028,6 +3041,10 @@ def platform_review_projection(
         db: Database session.
         execution: Flow execution row.
         flow: The execution's flow, when the caller holds it.
+        evidence: Counts already computed for this request.
+        with_evidence: Attach ``tool_evidence``. Left off for the execution
+            list, a status poll and the finished event, which would otherwise
+            decode every stored record.
 
     Returns:
         None when the flow has not opted in and nothing was ever claimed;
@@ -2036,8 +3053,14 @@ def platform_review_projection(
         ``posted_by`` says how the review reached the pull request:
         ``automatic`` (when the execution finished, or by an automatic
         retry), ``manual`` (the explicit publish call) or ``none``; null for
-        a review posted before the record existed. Contains
-        no credential and no provider response.
+        a review posted before the record existed. ``tool_evidence``, when
+        requested, is the count summary of the stored records. Contains no
+        credential, no provider response and no evidence values.
+        ``readback_check`` names the last comparison that failed
+        (``review_body``, ``status_absent``, and the other read-back checks).
+        It can stay set when a later attempt fails for another reason while
+        that read-back is still owed, and is null once the publication is
+        posted or no read-back has failed.
     """
     row = crud.crud_platform_review_publication.get_for_execution(
         db, execution_id=execution.id
@@ -2046,11 +3069,18 @@ def platform_review_projection(
         flow = getattr(execution, "flow", None)
     mode = platform_review_mode(getattr(flow, "git_clone_config", None))
     how = posted_by(execution)
+    if row is None and mode == MODE_OFF:
+        return None
+    counts: Mapping[str, Any] | None
+    if not with_evidence:
+        counts = None
+    elif evidence is not None:
+        counts = evidence
+    else:
+        counts = stored_tool_evidence(db, execution)
     if row is None:
-        if mode == MODE_OFF:
-            return None
         binding = getattr(execution, "ci_review_binding", None)
-        return {
+        payload = {
             "mode": mode,
             "posted_by": NOT_POSTED,
             "status": "pending",
@@ -2070,24 +3100,29 @@ def platform_review_projection(
             "retry_scheduled": False,
             "source": review_source(execution),
         }
-    return {
-        "mode": mode,
-        "posted_by": how if row.review_state == STATE_POSTED else NOT_POSTED,
-        "status": row.state,
-        "reason": row.reason,
-        "head_sha": row.head_sha,
-        "review": row.review_state,
-        "review_id": row.review_id,
-        "review_action": row.review_action,
-        "review_reason": row.review_reason,
-        "commit_status": row.status_value,
-        "status_context": row.status_context,
-        "status_reason": row.status_reason,
-        "posted_at": _iso(row.posted_at),
-        "attempts": row.attempts,
-        "retry_scheduled": bool(row.retryable and row.next_attempt_at is not None),
-        "source": review_source(execution),
-    }
+    else:
+        payload = {
+            "mode": mode,
+            "posted_by": how if row.review_state == STATE_POSTED else NOT_POSTED,
+            "status": row.state,
+            "reason": row.reason,
+            "head_sha": row.head_sha,
+            "review": row.review_state,
+            "review_id": row.review_id,
+            "review_action": row.review_action,
+            "review_reason": row.review_reason,
+            "commit_status": row.status_value,
+            "status_context": row.status_context,
+            "status_reason": row.status_reason,
+            "posted_at": _iso(row.posted_at),
+            "attempts": row.attempts,
+            "retry_scheduled": bool(row.retryable and row.next_attempt_at is not None),
+            "source": review_source(execution),
+        }
+    if with_evidence:
+        payload["tool_evidence"] = counts
+    payload["readback_check"] = None if row is None else row.readback_check
+    return payload
 
 
 async def publish_finished_execution(*, account_id: Any, execution_id: Any) -> None:

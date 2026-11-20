@@ -263,6 +263,104 @@ func TestReviewPostingShowListsMissingPrerequisites(t *testing.T) {
 	}
 }
 
+func TestReviewPostingShowStatesFindingFields(t *testing.T) {
+	flow := newReviewFlow()
+	flow["result_schema"].(map[string]any)["properties"] = map[string]any{
+		"verdict": map[string]any{"type": "string", "enum": []any{"pass", "fail"}},
+		"findings": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"severity": map[string]any{"type": "string"},
+					"problem":  map[string]any{"type": "string"},
+					"evidence": map[string]any{"type": "string"},
+					"fix":      map[string]any{"type": "string"},
+					"location": map[string]any{"type": "string"},
+				},
+			},
+		},
+	}
+	state := &reviewPostingServer{flow: flow}
+	startReviewPostingServer(t, state)
+
+	out, err := runReviewPosting(t, "show", reviewFlowID)
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	for _, want := range []string{"problem: text", "evidence: labelled block", "fix: labelled block", "location: location"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "no text field") {
+		t.Fatalf("a problem field must not warn:\n%s", out)
+	}
+
+	bare := newReviewFlow()
+	bare["result_schema"].(map[string]any)["properties"] = map[string]any{
+		"verdict": map[string]any{"type": "string", "enum": []any{"pass", "fail"}},
+		"findings": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"severity": map[string]any{"type": "string"},
+					"meta":     map[string]any{"type": "object"},
+				},
+			},
+		},
+	}
+	startReviewPostingServer(t, &reviewPostingServer{flow: bare})
+	out, err = runReviewPosting(t, "show", reviewFlowID)
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	if !strings.Contains(out, "no text field") || !strings.Contains(out, "meta: labelled block") {
+		t.Fatalf("output = %s", out)
+	}
+
+	wrapped := newReviewFlow()
+	wrapped["result_schema"].(map[string]any)["properties"] = map[string]any{
+		"verdict": map[string]any{"type": "string", "enum": []any{"pass", "fail"}},
+		"findings": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"allOf": []any{
+					map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"problem": map[string]any{"type": "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+	startReviewPostingServer(t, &reviewPostingServer{flow: wrapped})
+	out, err = runReviewPosting(t, "show", reviewFlowID)
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	if !strings.Contains(out, "problem: text") || strings.Contains(out, "no text field") {
+		t.Fatalf("allOf item was not read:\n%s", out)
+	}
+
+	undeclared := newReviewFlow()
+	undeclared["result_schema"].(map[string]any)["properties"] = map[string]any{
+		"verdict":  map[string]any{"type": "string", "enum": []any{"pass", "fail"}},
+		"findings": map[string]any{"type": "array"},
+	}
+	startReviewPostingServer(t, &reviewPostingServer{flow: undeclared})
+	out, err = runReviewPosting(t, "show", reviewFlowID)
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	if !strings.Contains(out, "does not declare any") || strings.Contains(out, "no text field") {
+		t.Fatalf("a findings array without an item schema must not warn:\n%s", out)
+	}
+}
+
 func TestReviewPostingStatusPrintsTheRecord(t *testing.T) {
 	state := &reviewPostingServer{
 		flow: newReviewFlow(),
@@ -381,10 +479,10 @@ func TestEventRunStatusPrintsSource(t *testing.T) {
 	state := &reviewPostingServer{
 		flow: newReviewFlow(),
 		record: map[string]any{
-			"status":  "pending",
-			"source":  "tracker_event",
-			"reason":  "installation_suspended",
-			"review":  "skipped",
+			"status":        "pending",
+			"source":        "tracker_event",
+			"reason":        "installation_suspended",
+			"review":        "skipped",
 			"review_reason": "admission_revoked",
 		},
 	}
@@ -408,5 +506,70 @@ func TestEventRunStatusPrintsSource(t *testing.T) {
 	}
 	if got := reviewReasonText("admission_revoked"); got != "the run is no longer admitted to the flow" {
 		t.Fatalf("admission_revoked text = %q", got)
+	}
+}
+
+func TestReviewPostingEvidenceFlag(t *testing.T) {
+	state := &reviewPostingServer{flow: newReviewFlow()}
+	startReviewPostingServer(t, state)
+
+	if _, err := runReviewPosting(t, "enable", reviewFlowID, "--no-status", "--evidence", "sometimes"); err == nil || !strings.Contains(err.Error(), "--evidence must be any, captured or complete") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(state.puts) != 0 {
+		t.Fatalf("unknown evidence must not be saved: %v", state.puts)
+	}
+
+	out, err := runReviewPosting(t, "enable", reviewFlowID, "--no-status", "--evidence", "captured")
+	if err != nil {
+		t.Fatalf("enable: %v\n%s", err, out)
+	}
+	block := state.puts[0]["git_clone_config"].(map[string]any)["platform_review"].(map[string]any)
+	if _, ok := block["status"]; ok || block["evidence"] != "captured" || block["enabled"] != true {
+		t.Fatalf("block = %v", block)
+	}
+	if !strings.Contains(out, "Evidence: captured") {
+		t.Fatalf("output = %q", out)
+	}
+
+	out, err = runReviewPosting(t, "set-states", reviewFlowID, "--evidence", "complete")
+	if err != nil {
+		t.Fatalf("set-states: %v\n%s", err, out)
+	}
+	block = state.puts[1]["git_clone_config"].(map[string]any)["platform_review"].(map[string]any)
+	if _, ok := block["status"]; ok || block["evidence"] != "complete" {
+		t.Fatalf("evidence-only set-states invented a status: %v", block)
+	}
+
+	out, err = runReviewPosting(t, "show", reviewFlowID)
+	if err != nil || !strings.Contains(out, "Evidence: complete") {
+		t.Fatalf("show = %q err = %v", out, err)
+	}
+
+	state.record = map[string]any{
+		"status":        "skipped",
+		"reason":        "evidence_incomplete",
+		"review":        "skipped",
+		"review_reason": "evidence_incomplete",
+		"tool_evidence": map[string]any{
+			"gateway_requests":     2,
+			"missing_records":      1,
+			"records":              1,
+			"incomplete_records":   0,
+			"masking_only_records": 0,
+			"masking_by_rule":      map[string]any{},
+		},
+	}
+	out, err = runReviewPosting(t, "status", reviewExecutionID)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	for _, want := range []string{
+		"not complete enough",
+		"Tool evidence: 2 model requests, 1 missing, 1 records, 0 incomplete, 0 incomplete only because a credential was masked",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
 	}
 }

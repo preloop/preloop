@@ -365,7 +365,8 @@ def _reject_invalid_platform_review(
                 git_clone_config=config,
                 result_schema=result_schema,
                 validate_result=validate_result,
-            )
+            ),
+            enforce_content_capture=True,
         )
         validate_platform_review_trackers(db, account_id=account_id, config=config)
         validate_event_review_posting(
@@ -2015,8 +2016,10 @@ def publish_execution_platform_review(
         description=(
             "Optional preconditions, each optional: expected_head_sha, "
             "expected_base_sha (full commit SHAs), expected_result_sha256 "
-            "(64 hex characters, as on GET .../result) and "
-            "expected_flow_revision (positive integer)."
+            "(64 hex characters, as on GET .../result), "
+            "expected_flow_revision (positive integer) and "
+            "expected_evidence (captured or complete; can only tighten the "
+            "flow setting)."
         ),
         examples=[
             {
@@ -2051,9 +2054,15 @@ def publish_execution_platform_review(
     - ``expected_result_sha256``: ``result_sha256`` of the stored result, as
       returned by ``GET /flows/executions/{id}/result``.
     - ``expected_flow_revision``: the flow's current configuration revision.
+    - ``expected_evidence``: ``captured`` or ``complete``. The stored tool
+      evidence must meet that level. It can require more than the flow's
+      ``platform_review.evidence``; it never lowers a stricter flow setting.
 
     A failed precondition returns 412, posts nothing and records nothing as
-    posted; the call can be repeated with corrected values.
+    posted; the call can be repeated with corrected values. While the last
+    gateway request can still be recording (a short window after the run
+    finishes) and the flow or the caller requires captured or complete
+    evidence, the call returns 409 ``evidence_pending`` and posts nothing.
 
     The call is idempotent. A review or status that was already posted for
     the execution is not posted again; the response is the current
@@ -2281,7 +2290,10 @@ def get_flow_execution_result(
             execution_timings,
         )
 
-        projection = execution_projection(execution)
+        counts = _tool_evidence_summary(db, execution)
+        projection = execution_projection(
+            execution, evidence=counts, with_evidence=True
+        )
         return {
             "execution_id": str(execution.id),
             **projection,
@@ -2297,6 +2309,7 @@ def get_flow_execution_result(
             "schema_validation": _ci_schema_validation(
                 execution, messages=not withheld
             ),
+            "tool_evidence": counts,
         }
     execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
@@ -2305,6 +2318,7 @@ def get_flow_execution_result(
         raise HTTPException(status_code=404, detail="Flow execution not found")
     if result_availability(execution) != "available" or not _is_terminal(execution):
         _raise_result_missing(execution)
+    counts = _tool_evidence_summary(db, execution)
     return {
         "execution_id": str(execution.id),
         "status": execution.status,
@@ -2320,15 +2334,33 @@ def get_flow_execution_result(
         # when the flow sets none.
         "schema_validation": _public_schema_validation(execution),
         # What Preloop posted on the pull request; null without the opt-in.
-        "platform_review": _platform_review_of(db, execution),
+        "platform_review": _platform_review_of(
+            db, execution, evidence=counts, with_evidence=True
+        ),
+        "tool_evidence": counts,
     }
 
 
-def _platform_review_of(db: Session, execution: Any) -> Optional[Dict[str, Any]]:
+def _tool_evidence_summary(db: Session, execution: Any) -> Dict[str, Any]:
+    """Tool-evidence counts for one execution. No values, paths or text."""
+    from preloop.services.platform_review import stored_tool_evidence
+
+    return stored_tool_evidence(db, execution)
+
+
+def _platform_review_of(
+    db: Session,
+    execution: Any,
+    *,
+    evidence: Optional[Dict[str, Any]] = None,
+    with_evidence: bool = False,
+) -> Optional[Dict[str, Any]]:
     """The posted-review record of an execution, or None."""
     from preloop.services.platform_review import platform_review_projection
 
-    return platform_review_projection(db, execution)
+    return platform_review_projection(
+        db, execution, evidence=evidence, with_evidence=with_evidence
+    )
 
 
 def _github_web_base(tracker_url: Any) -> Optional[str]:
@@ -2369,7 +2401,7 @@ def _platform_review_with_links(
     ``ci_review_binding`` (repository, pull request, reviewed commit) and the
     recorded review id. Nothing is fetched from the provider.
     """
-    record = _platform_review_of(db, execution)
+    record = _platform_review_of(db, execution, with_evidence=True)
     if record is None:
         return None
     links: Dict[str, Optional[str]] = {

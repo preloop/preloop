@@ -36,6 +36,7 @@ type reviewPostingFlags struct {
 	states          []string
 	context         string
 	incompleteState string
+	evidence        string
 	noStatus        bool
 	asJSON          bool
 }
@@ -101,6 +102,7 @@ func newReviewPostingShowCmd() *cobra.Command {
 			}
 			block := platformReviewBlock(flow)
 			checks := reviewPostingChecks(flow)
+			fields := findingFieldAppearances(flow["result_schema"])
 			if asJSON {
 				missing := []string{}
 				for _, check := range checks {
@@ -112,9 +114,12 @@ func newReviewPostingShowCmd() *cobra.Command {
 					"flow_id":         flowID,
 					"platform_review": block,
 					"missing":         missing,
+					"finding_fields":  fields,
+					"finding_text":    findingSchemaHasText(flow["result_schema"], fields),
 				})
 			}
 			printReviewPostingConfig(cmd.OutOrStdout(), flowID, block, checks)
+			printFindingFields(cmd.OutOrStdout(), flow["result_schema"], fields)
 			return nil
 		},
 	}
@@ -139,6 +144,7 @@ func newReviewPostingWriteCmd(operation string) *cobra.Command {
 	cmd.Flags().StringArrayVar(&flags.states, "state", nil, "verdict=state, repeatable; state is success, failure or error")
 	cmd.Flags().StringVar(&flags.context, "status-context", "", "commit status name (default preloop/review); keep it stable for branch protection")
 	cmd.Flags().StringVar(&flags.incompleteState, "incomplete-state", "", "status for a run that stopped, failed or has no valid result: error, failure, or none")
+	cmd.Flags().StringVar(&flags.evidence, "evidence", "", "which stored tool evidence may be posted: any, captured or complete")
 	if operation == "enable" {
 		cmd.Flags().BoolVar(&flags.noStatus, "no-status", false, "post the review only, no commit status")
 	}
@@ -193,6 +199,10 @@ func runReviewPostingWrite(cmd *cobra.Command, operation, nameOrID string, flags
 	if incomplete != "" && incomplete != "none" && incomplete != "error" && incomplete != "failure" {
 		return fmt.Errorf("--incomplete-state must be error, failure or none")
 	}
+	evidence := strings.ToLower(strings.TrimSpace(flags.evidence))
+	if evidence != "" && evidence != "any" && evidence != "captured" && evidence != "complete" {
+		return fmt.Errorf("--evidence must be any, captured or complete")
+	}
 	if flags.noStatus && (len(states) > 0 || flags.context != "" || incomplete != "") {
 		return fmt.Errorf("--no-status cannot be combined with --state, --status-context or --incomplete-state")
 	}
@@ -214,58 +224,70 @@ func runReviewPostingWrite(cmd *cobra.Command, operation, nameOrID string, flags
 	if operation == "enable" {
 		block["enabled"] = true
 	}
+	switch evidence {
+	case "":
+	case "any":
+		delete(block, "evidence")
+	default:
+		block["evidence"] = evidence
+	}
 	if flags.noStatus {
 		delete(block, "status")
 	} else {
 		status, _ := block["status"].(map[string]any)
-		if status == nil {
-			if operation == "set-states" && len(states) == 0 && flags.context == "" && incomplete == "" {
-				return fmt.Errorf("nothing to change: pass --state, --status-context or --incomplete-state")
+		statusFlags := len(states) > 0 || flags.context != "" || incomplete != ""
+		// Evidence on its own must not create a commit-status block.
+		evidenceOnly := status == nil && operation == "set-states" && !statusFlags
+		if evidenceOnly && evidence == "" {
+			return fmt.Errorf("nothing to change: pass --state, --status-context, --incomplete-state or --evidence")
+		}
+		if !evidenceOnly {
+			if status == nil {
+				status = map[string]any{}
 			}
-			status = map[string]any{}
-		}
-		verdictStates, _ := status["verdict_states"].(map[string]any)
-		if verdictStates == nil {
-			verdictStates = map[string]any{}
-		}
-		for verdict, state := range states {
-			verdictStates[verdict] = state
-		}
-		verdicts := verdictEnumOf(flow["result_schema"])
-		if len(verdictStates) == 0 && len(verdicts) > 0 {
-			return fmt.Errorf("set a commit status for every verdict with --state (verdicts: %s), or pass --no-status", strings.Join(verdicts, ", "))
-		}
-		for verdict := range states {
-			if len(verdicts) > 0 && !containsString(verdicts, verdict) {
-				return fmt.Errorf("verdict %q is not in the result schema (verdicts: %s)", verdict, strings.Join(verdicts, ", "))
+			verdictStates, _ := status["verdict_states"].(map[string]any)
+			if verdictStates == nil {
+				verdictStates = map[string]any{}
 			}
-		}
-		var unmapped []string
-		for _, verdict := range verdicts {
-			if _, ok := verdictStates[verdict]; !ok {
-				unmapped = append(unmapped, verdict)
+			for verdict, state := range states {
+				verdictStates[verdict] = state
 			}
+			verdicts := verdictEnumOf(flow["result_schema"])
+			if len(verdictStates) == 0 && len(verdicts) > 0 {
+				return fmt.Errorf("set a commit status for every verdict with --state (verdicts: %s), or pass --no-status", strings.Join(verdicts, ", "))
+			}
+			for verdict := range states {
+				if len(verdicts) > 0 && !containsString(verdicts, verdict) {
+					return fmt.Errorf("verdict %q is not in the result schema (verdicts: %s)", verdict, strings.Join(verdicts, ", "))
+				}
+			}
+			var unmapped []string
+			for _, verdict := range verdicts {
+				if _, ok := verdictStates[verdict]; !ok {
+					unmapped = append(unmapped, verdict)
+				}
+			}
+			if len(unmapped) > 0 {
+				return fmt.Errorf("no commit status for verdict %s; add --state %s=<success|failure|error>", strings.Join(unmapped, ", "), unmapped[0])
+			}
+			status["verdict_states"] = verdictStates
+			if flags.context != "" {
+				status["context"] = flags.context
+			} else if _, ok := status["context"]; !ok || status["context"] == nil {
+				status["context"] = defaultReviewStatusContext
+			}
+			switch incomplete {
+			case "":
+			case "none":
+				delete(status, "incomplete_state")
+			default:
+				status["incomplete_state"] = incomplete
+			}
+			if status["incomplete_state"] == nil {
+				delete(status, "incomplete_state")
+			}
+			block["status"] = status
 		}
-		if len(unmapped) > 0 {
-			return fmt.Errorf("no commit status for verdict %s; add --state %s=<success|failure|error>", strings.Join(unmapped, ", "), unmapped[0])
-		}
-		status["verdict_states"] = verdictStates
-		if flags.context != "" {
-			status["context"] = flags.context
-		} else if _, ok := status["context"]; !ok || status["context"] == nil {
-			status["context"] = defaultReviewStatusContext
-		}
-		switch incomplete {
-		case "":
-		case "none":
-			delete(status, "incomplete_state")
-		default:
-			status["incomplete_state"] = incomplete
-		}
-		if status["incomplete_state"] == nil {
-			delete(status, "incomplete_state")
-		}
-		block["status"] = status
 	}
 	saved, err := saveReviewPostingBlock(client, flowID, flow, block)
 	if err != nil {
@@ -279,6 +301,7 @@ func runReviewPostingWrite(cmd *cobra.Command, operation, nameOrID string, flags
 		verb = "on"
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Posting is %s for flow %s.\n", verb, flowID)
+	printEvidenceLevel(cmd.OutOrStdout(), saved)
 	printVerdictStates(cmd.OutOrStdout(), saved)
 	return nil
 }
@@ -558,6 +581,136 @@ func reviewPostingChecks(flow map[string]any) []reviewPostingCheck {
 	}
 }
 
+// findingFieldRole is how a declared finding field appears in the posted review.
+func findingFieldRole(name string) string {
+	switch name {
+	case "severity":
+		return "severity"
+	case "title":
+		return "title"
+	case "body", "description", "message", "detail", "problem", "issue", "finding", "summary":
+		return "text"
+	case "path", "file", "line", "location", "where":
+		return "location"
+	default:
+		return "labelled block"
+	}
+}
+
+type findingFieldAppearance struct {
+	Field     string `json:"field"`
+	AppearsAs string `json:"appears_as"`
+}
+
+func objectSchema(schema map[string]any) map[string]any {
+	if props, ok := schema["properties"].(map[string]any); ok && props != nil {
+		return schema
+	}
+	for _, key := range []string{"allOf", "anyOf", "oneOf"} {
+		options, ok := schema[key].([]any)
+		if !ok {
+			continue
+		}
+		for _, option := range options {
+			doc, ok := option.(map[string]any)
+			if !ok {
+				continue
+			}
+			if found := objectSchema(doc); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func findingItemSchema(schema any) map[string]any {
+	doc, _ := schema.(map[string]any)
+	properties, _ := doc["properties"].(map[string]any)
+	findings, _ := properties["findings"].(map[string]any)
+	if findings == nil {
+		return nil
+	}
+	switch items := findings["items"].(type) {
+	case map[string]any:
+		return objectSchema(items)
+	case []any:
+		for _, candidate := range items {
+			doc, ok := candidate.(map[string]any)
+			if !ok {
+				continue
+			}
+			if found := objectSchema(doc); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+// findingFieldAppearances lists the finding fields a result schema declares.
+// Map iteration order is not the schema order, so the list is sorted by role
+// and then by name; the posted review itself uses the schema's order.
+func findingFieldAppearances(schema any) []findingFieldAppearance {
+	item := findingItemSchema(schema)
+	if item == nil {
+		return []findingFieldAppearance{}
+	}
+	props, _ := item["properties"].(map[string]any)
+	if props == nil {
+		return []findingFieldAppearance{}
+	}
+	names := make([]string, 0, len(props))
+	for name := range props {
+		names = append(names, name)
+	}
+	rank := map[string]int{"severity": 0, "title": 1, "text": 2, "location": 3, "labelled block": 4}
+	sort.Slice(names, func(i, j int) bool {
+		ri, rj := rank[findingFieldRole(names[i])], rank[findingFieldRole(names[j])]
+		if ri != rj {
+			return ri < rj
+		}
+		return names[i] < names[j]
+	})
+	out := make([]findingFieldAppearance, 0, len(names))
+	for _, name := range names {
+		out = append(out, findingFieldAppearance{Field: name, AppearsAs: findingFieldRole(name)})
+	}
+	return out
+}
+
+// findingSchemaHasText reports whether the schema declares a findings object
+// and, when it does, whether any property is shown as the finding text.
+// A schema that does not declare findings returns true so show does not warn.
+func findingSchemaHasText(schema any, fields []findingFieldAppearance) bool {
+	if findingItemSchema(schema) == nil {
+		return true
+	}
+	for _, field := range fields {
+		if field.AppearsAs == "text" {
+			return true
+		}
+	}
+	return false
+}
+
+func printFindingFields(out io.Writer, schema any, fields []findingFieldAppearance) {
+	if findingItemSchema(schema) == nil {
+		fmt.Fprintln(out, "Finding fields: the result schema does not declare any.")
+		return
+	}
+	fmt.Fprintln(out, "Finding fields:")
+	if len(fields) == 0 {
+		fmt.Fprintln(out, "  (none declared)")
+	}
+	for _, field := range fields {
+		fmt.Fprintf(out, "  %s: %s\n", field.Field, field.AppearsAs)
+	}
+	if !findingSchemaHasText(schema, fields) {
+		fmt.Fprintln(out, "Warning: the schema declares no text field for a finding, so the review has no problem statement. The flow can still be saved.")
+	}
+}
+
 func printReviewPostingConfig(out io.Writer, flowID string, block map[string]any, checks []reviewPostingCheck) {
 	enabled, _ := block["enabled"].(bool)
 	state := "off"
@@ -565,6 +718,7 @@ func printReviewPostingConfig(out io.Writer, flowID string, block map[string]any
 		state = "on"
 	}
 	fmt.Fprintf(out, "Flow:     %s\nPosting:  %s\n", flowID, state)
+	printEvidenceLevel(out, block)
 	if block != nil {
 		printVerdictStates(out, block)
 	}
@@ -579,6 +733,16 @@ func printReviewPostingConfig(out io.Writer, flowID string, block map[string]any
 		fmt.Fprintf(out, "  [%s] %s%s\n", mark, check.label, detail)
 	}
 	fmt.Fprintln(out, "  [check in GitHub] App permissions: Pull requests: Read and write; Commit statuses: Read and write (for a status)")
+}
+
+func printEvidenceLevel(out io.Writer, block map[string]any) {
+	value := "any"
+	if block != nil {
+		if stored, _ := block["evidence"].(string); stored == "captured" || stored == "complete" {
+			value = stored
+		}
+	}
+	fmt.Fprintf(out, "Evidence: %s\n", value)
 }
 
 func printVerdictStates(out io.Writer, block map[string]any) {
@@ -657,6 +821,51 @@ func printPublicationRecord(out io.Writer, record map[string]any) {
 	if retry, _ := record["retry_scheduled"].(bool); retry {
 		fmt.Fprintln(out, "Preloop will retry on its own.")
 	}
+	printToolEvidence(out, record["tool_evidence"])
+	if check := str("readback_check"); check != "" {
+		fmt.Fprintf(out, "Read-back:   %s\n", check)
+	}
+}
+
+func printToolEvidence(out io.Writer, raw any) {
+	counts, _ := raw.(map[string]any)
+	if counts == nil {
+		return
+	}
+	fmt.Fprintf(
+		out,
+		"Tool evidence: %s model requests, %s missing, %s records, %s incomplete, %s incomplete only because a credential was masked\n",
+		reviewCount(counts["gateway_requests"]),
+		reviewCount(counts["missing_records"]),
+		reviewCount(counts["records"]),
+		reviewCount(counts["incomplete_records"]),
+		reviewCount(counts["masking_only_records"]),
+	)
+	rules, _ := counts["masking_by_rule"].(map[string]any)
+	if len(rules) == 0 {
+		return
+	}
+	names := make([]string, 0, len(rules))
+	for name := range rules {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+": "+reviewCount(rules[name]))
+	}
+	fmt.Fprintf(out, "  masking rules: %s\n", strings.Join(parts, ", "))
+}
+
+func reviewCount(value any) string {
+	switch n := value.(type) {
+	case float64:
+		return strconv.FormatInt(int64(n), 10)
+	case json.Number:
+		return n.String()
+	default:
+		return fmt.Sprint(value)
+	}
 }
 
 var reviewReasons = map[string]string{
@@ -668,7 +877,8 @@ var reviewReasons = map[string]string{
 	"provider_unavailable":        "GitHub was unavailable or rate limited; Preloop retries",
 	"provider_rejected":           "GitHub refused the request",
 	"provider_denied":             "GitHub denied the request; check the App installation and permissions",
-	"readback_mismatch":           "what GitHub holds differs from what was sent; check the pull request",
+	"readback_pending":            "GitHub had not shown the review or status yet; Preloop reads it again and does not post a second time",
+	"readback_mismatch":           "what GitHub holds differs from what was sent; publish again to repair the record only when it matches",
 	"lease_unavailable":           "no GitHub App token could be obtained for the repository",
 	"lease_refused":               "GitHub refused a token with the permissions posting needs",
 	"platform_review_disabled":    "posting is turned off on the flow",
@@ -681,6 +891,8 @@ var reviewReasons = map[string]string{
 	"no_review_binding":           "this run has no review binding",
 	"execution_not_finished":      "the run has not finished",
 	"attempt_interrupted":         "the attempt was interrupted; Preloop retries",
+	"evidence_incomplete":         "the stored tool evidence is not complete enough for this flow to post a review",
+	"evidence_pending":            "tool evidence for the last model request may still be recording; retry in a moment",
 }
 
 func reviewReasonText(code string) string {
