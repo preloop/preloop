@@ -1526,23 +1526,144 @@ Every command takes `--json`. The commands use your saved login or
 | `status.incomplete_state` | Optional `error` or `failure`, set with a neutral description when the run stopped, failed or returned no valid result, so a required status is not left waiting. Without it nothing is posted for such runs. |
 | `evidence` | Optional. Which stored tool evidence may be posted. See [Tool evidence](#tool-evidence). |
 
-What your result must contain. Preloop reads only these fields of the
-validated result; your schema decides which are required beyond `verdict`:
+### What your result must contain
 
-- `verdict`: the schema must declare it as a required string with an `enum`.
-- `summary`: text.
-- `findings`: a list of objects with `severity`, `title`, `body` (or
-  `description`, `message`, `detail`), `path` (or `file`) and `line`.
-- `checked` (or `checks`): a list of short strings saying what was reviewed.
+`verdict` is the one required field: a required string with an `enum`.
+Everything else below is posted when the validated result carries it. Your
+schema decides which of them are required. Nothing a finding holds is left
+out of the review without the review saying so.
+
+- **Summary.** `summary`, or if that is absent `review`, or else `overview`.
+- **Findings.** A list of objects. For each object:
+  - **Severity** is `severity`, shown in the heading.
+  - **Title** is `title`. When a finding has no title, the heading is the
+    number, the severity and the location. The word "Finding" is not added.
+  - **Text** is the first non-empty string among `body`, `description`,
+    `message`, `detail`, `problem`, `issue`, `finding` and `summary`, in
+    that order.
+  - **Location** is `path` or `file`, together with `line`. A line may be a
+    number or a decimal string such as `"17"`. When there is no path, a
+    string `location` or `where` is read: `path`, `path:LINE`,
+    `path:LINE-LINE` or `path#LLINE`. The path and the first line are used.
+    Anything else is shown as code and is not an inline comment.
+  - **Every other field** is a labelled block under the text, in the order
+    the result schema declares the properties (or the order in the result
+    when the schema does not name them). A string, number or boolean is
+    shown as text. A list of strings is shown as a list. Anything else is
+    counted ("2 fields not shown") and not rendered. A value cut for length
+    says "text shortened". The label is the field name, shown as text, so a
+    name the schema allows cannot become markup.
+- **Checked.** `checked` or `checks`, a list of short strings.
+
+`preloop flow review-posting show` and the **Post review on the pull
+request** card list the finding fields your schema declares and how each
+one appears (severity, title, text, location or a labelled block). When the
+schema declares findings and none of those fields is a text field, the flow's
+`config_warnings` says so. The flow still saves.
+
+A finding becomes an inline comment only when its path and line are in the
+pull request's diff. The comment carries the same blocks as the body. All
+text from the result is shown as literal text: it cannot mention a user,
+link anywhere, reference or close an issue, or carry HTML. File paths are
+shown as code. When the review is cut for size it says how many findings
+are not shown and points at the execution, which holds the full result.
+
+One result in the original field names:
+
+<!-- example: fragment -->
+```json
+{
+  "verdict": "fail",
+  "summary": "One problem in the parser.",
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Unchecked length",
+      "body": "The length is read before it is validated.",
+      "path": "src/parser.py",
+      "line": 12
+    }
+  ]
+}
+```
+
+The review GitHub shows for that result (the hidden marker is omitted):
+
+```text
+### Preloop review: fail
+
+Reviewed commit `<sha>`. This review covers that commit only.
+
+**Summary**
+
+> One problem in the parser.
+
+**Findings (1)**
+
+**1. [high] Unchecked length** (`src/parser.py:12`)
+
+> The length is read before it is validated.
+
+Execution: <link to the execution>
+
+Posted by Preloop from the validated result of a read-only review run.
+```
+
+The same review from `problem`, `evidence`, `fix` and `location`. There is
+no `title` and no `summary`; the narrative is `review`:
+
+<!-- example: fragment -->
+```json
+{
+  "verdict": "changes_requested",
+  "review": "Reserved stock can still be sold.",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "problem": "A sale ignores reservations.",
+      "evidence": "The count is written with no reservation check.",
+      "fix": "Refuse the sale when reserved units cover it.",
+      "location": "shop/inventory.py:17"
+    }
+  ]
+}
+```
+
+```text
+### Preloop review: changes_requested
+
+Reviewed commit `<sha>`. This review covers that commit only.
+
+**Summary**
+
+> Reserved stock can still be sold.
+
+**Findings (1)**
+
+**1. [MEDIUM]** (`shop/inventory.py:17`)
+
+> A sale ignores reservations.
+
+**evidence**
+
+> The count is written with no reservation check.
+
+**fix**
+
+> Refuse the sale when reserved units cover it.
+
+Execution: <link to the execution>
+
+Posted by Preloop from the validated result of a read-only review run.
+```
+
+With line 17 in the pull request diff, that finding is also one inline
+comment with the same problem, evidence and fix.
 
 What gets posted:
 
-- A review with the verdict, the summary, every finding with its severity,
-  file and line, what was checked, the reviewed commit and a link to the
-  execution. A finding whose file and line are in the pull request's diff is
-  also an inline comment. All text from the result is shown as literal text:
-  it cannot mention a user, link anywhere, reference or close an issue, or
-  carry HTML. File paths are shown as code.
+- A review with the verdict, the summary, every finding as above, what was
+  checked, the reviewed commit and a link to the execution.
 - A commit status on the reviewed SHA with the state mapped from the verdict.
 - Nothing from the result chooses the target. Repository, pull request and
   commit are the ones Preloop bound when it accepted the trigger
@@ -1706,7 +1827,8 @@ omit it:
     "incomplete_records": 0,
     "masking_only_records": 0,
     "masking_by_rule": {}
-  }
+  },
+  "readback_check": null
 }
 ```
 
@@ -1764,10 +1886,33 @@ changes the execution's status or result. `reason` values include
 `statuses_permission_missing`, `provider_unavailable`, `provider_denied`,
 `provider_rejected`, `lease_refused`, `lease_unavailable`,
 `attempt_interrupted`, `platform_review_disabled`, `precondition_failed`,
-`manual_mode`, `evidence_incomplete` and `readback_mismatch`. In automatic mode Preloop retries
-`provider_unavailable` and similar transient failures by itself, up to six
-attempts with growing delays. In manual mode it never retries on its own: a
-failed attempt waits for your next publish call.
+`manual_mode`, `evidence_incomplete`, `readback_pending` and
+`readback_mismatch`. In automatic mode
+Preloop retries `provider_unavailable`, `readback_pending` and similar
+transient failures by itself, up to six attempts with growing delays. In
+manual mode it never retries on its own: a failed attempt waits for your
+next publish call.
+
+`readback_check` on the same record names the last comparison that failed.
+It stays set when a later attempt fails for another reason while that
+read-back is still owed, and it is null once the publication is posted or
+no read-back has failed. It is one of
+`review_absent`, `review_actor`, `review_commit`, `review_state`,
+`review_body`, `status_absent`, `status_state`, `status_context` and
+`status_target_url`. The log line for the attempt carries the execution id
+and that value, and neither carries the review text. A record written
+before this field existed can show `readback_check` null with `reason`
+`readback_mismatch`. The publish call still reads the recorded ids and does
+not mark that record posted without the comparison.
+
+| `reason` | What it means | What to do |
+| --- | --- | --- |
+| `readback_pending` | The review or status was accepted, then was not visible yet (`readback_check` is `review_absent` or `status_absent`). The review id and the status id stay on the record. | Wait. In automatic mode Preloop reads them again and completes the record without posting a second time. In either mode the publish call does the same. |
+| `readback_mismatch` | GitHub has the object and it differs: the actor, commit, state, context, target URL or body (`readback_check` names which). | Look at the pull request. An explicit publish call reads the recorded ids again. When they match what was sent, the record becomes `posted`. When they still differ, it stays `failed` with the same check. Nothing is posted again, and automatic retry does not take the row. A record posted before the sent body and status URL were stored is compared with a fresh render. When that differs, the record stays `failed` with `review_body`. The review and the status are already on the pull request and are listed on the record, so leaving it failed is safe. |
+| `provider_unavailable` | GitHub was unavailable or rate limited. | Automatic mode retries. Otherwise publish again. |
+| `statuses_permission_missing` | The review is posted. The App may not write commit statuses. | Grant **Commit statuses: Read and write**, then publish again. The review is not posted twice. |
+| `head_moved` | The pull request moved on. The status is on the reviewed commit. No review was posted. | Trigger a review of the new head. |
+| `precondition_failed` | A value on the publish call does not match the stored run or the live pull request. Nothing was posted for that call. | Publish again with the current values. |
 
 ### Publish a finished review (manual mode) or again
 

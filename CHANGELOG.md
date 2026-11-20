@@ -42,6 +42,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A review posted by Preloop includes the finding text the validated result
+  actually holds. Besides `title`, `body` (`description`, `message`,
+  `detail`), `path` (`file`) and `line`, the review shows `problem`,
+  `issue`, `finding` and `summary` as the finding text, `location` or
+  `where` (`path`, `path:LINE`, `path:LINE-LINE`, `path#LLINE`) as the
+  location, and every other field as a labelled block. The summary is
+  `summary`, otherwise `review`, otherwise `overview`. A finding with no
+  title is not labelled "Finding". When text or findings are cut, the review
+  says so and points at the execution. `preloop flow review-posting show`,
+  the flow card and `config_warnings` say which finding fields the schema
+  declares and how each is shown.
+- A publication GitHub already holds is no longer left failed because the
+  review or status was not visible in the first read-back. A few short
+  re-reads distinguish "not visible yet" (`readback_pending`, retried, and
+  finished by reading the recorded ids without posting again) from a real
+  difference (`readback_mismatch`, still final, and named by
+  `readback_check` on the execution record). An explicit publish call can
+  repair an existing `readback_mismatch` row when GitHub matches what was
+  sent, including a row recorded before the check was stored. The body
+  digest and the status URL that were sent are what a later read compares,
+  so a console URL or schema change does not fail a review GitHub already
+  holds. A present difference stays failed.
+
 - A pre-tool permission check that allows a command after evaluating a
   tool approval workflow with no access rules records the allow that took
   effect. The audit row's action and status are allow. The details keep

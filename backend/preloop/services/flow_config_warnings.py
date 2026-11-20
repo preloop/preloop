@@ -83,7 +83,9 @@ def flow_config_warnings(
 
     Warns when a schema-bound native result runs on an OpenRouter-routed model
     whose ``model_parameters.provider`` pins no upstream (neither ``only`` nor
-    ``order`` with ``allow_fallbacks: false``).
+    ``order`` with ``allow_fallbacks: false``). When review posting is on,
+    also states which finding fields the result schema declares and warns
+    when none of them is the finding text. Neither warning blocks a save.
 
     Args:
         db: Database session.
@@ -94,9 +96,11 @@ def flow_config_warnings(
         Warnings with ``code``, ``message``, ``ai_model_id`` and ``docs_url``.
     """
     try:
+        from preloop.services.platform_review import review_posting_warnings
+
+        warnings: list[dict[str, Any]] = review_posting_warnings(flow)
         if not _structured_result(db, flow):
-            return []
-        warnings: list[dict[str, Any]] = []
+            return warnings
         ids = _model_ids(flow)
         found = crud_ai_model.get_by_ids(db, ids)
         for model_id in ids:

@@ -82,3 +82,14 @@ class PlatformReviewPublication(Base):
     status_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     status_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    #: Which read-back comparison failed, when ``reason`` is a read-back
+    #: reason. Empty once the publication is posted. No provider content.
+    readback_check: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    #: SHA-256 of the review body that was sent. Null on a row posted before
+    #: the digest was stored; those rows are compared with a fresh render.
+    body_digest: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    #: Commit-status target URL that was sent. Null on a row posted before
+    #: it was stored; those rows are checked against the current console URL.
+    status_target_url: Mapped[Optional[str]] = mapped_column(
+        String(1024), nullable=True
+    )

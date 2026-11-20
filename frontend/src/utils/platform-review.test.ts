@@ -118,6 +118,14 @@ describe('platform review helpers', () => {
     );
     expect(failed.variant).to.equal('danger');
     expect(failed.detail).to.contain('Commit statuses: Read and write');
+    const mismatch = publicationSummary(
+      record({
+        status: 'failed',
+        reason: 'readback_mismatch',
+        readback_check: 'review_body',
+      })
+    );
+    expect(mismatch.detail).to.contain('review_body');
     expect(reasonText('some_new_code')).to.equal('some new code');
   });
 

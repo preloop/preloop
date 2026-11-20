@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import DateTime, and_, cast, func, or_
+from sqlalchemy import DateTime, and_, case, cast, func, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -116,11 +116,21 @@ class CRUDPlatformReviewPublication:
         ).first()
         if inserted is None:
             finished: Any = model.state.in_(list(reclaim_states))
-            # A read-back mismatch is never cleared by another attempt: the
-            # provider holds something that needs a person to look at it.
-            finished = finished & or_(
+            # A true read-back mismatch is not retried on its own: the
+            # provider holds something different and a person has to look.
+            # An explicit call may still take a row that already holds a
+            # review id or a status id and finish it by reading those
+            # objects; that pass does not create anything.
+            not_mismatch = or_(
                 model.reason.is_(None), model.reason != "readback_mismatch"
             )
+            has_provider_id = or_(
+                model.review_id.isnot(None), model.status_id.isnot(None)
+            )
+            if retryable_only:
+                finished = finished & not_mismatch
+            else:
+                finished = finished & or_(not_mismatch, has_provider_id)
             if retryable_only:
                 finished = finished & (
                     (model.state != STATE_FAILED) | model.retryable.is_(True)
@@ -152,7 +162,19 @@ class CRUDPlatformReviewPublication:
                         model.state: STATE_PUBLISHING,
                         model.claimed_at: now,
                         model.attempts: model.attempts + 1,
-                        model.reason: None,
+                        # A read-back reason is the only record a row from
+                        # before readback_check has that the attempt must
+                        # re-read and must not mark the row posted. Any other
+                        # reason is cleared for the attempt.
+                        model.reason: case(
+                            (
+                                model.reason.in_(
+                                    ("readback_mismatch", "readback_pending")
+                                ),
+                                model.reason,
+                            ),
+                            else_=None,
+                        ),
                         model.retryable: False,
                         model.next_attempt_at: None,
                     },
