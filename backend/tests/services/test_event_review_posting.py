@@ -1633,3 +1633,33 @@ async def test_finished_event_run_is_listed_by_the_posting_sweep(
     )
     assert (world.account.id, execution.id) in found
     assert (world.account.id, other.id) not in found
+
+
+def test_ci_read_only_run_keeps_the_payload_fetch_ref() -> None:
+    """A CI run with no event ref still fetches ``pull/{number}/head``."""
+    from preloop.agents.container import ContainerAgentExecutor
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    payload = {"payload": {"pull_request": {"number": 7}}}
+    executor = SimpleNamespace(logger=logging.getLogger("test"))
+    assert (
+        ContainerAgentExecutor._extract_merge_request_ref_from_trigger(
+            executor, payload, {"read_only_review": True}
+        )
+        == "pull/7/head"
+    )
+    assert (
+        ContainerAgentExecutor._extract_merge_request_ref_from_trigger(
+            executor,
+            {"payload": {"pull_request": {"number": 9}}},
+            {"read_only_review": True, "read_only_fetch_ref": "pull/7/head"},
+        )
+        == "pull/7/head"
+    )
+    orchestrator = SimpleNamespace(
+        trigger_event_data=payload, _read_only_review_execution=True
+    )
+    assert (
+        FlowExecutionOrchestrator._extract_merge_request_ref_from_trigger(orchestrator)
+        == "pull/7/head"
+    )

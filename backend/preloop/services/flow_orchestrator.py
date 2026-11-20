@@ -2922,10 +2922,15 @@ class FlowExecutionOrchestrator:
             return None
 
     def _extract_merge_request_ref_from_trigger(self) -> Optional[str]:
-        """Extract a git fetch ref for the MR/PR head commit."""
+        """Extract a git fetch ref for the MR/PR head commit.
+
+        An event review sets ``_read_only_fetch_ref`` and that ref wins. A
+        restricted CI run leaves it unset, so the trigger payload is used.
+        """
         if getattr(self, "_read_only_review_execution", False):
             ref = getattr(self, "_read_only_fetch_ref", None)
-            return ref if isinstance(ref, str) and ref else None
+            if isinstance(ref, str) and ref:
+                return ref
         try:
             payload = self.trigger_event_data.get("payload", {})
 

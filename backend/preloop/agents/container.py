@@ -7201,8 +7201,9 @@ trap _preloop_publication_cleanup EXIT
     ) -> Optional[str]:
         """Extract a git fetch ref for the MR/PR head commit.
 
-        A read-only review uses ``read_only_fetch_ref`` from the execution
-        context and does not consult the trigger payload.
+        An event review puts ``read_only_fetch_ref`` on the context, and
+        that ref wins. A restricted CI run has no such ref, so the trigger
+        payload is still the source.
 
         Supports:
         - GitLab: refs/merge-requests/{iid}/head
@@ -7211,7 +7212,8 @@ trap _preloop_publication_cleanup EXIT
         context = execution_context or {}
         if context.get("read_only_review"):
             ref = context.get("read_only_fetch_ref")
-            return ref if isinstance(ref, str) and ref else None
+            if isinstance(ref, str) and ref:
+                return ref
         try:
             payload = trigger_data.get("payload", trigger_data)
             if not isinstance(payload, dict):
