@@ -79,3 +79,48 @@ def test_other_accounts_requests_are_not_shown(db_session, create_account, creat
         _execution_effective_requests(db_session, execution, account_id=other.id)
         is None
     )
+
+
+def test_execution_detail_reads_request_facts_once(
+    db_session, create_account, create_user
+):
+    from unittest.mock import patch
+
+    from preloop.api.endpoints import flows as flows_endpoint
+
+    account = create_account()
+    create_user(account=account)
+    _, _, execution = _setup_execution(db_session, account)
+    facts = [{"upstream_parameters": {"model": "deepseek-flash"}}]
+    with patch.object(
+        flows_endpoint.crud_api_usage, "review_request_facts", return_value=facts
+    ) as read:
+        loaded = flows_endpoint._execution_request_facts(
+            db_session, execution, account_id=account.id
+        )
+        flows_endpoint._execution_upstream_route(
+            db_session, execution, account_id=account.id, requests=loaded
+        )
+        entries = flows_endpoint._execution_effective_requests(
+            db_session, execution, account_id=account.id, requests=loaded
+        )
+    assert read.call_count == 1
+    assert entries is not None and entries[0]["model"] == "deepseek-flash"
+
+
+def test_failed_fact_read_yields_no_summary(db_session, create_account):
+    from unittest.mock import patch
+
+    from preloop.api.endpoints import flows as flows_endpoint
+
+    account = create_account()
+    _, _, execution = _setup_execution(db_session, account)
+    with patch.object(
+        flows_endpoint.crud_api_usage,
+        "review_request_facts",
+        side_effect=RuntimeError("synthetic"),
+    ):
+        assert (
+            _execution_effective_requests(db_session, execution, account_id=account.id)
+            is None
+        )

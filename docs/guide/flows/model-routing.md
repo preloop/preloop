@@ -73,7 +73,7 @@ curl -X PUT https://preloop.example.com/api/v1/flows/$FLOW_ID \
   -d '{"agent_config": {"reasoning_effort": "low"}}'
 ```
 
-`agent_config` is saved as one object, so send the flow's other `agent_config` keys along with it. Any other value is rejected on save (HTTP 422) with a message that names `agent_config.reasoning_effort`. The flow's effort applies whenever no label rule sets one: a label rule that sets its own effort still wins for runs it matches, and a label rule that only changes the model keeps the flow's effort. Removing the key, or never setting it, leaves the model's own default. The console keeps the value when you save the flow form but does not show it yet.
+`agent_config` is saved as one object, so send the flow's other `agent_config` keys along with it. Any other value is rejected on save (HTTP 422) with a message that names `agent_config.reasoning_effort`. The flow's effort applies whenever no label rule sets one: a label rule that sets its own effort still wins for runs it matches, and a label rule that only changes the model keeps the flow's effort. Removing the key, or never setting it, leaves the model's own default. Authorized eval-matrix cells are exempt: a matrix cell fixes its own model and harness, and the flow's effort is not applied to it, so a grid compares cells under the settings it names. The console keeps the value when you save the flow form but does not show it yet.
 
 The effort reaches the harness the same way a label rule's does (Codex: `model_reasoning_effort`). Whether the provider receives it depends on the provider:
 
