@@ -592,6 +592,9 @@ def _record_class(document: Any, *, valid: bool) -> str:
         else set()
     )
     if document.get("capture_complete") is True and not reasons:
+        # Native command records keep capture_complete when a named rule masked a value.
+        if _masking_counts(document):
+            return "masking_only"
         return "ok"
     if reasons == {REASON_MASKING} and _masking_counts(document):
         return "masking_only"
