@@ -127,6 +127,18 @@ export class ExecutionPlatformReview extends LitElement {
     }
   }
 
+  private renderSource(record: PlatformReviewRecord) {
+    if (record.source === 'tracker_event') {
+      return html`<dt>Started by</dt>
+        <dd data-source>Started by a pull request event</dd>`;
+    }
+    if (record.source === 'restricted_ci') {
+      return html`<dt>Started by</dt>
+        <dd data-source>Started by a restricted CI identity</dd>`;
+    }
+    return nothing;
+  }
+
   private renderReview(record: PlatformReviewRecord) {
     if (record.review === 'posted') {
       const label = `Posted as a ${ACTION_LABELS[record.review_action || 'comment'] ?? record.review_action}`;
@@ -227,6 +239,7 @@ export class ExecutionPlatformReview extends LitElement {
             : nothing
         }
         <dl>
+          ${this.renderSource(record)}
           <dt>Review</dt>
           <dd>${this.renderReview(record)}</dd>
           <dt>Commit status</dt>

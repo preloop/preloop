@@ -16,7 +16,11 @@ from preloop.models.schemas.flow_revision import (
     FlowRevisionMismatchError,
     RevisionCondition,
 )
-from preloop.schemas.ci_execution import CiReviewBinding, ci_review_event
+from preloop.schemas.ci_execution import (
+    CiReviewBinding,
+    EventReviewBinding,
+    ci_review_event,
+)
 from preloop.schemas.ci_principal import CiAction
 
 # Only existing controller-generated records may accompany canonical provenance.
@@ -289,6 +293,17 @@ class CRUDCiExecution:
             and execution.initiating_ci_key_id is None
         ):
             return None
+        # A tracker-event review has a binding and no CI principal. It is not
+        # a CI dispatch: callers that need it use authorize_event_review.
+        # A principal paired with a version-2 document falls through and
+        # fails closed on the version-1 parse.
+        if execution.ci_principal_id is None and execution.initiating_ci_key_id is None:
+            try:
+                EventReviewBinding.model_validate(execution.ci_review_binding)
+            except ValidationError:
+                pass
+            else:
+                return None
         try:
             binding = CiReviewBinding.model_validate(execution.ci_review_binding)
         except ValidationError:
@@ -325,6 +340,39 @@ class CRUDCiExecution:
                 "status": "FAILED",
                 "failure_category": "verification_blocked",
                 "error_message": "Restricted CI execution admission denied",
+                "end_time": datetime.now(timezone.utc),
+            },
+            synchronize_session=False,
+        )
+        db.commit()
+        db.refresh(execution)
+
+    def reject_event_dispatch(
+        self, db: Session, *, execution: models.FlowExecution
+    ) -> None:
+        """Fail a pending tracker-event review that lost launch admission.
+
+        Updates only a row whose binding source is ``tracker_event`` and
+        whose CI principal is null. The sentence is not the restricted-CI
+        admission sentence.
+
+        Args:
+            db: Database session.
+            execution: The execution that was refused.
+        """
+        stored = models.FlowExecution.ci_review_binding
+        db.query(models.FlowExecution).filter(
+            models.FlowExecution.id == execution.id,
+            models.FlowExecution.status.in_(["PENDING", "STARTING", "INITIALIZING"]),
+            models.FlowExecution.ci_principal_id.is_(None),
+            models.FlowExecution.initiating_ci_key_id.is_(None),
+            stored["source"].astext == "tracker_event",
+            stored["version"].astext == "2",
+        ).update(
+            {
+                "status": "FAILED",
+                "failure_category": "verification_blocked",
+                "error_message": "Event review admission denied",
                 "end_time": datetime.now(timezone.utc),
             },
             synchronize_session=False,

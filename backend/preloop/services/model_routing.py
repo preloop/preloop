@@ -55,6 +55,11 @@ AGENT_CONFIG_BY_LABEL_KEY = "model_by_label"
 #: a match is attributed by object identity rather than by this string.
 BY_LABEL_RULE_PREFIX = "by-label-"
 
+#: ``agent_config.reasoning_effort``: the flow's own effort, used when no
+#: label rule sets one. Same values a ``model_by_label`` rule accepts.
+AGENT_CONFIG_EFFORT_KEY = "reasoning_effort"
+FLOW_REASONING_EFFORTS = ("low", "medium", "high")
+
 # Keys that must never be treated as authorized model/harness overrides when
 # they arrive on an untrusted event body (webhook, tracker, or an
 # authenticated trigger). Presence of ``_resume`` in JSON is also not a
@@ -229,6 +234,31 @@ def parse_model_by_label(agent_config: Any) -> Optional[ModelByLabelConfig]:
         raise ModelRoutingError(
             f"agent_config.model_by_label is invalid: {exc}"
         ) from exc
+
+
+def parse_flow_reasoning_effort(agent_config: Any) -> Optional[str]:
+    """Parse ``agent_config.reasoning_effort`` or return None when absent.
+
+    Args:
+        agent_config: The flow's stored or submitted ``agent_config``.
+
+    Returns:
+        ``low``, ``medium`` or ``high``, or None when unset.
+
+    Raises:
+        ModelRoutingError: If the value is present but not an accepted effort.
+    """
+    if not isinstance(agent_config, dict):
+        return None
+    raw = agent_config.get(AGENT_CONFIG_EFFORT_KEY)
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or raw not in FLOW_REASONING_EFFORTS:
+        raise ModelRoutingError(
+            f"agent_config.reasoning_effort must be one of "
+            f"{', '.join(FLOW_REASONING_EFFORTS)}; got {raw!r}"
+        )
+    return raw
 
 
 def by_label_rules(
@@ -513,6 +543,7 @@ def validate_stored_model_routing(
     Raises:
         ModelRoutingError: Invalid document or unusable rule target.
     """
+    parse_flow_reasoning_effort(agent_config)
     by_label = parse_model_by_label(agent_config)
     if by_label is not None:
         # Validated without the flow's defaults, which a create request has
@@ -740,6 +771,8 @@ def resolve_routing_record(
         rule for rule, _ in label_pairs
     ]
     matched = first_matching_rule(ordered_rules, labels)
+    # The flow's own effort applies whenever no label rule sets one.
+    flow_effort = parse_flow_reasoning_effort(agent_config)
     if matched is not None:
         load_usable_model(
             db,
@@ -757,10 +790,13 @@ def resolve_routing_record(
                 reason=f"Matched routing rule '{matched.id}'.",
                 label_snapshot=labels,
                 rule_id=matched.id,
+                reasoning_effort=flow_effort,
             )
         reason = f"Matched label rule for '{entry.label}'."
         if entry.reasoning_effort:
             reason += f" Reasoning effort {entry.reasoning_effort}."
+        elif flow_effort:
+            reason += f" Flow reasoning effort {flow_effort}."
         return _record(
             ai_model_id=matched.ai_model_id,
             agent_type=matched.agent_type.strip().lower(),
@@ -769,7 +805,7 @@ def resolve_routing_record(
             label_snapshot=labels,
             rule_id=matched.id,
             matched_label=entry.label,
-            reasoning_effort=entry.reasoning_effort,
+            reasoning_effort=entry.reasoning_effort or flow_effort,
         )
 
     default_type = (flow.agent_type or "").strip().lower() or None
@@ -803,8 +839,10 @@ def resolve_routing_record(
         ai_model_id=default_model_id,
         agent_type=default_type,
         source="default",
-        reason=_DEFAULT_REASON,
+        reason=_DEFAULT_REASON
+        + (f" Flow reasoning effort {flow_effort}." if flow_effort else ""),
         label_snapshot=labels,
+        reasoning_effort=flow_effort,
     )
 
 

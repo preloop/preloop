@@ -776,6 +776,12 @@ func printPublicationRecord(out io.Writer, record map[string]any) {
 		return value
 	}
 	fmt.Fprintf(out, "Publication: %s\n", str("status"))
+	switch str("source") {
+	case "tracker_event":
+		fmt.Fprintln(out, "Started by a pull request event")
+	case "restricted_ci":
+		fmt.Fprintln(out, "Started by a restricted CI identity")
+	}
 	if reason := str("reason"); reason != "" {
 		fmt.Fprintf(out, "Reason:      %s (%s)\n", reviewReasonText(reason), reason)
 	}
@@ -864,6 +870,7 @@ func reviewCount(value any) string {
 
 var reviewReasons = map[string]string{
 	"head_moved":                  "the pull request moved to a newer commit; the status is on the reviewed commit",
+	"base_moved":                  "the pull request was retargeted onto another branch; the status is on the reviewed commit",
 	"pull_request_closed":         "the pull request was closed or merged",
 	"statuses_permission_missing": "the GitHub App may not write commit statuses; grant Commit statuses: Read and write, then publish again",
 	"not_configured":              "the flow sets no commit status",
@@ -878,9 +885,10 @@ var reviewReasons = map[string]string{
 	"verdict_unmapped":            "the verdict has no commit status on the flow",
 	"run_not_succeeded":           "the run did not succeed",
 	"result_not_valid":            "the result did not pass the result schema",
-	"admission_revoked":           "the run's CI identity or project is no longer admitted to the flow",
+	"admission_revoked":           "the run is no longer admitted to the flow",
+	"installation_suspended":      "the GitHub App installation is suspended",
 	"binding_changed":             "the pull request no longer matches the one the run was started for",
-	"no_review_binding":           "the run was not started by a restricted CI review",
+	"no_review_binding":           "this run has no review binding",
 	"execution_not_finished":      "the run has not finished",
 	"attempt_interrupted":         "the attempt was interrupted; Preloop retries",
 	"evidence_incomplete":         "the stored tool evidence is not complete enough for this flow to post a review",

@@ -19092,14 +19092,16 @@ paths:
         \ model.\n\nPosts the stored, validated result of a finished read-only review\
         \ as a\npull request review and commit status on the commit the execution\n\
         reviewed. The target comes from the execution's own binding; the request\n\
-        cannot name a repository, pull request or commit.\n\nThis is the only way\
-        \ a flow in ``manual`` platform review mode posts; a\nflow in ``automatic``\
-        \ mode also posts when the execution finishes.\n\nThe optional body carries\
-        \ preconditions. Each supplied one is checked\nbefore anything is posted,\
-        \ again after the flow and result are re-read\nfor posting, and, for the commit\
-        \ SHAs, against the live pull request\nbefore the first write:\n\n- ``expected_head_sha``:\
-        \ the execution's bound head and the live head.\n- ``expected_base_sha``:\
-        \ the bound base (when the binding has one) and\n  the live base.\n- ``expected_result_sha256``:\
+        cannot name a repository, pull request or commit. An execution started\nby\
+        \ a GitHub pull request event is published the same way, and the caller\n\
+        still cannot name the target.\n\nThis is the only way a flow in ``manual``\
+        \ platform review mode posts; a\nflow in ``automatic`` mode also posts when\
+        \ the execution finishes.\n\nThe optional body carries preconditions. Each\
+        \ supplied one is checked\nbefore anything is posted, again after the flow\
+        \ and result are re-read\nfor posting, and, for the commit SHAs, against the\
+        \ live pull request\nbefore the first write:\n\n- ``expected_head_sha``: the\
+        \ execution's bound head and the live head.\n- ``expected_base_sha``: the\
+        \ bound base (when the binding has one) and\n  the live base.\n- ``expected_result_sha256``:\
         \ ``result_sha256`` of the stored result, as\n  returned by ``GET /flows/executions/{id}/result``.\n\
         - ``expected_flow_revision``: the flow's current configuration revision.\n\
         - ``expected_evidence``: ``captured`` or ``complete``. The stored tool\n \
@@ -19158,8 +19160,8 @@ paths:
             names the member.
         '409':
           description: 'Nothing can be published for this execution: the flow has
-            not opted in, the execution has not finished, or it has no restricted
-            CI review binding. ``detail.code`` names which.'
+            not opted in, the execution has not finished, or it has no review binding.
+            ``detail.code`` names which.'
         '412':
           description: A caller precondition does not hold; nothing was posted. ``detail.code``
             is ``review_precondition_failed``; ``detail.precondition``, ``detail.expected``
@@ -38615,6 +38617,49 @@ components:
       - original_execution_id
       title: ExecutionContinuationNavigation
       description: Navigation shared by a publisher and its review/CI continuations.
+    ExecutionEffectiveRequest:
+      properties:
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider
+        reasoning_effort:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reasoning Effort
+          description: Reasoning effort sent to the provider; null when none was sent
+            and the provider used its own default.
+        max_output_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Output Tokens
+        request_count:
+          type: integer
+          title: Request Count
+        upstream_parameters:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Upstream Parameters
+        upstream_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Upstream Provider
+      type: object
+      required:
+      - request_count
+      title: ExecutionEffectiveRequest
+      description: Controls that reached the model provider, grouped across requests.
     ExecutionFollowUp:
       properties:
         id:
@@ -41409,6 +41454,16 @@ components:
           - type: 'null'
           description: Upstream providers recorded for this execution's model requests.
             Set on the execution detail read; null in lists.
+        effective_requests:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ExecutionEffectiveRequest'
+            type: array
+          - type: 'null'
+          title: Effective Requests
+          description: What reached the model provider for this execution's recorded
+            requests (model, reasoning effort, output cap), grouped. Set on the execution
+            detail read; null in lists.
         park:
           anyOf:
           - $ref: '#/components/schemas/ExecutionPark'

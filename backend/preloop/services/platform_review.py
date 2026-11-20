@@ -25,7 +25,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
@@ -38,7 +37,11 @@ from preloop.models.models.platform_review_publication import (
     STATE_SKIPPED,
     STATE_STATUS_ONLY,
 )
-from preloop.schemas.ci_execution import CiReviewBinding
+from preloop.schemas.ci_execution import (
+    CiReviewBinding,
+    EventReviewBinding,
+    parse_stored_review_binding,
+)
 from preloop.schemas.ci_principal import CiAction
 from preloop.services.flow_result_schema import validate_result_document
 from preloop.services.publication_credentials import (
@@ -66,6 +69,9 @@ POSTED_MANUALLY = "manual"
 NOT_POSTED = "none"
 #: Completion fact on the execution recording who posted its review.
 POSTED_BY_FACT = "platform_review_posted_by"
+#: Completion fact recording which route admitted the run.
+SOURCE_FACT = "platform_review_source"
+ReviewBinding = CiReviewBinding | EventReviewBinding
 #: Flow value to GitHub review event.
 REVIEW_EVENTS: dict[str, str] = {
     "comment": "COMMENT",
@@ -476,7 +482,7 @@ def check_stored_preconditions(
     *,
     flow: Any,
     execution: Any,
-    binding: CiReviewBinding,
+    binding: ReviewBinding,
     evidence: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Compare the preconditions with what Preloop stores.
@@ -2082,7 +2088,7 @@ async def _post_review(
     github: _GitHub,
     row: models.PlatformReviewPublication,
     *,
-    binding: CiReviewBinding,
+    binding: ReviewBinding,
     execution: Any,
     plan: PublicationPlan,
     schema: Mapping[str, Any] | None = None,
@@ -2119,6 +2125,11 @@ async def _post_review(
         # The verdict belongs to the reviewed commit. It is never attached to
         # a head that was not reviewed, and no review is left on a stale one.
         return {"review_state": STATE_SKIPPED, "review_reason": "head_moved"}
+    if not isinstance(base, Mapping) or base.get("ref") != binding.base_branch:
+        # The verdict was computed against the admitted base. A retarget
+        # makes the live diff a different change, so the review is not posted.
+        # The base SHA may advance on the same branch; only the ref is compared.
+        return {"review_state": STATE_SKIPPED, "review_reason": "base_moved"}
     if row.attempts > 1:
         # A previous attempt may have posted and then lost its claim. The
         # nonce is unguessable before the first post, so a match is ours.
@@ -2350,17 +2361,26 @@ async def _publish_claimed(
     # The execution's own identity must still be admitted: active, its
     # project on the flow, its snapshot unchanged, and holding the grant it
     # used to trigger or the explicit publish action.
-    binding = None
+    binding: ReviewBinding | None = None
+    dispatched = False
     for action in (CiAction.TRIGGER, CiAction.PUBLISH_REVIEW):
         try:
             binding = crud.crud_ci_execution.authorize_dispatch(
                 db, execution=execution, action=action
             )
+            dispatched = True
             break
         except PermissionError:
             continue
-    else:
+    if not dispatched:
         raise PlatformReviewError("admission_revoked")
+    if binding is None:
+        from preloop.services.event_review import authorize_event_review
+
+        stored = parse_stored_review_binding(execution.ci_review_binding)
+        if not isinstance(stored, EventReviewBinding):
+            raise PlatformReviewError("binding_changed")
+        binding = authorize_event_review(db, execution)
     if (
         binding is None
         or binding.tracker_type != "github"
@@ -2622,7 +2642,7 @@ async def _publish_claimed(
 
 
 def _record_receipt(
-    db: Session, row: models.PlatformReviewPublication, *, binding: CiReviewBinding
+    db: Session, row: models.PlatformReviewPublication, *, binding: ReviewBinding
 ) -> None:
     """Add the server-owned review receipt other features already read."""
     try:
@@ -2714,11 +2734,10 @@ async def publish_platform_review(
         # automatic mode stops here instead of posting unrequested.
         _stop_retrying(db, execution.id, "manual_mode")
         return None
-    try:
-        binding = CiReviewBinding.model_validate(execution.ci_review_binding)
-    except ValidationError:
+    binding = parse_stored_review_binding(execution.ci_review_binding)
+    if binding is None:
         if explicit:
-            raise PlatformReviewRefusedError("no_review_binding") from None
+            raise PlatformReviewRefusedError("no_review_binding")
         return None
     if execution.status not in TERMINAL_STATUSES:
         if explicit:
@@ -2846,7 +2865,7 @@ async def publish_platform_review(
         else NOT_POSTED
     )
     if posted_now:
-        _record_posted_by(db, execution.id, posted_by)
+        _record_posted_by(db, execution.id, posted_by, source=review_source(execution))
     _audit_attempt(
         db,
         account_id=account_id,
@@ -2862,11 +2881,39 @@ async def publish_platform_review(
     )
 
 
-def _record_posted_by(db: Session, execution_id: Any, posted_by: str) -> None:
-    """Record on the execution how its review reached the pull request."""
+def review_source(execution: Any) -> str | None:
+    """Which route admitted the run: ``tracker_event`` or ``restricted_ci``.
+
+    Args:
+        execution: Flow execution row.
+
+    Returns:
+        The source, or None when the binding is neither version.
+    """
+    binding = getattr(execution, "ci_review_binding", None)
+    if not isinstance(binding, Mapping):
+        return None
+    if binding.get("version") == 2 and binding.get("source") == "tracker_event":
+        return "tracker_event"
+    if binding.get("version") == 1:
+        return "restricted_ci"
+    return None
+
+
+def _record_posted_by(
+    db: Session, execution_id: Any, posted_by: str, *, source: str | None = None
+) -> None:
+    """Record on the execution how its review reached the pull request.
+
+    ``posted_by`` stays ``automatic`` or ``manual``. ``source`` is the
+    separate route fact.
+    """
+    facts: dict[str, Any] = {POSTED_BY_FACT: posted_by}
+    if source in {"tracker_event", "restricted_ci"}:
+        facts[SOURCE_FACT] = source
     try:
         crud.crud_flow_execution.record_completion_evidence(
-            db, execution_id=execution_id, facts={POSTED_BY_FACT: posted_by}
+            db, execution_id=execution_id, facts=facts
         )
     except Exception:
         db.rollback()
@@ -3051,6 +3098,7 @@ def platform_review_projection(
             "posted_at": None,
             "attempts": 0,
             "retry_scheduled": False,
+            "source": review_source(execution),
         }
     else:
         payload = {
@@ -3069,6 +3117,7 @@ def platform_review_projection(
             "posted_at": _iso(row.posted_at),
             "attempts": row.attempts,
             "retry_scheduled": bool(row.retryable and row.next_attempt_at is not None),
+            "source": review_source(execution),
         }
     if with_evidence:
         payload["tool_evidence"] = counts

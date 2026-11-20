@@ -2922,7 +2922,15 @@ class FlowExecutionOrchestrator:
             return None
 
     def _extract_merge_request_ref_from_trigger(self) -> Optional[str]:
-        """Extract a git fetch ref for the MR/PR head commit."""
+        """Extract a git fetch ref for the MR/PR head commit.
+
+        An event review sets ``_read_only_fetch_ref`` and that ref wins. A
+        restricted CI run leaves it unset, so the trigger payload is used.
+        """
+        if getattr(self, "_read_only_review_execution", False):
+            ref = getattr(self, "_read_only_fetch_ref", None)
+            if isinstance(ref, str) and ref:
+                return ref
         try:
             payload = self.trigger_event_data.get("payload", {})
 
@@ -3817,6 +3825,9 @@ class FlowExecutionOrchestrator:
                     *getattr(self, "_read_only_review_leases", []),
                     lease,
                 ]
+            fetch_ref = execution_context.get("read_only_fetch_ref")
+            if isinstance(fetch_ref, str) and fetch_ref:
+                self._read_only_fetch_ref = fetch_ref
             return
         clone_config = execution_context.get("git_clone_config")
         if clone_config is None:
@@ -11731,7 +11742,18 @@ class FlowExecutionOrchestrator:
                 self._read_only_review_execution
                 and not self.execution_log.ci_principal_id
             ):
-                raise ValueError("Read-only review requires a restricted CI execution")
+                from pydantic import ValidationError
+
+                from preloop.schemas.ci_execution import EventReviewBinding
+
+                try:
+                    EventReviewBinding.model_validate(
+                        self.execution_log.ci_review_binding
+                    )
+                except ValidationError:
+                    raise ValueError(
+                        "Read-only review requires a restricted CI execution"
+                    ) from None
 
             # Publish execution_started event for UI notification
             # This allows the flow executions list to update automatically
