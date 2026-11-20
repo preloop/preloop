@@ -248,13 +248,11 @@ that value with the execution id, never the body.
 
 Still not visible after the waits is `readback_pending`, which is retryable.
 The review id and the status id stay on the row. The sweep and the publish
-call finish it by reading those ids and comparing them with the row and a
-body rendered again from the stored result and the row's nonce. That pass
-does not call a create endpoint. The comparison uses the body digest and
-the status target URL stored when they were sent. A row posted before
-those were stored is compared with a fresh render, and a difference stays
-failed. A `readback_mismatch` row that already
-holds an id is not swept. An explicit publish call (a person, or an identity
+call finish it by reading those ids and comparing them with the body digest
+and the status target URL stored when they were sent. That pass does not
+call a create endpoint. A row posted before those were stored is compared
+with a fresh render, and a difference stays failed. A `readback_mismatch`
+row that already holds an id is not swept. An explicit publish call (a person, or an identity
 with `execution:review:publish`) runs the same verification. A match
 completes the record as posted. A present difference stays failed and names
 the check. A mismatch recorded before `readback_check` existed has a null

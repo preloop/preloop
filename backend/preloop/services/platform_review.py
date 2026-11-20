@@ -2733,9 +2733,10 @@ def platform_review_projection(
         retry), ``manual`` (the explicit publish call) or ``none``; null for
         a review posted before the record existed.         Contains
         no credential and no provider response. ``readback_check`` names the
-        comparison that failed (``review_body``, ``status_absent``, and the
-        other read-back checks) and is null when the last attempt did not
-        fail a read-back.
+        last comparison that failed (``review_body``, ``status_absent``, and
+        the other read-back checks). It can stay set when a later attempt
+        fails for another reason while that read-back is still owed, and is
+        null once the publication is posted or no read-back has failed.
     """
     row = crud.crud_platform_review_publication.get_for_execution(
         db, execution_id=execution.id
