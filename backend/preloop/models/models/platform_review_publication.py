@@ -82,3 +82,6 @@ class PlatformReviewPublication(Base):
     status_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     status_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     posted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    #: Which read-back comparison failed, when ``reason`` is a read-back
+    #: reason. Empty once the publication is posted. No provider content.
+    readback_check: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)

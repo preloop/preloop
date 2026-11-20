@@ -500,7 +500,9 @@ class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
             "What Preloop posted on the pull request for a read-only review "
             "flow with platform_review on: the publication record, plus "
             "pull_request_url, review_url and commit_url built from the "
-            "execution's own binding. Null without the opt-in."
+            "execution's own binding. readback_check names which comparison "
+            "failed when the record is a read-back failure, and is null "
+            "otherwise. Null without the opt-in."
         ),
     )
 

@@ -115,11 +115,21 @@ class CRUDPlatformReviewPublication:
         ).first()
         if inserted is None:
             finished: Any = model.state.in_(list(reclaim_states))
-            # A read-back mismatch is never cleared by another attempt: the
-            # provider holds something that needs a person to look at it.
-            finished = finished & or_(
+            # A true read-back mismatch is not retried on its own: the
+            # provider holds something different and a person has to look.
+            # An explicit call may still take a row that already holds a
+            # review id or a status id and finish it by reading those
+            # objects; that pass does not create anything.
+            not_mismatch = or_(
                 model.reason.is_(None), model.reason != "readback_mismatch"
             )
+            has_provider_id = or_(
+                model.review_id.isnot(None), model.status_id.isnot(None)
+            )
+            if retryable_only:
+                finished = finished & not_mismatch
+            else:
+                finished = finished & or_(not_mismatch, has_provider_id)
             if retryable_only:
                 finished = finished & (
                     (model.state != STATE_FAILED) | model.retryable.is_(True)

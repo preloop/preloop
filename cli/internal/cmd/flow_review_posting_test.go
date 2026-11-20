@@ -263,6 +263,64 @@ func TestReviewPostingShowListsMissingPrerequisites(t *testing.T) {
 	}
 }
 
+func TestReviewPostingShowStatesFindingFields(t *testing.T) {
+	flow := newReviewFlow()
+	flow["result_schema"].(map[string]any)["properties"] = map[string]any{
+		"verdict": map[string]any{"type": "string", "enum": []any{"pass", "fail"}},
+		"findings": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"severity": map[string]any{"type": "string"},
+					"problem":  map[string]any{"type": "string"},
+					"evidence": map[string]any{"type": "string"},
+					"fix":      map[string]any{"type": "string"},
+					"location": map[string]any{"type": "string"},
+				},
+			},
+		},
+	}
+	state := &reviewPostingServer{flow: flow}
+	startReviewPostingServer(t, state)
+
+	out, err := runReviewPosting(t, "show", reviewFlowID)
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	for _, want := range []string{"problem: text", "evidence: labelled block", "fix: labelled block", "location: location"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "no text field") {
+		t.Fatalf("a problem field must not warn:\n%s", out)
+	}
+
+	bare := newReviewFlow()
+	bare["result_schema"].(map[string]any)["properties"] = map[string]any{
+		"verdict": map[string]any{"type": "string", "enum": []any{"pass", "fail"}},
+		"findings": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"severity": map[string]any{"type": "string"},
+					"meta":     map[string]any{"type": "object"},
+				},
+			},
+		},
+	}
+	startReviewPostingServer(t, &reviewPostingServer{flow: bare})
+	out, err = runReviewPosting(t, "show", reviewFlowID)
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	if !strings.Contains(out, "no text field") || !strings.Contains(out, "meta: labelled block") {
+		t.Fatalf("output = %s", out)
+	}
+}
+
 func TestReviewPostingStatusPrintsTheRecord(t *testing.T) {
 	state := &reviewPostingServer{
 		flow: newReviewFlow(),

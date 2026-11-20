@@ -107,6 +107,16 @@ class FakeGitHub:
         self.fail: dict[tuple[str, str], list[int]] = {}
         self.lose_response_after_review = False
         self.tamper_review_body = False
+        #: Single-review GETs that answer 404 before the review is returned.
+        self.review_misses = 0
+        #: Single-review GETs that answer 200 without a body, then the review.
+        self.review_bodyless_misses = 0
+        #: When set, every single-review GET answers 404.
+        self.review_hidden = False
+        #: Status-list reads that omit the newest status id.
+        self.status_misses = 0
+        #: When set, the status list never contains the newest status id.
+        self.status_hidden = False
         self.sequence = 5000
 
     def add_pull(
@@ -224,8 +234,17 @@ class FakeGitHub:
                 return httpx.Response(200, json=review)
             found = re.fullmatch(r"/reviews/(\d+)", tail)
             if method == "GET" and found:
+                if self.review_hidden or self.review_misses > 0:
+                    if not self.review_hidden:
+                        self.review_misses -= 1
+                    return httpx.Response(404, json={})
                 for review in self.reviews.get(key, []):
                     if str(review["id"]) == found.group(1):
+                        if self.review_bodyless_misses > 0:
+                            self.review_bodyless_misses -= 1
+                            hidden = dict(review)
+                            hidden.pop("body", None)
+                            return httpx.Response(200, json=hidden)
                         return httpx.Response(200, json=review)
                 return httpx.Response(404, json={})
         status = re.fullmatch(r"statuses/([0-9a-f]+)", rest)
@@ -237,10 +256,26 @@ class FakeGitHub:
             return httpx.Response(201, json=entry)
         listed = re.fullmatch(r"commits/([0-9a-f]+)/statuses", rest)
         if method == "GET" and listed:
-            return httpx.Response(
-                200, json=self.statuses.get((slug, listed.group(1)), [])
-            )
+            entries = list(self.statuses.get((slug, listed.group(1)), []))
+            if entries and (self.status_hidden or self.status_misses > 0):
+                if not self.status_hidden:
+                    self.status_misses -= 1
+                newest = max(entry["id"] for entry in entries)
+                entries = [entry for entry in entries if entry["id"] != newest]
+            return httpx.Response(200, json=entries)
         raise AssertionError(f"Unexpected request {method} {path}")
+
+
+@pytest.fixture(autouse=True)
+def instant_readback(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Read-back waits are recorded and do not sleep."""
+    delays: list[float] = []
+
+    async def _instant(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(platform_review, "_pause", _instant)
+    return delays
 
 
 @pytest.fixture
@@ -2380,3 +2415,503 @@ def test_path_that_could_leave_a_code_span_is_rendered_as_text() -> None:
     section = body.split("**Findings")[1]
     assert "`" not in section.replace("&#96;", "")
     assert "@octocat" not in section and "](" not in section
+
+
+def _render(result: dict[str, Any], **kwargs: Any) -> tuple[str, list[dict[str, Any]]]:
+    return render_review(
+        result,
+        verdict=kwargs.pop("verdict", result.get("verdict", "fail")),
+        execution_id=kwargs.pop("execution_id", uuid4()),
+        head_sha=kwargs.pop("head_sha", HEAD),
+        nonce=kwargs.pop("nonce", "n" * 32),
+        inline=kwargs.pop("inline", {}),
+        **kwargs,
+    )
+
+
+def test_old_field_names_render_as_they_do_today() -> None:
+    """Title, body, path, line, summary and checked stay byte-identical."""
+    execution_id = uuid4()
+    body, comments = render_review(
+        RESULT,
+        verdict="fail",
+        execution_id=execution_id,
+        head_sha=HEAD,
+        nonce="n" * 32,
+        inline={"src/parser.py": {12}},
+    )
+    url = platform_review.execution_url(execution_id)
+    expected = (
+        "<!-- preloop-platform-review v1 "
+        f"execution={execution_id} head={HEAD} nonce={'n' * 32} -->\n\n"
+        "### Preloop review: fail\n\n"
+        f"Reviewed commit `{HEAD}`. This review covers that commit only.\n\n"
+        "**Summary**\n\n"
+        "> One problem in the parser.\n\n"
+        "**Findings (2)**\n\n"
+        "**1&#46; &#91;high&#93; Unchecked length** (`src/parser.py:12`)\n\n"
+        "> The length is read before it is validated.\n\n"
+        "**2&#46; &#91;low&#93; Naming** (`src/other.py:400`)\n\n"
+        "> Outside the diff.\n\n"
+        "**What was checked**\n\n"
+        "- correctness\n"
+        "- security\n\n"
+        f"Execution: {url}\n\n"
+        "Posted by Preloop from the validated result of a read-only review run."
+    )
+    assert body == expected
+    assert comments == [
+        {
+            "path": "src/parser.py",
+            "line": 12,
+            "side": "RIGHT",
+            "body": (
+                "**1&#46; &#91;high&#93; Unchecked length**\n\n"
+                "> The length is read before it is validated."
+            ),
+        }
+    ]
+
+
+def test_problem_evidence_fix_and_location_are_posted() -> None:
+    result = {
+        "verdict": "changes_requested",
+        "review": "Reserved stock can still be sold.",
+        "findings": [
+            {
+                "severity": "MEDIUM",
+                "problem": "A sale ignores reservations.",
+                "evidence": "The count is written with no reservation check.",
+                "fix": "Refuse the sale when reserved units cover it.",
+                "location": "shop/inventory.py:17",
+            }
+        ],
+    }
+    schema = {
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "severity": {"type": "string"},
+                        "problem": {"type": "string"},
+                        "evidence": {"type": "string"},
+                        "fix": {"type": "string"},
+                        "location": {"type": "string"},
+                    },
+                },
+            }
+        },
+    }
+    body, comments = _render(result, inline={"shop/inventory.py": {17}}, schema=schema)
+    assert "Reserved stock can still be sold." in body
+    assert "A sale ignores reservations." in body
+    assert "**evidence**" in body
+    assert "The count is written with no reservation check." in body
+    assert "**fix**" in body
+    assert "Refuse the sale when reserved units cover it." in body
+    assert "`shop/inventory.py:17`" in body
+    assert "Finding" not in body.split("**Findings")[1].split("**evidence**")[0]
+    assert comments == [
+        {
+            "path": "shop/inventory.py",
+            "line": 17,
+            "side": "RIGHT",
+            "body": (
+                "**1&#46; &#91;MEDIUM&#93;**\n\n"
+                "> A sale ignores reservations.\n\n"
+                "**evidence**\n\n"
+                "> The count is written with no reservation check.\n\n"
+                "**fix**\n\n"
+                "> Refuse the sale when reserved units cover it."
+            ),
+        }
+    ]
+
+
+def test_file_line_category_decimal_line_and_unparsed_location() -> None:
+    body, comments = _render(
+        {
+            "verdict": "fail",
+            "findings": [
+                {
+                    "title": "edge",
+                    "file": "a.py",
+                    "line": "2",
+                    "category": "style",
+                }
+            ],
+        },
+        inline={"a.py": {2}},
+    )
+    assert "`a.py:2`" in body
+    assert "**category**" in body and "style" in body
+    assert comments[0]["line"] == 2 and comments[0]["path"] == "a.py"
+    assert "**category**" in comments[0]["body"]
+
+    bare, no_comments = _render(
+        {
+            "verdict": "fail",
+            "findings": [
+                {
+                    "severity": "low",
+                    "problem": "Noted.",
+                    "location": "src/foo.py:line",
+                }
+            ],
+        },
+        inline={"src/foo.py": {1}},
+    )
+    assert "`src/foo.py:line`" in bare
+    assert no_comments == []
+
+    ranged, ranged_comments = _render(
+        {
+            "verdict": "fail",
+            "findings": [
+                {"severity": "low", "problem": "Span.", "location": "a.py:2-9"}
+            ],
+        },
+        inline={"a.py": {2}},
+    )
+    assert "`a.py:2`" in ranged
+    assert [(item["path"], item["line"]) for item in ranged_comments] == [("a.py", 2)]
+    hashed, hashed_comments = _render(
+        {
+            "verdict": "fail",
+            "findings": [{"severity": "low", "problem": "Hash.", "where": "a.py#L2"}],
+        },
+        inline={"a.py": {2}},
+    )
+    assert "`a.py:2`" in hashed
+    assert hashed_comments[0]["line"] == 2
+
+
+def test_object_field_is_counted_and_labels_are_escaped() -> None:
+    counted, _ = _render(
+        {"verdict": "fail", "findings": [{"severity": "low", "meta": {"a": 1}}]}
+    )
+    heading = counted.split("**Findings (1)**", 1)[1]
+    assert "1&#46;" in heading
+    assert "Finding" not in heading.split("Execution:")[0]
+    assert "1 field not shown" in counted
+    assert "nested" not in counted and '"a"' not in counted
+
+    hostile = {
+        "verdict": "fail",
+        "findings": [
+            {
+                "severity": "low",
+                "problem": HOSTILE,
+                "evidence": HOSTILE,
+                "location": "src/[x](https://evil.example).py:3",
+                "@user": HOSTILE,
+                "see #1 <b>": "click https://evil.example and close #1",
+            }
+        ],
+    }
+    body, comments = _render(hostile, inline={})
+    assert comments == []
+    rest = "\n".join(body.split("\n")[1:])
+    assert "<" not in rest and "\\" not in rest
+    shown = _visible(rest)
+    assert not re.search(r"@[A-Za-z0-9]", shown)
+    assert not re.search(r"#\d", shown)
+    assert "](" not in re.sub(r"`[^`\n]*`", "", body)
+    assert "https://evil" not in shown and "www.evil" not in shown
+    assert "user" in shown and "click" in shown
+    assert not any(line.startswith("/") for line in body.split("\n"))
+
+
+def test_findings_cut_for_size_name_how_many_are_not_shown() -> None:
+    findings = [
+        {
+            "severity": "low",
+            "problem": "p" * 3000,
+            "evidence": "e" * 3000,
+        }
+        for _ in range(20)
+    ]
+    body, _ = _render({"verdict": "fail", "findings": findings})
+    rendered = body.count("&#46;")
+    hidden = re.search(r"(\d+) further finding\(s\) are not shown", body)
+    assert hidden is not None
+    assert int(hidden.group(1)) == 20 - rendered
+    assert rendered < 20
+    assert "the execution holds the full result" in body
+    assert "/console/flows/executions/" in body
+    assert "text shortened" in body
+
+
+def test_schema_order_wins_over_document_order() -> None:
+    body, _ = _render(
+        {
+            "verdict": "fail",
+            "findings": [
+                {
+                    "severity": "low",
+                    "problem": "Text.",
+                    "fix": "Later.",
+                    "evidence": "Earlier.",
+                }
+            ],
+        },
+        schema={
+            "type": "object",
+            "properties": {
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "severity": {},
+                            "problem": {},
+                            "evidence": {},
+                            "fix": {},
+                        },
+                    },
+                }
+            },
+        },
+    )
+    assert body.index("**evidence**") < body.index("**fix**")
+
+
+def test_save_time_names_finding_fields_and_warns_when_none_are_text() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "verdict": {"type": "string", "enum": ["pass", "fail"]},
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "severity": {"type": "string"},
+                        "problem": {"type": "string"},
+                        "evidence": {"type": "string"},
+                        "location": {"type": "string"},
+                    },
+                },
+            },
+        },
+    }
+    appearances = platform_review.finding_field_appearances(schema)
+    assert appearances == [
+        {"field": "severity", "appears_as": "severity"},
+        {"field": "problem", "appears_as": "text"},
+        {"field": "evidence", "appears_as": "labelled block"},
+        {"field": "location", "appears_as": "location"},
+    ]
+    flow = SimpleNamespace(
+        git_clone_config={"platform_review": {"enabled": True}},
+        result_schema=schema,
+    )
+    warnings = platform_review.review_posting_warnings(flow)
+    assert warnings[0]["code"] == "review_finding_fields"
+    assert "problem (text)" in warnings[0]["message"]
+    bare = {
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"severity": {"type": "string"}, "meta": {}},
+                },
+            }
+        },
+    }
+    missing = platform_review.review_posting_warnings(
+        SimpleNamespace(
+            git_clone_config={"platform_review": {"enabled": True}},
+            result_schema=bare,
+        )
+    )
+    assert missing[0]["code"] == "review_finding_text_missing"
+    assert "no text field" in missing[0]["message"]
+    # Information only: a schema with no finding text still passes the save check.
+    checked = SimpleNamespace(
+        git_clone_config={
+            "publication_mode": "read_only",
+            "platform_review": OPT_IN,
+        },
+        result_schema={
+            **SCHEMA,
+            "properties": {
+                **SCHEMA["properties"],
+                "findings": bare["properties"]["findings"],
+            },
+        },
+        validate_result=True,
+    )
+    platform_review.validate_platform_review_flow(checked)
+
+
+def _provider_creates(github: FakeGitHub) -> list[tuple[str, str]]:
+    return [
+        call
+        for call in github.calls
+        if call[0] == "POST"
+        and (call[1].endswith("/reviews") or "/statuses/" in call[1])
+    ]
+
+
+@pytest.mark.asyncio
+async def test_status_list_lag_then_visible_is_posted(
+    world: SimpleNamespace, instant_readback: list[float]
+) -> None:
+    world.github.status_misses = 1
+    execution = finished(world, identity(world, world.projects[0]))
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert outcome["readback_check"] is None
+    assert instant_readback == [0.5]
+    assert len(_provider_creates(world.github)) == 2
+
+
+@pytest.mark.asyncio
+async def test_review_get_not_found_then_found_is_posted(
+    world: SimpleNamespace, instant_readback: list[float]
+) -> None:
+    world.github.review_misses = 1
+    execution = finished(world, identity(world, world.projects[0]))
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert instant_readback == [0.5]
+    assert world.github.revoked
+
+
+@pytest.mark.asyncio
+async def test_review_that_stays_invisible_is_pending_then_verified(
+    world: SimpleNamespace,
+    instant_readback: list[float],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    project = world.projects[0]
+    world.github.review_hidden = True
+    execution = finished(world, identity(world, project))
+    outcome = await publish(world, execution)
+    assert outcome is not None
+    assert outcome["status"] == "failed"
+    assert outcome["reason"] == "readback_pending"
+    assert outcome["readback_check"] == "review_absent"
+    assert outcome["review"] == "posted" and outcome["review_id"]
+    assert outcome["retry_scheduled"] is True
+    assert outcome["posted_at"] is None
+    assert instant_readback == list(platform_review.READBACK_RETRY_DELAYS)
+    assert str(execution.id) in caplog.text and "review_absent" in caplog.text
+    assert "The length is read" not in caplog.text
+    created = _provider_creates(world.github)
+    assert world.github.revoked
+    world.github.review_hidden = False
+    store = crud.crud_platform_review_publication
+    row = store.get_for_execution(world.db, execution_id=execution.id)
+    assert (world.account.id, execution.id) in store.due_execution_ids(world.db) or (
+        row.retryable and row.reason == "readback_pending"
+    )
+    row.next_attempt_at = datetime(2020, 1, 1)
+    world.db.commit()
+    assert (world.account.id, execution.id) in store.due_execution_ids(world.db)
+    again = await publish(world, execution)
+    assert again is not None and again["status"] == "posted"
+    assert again["posted_at"] is not None
+    assert again["readback_check"] is None
+    assert _provider_creates(world.github) == created
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+    assert len(world.github.statuses[(project.slug, HEAD)]) == 1
+
+
+@pytest.mark.asyncio
+async def test_present_difference_stays_final(
+    world: SimpleNamespace, instant_readback: list[float]
+) -> None:
+    project = world.projects[0]
+    world.github.tamper_review_body = True
+    execution = finished(world, identity(world, project))
+    outcome = await publish(world, execution)
+    assert outcome is not None
+    assert outcome["reason"] == "readback_mismatch"
+    assert outcome["readback_check"] == "review_body"
+    assert outcome["retry_scheduled"] is False
+    assert instant_readback == []
+    store = crud.crud_platform_review_publication
+    assert (world.account.id, execution.id) not in store.due_execution_ids(world.db)
+    created = _provider_creates(world.github)
+    again = await publish(world, execution)
+    assert again is not None and again["reason"] == "readback_mismatch"
+    assert again["readback_check"] == "review_body"
+    # An automatic attempt does not take the row, so nothing new is created.
+    assert _provider_creates(world.github) == created
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_repair_of_a_matching_mismatch_row_posts_nothing_new(
+    world: SimpleNamespace,
+) -> None:
+    project = world.projects[0]
+    execution = finished(world, identity(world, project))
+    posted = await publish(world, execution)
+    assert posted is not None and posted["status"] == "posted"
+    store = crud.crud_platform_review_publication
+    row = store.get_for_execution(world.db, execution_id=execution.id)
+    store.record(
+        world.db,
+        row=row,
+        state="failed",
+        reason="readback_mismatch",
+        retryable=False,
+        posted_at=None,
+        next_attempt_at=None,
+        readback_check="review_actor",
+    )
+    created = _provider_creates(world.github)
+    automatic = await publish(world, execution)
+    assert automatic is not None and automatic["reason"] == "readback_mismatch"
+    assert _provider_creates(world.github) == created
+    repaired = await publish(world, execution, explicit=True)
+    assert repaired is not None and repaired["status"] == "posted"
+    assert repaired["posted_at"] is not None
+    assert repaired["readback_check"] is None
+    assert _provider_creates(world.github) == created
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+    assert world.github.revoked
+
+
+@pytest.mark.asyncio
+async def test_explicit_repair_of_a_different_body_stays_failed(
+    world: SimpleNamespace, caplog: pytest.LogCaptureFixture
+) -> None:
+    project = world.projects[0]
+    execution = finished(world, identity(world, project))
+    await publish(world, execution)
+    review = world.github.reviews[(project.slug, 7)][0]
+    review["body"] = "different"
+    store = crud.crud_platform_review_publication
+    row = store.get_for_execution(world.db, execution_id=execution.id)
+    store.record(
+        world.db,
+        row=row,
+        state="failed",
+        reason="readback_mismatch",
+        retryable=False,
+        posted_at=None,
+        readback_check="review_actor",
+    )
+    created = _provider_creates(world.github)
+    repaired = await publish(world, execution, explicit=True)
+    assert repaired is not None
+    assert repaired["status"] == "failed"
+    assert repaired["reason"] == "readback_mismatch"
+    assert repaired["readback_check"] == "review_body"
+    assert _provider_creates(world.github) == created
+    assert "review_body" in caplog.text and str(execution.id) in caplog.text
+    assert "different" not in caplog.text
+    # A later automatic attempt still cannot clear it.
+    again = await publish(world, execution)
+    assert again is not None and again["reason"] == "readback_mismatch"
+    assert again["readback_check"] == "review_body"
+    assert _provider_creates(world.github) == created

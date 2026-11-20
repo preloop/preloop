@@ -23,6 +23,7 @@ import {
   COMMIT_STATES,
   DEFAULT_STATUS_CONTEXT,
   STATUS_CONTEXT_PATTERN,
+  findingFieldAppearances,
   platformReviewMode,
   platformReviewPrerequisites,
   prerequisitesMet,
@@ -215,6 +216,42 @@ export class FlowPlatformReviewCard extends LitElement {
 
   private get verdicts(): string[] | null {
     return verdictEnum(this.flow?.result_schema);
+  }
+
+  private renderFindingFields() {
+    const plan = findingFieldAppearances(this.flow?.result_schema);
+    if (!plan.declared) {
+      return html`<p class="meta" data-finding-fields>
+        The result schema does not declare finding fields. A finding in the
+        result is still posted from the fields it carries.
+      </p>`;
+    }
+    return html`
+      <ul class="checks" data-finding-fields>
+        ${
+          plan.fields.length
+            ? plan.fields.map(
+                (field) =>
+                  html`<li data-finding-field=${field.field}>
+                    <span></span>
+                    <span><code>${field.field}</code> ${field.appearsAs}</span>
+                  </li>`
+              )
+            : html`<li>
+                <span></span><span>No finding fields declared.</span>
+              </li>`
+        }
+      </ul>
+      ${
+        plan.hasText
+          ? nothing
+          : html`<sl-alert variant="warning" open data-finding-text>
+              <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+              The schema declares no text field for a finding, so the review has
+              no problem statement. You can still save.
+            </sl-alert>`
+      }
+    `;
   }
 
   private get checks(): PrerequisiteCheck[] {
@@ -515,6 +552,8 @@ export class FlowPlatformReviewCard extends LitElement {
           the result schema. The run itself never holds a token that can write
           to GitHub. Turning this on needs no new CI identities.
         </p>
+        <div class="section-title">What the review shows</div>
+        ${this.renderFindingFields()}
         <div class="section-title">What it needs</div>
         ${
           this.loadingTrackers

@@ -55,6 +55,8 @@ export interface PlatformReviewRecord {
   posted_at: string | null;
   attempts: number;
   retry_scheduled: boolean;
+  /** Which read-back comparison failed; null when the last attempt did not. */
+  readback_check?: string | null;
   pull_request_url?: string | null;
   review_url?: string | null;
   commit_url?: string | null;
@@ -70,6 +72,69 @@ export const COMMIT_STATES: CommitState[] = ['success', 'failure', 'error'];
  * The verdicts a result schema admits, or null when it declares no required
  * string `verdict` with an enum (the server's `verdict_enum`).
  */
+export type FindingFieldRole =
+  'severity' | 'title' | 'text' | 'location' | 'labelled block';
+
+export interface FindingFieldAppearance {
+  field: string;
+  appearsAs: FindingFieldRole;
+}
+
+const TEXT_FIELDS = new Set([
+  'body',
+  'description',
+  'message',
+  'detail',
+  'problem',
+  'issue',
+  'finding',
+  'summary',
+]);
+const LOCATION_FIELDS = new Set(['path', 'file', 'line', 'location', 'where']);
+
+/** How one declared finding field is shown in the posted review. */
+export function findingFieldRole(name: string): FindingFieldRole {
+  if (name === 'severity') return 'severity';
+  if (name === 'title') return 'title';
+  if (TEXT_FIELDS.has(name)) return 'text';
+  if (LOCATION_FIELDS.has(name)) return 'location';
+  return 'labelled block';
+}
+
+/**
+ * Finding fields the result schema declares, in schema order, and whether
+ * any of them is the finding text. `declared` is false when the schema has
+ * no findings object.
+ */
+export function findingFieldAppearances(schema: unknown): {
+  declared: boolean;
+  fields: FindingFieldAppearance[];
+  hasText: boolean;
+} {
+  const empty = { declared: false, fields: [], hasText: true };
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    return empty;
+  }
+  const findings = (schema as Record<string, any>).properties?.findings;
+  if (!findings || typeof findings !== 'object') return empty;
+  const items = findings.items;
+  const props =
+    items && typeof items === 'object' && !Array.isArray(items)
+      ? items.properties
+      : undefined;
+  const fields: FindingFieldAppearance[] = [];
+  if (props && typeof props === 'object' && !Array.isArray(props)) {
+    for (const field of Object.keys(props)) {
+      fields.push({ field, appearsAs: findingFieldRole(field) });
+    }
+  }
+  return {
+    declared: true,
+    fields,
+    hasText: fields.some((field) => field.appearsAs === 'text'),
+  };
+}
+
 export function verdictEnum(schema: unknown): string[] | null {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
     return null;
@@ -244,8 +309,10 @@ const REASONS: Record<string, string> = {
   provider_rejected: 'GitHub refused the request.',
   provider_denied:
     'GitHub denied the request. Check the App installation and its permissions.',
+  readback_pending:
+    'GitHub had not shown the review or status yet. Preloop reads it again and does not post a second time.',
   readback_mismatch:
-    'What GitHub holds differs from what was sent. Someone has to look at the pull request; this is not retried.',
+    'What GitHub holds differs from what was sent. Publish again to repair the record when GitHub matches; a real difference stays failed.',
   lease_unavailable:
     'Preloop could not get a GitHub App token for the repository.',
   lease_refused:
@@ -329,7 +396,9 @@ export function publicationSummary(
       return {
         label: 'Failed',
         variant: 'danger',
-        detail: reasonText(record.reason),
+        detail: [reasonText(record.reason), record.readback_check]
+          .filter((part) => part)
+          .join(' '),
       };
     default:
       return {

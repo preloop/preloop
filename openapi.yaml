@@ -41423,8 +41423,9 @@ components:
           title: Platform Review
           description: 'What Preloop posted on the pull request for a read-only review
             flow with platform_review on: the publication record, plus pull_request_url,
-            review_url and commit_url built from the execution''s own binding. Null
-            without the opt-in.'
+            review_url and commit_url built from the execution''s own binding. readback_check
+            names which comparison failed when the record is a read-back failure,
+            and is null otherwise. Null without the opt-in.'
       type: object
       required:
       - flow_id
@@ -59549,7 +59550,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

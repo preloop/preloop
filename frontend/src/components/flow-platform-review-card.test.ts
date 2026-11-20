@@ -396,4 +396,54 @@ describe('flow-platform-review-card', () => {
       'false'
     );
   });
+
+  it('states how each declared finding field is shown and warns when none is text', async () => {
+    const shown = await mount({
+      ...FLOW,
+      result_schema: {
+        type: 'object',
+        properties: {
+          verdict: { type: 'string', enum: ['pass', 'fail'] },
+          findings: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                severity: { type: 'string' },
+                problem: { type: 'string' },
+                evidence: { type: 'string' },
+                location: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    });
+    const text = shown.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(text).to.contain('problem text');
+    expect(text).to.contain('evidence labelled block');
+    expect(text).to.contain('location location');
+    expect(q(shown, '[data-finding-text]')).to.equal(null);
+
+    const missing = await mount({
+      ...FLOW,
+      result_schema: {
+        type: 'object',
+        properties: {
+          verdict: { type: 'string', enum: ['pass', 'fail'] },
+          findings: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { severity: { type: 'string' }, meta: {} },
+            },
+          },
+        },
+      },
+    });
+    expect(q(missing, '[data-finding-text]').textContent).to.contain(
+      'no text field'
+    );
+    expect(q(missing, '[data-action="save"]')).to.exist;
+  });
 });

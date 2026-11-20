@@ -101,6 +101,7 @@ func newReviewPostingShowCmd() *cobra.Command {
 			}
 			block := platformReviewBlock(flow)
 			checks := reviewPostingChecks(flow)
+			fields := findingFieldAppearances(flow["result_schema"])
 			if asJSON {
 				missing := []string{}
 				for _, check := range checks {
@@ -112,9 +113,12 @@ func newReviewPostingShowCmd() *cobra.Command {
 					"flow_id":         flowID,
 					"platform_review": block,
 					"missing":         missing,
+					"finding_fields":  fields,
+					"finding_text":    findingSchemaHasText(flow["result_schema"], fields),
 				})
 			}
 			printReviewPostingConfig(cmd.OutOrStdout(), flowID, block, checks)
+			printFindingFields(cmd.OutOrStdout(), flow["result_schema"], fields)
 			return nil
 		},
 	}
@@ -558,6 +562,94 @@ func reviewPostingChecks(flow map[string]any) []reviewPostingCheck {
 	}
 }
 
+// findingFieldRole is how a declared finding field appears in the posted review.
+func findingFieldRole(name string) string {
+	switch name {
+	case "severity":
+		return "severity"
+	case "title":
+		return "title"
+	case "body", "description", "message", "detail", "problem", "issue", "finding", "summary":
+		return "text"
+	case "path", "file", "line", "location", "where":
+		return "location"
+	default:
+		return "labelled block"
+	}
+}
+
+type findingFieldAppearance struct {
+	Field     string `json:"field"`
+	AppearsAs string `json:"appears_as"`
+}
+
+// findingFieldAppearances lists the finding fields a result schema declares.
+// Map iteration order is not the schema order, so the list is sorted by role
+// and then by name; the posted review itself uses the schema's order.
+func findingFieldAppearances(schema any) []findingFieldAppearance {
+	doc, _ := schema.(map[string]any)
+	properties, _ := doc["properties"].(map[string]any)
+	findings, _ := properties["findings"].(map[string]any)
+	items, _ := findings["items"].(map[string]any)
+	props, _ := items["properties"].(map[string]any)
+	if props == nil {
+		return []findingFieldAppearance{}
+	}
+	names := make([]string, 0, len(props))
+	for name := range props {
+		names = append(names, name)
+	}
+	rank := map[string]int{"severity": 0, "title": 1, "text": 2, "location": 3, "labelled block": 4}
+	sort.Slice(names, func(i, j int) bool {
+		ri, rj := rank[findingFieldRole(names[i])], rank[findingFieldRole(names[j])]
+		if ri != rj {
+			return ri < rj
+		}
+		return names[i] < names[j]
+	})
+	out := make([]findingFieldAppearance, 0, len(names))
+	for _, name := range names {
+		out = append(out, findingFieldAppearance{Field: name, AppearsAs: findingFieldRole(name)})
+	}
+	return out
+}
+
+// findingSchemaHasText reports whether the schema declares a findings object
+// and, when it does, whether any property is shown as the finding text.
+// A schema that does not declare findings returns true so show does not warn.
+func findingSchemaHasText(schema any, fields []findingFieldAppearance) bool {
+	doc, _ := schema.(map[string]any)
+	properties, _ := doc["properties"].(map[string]any)
+	if _, ok := properties["findings"]; !ok {
+		return true
+	}
+	for _, field := range fields {
+		if field.AppearsAs == "text" {
+			return true
+		}
+	}
+	return false
+}
+
+func printFindingFields(out io.Writer, schema any, fields []findingFieldAppearance) {
+	doc, _ := schema.(map[string]any)
+	properties, _ := doc["properties"].(map[string]any)
+	if _, ok := properties["findings"]; !ok {
+		fmt.Fprintln(out, "Finding fields: the result schema does not declare any.")
+		return
+	}
+	fmt.Fprintln(out, "Finding fields:")
+	if len(fields) == 0 {
+		fmt.Fprintln(out, "  (none declared)")
+	}
+	for _, field := range fields {
+		fmt.Fprintf(out, "  %s: %s\n", field.Field, field.AppearsAs)
+	}
+	if !findingSchemaHasText(schema, fields) {
+		fmt.Fprintln(out, "Warning: the schema declares no text field for a finding, so the review has no problem statement. The flow can still be saved.")
+	}
+}
+
 func printReviewPostingConfig(out io.Writer, flowID string, block map[string]any, checks []reviewPostingCheck) {
 	enabled, _ := block["enabled"].(bool)
 	state := "off"
@@ -651,6 +743,9 @@ func printPublicationRecord(out io.Writer, record map[string]any) {
 	if retry, _ := record["retry_scheduled"].(bool); retry {
 		fmt.Fprintln(out, "Preloop will retry on its own.")
 	}
+	if check := str("readback_check"); check != "" {
+		fmt.Fprintf(out, "Read-back:   %s\n", check)
+	}
 }
 
 var reviewReasons = map[string]string{
@@ -661,7 +756,8 @@ var reviewReasons = map[string]string{
 	"provider_unavailable":        "GitHub was unavailable or rate limited; Preloop retries",
 	"provider_rejected":           "GitHub refused the request",
 	"provider_denied":             "GitHub denied the request; check the App installation and permissions",
-	"readback_mismatch":           "what GitHub holds differs from what was sent; check the pull request",
+	"readback_pending":            "GitHub had not shown the review or status yet; Preloop reads it again and does not post a second time",
+	"readback_mismatch":           "what GitHub holds differs from what was sent; publish again to repair the record only when it matches",
 	"lease_unavailable":           "no GitHub App token could be obtained for the repository",
 	"lease_refused":               "GitHub refused a token with the permissions posting needs",
 	"platform_review_disabled":    "posting is turned off on the flow",
