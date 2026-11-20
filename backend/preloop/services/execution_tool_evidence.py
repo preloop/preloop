@@ -18,6 +18,49 @@ EVIDENCE_TYPE = "execution_tool_evidence"
 MAX_EVIDENCE_BYTES = 2 * 1024 * 1024
 MAX_OBSERVATIONS = 512
 
+#: Why a stored record is incomplete. Written at capture time. A record that
+#: is incomplete only because ``masking`` fired (a named credential rule) is
+#: the one case ``platform_review.evidence = captured`` still accepts.
+REASON_MISSING_ID = "missing_id"
+REASON_INVALID_NAME = "invalid_name"
+REASON_UNSAFE_TEXT = "unsafe_text"
+REASON_TRUNCATED = "truncated"
+REASON_CAPPED = "capped"
+REASON_SCAN_DEPTH = "scan_depth"
+REASON_MASKING = "masking"
+INCOMPLETE_REASONS = frozenset(
+    {
+        REASON_MISSING_ID,
+        REASON_INVALID_NAME,
+        REASON_UNSAFE_TEXT,
+        REASON_TRUNCATED,
+        REASON_CAPPED,
+        REASON_SCAN_DEPTH,
+        REASON_MASKING,
+    }
+)
+
+
+def note_incomplete(document: dict[str, Any], reason: str) -> None:
+    """Record one incompleteness reason and clear ``capture_complete``.
+
+    Args:
+        document: Evidence document about to be stored. Mutated in place.
+        reason: One of :data:`INCOMPLETE_REASONS`.
+    """
+    if reason not in INCOMPLETE_REASONS:
+        raise ValueError("Unsupported incompleteness reason")
+    current = document.get("incomplete_reasons")
+    names = (
+        [item for item in current if isinstance(item, str)]
+        if isinstance(current, list)
+        else []
+    )
+    if reason not in names:
+        names.append(reason)
+    document["incomplete_reasons"] = sorted(names)
+    document["capture_complete"] = False
+
 
 def canonical_bytes(value: Any) -> bytes:
     """Canonical v1 encoding: sorted keys, compact JSON, UTF-8, no ASCII escapes."""
@@ -52,13 +95,15 @@ def _sensitive_field(key: Any) -> bool:
     ) or ("token" in lowered and "tokens" not in lowered)
 
 
-def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]]]:
+def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]], bool]:
     """Scrub one observation value.
 
     Returns:
-        The stored value and the rule counts that fired while producing it.
-        Pattern rules run on the original string before the known-token
-        scrubber, so a match is counted even when both would mask it.
+        The stored value, the rule counts that fired while producing it, and
+        whether the value also changed for a reason that is not a named
+        masking rule. Pattern rules run on the original string before the
+        known-token scrubber, so a match is counted even when both would
+        mask it.
     """
     from preloop.services.model_gateway_events import (
         _REDACTION_MARKERS,
@@ -66,7 +111,9 @@ def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]]]:
         redact_sensitive_text,
     )
 
-    value = sanitize_for_jsonb(value)
+    sanitized = sanitize_for_jsonb(value)
+    unexplained = sanitized != value
+    value = sanitized
     if isinstance(value, dict):
         redacted: dict[Any, Any] = {}
         facts: list[dict[str, Any]] = []
@@ -83,37 +130,42 @@ def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]]]:
                     redacted[key] = "[REDACTED]"
                     field_hits += 1
                 continue
-            child, child_facts = _redact_value(item)
+            child, child_facts, child_unexplained = _redact_value(item)
             redacted[key] = child
             facts = merge_redactions(facts, child_facts)
+            unexplained = unexplained or child_unexplained
         if field_hits:
             facts = merge_redactions(
                 [{"rule": "sensitive_field", "count": field_hits}], facts
             )
-        return redacted, facts
+        return redacted, facts, unexplained
     if isinstance(value, list):
         items: list[Any] = []
         facts = []
         for item in value:
-            child, child_facts = _redact_value(item)
+            child, child_facts, child_unexplained = _redact_value(item)
             items.append(child)
             facts = merge_redactions(facts, child_facts)
-        return items, facts
+            unexplained = unexplained or child_unexplained
+        return items, facts, unexplained
     if isinstance(value, str):
         redacted_text, facts = redact_sensitive_text(value)
         scrubbed = scrub_structure(redacted_text)
         text = scrubbed if isinstance(scrubbed, str) else redacted_text
+        # A scrub that is not one of the named rules is not masking.
+        unexplained = unexplained or text != redacted_text
         try:
             parsed = json.loads(text)
         except ValueError:
-            return text, facts
+            return text, facts, unexplained
         if isinstance(parsed, (dict, list)):
-            clean, nested = _redact_value(parsed)
+            clean, nested, nested_unexplained = _redact_value(parsed)
             facts = merge_redactions(facts, nested)
+            unexplained = unexplained or nested_unexplained
             if clean != parsed:
-                return canonical_bytes(clean).decode("utf-8"), facts
-        return text, facts
-    return value, []
+                return canonical_bytes(clean).decode("utf-8"), facts, unexplained
+        return text, facts, unexplained
+    return value, [], unexplained
 
 
 def capture_tools(
@@ -122,11 +174,17 @@ def capture_tools(
     """Capture tool-only wire observations without prompt/history body fields."""
     observations: list[dict[str, Any]] = []
     incomplete = False
+    reasons: set[str] = set()
     remaining = MAX_EVIDENCE_BYTES
     storage_redacted = False
 
+    def mark(reason: str) -> None:
+        nonlocal incomplete
+        incomplete = True
+        reasons.add(reason)
+
     def add(item: dict[str, Any], source: str, kind: str) -> None:
-        nonlocal incomplete, remaining, storage_redacted
+        nonlocal remaining, storage_redacted
         function = item.get("function")
         function = function if isinstance(function, dict) else item
         raw = (
@@ -143,14 +201,15 @@ def capture_tools(
         name = function.get("name")
         # Enforce identifier bounds independently of argument content.
         if not isinstance(identity, str) or not 0 < len(identity) <= 256:
-            incomplete = True
+            mark(REASON_MISSING_ID)
             identity = None
         if name is not None and (not isinstance(name, str) or len(name) > 256):
-            incomplete = True
+            mark(REASON_INVALID_NAME)
             name = None
         safe_raw = sanitize_for_jsonb(raw)
         if safe_raw != raw:
-            incomplete = storage_redacted = True
+            storage_redacted = True
+            mark(REASON_UNSAFE_TEXT)
         facts: list[dict[str, Any]] = []
         if capture_content:
             from preloop.services.model_gateway_events import (
@@ -158,7 +217,7 @@ def capture_tools(
                 redact_sensitive_text,
             )
 
-            value, facts = _redact_value(safe_raw)
+            value, facts, unexplained = _redact_value(safe_raw)
             if isinstance(value, str):
                 # Keep exact wire argument strings. This redacts recognized
                 # secrets without reserializing JSON or applying the preview cap.
@@ -166,9 +225,16 @@ def capture_tools(
                 facts = merge_redactions(facts, more)
         else:
             value = None
+            unexplained = False
         redacted = not capture_content or value != raw
         if capture_content and value != raw:
-            incomplete = storage_redacted = True
+            storage_redacted = True
+            # A named rule is masking. A change the rules do not explain
+            # (removed unsafe text) is recorded as well, and both can apply.
+            if facts:
+                mark(REASON_MASKING)
+            if unexplained or not facts:
+                mark(REASON_UNSAFE_TEXT)
         record: dict[str, Any] = {
             "source": source,
             "kind": kind,
@@ -182,22 +248,25 @@ def capture_tools(
             record["redactions"] = facts
         safe_record = sanitize_for_jsonb(record)
         if safe_record != record:
-            incomplete = storage_redacted = True
+            storage_redacted = True
             safe_record["redacted"] = True
+            mark(REASON_UNSAFE_TEXT)
         record = safe_record
         encoded = canonical_bytes(record)
-        if len(observations) >= MAX_OBSERVATIONS or len(encoded) > remaining:
-            incomplete = True
+        if len(observations) >= MAX_OBSERVATIONS:
+            mark(REASON_CAPPED)
+            return
+        if len(encoded) > remaining:
+            mark(REASON_TRUNCATED)
             return
         remaining -= len(encoded)
         observations.append(record)
 
     def scan(items: Any, source: str, depth: int = 0) -> None:
-        nonlocal incomplete
         if not isinstance(items, list):
             return
         if depth > 12:
-            incomplete = True
+            mark(REASON_SCAN_DEPTH)
             return
         for item in items:
             if not isinstance(item, dict):
@@ -227,7 +296,7 @@ def capture_tools(
         scan(_latest_tool_exchange(request.get("input")), "request")
     from preloop.services.model_gateway_events import REDACTION_RULESET
 
-    return {
+    document = {
         "version": 1,
         "request_scope": "latest_tool_exchange",
         "storage_redacted": storage_redacted,
@@ -237,6 +306,9 @@ def capture_tools(
         "content_capture_enabled": capture_content,
         "response_available": isinstance(response, dict),
     }
+    if reasons:
+        document["incomplete_reasons"] = sorted(reasons)
+    return document
 
 
 def _latest_tool_exchange(items: Any) -> list[dict[str, Any]]:

@@ -47,6 +47,14 @@ const MODE_HELP: Record<PlatformReviewMode, string> = {
     "Posted only when someone, or the run's own CI identity, calls the publish endpoint for a finished run.",
 };
 
+const EVIDENCE_HELP: Record<'any' | 'captured' | 'complete', string> = {
+  any: "Post whether or not the run's tool evidence is complete.",
+  captured:
+    'Post only when every model request has an evidence record, and the only incomplete records are masked credentials.',
+  complete:
+    'Post only when every model request has an evidence record and no record is incomplete, including masked credentials.',
+};
+
 const STATE_LABELS: Record<CommitState, string> = {
   success: 'Success (passes)',
   failure: 'Failure (blocks)',
@@ -252,6 +260,12 @@ export class FlowPlatformReviewCard extends LitElement {
         : mode === 'manual'
           ? { ...rest, enabled: true, mode: 'manual' }
           : { ...rest, enabled: true };
+  }
+
+  private setEvidence(value: 'any' | 'captured' | 'complete'): void {
+    this.saved = false;
+    const { evidence: _evidence, ...rest } = this.draft;
+    this.draft = value === 'any' ? { ...rest } : { ...rest, evidence: value };
   }
 
   private setStatusOn(on: boolean): void {
@@ -545,6 +559,26 @@ export class FlowPlatformReviewCard extends LitElement {
         }
         ${
           enabled
+            ? html`<sl-select
+                label="Tool evidence"
+                data-field="evidence"
+                help-text=${EVIDENCE_HELP[this.draft.evidence || 'any']}
+                .value=${this.draft.evidence || 'any'}
+                ?disabled=${!this.editable}
+                @sl-change=${(event: Event) =>
+                  this.setEvidence(
+                    (event.target as HTMLInputElement).value as
+                      'any' | 'captured' | 'complete'
+                  )}
+              >
+                <sl-option value="any">Any</sl-option>
+                <sl-option value="captured">Captured</sl-option>
+                <sl-option value="complete">Complete</sl-option>
+              </sl-select>`
+            : nothing
+        }
+        ${
+          enabled
             ? html`
                 <div class="section-title">Commit status</div>
                 ${
@@ -627,6 +661,9 @@ function normalise(block: PlatformReviewConfig): PlatformReviewConfig {
   const out: PlatformReviewConfig = { enabled: Boolean(block.enabled) };
   // Automatic is what a block without a mode means; only manual is stored.
   if (block.enabled && block.mode === 'manual') out.mode = 'manual';
+  if (block.evidence === 'captured' || block.evidence === 'complete') {
+    out.evidence = block.evidence;
+  }
   if (block.action && block.action !== 'comment') out.action = block.action;
   if (block.verdict_actions && Object.keys(block.verdict_actions).length) {
     out.verdict_actions = block.verdict_actions;
