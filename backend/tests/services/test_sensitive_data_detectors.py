@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import os
 import random
+import re
+import statistics
+import sys
 import time
 
 import pytest
@@ -411,10 +414,129 @@ def _coverage_active() -> bool:
         return False
 
 
-def _slow_runner(text: str) -> bool:
-    """Calibrate on one plain regex pass; a slow or busy runner skips the timing."""
-    baseline = min(_timed_regex(text) for _ in range(3))
-    return baseline > 0.004
+# One email-regex scan of the benchmark text is about 1 ms on a quiet
+# machine, and ``detect`` is about 35 of those scans (~38 ms). A block this
+# long is preempted the same way ``detect`` is. A single scan often finishes
+# inside one quiet timeslice, so the best of three stays under 4 ms while
+# ``detect`` is already past 50 ms.
+_BASELINE_PASSES = 32
+_SAMPLE_COUNT = 7
+# Quiet-machine median of detect/baseline is about 1.1. Three full scans
+# land near 3.2. Load stretches both sides of the ratio together.
+_RATIO_LIMIT = 2.5
+# The 50 ms cap is meaningful only while a pass in this same loop is still
+# in the quiet band. At 1.3 ms/pass the matched block is ~42 ms and detect
+# is still under 50 ms; the old 4 ms gate was still open at the 55–80 ms
+# failures.
+_QUIET_PASS_S = 0.0013
+_ABSOLUTE_LIMIT_S = 0.050
+_BASELINE_RE = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+
+
+def _benchmark_config() -> DetectorConfig:
+    """Config the 100 KB benchmark scans: every built-in, plus two customs.
+
+    Returns:
+        Detector configuration with one custom pattern and one keyword list.
+    """
+    return DetectorConfig(
+        custom_patterns=(CustomPattern("emp", r"EMP-\d{6}"),),
+        keywords=(KeywordList("kw", ("Project Phoenix", "lorem")),),
+    )
+
+
+def _timed_baseline(text: str) -> float:
+    """Time ``_BASELINE_PASSES`` email-regex scans of ``text``.
+
+    Args:
+        text: Benchmark input, normally 100 KB.
+
+    Returns:
+        Elapsed seconds for the whole block.
+    """
+    start = time.perf_counter()
+    for _ in range(_BASELINE_PASSES):
+        _BASELINE_RE.findall(text)
+    return time.perf_counter() - start
+
+
+def _timed(text: str, cfg: DetectorConfig) -> float:
+    """Time one ``detect`` call.
+
+    Args:
+        text: Input scanned by the detectors.
+        cfg: Detector configuration.
+
+    Returns:
+        Elapsed seconds.
+    """
+    start = time.perf_counter()
+    detect(text, cfg)
+    return time.perf_counter() - start
+
+
+def _benchmark_samples(text: str, cfg: DetectorConfig) -> list[tuple[float, float]]:
+    """Interleave a regex baseline with ``detect`` so both see the same load.
+
+    The two timers alternate which one runs first. A stall between them then
+    does not always land on ``detect``.
+
+    Args:
+        text: Benchmark input.
+        cfg: Detector configuration passed to ``detect``.
+
+    Returns:
+        Pairs of ``(baseline_seconds, detect_seconds)``.
+    """
+    _BASELINE_RE.findall(text)
+    detect(text, cfg)
+    samples: list[tuple[float, float]] = []
+    for index in range(_SAMPLE_COUNT):
+        if index % 2 == 0:
+            baseline = _timed_baseline(text)
+            elapsed = _timed(text, cfg)
+        else:
+            elapsed = _timed(text, cfg)
+            baseline = _timed_baseline(text)
+        samples.append((baseline, elapsed))
+    return samples
+
+
+def _benchmark_failure(text: str, cfg: DetectorConfig) -> str | None:
+    """Return why the 100 KB benchmark failed, or None when it held.
+
+    Judges ``detect`` against a regex baseline measured in the same loop.
+    When that baseline shows a quiet machine, also requires the fastest
+    ``detect`` to finish within 50 ms.
+
+    Args:
+        text: Benchmark input.
+        cfg: Detector configuration passed to ``detect``.
+
+    Returns:
+        A failure message, or None when the run is within budget.
+    """
+    samples = _benchmark_samples(text, cfg)
+    if any(baseline <= 0 for baseline, _elapsed in samples):
+        return "regex baseline timer returned a non-positive duration"
+    ratios = [elapsed / baseline for baseline, elapsed in samples]
+    median_ratio = statistics.median(ratios)
+    if median_ratio >= _RATIO_LIMIT:
+        detect_ms = statistics.median(elapsed for _baseline, elapsed in samples)
+        return (
+            f"detect took {detect_ms * 1000:.1f} ms median, "
+            f"{median_ratio:.2f}x the interleaved regex baseline "
+            f"(limit {_RATIO_LIMIT:.1f}x)"
+        )
+    per_pass = statistics.median(baseline / _BASELINE_PASSES for baseline, _ in samples)
+    if per_pass <= _QUIET_PASS_S:
+        best = min(elapsed for _baseline, elapsed in samples)
+        if best >= _ABSOLUTE_LIMIT_S:
+            return (
+                f"detect took {best * 1000:.1f} ms "
+                f"(limit {_ABSOLUTE_LIMIT_S * 1000:.0f} ms) on a quiet runner"
+            )
+    return None
 
 
 @pytest.mark.benchmark
@@ -423,32 +545,39 @@ def _slow_runner(text: str) -> bool:
     reason="benchmarks disabled on this runner",
 )
 def test_benchmark_100kb_all_types_under_50ms() -> None:
-    """100 KB with every built-in plus a custom pattern and a keyword list."""
+    """100 KB with every built-in plus a custom pattern and a keyword list.
+
+    The 50 ms cap is checked only when the interleaved baseline shows a
+    quiet machine. On a busy runner the cap would move with the load, so
+    the test compares ``detect`` with that baseline instead.
+    """
     if _coverage_active():
         pytest.skip("coverage tracing active; timing is not representative")
-    cfg = DetectorConfig(
-        custom_patterns=(CustomPattern("emp", r"EMP-\d{6}"),),
-        keywords=(KeywordList("kw", ("Project Phoenix", "lorem")),),
-    )
     text = _benchmark_text()
     assert len(text) == 100_000
-    if _slow_runner(text):
-        pytest.skip("slow runner; one regex pass over 100 KB exceeds 4 ms")
-    detect(text, cfg)  # warm regex caches
-    best = min(_timed(text, cfg) for _ in range(3))
-    assert best < 0.050, f"detect took {best * 1000:.1f} ms"
+    failure = _benchmark_failure(text, _benchmark_config())
+    assert failure is None, failure
 
 
-def _timed_regex(text: str) -> float:
-    import re
+def test_benchmark_fails_when_detect_is_three_times_slower(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``detect`` that scans three times must fail the benchmark verdict.
 
-    pattern = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
-    start = time.perf_counter()
-    pattern.findall(text)
-    return time.perf_counter() - start
+    The extra scans slow the detector about threefold without changing the
+    regex baseline, which is the regression the ratio limit exists to catch.
+    """
+    original = detect
+    calls = {"n": 0}
 
+    def slow(text: str, config: DetectorConfig | None = None) -> list[Match]:
+        calls["n"] += 1
+        original(text, config)
+        original(text, config)
+        return original(text, config)
 
-def _timed(text: str, cfg: DetectorConfig) -> float:
-    start = time.perf_counter()
-    detect(text, cfg)
-    return time.perf_counter() - start
+    monkeypatch.setattr(sys.modules[__name__], "detect", slow)
+    failure = _benchmark_failure(_benchmark_text(), _benchmark_config())
+    assert calls["n"] == 1 + _SAMPLE_COUNT
+    assert failure is not None, "three-times-slower detect was accepted"
+    assert "baseline" in failure
