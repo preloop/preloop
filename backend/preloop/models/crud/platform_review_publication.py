@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import DateTime, cast, func, or_
+from sqlalchemy import DateTime, and_, cast, func, or_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ from preloop.models.models.platform_review_publication import (
     STATE_POSTED,
     STATE_PUBLISHING,
     STATE_SKIPPED,
+    STATE_STATUS_ONLY,
 )
 
 from .review_publication_receipt import normalize_repository
@@ -123,6 +124,14 @@ class CRUDPlatformReviewPublication:
             if retryable_only:
                 finished = finished & (
                     (model.state != STATE_FAILED) | model.retryable.is_(True)
+                )
+            else:
+                # Evidence can land after a refusal that already set the
+                # incomplete commit status. An explicit call may post then.
+                # Automatic retries do not reopen it.
+                finished = finished | and_(
+                    model.state == STATE_STATUS_ONLY,
+                    model.reason == "evidence_incomplete",
                 )
             updated = (
                 db.query(model)

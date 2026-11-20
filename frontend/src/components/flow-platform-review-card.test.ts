@@ -396,4 +396,32 @@ describe('flow-platform-review-card', () => {
       'false'
     );
   });
+
+  it('offers the three evidence levels and saves the one that tightens posting', async () => {
+    const element = await mount();
+    await chooseMode(element, 'automatic');
+    const select = q(element, '[data-field="evidence"]');
+    const values = [...select.querySelectorAll('sl-option')].map(
+      (option: Element) => option.getAttribute('value')
+    );
+    expect(values).to.deep.equal(['any', 'captured', 'complete']);
+    expect(select.helpText).to.contain(
+      "whether or not the run's tool evidence"
+    );
+    select.value = 'captured';
+    select.dispatchEvent(new Event('sl-change'));
+    await element.updateComplete;
+    expect(q(element, '[data-field="evidence"]').helpText).to.contain(
+      'masked credentials'
+    );
+    q(element, '[data-action="save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await element.updateComplete;
+    expect(putBodies[0].git_clone_config.platform_review.evidence).to.equal(
+      'captured'
+    );
+    expect(putBodies[0].git_clone_config.platform_review).to.not.have.property(
+      'status'
+    );
+  });
 });

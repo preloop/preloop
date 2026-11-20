@@ -27,6 +27,8 @@ export interface PlatformReviewConfig {
   action?: 'comment';
   verdict_actions?: Record<string, ReviewAction> | null;
   status?: PlatformReviewStatusConfig | null;
+  /** Which stored tool evidence may be posted. Absent means any. */
+  evidence?: 'any' | 'captured' | 'complete';
 }
 
 /** The record the API returns on an execution (`platform_review`). */
@@ -58,6 +60,14 @@ export interface PlatformReviewRecord {
   pull_request_url?: string | null;
   review_url?: string | null;
   commit_url?: string | null;
+  tool_evidence?: {
+    gateway_requests: number;
+    missing_records: number;
+    records: number;
+    incomplete_records: number;
+    masking_only_records: number;
+    masking_by_rule: Record<string, number>;
+  };
 }
 
 export const DEFAULT_STATUS_CONTEXT = 'preloop/review';
@@ -267,6 +277,10 @@ const REASONS: Record<string, string> = {
   attempt_interrupted:
     'The attempt was interrupted. Preloop retries on its own.',
   execution_not_finished: 'The run has not finished yet.',
+  evidence_incomplete:
+    'The stored tool evidence is not complete enough for this flow to post a review.',
+  evidence_pending:
+    'Tool evidence for the last model request may still be recording. Retry in a moment.',
   request_not_allowed: 'Preloop refused a request outside what posting may do.',
   internal_error: 'Posting failed inside Preloop.',
 };

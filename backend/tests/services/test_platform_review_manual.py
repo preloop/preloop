@@ -37,7 +37,12 @@ from tests.services.test_platform_review import (
     RESULT,
     FakeGitHub,
     _clone,
+    _age,
+    _gateway_usage,
+    _masked_tool_document,
     _orchestrator,
+    _set_evidence,
+    _store_gateway,
     finished,
     identity,
     publish,
@@ -695,3 +700,37 @@ async def test_finished_event_reports_an_automatic_post_made_on_another_session(
     await orchestrator._notify_terminal(status="SUCCEEDED")
     assert seen and seen[0] is not None
     assert (seen[0]["status"], seen[0]["posted_by"]) == ("posted", "automatic")
+
+
+def test_expected_evidence_refuses_with_412_and_cannot_loosen_the_flow_setting(
+    world: SimpleNamespace, client: TestClient
+) -> None:
+    """A caller can require more evidence. A weaker value does not lower the flow."""
+    project = world.projects[0]
+    who = identity(world, project)
+    execution = finished(world, who)
+    _age(world, execution)
+    usage = _gateway_usage(world, execution)
+    _store_gateway(world, execution, usage, _masked_tool_document())
+    malformed = ci_post(client, who, execution, {"expected_evidence": "any"})
+    assert malformed.status_code == 400
+    assert malformed.json()["detail"]["code"] == "review_precondition_malformed"
+    refused = ci_post(client, who, execution, {"expected_evidence": "complete"})
+    assert refused.status_code == 412, refused.text
+    detail = refused.json()["detail"]
+    assert detail["code"] == "review_precondition_failed"
+    assert detail["precondition"] == "expected_evidence"
+    assert detail["expected"] == "complete"
+    assert detail["current"] == "captured"
+    assert detail["failed"][0]["source"] == "tool_evidence"
+    assert world.github.reviews == {}
+    # The flow requires complete. Asking only for captured does not post
+    # the masked record: the precondition holds, the flow setting still refuses.
+    _set_evidence(world, "complete")
+    held = ci_post(client, who, execution, {"expected_evidence": "captured"})
+    assert held.status_code == 200, held.text
+    record = held.json()["platform_review"]
+    assert record["reason"] == "evidence_incomplete"
+    assert record["review"] == "skipped"
+    assert world.github.reviews == {}
+    assert world.github.statuses[(project.slug, HEAD)][0]["state"] == "error"

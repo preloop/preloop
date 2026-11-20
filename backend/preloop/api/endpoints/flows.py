@@ -1995,8 +1995,10 @@ def publish_execution_platform_review(
         description=(
             "Optional preconditions, each optional: expected_head_sha, "
             "expected_base_sha (full commit SHAs), expected_result_sha256 "
-            "(64 hex characters, as on GET .../result) and "
-            "expected_flow_revision (positive integer)."
+            "(64 hex characters, as on GET .../result), "
+            "expected_flow_revision (positive integer) and "
+            "expected_evidence (captured or complete; can only tighten the "
+            "flow setting)."
         ),
         examples=[
             {
@@ -2029,9 +2031,15 @@ def publish_execution_platform_review(
     - ``expected_result_sha256``: ``result_sha256`` of the stored result, as
       returned by ``GET /flows/executions/{id}/result``.
     - ``expected_flow_revision``: the flow's current configuration revision.
+    - ``expected_evidence``: ``captured`` or ``complete``. The stored tool
+      evidence must meet that level. It can require more than the flow's
+      ``platform_review.evidence``; it never lowers a stricter flow setting.
 
     A failed precondition returns 412, posts nothing and records nothing as
-    posted; the call can be repeated with corrected values.
+    posted; the call can be repeated with corrected values. While the last
+    gateway request can still be recording (a short window after the run
+    finishes) and the flow or the caller requires captured or complete
+    evidence, the call returns 409 ``evidence_pending`` and posts nothing.
 
     The call is idempotent. A review or status that was already posted for
     the execution is not posted again; the response is the current
@@ -2275,6 +2283,7 @@ def get_flow_execution_result(
             "schema_validation": _ci_schema_validation(
                 execution, messages=not withheld
             ),
+            "tool_evidence": _tool_evidence_summary(db, execution),
         }
     execution = crud_flow_execution.get_without_workspace(
         db=db, id=execution_id, account_id=current_user.account_id
@@ -2299,7 +2308,15 @@ def get_flow_execution_result(
         "schema_validation": _public_schema_validation(execution),
         # What Preloop posted on the pull request; null without the opt-in.
         "platform_review": _platform_review_of(db, execution),
+        "tool_evidence": _tool_evidence_summary(db, execution),
     }
+
+
+def _tool_evidence_summary(db: Session, execution: Any) -> Dict[str, Any]:
+    """Tool-evidence counts for one execution. No values, paths or text."""
+    from preloop.services.platform_review import stored_tool_evidence
+
+    return stored_tool_evidence(db, execution)
 
 
 def _platform_review_of(db: Session, execution: Any) -> Optional[Dict[str, Any]]:
