@@ -237,6 +237,11 @@ class CRUDPlatformReviewPublication:
     ) -> list[tuple[UUID, UUID]]:
         """Finished executions of automatic-mode flows no attempt has claimed.
 
+        A restricted CI run is selected when its binding and its principal
+        are both set. An event-started run is selected when the binding
+        source is ``tracker_event``, the version is 2, and the principal is
+        null.
+
         Covers a run that reached a terminal status outside the worker that
         would have published it (an operator stop, a crashed worker). Only
         executions that finished after posting was turned on are returned
@@ -268,8 +273,17 @@ class CRUDPlatformReviewPublication:
             .outerjoin(model, model.execution_id == execution.id)
             .filter(
                 model.id.is_(None),
-                execution.ci_review_binding.isnot(None),
-                execution.ci_principal_id.isnot(None),
+                or_(
+                    and_(
+                        execution.ci_review_binding.isnot(None),
+                        execution.ci_principal_id.isnot(None),
+                    ),
+                    and_(
+                        execution.ci_principal_id.is_(None),
+                        execution.ci_review_binding["source"].astext == "tracker_event",
+                        execution.ci_review_binding["version"].astext == "2",
+                    ),
+                ),
                 execution.status.in_(_TERMINAL_STATUSES),
                 execution.end_time.isnot(None),
                 execution.end_time >= _now() - finished_within,

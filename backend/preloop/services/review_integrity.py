@@ -107,7 +107,7 @@ def validate_review_integrity_block(block: Any) -> None:
 
 
 def applies(flow: Any, execution: Any) -> bool:
-    """Whether the checks apply: a read-only review with a CI admission."""
+    """Whether the checks apply: a read-only review with a CI or event binding."""
     from preloop.services.read_only_review import read_only_review
 
     binding = getattr(execution, "ci_review_binding", None)

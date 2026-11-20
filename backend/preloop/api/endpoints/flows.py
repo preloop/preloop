@@ -328,18 +328,25 @@ def _reject_invalid_platform_review(
     git_clone_config: Any,
     result_schema: Any,
     validate_result: Any,
+    trigger_event_source: Any = None,
+    trigger_event_types: Any = None,
+    trigger_project_ids: Any = None,
+    webhook_config: Any = None,
 ) -> None:
     """Refuse a ``platform_review`` opt-in that could not post safely.
 
     Checked on the configuration the flow will have after the save: the
     result must be validated against a schema with a closed, fully mapped
     ``verdict``, and every repository must belong to a GitHub App tracker.
+    An event-started posting flow is also checked against the pull request
+    allowlist.
 
     Raises:
         HTTPException: 422 with the reason.
     """
     from types import SimpleNamespace
 
+    from preloop.services.event_review import validate_event_review_posting
     from preloop.services.platform_review import (
         validate_platform_review_flow,
         validate_platform_review_trackers,
@@ -362,6 +369,15 @@ def _reject_invalid_platform_review(
             enforce_content_capture=True,
         )
         validate_platform_review_trackers(db, account_id=account_id, config=config)
+        validate_event_review_posting(
+            db,
+            account_id,
+            config,
+            trigger_event_source,
+            trigger_event_types,
+            trigger_project_ids,
+            webhook_config,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -501,6 +517,10 @@ def create_flow(
         git_clone_config=flow_in.git_clone_config,
         result_schema=flow_in.result_schema,
         validate_result=flow_in.validate_result,
+        trigger_event_source=flow_in.trigger_event_source,
+        trigger_event_types=flow_in.trigger_event_types,
+        trigger_project_ids=flow_in.trigger_project_ids,
+        webhook_config=flow_in.webhook_config,
     )
     _stamp_platform_review(flow_in.git_clone_config, None)
     _reject_host_exec_flow(
@@ -1972,7 +1992,7 @@ def get_execution_result_export(
             "description": (
                 "Nothing can be published for this execution: the flow has "
                 "not opted in, the execution has not finished, or it has no "
-                "restricted CI review binding. ``detail.code`` names which."
+                "review binding. ``detail.code`` names which."
             )
         },
         412: {
@@ -2016,7 +2036,9 @@ def publish_execution_platform_review(
     Posts the stored, validated result of a finished read-only review as a
     pull request review and commit status on the commit the execution
     reviewed. The target comes from the execution's own binding; the request
-    cannot name a repository, pull request or commit.
+    cannot name a repository, pull request or commit. An execution started
+    by a GitHub pull request event is published the same way, and the caller
+    still cannot name the target.
 
     This is the only way a flow in ``manual`` platform review mode posts; a
     flow in ``automatic`` mode also posts when the execution finishes.
@@ -4268,6 +4290,26 @@ def update_flow(
             if "validate_result" in flow_in.model_fields_set
             and flow_in.validate_result is not None
             else flow.validate_result
+        ),
+        trigger_event_source=(
+            flow_in.trigger_event_source
+            if "trigger_event_source" in flow_in.model_fields_set
+            else flow.trigger_event_source
+        ),
+        trigger_event_types=(
+            flow_in.trigger_event_types
+            if "trigger_event_types" in flow_in.model_fields_set
+            else flow.trigger_event_types
+        ),
+        trigger_project_ids=(
+            flow_in.trigger_project_ids
+            if "trigger_project_ids" in flow_in.model_fields_set
+            else flow.trigger_project_ids
+        ),
+        webhook_config=(
+            flow_in.webhook_config
+            if "webhook_config" in flow_in.model_fields_set
+            else flow.webhook_config
         ),
     )
 
