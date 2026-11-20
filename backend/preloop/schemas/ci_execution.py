@@ -125,6 +125,100 @@ class CiReviewBinding(CiReviewRequest):
         return branch
 
 
+class EventReviewBinding(BaseModel):
+    """Server-owned pull request snapshot for a tracker-event review.
+
+    Version 2 has no CI principal and no CI key. Fork pull requests are not
+    admitted: ``repository_identifier`` and ``repository_slug`` are the base
+    repository, and the head repository must be that same repository.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+
+    version: Literal[2]
+    source: Literal["tracker_event"]
+    account_id: UUID
+    flow_id: UUID
+    tracker_id: UUID
+    installation_id: str = Field(strict=True, pattern=r"^[1-9][0-9]{0,18}$")
+    project_id: UUID
+    repository_identifier: str = Field(min_length=1, max_length=100)
+    repository_slug: str = Field(min_length=1, max_length=255)
+    tracker_type: Literal["github"]
+    tracker_url: str | None = None
+    provider_pr_id: str = Field(min_length=1, max_length=64)
+    pr_number: int = Field(strict=True, gt=0)
+    head_sha: str = Field(strict=True, pattern=r"^[0-9a-f]{40}([0-9a-f]{24})?$")
+    base_sha: str = Field(strict=True, pattern=r"^[0-9a-f]{40}([0-9a-f]{24})?$")
+    base_branch: str = Field(
+        strict=True,
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]*$",
+    )
+    event_type: Literal[
+        "pull_request_opened",
+        "pull_request_updated",
+        "pull_request_reopened",
+        "pull_request_ready_for_review",
+    ]
+    action: Literal["opened", "synchronize", "reopened", "ready_for_review"]
+    delivery_id: str = Field(strict=True, min_length=1, max_length=128)
+    draft: bool = Field(strict=True)
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def strict_version(cls, version: object) -> object:
+        """A coerced numeric value is not a stored protocol version."""
+        if type(version) is not int:
+            raise ValueError("Event review version must be an integer")
+        return version
+
+    @field_validator("base_branch")
+    @classmethod
+    def safe_base_branch(cls, branch: str) -> str:
+        """Use a provider-confirmed conventional Git ref, never shell syntax."""
+        checked = CiReviewBinding.safe_review_branch(branch)
+        if not isinstance(checked, str):
+            raise ValueError("Unsupported review target branch")
+        return checked
+
+    @field_validator("delivery_id")
+    @classmethod
+    def bounded_delivery_id(cls, delivery_id: str) -> str:
+        """Keep the provider delivery id as an opaque token, not a path."""
+        if delivery_id.strip() != delivery_id or any(
+            character.isspace() for character in delivery_id
+        ):
+            raise ValueError("Event review delivery id is not a single token")
+        return delivery_id
+
+
+def parse_stored_review_binding(
+    document: Any,
+) -> CiReviewBinding | EventReviewBinding | None:
+    """Parse a stored binding, version 1 first, then an event binding.
+
+    Args:
+        document: The ``ci_review_binding`` column value.
+
+    Returns:
+        The binding, or None when the document is neither version.
+    """
+    from pydantic import ValidationError
+
+    try:
+        return CiReviewBinding.model_validate(document)
+    except ValidationError:
+        pass
+    try:
+        return EventReviewBinding.model_validate(document)
+    except ValidationError:
+        return None
+
+
 def ci_review_event(binding: CiReviewBinding) -> dict[str, Any]:
     """Build provenance only from server-accepted immutable review fields."""
     repository = {

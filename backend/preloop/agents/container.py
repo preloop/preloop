@@ -5325,6 +5325,7 @@ fi
         target_branch: str,
         trigger_data: Dict[str, Any],
         use_remote_default: bool = False,
+        execution_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Build post-clone branch and commit checkout commands."""
 
@@ -5335,7 +5336,9 @@ fi
         if commit_sha:
             q_commit = shlex.quote(commit_sha)
             q_commit_short = shlex.quote(commit_sha[:8])
-            mr_fetch_ref = self._extract_merge_request_ref_from_trigger(trigger_data)
+            mr_fetch_ref = self._extract_merge_request_ref_from_trigger(
+                trigger_data, execution_context
+            )
             mr_fetch_line = ""
             if mr_fetch_ref:
                 q_mr_ref = shlex.quote(mr_fetch_ref)
@@ -5666,6 +5669,7 @@ true
                     target_branch=repo_target,
                     trigger_data=trigger_data,
                     use_remote_default=bool(repo_config.get("use_remote_default")),
+                    execution_context=execution_context,
                 ),
                 self._build_git_clone_validation_shell(
                     full_path=full_path,
@@ -7191,14 +7195,23 @@ trap _preloop_publication_cleanup EXIT
             return None, None, None
 
     def _extract_merge_request_ref_from_trigger(
-        self, trigger_data: Dict[str, Any]
+        self,
+        trigger_data: Dict[str, Any],
+        execution_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """Extract a git fetch ref for the MR/PR head commit.
+
+        A read-only review uses ``read_only_fetch_ref`` from the execution
+        context and does not consult the trigger payload.
 
         Supports:
         - GitLab: refs/merge-requests/{iid}/head
         - GitHub: pull/{number}/head
         """
+        context = execution_context or {}
+        if context.get("read_only_review"):
+            ref = context.get("read_only_fetch_ref")
+            return ref if isinstance(ref, str) and ref else None
         try:
             payload = trigger_data.get("payload", trigger_data)
             if not isinstance(payload, dict):

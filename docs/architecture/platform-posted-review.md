@@ -165,6 +165,32 @@ repository on the token.
 Pinned extra read repositories (a separate feature) are read leases. The
 publish lease is only ever minted for the bound repository.
 
+## Tracker event
+
+A signed GitHub `pull_request` delivery can admit the same read-only review
+without a CI identity. The execution stores version 2 of
+`ci_review_binding` (`EventReviewBinding`): `version: 2`,
+`source: tracker_event`, and no `principal_id` or `key_id`. The fields come
+from the flow, the tracker row the signature resolved, and a server-side
+`GET /repositories/{id}/pulls/{number}` with that tracker's installation
+token (**Pull requests: Read**). They do not come from the result, the
+prompt, the flow text, or the caller. A failure to mint the installation
+token is retried, the same as an HTTP 5xx. A 403 or 404 does not start a
+run.
+
+`head.repo` and `base.repo` must both be the bound repository. A fork pull
+request does not start a posting run. `edited` and `labeled` do not either.
+
+Version 1 is unchanged. `authorize_dispatch` returns None for a version-2
+row and does not call `authorize_principal`. At launch and before every
+publish attempt, `authorize_event_review` re-checks the flow, the project,
+the tracker, and that the installation is not suspended. The publish step
+still requires both repository sides to match, and still skips a moved head
+or a closed pull request.
+
+`platform_review.source` is `tracker_event` or `restricted_ci`.
+`posted_by` stays `automatic` or `manual`.
+
 ## Exact commit
 
 The review is created with `commit_id` equal to the bound head. The status is
@@ -342,6 +368,12 @@ reading.
 | 18 | With the opt-in off anything changes | no claim, no lease, no call | `test_opt_in_off_mints_no_lease_and_makes_no_call`, `test_completion_path_does_nothing_without_the_opt_in_or_a_ci_binding` |
 | 21 | A manual-mode flow posts without the caller asking | completion path and sweep post only in automatic mode; manual failures are not retried | `test_platform_review_manual.py`: `test_execution_finish_posts_only_in_automatic_mode`, `test_sweep_never_posts_for_a_manual_flow`, `test_failed_manual_attempt_is_not_retried_automatically` |
 | 22 | A review is posted for a result, commit or flow configuration other than the one the caller validated | caller preconditions checked before the claim, inside the attempt and against the live pull request before any write | `test_platform_review_manual.py`: `test_each_mismatching_precondition_refuses_with_412_and_can_be_corrected`, `test_commit_moved_between_the_check_and_the_post_writes_nothing`, `test_result_changed_after_the_first_check_is_caught_at_post_time`, `test_flow_changed_after_the_caller_reviewed_it_refuses` |
+| 23 | A forged or replayed webhook starts a run that posts | Signature check stays the only ingress. A second copy of the same delivery does not create a second execution. The binding is built from the tracker row and the server read, and it is immutable. | `test_forged_signature_never_starts_a_run`, `test_replayed_delivery_posts_once` |
+| 24 | An event for repository B posts on A | Project and slug come from B's repository id. The lease and the review URL use B's slug. | `test_event_for_repository_b_posts_on_b_only` |
+| 25 | The payload names a different head than the one reviewed | The stored head is the server-read head, and it must equal the webhook head or no row is created. A later push skips the review and sets the status on the stored SHA. | `test_webhook_head_that_disagrees_with_the_server_read_starts_nothing`, `test_moved_head_on_an_event_run_skips_the_review_and_keeps_the_status_on_the_reviewed_sha` |
+| 26 | A fork pull request steers the review onto another repository | Both `head.repo` and `base.repo` must be the bound repository, or no posting run starts. | `test_fork_pull_request_starts_no_posting_run` |
+| 27 | A user who cannot edit the flow causes a post by opening a pull request | The run starts only for a flow an administrator enabled, on a project in `trigger_project_ids`, for an allowlisted action, and only when `trigger_config` matches. Cost is the flow's existing limits and the account kill switch. One active run per pull request and `supersede_on_update` bound how many runs one pull request can start. There is no new rate limit. | `test_opening_a_pull_request_posts_only_inside_the_flow_filters` |
+| 28 | Posting continues after the project is removed or the installation is suspended | `authorize_event_review` before every attempt. Project removed or flow disabled is `admission_revoked`. `suspended_at` set is `installation_suspended` and is not retried. | `test_project_removed_from_the_event_flow_revokes_posting`, `test_suspended_installation_stops_posting_without_a_retry` |
 
 ## GitHub App permissions
 
@@ -369,6 +401,8 @@ without posting the review again.
 - GitLab and Bitbucket. The opt-in is refused for them.
 - Threaded replies, reactions, re-requesting review, dismissing an earlier
   review, or updating a previous review in place.
+- A pull request label action does not start a posting run.
+- A pull request opened from a fork does not start a posting run.
 - A `pending` status at trigger time.
 - Check runs and annotations.
 - Verified against GitHub's documentation and a fake GitHub in tests, not

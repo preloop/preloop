@@ -15,6 +15,10 @@ export const GITHUB_TRACKER_EVENTS: TrackerEventOption[] = [
   { name: 'Pull Request Closed', value: 'pull_request_closed' },
   { name: 'Pull Request Merged', value: 'pull_request_merged' },
   { name: 'Pull Request Reopened', value: 'pull_request_reopened' },
+  {
+    name: 'Pull Request Ready for Review',
+    value: 'pull_request_ready_for_review',
+  },
   { name: 'Comment Created', value: 'comment_created' },
   { name: 'Comment Updated', value: 'comment_updated' },
   { name: 'Push to Repository', value: 'push' },

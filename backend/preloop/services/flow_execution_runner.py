@@ -237,6 +237,51 @@ async def run_existing_execution(
 
             await run_db_off_loop(reject_and_log)
             return
+        from preloop.services.event_review import (
+            EventReviewDeniedError,
+            EventReviewUnavailableError,
+            ensure_event_review_admission,
+        )
+
+        try:
+            await ensure_event_review_admission(
+                orchestrator.db, execution=orchestrator.execution_log
+            )
+        except EventReviewUnavailableError:
+            logger.warning(
+                "Event review admission unavailable; leaving the execution "
+                "pending delivery_id=%s execution_id=%s reason=%s",
+                (orchestrator.execution_log.trigger_event_details or {}).get(
+                    "delivery_id"
+                )
+                if isinstance(orchestrator.execution_log.trigger_event_details, dict)
+                else None,
+                orchestrator.execution_log.id,
+                "provider_unavailable",
+            )
+            return
+        except EventReviewDeniedError as error:
+
+            def reject_event() -> None:
+                crud.crud_ci_execution.reject_event_dispatch(
+                    orchestrator.db, execution=orchestrator.execution_log
+                )
+                logger.warning(
+                    "Event review admission denied delivery_id=%s "
+                    "execution_id=%s reason=%s",
+                    (orchestrator.execution_log.trigger_event_details or {}).get(
+                        "delivery_id"
+                    )
+                    if isinstance(
+                        orchestrator.execution_log.trigger_event_details, dict
+                    )
+                    else None,
+                    orchestrator.execution_log.id,
+                    error.reason,
+                )
+
+            await run_db_off_loop(reject_event)
+            return
     await orchestrator.run()
 
 

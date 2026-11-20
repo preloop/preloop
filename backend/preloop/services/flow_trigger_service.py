@@ -1641,6 +1641,7 @@ class FlowTriggerService:
         precreated_execution: Any = None,
         source_execution: Optional[FlowExecution] = None,
         authorization_context: AuthorizationContext | None = None,
+        ci_review_binding: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """Create (or reuse) a PENDING execution and hand it to a worker or local task.
 
@@ -1776,6 +1777,7 @@ class FlowTriggerService:
                 status="PENDING",
                 trigger_event_details=trigger_details,
                 retry_of_execution_id=retry_of_execution_id,
+                ci_review_binding=ci_review_binding,
             )
             # A retry is a deliberate second run of the same delivery, so it
             # must not claim the delivery key (nor collide with the original).
@@ -2818,11 +2820,37 @@ class FlowTriggerService:
                             flow.id,
                             ci_resume.get("execution_id"),
                         )
+                    from preloop.services.event_review import (
+                        EventReviewUnavailableError,
+                        build_event_review_binding,
+                    )
+
+                    try:
+                        decision = await build_event_review_binding(
+                            self.db, flow, event_copy
+                        )
+                    except EventReviewUnavailableError:
+                        raise
+                    if decision.skip_reason:
+                        logger.warning(
+                            "No posting run started for delivery %s: "
+                            "reason=%s flow_id=%s",
+                            event_copy.get("delivery_id"),
+                            decision.skip_reason,
+                            flow.id,
+                        )
+                        continue
+                    binding_document = (
+                        decision.binding.model_dump(mode="json")
+                        if decision.binding is not None
+                        else None
+                    )
                     await self._start_flow_execution(
                         flow=flow,
                         event_data=event_copy,
                         nats_client=nats_client,
                         source_execution=source_execution,
+                        ci_review_binding=binding_document,
                     )
                     logger.info(f"Flow '{flow.name}' ({flow.id}) execution initiated")
                 except ModelRoutingError:
@@ -2867,11 +2895,21 @@ class FlowTriggerService:
                         },
                     )
                 except Exception as e:
+                    from preloop.services.event_review import (
+                        EventReviewUnavailableError,
+                    )
+
+                    if isinstance(e, EventReviewUnavailableError):
+                        raise
                     logger.error(
                         f"Error initiating flow '{flow.name}' ({flow.id}): {type(e).__name__}"
                     )
 
         except Exception as e:
+            from preloop.services.event_review import EventReviewUnavailableError
+
+            if isinstance(e, EventReviewUnavailableError):
+                raise
             logger.error(
                 f"Error processing event source='{event_source}', type='{event_type}': {type(e).__name__}"
             )

@@ -24,6 +24,10 @@ describe('getTrackerEventOptions', () => {
     expect(events.some((event) => event.value === 'check_run')).to.be.true;
     expect(events.some((event) => event.value === 'check_suite')).to.be.true;
     expect(events.some((event) => event.value === 'workflow_run')).to.be.true;
+    expect(
+      events.find((event) => event.value === 'pull_request_ready_for_review')
+        ?.name
+    ).to.equal('Pull Request Ready for Review');
   });
 
   it('offers the Jira changelog-derived label and status events', () => {

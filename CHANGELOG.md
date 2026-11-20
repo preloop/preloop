@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A read-only review flow can be started by a GitHub pull request event and
+  Preloop posts the review and the commit status, with no CI identity. The
+  run stays read-only.
 - OpenRouter-routed executions show which upstream provider served the final
   answer (**Served by** on the execution page, `upstream_route` on the
   execution detail and `upstream_providers` / `final_answer_upstream_provider`

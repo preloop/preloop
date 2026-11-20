@@ -1433,6 +1433,45 @@ flow that has `publication_mode: "read_only"`, `validate_result: true` and a
 `result_schema`. It works with and without `ci_project_selection`. Enabling it
 needs no new CI identities.
 
+### No CI integration
+
+A GitHub App tracker can start the same read-only review when a pull request
+is opened, updated with new commits, or reopened. No CI identity and no
+workflow are required. The run stays read-only: Preloop posts the review
+and the commit status after the run finishes.
+
+```yaml
+publication_mode: read_only
+platform_review:
+  enabled: true
+trigger_event_source: <GitHub App tracker id>
+trigger_event_types:
+  - pull_request_opened
+  - pull_request_updated
+  - pull_request_reopened
+trigger_project_ids:
+  - <project id>
+webhook_config:
+  supersede_on_update: true
+```
+
+The GitHub App needs **Pull requests: Read and write**. It also needs
+**Commit statuses: Read and write** when a status is set. The admission
+read of the pull request uses the installation token and needs **Pull
+requests: Read**. A failure to mint that token is retried. Ready for
+review is `pull_request_ready_for_review`. `trigger_config: {draft: false}`
+skips drafts. A label on its own does not start a posting run, and a pull
+request opened from a fork does not start one either.
+
+The console and the trigger API do not start it. Retries do not post.
+Manual mode is the same publish call, made by an account user who may edit
+flows. How many runs one pull request can start is bounded by
+`trigger_project_ids`, `trigger_config` (including `draft: false` and
+`labels`), `agent_config.limits`, the account kill switch, one active run
+per pull request, and `supersede_on_update`. There is no separate rate
+limit for this route. The threat model is in the
+[design note](../../architecture/platform-posted-review.md).
+
 ### Posting modes
 
 | Mode | Stored as | What is posted |
@@ -1920,6 +1959,16 @@ flow only after that publish has succeeded.
 
 A finished run whose triggering identity has been retired cannot be
 published; run the review again with posting configured first.
+
+An event-started run has no CI identity to retire. At publish time the
+flow is still enabled, the project is still in `trigger_project_ids` with
+the same tracker, the tracker is still that GitHub App installation and is
+not suspended, and the event type is still selected. Disabling the flow,
+removing the project, pointing the trigger at another tracker, or removing
+the event type answers `admission_revoked`. A suspended installation
+answers `installation_suspended` and is not retried. A tracker that is no
+longer a GitHub App answers `tracker_unsupported`. A project whose
+identifier or slug no longer matches the binding answers `binding_changed`.
 
 The identity's provisioning binding (project, flow and snapshot) produces
 `admission_revoked`. A live pull request whose id, repository id or name no

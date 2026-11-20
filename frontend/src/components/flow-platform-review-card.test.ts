@@ -396,4 +396,16 @@ describe('flow-platform-review-card', () => {
       'false'
     );
   });
+
+  it('says a pull request event starts the run when the trigger types allow it', async () => {
+    const element = await mount({
+      ...FLOW,
+      trigger_event_types: ['pull_request_opened', 'pull_request_updated'],
+    });
+    expect(q(element, '[data-event-review]').textContent).to.contain(
+      'No CI identity is required'
+    );
+    const plain = await mount(FLOW);
+    expect(q(plain, '[data-event-review]')).to.equal(null);
+  });
 });

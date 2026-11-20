@@ -66,6 +66,17 @@ describe('execution-platform-review', () => {
   const q = (element: Element, selector: string): any =>
     element.shadowRoot!.querySelector(selector);
 
+  it('renders the source line for an event run and a CI run', async () => {
+    const eventRun = await mount(record({ source: 'tracker_event' }));
+    expect(q(eventRun, '[data-source]').textContent.trim()).to.equal(
+      'Started by a pull request event'
+    );
+    const ciRun = await mount(record({ source: 'restricted_ci' }));
+    expect(q(ciRun, '[data-source]').textContent.trim()).to.equal(
+      'Started by a restricted CI identity'
+    );
+  });
+
   it('renders nothing without a record', async () => {
     const element = await mount(null);
     expect(q(element, '[data-platform-review]')).to.equal(null);

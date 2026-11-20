@@ -612,6 +612,12 @@ func printPublicationRecord(out io.Writer, record map[string]any) {
 		return value
 	}
 	fmt.Fprintf(out, "Publication: %s\n", str("status"))
+	switch str("source") {
+	case "tracker_event":
+		fmt.Fprintln(out, "Started by a pull request event")
+	case "restricted_ci":
+		fmt.Fprintln(out, "Started by a restricted CI identity")
+	}
 	if reason := str("reason"); reason != "" {
 		fmt.Fprintf(out, "Reason:      %s (%s)\n", reviewReasonText(reason), reason)
 	}
@@ -668,9 +674,10 @@ var reviewReasons = map[string]string{
 	"verdict_unmapped":            "the verdict has no commit status on the flow",
 	"run_not_succeeded":           "the run did not succeed",
 	"result_not_valid":            "the result did not pass the result schema",
-	"admission_revoked":           "the run's CI identity or project is no longer admitted to the flow",
+	"admission_revoked":           "the run is no longer admitted to the flow",
+	"installation_suspended":      "the GitHub App installation is suspended",
 	"binding_changed":             "the pull request no longer matches the one the run was started for",
-	"no_review_binding":           "the run was not started by a restricted CI review",
+	"no_review_binding":           "this run has no review binding",
 	"execution_not_finished":      "the run has not finished",
 	"attempt_interrupted":         "the attempt was interrupted; Preloop retries",
 }

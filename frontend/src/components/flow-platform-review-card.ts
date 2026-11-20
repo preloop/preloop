@@ -47,6 +47,13 @@ const MODE_HELP: Record<PlatformReviewMode, string> = {
     "Posted only when someone, or the run's own CI identity, calls the publish endpoint for a finished run.",
 };
 
+const EVENT_REVIEW_TYPES = new Set([
+  'pull_request_opened',
+  'pull_request_updated',
+  'pull_request_reopened',
+  'pull_request_ready_for_review',
+]);
+
 const STATE_LABELS: Record<CommitState, string> = {
   success: 'Success (passes)',
   failure: 'Failure (blocks)',
@@ -171,6 +178,14 @@ export class FlowPlatformReviewCard extends LitElement {
   @state() private error = '';
   @state() private saved = false;
   private draftFlowId: string | null = null;
+
+  private get eventReviewTrigger(): boolean {
+    const types = this.flow?.trigger_event_types;
+    return (
+      Array.isArray(types) &&
+      types.some((type: string) => EVENT_REVIEW_TYPES.has(type))
+    );
+  }
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -542,6 +557,14 @@ export class FlowPlatformReviewCard extends LitElement {
                 <sl-radio value="manual">Only when requested</sl-radio>
               </sl-radio-group>`
             : html`<p class="meta" data-mode>${MODE_HELP[storedMode]}</p>`
+        }
+        ${
+          this.eventReviewTrigger
+            ? html`<p data-event-review>
+                A pull request event on this flow's GitHub tracker starts the
+                run. No CI identity is required.
+              </p>`
+            : nothing
         }
         ${
           enabled

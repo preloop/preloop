@@ -35,6 +35,8 @@ export interface PlatformReviewRecord {
   mode?: PlatformReviewMode;
   /** How the review reached the pull request; null when not recorded. */
   posted_by?: 'automatic' | 'manual' | 'none' | null;
+  /** Which route admitted the run. Absent on records from before this field. */
+  source?: 'tracker_event' | 'restricted_ci' | null;
   status:
     | 'pending'
     | 'publishing'
@@ -255,12 +257,12 @@ const REASONS: Record<string, string> = {
   run_not_succeeded: 'The run did not succeed, so no verdict was posted.',
   result_not_valid:
     'The result did not pass the result schema, so nothing was posted.',
-  admission_revoked:
-    "The run's CI identity or its project is no longer admitted to the flow.",
+  admission_revoked: 'The run is no longer admitted to the flow.',
+  installation_suspended: 'The GitHub App installation is suspended.',
   binding_changed:
     'The pull request no longer matches the one the run was started for.',
   binding_invalid: 'The run has no usable pull request binding.',
-  no_review_binding: 'The run was not started by a restricted CI review.',
+  no_review_binding: 'This run has no review binding.',
   tracker_unsupported:
     'The repository is not connected through a GitHub App, so nothing can be posted.',
   configuration_invalid: "The flow's posting settings are not valid.",
