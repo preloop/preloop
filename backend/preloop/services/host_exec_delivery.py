@@ -123,7 +123,9 @@ def build_host_exec_checkout(context: Dict[str, Any]) -> Optional[Dict[str, Any]
         git_user_email,
     ) = agent._resolve_git_branch_plan(context, git_config)
     trigger_data = context.get("trigger_event_data") or {}
-    merge_request_ref = agent._extract_merge_request_ref_from_trigger(trigger_data)
+    merge_request_ref = agent._extract_merge_request_ref_from_trigger(
+        trigger_data, context
+    )
     planned: List[Dict[str, Any]] = []
     for index, repo_config in enumerate(repositories):
         repo_url = agent._resolve_repository_clone_url(

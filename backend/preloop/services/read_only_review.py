@@ -108,19 +108,47 @@ class ReadOnlyHumanTriggerError(ValueError):
 def read_only_trigger_message(flow_id: Any) -> str:
     """The refusal a human trigger of a read-only review flow receives.
 
+    A CI-only flow keeps the original sentence. An event-started posting
+    flow names the pull request event. A flow that has both names both.
+
     Args:
-        flow_id: The flow that was triggered.
+        flow_id: The flow that was triggered, or its id. An id alone is
+            treated as a CI-only flow.
 
     Returns:
-        A sentence naming the CI-identity trigger route and its two fields.
+        The 409 detail. No execution was created.
     """
-    return (
+    flow = flow_id if not isinstance(flow_id, (str, int)) else None
+    identifier = getattr(flow, "id", flow_id)
+    ci_only = (
         "This flow is a read-only review, which runs only from its restricted "
         "CI identity; no execution was created. Trigger it with that "
-        f"identity's CI key: POST /api/v1/flows/{flow_id}/trigger with a body "
+        f"identity's CI key: POST /api/v1/flows/{identifier}/trigger with a body "
         'of exactly {"pr_number": <pull request number>, "head_sha": '
         '"<full head commit SHA>"}. See '
         f"{READ_ONLY_TRIGGER_DOC}."
+    )
+    from preloop.services.event_review import (
+        event_review_posting_configured,
+        flow_has_ci_identity,
+    )
+
+    if flow is None or not event_review_posting_configured(flow):
+        return ci_only
+    if flow_has_ci_identity(flow):
+        return (
+            "This flow is a read-only review. A pull request event on its "
+            "GitHub App tracker starts it, or its restricted CI key does: "
+            f"POST /api/v1/flows/{identifier}/trigger with a body of exactly "
+            '{"pr_number": <pull request number>, "head_sha": '
+            '"<full head commit SHA>"}. The console, a manual trigger, and '
+            "a retry do not. No execution was created. See "
+            f"{READ_ONLY_TRIGGER_DOC}."
+        )
+    return (
+        "This flow is a read-only review. A pull request event on its "
+        "GitHub App tracker starts it. The console, the trigger API, and "
+        "a retry do not. No execution was created."
     )
 
 
@@ -134,9 +162,7 @@ def reject_human_read_only_trigger(flow: Any) -> None:
         ReadOnlyHumanTriggerError: The flow is in read-only review mode.
     """
     if read_only_review(getattr(flow, "git_clone_config", None)):
-        raise ReadOnlyHumanTriggerError(
-            read_only_trigger_message(getattr(flow, "id", ""))
-        )
+        raise ReadOnlyHumanTriggerError(read_only_trigger_message(flow))
 
 
 def validate_read_only_configuration(config: dict[str, Any]) -> None:
@@ -366,7 +392,18 @@ async def prepare_read_only_review(
     """
     validate_read_only_flow(flow)
     validate_read_only_executor(flow, context, execution)
-    binding = crud.crud_ci_execution.authorize_dispatch(db, execution=execution)
+    from pydantic import ValidationError
+
+    from preloop.schemas.ci_execution import CiReviewBinding, EventReviewBinding
+
+    binding: CiReviewBinding | EventReviewBinding | None = (
+        crud.crud_ci_execution.authorize_dispatch(db, execution=execution)
+    )
+    if binding is None:
+        try:
+            binding = EventReviewBinding.model_validate(execution.ci_review_binding)
+        except ValidationError:
+            binding = None
     if binding is None or not read_only_review(flow.git_clone_config):
         raise ValueError("Read-only review requires a restricted CI execution")
     if str(flow.id) != str(binding.flow_id) or str(flow.account_id) != str(
@@ -421,6 +458,8 @@ async def prepare_read_only_review(
     context["read_only_head_sha"] = binding.head_sha
     context["read_only_base_sha"] = getattr(binding, "base_sha", None)
     context["read_only_base_ref"] = binding.base_branch
+    if isinstance(binding, EventReviewBinding):
+        context["read_only_fetch_ref"] = f"pull/{binding.pr_number}/head"
     context["prompt"] = (
         "Preloop review target (controller-bound):\n"
         f"Head SHA: {binding.head_sha}\n"

@@ -315,3 +315,119 @@ def test_read_archive_is_deferred_but_stop_retains_full_read(
     )
     assert stopped is not None
     assert stopped.workspace_snapshot == archive
+
+
+def _event_binding(flow: Any, project: Any) -> dict[str, Any]:
+    from preloop.schemas.ci_execution import EventReviewBinding
+
+    return EventReviewBinding(
+        version=2,
+        source="tracker_event",
+        account_id=flow.account_id,
+        flow_id=flow.id,
+        tracker_id=uuid4(),
+        installation_id="4242",
+        project_id=project.id,
+        repository_identifier=str(project.identifier),
+        repository_slug=project.slug,
+        tracker_type="github",
+        tracker_url=None,
+        provider_pr_id="9001",
+        pr_number=7,
+        head_sha="a" * 40,
+        base_sha="b" * 40,
+        base_branch="develop",
+        event_type="pull_request_opened",
+        action="opened",
+        delivery_id="delivery-1",
+        draft=False,
+    ).model_dump(mode="json")
+
+
+def test_event_binding_is_not_a_ci_dispatch(
+    db_session: Session, ci_resources: tuple[Any, ...]
+) -> None:
+    """A version-2 binding is not a CI dispatch, and a principal beside it fails closed."""
+    from unittest.mock import patch
+
+    _owner, project, flow, _grant = ci_resources
+    execution = CRUDBase(models.FlowExecution).create(
+        db_session,
+        obj_in={
+            "flow_id": flow.id,
+            "ci_review_binding": _event_binding(flow, project),
+        },
+    )
+    with patch(
+        "preloop.models.crud.ci_execution.crud_ci_principal.authorize_principal"
+    ) as authorize:
+        assert (
+            crud.crud_ci_execution.authorize_dispatch(db_session, execution=execution)
+            is None
+        )
+        authorize.assert_not_called()
+    principal, key, _token = provision(db_session, ci_resources)
+    paired = CRUDBase(models.FlowExecution).create(
+        db_session,
+        obj_in={
+            "flow_id": flow.id,
+            "ci_principal_id": principal.id,
+            "initiating_ci_key_id": key.id,
+            "ci_review_binding": _event_binding(flow, project),
+        },
+    )
+    with patch(
+        "preloop.models.crud.ci_execution.crud_ci_principal.authorize_principal"
+    ) as authorize:
+        with pytest.raises(
+            PermissionError, match="Restricted CI dispatch binding unavailable"
+        ):
+            crud.crud_ci_execution.authorize_dispatch(db_session, execution=paired)
+        authorize.assert_not_called()
+
+
+def test_version_1_dispatch_failure_is_unchanged(
+    db_session: Session, ci_resources: tuple[Any, ...]
+) -> None:
+    """A version-1 document that does not validate still raises the CI sentence."""
+    from unittest.mock import patch
+
+    principal, key, _token = provision(db_session, ci_resources)
+    broken = CRUDBase(models.FlowExecution).create(
+        db_session,
+        obj_in={
+            "flow_id": ci_resources[2].id,
+            "ci_principal_id": principal.id,
+            "initiating_ci_key_id": key.id,
+            "ci_review_binding": {"version": 1},
+        },
+    )
+    with patch(
+        "preloop.models.crud.ci_execution.crud_ci_principal.authorize_principal"
+    ) as authorize:
+        with pytest.raises(
+            PermissionError, match="Restricted CI dispatch binding unavailable"
+        ):
+            crud.crud_ci_execution.authorize_dispatch(db_session, execution=broken)
+        authorize.assert_not_called()
+
+
+def test_ci_key_does_not_list_an_event_execution(
+    db_session: Session, ci_resources: tuple[Any, ...]
+) -> None:
+    _owner, project, flow, _grant = ci_resources
+    _principal, _key, token = provision(db_session, ci_resources)
+    context = crud.crud_ci_principal.authenticate(db_session, token=token)
+    assert context is not None
+    own = crud.crud_ci_execution.create(
+        db_session, context=context, binding=review_binding(context), event={}
+    )
+    CRUDBase(models.FlowExecution).create(
+        db_session,
+        obj_in={
+            "flow_id": flow.id,
+            "ci_review_binding": _event_binding(flow, project),
+        },
+    )
+    listed = crud.crud_ci_execution.list(db_session, context=context)
+    assert [row.id for row in listed] == [own.id]

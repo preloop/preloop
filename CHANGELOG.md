@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a status such as `incomplete` or `partial` could succeed and be posted
   with its verdict.
 
+### Added
+
+- A flow can set `agent_config.reasoning_effort` (`low`, `medium` or `high`)
+  to change how hard its model thinks, without label rules. A label rule
+  that sets an effort still wins. For DeepSeek models, the gateway now sends
+  the effort as DeepSeek's documented `reasoning_effort` field. The execution
+  detail now includes `effective_requests`, which shows the effort that
+  actually reached the provider. Nothing changes for flows that set no
+  effort.
+
 ### Security
 
 - The console and installer TLS proxy use NGINX 1.30.7 to address HTTP/2
@@ -34,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A read-only review flow can be started by a GitHub pull request event and
+  Preloop posts the review and the commit status, with no CI identity. The
+  run stays read-only.
 - A read-only review flow can require stored tool evidence before Preloop
   posts the review. `platform_review.evidence` is `any` (today's behaviour),
   `captured` (every model request has a record, and the only incomplete
@@ -43,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publication record include the counts in one call. A manual publish can
   send `expected_evidence` of `captured` or `complete`; it can only tighten
   the flow setting.
+- Complete evidence now refuses a native command record whose value a named
+  rule masked. Captured evidence still accepts that record. Both levels also
+  refuse a record changed by an unexplained scrub or by an account
+  storage-redaction rule. A native command with an unexplained scrub is
+  stored incomplete (`capture_complete: false`, reason `unsafe_text`), the
+  same as a gateway record. Evidence set to any is unchanged.
 - OpenRouter-routed executions show which upstream provider served the final
   answer (**Served by** on the execution page, `upstream_route` on the
   execution detail and `upstream_providers` / `final_answer_upstream_provider`

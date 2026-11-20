@@ -606,6 +606,62 @@ def _is_openrouter_upstream(ai_model: GatewayModel) -> bool:
     return is_openrouter_model(ai_model)
 
 
+#: DeepSeek's thinking-mode guide
+#: (https://api-docs.deepseek.com/guides/thinking_mode) documents a top-level
+#: ``reasoning_effort`` of ``low``, ``high`` or ``max`` on its OpenAI-format
+#: API, for the models listed on https://api-docs.deepseek.com/quick_start/pricing
+#: (including the legacy flash names it still serves). ``medium`` is documented
+#: to run as ``high``, so the value that actually applies is the one sent.
+_DEEPSEEK_EFFORT_MODELS = frozenset(
+    {
+        "deepseek-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+    }
+)
+_DEEPSEEK_EFFORT_HOSTS = frozenset({"api.deepseek.com"})
+_DEEPSEEK_EFFORTS = {"low": "low", "medium": "high", "high": "high"}
+
+
+def _deepseek_reasoning_effort(
+    ai_model: GatewayModel, payload: Dict[str, Any]
+) -> Optional[str]:
+    """The documented DeepSeek effort for this request, or None to send nothing.
+
+    Only provider ``deepseek``, only models and the endpoint the provider's
+    documentation covers: an effort the upstream rejects would turn every
+    request into a 400, so anything outside that scope sends nothing.
+
+    Args:
+        ai_model: The resolved model row.
+        payload: Client payload; chat ``reasoning_effort`` wins over the
+            Responses ``reasoning.effort``.
+
+    Returns:
+        ``low`` or ``high``, or None.
+    """
+    if (getattr(ai_model, "provider_name", "") or "").strip().lower() != "deepseek":
+        return None
+    identifier = (getattr(ai_model, "model_identifier", "") or "").strip().lower()
+    if identifier.rpartition("/")[2] not in _DEEPSEEK_EFFORT_MODELS:
+        return None
+    endpoint = (getattr(ai_model, "api_endpoint", None) or "").strip()
+    if endpoint:
+        try:
+            host = (urlsplit(endpoint).hostname or "").lower()
+        except ValueError:
+            return None
+        if host not in _DEEPSEEK_EFFORT_HOSTS:
+            return None
+    reasoning = payload.get("reasoning")
+    reasoning = reasoning if isinstance(reasoning, dict) else {}
+    effort = payload.get("reasoning_effort", reasoning.get("effort"))
+    if not isinstance(effort, str):
+        return None
+    return _DEEPSEEK_EFFORTS.get(effort.strip().lower())
+
+
 #: Hosts whose chat API accepts ``response_format={"type": "json_object"}``
 #: but rejects ``json_schema`` with an HTTP 400 ("This response_format type is
 #: unavailable now"), although LiteLLM's catalog lists schema support.
@@ -8825,6 +8881,11 @@ class OpenAIGatewayService:
             effort = payload.get("reasoning_effort", reasoning.get("effort"))
             if effort is not None:
                 kwargs.setdefault("extra_body", {})["reasoning"] = {"effort": effort}
+        deepseek_effort = _deepseek_reasoning_effort(ai_model, payload)
+        if deepseek_effort is not None:
+            # Top-level body field, as DeepSeek documents it. extra_body keeps
+            # LiteLLM from dropping it for models missing from its catalog.
+            kwargs.setdefault("extra_body", {})["reasoning_effort"] = deepseek_effort
         if _is_openrouter_upstream(ai_model) and _openrouter_usage_accounting_enabled():
             # Ask OpenRouter to include the request's actual cost in the
             # response usage payload (usage accounting). litellm forwards

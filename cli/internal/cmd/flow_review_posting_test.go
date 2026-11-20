@@ -475,6 +475,40 @@ func TestReviewPostingWithoutARevisionStaysUnconditional(t *testing.T) {
 	}
 }
 
+func TestEventRunStatusPrintsSource(t *testing.T) {
+	state := &reviewPostingServer{
+		flow: newReviewFlow(),
+		record: map[string]any{
+			"status":        "pending",
+			"source":        "tracker_event",
+			"reason":        "installation_suspended",
+			"review":        "skipped",
+			"review_reason": "admission_revoked",
+		},
+	}
+	startReviewPostingServer(t, state)
+
+	out, err := runReviewPosting(t, "status", reviewExecutionID)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	for _, want := range []string{
+		"Started by a pull request event",
+		"the GitHub App installation is suspended",
+		"the run is no longer admitted to the flow",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if got := reviewReasonText("no_review_binding"); got != "this run has no review binding" {
+		t.Fatalf("no_review_binding text = %q", got)
+	}
+	if got := reviewReasonText("admission_revoked"); got != "the run is no longer admitted to the flow" {
+		t.Fatalf("admission_revoked text = %q", got)
+	}
+}
+
 func TestReviewPostingEvidenceFlag(t *testing.T) {
 	state := &reviewPostingServer{flow: newReviewFlow()}
 	startReviewPostingServer(t, state)

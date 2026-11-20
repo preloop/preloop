@@ -328,18 +328,25 @@ def _reject_invalid_platform_review(
     git_clone_config: Any,
     result_schema: Any,
     validate_result: Any,
+    trigger_event_source: Any = None,
+    trigger_event_types: Any = None,
+    trigger_project_ids: Any = None,
+    webhook_config: Any = None,
 ) -> None:
     """Refuse a ``platform_review`` opt-in that could not post safely.
 
     Checked on the configuration the flow will have after the save: the
     result must be validated against a schema with a closed, fully mapped
     ``verdict``, and every repository must belong to a GitHub App tracker.
+    An event-started posting flow is also checked against the pull request
+    allowlist.
 
     Raises:
         HTTPException: 422 with the reason.
     """
     from types import SimpleNamespace
 
+    from preloop.services.event_review import validate_event_review_posting
     from preloop.services.platform_review import (
         validate_platform_review_flow,
         validate_platform_review_trackers,
@@ -362,6 +369,15 @@ def _reject_invalid_platform_review(
             enforce_content_capture=True,
         )
         validate_platform_review_trackers(db, account_id=account_id, config=config)
+        validate_event_review_posting(
+            db,
+            account_id,
+            config,
+            trigger_event_source,
+            trigger_event_types,
+            trigger_project_ids,
+            webhook_config,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -501,6 +517,10 @@ def create_flow(
         git_clone_config=flow_in.git_clone_config,
         result_schema=flow_in.result_schema,
         validate_result=flow_in.validate_result,
+        trigger_event_source=flow_in.trigger_event_source,
+        trigger_event_types=flow_in.trigger_event_types,
+        trigger_project_ids=flow_in.trigger_project_ids,
+        webhook_config=flow_in.webhook_config,
     )
     _stamp_platform_review(flow_in.git_clone_config, None)
     _reject_host_exec_flow(
@@ -1664,17 +1684,28 @@ def read_flow_execution(
         db, account_id=current_user.account_id, execution=execution
     )
     execution.platform_review = _platform_review_with_links(db, execution)
-    execution.upstream_route = _execution_upstream_route(
+    # One usage query feeds both projections of the same request facts.
+    request_facts = _execution_request_facts(
         db, execution, account_id=current_user.account_id
+    )
+    execution.upstream_route = _execution_upstream_route(
+        db, execution, account_id=current_user.account_id, requests=request_facts
+    )
+    execution.effective_requests = _execution_effective_requests(
+        db, execution, account_id=current_user.account_id, requests=request_facts
     )
 
     return execution
 
 
-def _execution_upstream_route(
+#: Marks "not fetched yet" apart from a fetch that failed (None).
+_UNFETCHED: Any = object()
+
+
+def _execution_request_facts(
     db: Session, execution: Any, *, account_id: Any
-) -> Optional[Dict[str, Any]]:
-    """Summarise the OpenRouter upstream providers an execution used.
+) -> Optional[List[Dict[str, Any]]]:
+    """Load the execution's recorded request facts, or None when that fails.
 
     Args:
         db: Database session.
@@ -1682,21 +1713,79 @@ def _execution_upstream_route(
         account_id: Caller's account, enforced again by the query.
 
     Returns:
-        The route summary, or None when no upstream provider was recorded.
+        Request facts in completion order, or None when the read failed.
     """
-    from preloop.services.review_completion_evidence import upstream_route_summary
-
     try:
-        requests = crud_api_usage.review_request_facts(
+        return crud_api_usage.review_request_facts(
             db, execution_id=execution.id, account_id=account_id
         )
     except Exception:  # noqa: BLE001 - a missing summary must not fail the read
         import logging
 
         logging.getLogger(__name__).warning(
-            "Upstream route summary failed for %s", execution.id
+            "Request facts read failed for %s", execution.id
         )
         db.rollback()
+        return None
+
+
+def _execution_effective_requests(
+    db: Session,
+    execution: Any,
+    *,
+    account_id: Any,
+    requests: Any = _UNFETCHED,
+) -> Optional[List[Dict[str, Any]]]:
+    """What this execution's recorded model requests sent to the provider.
+
+    Lets the owning account check, for example, that a configured reasoning
+    effort reached the provider.
+
+    Args:
+        db: Database session.
+        execution: Execution already authorized for ``account_id``.
+        account_id: Caller's account, enforced again by the query.
+        requests: Request facts already loaded for this execution; loaded
+            here when omitted. None means the load failed.
+
+    Returns:
+        Grouped effective controls, or None when no request was recorded.
+    """
+    from preloop.services.review_completion_evidence import (
+        effective_requests_projection,
+    )
+
+    if requests is _UNFETCHED:
+        requests = _execution_request_facts(db, execution, account_id=account_id)
+    if requests is None:
+        return None
+    return effective_requests_projection(requests) or None
+
+
+def _execution_upstream_route(
+    db: Session,
+    execution: Any,
+    *,
+    account_id: Any,
+    requests: Any = _UNFETCHED,
+) -> Optional[Dict[str, Any]]:
+    """Summarise the OpenRouter upstream providers an execution used.
+
+    Args:
+        db: Database session.
+        execution: Execution already authorized for ``account_id``.
+        account_id: Caller's account, enforced again by the query.
+        requests: Request facts already loaded for this execution; loaded
+            here when omitted. None means the load failed.
+
+    Returns:
+        The route summary, or None when no upstream provider was recorded.
+    """
+    from preloop.services.review_completion_evidence import upstream_route_summary
+
+    if requests is _UNFETCHED:
+        requests = _execution_request_facts(db, execution, account_id=account_id)
+    if requests is None:
         return None
     summary = upstream_route_summary(execution, requests)
     return summary if summary["upstream_providers"] else None
@@ -1972,7 +2061,7 @@ def get_execution_result_export(
             "description": (
                 "Nothing can be published for this execution: the flow has "
                 "not opted in, the execution has not finished, or it has no "
-                "restricted CI review binding. ``detail.code`` names which."
+                "review binding. ``detail.code`` names which."
             )
         },
         412: {
@@ -2016,7 +2105,9 @@ def publish_execution_platform_review(
     Posts the stored, validated result of a finished read-only review as a
     pull request review and commit status on the commit the execution
     reviewed. The target comes from the execution's own binding; the request
-    cannot name a repository, pull request or commit.
+    cannot name a repository, pull request or commit. An execution started
+    by a GitHub pull request event is published the same way, and the caller
+    still cannot name the target.
 
     This is the only way a flow in ``manual`` platform review mode posts; a
     flow in ``automatic`` mode also posts when the execution finishes.
@@ -4268,6 +4359,26 @@ def update_flow(
             if "validate_result" in flow_in.model_fields_set
             and flow_in.validate_result is not None
             else flow.validate_result
+        ),
+        trigger_event_source=(
+            flow_in.trigger_event_source
+            if "trigger_event_source" in flow_in.model_fields_set
+            else flow.trigger_event_source
+        ),
+        trigger_event_types=(
+            flow_in.trigger_event_types
+            if "trigger_event_types" in flow_in.model_fields_set
+            else flow.trigger_event_types
+        ),
+        trigger_project_ids=(
+            flow_in.trigger_project_ids
+            if "trigger_project_ids" in flow_in.model_fields_set
+            else flow.trigger_project_ids
+        ),
+        webhook_config=(
+            flow_in.webhook_config
+            if "webhook_config" in flow_in.model_fields_set
+            else flow.webhook_config
         ),
     )
 

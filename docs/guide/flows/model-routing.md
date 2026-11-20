@@ -62,6 +62,29 @@ The short form carries a model and an effort and nothing else. Switching harness
 
 When a label rule decides the run, the execution records the matched label, the rule id and the effort alongside the model and harness, and the execution log carries a `model_by_label` milestone. Labels still come only from the trusted label snapshot, so a webhook body cannot introduce a rule or select one that is not on the issue.
 
+## Reasoning effort for the whole flow
+
+A flow can run its model at a lower or higher reasoning effort without any label rule. Set `agent_config.reasoning_effort` to `low`, `medium` or `high` when you create or update the flow:
+
+```bash
+curl -X PUT https://preloop.example.com/api/v1/flows/$FLOW_ID \
+  -H "Authorization: Bearer $PRELOOP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_config": {"reasoning_effort": "low"}}'
+```
+
+`agent_config` is saved as one object, so send the flow's other `agent_config` keys along with it. Any other value is rejected on save (HTTP 422) with a message that names `agent_config.reasoning_effort`. The flow's effort applies whenever no label rule sets one: a label rule that sets its own effort still wins for runs it matches, and a label rule that only changes the model keeps the flow's effort. Removing the key, or never setting it, leaves the model's own default. Authorized eval-matrix cells are exempt: a matrix cell fixes its own model and harness, and the flow's effort is not applied to it, so a grid compares cells under the settings it names. The console keeps the value when you save the flow form but does not show it yet.
+
+The effort reaches the harness the same way a label rule's does (Codex: `model_reasoning_effort`). Whether the provider receives it depends on the provider:
+
+- **DeepSeek** (provider `deepseek`): sent as the top-level `reasoning_effort` field described in DeepSeek's [thinking mode guide](https://api-docs.deepseek.com/guides/thinking_mode). DeepSeek accepts `low`, `high` and `max` and runs `medium` as `high`, so `low` becomes `low`, and `medium` and `high` both become `high`. It is sent only for the models listed on DeepSeek's [models page](https://api-docs.deepseek.com/quick_start/pricing) (`deepseek-flash`, `deepseek-v4-pro` and the legacy flash names they serve), and only to the default DeepSeek endpoint (`api.deepseek.com`). For any other model or endpoint the effort is not sent, so the provider never rejects the request because of it.
+- **Alibaba Model Studio** and **OpenRouter**: forwarded as before.
+- Other providers: not sent.
+
+### Check what reached the provider
+
+`GET /api/v1/flows/executions/{execution_id}` includes `effective_requests`: the execution's model requests grouped by what was actually sent, with `model`, `reasoning_effort`, `max_output_tokens` and `request_count`. `reasoning_effort: null` means none was sent and the provider used its own default. The routing record (`trigger_event_details._model_routing.reasoning_effort`) shows what the flow asked for; `effective_requests` shows what the provider received.
+
 ## What is recorded
 
 Each execution stores the chosen rule or default, the label snapshot, model id, and harness under reserved `_model_routing` on `trigger_event_details`. Retries keep that selection even if you later edit the flow's rules. Native continuation of the same conversation also keeps it; a different model or harness requires an explicit new execution. A mismatch blocks the repair turn before agent launch. New executions record their default identity even without routing rules. Legacy runs without a complete recorded model and harness cannot be retried or resumed automatically because their original identity cannot be proven; start a new execution explicitly. Durable feedback threads show `model_identity_unavailable` when their pinned selection cannot be used.

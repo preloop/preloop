@@ -17,6 +17,7 @@ from preloop.models import models
 from preloop.services.execution_tool_evidence import (
     EVIDENCE_TYPE,
     REASON_MASKING,
+    REASON_UNSAFE_TEXT,
     canonical_bytes,
     digest,
     note_incomplete,
@@ -158,9 +159,12 @@ def _persist_tool_evidence(
         "api_usage_id": str(usage.id),
     }
     sanitized = apply_storage_redaction(str(usage.account_id), document)
+    storage_rule_changed = sanitized != document
     sanitized["storage_redacted"] = (
-        document.get("storage_redacted", False) or sanitized != document
+        document.get("storage_redacted", False) or storage_rule_changed
     )
+    if storage_rule_changed:
+        note_incomplete(sanitized, REASON_UNSAFE_TEXT)
     document = sanitized
     observations = document.get("observations")
     if isinstance(observations, list) and any(
@@ -198,10 +202,11 @@ def _persist_document(
     safe = sanitize_for_jsonb(document)
     if safe != document:
         safe["storage_redacted"] = True
-        note_incomplete(safe, "unsafe_text")
+        note_incomplete(safe, REASON_UNSAFE_TEXT)
     cleaned = scrub_structure(safe)
-    if cleaned != document:
+    if cleaned != safe:
         cleaned["storage_redacted"] = True
+        note_incomplete(cleaned, REASON_UNSAFE_TEXT)
     document = cleaned
     import json
 
@@ -367,8 +372,9 @@ def _persist_native_command_evidence(
     from preloop.services.model_gateway_events import REDACTION_RULESET
 
     raw = item.get("command")
+    unexplained = False
     if settings.model_gateway_capture_content:
-        value, redaction_facts, _unexplained = _redact_value(raw)
+        value, redaction_facts, unexplained = _redact_value(raw)
     else:
         value, redaction_facts = None, []
     bounded = len(canonical_bytes(value)) <= MAX_EVIDENCE_BYTES
@@ -393,6 +399,14 @@ def _persist_native_command_evidence(
         reasons.append(REASON_TRUNCATED)
     if storage_redacted:
         reasons.append(REASON_UNSAFE_TEXT)
+    # A named rule keeps capture_complete. An unexplained scrub, or a change
+    # no named rule accounts for, is incomplete, as on the gateway path.
+    if settings.model_gateway_capture_content and (
+        unexplained or (value != raw and not redaction_facts)
+    ):
+        complete = False
+        if REASON_UNSAFE_TEXT not in reasons:
+            reasons.append(REASON_UNSAFE_TEXT)
     document = {
         "version": 1,
         "execution_id": str(execution_id),
@@ -405,9 +419,12 @@ def _persist_native_command_evidence(
     if reasons:
         document["incomplete_reasons"] = sorted(reasons)
     sanitized = apply_storage_redaction(account_id, document)
+    storage_rule_changed = sanitized != document
     sanitized["storage_redacted"] = (
-        document.get("storage_redacted", False) or sanitized != document
+        document.get("storage_redacted", False) or storage_rule_changed
     )
+    if storage_rule_changed:
+        note_incomplete(sanitized, REASON_UNSAFE_TEXT)
     observation = sanitized["observations"][0]
     if (
         event["type"] == "item.completed"
@@ -543,6 +560,27 @@ def _gateway_coverage(db: Session, execution_id: UUID) -> tuple[int, int]:
 _RULE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
+def _valid_named_redaction(item: Any) -> bool:
+    """True for one ``{"rule", "count"}`` fact the gate will count.
+
+    Args:
+        item: One entry of an observation's ``redactions`` list.
+
+    Returns:
+        Whether ``item`` names a rule and a positive count.
+    """
+    if not isinstance(item, dict):
+        return False
+    rule = item.get("rule")
+    count = item.get("count")
+    return (
+        isinstance(rule, str)
+        and _RULE_NAME.fullmatch(rule) is not None
+        and type(count) is int
+        and count >= 1
+    )
+
+
 def _masking_counts(document: dict[str, Any]) -> dict[str, int]:
     """Named masking rules on one document. Rule ids only, never values."""
     totals: dict[str, int] = {}
@@ -556,23 +594,49 @@ def _masking_counts(document: dict[str, Any]) -> dict[str, int]:
         if not isinstance(redactions, list):
             continue
         for item in redactions:
-            if not isinstance(item, dict):
+            if not _valid_named_redaction(item):
                 continue
-            rule = item.get("rule")
-            count = item.get("count")
-            if (
-                not isinstance(rule, str)
-                or _RULE_NAME.fullmatch(rule) is None
-                or type(count) is not int
-                or count < 1
-            ):
-                continue
+            rule = str(item["rule"])
+            count = int(item["count"])
             totals[rule] = totals.get(rule, 0) + count
     return totals
 
 
+def _redacted_without_named_rule(document: dict[str, Any]) -> bool:
+    """True when an observation was redacted and no named rule explains it.
+
+    Args:
+        document: Stored evidence document.
+
+    Returns:
+        Whether any observation has ``redacted`` set and no valid named fact.
+    """
+    observations = document.get("observations")
+    if not isinstance(observations, list):
+        return False
+    for observation in observations:
+        if not isinstance(observation, dict):
+            continue
+        if observation.get("redacted") is not True:
+            continue
+        redactions = observation.get("redactions")
+        named = isinstance(redactions, list) and any(
+            _valid_named_redaction(item) for item in redactions
+        )
+        if not named:
+            return True
+    return False
+
+
 def _record_class(document: Any, *, valid: bool) -> str:
     """Classify one stored record for the evidence gate.
+
+    A record stored before an unexplained scrub or an account storage rule
+    was written down as incomplete still fails closed: ``capture_complete``
+    with no reasons is ``incomplete`` when ``storage_redacted`` is set, or
+    when an observation is redacted without a named rule. A named mask that
+    kept ``capture_complete``, and a record whose reasons are exactly
+    ``{masking}``, stay ``masking_only``.
 
     Returns:
         ``ok``, ``masking_only`` or ``incomplete``. An unreadable record,
@@ -592,6 +656,13 @@ def _record_class(document: Any, *, valid: bool) -> str:
         else set()
     )
     if document.get("capture_complete") is True and not reasons:
+        if document.get("storage_redacted") is True or _redacted_without_named_rule(
+            document
+        ):
+            return "incomplete"
+        # Native command records keep capture_complete when a named rule masked a value.
+        if _masking_counts(document):
+            return "masking_only"
         return "ok"
     if reasons == {REASON_MASKING} and _masking_counts(document):
         return "masking_only"
