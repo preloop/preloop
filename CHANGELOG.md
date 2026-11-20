@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publication record include the counts in one call. A manual publish can
   send `expected_evidence` of `captured` or `complete`; it can only tighten
   the flow setting.
+- Complete evidence now refuses a native command record whose value a named
+  rule masked. Captured evidence still accepts that record, and evidence set
+  to any is unchanged.
 - OpenRouter-routed executions show which upstream provider served the final
   answer (**Served by** on the execution page, `upstream_route` on the
   execution detail and `upstream_providers` / `final_answer_upstream_provider`
