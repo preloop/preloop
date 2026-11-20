@@ -446,4 +446,42 @@ describe('flow-platform-review-card', () => {
     );
     expect(q(missing, '[data-action="save"]')).to.exist;
   });
+
+  it('reads finding fields wrapped in allOf and does not warn without an item schema', async () => {
+    const wrapped = await mount({
+      ...FLOW,
+      result_schema: {
+        type: 'object',
+        properties: {
+          verdict: { type: 'string', enum: ['pass', 'fail'] },
+          findings: {
+            type: 'array',
+            items: {
+              allOf: [
+                {
+                  type: 'object',
+                  properties: { problem: { type: 'string' } },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    expect(wrapped.shadowRoot!.textContent).to.contain('problem text');
+    expect(q(wrapped, '[data-finding-text]')).to.equal(null);
+
+    const bare = await mount({
+      ...FLOW,
+      result_schema: {
+        type: 'object',
+        properties: {
+          verdict: { type: 'string', enum: ['pass', 'fail'] },
+          findings: { type: 'array' },
+        },
+      },
+    });
+    expect(q(bare, '[data-finding-text]')).to.equal(null);
+    expect(bare.shadowRoot!.textContent).to.contain('does not declare');
+  });
 });

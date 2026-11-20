@@ -2990,3 +2990,62 @@ async def test_legacy_mismatch_whose_review_is_missing_is_not_posted(
     assert repaired["status"] != "posted"
     assert repaired["posted_at"] is None
     assert _provider_creates(world.github) == created
+
+
+@pytest.mark.asyncio
+async def test_repair_uses_the_sent_digest_when_the_console_url_changes(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    execution = finished(world, identity(world, world.projects[0]))
+    posted = await publish(world, execution)
+    assert posted is not None and posted["status"] == "posted"
+    store = crud.crud_platform_review_publication
+    row = store.get_for_execution(world.db, execution_id=execution.id)
+    assert row.body_digest and row.status_target_url
+    store.record(
+        world.db,
+        row=row,
+        state="failed",
+        reason="readback_mismatch",
+        retryable=False,
+        posted_at=None,
+        readback_check=None,
+    )
+    monkeypatch.setattr(
+        platform_review.settings, "preloop_url", "https://other.example"
+    )
+    created = _provider_creates(world.github)
+    repaired = await publish(world, execution, explicit=True)
+    assert repaired is not None and repaired["status"] == "posted"
+    assert repaired["readback_check"] is None
+    assert _provider_creates(world.github) == created
+
+
+@pytest.mark.asyncio
+async def test_mismatch_without_a_stored_digest_stays_failed_when_rerender_differs(
+    world: SimpleNamespace,
+) -> None:
+    """A pre-digest row is not repaired when a fresh render differs."""
+    execution = finished(world, identity(world, world.projects[0]))
+    await publish(world, execution)
+    review = world.github.reviews[(world.projects[0].slug, 7)][0]
+    review["body"] = "different"
+    store = crud.crud_platform_review_publication
+    row = store.get_for_execution(world.db, execution_id=execution.id)
+    store.record(
+        world.db,
+        row=row,
+        state="failed",
+        reason="readback_mismatch",
+        retryable=False,
+        posted_at=None,
+        readback_check=None,
+        body_digest=None,
+    )
+    created = _provider_creates(world.github)
+    repaired = await publish(world, execution, explicit=True)
+    assert repaired is not None
+    assert repaired["status"] == "failed"
+    assert repaired["reason"] == "readback_mismatch"
+    assert repaired["readback_check"] == "review_body"
+    assert _provider_creates(world.github) == created

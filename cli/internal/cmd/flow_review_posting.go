@@ -583,15 +583,61 @@ type findingFieldAppearance struct {
 	AppearsAs string `json:"appears_as"`
 }
 
+func objectSchema(schema map[string]any) map[string]any {
+	if props, ok := schema["properties"].(map[string]any); ok && props != nil {
+		return schema
+	}
+	for _, key := range []string{"allOf", "anyOf", "oneOf"} {
+		options, ok := schema[key].([]any)
+		if !ok {
+			continue
+		}
+		for _, option := range options {
+			doc, ok := option.(map[string]any)
+			if !ok {
+				continue
+			}
+			if found := objectSchema(doc); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
+func findingItemSchema(schema any) map[string]any {
+	doc, _ := schema.(map[string]any)
+	properties, _ := doc["properties"].(map[string]any)
+	findings, _ := properties["findings"].(map[string]any)
+	if findings == nil {
+		return nil
+	}
+	switch items := findings["items"].(type) {
+	case map[string]any:
+		return objectSchema(items)
+	case []any:
+		for _, candidate := range items {
+			doc, ok := candidate.(map[string]any)
+			if !ok {
+				continue
+			}
+			if found := objectSchema(doc); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
+}
+
 // findingFieldAppearances lists the finding fields a result schema declares.
 // Map iteration order is not the schema order, so the list is sorted by role
 // and then by name; the posted review itself uses the schema's order.
 func findingFieldAppearances(schema any) []findingFieldAppearance {
-	doc, _ := schema.(map[string]any)
-	properties, _ := doc["properties"].(map[string]any)
-	findings, _ := properties["findings"].(map[string]any)
-	items, _ := findings["items"].(map[string]any)
-	props, _ := items["properties"].(map[string]any)
+	item := findingItemSchema(schema)
+	if item == nil {
+		return []findingFieldAppearance{}
+	}
+	props, _ := item["properties"].(map[string]any)
 	if props == nil {
 		return []findingFieldAppearance{}
 	}
@@ -618,9 +664,7 @@ func findingFieldAppearances(schema any) []findingFieldAppearance {
 // and, when it does, whether any property is shown as the finding text.
 // A schema that does not declare findings returns true so show does not warn.
 func findingSchemaHasText(schema any, fields []findingFieldAppearance) bool {
-	doc, _ := schema.(map[string]any)
-	properties, _ := doc["properties"].(map[string]any)
-	if _, ok := properties["findings"]; !ok {
+	if findingItemSchema(schema) == nil {
 		return true
 	}
 	for _, field := range fields {
@@ -632,9 +676,7 @@ func findingSchemaHasText(schema any, fields []findingFieldAppearance) bool {
 }
 
 func printFindingFields(out io.Writer, schema any, fields []findingFieldAppearance) {
-	doc, _ := schema.(map[string]any)
-	properties, _ := doc["properties"].(map[string]any)
-	if _, ok := properties["findings"]; !ok {
+	if findingItemSchema(schema) == nil {
 		fmt.Fprintln(out, "Finding fields: the result schema does not declare any.")
 		return
 	}

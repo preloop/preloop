@@ -21,13 +21,27 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Add the read-back check. Nothing already stored is rewritten."""
+    """Add the read-back check and the sent body digest and status URL.
+
+    Existing rows stay null. A later verification of those rows compares
+    a fresh render, and a difference stays failed.
+    """
     op.add_column(
         "platform_review_publication",
         sa.Column("readback_check", sa.String(length=32), nullable=True),
     )
+    op.add_column(
+        "platform_review_publication",
+        sa.Column("body_digest", sa.String(length=64), nullable=True),
+    )
+    op.add_column(
+        "platform_review_publication",
+        sa.Column("status_target_url", sa.String(length=1024), nullable=True),
+    )
 
 
 def downgrade() -> None:
-    """Drop the read-back check. Publication rows stay."""
+    """Drop the read-back columns. Publication rows stay."""
+    op.drop_column("platform_review_publication", "status_target_url")
+    op.drop_column("platform_review_publication", "body_digest")
     op.drop_column("platform_review_publication", "readback_check")

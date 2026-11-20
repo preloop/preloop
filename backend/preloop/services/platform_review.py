@@ -19,7 +19,7 @@ import hashlib
 import logging
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -1681,7 +1681,12 @@ def _is_bot(entry: Any) -> bool:
 
 
 def _review_check(
-    review: Any, *, review_id: str, head_sha: str, event: str, digest: str
+    review: Any,
+    *,
+    review_id: str,
+    head_sha: str,
+    event: str,
+    digests: Collection[str],
 ) -> str | None:
     """The read-back check that failed, or None when the review matches.
 
@@ -1701,7 +1706,7 @@ def _review_check(
         return "review_commit"
     if review.get("state") != _SUBMITTED_STATES.get(event):
         return "review_state"
-    if _digest(review["body"]) != digest:
+    if _digest(review["body"]) not in digests:
         return "review_body"
     return None
 
@@ -1799,7 +1804,12 @@ async def _load_review(github: _GitHub, review_id: str) -> Any:
 
 
 async def _confirm_review(
-    github: _GitHub, *, review_id: str, head_sha: str, event: str, digest: str
+    github: _GitHub,
+    *,
+    review_id: str,
+    head_sha: str,
+    event: str,
+    digests: Collection[str],
 ) -> None:
     """Re-read one review until it matches or the difference is decided.
 
@@ -1813,7 +1823,7 @@ async def _confirm_review(
             review_id=review_id,
             head_sha=head_sha,
             event=event,
-            digest=digest,
+            digests=digests,
         )
 
     async def load() -> Any:
@@ -1922,6 +1932,7 @@ async def _post_review(
                     "review_state": STATE_POSTED,
                     "review_action": plan.review_action,
                     "review_id": str(existing.get("id")),
+                    "body_digest": _digest(existing["body"]),
                     "_verify": None,
                 }
     body, comments = render_review(
@@ -1949,11 +1960,13 @@ async def _post_review(
     review_id = str(created.get("id")) if isinstance(created, Mapping) else ""
     if not review_id.isdecimal():
         raise PlatformReviewError("readback_mismatch", check="review_absent")
+    digest = _digest(body)
     return {
         "review_state": STATE_POSTED,
         "review_action": plan.review_action,
         "review_id": review_id,
-        "_verify": {"event": event, "digest": _digest(body)},
+        "body_digest": digest,
+        "_verify": {"event": event, "digest": digest},
     }
 
 
@@ -1961,11 +1974,12 @@ async def _post_status(
     github: _GitHub, *, execution: Any, plan: PublicationPlan
 ) -> dict[str, Any]:
     """Create the commit status on the reviewed commit and read it back."""
+    target_url = execution_url(execution.id)
     payload = {
         "state": plan.status_value,
         "context": plan.status_context,
         "description": (plan.status_description or "")[:140],
-        "target_url": execution_url(execution.id),
+        "target_url": target_url,
     }
     created = await github.create_status(payload)
     status_id = str(created.get("id")) if isinstance(created, Mapping) else ""
@@ -1976,6 +1990,7 @@ async def _post_status(
         "status_value": plan.status_value,
         "status_context": plan.status_context,
         "status_id": status_id,
+        "status_target_url": target_url,
     }
     await _confirm_status(
         github,
@@ -2047,7 +2062,9 @@ async def _confirm_recorded_review(
 ) -> None:
     """Re-read a review this row already recorded. Does not create one.
 
-    The body is rendered again from the stored result and the row's nonce.
+    The comparison uses the body digest stored when the review was sent.
+    A row posted before that digest was stored is compared with a fresh
+    render. When that differs, the row stays failed.
 
     Raises:
         PlatformReviewError: The review is still absent, or present and
@@ -2058,21 +2075,25 @@ async def _confirm_recorded_review(
     if not isinstance(verdict, str):
         stored = result.get("verdict")
         verdict = stored if isinstance(stored, str) else ""
-    body, _comments = render_review(
-        result,
-        verdict=verdict,
-        execution_id=execution.id,
-        head_sha=binding.head_sha,
-        nonce=row.nonce,
-        inline={},
-        schema=schema if isinstance(schema, Mapping) else None,
-    )
+    if row.body_digest:
+        digests = {row.body_digest}
+    else:
+        current, _comments = render_review(
+            result,
+            verdict=verdict,
+            execution_id=execution.id,
+            head_sha=binding.head_sha,
+            nonce=row.nonce,
+            inline={},
+            schema=schema if isinstance(schema, Mapping) else None,
+        )
+        digests = {_digest(current)}
     await _confirm_review(
         github,
         review_id=str(row.review_id),
         head_sha=binding.head_sha,
         event=REVIEW_EVENTS.get(row.review_action or "comment", "COMMENT"),
-        digest=_digest(body),
+        digests=digests,
     )
 
 
@@ -2094,7 +2115,7 @@ async def _confirm_recorded_status(
             status_id=str(row.status_id),
             state=row.status_value,
             context=row.status_context,
-            target_url=execution_url(execution.id),
+            target_url=row.status_target_url or execution_url(execution.id),
             values={},
         )
     except _RecordedError as error:
@@ -2296,7 +2317,7 @@ async def _publish_claimed(
                                 review_id=str(row.review_id),
                                 head_sha=binding.head_sha,
                                 event=verify["event"],
-                                digest=verify["digest"],
+                                digests={verify["digest"]},
                             )
                     except PlatformReviewError as error:
                         failure = error

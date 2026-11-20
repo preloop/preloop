@@ -55,7 +55,10 @@ export interface PlatformReviewRecord {
   posted_at: string | null;
   attempts: number;
   retry_scheduled: boolean;
-  /** Which read-back comparison failed; null when the last attempt did not. */
+  /**
+   * The last read-back comparison that failed. It can stay set when a later
+   * attempt fails for another reason while that read is still owed.
+   */
   readback_check?: string | null;
   pull_request_url?: string | null;
   review_url?: string | null;
@@ -101,6 +104,42 @@ export function findingFieldRole(name: string): FindingFieldRole {
   return 'labelled block';
 }
 
+function isSchemaObject(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** An object schema, following one allOf, anyOf or oneOf. */
+function objectSchema(schema: unknown): Record<string, any> | null {
+  if (!isSchemaObject(schema)) return null;
+  if (isSchemaObject(schema.properties)) return schema;
+  for (const key of ['allOf', 'anyOf', 'oneOf']) {
+    const options = schema[key];
+    if (!Array.isArray(options)) continue;
+    for (const option of options) {
+      const found = objectSchema(option);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findingsItemSchema(schema: unknown): Record<string, any> | null {
+  if (!isSchemaObject(schema)) return null;
+  const findings = isSchemaObject(schema.properties)
+    ? schema.properties.findings
+    : undefined;
+  if (!isSchemaObject(findings)) return null;
+  const items = findings.items;
+  if (Array.isArray(items)) {
+    for (const candidate of items) {
+      const found = objectSchema(candidate);
+      if (found) return found;
+    }
+    return null;
+  }
+  return objectSchema(items);
+}
+
 /**
  * Finding fields the result schema declares, in schema order, and whether
  * any of them is the finding text. `declared` is false when the schema has
@@ -112,18 +151,11 @@ export function findingFieldAppearances(schema: unknown): {
   hasText: boolean;
 } {
   const empty = { declared: false, fields: [], hasText: true };
-  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
-    return empty;
-  }
-  const findings = (schema as Record<string, any>).properties?.findings;
-  if (!findings || typeof findings !== 'object') return empty;
-  const items = findings.items;
-  const props =
-    items && typeof items === 'object' && !Array.isArray(items)
-      ? items.properties
-      : undefined;
+  const item = findingsItemSchema(schema);
+  if (!item) return empty;
+  const props = item.properties;
   const fields: FindingFieldAppearance[] = [];
-  if (props && typeof props === 'object' && !Array.isArray(props)) {
+  if (isSchemaObject(props)) {
     for (const field of Object.keys(props)) {
       fields.push({ field, appearsAs: findingFieldRole(field) });
     }

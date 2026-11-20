@@ -1816,8 +1816,10 @@ transient failures by itself, up to six attempts with growing delays. In
 manual mode it never retries on its own: a failed attempt waits for your
 next publish call.
 
-`readback_check` on the same record names the comparison that failed. It is
-null when the last attempt did not fail a read-back. It is one of
+`readback_check` on the same record names the last comparison that failed.
+It stays set when a later attempt fails for another reason while that
+read-back is still owed, and it is null once the publication is posted or
+no read-back has failed. It is one of
 `review_absent`, `review_actor`, `review_commit`, `review_state`,
 `review_body`, `status_absent`, `status_state`, `status_context` and
 `status_target_url`. The log line for the attempt carries the execution id
@@ -1829,7 +1831,7 @@ not mark that record posted without the comparison.
 | `reason` | What it means | What to do |
 | --- | --- | --- |
 | `readback_pending` | The review or status was accepted, then was not visible yet (`readback_check` is `review_absent` or `status_absent`). The review id and the status id stay on the record. | Wait. In automatic mode Preloop reads them again and completes the record without posting a second time. In either mode the publish call does the same. |
-| `readback_mismatch` | GitHub has the object and it differs: the actor, commit, state, context, target URL or body (`readback_check` names which). | Look at the pull request. An explicit publish call reads the recorded ids again. When they match what was sent, the record becomes `posted`. When they still differ, it stays `failed` with the same check. Nothing is posted again, and automatic retry does not take the row. |
+| `readback_mismatch` | GitHub has the object and it differs: the actor, commit, state, context, target URL or body (`readback_check` names which). | Look at the pull request. An explicit publish call reads the recorded ids again. When they match what was sent, the record becomes `posted`. When they still differ, it stays `failed` with the same check. Nothing is posted again, and automatic retry does not take the row. A record posted before the sent body and status URL were stored is compared with a fresh render. When that differs, the record stays `failed` with `review_body`. The review and the status are already on the pull request and are listed on the record, so leaving it failed is safe. |
 | `provider_unavailable` | GitHub was unavailable or rate limited. | Automatic mode retries. Otherwise publish again. |
 | `statuses_permission_missing` | The review is posted. The App may not write commit statuses. | Grant **Commit statuses: Read and write**, then publish again. The review is not posted twice. |
 | `head_moved` | The pull request moved on. The status is on the reviewed commit. No review was posted. | Trigger a review of the new head. |

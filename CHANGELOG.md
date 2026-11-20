@@ -51,8 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   difference (`readback_mismatch`, still final, and named by
   `readback_check` on the execution record). An explicit publish call can
   repair an existing `readback_mismatch` row when GitHub matches what was
-  sent, including a row recorded before the check was stored. A present
-  difference stays failed.
+  sent, including a row recorded before the check was stored. The body
+  digest and the status URL that were sent are what a later read compares,
+  so a console URL or schema change does not fail a review GitHub already
+  holds. A present difference stays failed.
 
 - A pre-tool permission check that allows a command after evaluating a
   tool approval workflow with no access rules records the allow that took
