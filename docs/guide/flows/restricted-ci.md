@@ -1570,7 +1570,10 @@ A masked credential still marks that gateway record incomplete. `captured`
 accepts that record; `complete` does not. Saving `captured` or `complete`
 requires model-gateway content capture to be on for the instance
 (`MODEL_GATEWAY_CAPTURE_CONTENT`). Without it the setting is rejected,
-because the gate could never pass.
+because the gate could never pass. That check is only at save. Turning
+content capture off later does not by itself reject a publish: a record
+stored while capture was on can still meet the gate, and a record stored
+with content capture off does not.
 
 When the gate refuses, no review is posted. The publication is recorded with
 `reason: "evidence_incomplete"` and the counts below. The commit status, when
@@ -1584,10 +1587,13 @@ neither posts nor records `evidence_incomplete`. An automatic post is left
 for the sweep. An explicit publish call answers **409** with
 `detail.code` `evidence_pending`.
 
-`GET /api/v1/flows/executions/{id}/result` and the publication record
-(`platform_review.tool_evidence`) both carry the same counts, in one call.
-A CI identity that can read its own result can read them. They contain no
-observation values, paths or text:
+`GET /api/v1/flows/executions/{id}/result` carries the counts once, both at
+the top level (`tool_evidence`) and on the publication record
+(`platform_review.tool_evidence`). The execution an operator opens carries
+them on its publication record too. The execution list, a CI status poll
+and the `flow.execution.finished` event do not: those reads must not decode
+every evidence record. A CI identity that can read its own result can read
+the counts. They contain no observation values, paths or text:
 
 | Field | Meaning |
 | --- | --- |
@@ -1671,7 +1677,9 @@ the result schema never affect an identity.
 
 `GET /api/v1/flows/executions/{id}`, `GET .../result` and the `data` of
 `flow.execution.finished` carry `platform_review` (`null` when the flow has
-not opted in):
+not opted in). `tool_evidence` is present on the result and on the
+execution an operator opens; the list, a status poll and the finished event
+omit it:
 
 <!-- example: fragment -->
 ```json

@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import quote
@@ -324,7 +325,12 @@ async def _read_provider(
         raise CiReviewUnavailableError() from None
 
 
-def execution_projection(execution: models.FlowExecution) -> dict[str, Any]:
+def execution_projection(
+    execution: models.FlowExecution,
+    *,
+    evidence: Mapping[str, Any] | None = None,
+    with_evidence: bool = False,
+) -> dict[str, Any]:
     """Expose correlation and readiness, never prompts, runtime keys or logs."""
     binding = CiReviewBinding.model_validate(execution.ci_review_binding)
     receipt = public_startup_receipt(execution)
@@ -344,12 +350,27 @@ def execution_projection(execution: models.FlowExecution) -> dict[str, Any]:
         "flow_revision": execution.flow_revision,
         "startup_receipt": receipt,
         "startup_receipt_status": startup_receipt_status(execution, receipt),
-        "platform_review": _platform_review(execution),
+        "platform_review": _platform_review(
+            execution, evidence=evidence, with_evidence=with_evidence
+        ),
     }
 
 
-def _platform_review(execution: models.FlowExecution) -> dict[str, Any] | None:
-    """What Preloop posted for this execution; null when the flow opted out."""
+def _platform_review(
+    execution: models.FlowExecution,
+    *,
+    evidence: Mapping[str, Any] | None = None,
+    with_evidence: bool = False,
+) -> dict[str, Any] | None:
+    """What Preloop posted for this execution; null when the flow opted out.
+
+    Args:
+        execution: Flow execution row.
+        evidence: Counts already computed for this request, when the caller
+            has them.
+        with_evidence: Include those counts. The execution list and a status
+            poll leave this off so they do not decode every evidence record.
+    """
     from sqlalchemy.orm import object_session
 
     from preloop.services.platform_review import platform_review_projection
@@ -357,7 +378,9 @@ def _platform_review(execution: models.FlowExecution) -> dict[str, Any] | None:
     session = object_session(execution)
     if session is None:
         return None
-    return platform_review_projection(session, execution)
+    return platform_review_projection(
+        session, execution, evidence=evidence, with_evidence=with_evidence
+    )
 
 
 def _prepare_execution(

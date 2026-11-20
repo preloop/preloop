@@ -717,11 +717,19 @@ def verdict_enum(schema: Any) -> list[str] | None:
     return list(values)
 
 
-def validate_platform_review_flow(flow: Any) -> None:
+def validate_platform_review_flow(
+    flow: Any, *, enforce_content_capture: bool = False
+) -> None:
     """Require a validated result with a closed, fully mapped verdict.
 
     Args:
         flow: Flow row or namespace.
+        enforce_content_capture: When True (the save path), reject
+            ``captured`` or ``complete`` while model-gateway content capture
+            is off. Publish does not pass this: a record stored with content
+            capture off already fails the gate, and turning the instance flag
+            off later must not refuse a run whose records were captured
+            while it was on.
 
     Raises:
         ValueError: The flow opts in but its result is not validated, its
@@ -735,7 +743,7 @@ def validate_platform_review_flow(flow: Any) -> None:
     block = platform_review_block(config)
     if block is None or not isinstance(config, Mapping):
         return
-    if block.get("evidence") in {"captured", "complete"}:
+    if enforce_content_capture and block.get("evidence") in {"captured", "complete"}:
         from preloop.config import settings
 
         # Content capture is the instance setting that writes
@@ -1655,6 +1663,7 @@ async def _publish_claimed(
     flow: models.Flow,
     execution: models.FlowExecution,
     preconditions: ReviewPreconditions | None = None,
+    evidence: Mapping[str, Any] | None = None,
 ) -> None:
     """Run one attempt for a claimed row and record its outcome.
 
@@ -1701,7 +1710,7 @@ async def _publish_claimed(
             flow=flow,
             execution=execution,
             binding=binding,
-            evidence=stored_tool_evidence(db, execution),
+            evidence=evidence,
         )
         if failures:
             raise PreconditionFailedError(failures)
@@ -1739,7 +1748,7 @@ async def _publish_claimed(
         flow,
         execution,
         integrity=evaluate_execution(db, flow, execution, require_head=True),
-        evidence=stored_tool_evidence(db, execution),
+        evidence=evidence,
     )
     if (
         plan.review_action is not None
@@ -2008,13 +2017,19 @@ async def publish_platform_review(
         if explicit:
             raise PlatformReviewRefusedError("evidence_pending")
         return None
+    # One read of the stored records serves the precondition, the plan and
+    # the record returned to the caller. A flow with the gate off, and a
+    # publish call that does not ask for evidence, does not read them.
+    counts: dict[str, Any] | None = None
+    if pre.evidence is not None or evidence_level(flow.git_clone_config) != "any":
+        counts = stored_tool_evidence(db, execution)
     if pre.any:
         failures = check_stored_preconditions(
             pre,
             flow=flow,
             execution=execution,
             binding=binding,
-            evidence=stored_tool_evidence(db, execution),
+            evidence=counts,
         )
         if failures:
             _audit_attempt(
@@ -2040,7 +2055,13 @@ async def publish_platform_review(
         retryable_only=not explicit,
     )
     if row is None:
-        return platform_review_projection(db, execution, flow=flow)
+        return platform_review_projection(
+            db,
+            execution,
+            flow=flow,
+            evidence=counts,
+            with_evidence=counts is not None,
+        )
     # Manual mode never retries on its own: a failed explicit attempt waits
     # for the caller, who may want to check again before posting.
     automatic_retry = mode == MODE_AUTOMATIC
@@ -2049,7 +2070,12 @@ async def publish_platform_review(
     details: dict[str, Any] = {}
     try:
         await _publish_claimed(
-            db, row, flow=flow, execution=execution, preconditions=pre
+            db,
+            row,
+            flow=flow,
+            execution=execution,
+            preconditions=pre,
+            evidence=counts,
         )
     except asyncio.CancelledError:
         # Cut short by the caller's time limit: hand the row to the monitor
@@ -2100,7 +2126,9 @@ async def publish_platform_review(
         status=outcome,
         details=details,
     )
-    return platform_review_projection(db, execution, flow=flow)
+    return platform_review_projection(
+        db, execution, flow=flow, evidence=counts, with_evidence=counts is not None
+    )
 
 
 def _record_posted_by(db: Session, execution_id: Any, posted_by: str) -> None:
@@ -2211,7 +2239,12 @@ def _iso(value: datetime | None) -> str | None:
 
 
 def platform_review_projection(
-    db: Session, execution: Any, *, flow: Any = None
+    db: Session,
+    execution: Any,
+    *,
+    flow: Any = None,
+    evidence: Mapping[str, Any] | None = None,
+    with_evidence: bool = False,
 ) -> dict[str, Any] | None:
     """What was posted for an execution, safe for its restricted CI identity.
 
@@ -2219,6 +2252,10 @@ def platform_review_projection(
         db: Database session.
         execution: Flow execution row.
         flow: The execution's flow, when the caller holds it.
+        evidence: Counts already computed for this request.
+        with_evidence: Attach ``tool_evidence``. Left off for the execution
+            list, a status poll and the finished event, which would otherwise
+            decode every stored record.
 
     Returns:
         None when the flow has not opted in and nothing was ever claimed;
@@ -2227,11 +2264,10 @@ def platform_review_projection(
         ``posted_by`` says how the review reached the pull request:
         ``automatic`` (when the execution finished, or by an automatic
         retry), ``manual`` (the explicit publish call) or ``none``; null for
-        a review posted before the record existed. ``tool_evidence`` is the
-        count summary of the stored records. Contains no credential, no
-        provider response and no evidence values.
+        a review posted before the record existed. ``tool_evidence``, when
+        requested, is the count summary of the stored records. Contains no
+        credential, no provider response and no evidence values.
     """
-    counts = stored_tool_evidence(db, execution)
     row = crud.crud_platform_review_publication.get_for_execution(
         db, execution_id=execution.id
     )
@@ -2239,11 +2275,18 @@ def platform_review_projection(
         flow = getattr(execution, "flow", None)
     mode = platform_review_mode(getattr(flow, "git_clone_config", None))
     how = posted_by(execution)
+    if row is None and mode == MODE_OFF:
+        return None
+    counts: Mapping[str, Any] | None
+    if not with_evidence:
+        counts = None
+    elif evidence is not None:
+        counts = evidence
+    else:
+        counts = stored_tool_evidence(db, execution)
     if row is None:
-        if mode == MODE_OFF:
-            return None
         binding = getattr(execution, "ci_review_binding", None)
-        return {
+        payload = {
             "mode": mode,
             "posted_by": NOT_POSTED,
             "status": "pending",
@@ -2261,26 +2304,28 @@ def platform_review_projection(
             "posted_at": None,
             "attempts": 0,
             "retry_scheduled": False,
-            "tool_evidence": counts,
         }
-    return {
-        "mode": mode,
-        "posted_by": how if row.review_state == STATE_POSTED else NOT_POSTED,
-        "status": row.state,
-        "reason": row.reason,
-        "head_sha": row.head_sha,
-        "review": row.review_state,
-        "review_id": row.review_id,
-        "review_action": row.review_action,
-        "review_reason": row.review_reason,
-        "commit_status": row.status_value,
-        "status_context": row.status_context,
-        "status_reason": row.status_reason,
-        "posted_at": _iso(row.posted_at),
-        "attempts": row.attempts,
-        "retry_scheduled": bool(row.retryable and row.next_attempt_at is not None),
-        "tool_evidence": counts,
-    }
+    else:
+        payload = {
+            "mode": mode,
+            "posted_by": how if row.review_state == STATE_POSTED else NOT_POSTED,
+            "status": row.state,
+            "reason": row.reason,
+            "head_sha": row.head_sha,
+            "review": row.review_state,
+            "review_id": row.review_id,
+            "review_action": row.review_action,
+            "review_reason": row.review_reason,
+            "commit_status": row.status_value,
+            "status_context": row.status_context,
+            "status_reason": row.status_reason,
+            "posted_at": _iso(row.posted_at),
+            "attempts": row.attempts,
+            "retry_scheduled": bool(row.retryable and row.next_attempt_at is not None),
+        }
+    if with_evidence:
+        payload["tool_evidence"] = counts
+    return payload
 
 
 async def publish_finished_execution(*, account_id: Any, execution_id: Any) -> None:

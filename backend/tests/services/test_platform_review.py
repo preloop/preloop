@@ -1504,11 +1504,19 @@ def test_ci_identity_publishes_its_own_execution_and_reads_the_record(
     assert record["status"] == "posted" and record["head_sha"] == HEAD
     again = client.post(path + "/platform-review", headers=headers)
     assert again.json()["platform_review"] == record
+    assert "tool_evidence" not in record
     assert len(world.github.reviews[(project.slug, 7)]) == 1
-    for suffix in ("", "/result"):
-        read = client.get(path + suffix, headers=headers)
-        assert read.status_code == 200, read.text
-        assert read.json()["platform_review"] == record
+    status = client.get(path, headers=headers)
+    assert status.status_code == 200, status.text
+    # A status poll does not decode the evidence records.
+    assert status.json()["platform_review"] == record
+    result = client.get(path + "/result", headers=headers)
+    assert result.status_code == 200, result.text
+    result_record = result.json()["platform_review"]
+    assert result.json()["tool_evidence"] == result_record["tool_evidence"]
+    assert {
+        key: value for key, value in result_record.items() if key != "tool_evidence"
+    } == record
     assert "lease-" not in posted.text
 
 
@@ -2505,6 +2513,26 @@ async def test_absent_evidence_setting_posts_as_before(world: SimpleNamespace) -
 
 
 @pytest.mark.asyncio
+async def test_publish_reads_the_stored_records_once(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The precondition, the plan and the returned record share one read."""
+    _project, execution = _ready(world, document=_complete_tool_document())
+    calls = 0
+    real = platform_review.stored_tool_evidence
+
+    def counted(db: Any, row: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return real(db, row)
+
+    monkeypatch.setattr(platform_review, "stored_tool_evidence", counted)
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_captured_posts_when_records_are_complete(world: SimpleNamespace) -> None:
     project, execution = _ready(world, document=_complete_tool_document())
     outcome = await publish(world, execution)
@@ -2691,6 +2719,24 @@ async def test_late_gateway_evidence_is_not_refused_or_posted_early(
     assert len(world.github.reviews[(project.slug, 7)]) == 1
 
 
+def test_status_projection_does_not_read_tool_evidence(
+    world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The list and a status poll must not decode the stored records."""
+    execution = finished(world, identity(world, world.projects[0]))
+
+    def scanned(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args, kwargs
+        raise AssertionError("tool evidence was read")
+
+    monkeypatch.setattr(platform_review, "stored_tool_evidence", scanned)
+    record = platform_review.platform_review_projection(
+        world.db, execution, flow=world.flow
+    )
+    assert record is not None
+    assert "tool_evidence" not in record
+
+
 def test_tool_evidence_summary_counts_match(
     world: SimpleNamespace, client: TestClient
 ) -> None:
@@ -2750,7 +2796,12 @@ def test_evidence_values_are_validated_and_content_capture_is_required(
         validate_result=True,
     )
     monkeypatch.setattr(settings, "model_gateway_capture_content", False)
-    with pytest.raises(ValueError, match="content capture"):
-        platform_review.validate_platform_review_flow(flow)
-    monkeypatch.setattr(settings, "model_gateway_capture_content", True)
+    # Publish keeps evaluating the stored records. Only the save path
+    # rejects a gate that the instance cannot satisfy.
     platform_review.validate_platform_review_flow(flow)
+    with pytest.raises(ValueError, match="content capture"):
+        platform_review.validate_platform_review_flow(
+            flow, enforce_content_capture=True
+        )
+    monkeypatch.setattr(settings, "model_gateway_capture_content", True)
+    platform_review.validate_platform_review_flow(flow, enforce_content_capture=True)

@@ -734,3 +734,32 @@ def test_expected_evidence_refuses_with_412_and_cannot_loosen_the_flow_setting(
     assert record["review"] == "skipped"
     assert world.github.reviews == {}
     assert world.github.statuses[(project.slug, HEAD)][0]["state"] == "error"
+
+
+def test_explicit_publish_answers_409_while_evidence_may_still_arrive(
+    world: SimpleNamespace, client: TestClient
+) -> None:
+    """The explicit call waits, records nothing, then posts once evidence can be read."""
+    from tests.services.test_platform_review import _complete_tool_document
+
+    _set_evidence(world, "captured")
+    project = world.projects[0]
+    who = identity(world, project)
+    execution = finished(world, who)
+    usage = _gateway_usage(world, execution)
+    _store_gateway(world, execution, usage, _complete_tool_document())
+    pending = ci_post(client, who, execution, {})
+    assert pending.status_code == 409, pending.text
+    assert pending.json()["detail"]["code"] == "evidence_pending"
+    assert world.github.reviews == {}
+    assert (
+        crud.crud_platform_review_publication.get_for_execution(
+            world.db, execution_id=str(execution.id)
+        )
+        is None
+    )
+    _age(world, execution)
+    posted = ci_post(client, who, execution, {})
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["platform_review"]["status"] == "posted"
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
