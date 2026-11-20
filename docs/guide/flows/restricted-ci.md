@@ -1472,8 +1472,8 @@ flows. How many runs one pull request can start is bounded by
 `trigger_project_ids`, `trigger_config` (including `draft: false` and
 `labels`), `agent_config.limits`, the account kill switch, one active run
 per pull request, and `supersede_on_update`. There is no separate rate
-limit for this route. The threat model is in the
-[design note](../../architecture/platform-posted-review.md).
+limit for this route. The threat model is in the [platform-posted review
+architecture page](../../architecture/platform-posted-review.md).
 
 ### Posting modes
 
@@ -1730,7 +1730,13 @@ moment.
 | `complete` | The same as `captured`, and no record is incomplete for any reason, including a masked credential. |
 
 A masked credential still marks that gateway record incomplete. `captured`
-accepts that record; `complete` does not. Saving `captured` or `complete`
+accepts that record; `complete` does not. `captured` and `complete` both
+refuse a record changed by an unexplained scrub or by an account
+storage-redaction rule; a record masked only by named rules is still
+accepted by `captured` and refused by `complete`, and level `any` or a flow
+without the setting is unchanged. A native command with an unexplained
+scrub is stored with `capture_complete: false` and reason `unsafe_text`,
+the same as a gateway record. Saving `captured` or `complete`
 requires model-gateway content capture to be on for the instance
 (`MODEL_GATEWAY_CAPTURE_CONTENT`). Without it the setting is rejected,
 because the gate could never pass. That check is only at save. Turning
