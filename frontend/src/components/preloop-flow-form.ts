@@ -102,6 +102,10 @@ export const REVIEW_INSTRUCTIONS_PROMPT_CAP = 16384;
 /** Catalog slug of the Pull Request Reviewer preset. */
 export const REVIEWER_PRESET_SLUG = 'pull-request-reviewer';
 
+/** Guide section for the flow-wide `agent_config.reasoning_effort`. */
+export const FLOW_REASONING_EFFORT_DOCS_URL =
+  'https://docs.preloop.ai/guide/flows/model-routing#reasoning-effort-for-the-whole-flow';
+
 /** Docs for `.preloop/review-policy.md`, the same markdown this field stores. */
 export const REVIEW_POLICY_DOCS_URL =
   'https://docs.preloop.ai/guide/flows/pull-request-review#repository-review-policy';
@@ -2977,6 +2981,43 @@ export class PreloopFlowForm extends LitElement {
     this.requestUpdate();
   }
 
+  private flowReasoningEffortValue(): string {
+    const raw = this.parseAgentConfig(this.flow.agent_config).reasoning_effort;
+    return typeof raw === 'string' ? raw : '';
+  }
+
+  /**
+   * The flow-wide effort (agent_config.reasoning_effort). "Model default"
+   * removes the key; an untouched select leaves a stored value as it is.
+   */
+  private renderFlowReasoningEffortField() {
+    return html`<sl-select
+      label="Reasoning effort"
+      data-flow-reasoning-effort
+      .value=${this.flowReasoningEffortValue()}
+      @sl-change=${(e: Event) =>
+        this.setHarnessRoutingKey(
+          'reasoning_effort',
+          (e.target as HTMLSelectElement).value
+        )}
+    >
+      <sl-option value="">Model default</sl-option>
+      <sl-option value="low">Low</sl-option>
+      <sl-option value="medium">Medium</sl-option>
+      <sl-option value="high">High</sl-option>
+      <div slot="help-text">
+        Used when no label rule sets an effort. Whether the provider receives it
+        depends on the provider:
+        <a
+          href=${FLOW_REASONING_EFFORT_DOCS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          >reasoning effort</a
+        >.
+      </div>
+    </sl-select>`;
+  }
+
   /** Harness + model picker fed by the runners' harness inventory. */
   private renderHarnessPicker() {
     const hostType = this.hostExecAgentType();
@@ -5172,6 +5213,7 @@ export class PreloopFlowForm extends LitElement {
                             AI model
                           </sl-button>
                         </div>
+                        ${this.renderFlowReasoningEffortField()}
                         <sl-details
                           data-advanced="routing"
                           summary=${`Advanced model routing: ${this.routingRules.length} routing rules, ${this.labelRules.length} label rules`}
