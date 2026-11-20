@@ -1236,11 +1236,15 @@ exit $CODEX_EXIT_CODE
                 **self._review_binding_facts(execution_context)
             )
         )
+        note = self._review_time_left_note(execution_context)
+        note_call = (
+            f'    _pl_time_left_note "{REVIEW_CONTINUATION_PATH}"\n' if note else ""
+        )
         return f"""
 # A native-result review without a qualifying command did not read the
 # change. Start a bounded number of fresh sessions that must inspect first.
 {CONTINUATION_DIR_SETUP}
-_pl_review_continuation=0
+{note}_pl_review_continuation=0
 while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     && [ "$_pl_review_continuation" -lt {REVIEW_INSPECTION_CONTINUATIONS} ] \
     && ! {check}; do
@@ -1248,7 +1252,7 @@ while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":'"$_pl_review_continuation"',"reason":"no_repository_inspection"}}' \
         | tee -a "{AGENT_OUTPUT_LOG_PATH}"
     {{ cat "{PROMPT_FILE_PATH}"; printf %s {prompt}; }} > "{REVIEW_CONTINUATION_PATH}"
-    rm -f -- /workspace/result.json /workspace/.preloop-native-result.json
+{note_call}    rm -f -- /workspace/result.json /workspace/.preloop-native-result.json
     : > "{ATTEMPT_LOG_PATH}"
     set +e
     $PRELOOP_AS_AGENT codex exec {native_args} --json --skip-git-repo-check \
@@ -1262,6 +1266,48 @@ while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     fi
 done
 """
+
+    @staticmethod
+    def _review_time_left_note(execution_context: Dict[str, Any]) -> str:
+        """Shell that appends the time left to a continuation prompt file.
+
+        A bound review's continuation and repair sessions get prompts of
+        their own; they are told the time remaining at the moment each one
+        starts, not the original budget. The function takes the prompt file
+        as its only argument.
+
+        Args:
+            execution_context: Execution context.
+
+        Returns:
+            A shell function definition named ``_pl_time_left_note``, or an
+            empty string on runs that are not bound read-only reviews or that
+            carry no deadline.
+        """
+        from preloop.services.read_only_review import read_only_review
+
+        deadline = execution_context.get(RUN_DEADLINE_EPOCH_CONTEXT_KEY)
+        if (
+            not read_only_review(execution_context.get("git_clone_config"))
+            or not isinstance(deadline, (int, float))
+            or isinstance(deadline, bool)
+        ):
+            return ""
+        epoch = int(deadline)
+        return (
+            "_pl_time_left_note() {\n"
+            f"    _pl_left=$(( {epoch} - $(date +%s) ))\n"
+            '    [ "$_pl_left" -lt 0 ] && _pl_left=0\n'
+            "    printf '\\nTime left: %s seconds; this run is stopped at %s "
+            "(UTC). Run `date -u` to see the current time. Write your answer "
+            "before then. If you cannot finish, say so: do not report a pass "
+            "or no issues, use the failure or incomplete form the result "
+            "format defines, list what you verified and name what you did not "
+            'review.\\n\' "$_pl_left" '
+            f'"$(date -u -d @{epoch} +%Y-%m-%dT%H:%M:%SZ 2>/dev/null '
+            f'|| date -u -r {epoch} +%Y-%m-%dT%H:%M:%SZ)" >> "$1"\n'
+            "}\n"
+        )
 
     @staticmethod
     def _review_binding_facts(execution_context: Dict[str, Any]) -> Dict[str, str]:
@@ -1412,6 +1458,10 @@ sys.exit(1)
             if isinstance(deadline, (int, float)) and not isinstance(deadline, bool)
             else ""
         )
+        note = self._review_time_left_note(execution_context)
+        note_call = (
+            f'    _pl_time_left_note "{NATIVE_RESULT_REPAIR_PATH}"\n' if note else ""
+        )
         combined = ""
         if inspection_check:
             requirement = shlex.quote(
@@ -1429,7 +1479,7 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] \
     && ! _pl_repair_paths=$({check} {requirement}); then
     echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":1,"reason":"{UNINSPECTED_REPAIR_REASON}","paths":'"$_pl_repair_paths"'}}' \
         | tee -a "{AGENT_OUTPUT_LOG_PATH}"
-    _pl_repair_limit=""
+{note_call}    _pl_repair_limit=""
     if [ -n "$_pl_run_deadline" ]; then
         _pl_repair_limit="timeout -k 5 $(_pl_repair_left)"
     fi
@@ -1452,7 +1502,7 @@ fi
 # again, naming the errors, a bounded number of times within the run budget.
 {CONTINUATION_DIR_SETUP}
 _pl_run_deadline={deadline}
-_pl_repair_left() {{
+{note}_pl_repair_left() {{
     if [ -z "$_pl_run_deadline" ]; then echo 999999; return; fi
     echo $(( _pl_run_deadline - $(date +%s) - {NATIVE_RESULT_REPAIR_MARGIN_SECONDS} ))
 }}
@@ -1467,7 +1517,7 @@ while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     _pl_result_repair=$((_pl_result_repair + 1))
     echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":'"$_pl_result_repair"',"reason":"result_schema_invalid","paths":'"$_pl_repair_paths"'}}' \
         | tee -a "{AGENT_OUTPUT_LOG_PATH}"
-    _pl_repair_limit=""
+{note_call}    _pl_repair_limit=""
     if [ -n "$_pl_run_deadline" ]; then
         _pl_repair_limit="timeout -k 5 $(_pl_repair_left)"
     fi

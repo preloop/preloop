@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A read-only pull request review is now told its time limit: the preamble
+  states the total budget and the UTC time the run is stopped, which is the
+  deadline the orchestrator enforces from admission, and continuation and
+  repair sessions are told the time left. The reviewer is asked to write its
+  answer before the limit and, if it cannot finish, to say so in the result
+  schema's failure or incomplete form instead of reporting a pass. A review
+  result that says it did not finish is kept and readable, but is no longer
+  accepted as a verified review: before this change a schema-valid answer
+  with a status such as `incomplete` or `partial` could succeed and be posted
+  with its verdict.
+
 ### Security
 
 - The console and installer TLS proxy use NGINX 1.30.7 to address HTTP/2
