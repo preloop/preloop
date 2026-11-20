@@ -372,37 +372,20 @@ def upstream_route_summary(
     }
 
 
-def timings_projection(
-    execution: Any, requests: list[dict[str, Any]]
-) -> dict[str, Any]:
-    """Aggregate persisted request facts; unknown boundaries stay null.
+def effective_requests_projection(
+    requests: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Group recorded requests by the controls that actually reached upstream.
 
     Args:
-        execution: Authorized execution row.
         requests: Account- and execution-scoped gateway facts from CRUD.
 
     Returns:
-        Durations in seconds, counts of recorded requests and effective settings.
+        One entry per distinct model, provider, effort, output cap and
+        upstream summary, with how many requests used it.
     """
-    receipt = getattr(execution, "startup_receipt", None)
-    receipt = receipt if isinstance(receipt, dict) else {}
-    phases = receipt.get("_phases") or {}
-    facts = completion_facts(execution)
     effective: Counter[tuple[Any, ...]] = Counter()
-    retry_count: int | None = 0
-    total = 0.0
-    first_error = None
-    first_response_seconds: float | None = None
     for request in requests:
-        response_seconds = _seconds(
-            receipt.get("agent_started_at"), request.get("first_response_at")
-        )
-        if response_seconds is not None:
-            first_response_seconds = (
-                min(first_response_seconds, response_seconds)
-                if first_response_seconds is not None
-                else response_seconds
-            )
         params = request.get("upstream_parameters") or {}
         params = params if isinstance(params, dict) else {}
         effort = params.get("reasoning_effort")
@@ -423,6 +406,50 @@ def timings_projection(
                 _upstream_name(request.get("upstream_provider")),
             )
         ] += 1
+    return [
+        {
+            "model": key[0],
+            "provider": key[1],
+            "reasoning_effort": key[2],
+            "max_output_tokens": key[3],
+            "request_count": count,
+            "upstream_parameters": json.loads(key[4]),
+            "upstream_provider": key[5],
+        }
+        for key, count in effective.items()
+    ]
+
+
+def timings_projection(
+    execution: Any, requests: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Aggregate persisted request facts; unknown boundaries stay null.
+
+    Args:
+        execution: Authorized execution row.
+        requests: Account- and execution-scoped gateway facts from CRUD.
+
+    Returns:
+        Durations in seconds, counts of recorded requests and effective settings.
+    """
+    receipt = getattr(execution, "startup_receipt", None)
+    receipt = receipt if isinstance(receipt, dict) else {}
+    phases = receipt.get("_phases") or {}
+    facts = completion_facts(execution)
+    retry_count: int | None = 0
+    total = 0.0
+    first_error = None
+    first_response_seconds: float | None = None
+    for request in requests:
+        response_seconds = _seconds(
+            receipt.get("agent_started_at"), request.get("first_response_at")
+        )
+        if response_seconds is not None:
+            first_response_seconds = (
+                min(first_response_seconds, response_seconds)
+                if first_response_seconds is not None
+                else response_seconds
+            )
         duration = request.get("duration")
         if isinstance(duration, (int, float)) and duration >= 0:
             total += duration
@@ -465,18 +492,7 @@ def timings_projection(
         "first_causal_upstream_error_class": first_error
         if cause == "upstream_error"
         else None,
-        "effective_requests": [
-            {
-                "model": key[0],
-                "provider": key[1],
-                "reasoning_effort": key[2],
-                "max_output_tokens": key[3],
-                "request_count": count,
-                "upstream_parameters": json.loads(key[4]),
-                "upstream_provider": key[5],
-            }
-            for key, count in effective.items()
-        ],
+        "effective_requests": effective_requests_projection(requests),
         **upstream_route_summary(execution, requests),
     }
 

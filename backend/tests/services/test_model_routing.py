@@ -2130,3 +2130,120 @@ class TestModelByLabel:
         assert record["rule_id"] == "by-label-1"
         assert "matched_label" not in record
         assert "reasoning_effort" not in record
+
+
+class TestFlowReasoningEffort:
+    """``agent_config.reasoning_effort``: a flow-wide effort without label rules."""
+
+    @pytest.mark.parametrize("effort", ["low", "medium", "high"])
+    def test_flow_effort_applies_when_no_rule_matches(
+        self, db_session: Session, test_user: User, effort: str
+    ):
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=default.id,
+            extra_config={"reasoning_effort": effort},
+        )
+        record = prepare_execution_routing(
+            db_session, flow, {"payload": {"labels": ["bug"]}}
+        )[ROUTING_RECORD_KEY]
+        assert record["source"] == "default"
+        assert record["ai_model_id"] == str(default.id)
+        assert record["reasoning_effort"] == effort
+        assert f"Flow reasoning effort {effort}." in record["reason"]
+
+    def test_label_rule_effort_beats_flow_effort(
+        self, db_session: Session, test_user: User
+    ):
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=default.id,
+            extra_config={
+                "reasoning_effort": "low",
+                "model_by_label": [
+                    {"label": "complexity:high", "reasoning_effort": "high"}
+                ],
+            },
+        )
+        matched = prepare_execution_routing(
+            db_session, flow, {"payload": {"labels": ["complexity:high"]}}
+        )[ROUTING_RECORD_KEY]
+        assert matched["source"] == "label"
+        assert matched["reasoning_effort"] == "high"
+        unmatched = prepare_execution_routing(
+            db_session, flow, {"payload": {"labels": ["bug"]}}
+        )[ROUTING_RECORD_KEY]
+        assert unmatched["source"] == "default"
+        assert unmatched["reasoning_effort"] == "low"
+
+    def test_model_only_label_rule_keeps_flow_effort(
+        self, db_session: Session, test_user: User
+    ):
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        big = _usable_model(db_session, test_user.account_id, name="Big")
+        flow = _flow(
+            db_session,
+            test_user,
+            ai_model_id=default.id,
+            extra_config={
+                "reasoning_effort": "low",
+                "model_by_label": [
+                    {"label": "complexity:high", "ai_model_id": str(big.id)}
+                ],
+            },
+        )
+        record = prepare_execution_routing(
+            db_session, flow, {"payload": {"labels": ["complexity:high"]}}
+        )[ROUTING_RECORD_KEY]
+        assert record["ai_model_id"] == str(big.id)
+        assert record["reasoning_effort"] == "low"
+
+    def test_no_flow_effort_records_none(self, db_session: Session, test_user: User):
+        default = _usable_model(db_session, test_user.account_id, name="Default")
+        flow = _flow(db_session, test_user, ai_model_id=default.id)
+        record = prepare_execution_routing(
+            db_session, flow, {"payload": {"labels": []}}
+        )[ROUTING_RECORD_KEY]
+        assert "reasoning_effort" not in record
+
+    @pytest.mark.parametrize("value", ["max", "LOW", "", 3, ["low"]])
+    def test_invalid_flow_effort_rejected_on_create(
+        self, client: TestClient, db_session: Session, test_user: User, value
+    ):
+        response = client.post(
+            "/api/v1/flows",
+            json={
+                "name": f"Bad effort {uuid4().hex[:8]}",
+                "prompt_template": "go",
+                "agent_type": "codex",
+                "agent_config": {"reasoning_effort": value},
+            },
+        )
+        assert response.status_code == 422
+        assert "agent_config.reasoning_effort" in response.json()["detail"]
+
+    @pytest.mark.parametrize("effort", ["low", "medium", "high"])
+    def test_valid_flow_effort_saved_and_invalid_update_rejected(
+        self, client: TestClient, db_session: Session, test_user: User, effort: str
+    ):
+        created = client.post(
+            "/api/v1/flows",
+            json={
+                "name": f"Effort {uuid4().hex[:8]}",
+                "prompt_template": "go",
+                "agent_type": "codex",
+                "agent_config": {"reasoning_effort": effort},
+            },
+        )
+        assert created.status_code in (200, 201), created.text
+        assert created.json()["agent_config"]["reasoning_effort"] == effort
+        rejected = client.put(
+            f"/api/v1/flows/{created.json()['id']}",
+            json={"agent_config": {"reasoning_effort": "extreme"}},
+        )
+        assert rejected.status_code == 422
+        assert "agent_config.reasoning_effort" in rejected.json()["detail"]
