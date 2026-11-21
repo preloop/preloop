@@ -63,8 +63,10 @@ import {
   formatEstimatedCost,
   isWaitingForRunnerOwner,
   formatTokenCount,
+  executionEffortSent,
   renderExecutionModel,
   renderExecutionRunner,
+  type ExecutionEffectiveRequest,
   type ExecutionModelSource,
   type ExecutionModelUsage,
   type ExecutionRunner,
@@ -163,6 +165,8 @@ interface FlowExecution {
    * for other routes and on older servers.
    */
   upstream_route?: ExecutionUpstreamRoute | null;
+  /** What reached the provider, grouped. Absent on older servers. */
+  effective_requests?: ExecutionEffectiveRequest[] | null;
   runner?: ExecutionRunner | null;
   actions_taken_summary?: any[];
   model_output_summary?: string;
@@ -4077,6 +4081,16 @@ ${execution.resolved_input_prompt}</pre>
    * when no request finished with stop, and hidden when the route recorded
    * no upstream.
    */
+  /** The effort sent to the provider; hidden when none was sent. */
+  private renderEffortSentStripItem(execution: FlowExecution) {
+    const effort = executionEffortSent(execution.effective_requests);
+    if (!effort) return '';
+    return html`<div class="strip-item">
+      <span class="strip-label">Effort sent</span>
+      <span class="strip-value" data-testid="strip-effort">${effort}</span>
+    </div>`;
+  }
+
   private renderUpstreamStripItem(execution: FlowExecution) {
     const providers = execution.upstream_route?.upstream_providers ?? [];
     if (providers.length === 0) {
@@ -4306,6 +4320,7 @@ ${execution.resolved_input_prompt}</pre>
             >${renderExecutionModel(this.getExecutionModelSource(execution))}</span
           >
         </div>
+        ${this.renderEffortSentStripItem(execution)}
         ${this.renderUpstreamStripItem(execution)}
         <div class="strip-item">
           <span class="strip-label">Tokens</span>
