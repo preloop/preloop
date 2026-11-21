@@ -634,3 +634,25 @@ async def test_listed_repository_with_ci_and_events_runs_once_per_start(
     finish(world, running)
     rows = await deliver(world, _event(world, project, sha=HEAD))
     assert len(rows) == 2
+
+
+def test_run_without_a_binding_is_not_reported_out_of_scope(
+    db_session: Session, test_user: Any
+) -> None:
+    from preloop.models.crud.base import CRUDBase
+
+    world = world_for(db_session, test_user, projects=2)
+    scope(world, world.projects[0])
+    execution = CRUDBase(models.FlowExecution).create(
+        world.db,
+        obj_in={
+            "flow_id": world.flow.id,
+            "status": "SUCCEEDED",
+            "end_time": datetime.now(timezone.utc),
+        },
+    )
+    projection = platform_review.platform_review_projection(world.db, execution)
+    assert projection is not None
+    assert projection["status"] == "pending"
+    assert projection["reason"] is None
+    assert "project_in_posting_scope" not in projection

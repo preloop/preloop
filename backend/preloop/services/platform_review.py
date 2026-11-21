@@ -3226,8 +3226,12 @@ def platform_review_projection(
         stored = parse_stored_review_binding(
             getattr(execution, "ci_review_binding", None)
         )
-        in_scope = stored is not None and project_in_posting_scope(
-            flow.git_clone_config, stored.project_id
+        # A run without a binding has no project to compare: it is not
+        # known to be outside the list, so the key stays unset.
+        in_scope = (
+            None
+            if stored is None
+            else project_in_posting_scope(flow.git_clone_config, stored.project_id)
         )
     if row is None:
         binding = getattr(execution, "ci_review_binding", None)

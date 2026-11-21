@@ -458,8 +458,12 @@ export class FlowPlatformReviewCard extends LitElement {
     const noun = admitted.length === 1 ? 'repository' : 'repositories';
     const which = names.length ? `: ${names.join(', ')}` : '';
     return html`<p class="meta" data-posting-projects>
-      ${`Posts for ${count} of ${admitted.length} ${noun}${which}.`} Other
-      repositories keep running; Preloop does not post their reviews.
+      ${`Posts for ${count} of ${admitted.length} ${noun}${which}.`}
+      ${
+        count < admitted.length
+          ? 'Other repositories keep running; Preloop does not post their reviews.'
+          : nothing
+      }
     </p>`;
   }
 

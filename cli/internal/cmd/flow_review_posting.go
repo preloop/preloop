@@ -153,7 +153,7 @@ func newReviewPostingWriteCmd(operation string) *cobra.Command {
 	cmd.Flags().StringVar(&flags.evidence, "evidence", "", "which stored tool evidence may be posted: any, captured or complete")
 	if operation == "enable" {
 		cmd.Flags().BoolVar(&flags.noStatus, "no-status", false, "post the review only, no commit status")
-		cmd.Flags().StringArrayVar(&flags.projects, "project", nil, "post only for this project of the flow, repeatable (default: every project); on an event-started review it also limits where an event starts one")
+		cmd.Flags().StringArrayVar(&flags.projects, "project", nil, "post only for this project of the flow, repeatable; replaces the stored list. Without it a stored list is kept, and a flow without one posts for every project; set-projects --all clears it. On an event-started review it also limits where an event starts one")
 	}
 	cmd.Flags().BoolVar(&flags.asJSON, "json", false, "print the saved platform_review block as JSON")
 	return cmd

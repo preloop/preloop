@@ -575,4 +575,21 @@ describe('flow-platform-review-card', () => {
     expect(saved.enabled).to.equal(false);
     expect(saved).to.not.have.property('project_ids');
   });
+
+  it('does not mention other repositories when the list covers them all', async () => {
+    const element = await mount({
+      ...FLOW,
+      trigger_project_ids: ['p1'],
+      git_clone_config: {
+        ...FLOW.git_clone_config,
+        repositories: [
+          { tracker_id: 't1', project_id: 'p1', identifier: 'acme/api' },
+        ],
+        platform_review: { enabled: true, project_ids: ['p1'] },
+      },
+    });
+    const note = q(element, '[data-posting-projects]');
+    expect(note.textContent).to.contain('Posts for 1 of 1 repository');
+    expect(note.textContent).to.not.contain('Other repositories');
+  });
 });

@@ -693,3 +693,30 @@ func TestReviewPostingShowsTheProjectScope(t *testing.T) {
 		t.Fatal("the refusal reason needs its own text")
 	}
 }
+
+func TestReviewPostingEnableWithoutProjectKeepsTheStoredList(t *testing.T) {
+	flow := scopedReviewFlow()
+	config := flow["git_clone_config"].(map[string]any)
+	config["platform_review"] = map[string]any{"enabled": false}
+	state := &reviewPostingServer{flow: flow}
+	startReviewPostingServer(t, state)
+	if out, err := runReviewPosting(t, "enable", reviewFlowID, "--no-status"); err != nil {
+		t.Fatalf("enable: %v\n%s", err, out)
+	}
+	if _, ok := savedBlock(t, state)["project_ids"]; ok {
+		t.Fatalf("a flow without a list must post for every project: %v", savedBlock(t, state))
+	}
+	config = state.flow["git_clone_config"].(map[string]any)
+	config["platform_review"] = map[string]any{"enabled": true, "project_ids": []any{postingProjectA}}
+	if out, err := runReviewPosting(t, "enable", reviewFlowID, "--no-status"); err != nil {
+		t.Fatalf("enable: %v\n%s", err, out)
+	}
+	if ids, _ := savedBlock(t, state)["project_ids"].([]any); len(ids) != 1 || ids[0] != postingProjectA {
+		t.Fatalf("a stored list must be kept: %v", savedBlock(t, state))
+	}
+	cmd := newFlowReviewPostingCmd()
+	enable, _, _ := cmd.Find([]string{"enable"})
+	if help := enable.Flags().Lookup("project").Usage; !strings.Contains(help, "stored list is kept") {
+		t.Fatalf("help = %q", help)
+	}
+}
