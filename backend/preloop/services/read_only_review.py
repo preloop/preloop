@@ -23,6 +23,69 @@ READ_ONLY_NATIVE_AGENT_TYPES: frozenset[str] = frozenset({"codex"})
 SERVER_POOL = "server"
 AUTO_POOL = "auto"
 
+#: Stands in the bound-review preamble for the time-limit paragraph. The
+#: prompt is assembled before admission, and the deadline is anchored at
+#: admission, so the orchestrator replaces this with
+#: :func:`state_review_deadline` when it fixes the deadline.
+REVIEW_DEADLINE_PLACEHOLDER = "[time limit: stated when the run is admitted]\n"
+
+#: What a bound reviewer is told to do with its time limit. The result schema
+#: belongs to the flow owner, so this names no fields.
+REVIEW_DEADLINE_GUIDANCE = (
+    "Run `date -u` to see the current time. Plan your reading so that your "
+    "answer is written before the limit: a run that reaches the limit without "
+    "an answer returns nothing. If you cannot finish the review in time, say "
+    "so in your answer. Never report a pass or no issues for a change you "
+    "have not finished reading. Use the failure or incomplete form that the "
+    "result format defines, list the findings you have verified so far, and "
+    "name the files or areas you did not review.\n"
+)
+
+
+def review_deadline_text(budget_seconds: int | None, deadline: datetime | None) -> str:
+    """The time-limit paragraph of a bound-review preamble.
+
+    Args:
+        budget_seconds: The run's total budget, as the monitor enforces it.
+        deadline: The absolute time the monitor stops the run.
+
+    Returns:
+        The paragraph, ending in a newline. Without a budget or deadline it
+        keeps the guidance and states no time it cannot vouch for.
+    """
+    if budget_seconds is None or deadline is None:
+        return "Time limit: this run has a time limit. " + REVIEW_DEADLINE_GUIDANCE
+    at = deadline.astimezone(timezone.utc).replace(microsecond=0)
+    return (
+        f"Time limit: this run has {int(budget_seconds)} seconds in total, "
+        f"counted from when it was admitted, and is stopped at "
+        f"{at.strftime('%Y-%m-%dT%H:%M:%SZ')} (UTC). " + REVIEW_DEADLINE_GUIDANCE
+    )
+
+
+def state_review_deadline(
+    context: dict[str, Any],
+    budget_seconds: int | None,
+    deadline: datetime | None,
+) -> None:
+    """Replace the preamble placeholder with the enforced time limit.
+
+    A prompt without the placeholder (any run that is not a bound read-only
+    review, or one already stated) is left unchanged.
+
+    Args:
+        context: Execution context whose ``prompt`` is updated in place.
+        budget_seconds: The run's total budget.
+        deadline: The absolute time the run is stopped.
+    """
+    prompt = context.get("prompt")
+    if isinstance(prompt, str) and REVIEW_DEADLINE_PLACEHOLDER in prompt:
+        context["prompt"] = prompt.replace(
+            REVIEW_DEADLINE_PLACEHOLDER,
+            review_deadline_text(budget_seconds, deadline),
+            1,
+        )
+
 
 def read_only_review(config: Any) -> bool:
     """Whether an administrator selected the read-only review contract."""
@@ -409,7 +472,9 @@ async def prepare_read_only_review(
         + 'Before answering, read `git diff "$PRELOOP_REVIEW_BASE_SHA"...'
         '"$PRELOOP_REVIEW_HEAD_SHA"` and the changed files. '
         "Return an evidence-based review with actionable findings, or a clear "
-        "no-issues conclusion. If the change cannot be read, report failure.\n\n"
+        "no-issues conclusion. If the change cannot be read, report failure.\n"
+        + REVIEW_DEADLINE_PLACEHOLDER
+        + "\n"
         + context.get("prompt", "")
     )
     if not mint:

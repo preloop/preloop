@@ -40,6 +40,31 @@ CATEGORY_BINDING_MISMATCH = "review_binding_mismatch"
 CATEGORY_NOT_INSPECTED = "review_not_inspected"
 CATEGORY_DEGENERATE = "review_degenerate"
 
+#: ``status`` values by which a review says it did not finish. A reviewer
+#: that runs out of time is told to answer in the schema's failure or
+#: incomplete form; such an answer is kept but is never a verified review.
+DECLARED_UNFINISHED_STATUSES: frozenset[str] = frozenset(
+    {
+        "error",
+        "failed",
+        "failure",
+        "incomplete",
+        "partial",
+        "unfinished",
+        "timeout",
+        "timed_out",
+        "cancelled",
+        "canceled",
+        "in_progress",
+        "running",
+        "pending",
+    }
+)
+#: ``verdict`` values with the same meaning. ``fail`` is a finished review.
+DECLARED_UNFINISHED_VERDICTS: frozenset[str] = frozenset(
+    {"error", "incomplete", "partial", "unfinished"}
+)
+
 STATUS_VERIFIED = "verified"
 STATUS_REJECTED = "rejected"
 STATUS_NOT_APPLICABLE = "not_applicable"
@@ -286,6 +311,28 @@ def degenerate_review(flow: Any, document: Mapping[str, Any]) -> bool:
     )
 
 
+def declared_unfinished(document: Any) -> bool:
+    """Whether a review document says the review did not finish.
+
+    Args:
+        document: The captured result document.
+
+    Returns:
+        True when its top-level ``status`` or ``verdict`` is a failure or
+        incomplete value.
+    """
+    if not isinstance(document, Mapping):
+        return False
+    for field, values in (
+        ("status", DECLARED_UNFINISHED_STATUSES),
+        ("verdict", DECLARED_UNFINISHED_VERDICTS),
+    ):
+        value = document.get(field)
+        if isinstance(value, str) and value.strip().lower() in values:
+            return True
+    return False
+
+
 def evaluate(
     flow: Any,
     *,
@@ -349,6 +396,12 @@ def evaluate(
     if degenerate:
         reasons.insert(0, "narrative_not_substantive")
         category = CATEGORY_DEGENERATE
+    if declared_unfinished(document):
+        # The reviewer says it did not finish: whatever else it wrote is not
+        # a review of this change. Reported under the degenerate category,
+        # with its own reason, so the published categories stay the same.
+        reasons.insert(0, "review_declared_incomplete")
+        category = CATEGORY_DEGENERATE
     return {
         "status": STATUS_REJECTED if category else STATUS_VERIFIED,
         "category": category,
@@ -368,6 +421,11 @@ def evaluate(
 def failure_message(outcome: Mapping[str, Any]) -> str:
     """A stable, value-free message for the execution row."""
     reasons = ", ".join(outcome.get("reasons") or []) or "unverified"
+    if "review_declared_incomplete" in (outcome.get("reasons") or []):
+        return (
+            "review_degenerate: the review says it did not finish, so it is "
+            "kept but its verdict is not recorded"
+        )
     if outcome.get("category") == CATEGORY_DEGENERATE:
         return "review_degenerate: a required narrative is too short or the review contains only a word without findings"
     if outcome.get("category") == CATEGORY_NOT_INSPECTED:
