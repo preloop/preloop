@@ -236,7 +236,9 @@ def test_result_text_covers_strings_tool_results_and_blocks() -> None:
 
 def test_deny_rule_reports_types_paths_and_hash_only(mocker) -> None:
     audit = mocker.patch.object(policy_evaluator, "_log_policy_decision_async")
-    account_id = uuid.uuid4()
+    # Fixed id: a random uuid's hex can contain "4111" and fail the leak
+    # check below for reasons unrelated to the card number.
+    account_id = uuid.UUID("00000000-0000-4000-8000-000000000001")
     outcome = evaluate_tool_target(
         config=_config(_rule()),
         detector_config=None,
@@ -266,6 +268,7 @@ def test_deny_rule_reports_types_paths_and_hash_only(mocker) -> None:
     assert kwargs["extra_details"]["types_found"] == ["credit_card"]
     assert kwargs["extra_details"]["source"] == SOURCE_SENSITIVE_DATA_RULE
     assert "4111" not in repr(kwargs)
+    assert CARD.replace(" ", "") not in repr(kwargs).replace(" ", "")
 
 
 def test_no_rule_in_scope_runs_no_detector(mocker) -> None:

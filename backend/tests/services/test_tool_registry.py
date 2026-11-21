@@ -1,5 +1,6 @@
 """Approve-once registry persistence and lifecycle regression tests."""
 
+import re
 import asyncio
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -409,8 +410,9 @@ def test_registry_existing_route_performance(
     db_session: Session,
     test_user: models.User,
 ) -> None:
-    """protects=10k-route lookup stays indexed and p95 below 10ms;
-    fails_when=sequential scans or p95 >= 10ms; no_claim=native local PG, not Docker.
+    """protects=10k-route lookup stays indexed and touches a bounded page count;
+    fails_when=sequential scans or a lookup reads pages in proportion to the table;
+    no_claim=wall-clock latency, which depends on runner load and is only printed.
     """
     from datetime import datetime, timezone
     from time import perf_counter
@@ -455,7 +457,7 @@ def test_registry_existing_route_performance(
         row[0]
         for row in db_session.execute(
             text(
-                "EXPLAIN ANALYZE SELECT * FROM tool_registry_entry "
+                "EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM tool_registry_entry "
                 "WHERE account_id=:account AND tool_source='mcp' "
                 "AND mcp_server_id IS NULL AND server_label='docs' AND tool_name='fetch_1'"
             ),
@@ -463,8 +465,15 @@ def test_registry_existing_route_performance(
         )
     )
     print(f"registry existing-route p95={p95:.3f} ms\n{plan}")
-    assert p95 < 10
     assert "Index Scan using uq_tool_registry_entry" in plan
+    # A unique-index probe on 10k rows reads a few pages (btree root, leaf,
+    # heap). A sequential scan reads the whole heap, well over 100 pages.
+    # Page counts do not change with runner load the way p95 latency does.
+    pages = sum(
+        int(n)
+        for n in re.findall(r"shared (?:hit|read)=(\d+)", plan.split("Planning")[0])
+    )
+    assert 0 < pages <= 16, plan
 
 
 @pytest.mark.asyncio

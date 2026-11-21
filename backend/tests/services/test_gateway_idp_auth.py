@@ -358,12 +358,28 @@ def test_unavailable_issuer_warning_is_rate_limited(caplog):
         for _ in range(3):
             _reason(sign(), stub=stub, cache=cache)
             clock.now += 61
-    assert len([r for r in caplog.records if "unavailable" in r.message]) == 3
+    assert len(_issuer_unavailable_warnings(caplog)) == 3
     caplog.clear()
     with caplog.at_level("WARNING", logger="preloop.services.gateway_idp_auth"):
         _reason(sign(), stub=stub, cache=cache)
         _reason(sign(), stub=stub, cache=cache)
-    assert len([r for r in caplog.records if "unavailable" in r.message]) <= 1
+    assert len(_issuer_unavailable_warnings(caplog)) <= 1
+
+
+def _issuer_unavailable_warnings(
+    caplog: pytest.LogCaptureFixture,
+) -> list[logging.LogRecord]:
+    """Return only this module's issuer-unavailable warnings.
+
+    caplog also collects records from other loggers, and other gateway
+    warnings contain the word "unavailable", so match logger and template.
+    """
+    return [
+        r
+        for r in caplog.records
+        if r.name == "preloop.services.gateway_idp_auth"
+        and r.msg == "Gateway IdP issuer unavailable (issuer=%s): %s"
+    ]
 
 
 def test_cache_ttl_is_clamped():
