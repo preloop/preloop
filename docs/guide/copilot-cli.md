@@ -215,7 +215,8 @@ Tool permissions are local to the profile:
 - `allow_all_tools: true` passes `--allow-all-tools`. The runner refuses it
   unless the Preloop approval hook is installed
   (`preloop agents onboard "Copilot CLI" --approvals`), so every tool call
-  still goes through Preloop policy.
+  still goes through Preloop policy. If that hook cannot reach Preloop, see
+  [If approvals cannot reach Preloop](cli.md#if-approvals-cannot-reach-preloop).
 - `force_writes`, `--allow-all`, `--yolo`, `--model`, `--agent`, prompt,
   resume and MCP flags cannot be set in profile `argv`. That includes
   `--additional-mcp-config`: the operator cannot supply or replace the

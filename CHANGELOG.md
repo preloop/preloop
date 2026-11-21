@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The guide documents `preloop agents pause` and `preloop agents resume`
+  for when an approval hook cannot reach Preloop. See
+  [If approvals cannot reach Preloop](docs/guide/cli.md#if-approvals-cannot-reach-preloop).
 - A read-only review flow can be started by a GitHub pull request event and
   Preloop posts the review and the commit status, with no CI identity. The
   run stays read-only.

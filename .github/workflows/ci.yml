@@ -123,6 +123,7 @@ jobs:
       contents: read
     name: Pick test runner
     needs: [changes, fast]
+    if: ${{ !cancelled() && needs.fast.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -456,7 +457,7 @@ jobs:
   test-cli-linux:
     name: CLI Tests (Linux)
     needs: [changes, fast]
-    if: needs.changes.outputs.cli == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.cli == 'true') }}
     permissions:
       contents: read
     runs-on: ubuntu-24.04
@@ -505,7 +506,7 @@ jobs:
 
   review:
     needs: fast
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
     permissions:
       contents: read
       pull-requests: read
@@ -521,7 +522,7 @@ jobs:
   recover-capacity:
     name: Start recovery only for assigned private capacity
     needs: pick-runner
-    if: needs.pick-runner.outputs.self_hosted == 'true' && github.run_attempt == 1
+    if: ${{ !cancelled() && needs.pick-runner.result == 'success' && (needs.pick-runner.outputs.self_hosted == 'true' && github.run_attempt == 1) }}
     permissions:
       contents: read
       actions: write
@@ -547,7 +548,7 @@ jobs:
     name: Helm Chart Checks
     runs-on: ubuntu-24.04
     needs: [changes, fast]
-    if: needs.changes.outputs.helm == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.helm == 'true') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -612,7 +613,7 @@ jobs:
     # rerun a successful picker. Recovery must never requeue a lost spot slot.
     runs-on: ${{ github.run_attempt > 1 && 'ubuntu-24.04' || fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
     needs: [changes, pick-runner, fast]
-    if: needs.changes.outputs.backend == 'true'
+    if: ${{ !cancelled() && needs.pick-runner.result == 'success' && needs.fast.result == 'success' && (needs.changes.outputs.backend == 'true') }}
     # Hang bound, not a speed target: hosted shards take 5-12 min, but the
     # self-hosted pool (6-CPU slice shared by three runners) measured 11-15+,
     # and 15 cancelled healthy shards there.
@@ -778,7 +779,7 @@ jobs:
     name: Backend Coverage
     runs-on: ubuntu-24.04
     needs: [changes, test-backend]
-    if: needs.changes.outputs.backend == 'true'
+    if: ${{ !cancelled() && needs.test-backend.result == 'success' && (needs.changes.outputs.backend == 'true') }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -845,7 +846,7 @@ jobs:
     name: Frontend Tests
     runs-on: ubuntu-24.04
     needs: [changes, fast]
-    if: needs.changes.outputs.frontend == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.frontend == 'true') }}
     timeout-minutes: 45
     defaults:
       run:
@@ -959,7 +960,7 @@ jobs:
     name: Runtime Plugin Tests
     runs-on: ubuntu-24.04
     needs: [changes, fast]
-    if: needs.changes.outputs.plugins == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.plugins == 'true') }}
     timeout-minutes: 30
 
     steps:
@@ -1086,7 +1087,7 @@ jobs:
     name: CLI Tests (Windows)
     runs-on: windows-latest
     needs: [changes, fast]
-    if: needs.changes.outputs.cli == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.cli == 'true') }}
 
     defaults:
       run:
@@ -1131,7 +1132,7 @@ jobs:
     name: Egress Proxy
     runs-on: ubuntu-24.04
     needs: [changes, fast]
-    if: needs.changes.outputs.egress == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.egress == 'true') }}
     defaults:
       run:
         working-directory: environments/egress-proxy
@@ -1166,7 +1167,7 @@ jobs:
     name: Browser profile
     runs-on: ubuntu-24.04
     needs: [changes, fast]
-    if: needs.changes.outputs.browser == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.browser == 'true') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1240,6 +1241,7 @@ jobs:
       contents: read
     name: CLI Vulnerability Scan
     needs: fast
+    if: ${{ !cancelled() && needs.fast.result == 'success' }}
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -1272,7 +1274,7 @@ jobs:
   # so a checkout/filter crash cannot leave this job green with no tests.
   leaf-parity:
     needs: [changes, fast]
-    if: needs.changes.outputs.parity == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.parity == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/discovery-parity.yml
@@ -1282,7 +1284,7 @@ jobs:
 
   leaf-windows:
     needs: [changes, fast]
-    if: needs.changes.outputs.windows == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.windows == 'true') }}
     permissions:
       contents: read
       pull-requests: read
@@ -1293,7 +1295,7 @@ jobs:
 
   leaf-docs:
     needs: [changes, fast]
-    if: needs.changes.outputs.docs == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.docs == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/docs.yml
@@ -1303,7 +1305,7 @@ jobs:
 
   leaf-fuzz:
     needs: [changes, fast]
-    if: needs.changes.outputs.fuzz == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.fuzz == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/fuzz.yml
@@ -1313,7 +1315,7 @@ jobs:
 
   leaf-browser-fixture:
     needs: [changes, fast]
-    if: needs.changes.outputs.browser_fixture == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.browser_fixture == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/browser-fixture.yml
@@ -1323,7 +1325,7 @@ jobs:
 
   leaf-totp:
     needs: [changes, fast]
-    if: needs.changes.outputs.totp == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.totp == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/totp-e2e.yml
@@ -1333,7 +1335,7 @@ jobs:
 
   leaf-release-validation:
     needs: [changes, fast]
-    if: needs.changes.outputs.release_validation == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.release_validation == 'true') }}
     # Read-only scopes the callee's dispatch-only remote-audit job declares;
     # GitHub rejects the whole run at startup if a caller grants less.
     permissions:
@@ -1349,7 +1351,7 @@ jobs:
 
   leaf-upgrade:
     needs: [changes, fast]
-    if: needs.changes.outputs.upgrade == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.upgrade == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/upgrade-acceptance.yml
@@ -1359,7 +1361,7 @@ jobs:
 
   leaf-claude:
     needs: [changes, fast]
-    if: needs.changes.outputs.claude == 'true'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.claude == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/claude-code-e2e.yml
@@ -1369,7 +1371,7 @@ jobs:
 
   full-codeql:
     needs: fast
-    if: github.event_name != 'pull_request' && github.event_name != 'push'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (github.event_name != 'pull_request' && github.event_name != 'push') }}
     permissions:
       contents: read
       actions: read
@@ -1382,7 +1384,7 @@ jobs:
 
   full-secret-scan:
     needs: fast
-    if: github.event_name != 'pull_request' && github.event_name != 'push'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (github.event_name != 'pull_request' && github.event_name != 'push') }}
     permissions:
       contents: read
       security-events: write
@@ -1393,7 +1395,7 @@ jobs:
 
   full-zizmor:
     needs: fast
-    if: github.event_name != 'pull_request' && github.event_name != 'push'
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (github.event_name != 'pull_request' && github.event_name != 'push') }}
     permissions:
       contents: read
     uses: ./.github/workflows/zizmor.yml
@@ -1414,6 +1416,11 @@ jobs:
           CI_RUN_ID: ${{ github.run_id }}
         run: gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID/cancel"
 
+  # Required aggregate. Jobs below `fast` use `${{ !cancelled() && needs.<need>.result
+  # == 'success' && ... }}`: the implicit success() is false when any ancestor
+  # was skipped by a path filter, which skipped every selected leaf. A selected
+  # job runs once `fast` succeeded; when `fast` or `changes` failed or the run
+  # was cancelled nothing runs and this job fails; unselected jobs stay skipped.
   ci:
     permissions:
       contents: read
