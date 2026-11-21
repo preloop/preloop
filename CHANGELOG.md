@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A flow can set `agent_config.reasoning_effort` (`low`, `medium` or `high`)
+  to change how hard its model thinks, without label rules. A label rule
+  that sets an effort still wins. For DeepSeek models, the gateway now sends
+  the effort as DeepSeek's documented `reasoning_effort` field. The execution
+  detail now includes `effective_requests`, which shows the effort that
+  actually reached the provider. Nothing changes for flows that set no
+  effort.
+
 ### Security
 
 - The console and installer TLS proxy use NGINX 1.30.7 to address HTTP/2
@@ -21,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The guide documents `preloop agents pause` and `preloop agents resume`
+  for when an approval hook cannot reach Preloop. See
+  [If approvals cannot reach Preloop](docs/guide/cli.md#if-approvals-cannot-reach-preloop).
 - A read-only review flow can be started by a GitHub pull request event and
   Preloop posts the review and the commit status, with no CI identity. The
   run stays read-only.

@@ -144,7 +144,8 @@ know this run was spawned from another conversation.
   `preToolUse` hook answers Shell and MCP tools locally (they are already
   gated by the two `before*` hooks) and only raises approvals for native
   file tools such as `Write`, `StrReplace`, and `Delete`, so one command
-  creates one approval request.
+  creates one approval request. If that hook cannot reach Preloop, see
+  [If approvals cannot reach Preloop](cli.md#if-approvals-cannot-reach-preloop).
 - `preloop usage import` records billed Cursor dashboard exports as
   imported spend. Reconciled per-conversation amounts supersede these
   estimates in Cost analytics summaries; the two bases are never summed.

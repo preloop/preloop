@@ -213,6 +213,8 @@ preloop agents onboard "claude code" --approvals
 
 This installs a `PreToolUse` hook entry in `~/.claude/settings.json` that runs `preloop agents permission-hook --source claude_code` before each tool call, plus a per-agent credential under `~/.preloop/agents/`. Because Claude Code's `PreToolUse` fires on *every* tool call, the hook first evaluates your own Claude Code permission settings and only escalates calls that **would have prompted you**, those become Preloop approval requests you can answer from the [mobile apps](mobile-apps.md), watch, or web console. Calls your own config already allows proceed untouched.
 
+If that hook cannot reach Preloop, see [If approvals cannot reach Preloop](../cli.md#if-approvals-cannot-reach-preloop).
+
 <!-- TODO screenshot: `claude-cli-approval-flow.png` -->
 
 ---

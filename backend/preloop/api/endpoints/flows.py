@@ -1684,17 +1684,28 @@ def read_flow_execution(
         db, account_id=current_user.account_id, execution=execution
     )
     execution.platform_review = _platform_review_with_links(db, execution)
-    execution.upstream_route = _execution_upstream_route(
+    # One usage query feeds both projections of the same request facts.
+    request_facts = _execution_request_facts(
         db, execution, account_id=current_user.account_id
+    )
+    execution.upstream_route = _execution_upstream_route(
+        db, execution, account_id=current_user.account_id, requests=request_facts
+    )
+    execution.effective_requests = _execution_effective_requests(
+        db, execution, account_id=current_user.account_id, requests=request_facts
     )
 
     return execution
 
 
-def _execution_upstream_route(
+#: Marks "not fetched yet" apart from a fetch that failed (None).
+_UNFETCHED: Any = object()
+
+
+def _execution_request_facts(
     db: Session, execution: Any, *, account_id: Any
-) -> Optional[Dict[str, Any]]:
-    """Summarise the OpenRouter upstream providers an execution used.
+) -> Optional[List[Dict[str, Any]]]:
+    """Load the execution's recorded request facts, or None when that fails.
 
     Args:
         db: Database session.
@@ -1702,21 +1713,79 @@ def _execution_upstream_route(
         account_id: Caller's account, enforced again by the query.
 
     Returns:
-        The route summary, or None when no upstream provider was recorded.
+        Request facts in completion order, or None when the read failed.
     """
-    from preloop.services.review_completion_evidence import upstream_route_summary
-
     try:
-        requests = crud_api_usage.review_request_facts(
+        return crud_api_usage.review_request_facts(
             db, execution_id=execution.id, account_id=account_id
         )
     except Exception:  # noqa: BLE001 - a missing summary must not fail the read
         import logging
 
         logging.getLogger(__name__).warning(
-            "Upstream route summary failed for %s", execution.id
+            "Request facts read failed for %s", execution.id
         )
         db.rollback()
+        return None
+
+
+def _execution_effective_requests(
+    db: Session,
+    execution: Any,
+    *,
+    account_id: Any,
+    requests: Any = _UNFETCHED,
+) -> Optional[List[Dict[str, Any]]]:
+    """What this execution's recorded model requests sent to the provider.
+
+    Lets the owning account check, for example, that a configured reasoning
+    effort reached the provider.
+
+    Args:
+        db: Database session.
+        execution: Execution already authorized for ``account_id``.
+        account_id: Caller's account, enforced again by the query.
+        requests: Request facts already loaded for this execution; loaded
+            here when omitted. None means the load failed.
+
+    Returns:
+        Grouped effective controls, or None when no request was recorded.
+    """
+    from preloop.services.review_completion_evidence import (
+        effective_requests_projection,
+    )
+
+    if requests is _UNFETCHED:
+        requests = _execution_request_facts(db, execution, account_id=account_id)
+    if requests is None:
+        return None
+    return effective_requests_projection(requests) or None
+
+
+def _execution_upstream_route(
+    db: Session,
+    execution: Any,
+    *,
+    account_id: Any,
+    requests: Any = _UNFETCHED,
+) -> Optional[Dict[str, Any]]:
+    """Summarise the OpenRouter upstream providers an execution used.
+
+    Args:
+        db: Database session.
+        execution: Execution already authorized for ``account_id``.
+        account_id: Caller's account, enforced again by the query.
+        requests: Request facts already loaded for this execution; loaded
+            here when omitted. None means the load failed.
+
+    Returns:
+        The route summary, or None when no upstream provider was recorded.
+    """
+    from preloop.services.review_completion_evidence import upstream_route_summary
+
+    if requests is _UNFETCHED:
+        requests = _execution_request_facts(db, execution, account_id=account_id)
+    if requests is None:
         return None
     summary = upstream_route_summary(execution, requests)
     return summary if summary["upstream_providers"] else None
