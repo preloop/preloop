@@ -2264,6 +2264,7 @@ Move one repository of a shared flow to event-started review, and leave the
 others on their CI keys. The administrator saves the flow with
 `PUT /api/v1/flows/{flow_id}`; the other keys of the flow stay as they are:
 
+<!-- example: flow-update -->
 ```json
 {
   "trigger_event_source": "<GitHub App tracker id>",
