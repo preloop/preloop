@@ -1180,17 +1180,35 @@ def _parse_line(value: Any) -> int | None:
     return number
 
 
-def _parse_location_string(value: str) -> tuple[str, int | None] | None:
+def _parse_location_string(
+    value: str,
+) -> tuple[str, int | None, int | None] | None:
     """Parse ``path``, ``path:LINE``, ``path:LINE-LINE`` or ``path#LLINE``.
 
+    A range keeps both lines. The range pattern is greedy, so a
+    comma-separated value matches on its last ``:START-END`` and the
+    earlier locations stay in the path. The end line is returned so the
+    posted text keeps that last range instead of rebuilding ``path:line``.
+
     Returns:
-        The path and the first line, or None when the string is not one of
-        those forms. The caller shows an unparsed value as literal code.
+        The path, the first line, and the end line when the value is a
+        validated range. None when the string is not one of those forms,
+        or when a range's ends are not positive line numbers with the end
+        on or after the start. The caller shows an unparsed value as
+        literal code.
     """
     text = value.strip()
     if not text or "\n" in value or "\r" in value:
         return None
-    for pattern in (_LOCATION_HASH, _LOCATION_RANGE, _LOCATION_LINE):
+    ranged = _LOCATION_RANGE.fullmatch(text)
+    if ranged is not None:
+        path = ranged.group(1).strip()
+        start = _parse_line(ranged.group(2))
+        end = _parse_line(ranged.group(3))
+        if not path or start is None or end is None or end < start:
+            return None
+        return path, start, end
+    for pattern in (_LOCATION_HASH, _LOCATION_LINE):
         match = pattern.fullmatch(text)
         if match is None:
             continue
@@ -1198,18 +1216,31 @@ def _parse_location_string(value: str) -> tuple[str, int | None] | None:
         line = _parse_line(match.group(2))
         if not path or line is None:
             return None
-        return path, line
+        return path, line, None
     if ":" in text or "#" in text:
         return None
-    return text, None
+    return text, None, None
 
 
-def _location(path: Any, line: Any) -> str:
-    """``path:line`` as a code span (the line only when it is a valid number)."""
+def _location(path: Any, line: Any, end: Any = None) -> str:
+    """``path:line`` or ``path:start-end`` as a code span.
+
+    The line is included only when it is a valid line number. A range is
+    included only when both ends are valid and the end is on or after the
+    start. Anything else is the path alone, still inside the same span.
+    """
     if not isinstance(path, str):
         return ""
-    valid = _parse_line(line) is not None and type(line) is int
-    return code_span(f"{path.strip()}:{line}" if valid else path, 320)
+    start = _parse_line(line)
+    finish = _parse_line(end) if end is not None else None
+    if start is not None and type(line) is int:
+        if finish is not None and type(end) is int and finish >= start:
+            shown = f"{path.strip()}:{start}-{finish}"
+        else:
+            shown = f"{path.strip()}:{line}"
+    else:
+        shown = path
+    return code_span(shown, 320)
 
 
 def _finding_field_role(name: str) -> str:
@@ -1485,9 +1516,9 @@ def structured_findings(
     ``finding`` and ``summary``. A location is ``path`` or ``file`` with
     ``line`` (a decimal string counts), or, when those name no path, a
     ``location`` or ``where`` string of the form ``path``, ``path:LINE``,
-    ``path:LINE-LINE`` or ``path#LLINE``. Every other member is a labelled
-    block, in the order the result schema declares the properties, then
-    the order of the document.
+    ``path:LINE-LINE`` or ``path#LLINE``. A range is posted with both
+    lines. Every other member is a labelled block, in the order the result
+    schema declares the properties, then the order of the document.
 
     Args:
         result: The stored, validated result document.
@@ -1522,6 +1553,7 @@ def structured_findings(
         raw_path = _first_text(item, ("path", "file"))
         path_name = _first_name(item, ("path", "file"))
         line: int | None = None
+        end_line: int | None = None
         literal: str | None = None
         if path_name is not None:
             used.add(path_name)
@@ -1536,14 +1568,14 @@ def structured_findings(
                 if parsed is None:
                     literal = str(item.get(where_name))
                 else:
-                    raw_path, line = parsed
+                    raw_path, line, end_line = parsed
         if literal is not None:
             path_span = code_span(literal, 320) or None
             stored_path: str | None = None
             stored_line: int | None = None
         else:
             shown_line = line if type(line) is int else None
-            path_span = _location(raw_path, shown_line) or None
+            path_span = _location(raw_path, shown_line, end_line) or None
             stored_path = raw_path if isinstance(raw_path, str) else None
             stored_line = line
         findings.append(
