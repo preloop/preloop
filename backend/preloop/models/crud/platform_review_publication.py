@@ -8,7 +8,7 @@ from typing import Any, Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy import DateTime, and_, case, cast, func, or_
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -248,7 +248,8 @@ class CRUDPlatformReviewPublication:
         (the server-set ``platform_review.enabled_at``), so turning the
         opt-in on never reaches back to earlier runs and an unrelated flow
         save drops nothing. A run this bound leaves out can still be
-        published with the explicit publish call.
+        published with the explicit publish call. A run whose project is
+        outside ``platform_review.project_ids`` is never returned.
 
         Returns:
             ``(account_id, execution_id)`` pairs, oldest first.
@@ -267,6 +268,21 @@ class CRUDPlatformReviewPublication:
         since = func.coalesce(cast(stamp, DateTime), flow.updated_at)
         # Manual mode posts only on the explicit call, never from a sweep.
         mode: Any = flow.git_clone_config[("platform_review", "mode")].as_string()
+        # platform_review.project_ids: absent or null posts for every
+        # project; a list posts only for the binding's own project. Without
+        # this, a run outside the list would be selected on every pass.
+        scope: Any = cast(
+            flow.git_clone_config[("platform_review", "project_ids")], JSONB
+        )
+        project: Any = execution.ci_review_binding["project_id"].astext
+        in_scope = or_(
+            scope.is_(None),
+            func.jsonb_typeof(scope) == "null",
+            and_(
+                func.jsonb_typeof(scope) == "array",
+                scope.op("@>")(func.jsonb_build_array(project)),
+            ),
+        )
         rows = (
             db.query(flow.account_id, execution.id)
             .join(flow, flow.id == execution.flow_id)
@@ -291,6 +307,7 @@ class CRUDPlatformReviewPublication:
                 execution.end_time <= _now() - timedelta(minutes=2),
                 enabled.is_(True),
                 or_(mode.is_(None), mode != "manual"),
+                in_scope,
                 execution.end_time >= since,
             )
             .order_by(execution.end_time.asc())

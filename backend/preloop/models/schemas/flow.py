@@ -343,6 +343,45 @@ class ReviewIntegrity(BaseModel):
     )
 
 
+POSTING_PROJECT_IDS_KEY = "platform_review.project_ids"
+
+
+def normalize_posting_project_ids(value: Any) -> list[str]:
+    """Check and normalise a ``platform_review.project_ids`` list.
+
+    Args:
+        value: The submitted or stored list.
+
+    Returns:
+        The ids as canonical lower-case UUID strings, in the given order.
+
+    Raises:
+        ValueError: Not a list, an entry that is not a UUID, or an id listed
+            twice. The message names the key and the offending id.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{POSTING_PROJECT_IDS_KEY} must be a list of project ids")
+    seen: list[str] = []
+    for item in value:
+        try:
+            if isinstance(item, UUID):
+                canonical = str(item)
+            elif isinstance(item, str):
+                canonical = str(UUID(item))
+            else:
+                raise ValueError
+        except ValueError:
+            raise ValueError(
+                f"{POSTING_PROJECT_IDS_KEY}: {item!s} is not a project id"
+            ) from None
+        if canonical in seen:
+            raise ValueError(
+                f"{POSTING_PROJECT_IDS_KEY}: {canonical} is listed more than once"
+            )
+        seen.append(canonical)
+    return seen
+
+
 class PlatformReview(BaseModel):
     """Preloop posts the validated result of a read-only review itself.
 
@@ -404,6 +443,36 @@ class PlatformReview(BaseModel):
             "published automatically."
         ),
     )
+    project_ids: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Projects of this flow Preloop posts for, each a member of the "
+            "flow's trigger_project_ids and listed once. Omit or null to post "
+            "for every project of the flow; an empty list posts for none. "
+            "On an event-started review the same list decides which projects "
+            "a pull request event starts a review for. A run of another "
+            "project still runs and keeps its result; Preloop does not post "
+            "it. Only valid while posting is enabled."
+        ),
+    )
+
+    @field_validator("project_ids", mode="before")
+    @classmethod
+    def _posting_project_ids(cls, value: Any) -> Any:
+        """Each entry a UUID, listed once; stored in canonical form."""
+        if value is None:
+            return None
+        return normalize_posting_project_ids(value)
+
+    @model_validator(mode="after")
+    def _project_ids_need_posting(self) -> "PlatformReview":
+        """A project list belongs to a flow that posts."""
+        if self.project_ids is not None and self.enabled is not True:
+            raise ValueError(
+                f"{POSTING_PROJECT_IDS_KEY} is only valid while posting is "
+                "enabled; remove it or set enabled to true"
+            )
+        return self
 
 
 class FollowUpFiling(BaseModel):

@@ -29,6 +29,11 @@ export interface PlatformReviewConfig {
   status?: PlatformReviewStatusConfig | null;
   /** Which stored tool evidence may be posted. Absent means any. */
   evidence?: 'any' | 'captured' | 'complete';
+  /**
+   * Projects of the flow Preloop posts for. Absent or null: every project.
+   * Only valid while posting is on.
+   */
+  project_ids?: string[] | null;
 }
 
 /** The record the API returns on an execution (`platform_review`). */
@@ -364,6 +369,8 @@ const REASONS: Record<string, string> = {
   lease_refused:
     'GitHub refused a token for the repository with the permissions posting needs.',
   platform_review_disabled: 'Posting was turned off on the flow.',
+  project_not_in_posting_scope:
+    'Preloop does not post for this repository of the flow.',
   verdict_unmapped: 'The verdict has no commit status state on the flow.',
   run_not_succeeded: 'The run did not succeed, so no verdict was posted.',
   result_not_valid:

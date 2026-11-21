@@ -573,3 +573,150 @@ func TestReviewPostingEvidenceFlag(t *testing.T) {
 		}
 	}
 }
+
+const (
+	postingProjectA = "11111111-2222-4333-8444-555555555555"
+	postingProjectB = "66666666-7777-4888-9999-000000000000"
+)
+
+func scopedReviewFlow() map[string]any {
+	flow := newReviewFlow()
+	flow["trigger_project_ids"] = []any{postingProjectA, postingProjectB}
+	return flow
+}
+
+func savedBlock(t *testing.T, state *reviewPostingServer) map[string]any {
+	t.Helper()
+	return state.puts[len(state.puts)-1]["git_clone_config"].(map[string]any)["platform_review"].(map[string]any)
+}
+
+func TestReviewPostingProjectsEnableChangeAndClear(t *testing.T) {
+	state := &reviewPostingServer{flow: scopedReviewFlow()}
+	startReviewPostingServer(t, state)
+
+	out, err := runReviewPosting(t, "enable", reviewFlowID, "--no-status", "--project", strings.ToUpper(postingProjectA))
+	if err != nil {
+		t.Fatalf("enable: %v\n%s", err, out)
+	}
+	if ids := savedBlock(t, state)["project_ids"].([]any); len(ids) != 1 || ids[0] != postingProjectA {
+		t.Fatalf("project_ids = %v", ids)
+	}
+	if !strings.Contains(out, "Projects: limited to 1 of 2") {
+		t.Fatalf("output = %q", out)
+	}
+	if len(state.puts[0]) != 1 {
+		t.Fatalf("PUT must carry only git_clone_config, got %v", state.puts[0])
+	}
+
+	out, err = runReviewPosting(t, "set-projects", reviewFlowID, "--project", postingProjectA, "--project", postingProjectB)
+	if err != nil {
+		t.Fatalf("set-projects: %v\n%s", err, out)
+	}
+	block := savedBlock(t, state)
+	if ids := block["project_ids"].([]any); len(ids) != 2 || block["enabled"] != true {
+		t.Fatalf("block = %v", block)
+	}
+
+	out, err = runReviewPosting(t, "set-projects", reviewFlowID, "--all")
+	if err != nil {
+		t.Fatalf("set-projects --all: %v\n%s", err, out)
+	}
+	if _, ok := savedBlock(t, state)["project_ids"]; ok {
+		t.Fatalf("--all must clear the list: %v", savedBlock(t, state))
+	}
+	if !strings.Contains(out, "Projects: all 2 of the flow") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestReviewPostingProjectsRefusedBeforeSaving(t *testing.T) {
+	state := &reviewPostingServer{flow: scopedReviewFlow()}
+	startReviewPostingServer(t, state)
+
+	stranger := "99999999-2222-4333-8444-555555555555"
+	_, err := runReviewPosting(t, "enable", reviewFlowID, "--no-status", "--project", stranger)
+	if err == nil || !strings.Contains(err.Error(), stranger) || !strings.Contains(err.Error(), "trigger_project_ids") {
+		t.Fatalf("err = %v", err)
+	}
+	_, err = runReviewPosting(t, "enable", reviewFlowID, "--no-status", "--project", postingProjectA, "--project", postingProjectA)
+	if err == nil || !strings.Contains(err.Error(), "more than once") {
+		t.Fatalf("err = %v", err)
+	}
+	_, err = runReviewPosting(t, "set-projects", reviewFlowID, "--project", postingProjectA)
+	if err == nil || !strings.Contains(err.Error(), "posting is not on") {
+		t.Fatalf("err = %v", err)
+	}
+	_, err = runReviewPosting(t, "set-projects", reviewFlowID)
+	if err == nil || !strings.Contains(err.Error(), "--project") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(state.puts) != 0 {
+		t.Fatalf("nothing should be saved, got %d puts", len(state.puts))
+	}
+}
+
+func TestReviewPostingDisableClearsTheProjectList(t *testing.T) {
+	flow := scopedReviewFlow()
+	config := flow["git_clone_config"].(map[string]any)
+	config["platform_review"] = map[string]any{"enabled": true, "project_ids": []any{postingProjectA}}
+	state := &reviewPostingServer{flow: flow}
+	startReviewPostingServer(t, state)
+
+	out, err := runReviewPosting(t, "disable", reviewFlowID)
+	if err != nil {
+		t.Fatalf("disable: %v\n%s", err, out)
+	}
+	block := savedBlock(t, state)
+	if _, ok := block["project_ids"]; ok || block["enabled"] != false {
+		t.Fatalf("block = %v", block)
+	}
+	if !strings.Contains(out, "project list was cleared") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
+func TestReviewPostingShowsTheProjectScope(t *testing.T) {
+	flow := scopedReviewFlow()
+	config := flow["git_clone_config"].(map[string]any)
+	config["platform_review"] = map[string]any{"enabled": true, "project_ids": []any{postingProjectB}}
+	state := &reviewPostingServer{flow: flow}
+	startReviewPostingServer(t, state)
+
+	out, err := runReviewPosting(t, "show", reviewFlowID)
+	if err != nil {
+		t.Fatalf("show: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Projects: limited to 1 of 2") || !strings.Contains(out, postingProjectB) {
+		t.Fatalf("output = %q", out)
+	}
+	if reviewReasonText("project_not_in_posting_scope") == "project not in posting scope" {
+		t.Fatal("the refusal reason needs its own text")
+	}
+}
+
+func TestReviewPostingEnableWithoutProjectKeepsTheStoredList(t *testing.T) {
+	flow := scopedReviewFlow()
+	config := flow["git_clone_config"].(map[string]any)
+	config["platform_review"] = map[string]any{"enabled": false}
+	state := &reviewPostingServer{flow: flow}
+	startReviewPostingServer(t, state)
+	if out, err := runReviewPosting(t, "enable", reviewFlowID, "--no-status"); err != nil {
+		t.Fatalf("enable: %v\n%s", err, out)
+	}
+	if _, ok := savedBlock(t, state)["project_ids"]; ok {
+		t.Fatalf("a flow without a list must post for every project: %v", savedBlock(t, state))
+	}
+	config = state.flow["git_clone_config"].(map[string]any)
+	config["platform_review"] = map[string]any{"enabled": true, "project_ids": []any{postingProjectA}}
+	if out, err := runReviewPosting(t, "enable", reviewFlowID, "--no-status"); err != nil {
+		t.Fatalf("enable: %v\n%s", err, out)
+	}
+	if ids, _ := savedBlock(t, state)["project_ids"].([]any); len(ids) != 1 || ids[0] != postingProjectA {
+		t.Fatalf("a stored list must be kept: %v", savedBlock(t, state))
+	}
+	cmd := newFlowReviewPostingCmd()
+	enable, _, _ := cmd.Find([]string{"enable"})
+	if help := enable.Flags().Lookup("project").Usage; !strings.Contains(help, "stored list is kept") {
+		t.Fatalf("help = %q", help)
+	}
+}

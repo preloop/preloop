@@ -39,6 +39,8 @@ type reviewPostingFlags struct {
 	evidence        string
 	noStatus        bool
 	asJSON          bool
+	projects        []string
+	allProjects     bool
 }
 
 func newFlowReviewPostingCmd() *cobra.Command {
@@ -62,6 +64,9 @@ Examples:
   preloop flow review-posting show pull-request-reviewer
   preloop flow review-posting enable pull-request-reviewer --state pass=success --state fail=failure
   preloop flow review-posting set-states pull-request-reviewer --state fail=error --incomplete-state error
+  preloop flow review-posting enable pull-request-reviewer --no-status --project 11111111-2222-4333-8444-555555555555
+  preloop flow review-posting set-projects pull-request-reviewer --project 11111111-2222-4333-8444-555555555555
+  preloop flow review-posting set-projects pull-request-reviewer --all
   preloop flow review-posting disable pull-request-reviewer
   preloop flow review-posting status 11111111-2222-4333-8444-555555555555
   preloop flow review-posting publish 11111111-2222-4333-8444-555555555555`,
@@ -70,6 +75,7 @@ Examples:
 		newReviewPostingShowCmd(),
 		newReviewPostingWriteCmd("enable"),
 		newReviewPostingWriteCmd("set-states"),
+		newReviewPostingSetProjectsCmd(),
 		newReviewPostingDisableCmd(),
 		newReviewPostingStatusCmd(),
 		newReviewPostingPublishCmd(),
@@ -118,7 +124,7 @@ func newReviewPostingShowCmd() *cobra.Command {
 					"finding_text":    findingSchemaHasText(flow["result_schema"], fields),
 				})
 			}
-			printReviewPostingConfig(cmd.OutOrStdout(), flowID, block, checks)
+			printReviewPostingConfig(cmd.OutOrStdout(), flowID, flow, block, checks)
 			printFindingFields(cmd.OutOrStdout(), flow["result_schema"], fields)
 			return nil
 		},
@@ -147,6 +153,7 @@ func newReviewPostingWriteCmd(operation string) *cobra.Command {
 	cmd.Flags().StringVar(&flags.evidence, "evidence", "", "which stored tool evidence may be posted: any, captured or complete")
 	if operation == "enable" {
 		cmd.Flags().BoolVar(&flags.noStatus, "no-status", false, "post the review only, no commit status")
+		cmd.Flags().StringArrayVar(&flags.projects, "project", nil, "post only for this project of the flow, repeatable; replaces the stored list. Without it a stored list is kept, and a flow without one posts for every project; set-projects --all clears it. On an event-started review it also limits where an event starts one")
 	}
 	cmd.Flags().BoolVar(&flags.asJSON, "json", false, "print the saved platform_review block as JSON")
 	return cmd
@@ -156,7 +163,7 @@ func newReviewPostingDisableCmd() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "disable <flow-id-or-name>",
-		Short: "Turn posting off; the verdict mapping is kept",
+		Short: "Turn posting off; the verdict mapping is kept, a project list is cleared",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := reviewPostingClient()
@@ -172,6 +179,9 @@ func newReviewPostingDisableCmd() *cobra.Command {
 				block = map[string]any{}
 			}
 			block["enabled"] = false
+			// A project list is only valid while posting is on.
+			_, hadProjects := block["project_ids"]
+			delete(block, "project_ids")
 			saved, err := saveReviewPostingBlock(client, flowID, flow, block)
 			if err != nil {
 				return err
@@ -180,6 +190,9 @@ func newReviewPostingDisableCmd() *cobra.Command {
 				return writeJSON(cmd.OutOrStdout(), saved)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Posting is off for flow %s.\n", flowID)
+			if hadProjects {
+				fmt.Fprintln(cmd.OutOrStdout(), "The project list was cleared; pass --project again when you enable posting.")
+			}
 			return nil
 		},
 	}
@@ -223,6 +236,13 @@ func runReviewPostingWrite(cmd *cobra.Command, operation, nameOrID string, flags
 	}
 	if operation == "enable" {
 		block["enabled"] = true
+		if len(flags.projects) > 0 {
+			ids, err := checkPostingProjects(flow, flags.projects)
+			if err != nil {
+				return err
+			}
+			block["project_ids"] = ids
+		}
 	}
 	switch evidence {
 	case "":
@@ -301,6 +321,7 @@ func runReviewPostingWrite(cmd *cobra.Command, operation, nameOrID string, flags
 		verb = "on"
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Posting is %s for flow %s.\n", verb, flowID)
+	printPostingProjects(cmd.OutOrStdout(), flow, saved)
 	printEvidenceLevel(cmd.OutOrStdout(), saved)
 	printVerdictStates(cmd.OutOrStdout(), saved)
 	return nil
@@ -711,13 +732,16 @@ func printFindingFields(out io.Writer, schema any, fields []findingFieldAppearan
 	}
 }
 
-func printReviewPostingConfig(out io.Writer, flowID string, block map[string]any, checks []reviewPostingCheck) {
+func printReviewPostingConfig(out io.Writer, flowID string, flow map[string]any, block map[string]any, checks []reviewPostingCheck) {
 	enabled, _ := block["enabled"].(bool)
 	state := "off"
 	if enabled {
 		state = "on"
 	}
 	fmt.Fprintf(out, "Flow:     %s\nPosting:  %s\n", flowID, state)
+	if enabled {
+		printPostingProjects(out, flow, block)
+	}
 	printEvidenceLevel(out, block)
 	if block != nil {
 		printVerdictStates(out, block)
@@ -869,30 +893,31 @@ func reviewCount(value any) string {
 }
 
 var reviewReasons = map[string]string{
-	"head_moved":                  "the pull request moved to a newer commit; the status is on the reviewed commit",
-	"base_moved":                  "the pull request was retargeted onto another branch; the status is on the reviewed commit",
-	"pull_request_closed":         "the pull request was closed or merged",
-	"statuses_permission_missing": "the GitHub App may not write commit statuses; grant Commit statuses: Read and write, then publish again",
-	"not_configured":              "the flow sets no commit status",
-	"provider_unavailable":        "GitHub was unavailable or rate limited; Preloop retries",
-	"provider_rejected":           "GitHub refused the request",
-	"provider_denied":             "GitHub denied the request; check the App installation and permissions",
-	"readback_pending":            "GitHub had not shown the review or status yet; Preloop reads it again and does not post a second time",
-	"readback_mismatch":           "what GitHub holds differs from what was sent; publish again to repair the record only when it matches",
-	"lease_unavailable":           "no GitHub App token could be obtained for the repository",
-	"lease_refused":               "GitHub refused a token with the permissions posting needs",
-	"platform_review_disabled":    "posting is turned off on the flow",
-	"verdict_unmapped":            "the verdict has no commit status on the flow",
-	"run_not_succeeded":           "the run did not succeed",
-	"result_not_valid":            "the result did not pass the result schema",
-	"admission_revoked":           "the run is no longer admitted to the flow",
-	"installation_suspended":      "the GitHub App installation is suspended",
-	"binding_changed":             "the pull request no longer matches the one the run was started for",
-	"no_review_binding":           "this run has no review binding",
-	"execution_not_finished":      "the run has not finished",
-	"attempt_interrupted":         "the attempt was interrupted; Preloop retries",
-	"evidence_incomplete":         "the stored tool evidence is not complete enough for this flow to post a review",
-	"evidence_pending":            "tool evidence for the last model request may still be recording; retry in a moment",
+	"head_moved":                   "the pull request moved to a newer commit; the status is on the reviewed commit",
+	"base_moved":                   "the pull request was retargeted onto another branch; the status is on the reviewed commit",
+	"pull_request_closed":          "the pull request was closed or merged",
+	"statuses_permission_missing":  "the GitHub App may not write commit statuses; grant Commit statuses: Read and write, then publish again",
+	"not_configured":               "the flow sets no commit status",
+	"provider_unavailable":         "GitHub was unavailable or rate limited; Preloop retries",
+	"provider_rejected":            "GitHub refused the request",
+	"provider_denied":              "GitHub denied the request; check the App installation and permissions",
+	"readback_pending":             "GitHub had not shown the review or status yet; Preloop reads it again and does not post a second time",
+	"readback_mismatch":            "what GitHub holds differs from what was sent; publish again to repair the record only when it matches",
+	"lease_unavailable":            "no GitHub App token could be obtained for the repository",
+	"lease_refused":                "GitHub refused a token with the permissions posting needs",
+	"platform_review_disabled":     "posting is turned off on the flow",
+	"project_not_in_posting_scope": "Preloop does not post for this project of the flow (platform_review.project_ids)",
+	"verdict_unmapped":             "the verdict has no commit status on the flow",
+	"run_not_succeeded":            "the run did not succeed",
+	"result_not_valid":             "the result did not pass the result schema",
+	"admission_revoked":            "the run is no longer admitted to the flow",
+	"installation_suspended":       "the GitHub App installation is suspended",
+	"binding_changed":              "the pull request no longer matches the one the run was started for",
+	"no_review_binding":            "this run has no review binding",
+	"execution_not_finished":       "the run has not finished",
+	"attempt_interrupted":          "the attempt was interrupted; Preloop retries",
+	"evidence_incomplete":          "the stored tool evidence is not complete enough for this flow to post a review",
+	"evidence_pending":             "tool evidence for the last model request may still be recording; retry in a moment",
 }
 
 func reviewReasonText(code string) string {
@@ -900,4 +925,110 @@ func reviewReasonText(code string) string {
 		return text
 	}
 	return strings.ReplaceAll(code, "_", " ")
+}
+
+func newReviewPostingSetProjectsCmd() *cobra.Command {
+	var projects []string
+	var all, asJSON bool
+	cmd := &cobra.Command{
+		Use:   "set-projects <flow-id-or-name>",
+		Short: "Choose which of the flow's projects Preloop posts for",
+		Long: `Limit posting to some of the flow's projects (git_clone_config.platform_review.project_ids),
+or with --all post for every project again. On an event-started review the same list
+decides which projects a pull request event starts a review for. A CI key of another
+project keeps triggering and reading its runs; Preloop just does not post them.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if all == (len(projects) > 0) {
+				return fmt.Errorf("pass --project (repeatable) or --all")
+			}
+			client, err := reviewPostingClient()
+			if err != nil {
+				return err
+			}
+			flowID, flow, err := loadFlowDocument(client, args[0])
+			if err != nil {
+				return err
+			}
+			block := platformReviewBlock(flow)
+			if enabled, _ := block["enabled"].(bool); !enabled {
+				return fmt.Errorf("posting is not on for flow %s; run `preloop flow review-posting enable` first", flowID)
+			}
+			if all {
+				delete(block, "project_ids")
+			} else {
+				ids, err := checkPostingProjects(flow, projects)
+				if err != nil {
+					return err
+				}
+				block["project_ids"] = ids
+			}
+			saved, err := saveReviewPostingBlock(client, flowID, flow, block)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return writeJSON(cmd.OutOrStdout(), saved)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Posting projects updated for flow %s.\n", flowID)
+			printPostingProjects(cmd.OutOrStdout(), flow, saved)
+			return nil
+		},
+	}
+	cmd.Flags().StringArrayVar(&projects, "project", nil, "project id to post for, repeatable; replaces the list")
+	cmd.Flags().BoolVar(&all, "all", false, "post for every project of the flow (clears the list)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the saved platform_review block as JSON")
+	return cmd
+}
+
+// flowProjectIDs is the flow's trigger_project_ids, lower-cased.
+func flowProjectIDs(flow map[string]any) []string {
+	raw, _ := flow["trigger_project_ids"].([]any)
+	ids := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if id, ok := item.(string); ok {
+			ids = append(ids, strings.ToLower(id))
+		}
+	}
+	return ids
+}
+
+// checkPostingProjects refuses, before saving, an id listed twice or one the
+// flow does not admit. The server checks the same on save.
+func checkPostingProjects(flow map[string]any, projects []string) ([]any, error) {
+	admitted := flowProjectIDs(flow)
+	seen := map[string]bool{}
+	ids := make([]any, 0, len(projects))
+	for _, project := range projects {
+		id := strings.ToLower(strings.TrimSpace(project))
+		if seen[id] {
+			return nil, fmt.Errorf("--project %s is listed more than once", project)
+		}
+		if !containsString(admitted, id) {
+			return nil, fmt.Errorf("--project %s is not one of the flow's projects (trigger_project_ids)", project)
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// printPostingProjects says which of the flow's projects are posted for.
+func printPostingProjects(out io.Writer, flow map[string]any, block map[string]any) {
+	admitted := flowProjectIDs(flow)
+	listed, ok := block["project_ids"].([]any)
+	if !ok {
+		fmt.Fprintf(out, "Projects: all %d of the flow\n", len(admitted))
+		return
+	}
+	count := 0
+	for _, item := range listed {
+		if id, isString := item.(string); isString && containsString(admitted, strings.ToLower(id)) {
+			count++
+		}
+	}
+	fmt.Fprintf(out, "Projects: limited to %d of %d\n", count, len(admitted))
+	for _, item := range listed {
+		fmt.Fprintf(out, "  %v\n", item)
+	}
 }

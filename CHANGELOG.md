@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A shared read-only review flow can post for some of its projects only:
+  `git_clone_config.platform_review.project_ids` lists them, and the same
+  list decides which projects a pull request event starts a review for.
+  Runs of other projects run and are read as before and are not posted; an
+  explicit publish answers 409 `project_not_in_posting_scope`. Unset keeps
+  today's behaviour. `preloop flow review-posting enable --project` and
+  `set-projects` manage the list; the console shows it read-only.
 - The flow form has a **Reasoning effort** select next to the flow's AI
   model (Model default, Low, Medium, High), so the flow-wide effort no
   longer needs the API. The execution page shows **Effort sent**, the effort

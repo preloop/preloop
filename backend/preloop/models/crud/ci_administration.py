@@ -85,6 +85,36 @@ SHARED_FLOW_CONTRACT_REFUSED = (
 )
 
 
+def _prune_posting_projects(
+    config: dict[str, Any], admitted: Sequence[str]
+) -> dict[str, Any] | None:
+    """The ``platform_review`` block with projects that left the allowlist removed.
+
+    The posting list (``platform_review.project_ids``) must stay a subset of
+    the allowlist, so a project that leaves the allowlist leaves the list in
+    the same write. The list never gains a project here, and removing a
+    project from the allowlist is never refused because of it.
+
+    Args:
+        config: The stored ``git_clone_config``.
+        admitted: The new allowlist.
+
+    Returns:
+        The updated block, or None when the flow has no posting list.
+    """
+    block = config.get("platform_review")
+    if not isinstance(block, dict) or block.get("project_ids") is None:
+        return None
+    keep = {str(item).lower() for item in admitted}
+    listed = block["project_ids"]
+    kept = (
+        [item for item in listed if isinstance(item, str) and item.lower() in keep]
+        if isinstance(listed, list)
+        else []
+    )
+    return {**block, "project_ids": kept}
+
+
 class CRUDCiAdministration:
     """No machine credential can administer itself or inherit its human's roles."""
 
@@ -1014,12 +1044,15 @@ class CRUDCiAdministration:
                     repositories.append(
                         {"project_id": str(project.id), "tracker_id": str(tracker.id)}
                     )
+            admitted = [str(project_id) for project_id in payload.project_ids]
             updated = {
                 **config,
                 "ci_project_selection": True,
                 "repositories": repositories,
             }
-            admitted = [str(project_id) for project_id in payload.project_ids]
+            pruned = _prune_posting_projects(config, admitted)
+            if pruned is not None:
+                updated["platform_review"] = pruned
             try:
                 GitCloneConfig.model_validate(updated)
                 flow.git_clone_config = updated
@@ -1041,6 +1074,11 @@ class CRUDCiAdministration:
                     "project_ids": admitted,
                     "added": sorted(set(admitted) - set(existing)),
                     "removed": sorted(set(existing) - set(admitted)),
+                    **(
+                        {"posting_project_ids": pruned["project_ids"]}
+                        if pruned is not None
+                        else {}
+                    ),
                 },
             )
             db.commit()

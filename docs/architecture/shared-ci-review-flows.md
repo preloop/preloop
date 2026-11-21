@@ -114,6 +114,7 @@ named.
 | T15 | Moving a repository to a shared flow interrupts or cross-wires its reviews | A new identity on the shared flow runs next to the dedicated one; each sees only its own executions; retiring the old one leaves the new one working | `test_project_moves_to_a_shared_flow_while_its_dedicated_review_keeps_working` |
 | T16 | A stale head is reviewed | The requested head must equal the pull request's current head at admission and again at dispatch | `test_stale_head_is_refused_on_a_shared_flow`, `backend/tests/services/test_ci_execution_admission.py` |
 | T17 | A completion callback tells one identity about a sibling's run | A subscription belongs to one principal and only carries that principal's executions; it stops when the project is removed | `test_completion_callback_is_delivered_to_the_owning_identity_only` |
+| T19 | Posting for some projects (`platform_review.project_ids`) invalidates an identity, leaks the other projects, or outlives the allowlist | Identities of unlisted projects trigger and read unchanged; the execution projection carries only `project_in_posting_scope` for its own run; replacing the allowlist prunes the list in the same write and never widens it | `test_identity_outside_the_posting_list_keeps_triggering_and_reading`, `test_allowlist_replacement_prunes_the_posting_list_and_never_widens_it`, `test_allowlist_replacement_leaves_an_unset_posting_list_unset` |
 
 ## Two-repository acceptance walk-through
 
