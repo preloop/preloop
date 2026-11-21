@@ -271,3 +271,180 @@ def test_continuations_outside_a_bound_review_are_unchanged() -> None:
     assert json.dumps(_blocks(not_review)) == json.dumps(
         _blocks(_context(git_clone_config={}, **deadline))
     )
+
+
+# --- a queued private-runner review is leased later from the stored prompt --
+
+
+@pytest.fixture
+def private_review() -> tuple[Any, Any]:
+    """A bound review on a named private runner pool's Codex host profile."""
+    from tests.services.test_read_only_review_private_runner import (
+        review as private_fixture,
+    )
+
+    binding, flow = private_fixture.__wrapped__()
+    flow.custom_commands = None
+    flow.timeout_seconds = 600
+    flow.ai_model = None
+    return binding, flow
+
+
+def _delayed_lease(flow: Any, execution: Any) -> dict[str, Any]:
+    """The payload ``RemoteRunnerExecutor.get_status`` leases a queued job with."""
+    from preloop.agents.remote_runner import RemoteRunnerExecutor
+
+    executor = RemoteRunnerExecutor(
+        "codex",
+        {},
+        db=MagicMock(),
+        pool=flow.runner_pool,
+        account_id=flow.account_id,
+        flow=flow,
+        execution=execution,
+    )
+    with patch(
+        "preloop.agents.remote_runner.flow_launch_fingerprint", return_value="fp"
+    ):
+        # Same call as the delayed lease: no orchestrator context, the
+        # stored prompt.
+        return executor._lease_payload(
+            execution_id=execution.id,
+            flow_id=flow.id,
+            prompt=execution.resolved_input_prompt,
+            flow=flow,
+        )
+
+
+@pytest.mark.asyncio
+async def test_queued_private_runner_review_is_leased_with_the_stated_limit(
+    private_review: tuple[Any, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = Clock()
+    monkeypatch.setattr(orchestrator_module, "_utcnow", clock)
+    binding, flow = private_review
+    admitted = clock.now - timedelta(seconds=30)
+    prompt = await _bound_prompt(private_review)
+    orch = _orchestrator(600, admitted)
+    orch.flow = flow
+    execution = orch.execution_log
+    execution.ci_review_binding = {"head_sha": binding.head_sha}
+    execution.agent_session_reference = None
+    execution.trigger_event_details = {}
+    # Stored before admission, as the run loop does at STARTING.
+    execution.resolved_input_prompt = prompt
+
+    async def update(status: Any = None, **fields: Any) -> None:
+        for key, value in fields.items():
+            setattr(execution, key, value)
+
+    monkeypatch.setattr(orch, "_update_execution_log", update)
+    # No runner is online: start() queues and the lease happens later.
+    await _start(orch, prompt)
+
+    payload = _delayed_lease(flow, execution)
+
+    sent = payload["prompt"]
+    assert REVIEW_DEADLINE_PLACEHOLDER not in sent
+    assert "600 seconds in total" in sent
+    assert f"stopped at {_stated(admitted + timedelta(seconds=600))} (UTC)" in sent
+    assert sent.count("Time limit:") == 1
+    # A host profile runs one CLI session on the runner: there is no
+    # server-built script, so no continuation or repair session to inform.
+    assert payload["completion_protocol"] == "host_exec"
+    assert "launch" not in payload and "script" not in payload
+
+
+@pytest.mark.asyncio
+async def test_a_retry_keeps_the_one_stated_limit(
+    review: tuple[Any, Any],  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = Clock()
+    monkeypatch.setattr(orchestrator_module, "_utcnow", clock)
+    orch = _orchestrator(600, clock.now)
+    stored: list[str] = []
+
+    async def update(status: Any = None, **fields: Any) -> None:
+        stored.append(fields["resolved_input_prompt"])
+
+    monkeypatch.setattr(orch, "_update_execution_log", update)
+    context = {
+        "agent_type": "codex",
+        "agent_config": {},
+        "prompt": await _bound_prompt(review),
+    }
+    executor = MagicMock()
+    executor.start = AsyncMock(return_value="session")
+    with (
+        patch.object(
+            orchestrator_module, "create_executor_for_execution", return_value=executor
+        ),
+        patch.object(
+            orchestrator_module.crud_flow_execution,
+            "admit_runtime_start",
+            return_value=True,
+        ),
+        patch.object(orch, "_refuse_hosted_approval_gap", MagicMock()),
+        patch.object(orch, "_refuse_invalid_hook_binding", MagicMock()),
+    ):
+        await orch._start_agent_session(context)
+        first = context["prompt"]
+        clock.now += timedelta(seconds=120)
+        # A retry reuses the context; the deadline is shared.
+        await orch._start_agent_session(context)
+
+    assert context["prompt"] == first
+    assert first.count("Time limit:") == 1
+    # Stored once, at the first admission, and identical to what was sent.
+    assert stored == [first]
+
+
+def test_lease_never_carries_an_unfilled_placeholder(
+    private_review: tuple[Any, Any],
+) -> None:
+    """A row stored before the limit was persisted still leases cleanly."""
+    binding, flow = private_review
+    execution = SimpleNamespace(
+        id=uuid4(),
+        ci_review_binding={"head_sha": binding.head_sha},
+        agent_session_reference=None,
+        trigger_event_details={},
+        resolved_input_prompt="Head SHA: x\n" + REVIEW_DEADLINE_PLACEHOLDER + "Go.",
+    )
+
+    sent = _delayed_lease(flow, execution)["prompt"]
+
+    assert REVIEW_DEADLINE_PLACEHOLDER not in sent
+    assert "Time limit: this run has a time limit." in sent
+    assert "seconds in total" not in sent
+
+
+@pytest.mark.asyncio
+async def test_runner_launch_never_carries_an_unfilled_placeholder() -> None:
+    from preloop.agents.runner_launch import build_runner_launch
+    from preloop.utils.execve_limits import prompt_transport_env
+
+    captured: list[str] = []
+
+    def transport(prompt: str) -> dict[str, str]:
+        captured.append(prompt)
+        return prompt_transport_env(prompt)
+
+    with patch("preloop.agents.runner_launch.prompt_transport_env", transport):
+        await build_runner_launch(
+            {
+                "agent_type": "codex",
+                "agent_config": {},
+                "model_identifier": "example-model",
+                "model_provider": "openai",
+                "account_api_token": "token",
+                "prompt": "A\n" + REVIEW_DEADLINE_PLACEHOLDER + "B",
+                "execution_id": str(uuid4()),
+                "flow_id": str(uuid4()),
+            }
+        )
+
+    assert captured and REVIEW_DEADLINE_PLACEHOLDER not in captured[0]
+    assert "Time limit: this run has a time limit." in captured[0]

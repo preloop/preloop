@@ -63,6 +63,28 @@ def review_deadline_text(budget_seconds: int | None, deadline: datetime | None) 
     )
 
 
+def without_review_deadline_placeholder(prompt: Any) -> Any:
+    """A prompt that is safe to send: no unfilled time-limit placeholder.
+
+    Every place a prompt leaves for a runner or a model calls this, so a
+    path that never fixed the deadline (a row stored before the limit was
+    persisted, a rebuilt context) still sends the guidance, with no time it
+    cannot vouch for, and never the literal placeholder.
+
+    Args:
+        prompt: The outgoing prompt; anything that is not a string is
+            returned unchanged.
+
+    Returns:
+        The prompt with any placeholder replaced by the time-free paragraph.
+    """
+    if isinstance(prompt, str) and REVIEW_DEADLINE_PLACEHOLDER in prompt:
+        return prompt.replace(
+            REVIEW_DEADLINE_PLACEHOLDER, review_deadline_text(None, None)
+        )
+    return prompt
+
+
 def state_review_deadline(
     context: dict[str, Any],
     budget_seconds: int | None,

@@ -546,6 +546,10 @@ class RemoteRunnerExecutor(AgentExecutor):
         flow: Any = None,
     ) -> Dict[str, Any]:
         """Build one complete payload for initial and delayed runner leases."""
+        from preloop.services.read_only_review import (
+            without_review_deadline_placeholder,
+        )
+
         context = execution_context or {}
         flow = flow or self.flow
         try:
@@ -644,7 +648,7 @@ class RemoteRunnerExecutor(AgentExecutor):
             "flow_id": str(flow_id),
             "agent_type": agent_type,
             "agent_config": agent_config,
-            "prompt": prompt,
+            "prompt": without_review_deadline_placeholder(prompt),
             "model_identifier": context.get("model_identifier")
             or getattr(ai_model, "model_identifier", None)
             or self.config.get("model_identifier"),

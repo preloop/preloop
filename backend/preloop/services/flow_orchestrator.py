@@ -5107,6 +5107,8 @@ class FlowExecutionOrchestrator:
             from preloop.services.checkpoint_runtime import checkpoint_context
             from preloop.services.read_only_review import state_review_deadline
 
+            prompt_before_admission = execution_context.get("prompt")
+
             # Private state stays on its owning host. Persistent Agent Control
             # targets already have a workspace; do not mint hosted artifacts.
             execution_context["checkpoint_env"] = (
@@ -5166,6 +5168,18 @@ class FlowExecutionOrchestrator:
             # Never leave the placeholder: without a computable deadline the
             # reviewer still gets the guidance, with no time stated.
             state_review_deadline(execution_context, None, None)
+            stated_prompt = execution_context.get("prompt")
+            if stated_prompt != prompt_before_admission:
+                # A queued private-runner job is leased later from the stored
+                # prompt. Store the one stated at admission, so the limit it
+                # names is the enforced one however late the lease is, and a
+                # retry, which reuses this context, changes nothing.
+                try:
+                    await self._update_execution_log(
+                        resolved_input_prompt=stated_prompt
+                    )
+                except Exception:
+                    logger.warning("Could not store the prompt stated at admission")
 
             if not isinstance(
                 agent_executor, (RemoteRunnerExecutor, AgentControlExecutor)
