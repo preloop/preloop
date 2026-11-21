@@ -29,6 +29,15 @@ def test_weekly_spend_with_500k_rows_uses_generic_index_within_default_timeout(
     # Bound fixture loading too: a cached trigger plan previously hung here
     # before the read timeout below was installed, consuming the CI job limit.
     db_session.execute(text("SET LOCAL statement_timeout = '120s'"))
+    # The agent-usage roll-up trigger on api_usage aggregates every inserted
+    # row into agent_usage_total. The spend reads below only touch api_usage,
+    # and the roll-up has its own bulk-insert test, so skip it for this load:
+    # on a busy runner it alone exceeded the fixture's 120s budget.
+    # The table owner may do this without superuser rights; the outer test
+    # transaction rolls it back, and it is re-enabled before the reads.
+    db_session.execute(
+        text("ALTER TABLE api_usage DISABLE TRIGGER agent_usage_track_insert")
+    )
     db_session.execute(
         text("""
         INSERT INTO api_usage
@@ -46,6 +55,9 @@ def test_weekly_spend_with_500k_rows_uses_generic_index_within_default_timeout(
         FROM generate_series(1, 500000) n
         """),
         {"account": test_user.account_id, "when": start, "run": str(run_id)},
+    )
+    db_session.execute(
+        text("ALTER TABLE api_usage ENABLE TRIGGER agent_usage_track_insert")
     )
     db_session.execute(text("ANALYZE api_usage"))
     db_session.execute(text("SET LOCAL statement_timeout = '30s'"))
