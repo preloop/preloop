@@ -1471,8 +1471,10 @@ Manual mode is the same publish call, made by an account user who may edit
 flows. How many runs one pull request can start is bounded by
 `trigger_project_ids`, `trigger_config` (including `draft: false` and
 `labels`), `agent_config.limits`, the account kill switch, one active run
-per pull request, and `supersede_on_update`. There is no separate rate
-limit for this route. The threat model is in the [platform-posted review
+per pull request, and `supersede_on_update`. On a flow that sets
+`platform_review.project_ids`, only an event for a listed project starts a
+run; see [Post for some of a shared flow's projects](#post-for-some-of-a-shared-flows-projects).
+There is no separate rate limit for this route. The threat model is in the [platform-posted review
 architecture page](../../architecture/platform-posted-review.md).
 
 ### Posting modes
@@ -1567,6 +1569,7 @@ Every command takes `--json`. The commands use your saved login or
 | `status.verdict_states` | `success`, `failure` or `error` for every verdict your schema admits. Saving fails if one is missing. |
 | `status.incomplete_state` | Optional `error` or `failure`, set with a neutral description when the run stopped, failed or returned no valid result, so a required status is not left waiting. Without it nothing is posted for such runs. |
 | `evidence` | Optional. Which stored tool evidence may be posted. See [Tool evidence](#tool-evidence). |
+| `project_ids` | Optional. The flow's projects Preloop posts for, each in `trigger_project_ids` and listed once. Omit it (or `null`) for every project; `[]` posts for none. It also decides which projects a pull request event starts a review for. Only valid while `enabled` is true. See [Post for some of a shared flow's projects](#post-for-some-of-a-shared-flows-projects). |
 
 ### What your result must contain
 
@@ -2232,6 +2235,79 @@ refused before publication with the same 401 detail. When the key is valid
 and the flow is enabled, but the key does not hold
 `execution:review:publish`, the detail text is the same and the status is
 403.
+
+### Post for some of a shared flow's projects
+
+`platform_review.project_ids` names the projects of the flow that Preloop
+posts for. Without it Preloop posts for every project of the flow, as
+before. With it:
+
+- A run of a project outside the list still runs, and its CI key still
+  triggers, reads and stops it exactly as before. Preloop does not post
+  it. Its posting record says `skipped`, reason
+  `project_not_in_posting_scope`; nothing is retried. The explicit publish
+  call answers 409 `project_not_in_posting_scope`.
+- A pull request event starts a review only for a listed project. An event
+  for another project of the flow inserts no execution.
+- A project removed from the list while its run is in flight is not
+  posted (`admission_revoked`).
+- No CI identity is invalidated by setting, changing or removing the list,
+  and no CI identity can read it.
+- Each id must be in `trigger_project_ids`; saving refuses any other id, a
+  duplicate or a value that is not a project id, and names the offending
+  id. When the shared-flow allowlist is replaced
+  (`PUT /api/v1/ci-identities/shared-flows/{flow_id}`), a project that
+  leaves the allowlist leaves `project_ids` in the same write. A project
+  added to the allowlist is not added to the list.
+
+Move one repository of a shared flow to event-started review, and leave the
+others on their CI keys. The administrator saves the flow with
+`PUT /api/v1/flows/{flow_id}`; the other keys of the flow stay as they are:
+
+```json
+{
+  "trigger_event_source": "<GitHub App tracker id>",
+  "trigger_event_types": [
+    "pull_request_opened",
+    "pull_request_updated",
+    "pull_request_reopened",
+    "pull_request_ready_for_review"
+  ],
+  "trigger_project_ids": ["<project A id>", "<project B id>", "<project C id>"],
+  "webhook_config": {"supersede_on_update": true},
+  "git_clone_config": {
+    "enabled": true,
+    "publication_mode": "read_only",
+    "ci_project_selection": true,
+    "repositories": [
+      {"project_id": "<project A id>", "tracker_id": "<GitHub App tracker id>"},
+      {"project_id": "<project B id>", "tracker_id": "<GitHub App tracker id>"},
+      {"project_id": "<project C id>", "tracker_id": "<GitHub App tracker id>"}
+    ],
+    "platform_review": {
+      "enabled": true,
+      "project_ids": ["<project A id>"],
+      "status": {
+        "context": "preloop/review",
+        "verdict_states": {"pass": "success", "fail": "failure"}
+      }
+    }
+  }
+}
+```
+
+Pull request events on project A now start a review that Preloop posts.
+Projects B and C keep their CI keys and workflows; their runs and results
+are unchanged, and Preloop posts nothing for them. With the CLI:
+`preloop flow review-posting set-projects <flow> --project <project A id>`,
+and `--all` to post for every project again.
+
+Remove the CI workflow from project A once its events start reviews. While
+both are in place, each can start a run for the same commit: an event for a
+commit that a CI-started run of the same repository is still reviewing is
+dropped, but a CI trigger does not check for a running event review, and an
+event that arrives after the CI run finished starts a new one. Each run is
+posted as its own review.
 
 ### Worked example: one flow for an organisation, two repositories
 

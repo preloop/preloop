@@ -524,4 +524,55 @@ describe('flow-platform-review-card', () => {
       'status'
     );
   });
+
+  it('keeps a stored project list across a save and shows it read-only', async () => {
+    const scoped = {
+      ...FLOW,
+      trigger_project_ids: ['p1', 'p2', 'p3'],
+      git_clone_config: {
+        ...FLOW.git_clone_config,
+        repositories: [
+          { tracker_id: 't1', project_id: 'p1', identifier: 'acme/api' },
+          { tracker_id: 't1', project_id: 'p2', identifier: 'acme/web' },
+          { tracker_id: 't1', project_id: 'p3', identifier: 'acme/docs' },
+        ],
+        platform_review: { enabled: true, project_ids: ['p2'] },
+      },
+    };
+    const element = await mount(scoped);
+    const note = q(element, '[data-posting-projects]');
+    expect(note.textContent).to.contain('Posts for 1 of 3 repositories');
+    expect(note.textContent).to.contain('acme/web');
+    expect(note.textContent).to.not.contain('acme/api');
+    // No control edits the list in the console.
+    expect(element.shadowRoot!.querySelector('[data-field="project_ids"]')).to
+      .be.null;
+    const select = q(element, '[data-field="evidence"]');
+    select.value = 'captured';
+    select.dispatchEvent(new Event('sl-change'));
+    await element.updateComplete;
+    q(element, '[data-action="save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await element.updateComplete;
+    const saved = putBodies[0].git_clone_config.platform_review;
+    expect(saved.project_ids).to.deep.equal(['p2']);
+    expect(saved.evidence).to.equal('captured');
+  });
+
+  it('drops the project list when posting is turned off', async () => {
+    const element = await mount({
+      ...FLOW,
+      git_clone_config: {
+        ...FLOW.git_clone_config,
+        platform_review: { enabled: true, project_ids: ['p1'] },
+      },
+    });
+    await chooseMode(element, 'off');
+    q(element, '[data-action="save"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await element.updateComplete;
+    const saved = putBodies[0].git_clone_config.platform_review;
+    expect(saved.enabled).to.equal(false);
+    expect(saved).to.not.have.property('project_ids');
+  });
 });
