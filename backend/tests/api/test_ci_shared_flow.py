@@ -1501,3 +1501,102 @@ def test_ci_trigger_refuses_a_configuration_it_did_not_review(
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["flow_revision"] == current
     dispatch.assert_awaited_once()
+
+
+# --- platform_review.project_ids on a shared flow ---------------------------
+
+
+def _post_for(db: Session, account: Shared, *projects: models.Project) -> None:
+    """Store a posting list on the shared flow, as an administrator's save."""
+    account.flow.git_clone_config = {
+        **account.flow.git_clone_config,
+        "platform_review": {
+            "enabled": True,
+            "project_ids": [str(project.id) for project in projects],
+        },
+    }
+    db.commit()
+
+
+def test_allowlist_replacement_prunes_the_posting_list_and_never_widens_it(
+    db_session: Session, shared: Shared
+) -> None:
+    _post_for(db_session, shared, shared.project_a)
+    crud.crud_ci_administration.share_flow(
+        db_session,
+        actor=shared.owner,
+        flow_id=shared.flow.id,
+        payload=_allow(shared.project_a, shared.project_b, shared.project_c),
+    )
+    db_session.refresh(shared.flow)
+    block = shared.flow.git_clone_config["platform_review"]
+    # Adding projects to the allowlist adds nothing to the posting list.
+    assert block["project_ids"] == [str(shared.project_a.id)]
+    # Removing a listed project is not blocked and leaves the list with it.
+    crud.crud_ci_administration.share_flow(
+        db_session,
+        actor=shared.owner,
+        flow_id=shared.flow.id,
+        payload=_allow(shared.project_b),
+    )
+    db_session.refresh(shared.flow)
+    block = shared.flow.git_clone_config["platform_review"]
+    assert block["project_ids"] == []
+    assert block["enabled"] is True
+    assert shared.flow.trigger_project_ids == [str(shared.project_b.id)]
+
+
+def test_allowlist_replacement_leaves_an_unset_posting_list_unset(
+    db_session: Session, shared: Shared
+) -> None:
+    shared.flow.git_clone_config = {
+        **shared.flow.git_clone_config,
+        "platform_review": {"enabled": True},
+    }
+    db_session.commit()
+    crud.crud_ci_administration.share_flow(
+        db_session,
+        actor=shared.owner,
+        flow_id=shared.flow.id,
+        payload=_allow(shared.project_a),
+    )
+    db_session.refresh(shared.flow)
+    assert "project_ids" not in shared.flow.git_clone_config["platform_review"]
+
+
+def test_identity_outside_the_posting_list_keeps_triggering_and_reading(
+    db_session: Session,
+    shared: Shared,
+    api: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Setting the list invalidates no identity and tells none the list."""
+    _, _, token_b = _identity(db_session, shared, shared.project_b)
+    _post_for(db_session, shared, shared.project_a)
+    _provider(monkeypatch, _pull(shared.project_b, SHA_B))
+    started = api.post(
+        f"/api/v1/flows/{shared.flow.id}/trigger",
+        headers=_bearer(token_b),
+        json={"pr_number": 7, "head_sha": SHA_B},
+    )
+    assert started.status_code == 200, started.text
+    run_id = started.json()["id"]
+    CRUDBase(models.FlowExecution).update(
+        db_session,
+        db_obj=db_session.get(models.FlowExecution, UUID(run_id)),
+        obj_in={"status": "SUCCEEDED", "result": {"review": "for project B"}},
+    )
+    for suffix in ("", "/result"):
+        read = api.get(
+            f"/api/v1/flows/executions/{run_id}{suffix}", headers=_bearer(token_b)
+        )
+        assert read.status_code == 200, read.text
+        assert str(shared.project_a.id) not in read.text
+        assert "project_ids" not in read.text
+    for path in (
+        f"{ADMIN}/shared-flows/{shared.flow.id}",
+        f"/api/v1/flows/{shared.flow.id}",
+    ):
+        denied = api.get(path, headers=_bearer(token_b))
+        assert denied.status_code == 403
+        assert str(shared.project_a.id) not in denied.text

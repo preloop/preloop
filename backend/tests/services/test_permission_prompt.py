@@ -9,6 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Import before any test patches crud.approval_request.get_approval_request_async.
+# approval_service binds that name at import, so a first import inside such a
+# patch would keep the mock for the rest of the process and break later tests.
+import preloop.services.approval_service  # noqa: F401
 from preloop.models import models
 from preloop.services.permission_prompt import (
     CONSUMED_KEY,

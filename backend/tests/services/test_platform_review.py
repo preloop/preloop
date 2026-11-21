@@ -2584,7 +2584,7 @@ def test_file_line_category_decimal_line_and_unparsed_location() -> None:
         },
         inline={"a.py": {2}},
     )
-    assert "`a.py:2`" in ranged
+    assert "`a.py:2-9`" in ranged
     assert [(item["path"], item["line"]) for item in ranged_comments] == [("a.py", 2)]
     hashed, hashed_comments = _render(
         {
@@ -2595,6 +2595,136 @@ def test_file_line_category_decimal_line_and_unparsed_location() -> None:
     )
     assert "`a.py:2`" in hashed
     assert hashed_comments[0]["line"] == 2
+
+
+def test_posted_location_keeps_a_line_range() -> None:
+    """A location ``path:START-END`` is posted with both lines."""
+    body, comments = _render(
+        {
+            "verdict": "fail",
+            "findings": [
+                {
+                    "severity": "low",
+                    "problem": "Span.",
+                    "location": "shop/inventory.py:23-25",
+                }
+            ],
+        },
+        inline={"shop/inventory.py": {23, 24, 25}},
+    )
+    assert "`shop/inventory.py:23-25`" in body
+    assert [(item["path"], item["line"]) for item in comments] == [
+        ("shop/inventory.py", 23)
+    ]
+
+
+def test_posted_location_keeps_every_comma_separated_range() -> None:
+    """A comma-separated location keeps each range, including the last end."""
+    body, _comments = _render(
+        {
+            "verdict": "fail",
+            "findings": [
+                {
+                    "severity": "low",
+                    "problem": "Two places.",
+                    "location": "a.py:6-8, b.py:14-17",
+                }
+            ],
+        },
+        inline={"a.py": {6, 7, 8}, "b.py": {14, 15, 16, 17}},
+    )
+    assert "`a.py:6-8, b.py:14-17`" in body
+    assert "b.py:14`" not in body
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "path:25-23",
+        "path:0-3",
+        "path:2-n",
+        "src/[x](https://evil.example).py:2-n",
+    ],
+)
+def test_invalid_location_range_is_literal_code(location: str) -> None:
+    """An inverted, non-positive, or non-numeric range is posted unchanged."""
+    body, comments = _render(
+        {
+            "verdict": "fail",
+            "findings": [{"severity": "low", "problem": "No.", "location": location}],
+        },
+        inline={"path": {0, 2, 3, 23, 25}},
+    )
+    assert f"`{location}`" in body
+    assert comments == []
+    rest = "\n".join(body.split("\n")[1:])
+    outside = re.sub(r"`[^`\n]*`", "", rest)
+    assert "](" not in outside
+    assert "<" not in outside
+
+
+def test_single_line_and_bare_path_locations_are_unchanged() -> None:
+    """``path:LINE`` and a bare path stay as they are posted today."""
+    lined, comments = _render(
+        {
+            "verdict": "fail",
+            "findings": [
+                {
+                    "severity": "low",
+                    "problem": "One line.",
+                    "location": "shop/inventory.py:17",
+                }
+            ],
+        },
+        inline={"shop/inventory.py": {17}},
+    )
+    assert "`shop/inventory.py:17`" in lined
+    assert [(item["path"], item["line"]) for item in comments] == [
+        ("shop/inventory.py", 17)
+    ]
+
+    bare, bare_comments = _render(
+        {
+            "verdict": "fail",
+            "findings": [
+                {
+                    "severity": "low",
+                    "problem": "A file.",
+                    "location": "shop/inventory.py",
+                }
+            ],
+        },
+        inline={"shop/inventory.py": {1}},
+    )
+    assert "`shop/inventory.py`" in bare
+    assert "`shop/inventory.py:" not in bare
+    assert bare_comments == []
+
+
+def test_location_backtick_or_newline_cannot_leave_the_code_span() -> None:
+    """A backtick or a newline in a location cannot break the code span."""
+    tick = "shop/`inventory`.py:23-25"
+    body, _comments = _render(
+        {
+            "verdict": "fail",
+            "findings": [{"severity": "low", "problem": "Tick.", "location": tick}],
+        }
+    )
+    findings = body.split("**Findings", 1)[1]
+    assert "`" not in findings.replace("&#96;", "")
+    assert "inventory" in findings
+
+    injected = "shop/inventory.py:23-25\n**not a heading**"
+    body, _comments = _render(
+        {
+            "verdict": "fail",
+            "findings": [
+                {"severity": "low", "problem": "Break.", "location": injected}
+            ],
+        }
+    )
+    assert "\n**not a heading**" not in body
+    assert "`shop/inventory.py:23-25**not a heading**`" in body
 
 
 def test_object_field_is_counted_and_labels_are_escaped() -> None:

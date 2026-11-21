@@ -436,6 +436,37 @@ export class FlowPlatformReviewCard extends LitElement {
     this.saved = false;
   }
 
+  /** Read-only: which of the flow's projects Preloop posts for. */
+  private renderPostingProjects() {
+    const listed = this.draft.project_ids;
+    if (!this.draft.enabled || !Array.isArray(listed)) return nothing;
+    const config = this.flow?.git_clone_config || {};
+    const repositories: any[] = Array.isArray(config.repositories)
+      ? config.repositories
+      : [];
+    const admitted: string[] = Array.isArray(this.flow?.trigger_project_ids)
+      ? this.flow.trigger_project_ids.map((id: unknown) => String(id))
+      : repositories.map((repo) => String(repo?.project_id ?? ''));
+    const names = listed
+      .map(
+        (id) =>
+          repositories.find((repo) => String(repo?.project_id) === id)
+            ?.identifier
+      )
+      .filter((name): name is string => typeof name === 'string' && !!name);
+    const count = listed.filter((id) => admitted.includes(id)).length;
+    const noun = admitted.length === 1 ? 'repository' : 'repositories';
+    const which = names.length ? `: ${names.join(', ')}` : '';
+    return html`<p class="meta" data-posting-projects>
+      ${`Posts for ${count} of ${admitted.length} ${noun}${which}.`}
+      ${
+        count < admitted.length
+          ? 'Other repositories keep running; Preloop does not post their reviews.'
+          : nothing
+      }
+    </p>`;
+  }
+
   private renderCheck(check: PrerequisiteCheck) {
     const icon =
       check.ok === true
@@ -611,6 +642,7 @@ export class FlowPlatformReviewCard extends LitElement {
               </sl-radio-group>`
             : html`<p class="meta" data-mode>${MODE_HELP[storedMode]}</p>`
         }
+        ${this.renderPostingProjects()}
         ${
           this.eventReviewTrigger
             ? html`<p data-event-review>
@@ -727,6 +759,10 @@ function normalise(block: PlatformReviewConfig): PlatformReviewConfig {
     out.evidence = block.evidence;
   }
   if (block.action && block.action !== 'comment') out.action = block.action;
+  // The posting list is kept across a save; it is only valid while on.
+  if (block.enabled && Array.isArray(block.project_ids)) {
+    out.project_ids = [...block.project_ids];
+  }
   if (block.verdict_actions && Object.keys(block.verdict_actions).length) {
     out.verdict_actions = block.verdict_actions;
   }

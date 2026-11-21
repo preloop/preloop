@@ -239,6 +239,9 @@ async def build_event_review_binding(
     A posting flow whose action is outside the allowlist, whose server
     read disagrees with the webhook, or whose pull request is from a
     fork, is skipped: ``skip_reason`` is set and no execution is inserted.
+    So is an event for a project the flow admits but does not post for
+    (``platform_review.project_ids``): ``project_not_in_posting_scope``,
+    decided before the provider is read.
 
     Args:
         db: Database session.
@@ -274,6 +277,16 @@ async def build_event_review_binding(
     project_id = event_data.get("project_id")
     if not project_id or str(project_id) not in project_ids:
         return EventReviewDecision(binding=None)
+    from preloop.services.platform_review import (
+        OUT_OF_SCOPE_REASON,
+        project_in_posting_scope,
+    )
+
+    if not project_in_posting_scope(flow.git_clone_config, project_id):
+        # Admitted to the flow but not posted for: an event-started review
+        # exists only as a posting run, so nothing is inserted, not even the
+        # failed execution of the older path.
+        return _skip(OUT_OF_SCOPE_REASON)
     delivery_id = event_data.get("delivery_id")
     if not isinstance(delivery_id, str) or not delivery_id.strip():
         return _skip("delivery_missing")
@@ -419,7 +432,10 @@ def authorize_event_review(
             of ``admission_revoked``, ``binding_changed``,
             ``tracker_unsupported`` or ``installation_suspended``.
     """
-    from preloop.services.platform_review import PlatformReviewError
+    from preloop.services.platform_review import (
+        PlatformReviewError,
+        project_in_posting_scope,
+    )
 
     try:
         binding = EventReviewBinding.model_validate(execution.ci_review_binding)
@@ -445,6 +461,7 @@ def authorize_event_review(
         or binding.event_type not in list(flow.trigger_event_types or [])
         or str(binding.project_id)
         not in [str(item) for item in (flow.trigger_project_ids or [])]
+        or not project_in_posting_scope(flow.git_clone_config, binding.project_id)
     ):
         raise PlatformReviewError("admission_revoked")
     repositories = [

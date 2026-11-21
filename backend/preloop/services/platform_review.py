@@ -23,6 +23,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import UUID
 
 import httpx
 from sqlalchemy.orm import Session
@@ -118,6 +119,10 @@ READBACK_ABSENT: frozenset[str] = frozenset({"review_absent", "status_absent"})
 #: Guide section for what a posted review shows of a finding.
 REVIEW_FINDING_DOCS_URL = (
     "https://docs.preloop.ai/guide/flows/restricted-ci/#what-your-result-must-contain"
+)
+POSTING_SCOPE_DOCS_URL = (
+    "https://docs.preloop.ai/guide/flows/restricted-ci/"
+    "#post-for-some-of-a-shared-flows-projects"
 )
 #: Pages (of 100) read when listing the files or reviews of a pull request.
 MAX_PAGES = 10
@@ -596,6 +601,87 @@ def platform_review_mode(config: Any) -> str:
     return MODE_MANUAL if block.get("mode") == MODE_MANUAL else MODE_AUTOMATIC
 
 
+#: Reason for a run whose project is outside ``platform_review.project_ids``.
+OUT_OF_SCOPE_REASON = "project_not_in_posting_scope"
+
+
+def posting_project_ids(config: Any) -> list[str] | None:
+    """The projects an enabled flow posts for, or None for all of them.
+
+    ``platform_review.project_ids`` absent or null means every project of
+    the flow. A stored value that is not a well-formed list posts for none:
+    when in doubt nothing is posted.
+
+    Args:
+        config: The flow's ``git_clone_config``.
+
+    Returns:
+        Canonical project id strings, or None when posting is not limited.
+    """
+    from preloop.models.schemas.flow import normalize_posting_project_ids
+
+    block = platform_review_block(config)
+    if block is None or block.get("project_ids") is None:
+        return None
+    try:
+        return normalize_posting_project_ids(block["project_ids"])
+    except ValueError:
+        return []
+
+
+def project_in_posting_scope(config: Any, project_id: Any) -> bool:
+    """Whether Preloop posts for ``project_id`` on this flow.
+
+    Membership in the flow's ``trigger_project_ids`` is checked separately
+    by each caller; this is only the posting list.
+
+    Args:
+        config: The flow's ``git_clone_config``.
+        project_id: Project of the run's stored binding.
+
+    Returns:
+        True when posting is not limited or the project is listed.
+    """
+    scope = posting_project_ids(config)
+    if scope is None:
+        return True
+    try:
+        return str(UUID(str(project_id))) in scope
+    except ValueError:
+        return False
+
+
+def validate_platform_review_projects(config: Any, trigger_project_ids: Any) -> None:
+    """Refuse a posting list that names a project the flow does not admit.
+
+    Args:
+        config: ``git_clone_config`` the flow will have after the save.
+        trigger_project_ids: The flow's ``trigger_project_ids`` after the save.
+
+    Raises:
+        ValueError: An id is not in ``trigger_project_ids``. The message
+            names the key and the id.
+    """
+    from preloop.models.schemas.flow import POSTING_PROJECT_IDS_KEY
+
+    block = config.get(CONFIG_KEY) if isinstance(config, Mapping) else None
+    if not isinstance(block, Mapping) or block.get("project_ids") is None:
+        return
+    scope = posting_project_ids({CONFIG_KEY: {**block, "enabled": True}}) or []
+    admitted: set[str] = set()
+    for item in trigger_project_ids or []:
+        try:
+            admitted.add(str(UUID(str(item))))
+        except ValueError:
+            continue
+    for project_id in scope:
+        if project_id not in admitted:
+            raise ValueError(
+                f"{POSTING_PROJECT_IDS_KEY}: {project_id} is not one of the "
+                "flow's trigger_project_ids"
+            )
+
+
 def _status_block(block: Mapping[str, Any]) -> dict[str, Any] | None:
     status = block.get("status")
     return dict(status) if isinstance(status, Mapping) else None
@@ -626,9 +712,21 @@ def validate_platform_review_block(block: Any) -> None:
         "status",
         "enabled_at",
         "evidence",
+        "project_ids",
     }
     if unknown:
         raise ValueError("platform_review has unsupported keys")
+    if block.get("project_ids") is not None:
+        from preloop.models.schemas.flow import (
+            POSTING_PROJECT_IDS_KEY,
+            normalize_posting_project_ids,
+        )
+
+        normalize_posting_project_ids(block["project_ids"])
+        if block.get("enabled") is not True:
+            raise ValueError(
+                f"{POSTING_PROJECT_IDS_KEY} is only valid while posting is enabled"
+            )
     if block.get("mode", MODE_AUTOMATIC) not in STORED_MODES:
         raise ValueError("platform_review.mode must be automatic or manual")
     # A dumped block carries evidence: null when the key was omitted. That is
@@ -1082,17 +1180,35 @@ def _parse_line(value: Any) -> int | None:
     return number
 
 
-def _parse_location_string(value: str) -> tuple[str, int | None] | None:
+def _parse_location_string(
+    value: str,
+) -> tuple[str, int | None, int | None] | None:
     """Parse ``path``, ``path:LINE``, ``path:LINE-LINE`` or ``path#LLINE``.
 
+    A range keeps both lines. The range pattern is greedy, so a
+    comma-separated value matches on its last ``:START-END`` and the
+    earlier locations stay in the path. The end line is returned so the
+    posted text keeps that last range instead of rebuilding ``path:line``.
+
     Returns:
-        The path and the first line, or None when the string is not one of
-        those forms. The caller shows an unparsed value as literal code.
+        The path, the first line, and the end line when the value is a
+        validated range. None when the string is not one of those forms,
+        or when a range's ends are not positive line numbers with the end
+        on or after the start. The caller shows an unparsed value as
+        literal code.
     """
     text = value.strip()
     if not text or "\n" in value or "\r" in value:
         return None
-    for pattern in (_LOCATION_HASH, _LOCATION_RANGE, _LOCATION_LINE):
+    ranged = _LOCATION_RANGE.fullmatch(text)
+    if ranged is not None:
+        path = ranged.group(1).strip()
+        start = _parse_line(ranged.group(2))
+        end = _parse_line(ranged.group(3))
+        if not path or start is None or end is None or end < start:
+            return None
+        return path, start, end
+    for pattern in (_LOCATION_HASH, _LOCATION_LINE):
         match = pattern.fullmatch(text)
         if match is None:
             continue
@@ -1100,18 +1216,31 @@ def _parse_location_string(value: str) -> tuple[str, int | None] | None:
         line = _parse_line(match.group(2))
         if not path or line is None:
             return None
-        return path, line
+        return path, line, None
     if ":" in text or "#" in text:
         return None
-    return text, None
+    return text, None, None
 
 
-def _location(path: Any, line: Any) -> str:
-    """``path:line`` as a code span (the line only when it is a valid number)."""
+def _location(path: Any, line: Any, end: Any = None) -> str:
+    """``path:line`` or ``path:start-end`` as a code span.
+
+    The line is included only when it is a valid line number. A range is
+    included only when both ends are valid and the end is on or after the
+    start. Anything else is the path alone, still inside the same span.
+    """
     if not isinstance(path, str):
         return ""
-    valid = _parse_line(line) is not None and type(line) is int
-    return code_span(f"{path.strip()}:{line}" if valid else path, 320)
+    start = _parse_line(line)
+    finish = _parse_line(end) if end is not None else None
+    if start is not None and type(line) is int:
+        if finish is not None and type(end) is int and finish >= start:
+            shown = f"{path.strip()}:{start}-{finish}"
+        else:
+            shown = f"{path.strip()}:{line}"
+    else:
+        shown = path
+    return code_span(shown, 320)
 
 
 def _finding_field_role(name: str) -> str:
@@ -1199,6 +1328,33 @@ def finding_field_appearances(schema: Any) -> list[dict[str, str]]:
     ]
 
 
+def _posting_scope_notes(flow: Any) -> list[dict[str, Any]]:
+    """Say that posting is limited to N of the flow's M projects."""
+    config = getattr(flow, "git_clone_config", None)
+    scope = posting_project_ids(config)
+    if scope is None:
+        return []
+    admitted: list[str] = []
+    for item in getattr(flow, "trigger_project_ids", None) or []:
+        try:
+            admitted.append(str(UUID(str(item))))
+        except ValueError:
+            continue
+    listed = len([project for project in scope if project in admitted])
+    return [
+        {
+            "code": "review_posting_project_scope",
+            "message": (
+                f"Posting is limited to {listed} of {len(admitted)} projects "
+                "of this flow (platform_review.project_ids). "
+                "A run of another project is not posted, and a pull request "
+                "event for one starts no review."
+            ),
+            "docs_url": POSTING_SCOPE_DOCS_URL,
+        }
+    ]
+
+
 def review_posting_warnings(flow: Any) -> list[dict[str, Any]]:
     """Save-time description of how finding fields are posted.
 
@@ -1209,13 +1365,18 @@ def review_posting_warnings(flow: Any) -> list[dict[str, Any]]:
         flow: Flow row or namespace.
 
     Returns:
-        Zero or one warning with ``code``, ``message`` and ``docs_url``.
+        Warnings with ``code``, ``message`` and ``docs_url``: one when
+        posting is limited to some of the flow's projects
+        (``review_posting_project_scope``), and zero or one about the
+        finding fields.
     """
-    if platform_review_block(getattr(flow, "git_clone_config", None)) is None:
+    config = getattr(flow, "git_clone_config", None)
+    if platform_review_block(config) is None:
         return []
+    notes = _posting_scope_notes(flow)
     schema = getattr(flow, "result_schema", None)
     if _findings_item_schema(schema) is None:
-        return []
+        return notes
     appearances = finding_field_appearances(schema)
     listed = (
         ", ".join(f"{item['field']} ({item['appears_as']})" for item in appearances)
@@ -1223,14 +1384,14 @@ def review_posting_warnings(flow: Any) -> list[dict[str, Any]]:
     )
     has_text = any(item["appears_as"] == "text" for item in appearances)
     if has_text:
-        return [
+        return notes + [
             {
                 "code": "review_finding_fields",
                 "message": f"A posted review shows these finding fields: {listed}.",
                 "docs_url": REVIEW_FINDING_DOCS_URL,
             }
         ]
-    return [
+    return notes + [
         {
             "code": "review_finding_text_missing",
             "message": (
@@ -1355,9 +1516,9 @@ def structured_findings(
     ``finding`` and ``summary``. A location is ``path`` or ``file`` with
     ``line`` (a decimal string counts), or, when those name no path, a
     ``location`` or ``where`` string of the form ``path``, ``path:LINE``,
-    ``path:LINE-LINE`` or ``path#LLINE``. Every other member is a labelled
-    block, in the order the result schema declares the properties, then
-    the order of the document.
+    ``path:LINE-LINE`` or ``path#LLINE``. A range is posted with both
+    lines. Every other member is a labelled block, in the order the result
+    schema declares the properties, then the order of the document.
 
     Args:
         result: The stored, validated result document.
@@ -1392,6 +1553,7 @@ def structured_findings(
         raw_path = _first_text(item, ("path", "file"))
         path_name = _first_name(item, ("path", "file"))
         line: int | None = None
+        end_line: int | None = None
         literal: str | None = None
         if path_name is not None:
             used.add(path_name)
@@ -1406,14 +1568,14 @@ def structured_findings(
                 if parsed is None:
                     literal = str(item.get(where_name))
                 else:
-                    raw_path, line = parsed
+                    raw_path, line, end_line = parsed
         if literal is not None:
             path_span = code_span(literal, 320) or None
             stored_path: str | None = None
             stored_line: int | None = None
         else:
             shown_line = line if type(line) is int else None
-            path_span = _location(raw_path, shown_line) or None
+            path_span = _location(raw_path, shown_line, end_line) or None
             stored_path = raw_path if isinstance(raw_path, str) else None
             stored_line = line
         findings.append(
@@ -2390,6 +2552,10 @@ async def _publish_claimed(
         != (binding.repository_slug.lower(), str(binding.pr_number), binding.head_sha)
     ):
         raise PlatformReviewError("binding_changed")
+    # The list may have changed since the entry check: re-read it.
+    db.refresh(flow)
+    if not project_in_posting_scope(flow.git_clone_config, binding.project_id):
+        raise PlatformReviewError("admission_revoked")
     if pre.any:
         # Posting re-reads the flow and the result: check against what is
         # stored now, not what the caller's earlier check saw.
@@ -2739,6 +2905,14 @@ async def publish_platform_review(
         if explicit:
             raise PlatformReviewRefusedError("no_review_binding")
         return None
+    # The project of the stored binding decides, never anything the caller
+    # sends. Outside the list nothing is claimed, so no failure and no retry
+    # is recorded; a retry left from before the list changed stops here.
+    if not project_in_posting_scope(flow.git_clone_config, binding.project_id):
+        _stop_retrying(db, execution.id, OUT_OF_SCOPE_REASON)
+        if explicit:
+            raise PlatformReviewRefusedError(OUT_OF_SCOPE_REASON)
+        return None
     if execution.status not in TERMINAL_STATUSES:
         if explicit:
             raise PlatformReviewRefusedError("execution_not_finished")
@@ -3078,13 +3252,29 @@ def platform_review_projection(
         counts = evidence
     else:
         counts = stored_tool_evidence(db, execution)
+    scope = posting_project_ids(getattr(flow, "git_clone_config", None))
+    in_scope: bool | None = None
+    if scope is not None:
+        stored = parse_stored_review_binding(
+            getattr(execution, "ci_review_binding", None)
+        )
+        # A run without a binding has no project to compare: it is not
+        # known to be outside the list, so the key stays unset.
+        in_scope = (
+            None
+            if stored is None
+            else project_in_posting_scope(flow.git_clone_config, stored.project_id)
+        )
     if row is None:
         binding = getattr(execution, "ci_review_binding", None)
+        # Outside the posting list nothing will be attempted: say so
+        # instead of reporting a publication that is still to come.
+        skipped = in_scope is False
         payload = {
             "mode": mode,
             "posted_by": NOT_POSTED,
-            "status": "pending",
-            "reason": None,
+            "status": STATE_SKIPPED if skipped else "pending",
+            "reason": OUT_OF_SCOPE_REASON if skipped else None,
             "head_sha": binding.get("head_sha")
             if isinstance(binding, Mapping)
             else None,
@@ -3122,6 +3312,10 @@ def platform_review_projection(
     if with_evidence:
         payload["tool_evidence"] = counts
     payload["readback_check"] = None if row is None else row.readback_check
+    if in_scope is not None:
+        # Only this run's own project: never the list or its size, which
+        # would describe the flow's other projects to a CI identity.
+        payload["project_in_posting_scope"] = in_scope
     return payload
 
 

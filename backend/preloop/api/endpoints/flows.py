@@ -349,6 +349,7 @@ def _reject_invalid_platform_review(
     from preloop.services.event_review import validate_event_review_posting
     from preloop.services.platform_review import (
         validate_platform_review_flow,
+        validate_platform_review_projects,
         validate_platform_review_trackers,
     )
 
@@ -369,6 +370,7 @@ def _reject_invalid_platform_review(
             enforce_content_capture=True,
         )
         validate_platform_review_trackers(db, account_id=account_id, config=config)
+        validate_platform_review_projects(config, trigger_project_ids)
         validate_event_review_posting(
             db,
             account_id,
@@ -2132,6 +2134,8 @@ def publish_execution_platform_review(
     gateway request can still be recording (a short window after the run
     finishes) and the flow or the caller requires captured or complete
     evidence, the call returns 409 ``evidence_pending`` and posts nothing.
+    A run whose project is outside ``platform_review.project_ids`` answers
+    409 ``project_not_in_posting_scope`` and posts nothing.
 
     The call is idempotent. A review or status that was already posted for
     the execution is not posted again; the response is the current
@@ -2142,6 +2146,7 @@ def publish_execution_platform_review(
     own restricted CI identity when it holds ``execution:review:publish``.
     """
     from preloop.services.platform_review import (
+        OUT_OF_SCOPE_REASON,
         PlatformReviewRefusedError,
         PreconditionFailedError,
         PreconditionMalformedError,
@@ -2207,7 +2212,13 @@ def publish_execution_platform_review(
             exc.status_code,
             detail={
                 "code": exc.reason,
-                "message": "Nothing can be published for this execution",
+                "message": (
+                    "Nothing can be published for this execution: its project "
+                    "is not in the flow's posting scope "
+                    "(platform_review.project_ids)"
+                    if exc.reason == OUT_OF_SCOPE_REASON
+                    else "Nothing can be published for this execution"
+                ),
             },
         ) from None
     return {"execution_id": str(execution_id), "platform_review": projection}
