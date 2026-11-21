@@ -492,3 +492,52 @@ export function isWaitingForRunnerOwner(execution: {
     ) && execution.error_message === WAITING_FOR_RUNNER_OWNER
   );
 }
+
+/** One group of `effective_requests` on the execution detail. */
+export interface ExecutionEffectiveRequest {
+  model?: string | null;
+  reasoning_effort?: string | null;
+  max_output_tokens?: number | null;
+  request_count: number;
+}
+
+const EFFORT_LABELS: Record<string, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+};
+
+/**
+ * The reasoning effort that reached the provider, for the execution strip.
+ * Null when no request sent one (older runs and servers send no groups), so
+ * the strip never shows the effort the flow only asked for. One effort and
+ * model reads as the effort alone; otherwise each model and effort pair is
+ * listed with its request count, merging groups split only by output cap.
+ */
+export function executionEffortSent(
+  groups: ExecutionEffectiveRequest[] | null | undefined
+): string | null {
+  if (!groups?.some((g) => g.reasoning_effort)) return null;
+  const merged = new Map<
+    string,
+    { effort: string; model: string; count: number }
+  >();
+  for (const g of groups) {
+    const effort = g.reasoning_effort
+      ? (EFFORT_LABELS[g.reasoning_effort] ?? g.reasoning_effort)
+      : 'None sent';
+    const model = g.model || '-';
+    const key = JSON.stringify([effort, model]);
+    const entry = merged.get(key) ?? { effort, model, count: 0 };
+    entry.count += g.request_count || 0;
+    merged.set(key, entry);
+  }
+  const entries = [...merged.values()];
+  if (entries.length === 1) return entries[0].effort;
+  return entries
+    .map(
+      (e) =>
+        `${e.effort} · ${e.model} (${e.count} request${e.count === 1 ? '' : 's'})`
+    )
+    .join(', ');
+}

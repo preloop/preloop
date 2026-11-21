@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The flow form has a **Reasoning effort** select next to the flow's AI
+  model (Model default, Low, Medium, High), so the flow-wide effort no
+  longer needs the API. The execution page shows **Effort sent**, the effort
+  that reached the provider, next to the model, and nothing when none was
+  sent.
 - A flow can set `agent_config.reasoning_effort` (`low`, `medium` or `high`)
   to change how hard its model thinks, without label rules. A label rule
   that sets an effort still wins. For DeepSeek models, the gateway now sends
