@@ -474,7 +474,7 @@ runner goes away (see [When the laptop sleeps](#when-the-laptop-sleeps)).
 
 When the runner hosting a started session (`idle` or `running`) goes
 `asleep` (it sent `going_to_sleep`) or `offline` (no heartbeat and no sleep
-signal; this is what a lid close looks like on macOS and Windows), the
+signal, for example after a network drop), the
 session moves to `runner_away`:
 
 - It keeps its slot. A turn sent now is accepted and held on the server; it

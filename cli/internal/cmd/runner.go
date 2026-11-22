@@ -612,6 +612,8 @@ func runnerForegroundLoop(
 	powerEvents, stopPower := startRunnerPowerWatcher()
 	defer stopPower()
 	jobs.power = powerEvents
+	jobs.keepAwake = newRunnerKeepAwake()
+	defer jobs.keepAwake.close()
 	backoff := runnerReconnectMin
 	connectedOnce := false
 
@@ -850,6 +852,7 @@ func runRunnerSession(
 			}
 		case <-ticker.C:
 			jobs.sessions.tick()
+			jobs.updateKeepAwake(loadRunnerConfigDoc)
 			if !jobs.publicationActive() {
 				_ = cleanupPublicationRecovery(time.Now())
 			}

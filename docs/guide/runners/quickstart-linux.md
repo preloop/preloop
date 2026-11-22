@@ -303,9 +303,25 @@ Windows (`GetLastInputInfo`); Linux runners do not report it and show
 | Host | Before sleep | After wake |
 | --- | --- | --- |
 | Linux with systemd-logind | The runner holds a short logind sleep delay (released after at most 3 seconds), sends `going_to_sleep`, and stops heartbeating, so the runner shows `asleep`. | Reconnects at once on logind's wake signal. |
-| macOS | No signal in this build: IOKit power notifications need a native callback. The runner shows `offline` once heartbeats are 45 seconds old. | Reconnects at once. |
-| Windows | No signal in this build, for the same reason. Shows `offline`. | Reconnects at once. |
-| Linux without logind (containers, minimal hosts) | No signal. Shows `offline`. | Reconnects at once. |
+| macOS | The runner registers for IOKit system power notifications. On `kIOMessageSystemWillSleep` (lid close, Apple menu Sleep, idle sleep) it sends `going_to_sleep` and stops heartbeating before it acknowledges, waiting at most 3 seconds, so the runner shows `asleep`. | Reconnects at once on `kIOMessageSystemHasPoweredOn`. |
+| Windows 8 and later | The runner registers with `PowerRegisterSuspendResumeNotification`. On `PBT_APMSUSPEND` it sends `going_to_sleep` within at most 1.5 seconds and shows `asleep`. On Modern Standby laptops Windows sends this when the system really suspends, which can be some minutes after the lid closes; until then the runner stays `online`. | Reconnects at once on `PBT_APMRESUMEAUTOMATIC`. |
+| Linux without logind (containers, minimal hosts), or a failed registration on any host | No signal. Shows `offline`. | Reconnects at once. |
+
+### Keeping the host awake during work (macOS, optional)
+
+Off by default. To keep a Mac from idle sleep while a flow job or a remote
+session runs, set this in `~/.preloop/runner.json`:
+
+```json
+{"power": {"keep_awake_while_busy": true}}
+```
+
+The runner then holds `caffeinate -i` from the heartbeat after work starts
+until the heartbeat after it ends (within 15 seconds either way), and
+macOS drops the assertion by itself if the runner exits. Only idle sleep
+is held off: closing the lid or choosing Sleep still sleeps the Mac, which
+then shows `asleep`. Battery use rises while it is held, and a managed Mac's
+energy policy may override it. Other platforms ignore the setting.
 
 The runner detects wake on every host: the wall clock keeps running through
 sleep, so a wall-clock gap 20 seconds or more longer than the 5 second sample

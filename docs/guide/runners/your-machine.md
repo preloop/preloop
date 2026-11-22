@@ -121,8 +121,8 @@ Model selection rules for flows are in [Model routing](../flows/model-routing.md
 A harness flow that pins a runner (`agent_config.runner_id`) follows its
 `agent_config.offline_policy` when that runner is `asleep` (it sent
 `going_to_sleep` before it went quiet) or `offline` (heartbeats stopped
-without a sleep signal; on macOS and Windows a closed lid shows as
-`offline`):
+without a sleep signal, for example a pulled network cable or a host
+whose sleep signal is unavailable):
 
 - `fail` (default): the run fails in the same routing cycle with the
   routing reason `runner_asleep` or `runner_offline`.
