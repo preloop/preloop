@@ -8,6 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 ExtensionKind = Literal["plugin", "skill", "hook", "command"]
 ApprovalState = Literal["approved", "unapproved", "unknown"]
+EffectiveState = Literal[
+    "approved", "unapproved", "unknown", "content_changed", "content_unverified"
+]
+ContentHashStatus = Literal["ok", "too_large", "unreadable"]
 SourceKind = Literal[
     "official_marketplace",
     "third_party_marketplace",
@@ -37,6 +41,7 @@ class ExtensionMetadata(BaseModel):
     project_ref_hash: str | None = Field(default=None, pattern=HASH_PATTERN)
     enabled: Literal["true", "false", "unknown"] = "unknown"
     content_hash: str | None = Field(default=None, pattern=HASH_PATTERN)
+    content_hash_status: ContentHashStatus = "ok"
     event: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_\-]{0,31}$")
     count: int | None = Field(default=None, ge=1, le=10000)
     id_hashed: bool = False
@@ -56,6 +61,8 @@ class ExtensionMetadata(BaseModel):
             raise ValueError(
                 "Project scope requires a project hash; user scope forbids it"
             )
+        if self.content_hash_status != "ok" and self.content_hash is not None:
+            raise ValueError("A bounded or unreadable extension has no content hash")
         if self.kind == "hook" and (self.event is None or self.count is None):
             raise ValueError("Hooks require event and count")
         if self.kind != "hook" and (self.event is not None or self.count is not None):
@@ -63,8 +70,34 @@ class ExtensionMetadata(BaseModel):
         return self
 
 
-class ExtensionApprovalUpdate(BaseModel):
-    """Replace a decision; null version constraint means any version."""
+class ExtensionPinCreate(BaseModel):
+    """Pin an approval to one reviewed content hash."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content_hash: str = Field(pattern=HASH_PATTERN)
+    version: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$"
+    )
+    note: str | None = Field(default=None, max_length=512)
+
+
+class ExtensionPinSummary(BaseModel):
+    """A pinned hash with who pinned it and when."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    content_hash: str
+    version: str | None
+    note: str | None
+    pinned_by_user_id: UUID | None
+    pinned_by: str | None = None
+    pinned_at: datetime
+
+
+class ExtensionApprovalFields(BaseModel):
+    """Decision fields stored on the approval row."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -75,10 +108,27 @@ class ExtensionApprovalUpdate(BaseModel):
     note: str | None = Field(default=None, max_length=512)
 
 
-class ExtensionApprovalSummary(ExtensionApprovalUpdate):
-    """A decision and its audit attribution."""
+class ExtensionApprovalUpdate(ExtensionApprovalFields):
+    """Replace a decision; null version constraint means any version.
 
-    model_config = ConfigDict(from_attributes=True)
+    ``pin`` approves this exact content: the approval and the pin are written
+    in one transaction, and the pin requires ``approval_state="approved"``.
+    """
+
+    pin: ExtensionPinCreate | None = None
+
+    @model_validator(mode="after")
+    def pin_requires_approval(self) -> "ExtensionApprovalUpdate":
+        """Only an approved decision can be pinned to content."""
+        if self.pin is not None and self.approval_state != "approved":
+            raise ValueError("A pin requires approval_state 'approved'")
+        return self
+
+
+class ExtensionApprovalSummary(ExtensionApprovalFields):
+    """A decision, its audit attribution and its content pins."""
+
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
 
     id: UUID
     agent_kind: str
@@ -86,6 +136,7 @@ class ExtensionApprovalSummary(ExtensionApprovalUpdate):
     extension_id: str
     decided_by_user_id: UUID | None
     decided_at: datetime | None
+    pins: list[ExtensionPinSummary] = Field(default_factory=list)
 
 
 class DiscoveredExtensionSummary(BaseModel):
@@ -107,6 +158,18 @@ class DiscoveredExtensionSummary(BaseModel):
     first_seen_at: datetime
     last_seen_at: datetime
     approval_state: ApprovalState
+    effective_state: EffectiveState
+    content_hash: str | None
+    content_hash_status: ContentHashStatus
+
+
+class ContentHashBucket(BaseModel):
+    """Devices reporting one content hash, or the null bucket with its status."""
+
+    content_hash: str | None
+    status: ContentHashStatus = "ok"
+    device_count: int
+    pinned: bool
 
 
 class ExtensionAggregate(BaseModel):
@@ -119,6 +182,8 @@ class ExtensionAggregate(BaseModel):
     versions: list[str]
     source_kinds: list[SourceKind]
     approval_state: ApprovalState
+    pin_count: int = 0
+    content_hashes: list[ContentHashBucket] = Field(default_factory=list)
 
 
 class DiscoveredExtensionList(BaseModel):

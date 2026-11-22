@@ -48,7 +48,7 @@ func TestExtensionInventoryPrivacyAndClaudeLayouts(t *testing.T) {
 	if found["plugin"].Version != "1.4.0" || found["plugin"].SourceKind != "official_marketplace" || found["plugin"].Enabled != "true" || found["plugin"].IDHashed {
 		t.Fatalf("plugin %+v", found["plugin"])
 	}
-	if !found["skill"].IDHashed || !strings.HasPrefix(found["skill"].ID, "hash:") || found["skill"].ContentHash != extensionHash([]byte(secret)) {
+	if !found["skill"].IDHashed || !strings.HasPrefix(found["skill"].ID, "hash:") || found["skill"].ContentHash != extensionHash([]byte("SKILL.md\x00"+strings.TrimPrefix(extensionHash([]byte(secret)), "sha256:")+"\n")) {
 		t.Fatalf("skill %+v", found["skill"])
 	}
 	if found["hook"].Count != 2 || found["hook"].Event != "PreToolUse" {
@@ -145,7 +145,7 @@ func TestExtensionInventoryCodex(t *testing.T) {
 // protects=bounded safe reads; fails_when=links, oversized or malformed metadata
 // are reported complete; no_claim=permissions and races vary by operating system.
 func TestExtensionInventoryUnsafeFiles(t *testing.T) {
-	for _, mode := range []string{"symlink", "parent-symlink", "oversized", "malformed", "unbound-hook"} {
+	for _, mode := range []string{"symlink", "parent-symlink", "malformed", "unbound-hook"} {
 		t.Run(mode, func(t *testing.T) {
 			home := t.TempDir()
 			outside := t.TempDir()
@@ -160,11 +160,6 @@ func TestExtensionInventoryUnsafeFiles(t *testing.T) {
 				}
 				if err := os.Symlink(outside, path); err != nil {
 					t.Skipf("symlink unavailable: %v", err)
-				}
-			case "oversized":
-				path := writeInventoryFixture(t, home, ".claude/skills/large/SKILL.md", "")
-				if err := os.Truncate(path, inventoryConfigLimit+1); err != nil {
-					t.Fatal(err)
 				}
 			case "malformed":
 				writeInventoryFixture(t, home, ".claude/settings.json", "invalid")

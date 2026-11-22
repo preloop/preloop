@@ -2101,6 +2101,8 @@ paths:
             - approved
             - unapproved
             - unknown
+            - content_changed
+            - content_unverified
             type: string
           - type: 'null'
           title: State
@@ -2318,6 +2320,127 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ExtensionApprovalSummary'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}/pins:
+    post:
+      tags:
+      - Agent discovery
+      summary: Add Pin
+      description: Approve one exact content hash under an approved extension.
+      operationId: add_pin_api_v1_agents_extension_approvals__agent_kind___extension_kind___extension_id__pins_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_kind
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_\-]{0,63}$
+          title: Agent Kind
+      - name: extension_kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          type: string
+          title: Extension Kind
+      - name: extension_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[^\x00-\x1f\x7f/\\]{1,128}$
+          title: Extension Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtensionPinCreate'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionPinSummary'
+        '404':
+          description: Extension approval not found
+        '409':
+          description: Hash already pinned or pin limit reached
+        '422':
+          description: Approval is not approved or hash is malformed
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}/pins/{pin_id}:
+    delete:
+      tags:
+      - Agent discovery
+      summary: Delete Pin
+      description: Unpin a hash; deleting the last pin returns to a name approval.
+      operationId: delete_pin_api_v1_agents_extension_approvals__agent_kind___extension_kind___extension_id__pins__pin_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: pin_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Pin Id
+      - name: agent_kind
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_\-]{0,63}$
+          title: Agent Kind
+      - name: extension_kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          type: string
+          title: Extension Kind
+      - name: extension_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^[^\x00-\x1f\x7f/\\]{1,128}$
+          title: Extension Id
+      responses:
+        '204':
+          description: Successful Response
+        '404':
+          description: Pin not found under this approval
         '422':
           description: Validation Error
           content:
@@ -35892,6 +36015,35 @@ components:
       required:
       - enabled
       title: ConnectionUpdate
+    ContentHashBucket:
+      properties:
+        content_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Hash
+        status:
+          type: string
+          enum:
+          - ok
+          - too_large
+          - unreadable
+          title: Status
+          default: ok
+        device_count:
+          type: integer
+          title: Device Count
+        pinned:
+          type: boolean
+          title: Pinned
+      type: object
+      required:
+      - content_hash
+      - device_count
+      - pinned
+      title: ContentHashBucket
+      description: Devices reporting one content hash, or the null bucket with its
+        status.
     ContinuationAdoptRequest:
       properties:
         recovery_mode:
@@ -37925,6 +38077,27 @@ components:
           - unapproved
           - unknown
           title: Approval State
+        effective_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          - unknown
+          - content_changed
+          - content_unverified
+          title: Effective State
+        content_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Hash
+        content_hash_status:
+          type: string
+          enum:
+          - ok
+          - too_large
+          - unreadable
+          title: Content Hash Status
       type: object
       required:
       - fingerprint
@@ -37943,6 +38116,9 @@ components:
       - first_seen_at
       - last_seen_at
       - approval_state
+      - effective_state
+      - content_hash
+      - content_hash_status
       title: DiscoveredExtensionSummary
       description: Device inventory joined to its account-wide decision.
     DiscoveryEvidence:
@@ -39257,6 +39433,15 @@ components:
           - unapproved
           - unknown
           title: Approval State
+        pin_count:
+          type: integer
+          title: Pin Count
+          default: 0
+        content_hashes:
+          items:
+            $ref: '#/components/schemas/ContentHashBucket'
+          type: array
+          title: Content Hashes
       type: object
       required:
       - agent_kind
@@ -39338,7 +39523,11 @@ components:
             format: date-time
           - type: 'null'
           title: Decided At
-      additionalProperties: false
+        pins:
+          items:
+            $ref: '#/components/schemas/ExtensionPinSummary'
+          type: array
+          title: Pins
       type: object
       required:
       - approval_state
@@ -39349,7 +39538,7 @@ components:
       - decided_by_user_id
       - decided_at
       title: ExtensionApprovalSummary
-      description: A decision and its audit attribution.
+      description: A decision, its audit attribution and its content pins.
     ExtensionApprovalUpdate:
       properties:
         approval_state:
@@ -39372,12 +39561,21 @@ components:
             maxLength: 512
           - type: 'null'
           title: Note
+        pin:
+          anyOf:
+          - $ref: '#/components/schemas/ExtensionPinCreate'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:
       - approval_state
       title: ExtensionApprovalUpdate
-      description: Replace a decision; null version constraint means any version.
+      description: 'Replace a decision; null version constraint means any version.
+
+
+        ``pin`` approves this exact content: the approval and the pin are written
+
+        in one transaction, and the pin requires ``approval_state="approved"``.'
     ExtensionAttentionItem:
       properties:
         id:
@@ -39491,6 +39689,14 @@ components:
             pattern: ^sha256:[0-9a-f]{64}$
           - type: 'null'
           title: Content Hash
+        content_hash_status:
+          type: string
+          enum:
+          - ok
+          - too_large
+          - unreadable
+          title: Content Hash Status
+          default: ok
         event:
           anyOf:
           - type: string
@@ -39518,6 +39724,74 @@ components:
       title: ExtensionMetadata
       description: Only identifiers, version, classification and final hashes leave
         a device.
+    ExtensionPinCreate:
+      properties:
+        content_hash:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+          title: Content Hash
+        version:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          - type: 'null'
+          title: Version
+        note:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Note
+      additionalProperties: false
+      type: object
+      required:
+      - content_hash
+      title: ExtensionPinCreate
+      description: Pin an approval to one reviewed content hash.
+    ExtensionPinSummary:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        content_hash:
+          type: string
+          title: Content Hash
+        version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Version
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+        pinned_by_user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Pinned By User Id
+        pinned_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pinned By
+        pinned_at:
+          type: string
+          format: date-time
+          title: Pinned At
+      type: object
+      required:
+      - id
+      - content_hash
+      - version
+      - note
+      - pinned_by_user_id
+      - pinned_at
+      title: ExtensionPinSummary
+      description: A pinned hash with who pinned it and when.
     ExternalApprovalResult:
       properties:
         external_reference:
@@ -59688,7 +59962,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

@@ -5,14 +5,23 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import String, func, select, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.schemas.discovery_evidence import DiscoveryEvidence
 
 from .expected_device import crud_expected_device
-from .extension_approval import approval_join, decode_cursor, encode_cursor
+from .extension_approval import (
+    approval_join,
+    crud_extension_approval,
+    decode_cursor,
+    effective_state,
+    effective_state_sql,
+    encode_cursor,
+)
+
+CONTENT_HASH_BUCKETS = 20
 
 
 class CRUDDiscoveredExtension:
@@ -124,6 +133,7 @@ class CRUDDiscoveredExtension:
                         "source_ref_hash",
                         "enabled",
                         "content_hash",
+                        "content_hash_status",
                         "event",
                         "id_hashed",
                     ):
@@ -214,10 +224,12 @@ class CRUDDiscoveredExtension:
         cursor: str | None = None,
         group: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Return presence and raw name approvals, including fields future rules need.
+        """Return presence, raw approvals and content-pinned effective state.
 
         Name approval does not imply version compliance; callers evaluating a
         constraint can read version_constraint alongside observed version.
+        ``state`` filters on the per-device effective state, so in group mode
+        an aggregate counts only the devices in that state.
         """
         model, approval = models.DiscoveredExtension, models.ExtensionApproval
         approval_state = func.coalesce(approval.approval_state, "unknown")
@@ -225,7 +237,7 @@ class CRUDDiscoveredExtension:
         for column, value in (
             (model.workstation_fingerprint, fingerprint),
             (model.agent_kind, agent_kind),
-            (approval_state, state),
+            (effective_state_sql(), state),
             (model.source_kind, source_kind),
         ):
             if value is not None:
@@ -240,6 +252,7 @@ class CRUDDiscoveredExtension:
                     func.array_agg(func.distinct(model.version)),
                     func.array_agg(func.distinct(model.source_kind)),
                     approval_state,
+                    func.max(approval.id.cast(String)),
                 )
                 .outerjoin(approval, approval_join())
                 .where(*filters)
@@ -249,18 +262,35 @@ class CRUDDiscoveredExtension:
             if key:
                 query = query.where(tuple_(*columns) > tuple(key))
             rows = list(db.execute(query.limit(limit + 1)))
-            items = [
-                dict(
-                    agent_kind=r[0],
-                    extension_kind=r[1],
-                    extension_id=r[2],
-                    device_count=r[3],
-                    versions=sorted(v for v in r[4] if v is not None),
-                    source_kinds=sorted(r[5]),
-                    approval_state=r[6],
+            page = rows[:limit]
+            pins = crud_extension_approval.pins_for(
+                db, approval_ids=[UUID(r[7]) for r in page if r[7]]
+            )
+            buckets = self._content_hashes(
+                db, account_id=account_id, keys=[tuple(r[:3]) for r in page]
+            )
+            items = []
+            for r in page:
+                pinned = (
+                    {p["content_hash"] for p in pins.get(UUID(r[7]), [])}
+                    if r[7]
+                    else set()
                 )
-                for r in rows[:limit]
-            ]
+                items.append(
+                    dict(
+                        agent_kind=r[0],
+                        extension_kind=r[1],
+                        extension_id=r[2],
+                        device_count=r[3],
+                        versions=sorted(v for v in r[4] if v is not None),
+                        source_kinds=sorted(r[5]),
+                        approval_state=r[6],
+                        pin_count=len(pinned),
+                        content_hashes=hash_buckets(
+                            buckets.get(tuple(r[:3]), []), pinned
+                        ),
+                    )
+                )
             next_cursor = (
                 encode_cursor(list(rows[limit - 1][:3])) if len(rows) > limit else None
             )
@@ -274,12 +304,22 @@ class CRUDDiscoveredExtension:
             if key:
                 device_query = device_query.where(model.id > UUID(key[0]))
             rows = list(db.execute(device_query.limit(limit + 1)))
+            pins = crud_extension_approval.pins_for(
+                db, approval_ids={d.id for _, d in rows[:limit] if d is not None}
+            )
             items = []
             for row, decision in rows[:limit]:
                 item = row.to_dict()
                 item.update(
                     fingerprint=row.workstation_fingerprint,
                     approval_state=decision.approval_state if decision else "unknown",
+                    effective_state=effective_state(
+                        row,
+                        decision,
+                        [p["content_hash"] for p in pins.get(decision.id, [])]
+                        if decision
+                        else [],
+                    ),
                     version_constraint=decision.version_constraint
                     if decision
                     else None,
@@ -291,6 +331,68 @@ class CRUDDiscoveredExtension:
                 else None
             )
         return items, next_cursor
+
+    def _content_hashes(
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        keys: list[tuple[str, str, str]],
+    ) -> dict[tuple[str, str, str], list[tuple[str | None, str, int]]]:
+        """Count present (device, profile) pairs per content hash for each key.
+
+        Null hashes form one bucket whose status is the greatest reported one
+        (``unreadable`` > ``too_large`` > ``ok``).
+        """
+        if not keys:
+            return {}
+        model = models.DiscoveredExtension
+        columns = (model.agent_kind, model.extension_kind, model.extension_id)
+        rows = db.execute(
+            select(
+                *columns,
+                model.content_hash,
+                func.max(model.content_hash_status),
+                func.count(
+                    func.distinct(
+                        tuple_(model.workstation_fingerprint, model.profile_ref)
+                    )
+                ),
+            )
+            .where(
+                model.account_id == account_id,
+                model.present.is_(True),
+                tuple_(*columns).in_(keys),
+            )
+            .group_by(*columns, model.content_hash)
+        )
+        result: dict[tuple[str, str, str], list[tuple[str | None, str, int]]] = (
+            defaultdict(list)
+        )
+        for kind, ext_kind, ext_id, content_hash, status, count in rows:
+            result[(kind, ext_kind, ext_id)].append((content_hash, status, count))
+        return result
+
+
+def hash_buckets(
+    observed: list[tuple[str | None, str, int]], pinned: set[str]
+) -> list[dict[str, Any]]:
+    """Most common hashes first (ties by hash, null last), top 20, plus all pins."""
+    ordered = sorted(observed, key=lambda b: (-b[2], b[0] is None, b[0] or ""))
+    top = ordered[:CONTENT_HASH_BUCKETS]
+    shown = {b[0] for b in top}
+    counts = {b[0]: b for b in ordered}
+    for content_hash in sorted(pinned - shown):
+        top.append(counts.get(content_hash, (content_hash, "ok", 0)))
+    return [
+        dict(
+            content_hash=content_hash,
+            status=status if content_hash is None else "ok",
+            device_count=count,
+            pinned=content_hash in pinned,
+        )
+        for content_hash, status, count in top
+    ]
 
 
 crud_discovered_extension = CRUDDiscoveredExtension()

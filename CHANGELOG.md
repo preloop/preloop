@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extension approvals can be pinned to content hashes (#2321). A pinned
+  approval approves only the pinned hashes; a device reporting other content
+  reads `content_changed`, or `content_unverified` when no hash could be
+  computed. Skill and plugin hashes now cover every file in the extension's
+  directory (bounded to 500 files, 16 MiB and depth 8). The upgrade pins
+  existing approved extensions to the hashes reported at that moment, so
+  later changes need a fresh pin. The console's Extensions tab shows the
+  observed hashes with Pin and Unpin, the two new badges and filters, and
+  **Approve this exact content**. Downgrading drops the pins, which turns
+  pinned approvals back into the more permissive name approvals.
 - A shared read-only review flow can post for some of its projects only:
   `git_clone_config.platform_review.project_ids` lists them, and the same
   list decides which projects a pull request event starts a review for.
