@@ -6,6 +6,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+from tests.xdist_database import check_job_database
+
 
 @pytest.fixture(scope="session")
 def db_engine():
@@ -17,6 +19,7 @@ def db_engine():
             "DATABASE_URL environment variable not set. "
             "This is required for tests needing PostgreSQL with PGVector."
         )
+    check_job_database(os.environ)
 
     # Use PostgreSQL for tests requiring it (like embedding tests)
     # Assumes the database specified by DATABASE_URL exists and has PGVector enabled.
