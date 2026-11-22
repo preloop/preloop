@@ -1,0 +1,436 @@
+"""AzureDevOpsTracker against a stub transport.
+
+Response bodies follow the Azure DevOps REST 7.1 reference examples:
+repositories (https://learn.microsoft.com/rest/api/azure/devops/git/
+repositories/list), pull requests (.../git/pull-requests/get-pull-request),
+threads (.../git/pull-request-threads), iterations and iteration changes
+(.../git/pull-request-iterations, .../git/pull-request-iteration-changes)
+and service hook subscriptions (.../hooks/subscriptions).
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+from typing import Any, Dict, List, Tuple
+
+import httpx
+import pytest
+
+from preloop.api.endpoints import mcp_azure_devops
+from preloop.sync.exceptions import (
+    TrackerAuthenticationError,
+    TrackerPermissionError,
+)
+from preloop.sync.trackers.azure_devops import AzureDevOpsTracker
+from preloop.sync.trackers.factory import (
+    create_tracker_client,
+    tracker_hosts_repositories,
+)
+from preloop.utils.azure_devops import WEBHOOK_SECRET_HEADER
+
+pytestmark = pytest.mark.asyncio
+
+REPO_ID = "5febef5a-833d-4e14-b9c0-14cb638f91e6"
+PROJECT_ID = "6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c"
+FULL = "fabrikam/Fabrikam-Fiber-Git/Fabrikam-Fiber-Git"
+REPO = {
+    # Repositories - Get (REST 7.1 example)
+    "id": REPO_ID,
+    "name": "Fabrikam-Fiber-Git",
+    "url": f"https://dev.azure.com/fabrikam/_apis/git/repositories/{REPO_ID}",
+    "project": {
+        "id": PROJECT_ID,
+        "name": "Fabrikam-Fiber-Git",
+        "url": f"https://dev.azure.com/fabrikam/_apis/projects/{PROJECT_ID}",
+        "state": "wellFormed",
+    },
+    "defaultBranch": "refs/heads/master",
+    "remoteUrl": "https://fabrikam@dev.azure.com/fabrikam/Fabrikam-Fiber-Git/_git/Fabrikam-Fiber-Git",
+}
+PR = {
+    # Pull Requests - Get Pull Request (REST 7.1 example, trimmed)
+    "repository": REPO,
+    "pullRequestId": 22,
+    "codeReviewId": 22,
+    "status": "active",
+    "createdBy": {"displayName": "Normal Paulk", "uniqueName": "user@example.com"},
+    "creationDate": "2016-11-01T16:30:31.6655471Z",
+    "title": "A new feature",
+    "description": "Adding a new feature",
+    "sourceRefName": "refs/heads/npaulk/my_work",
+    "targetRefName": "refs/heads/new_feature",
+    "mergeStatus": "succeeded",
+    "lastMergeSourceCommit": {"commitId": "b60280bc6e62e2f880f1b63c1e24987664d3bda3"},
+    "lastMergeTargetCommit": {"commitId": "f47bbc106853afe3c1b07a81754bce5f4b8dbf62"},
+    "reviewers": [{"displayName": "Normal Paulk", "vote": 0}],
+    "isDraft": False,
+}
+
+
+class Stub:
+    """Records requests and answers from a route table."""
+
+    def __init__(self, routes: Dict[Tuple[str, str], Any]) -> None:
+        self.routes = routes
+        self.calls: List[httpx.Request] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(request)
+        key = (request.method, request.url.path)
+        answer = self.routes.get(key)
+        if answer is None:
+            return httpx.Response(404, json={"message": "not found"})
+        if callable(answer):
+            return answer(request)
+        if isinstance(answer, httpx.Response):
+            return answer
+        return httpx.Response(200, json=answer)
+
+
+def make(routes: Dict[Tuple[str, str], Any], **details: Any):
+    stub = Stub(routes)
+    client = AzureDevOpsTracker(
+        "t1",
+        "pat-value",
+        {
+            "organization": "fabrikam",
+            "project": "Fabrikam-Fiber-Git",
+            "repository": "Fabrikam-Fiber-Git",
+            **details,
+        },
+        transport=httpx.MockTransport(stub),
+    )
+    return client, stub
+
+
+API = "/fabrikam/Fabrikam-Fiber-Git/_apis/git/repositories/Fabrikam-Fiber-Git"
+
+
+async def test_basic_auth_api_version_and_connection() -> None:
+    client, stub = make({("GET", API): REPO})
+    result = await client.test_connection()
+    assert result.connected, result.message
+    request = stub.calls[0]
+    expected = "Basic " + base64.b64encode(b":pat-value").decode()
+    assert request.headers["authorization"] == expected
+    assert request.url.params["api-version"] == "7.1"
+    assert request.url.host == "dev.azure.com"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(401),
+        httpx.Response(203, text="<html>sign in</html>"),
+        httpx.Response(302, headers={"Location": "https://login.example.com"}),
+    ],
+)
+async def test_bad_token_is_an_authentication_failure(
+    response: httpx.Response,
+) -> None:
+    client, _ = make(
+        {("GET", API): response, ("GET", f"{API}/pullRequests/1"): response}
+    )
+    result = await client.test_connection()
+    assert not result.connected
+    assert "personal access token" in result.message
+    with pytest.raises(TrackerAuthenticationError):
+        await client.get_pull_request(1)
+
+
+async def test_projects_follow_continuation_and_skip_disabled() -> None:
+    pages = iter(
+        [
+            httpx.Response(
+                200,
+                json={"value": [REPO], "count": 1},
+                headers={"x-ms-continuationtoken": "next"},
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {**REPO, "id": PROJECT_ID, "name": "old", "isDisabled": True}
+                    ]
+                },
+            ),
+        ]
+    )
+    client, stub = make(
+        {("GET", "/fabrikam/_apis/git/repositories"): lambda _r: next(pages)},
+        project=None,
+        repository=None,
+    )
+    projects = await client.get_projects("fabrikam")
+    assert [p["id"] for p in projects] == [REPO_ID]
+    assert stub.calls[1].url.params["continuationToken"] == "next"
+    transformed = client.transform_project(projects[0], "org-id")
+    assert transformed["slug"] == FULL
+    assert transformed["meta_data"]["clone_url"] == (
+        "https://dev.azure.com/fabrikam/Fabrikam-Fiber-Git/_git/Fabrikam-Fiber-Git"
+    )
+    assert projects[0]["group"] == "Fabrikam-Fiber-Git"
+
+
+async def test_issue_methods_are_unsupported() -> None:
+    client, _ = make({})
+    assert await client.get_issues("o", "p") == []
+    with pytest.raises(NotImplementedError, match="Azure Boards"):
+        await client.get_issue("1")
+
+
+async def test_factory_and_repository_hosting() -> None:
+    assert tracker_hosts_repositories("azure_devops")
+    client = await create_tracker_client(
+        tracker_type="azure_devops",
+        tracker_id="t",
+        api_key="k",
+        connection_details={"organization": "o"},
+    )
+    assert isinstance(client, AzureDevOpsTracker)
+
+
+async def test_get_pull_request_tool_maps_threads_and_changes() -> None:
+    threads = {
+        # Pull Request Threads - List (REST 7.1 example shape)
+        "value": [
+            {
+                "id": 148,
+                "status": "active",
+                "threadContext": None,
+                "comments": [
+                    {
+                        "id": 1,
+                        "parentCommentId": 0,
+                        "author": {"displayName": "Normal Paulk"},
+                        "content": "Please add tests",
+                        "publishedDate": "2016-11-01T16:30:50.083Z",
+                        "commentType": "text",
+                    },
+                    {
+                        "id": 2,
+                        "parentCommentId": 1,
+                        "author": {"displayName": "Jamal Hartnett"},
+                        "content": "Done",
+                        "commentType": "text",
+                    },
+                ],
+            },
+            {
+                "id": 149,
+                "status": "fixed",
+                "threadContext": {
+                    "filePath": "/src/app.py",
+                    "rightFileStart": {"line": 5, "offset": 1},
+                },
+                "comments": [
+                    {"id": 1, "content": "nit", "commentType": "text"},
+                ],
+            },
+            {
+                "id": 150,
+                "comments": [
+                    {"id": 1, "content": "voted", "commentType": "system"},
+                ],
+            },
+        ]
+    }
+    iterations = {"value": [{"id": 1}, {"id": 2}]}
+    changes = {
+        "changeEntries": [
+            {"changeType": "edit", "item": {"path": "/src/app.py"}},
+            {
+                "changeType": "rename",
+                "item": {"path": "/b.py"},
+                "originalPath": "/a.py",
+            },
+            {"changeType": "add", "item": {"path": "/src", "isFolder": True}},
+        ]
+    }
+    client, _ = make(
+        {
+            ("GET", f"{API}/pullRequests/22"): PR,
+            ("GET", f"{API}/pullRequests/22/threads"): threads,
+            ("GET", f"{API}/pullRequests/22/iterations"): iterations,
+            ("GET", f"{API}/pullRequests/22/iterations/2/changes"): changes,
+        }
+    )
+    result = await mcp_azure_devops.get_pull_request(client, "22")
+    assert result.url.endswith("/_git/Fabrikam-Fiber-Git/pullrequest/22")
+    assert result.source_branch == "npaulk/my_work"
+    assert result.head_sha == "b60280bc6e62e2f880f1b63c1e24987664d3bda3"
+    assert [c["id"] for c in result.comments] == ["148", "148:2", "149"]
+    assert result.comments[1]["in_reply_to_id"] == "148"
+    assert result.comments[2]["path"] == "/src/app.py"
+    assert result.comments[2]["resolved"] is True
+    files = result.changes["changed_files"]
+    assert [f["filename"] for f in files] == ["src/app.py", "b.py"]
+    assert files[1]["previous_filename"] == "a.py"
+    assert "user@example.com" not in result.model_dump_json()
+
+
+async def test_review_posts_summary_thread_then_vote() -> None:
+    posted: List[Dict[str, Any]] = []
+
+    def thread(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        posted.append(body)
+        return httpx.Response(
+            200, json={"id": 200 + len(posted), "comments": [{"id": 1}]}
+        )
+
+    client, stub = make(
+        {
+            ("POST", f"{API}/pullRequests/22/threads"): thread,
+            ("GET", "/fabrikam/_apis/connectionData"): {
+                "authenticatedUser": {"id": "d6245f20-2af8-44f4-9451-8107cb2767db"}
+            },
+            (
+                "PUT",
+                f"{API}/pullRequests/22/reviewers/d6245f20-2af8-44f4-9451-8107cb2767db",
+            ): {"vote": -5},
+        }
+    )
+    result = await mcp_azure_devops.update_pull_request(
+        client,
+        "22",
+        review_action="request_changes",
+        review_body="## Review\nNeeds work",
+        review_comments=[{"path": "src/app.py", "line": 3, "body": "bug"}],
+    )
+    assert result.status == "updated"
+    assert result.pull_request_id == "202"
+    assert "src/app.py" in posted[0]["comments"][0]["content"]
+    assert posted[1]["comments"][0]["content"] == "## Review\nNeeds work"
+    assert posted[1]["status"] == "active"
+    methods = [(c.method, c.url.path.rsplit("/", 1)[-1]) for c in stub.calls]
+    assert methods[-1][0] == "PUT"
+    assert json.loads(stub.calls[-1].content) == {"vote": -5}
+
+
+async def test_review_comment_only_and_refused_vote() -> None:
+    client, _ = make(
+        {
+            ("POST", f"{API}/pullRequests/22/threads"): {
+                "id": 7,
+                "comments": [{"id": 1}],
+            },
+            ("GET", "/fabrikam/_apis/connectionData"): {
+                "authenticatedUser": {"id": "abc"}
+            },
+            ("PUT", f"{API}/pullRequests/22/reviewers/abc"): httpx.Response(
+                403, json={"message": "no"}
+            ),
+        }
+    )
+    comment = await mcp_azure_devops.update_pull_request(
+        client, "22", review_action="comment", review_body="LGTM"
+    )
+    assert comment.pull_request_id == "7"
+    approve = await mcp_azure_devops.update_pull_request(
+        client, "22", review_action="approve", review_body="LGTM"
+    )
+    assert approve.status == "updated"
+    assert "vote skipped" in approve.message
+
+
+@pytest.mark.parametrize("state", ["completed", "abandoned", "merged", "closed"])
+async def test_refuses_to_complete_or_abandon(state: str) -> None:
+    client, stub = make({})
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        await mcp_azure_devops.update_pull_request(client, "22", state=state)
+    assert exc.value.status_code == 400
+    assert stub.calls == []
+
+
+async def test_add_reply_and_update_comment() -> None:
+    client, stub = make(
+        {
+            ("POST", f"{API}/pullRequests/22/threads/148/comments"): {"id": 3},
+            ("PATCH", f"{API}/pullRequests/22/threads/148/comments/3"): {"id": 3},
+            ("PATCH", f"{API}/pullRequests/22/threads/148"): {"id": 148},
+        }
+    )
+    reply = await mcp_azure_devops.add_comment(
+        client, "22", "thanks", in_reply_to="148"
+    )
+    assert reply.comment_id == "148:3"
+    assert json.loads(stub.calls[0].content)["parentCommentId"] == 1
+    updated = await mcp_azure_devops.update_comment(
+        client, "22", "148:3", body="edited", resolved=True
+    )
+    assert updated.comment_id == "148:3"
+    assert json.loads(stub.calls[1].content) == {"content": "edited"}
+    assert json.loads(stub.calls[2].content) == {"status": "fixed"}
+
+
+async def test_permission_error_is_raised_for_threads() -> None:
+    client, _ = make(
+        {
+            ("POST", f"{API}/pullRequests/22/threads"): httpx.Response(
+                403, json={"message": "TF401027: needs PullRequestContribute"}
+            )
+        }
+    )
+    with pytest.raises(TrackerPermissionError):
+        await client.add_pull_request_comment(22, "x")
+
+
+async def test_ensure_service_hooks_creates_then_updates() -> None:
+    callback = "https://preloop.example.com/api/v1/private/webhooks/azure_devops/t1"
+    existing: List[Dict[str, Any]] = []
+    bodies: List[Tuple[str, Dict[str, Any]]] = []
+
+    def create(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sub = {**body, "id": f"sub-{len(existing)}", "status": "enabled"}
+        existing.append(sub)
+        bodies.append((request.method, body))
+        return httpx.Response(200, json=sub)
+
+    def replace(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append((request.method, body))
+        return httpx.Response(200, json={**body, "id": request.url.path[-5:]})
+
+    client, _ = make(
+        {
+            ("GET", API): REPO,
+            ("GET", "/fabrikam/_apis/hooks/subscriptions"): lambda _r: httpx.Response(
+                200, json={"value": existing}
+            ),
+            ("POST", "/fabrikam/_apis/hooks/subscriptions"): create,
+            ("PUT", "/fabrikam/_apis/hooks/subscriptions/sub-0"): replace,
+            ("PUT", "/fabrikam/_apis/hooks/subscriptions/sub-1"): replace,
+        }
+    )
+    first = await client.ensure_service_hooks(callback, "s1")
+    assert first["created"] == 2
+    created = {body["eventType"]: body for _m, body in bodies}
+    updated_hook = created["git.pullrequest.updated"]
+    assert updated_hook["publisherId"] == "tfs"
+    assert updated_hook["consumerId"] == "webHooks"
+    assert updated_hook["consumerActionId"] == "httpRequest"
+    assert updated_hook["publisherInputs"] == {
+        "projectId": PROJECT_ID,
+        "repository": REPO_ID,
+        "notificationType": "PushNotification",
+    }
+    assert updated_hook["consumerInputs"]["url"] == callback
+    assert updated_hook["consumerInputs"]["httpHeaders"] == (
+        f"{WEBHOOK_SECRET_HEADER}:s1"
+    )
+    assert (
+        "notificationType" not in created["git.pullrequest.created"]["publisherInputs"]
+    )
+    status = await client.inspect_service_hooks(callback)
+    assert status["status"] == "registered"
+
+    bodies.clear()
+    second = await client.ensure_service_hooks(callback, "s2")
+    assert second["created"] == 0
+    assert {m for m, _b in bodies} == {"PUT"}
+    assert all(b["consumerInputs"]["httpHeaders"].endswith(":s2") for _m, b in bodies)

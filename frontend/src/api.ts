@@ -9982,3 +9982,85 @@ export async function getRunnerOwnerNotices(): Promise<RunnerOwnerNotice[]> {
   if (!response.ok) throw new Error('Could not load runner notifications');
   return response.json();
 }
+
+// Azure DevOps service hook setup. Same response model as the Bitbucket Data
+// Center webhook endpoints; the secret is returned once, on rotation only.
+
+export interface AzureDevOpsWebhookRegistration {
+  status: string;
+  ids?: string[];
+  [key: string]: unknown;
+}
+
+export interface AzureDevOpsWebhookStatus {
+  callback_url: string | null;
+  callback_configured: boolean;
+  required_events: string[];
+  signature: 'configured' | 'missing_secret' | string;
+  registration: AzureDevOpsWebhookRegistration | null;
+  instructions: string;
+  header_name: string;
+  /** Plain secret, present only in the rotation response. */
+  secret?: string;
+}
+
+async function azureDevOpsWebhookError(
+  response: Response,
+  fallback: string
+): Promise<Error> {
+  const body = await response.json().catch(() => ({}));
+  const detail = body?.detail ?? body?.message;
+  return new Error(typeof detail === 'string' ? detail : fallback);
+}
+
+function azureDevOpsWebhookPath(trackerId: string): string {
+  return `${REST_API_PREFIX}/trackers/${encodeURIComponent(trackerId)}/azure-devops/webhook`;
+}
+
+export async function getAzureDevOpsWebhookStatus(
+  trackerId: string,
+  check = false
+): Promise<AzureDevOpsWebhookStatus> {
+  const response = await fetchWithAuth(
+    `${azureDevOpsWebhookPath(trackerId)}?check=${check ? 'true' : 'false'}`
+  );
+  if (!response.ok) {
+    throw await azureDevOpsWebhookError(
+      response,
+      'Failed to read the Azure DevOps service hook status'
+    );
+  }
+  return response.json();
+}
+
+export async function rotateAzureDevOpsWebhookSecret(
+  trackerId: string
+): Promise<AzureDevOpsWebhookStatus> {
+  const response = await fetchWithAuth(
+    `${azureDevOpsWebhookPath(trackerId)}/secret`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    throw await azureDevOpsWebhookError(
+      response,
+      'Failed to generate the Azure DevOps webhook secret'
+    );
+  }
+  return response.json();
+}
+
+export async function registerAzureDevOpsWebhook(
+  trackerId: string
+): Promise<AzureDevOpsWebhookStatus> {
+  const response = await fetchWithAuth(
+    `${azureDevOpsWebhookPath(trackerId)}/register`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    throw await azureDevOpsWebhookError(
+      response,
+      'Failed to register the Azure DevOps service hooks'
+    );
+  }
+  return response.json();
+}

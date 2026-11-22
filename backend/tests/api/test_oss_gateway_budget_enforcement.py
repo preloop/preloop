@@ -129,10 +129,8 @@ def test_dedicated_gateway_applies_real_budget_before_dispatch(
     assert get_budget_enforcer not in app.dependency_overrides
     assert isinstance(get_budget_enforcer(), ModelGatewayBudgetEnforcer)
     app.dependency_overrides[get_db_session] = lambda: db_session
-    app.dependency_overrides[get_model_gateway_auth_context] = (
-        lambda: ModelGatewayAuthContext(
-            token="synthetic-authenticated-user", user=test_user
-        )
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="synthetic-authenticated-user", user=test_user)
     )
     original = ModelGatewayBudgetEnforcer.enforce_or_raise
     with (
@@ -231,10 +229,8 @@ def test_unpriced_hard_limit_serves_the_request_and_pages_an_admin(
     )
     app = create_app()
     app.dependency_overrides[get_db_session] = lambda: db_session
-    app.dependency_overrides[get_model_gateway_auth_context] = (
-        lambda: ModelGatewayAuthContext(
-            token="synthetic-authenticated-user", user=test_user
-        )
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="synthetic-authenticated-user", user=test_user)
     )
     with (
         patch("preloop.services.unpriced_model_alert.notify_admins") as notify_admins,
@@ -431,10 +427,8 @@ def test_unpriced_hard_limit_warning_reaches_streaming_callers(
     )
     app = create_app()
     app.dependency_overrides[get_db_session] = lambda: db_session
-    app.dependency_overrides[get_model_gateway_auth_context] = (
-        lambda: ModelGatewayAuthContext(
-            token="synthetic-authenticated-user", user=test_user
-        )
+    app.dependency_overrides[get_model_gateway_auth_context] = lambda: (
+        ModelGatewayAuthContext(token="synthetic-authenticated-user", user=test_user)
     )
     chunks = [
         {

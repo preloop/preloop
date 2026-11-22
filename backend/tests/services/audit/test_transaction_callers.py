@@ -868,8 +868,8 @@ async def test_legacy_mcp_audit_failure_preserves_tool_outcome(
 
     fake_server = MagicMock()
     handlers = {}
-    fake_server.add_request_handler.side_effect = (
-        lambda method, params, fn: handlers.__setitem__(method, fn)
+    fake_server.add_request_handler.side_effect = lambda method, params, fn: (
+        handlers.__setitem__(method, fn)
     )
     monkeypatch.setattr(module, "Server", lambda *a, **kw: fake_server)
     server = module.DynamicMCPServer()

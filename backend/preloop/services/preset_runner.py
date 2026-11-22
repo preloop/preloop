@@ -275,6 +275,25 @@ def _repository_clone_fields(project: Any, tracker: Any) -> Dict[str, Any]:
     _reject_dc_execution(tracker)
     tracker_type = (getattr(tracker, "tracker_type", "") or "").lower()
     default_branch = _default_branch(project)
+    if tracker_type == "azure_devops":
+        from preloop.utils.azure_devops import clone_url as azure_clone_url
+
+        meta = (
+            project.meta_data
+            if isinstance(getattr(project, "meta_data", None), dict)
+            else {}
+        )
+        full_name = meta.get("full_name") or slug
+        parts = full_name.split("/")
+        url = azure_clone_url(*parts) if len(parts) == 3 else ""
+        return {
+            "id": str(getattr(project, "identifier", "") or ""),
+            "name": name,
+            "full_name": full_name,
+            "html_url": url,
+            "clone_url": url,
+            "default_branch": default_branch,
+        }
     if "bitbucket" in tracker_type:
         meta = (
             project.meta_data
@@ -613,6 +632,8 @@ def build_pull_request_trigger_payload(
     """
     _reject_dc_execution(tracker)
     tracker_type = (getattr(tracker, "tracker_type", "") or "github").lower()
+    if tracker_type == "azure_devops":
+        return _azure_devops_pull_request_trigger(pr, project, tracker)
     if tracker_type not in ("github", "gitlab", "bitbucket"):
         if "gitlab" in tracker_type:
             tracker_type = "gitlab"
@@ -705,6 +726,61 @@ def build_pull_request_trigger_payload(
     }
 
 
+def _azure_devops_pull_request_trigger(
+    pr: Dict[str, Any], project: Any, tracker: Any
+) -> Dict[str, Any]:
+    """Trigger data for a reviewer run on an Azure Repos pull request.
+
+    The payload has the same shape the service hook intake produces
+    (``preloop.utils.azure_devops.normalize_pull_request``).
+
+    Args:
+        pr: The pull request in the shared list shape.
+        project: The repository's Preloop project.
+        tracker: The Azure DevOps tracker.
+
+    Returns:
+        ``trigger_event_data`` for the run.
+    """
+    from preloop.utils.azure_devops import build_object_attributes
+
+    repo = _repository_clone_fields(project, tracker)
+    number = _pr_detail_number(pr)
+    pull_request = {
+        "id": number,
+        "number": number,
+        "title": pr.get("title") or "",
+        "body": pr.get("description") or "",
+        "html_url": pr.get("url") or "",
+        "state": pr.get("state") or "open",
+        "draft": bool(pr.get("draft")),
+        "user": {"login": _pr_detail_author(pr)},
+        "head": {"ref": pr.get("source_branch") or "", "sha": pr.get("head_sha")},
+        "base": {"ref": pr.get("target_branch") or ""},
+    }
+    organization, _, rest = (repo.get("full_name") or "").partition("/")
+    payload: Dict[str, Any] = {
+        "project_id": str(project.id),
+        "repository": repo,
+        "pull_request": pull_request,
+        "object_attributes": build_object_attributes(pull_request),
+        "azure_devops": {
+            "organization": organization or None,
+            "repository_id": repo.get("id") or None,
+            "pull_request_id": number,
+            "head_sha": pr.get("head_sha"),
+        },
+    }
+    return {
+        "type": "pull_request_run",
+        "source": "azure_devops",
+        "project_id": str(project.id),
+        "tracker_id": str(tracker.id),
+        "account_id": str(tracker.account_id),
+        "payload": payload,
+    }
+
+
 def _load_visible_issue(
     db: Session, *, issue_id: UUID, account_id: UUID
 ) -> Tuple[Any, Any, Any]:
@@ -777,6 +853,20 @@ async def _fetch_pull_request_detail(
             return await client.get_merge_request(str(number))
         if "github" in tracker_type:
             return await client.get_pull_request(str(number))
+        if tracker_type == "azure_devops":
+            from preloop.sync.trackers.azure_devops import AzureDevOpsTracker
+
+            meta = (
+                project.meta_data
+                if isinstance(getattr(project, "meta_data", None), dict)
+                else {}
+            )
+            pr = await client.get_pull_request(
+                int(number), meta.get("full_name") or project.slug
+            )
+            return AzureDevOpsTracker.normalize_listed_pull_request(
+                pr, client.organization
+            )
         if "bitbucket" in tracker_type:
             from preloop.sync.trackers.bitbucket import BitbucketTracker
 

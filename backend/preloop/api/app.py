@@ -1017,6 +1017,7 @@ def _register_control_plane_routes(
         audio,
         audit,
         audit_chain,
+        azure_devops_webhooks,
         bitbucket_dc_webhooks,
         budget,
         ci_identities,
@@ -1184,6 +1185,12 @@ def _register_control_plane_routes(
     )
     app.include_router(
         bitbucket_dc_webhooks.router,
+        prefix="/api/v1",
+        tags=["Trackers"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        azure_devops_webhooks.router,
         prefix="/api/v1",
         tags=["Trackers"],
         dependencies=[Depends(get_current_active_user)],

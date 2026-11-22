@@ -438,10 +438,12 @@ def test_enable_and_delete_take_the_same_lock(monkeypatch):
     monkeypatch.setattr(
         webauthn_router,
         "require_recent_strong_auth",
-        lambda age: lambda request, member, db: {
-            "amr": ["passkey"],
-            "auth_time": int(time.time()),
-        },
+        lambda age: (
+            lambda request, member, db: {
+                "amr": ["passkey"],
+                "auth_time": int(time.time()),
+            }
+        ),
     )
     monkeypatch.setattr(
         webauthn_router.crud_webauthn_credential,

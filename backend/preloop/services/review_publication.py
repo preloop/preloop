@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 #: Key of the stored result the control plane owns.
 REVIEW_PUBLICATION_RESULT_KEY = "review_publication"
@@ -64,6 +64,9 @@ REASON_TRIGGER_HEAD_MISSING = "trigger_head_missing"
 _GITHUB_PR = re.compile(r"^/([^/]+)/([^/]+)/pull/(\d+)(?:/.*)?$")
 _GITLAB_MR = re.compile(r"^/(.+?)/-/merge_requests/(\d+)(?:/.*)?$")
 _BITBUCKET_PR = re.compile(r"^/([^/]+)/([^/]+)/pull-requests/(\d+)(?:/.*)?$")
+_AZURE_DEVOPS_PR = re.compile(
+    r"^/([^/]+)/([^/]+)/_git/([^/]+)/pullrequest/(\d+)(?:/.*)?$", re.IGNORECASE
+)
 
 
 def _config_block(git_clone_config: Any) -> Optional[Mapping[str, Any]]:
@@ -90,10 +93,18 @@ def normalize_repository(value: Any) -> str:
 
 
 def parse_pull_request_url(url: Any) -> Tuple[Optional[str], Optional[str]]:
-    """``(repository, number)`` from a GitHub, GitLab or Bitbucket PR URL."""
+    """``(repository, number)`` from a GitHub, GitLab, Bitbucket or Azure PR URL.
+
+    Azure Repos URLs yield ``org/project/repo`` with path escapes decoded,
+    the form receipts are recorded under.
+    """
     if not isinstance(url, str) or not url.strip():
         return None, None
     path = urlparse(url.strip()).path.rstrip("/")
+    azure = _AZURE_DEVOPS_PR.match(path)
+    if azure:
+        groups = [unquote(group) for group in azure.groups()]
+        return normalize_repository("/".join(groups[:-1])), groups[-1]
     for pattern in (_GITLAB_MR, _BITBUCKET_PR, _GITHUB_PR):
         match = pattern.match(path)
         if match:

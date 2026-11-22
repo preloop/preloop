@@ -55,6 +55,7 @@ describe('filterTrackers', () => {
     expect(trackerKindLabel('jira')).to.equal('Jira');
     expect(trackerKindLabel('bitbucket')).to.equal('Bitbucket Cloud');
     expect(trackerKindLabel('bitbucket_dc')).to.equal('Bitbucket Data Center');
+    expect(trackerKindLabel('azure_devops')).to.equal('Azure DevOps');
     expect(trackerKindLabel('Bitbucket')).to.equal('Bitbucket Cloud');
   });
 

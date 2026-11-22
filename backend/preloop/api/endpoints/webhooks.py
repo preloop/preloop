@@ -32,6 +32,14 @@ from preloop.services.managed_credentials import (
 )
 from preloop.sync.scanner.core import TrackerClient
 from preloop.sync.services.event_bus import EventBus, get_task_publisher
+from preloop.utils.azure_devops import (
+    AZURE_DEVOPS_TRACKER_TYPE,
+    WEBHOOK_MAX_BYTES as AZURE_DEVOPS_WEBHOOK_MAX_BYTES,
+    AzureDevOpsWebhookRejectedError,
+)
+from preloop.utils.azure_devops import delivery_identity as azure_delivery_identity
+from preloop.utils.azure_devops import normalize_delivery as normalize_azure_delivery
+from preloop.utils.azure_devops import verify_webhook_secret as verify_azure_secret
 from preloop.utils.bitbucket import (
     BITBUCKET_DELIVERY_HEADER,
     BITBUCKET_EVENT_HEADER,
@@ -127,7 +135,12 @@ class _WebhookPlan:
 
 #: Tracker types whose delivery header is a forge-assigned, redelivery-stable
 #: id: ``X-GitHub-Delivery``, ``X-Gitlab-Event-UUID``, ``X-Request-UUID``.
-FORGE_DEDUPE_TRACKER_TYPES = frozenset({"github", "gitlab", "bitbucket"})
+#: Azure DevOps deliveries are keyed on the pull request head instead (see
+#: ``preloop.utils.azure_devops.delivery_identity``), so a vote or reviewer
+#: change on an already-seen head is a duplicate.
+FORGE_DEDUPE_TRACKER_TYPES = frozenset(
+    {"github", "gitlab", "bitbucket", AZURE_DEVOPS_TRACKER_TYPE}
+)
 
 
 def _forge_delivery_id(tracker_type: str, plan: _WebhookPlan) -> Optional[str]:
@@ -253,6 +266,8 @@ async def receive_webhook(
     """
     if tracker_type.lower() == BITBUCKET_DC_TRACKER_TYPE:
         raw_body = await _read_limited_body(request, BITBUCKET_DC_WEBHOOK_MAX_BYTES)
+    elif tracker_type.lower() == AZURE_DEVOPS_TRACKER_TYPE:
+        raw_body = await _read_limited_body(request, AZURE_DEVOPS_WEBHOOK_MAX_BYTES)
     else:
         raw_body = await request.body()
     headers = request.headers
@@ -264,6 +279,10 @@ async def receive_webhook(
         try:
             if tracker_type.lower() == BITBUCKET_DC_TRACKER_TYPE:
                 return _prepare_bitbucket_dc_webhook(
+                    organization_id, raw_body, headers, db, plan
+                )
+            if tracker_type.lower() == AZURE_DEVOPS_TRACKER_TYPE:
+                return _prepare_azure_devops_webhook(
                     organization_id, raw_body, headers, db, plan
                 )
             if tracker_type.lower() == "jira":
@@ -516,6 +535,129 @@ def _prepare_bitbucket_dc_webhook(
             delivery.payload,
             raw_body,
         ),
+        payload=delivery.payload,
+        tracker_id=str(tracker.id),
+        organization_id=str(plan.organization_id) if plan.organization_id else None,
+        embedding_requests=[],
+    )
+    return {"status": "success", "tracker_id": tracker.id}
+
+
+def _prepare_azure_devops_webhook(
+    tracker_id: str,
+    raw_body: bytes,
+    headers: Mapping[str, str],
+    db: Session,
+    plan: _WebhookPlan,
+) -> dict[str, Any]:
+    """Authenticate, validate and normalize one Azure DevOps service hook.
+
+    Service hooks are unsigned, so the subscription sends the per-tracker
+    secret as a header (or Basic password); it is compared in constant time
+    before the body is parsed. The payload's organization and repository are
+    checked against the tracker before anything is dispatched. Logs carry
+    the tracker id and a fixed reason code, never the secret or payload.
+
+    Args:
+        tracker_id: Tracker id from the callback path.
+        raw_body: The request body.
+        headers: Request headers.
+        db: Database session.
+        plan: Collects the task to publish.
+
+    Returns:
+        The response body.
+
+    Raises:
+        HTTPException: 404 for an unknown tracker, 403 for a missing or wrong
+            secret or a foreign repository, 400 for malformed payloads.
+    """
+    try:
+        tracker_uuid = uuid.UUID(str(tracker_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found")
+    tracker = crud_tracker.get(db, id=tracker_uuid)
+    if (
+        tracker is None
+        or tracker.tracker_type != AZURE_DEVOPS_TRACKER_TYPE
+        or getattr(tracker, "is_deleted", False) is True
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
+    plan.tracker_id = tracker.id
+
+    secret = tracker.resolved_webhook_secret
+    if not secret:
+        logger.warning("Azure DevOps webhook for tracker %s has no secret", tracker.id)
+        raise HTTPException(status_code=403, detail="Webhook not configured")
+    if not verify_azure_secret(secret, headers):
+        logger.warning(
+            "Azure DevOps webhook for tracker %s failed authentication", tracker.id
+        )
+        raise HTTPException(status_code=403, detail="Invalid webhook secret")
+    if not tracker.is_active:
+        return {"status": "ignored", "reason": "tracker_inactive"}
+
+    try:
+        payload = json.loads(raw_body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    details = tracker.connection_details or {}
+    projects: dict[str, Optional[models.Project]] = {}
+
+    def project_for(repository_id: str) -> Optional[models.Project]:
+        if repository_id not in projects:
+            projects[repository_id] = crud_project.get_for_tracker_by_identifier(
+                db, tracker_id=tracker.id, identifier=repository_id
+            )
+        return projects[repository_id]
+
+    try:
+        delivery = normalize_azure_delivery(
+            payload,
+            organization=str(details.get("organization") or ""),
+            bound_project=details.get("project") or None,
+            bound_repository=details.get("repository") or None,
+            repository_known=lambda repo_id: project_for(repo_id) is not None,
+        )
+    except AzureDevOpsWebhookRejectedError as exc:
+        logger.warning(
+            "Azure DevOps webhook rejected for tracker %s: %s", tracker.id, exc.reason
+        )
+        raise HTTPException(status_code=exc.status_code, detail=exc.reason)
+
+    if not delivery.accepted:
+        logger.info(
+            "Azure DevOps webhook %s acknowledged without dispatch for tracker %s: %s",
+            delivery.event_key,
+            tracker.id,
+            delivery.reason,
+        )
+        return {
+            "status": "ignored",
+            "reason": delivery.reason,
+            "tracker_id": tracker.id,
+        }
+    subscribed = tracker.subscribed_events or []
+    if subscribed and not (
+        delivery.event_key in subscribed or delivery.event_type in subscribed
+    ):
+        return {
+            "status": "ignored",
+            "reason": "not_subscribed",
+            "tracker_id": tracker.id,
+        }
+
+    project = project_for(delivery.repository_id) if delivery.repository_id else None
+    if project is not None:
+        plan.organization_id = project.organization_id
+        plan.db_processed = True
+        delivery.payload["project_id"] = str(project.id)
+    plan.queue_task(
+        "process_webhook_event",
+        tracker_type=AZURE_DEVOPS_TRACKER_TYPE,
+        event_type=delivery.event_key,
+        delivery_id=azure_delivery_identity(tracker.id, delivery),
         payload=delivery.payload,
         tracker_id=str(tracker.id),
         organization_id=str(plan.organization_id) if plan.organization_id else None,

@@ -36,6 +36,7 @@ class TrackerType(enum.Enum):
     JIRA = "jira"
     BITBUCKET = "bitbucket"
     BITBUCKET_DC = "bitbucket_dc"
+    AZURE_DEVOPS = "azure_devops"
 
 
 class Tracker(Base):

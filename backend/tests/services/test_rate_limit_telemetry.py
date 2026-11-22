@@ -179,8 +179,8 @@ class TestClassifyRateLimitSubtype:
         """A working #141 classifier is used and labeled as the source."""
         fake = ModuleType("preloop.services.upstream_errors")
         fake.ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED = "upstream_quota_exhausted"
-        fake.classify_recorded_error = (
-            lambda status_code, detail: "upstream_quota_exhausted"
+        fake.classify_recorded_error = lambda status_code, detail: (
+            "upstream_quota_exhausted"
         )
         monkeypatch.setitem(sys.modules, "preloop.services.upstream_errors", fake)
 

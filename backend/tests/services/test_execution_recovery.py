@@ -126,9 +126,9 @@ async def test_recover_handles_nats_connection_failure():
         patch.object(
             execution_recovery.crud_flow_execution,
             "get_multi",
-            side_effect=lambda db, *, skip, limit, status: execs
-            if status == "RUNNING"
-            else [],
+            side_effect=lambda db, *, skip, limit, status: (
+                execs if status == "RUNNING" else []
+            ),
         ),
         patch.object(
             execution_recovery,
@@ -158,9 +158,9 @@ async def test_recover_continues_when_one_resume_fails():
         patch.object(
             execution_recovery.crud_flow_execution,
             "get_multi",
-            side_effect=lambda db, *, skip, limit, status: [bad, good]
-            if status == "RUNNING"
-            else [],
+            side_effect=lambda db, *, skip, limit, status: (
+                [bad, good] if status == "RUNNING" else []
+            ),
         ),
         patch.object(
             execution_recovery, "get_nats_client", AsyncMock(return_value="nats")

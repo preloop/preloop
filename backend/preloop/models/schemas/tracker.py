@@ -12,6 +12,7 @@ class TrackerTypeSchema(str, PydanticEnum):
     JIRA = "jira"
     BITBUCKET = "bitbucket"
     BITBUCKET_DC = "bitbucket_dc"
+    AZURE_DEVOPS = "azure_devops"
 
 
 class TrackerBase(BaseModel):

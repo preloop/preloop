@@ -6257,6 +6257,147 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/trackers/{tracker_id}/azure-devops/webhook:
+    get:
+      tags:
+      - Trackers
+      summary: Get Azure Devops Webhook Status
+      description: Report callback, secret and (with ``check=true``) subscription
+        state.
+      operationId: get_azure_devops_webhook_status_api_v1_trackers__tracker_id__azure_devops_webhook_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid4
+          title: Tracker Id
+      - name: check
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Check
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AzureDevOpsWebhookStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/trackers/{tracker_id}/azure-devops/webhook/secret:
+    post:
+      tags:
+      - Trackers
+      summary: Rotate Azure Devops Webhook Secret
+      description: 'Generate a new per-tracker secret, store it encrypted, return
+        it once.
+
+
+        Deliveries carrying the previous secret are rejected from now on, so
+
+        update the subscriptions (or call the register endpoint) right after.'
+      operationId: rotate_azure_devops_webhook_secret_api_v1_trackers__tracker_id__azure_devops_webhook_secret_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid4
+          title: Tracker Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AzureDevOpsWebhookSecret'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/trackers/{tracker_id}/azure-devops/webhook/register:
+    post:
+      tags:
+      - Trackers
+      summary: Register Azure Devops Webhook
+      description: 'Create or update the two subscriptions with the tracker''s own
+        token.
+
+
+        Idempotent: re-running updates Preloop''s subscriptions in place and
+
+        never touches other subscriptions. A secret is generated first when the
+
+        tracker has none.'
+      operationId: register_azure_devops_webhook_api_v1_trackers__tracker_id__azure_devops_webhook_register_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: tracker_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid4
+          title: Tracker Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/AzureDevOpsWebhookRegisterRequest'
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AzureDevOpsWebhookStatus'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/mcp-servers:
     get:
       tags:
@@ -33380,6 +33521,109 @@ components:
       type: object
       title: AvatarResponse
       description: Response after avatar upload or deletion.
+    AzureDevOpsWebhookRegisterRequest:
+      properties:
+        repository:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repository
+          description: '''organization/project/repository''.'
+      type: object
+      title: AzureDevOpsWebhookRegisterRequest
+      description: Optional repository override for a tracker not bound to one.
+    AzureDevOpsWebhookSecret:
+      properties:
+        callback_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Callback Url
+          description: URL the subscriptions call; null when PRELOOP_URL is unset.
+        callback_configured:
+          type: boolean
+          title: Callback Configured
+        required_events:
+          items:
+            type: string
+          type: array
+          title: Required Events
+        header_name:
+          type: string
+          title: Header Name
+          description: Header carrying the secret.
+        signature:
+          type: string
+          title: Signature
+          description: '''configured'' or ''missing_secret'' (Preloop side).'
+        registration:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Registration
+          description: 'Subscription state when checked: registered, events_missing,
+            permission_denied, unauthorized or unavailable.'
+        instructions:
+          type: string
+          title: Instructions
+        secret:
+          type: string
+          title: Secret
+      type: object
+      required:
+      - callback_configured
+      - required_events
+      - header_name
+      - signature
+      - instructions
+      - secret
+      title: AzureDevOpsWebhookSecret
+      description: A newly generated secret. It is shown once and stored encrypted.
+    AzureDevOpsWebhookStatus:
+      properties:
+        callback_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Callback Url
+          description: URL the subscriptions call; null when PRELOOP_URL is unset.
+        callback_configured:
+          type: boolean
+          title: Callback Configured
+        required_events:
+          items:
+            type: string
+          type: array
+          title: Required Events
+        header_name:
+          type: string
+          title: Header Name
+          description: Header carrying the secret.
+        signature:
+          type: string
+          title: Signature
+          description: '''configured'' or ''missing_secret'' (Preloop side).'
+        registration:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Registration
+          description: 'Subscription state when checked: registered, events_missing,
+            permission_denied, unauthorized or unavailable.'
+        instructions:
+          type: string
+          title: Instructions
+      type: object
+      required:
+      - callback_configured
+      - required_events
+      - header_name
+      - signature
+      - instructions
+      title: AzureDevOpsWebhookStatus
+      description: Service hook readiness of one Azure DevOps tracker.
     Backport:
       properties:
         enabled:
@@ -59680,6 +59924,7 @@ components:
       - jira
       - bitbucket
       - bitbucket_dc
+      - azure_devops
       title: TrackerType
       description: Enum for tracker types.
     TrackerUpdate:
@@ -60099,7 +60344,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

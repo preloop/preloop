@@ -59,9 +59,9 @@ def patch_engines(sync_engine=None, async_engine=None):
         ),
         patch(
             "preloop.models.db.session._env_int",
-            side_effect=lambda name, default: 12
-            if name == "DATABASE_MAX_OVERFLOW"
-            else default,
+            side_effect=lambda name, default: (
+                12 if name == "DATABASE_MAX_OVERFLOW" else default
+            ),
         ),
     )
 

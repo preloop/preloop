@@ -217,6 +217,13 @@ async def get_tracker_client(
             or (project.meta_data or {}).get("full_name")
             or f"{organization.identifier}/{project.name}"
         )
+    elif tracker_type == "azure_devops":
+        # The organization belongs to the tracker; project settings never
+        # redirect the token. PR calls address "org/project/repo".
+        full_config = dict(tracker.connection_details or {})
+        full_config["repo_full_name"] = (project.meta_data or {}).get(
+            "full_name"
+        ) or project.slug
     elif tracker_type == "bitbucket_dc":
         # Deployment/credential identity belongs to the tracker, never to
         # project settings. Discovered metadata selects a repository within it.

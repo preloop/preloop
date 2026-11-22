@@ -161,6 +161,9 @@ export class TrackerItem extends LitElement {
     if (type.includes('bitbucket')) {
       return { name: 'bucket', library: 'default' };
     }
+    if (type.includes('azure')) {
+      return { name: 'microsoft', library: 'default' };
+    }
     return { name: 'box-seam', library: 'default' };
   }
 

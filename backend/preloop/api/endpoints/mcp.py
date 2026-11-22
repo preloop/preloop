@@ -29,7 +29,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import HTTPException
 
-from preloop.api.endpoints import mcp_bitbucket
+from preloop.api.endpoints import mcp_azure_devops, mcp_bitbucket
 from preloop.api.common import (
     get_tracker_client,
     load_compliance_prompts_config,
@@ -255,7 +255,9 @@ def _extract_assignee_name(assignee_data: Any) -> Optional[str]:
     return str(assignee_data)
 
 
-def _detect_platform_from_url(url: str) -> Literal["github", "gitlab", "bitbucket"]:
+def _detect_platform_from_url(
+    url: str,
+) -> Literal["github", "gitlab", "bitbucket", "azure_devops"]:
     """
     Detect if URL is GitHub, GitLab or Bitbucket Cloud.
 
@@ -271,7 +273,7 @@ def _detect_platform_from_url(url: str) -> Literal["github", "gitlab", "bitbucke
     from preloop.utils.repo_urls import tracker_host_kind
 
     host_kind = tracker_host_kind(url)
-    if host_kind in ("github", "gitlab", "bitbucket"):
+    if host_kind in ("github", "gitlab", "bitbucket", "azure_devops"):
         return host_kind
 
     # Path-based fallback for non-standard hosts (parsed path segments only).
@@ -369,6 +371,24 @@ def _parse_pr_key_from_url(url: str) -> Optional[Dict[str, Any]]:
                 "owner": m.group(1),
                 "repo": m.group(2),
                 "pr_number": m.group(3),
+            }
+
+    # Azure Repos: /org/project/_git/repo/pullrequest/7
+    if tracker_host_kind(url) == "azure_devops":
+        from preloop.utils.azure_devops import AzureDevOpsConfigError, parse_azure_url
+
+        try:
+            azure = parse_azure_url(url)
+        except AzureDevOpsConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if azure and azure[3] is not None:
+            organization, project, repository, number = azure
+            return {
+                "platform": "azure_devops",
+                "project_path": f"{organization}/{project}/{repository}",
+                "owner": f"{organization}/{project}",
+                "repo": repository,
+                "pr_number": str(number),
             }
 
     # GitLab: /group/subgroup/project/-/merge_requests/28
@@ -481,6 +501,8 @@ def _find_pr_project(
 
         if platform == "bitbucket":
             tracker_type = TrackerType.BITBUCKET
+        elif platform == "azure_devops":
+            tracker_type = TrackerType.AZURE_DEVOPS
         elif platform == "gitlab":
             tracker_type = TrackerType.GITLAB
         else:
@@ -544,7 +566,9 @@ def _normalize_url(url: str) -> str:
     return normalized
 
 
-async def _run_bitbucket(action: str, call: Awaitable[_ToolResult]) -> _ToolResult:
+async def _run_bitbucket(
+    action: str, call: Awaitable[_ToolResult], provider: str = "Bitbucket"
+) -> _ToolResult:
     """Await a Bitbucket MCP handler and map provider errors to HTTP errors.
 
     Args:
@@ -564,10 +588,10 @@ async def _run_bitbucket(action: str, call: Awaitable[_ToolResult]) -> _ToolResu
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        logger.error(f"Bitbucket: failed to {action}: {type(e).__name__}")
+        logger.error(f"{provider}: failed to {action}: {type(e).__name__}")
         raise HTTPException(
             status_code=502,
-            detail=f"Failed to {action} on Bitbucket: {str(e)}",
+            detail=f"Failed to {action} on {provider}: {str(e)}",
         ) from e
 
 
@@ -2005,7 +2029,7 @@ async def add_comment(
     is_merge_request = False
     project_path = None
     pr_mr_number = None
-    platform: Optional[Literal["github", "gitlab", "bitbucket"]] = None
+    platform: Optional[Literal["github", "gitlab", "bitbucket", "azure_devops"]] = None
 
     if target.startswith("http"):
         # Detect platform from URL
@@ -2030,6 +2054,13 @@ async def add_comment(
         # Also handles self-hosted GitLab where platform was detected via URL patterns
         # (e.g., https://git.example.com/owner/repo/-/merge_requests/123)
         # platform is set from _detect_platform_from_url which checks for /merge_requests/ pattern
+        elif platform == "azure_devops" and "/pullrequest/" in target.lower():
+            is_pull_request = True
+            azure = _parse_pr_key_from_url(_normalize_url(target))
+            if azure:
+                pr_mr_number = azure["pr_number"]
+                project_path = azure["project_path"]
+                logger.info(f"Detected Azure DevOps PR: {project_path}!{pr_mr_number}")
         elif platform == "bitbucket" and "/pull-requests/" in target:
             is_pull_request = True
             bb = _parse_pr_key_from_url(_normalize_url(target))
@@ -2079,6 +2110,20 @@ async def add_comment(
         # Release the read transaction before the external tracker request.
         db.close()
 
+        if (tracker_client.tracker_type or "").lower() == "azure_devops":
+            return await _run_bitbucket(
+                f"add comment to {pr_mr_number}",
+                mcp_azure_devops.add_comment(
+                    tracker_client,
+                    pr_mr_number,
+                    comment,
+                    path=path,
+                    line=line,
+                    side=side,
+                    in_reply_to=in_reply_to,
+                ),
+                "Azure DevOps",
+            )
         if (tracker_client.tracker_type or "").lower() == "bitbucket":
             return await _run_bitbucket(
                 f"add comment to {pr_mr_number}",
@@ -2396,7 +2441,9 @@ async def get_pull_request(
     project_path = pr_info["project_path"]
     owner = pr_info["owner"]
     repo = pr_info["repo"]
-    platform: Optional[Literal["github", "gitlab", "bitbucket"]] = pr_info["platform"]
+    platform: Optional[Literal["github", "gitlab", "bitbucket", "azure_devops"]] = (
+        pr_info["platform"]
+    )
 
     # Find the project
     project_obj = _find_pr_project(
@@ -2415,6 +2462,17 @@ async def get_pull_request(
     # Client configuration is materialized; provider I/O needs no DB checkout.
     db.close()
 
+    if (tracker_client.tracker_type or "").lower() == "azure_devops":
+        return await _run_bitbucket(
+            f"get pull request {pr_number}",
+            mcp_azure_devops.get_pull_request(
+                tracker_client,
+                pr_number,
+                include_comments=include_comments,
+                include_diff=include_diff,
+            ),
+            "Azure DevOps",
+        )
     if (tracker_client.tracker_type or "").lower() == "bitbucket":
         return await _run_bitbucket(
             f"get pull request {pr_number}",
@@ -2566,7 +2624,9 @@ async def update_pull_request(
     project_path = pr_info["project_path"]
     owner = pr_info["owner"]
     repo = pr_info["repo"]
-    platform: Optional[Literal["github", "gitlab", "bitbucket"]] = pr_info["platform"]
+    platform: Optional[Literal["github", "gitlab", "bitbucket", "azure_devops"]] = (
+        pr_info["platform"]
+    )
 
     # Find the project
     project_obj = _find_pr_project(
@@ -2605,6 +2665,36 @@ async def update_pull_request(
             head_sha=head_sha,
             provider_review_id=review_id,
         )
+
+    if (tracker_client.tracker_type or "").lower() == "azure_devops":
+        azure_result = await _run_bitbucket(
+            f"update pull request {pr_number}",
+            mcp_azure_devops.update_pull_request(
+                tracker_client,
+                pr_number,
+                title=title,
+                description=description,
+                state=state,
+                assignees=assignees,
+                reviewers=reviewers,
+                labels=labels,
+                draft=draft,
+                review_action=review_action,
+                review_body=review_body,
+                review_comments=review_comments,
+                add_reaction=add_reaction,
+                remove_reaction=remove_reaction,
+            ),
+            "Azure DevOps",
+        )
+        if (review_action or "").lower() in REVIEW_RECEIPT_ACTIONS:
+            posted_id = getattr(azure_result, "pull_request_id", None)
+            record_receipt(
+                "azure_devops",
+                None,
+                posted_id if str(posted_id) != str(pr_number) else None,
+            )
+        return azure_result
 
     if (tracker_client.tracker_type or "").lower() == "bitbucket":
         bitbucket_result = await _run_bitbucket(
@@ -3218,6 +3308,12 @@ async def create_pull_request(
     if platform is None:
         platform = tracker_client.tracker_type.lower()
 
+    if platform == "azure_devops":
+        raise HTTPException(
+            status_code=400,
+            detail="Opening pull requests on Azure DevOps is not supported yet; "
+            "Azure DevOps trackers support pull request review only.",
+        )
     if platform == "bitbucket":
         logger.info(
             "Creating pull request: source_branch=%s target_branch=%s",
@@ -3475,7 +3571,7 @@ async def update_comment(
     # Detect platform and parse target
     project_path = None
     pr_mr_number = None
-    platform: Optional[Literal["github", "gitlab", "bitbucket"]] = None
+    platform: Optional[Literal["github", "gitlab", "bitbucket", "azure_devops"]] = None
 
     if target.startswith("http"):
         try:
@@ -3497,6 +3593,13 @@ async def update_comment(
         # Also handles self-hosted GitLab where platform was detected via URL patterns
         # (e.g., https://git.example.com/owner/repo/-/merge_requests/123)
         # platform is set from _detect_platform_from_url which checks for /merge_requests/ pattern
+        elif platform == "azure_devops" and "/pullrequest/" in target.lower():
+            is_pull_request = True
+            azure = _parse_pr_key_from_url(_normalize_url(target))
+            if azure:
+                pr_mr_number = azure["pr_number"]
+                project_path = azure["project_path"]
+                logger.info(f"Detected Azure DevOps PR: {project_path}!{pr_mr_number}")
         elif platform == "bitbucket" and "/pull-requests/" in target:
             bb = _parse_pr_key_from_url(_normalize_url(target))
             if bb:
@@ -3556,6 +3659,19 @@ async def update_comment(
     # Client configuration is materialized; provider I/O needs no DB checkout.
     db.close()
 
+    if (tracker_client.tracker_type or "").lower() == "azure_devops":
+        return await _run_bitbucket(
+            f"update comment {comment_id}",
+            mcp_azure_devops.update_comment(
+                tracker_client,
+                pr_mr_number,
+                comment_id,
+                body=body,
+                resolved=resolved,
+                thread_id=thread_id,
+            ),
+            "Azure DevOps",
+        )
     if (tracker_client.tracker_type or "").lower() == "bitbucket":
         return await _run_bitbucket(
             f"update comment {comment_id}",

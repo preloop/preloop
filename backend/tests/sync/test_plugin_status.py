@@ -191,9 +191,9 @@ def test_intentional_noop_advances_completion() -> None:
     from preloop.sync import plugin_status, tasks
 
     manager = AsyncMock()
-    manager.get_service = lambda _: lambda db, account_id=None: {
-        "skipped": "stripe_not_configured"
-    }
+    manager.get_service = lambda _: (
+        lambda db, account_id=None: {"skipped": "stripe_not_configured"}
+    )
     with (
         patch("preloop.plugins.base.get_plugin_manager", return_value=manager),
         patch.object(tasks, "get_db_session", return_value=iter([MagicMock()])),

@@ -90,9 +90,11 @@ def test_admin_enables_and_audio_is_stored_and_audited(client, db_session, test_
 
 def test_non_admin_cannot_change_the_setting(client, db_session, test_user):
     account_hooks.register_authorizer(
-        lambda ctx, action, resource: Decision("deny", reason="not an admin")
-        if action == "manage_policies"
-        else Decision("allow")
+        lambda ctx, action, resource: (
+            Decision("deny", reason="not an admin")
+            if action == "manage_policies"
+            else Decision("allow")
+        )
     )
 
     response = client.put(SETTINGS, json={"audio_storage_enabled": True})

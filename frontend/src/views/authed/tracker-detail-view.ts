@@ -23,6 +23,7 @@ import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '../../components/delivery-report-policy-settings.ts';
+import '../../components/azure-devops-webhook-panel.ts';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
 import '../../components/list-toolbar.ts';
@@ -995,6 +996,7 @@ export class TrackerDetailView extends LitElement {
 
   private _prHost(): string {
     if (this._isBitbucket()) return 'Bitbucket';
+    if (this._isAzureDevOps()) return 'Azure DevOps';
     return this._isGitlab() ? 'GitLab' : 'GitHub';
   }
 
@@ -1002,6 +1004,10 @@ export class TrackerDetailView extends LitElement {
     return (this._tracker?.tracker_type || '')
       .toLowerCase()
       .includes('bitbucket');
+  }
+
+  private _isAzureDevOps(): boolean {
+    return (this._tracker?.tracker_type || '').toLowerCase() === 'azure_devops';
   }
 
   /** A managed Bitbucket grant (browser consent, no pasted token). */
@@ -1432,7 +1438,7 @@ export class TrackerDetailView extends LitElement {
         </div>
         <div class="project-actions">
           ${
-            this._isBitbucket()
+            this._isBitbucket() || this._isAzureDevOps()
               ? ''
               : html`<sl-button
                   size="small"
@@ -1647,6 +1653,7 @@ export class TrackerDetailView extends LitElement {
     if (type.includes('github')) return 'github';
     if (type.includes('gitlab')) return 'gitlab';
     if (type.includes('bitbucket')) return 'bucket';
+    if (type.includes('azure')) return 'microsoft';
     return 'box-seam';
   }
 
@@ -2236,6 +2243,13 @@ export class TrackerDetailView extends LitElement {
 
           ${this._renderManagedConnection()} ${this._renderJiraConnection()}
           ${this._renderManualJiraWebhook()}
+          ${
+            this._isAzureDevOps()
+              ? html`<azure-devops-webhook-panel
+                  .trackerId=${tracker.id}
+                ></azure-devops-webhook-panel>`
+              : nothing
+          }
 
           <p class="scope-summary">
             <strong>Scope:</strong> ${this._describeScope()}
