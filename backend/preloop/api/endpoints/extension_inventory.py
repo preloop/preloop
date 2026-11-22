@@ -1,5 +1,7 @@
 """Installed extensions, account-wide approvals and their content pins."""
 
+import hashlib
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -23,6 +25,8 @@ from preloop.schemas.discovered_extension import (
     ExtensionKind,
     ExtensionPinCreate,
     ExtensionPinSummary,
+    ExtensionPolicyEntry,
+    ExtensionPolicyFile,
     SourceKind,
 )
 from preloop.services.fleet_findings import evaluate_fleet_findings
@@ -95,6 +99,52 @@ def list_approvals(
             for item in crud_extension_approval.summary(db, rows)
         ],
         next_cursor=next_cursor,
+    )
+
+
+def extension_policy_account_ref(account_id: UUID) -> str:
+    """Hash the canonical account id; the file keeps only the first 16 hex digits."""
+    return hashlib.sha256(str(account_id).encode("utf-8")).hexdigest()[:16]
+
+
+@router.get(
+    "/agents/extension-approvals/export",
+    response_model=ExtensionPolicyFile,
+    response_model_by_alias=True,
+)
+@require_permission("view_agents")
+def export_approvals(
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ExtensionPolicyFile:
+    """Download every account decision as an offline policy file.
+
+    ``content_hashes`` lists that approval's pinned hashes, oldest first.
+    An approval with no pins exports an empty list. The file has no notes,
+    user ids, credentials, or device data.
+    """
+    ensure_permission_in_oss(db, current_user, "view_agents")
+    rows = crud_extension_approval.list_all(db, account_id=account.id)
+    pins = crud_extension_approval.pins_for(db, approval_ids=[row.id for row in rows])
+    return ExtensionPolicyFile(
+        account_ref=extension_policy_account_ref(account.id),
+        generated_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        entries=[
+            ExtensionPolicyEntry.model_validate(
+                {
+                    "agent_kind": row.agent_kind,
+                    "extension_kind": row.extension_kind,
+                    "extension_id": row.extension_id,
+                    "approval_state": row.approval_state,
+                    "version_constraint": row.version_constraint,
+                    "content_hashes": [
+                        pin["content_hash"] for pin in pins.get(row.id, [])
+                    ],
+                }
+            )
+            for row in rows
+        ],
     )
 
 

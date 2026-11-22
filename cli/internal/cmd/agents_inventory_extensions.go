@@ -35,13 +35,17 @@ type inventoryExtension struct {
 	Event          string `json:"event,omitempty"`
 	Count          int    `json:"count,omitempty"`
 	IDHashed       bool   `json:"id_hashed"`
+	// PolicyID is the identifier an inventory report stores. Listings keep
+	// the clear name in ID and do not print this field.
+	PolicyID string `json:"-"`
 }
 
 type extensionScan struct {
-	home, salt string
-	extensions []inventoryExtension
-	errors     map[string]bool
-	hookHashes map[string][]string
+	home, salt   string
+	localDisplay bool
+	extensions   []inventoryExtension
+	errors       map[string]bool
+	hookHashes   map[string][]string
 }
 
 type extensionRoot struct {
@@ -227,14 +231,21 @@ func (s *extensionScan) add(ext inventoryExtension) {
 		s.fail("extension_malformed")
 		return
 	}
+	// Inventory reports hash identifiers that contain a home-path segment.
+	// A local listing keeps those identifiers in clear: nothing is sent.
+	// PolicyID stays the report identifier so a check can match the export.
+	ext.PolicyID = ext.ID
 	if (ext.SourceKind == "local" || ext.SourceKind == "git" || ext.Scope == "project") && !(ext.Kind == "plugin" && strings.HasSuffix(ext.SourceKind, "marketplace")) {
 		for _, segment := range strings.FieldsFunc(filepath.ToSlash(s.home), func(r rune) bool { return r == '/' || r == '\\' || r == ':' }) {
 			if segment != "" && strings.Contains(strings.ToLower(rawID), strings.ToLower(segment)) {
-				ext.ID = "hash:" + strings.TrimPrefix(extensionHash([]byte(rawID)), "sha256:")[:16]
-				ext.IDHashed = true
+				ext.PolicyID = "hash:" + strings.TrimPrefix(extensionHash([]byte(rawID)), "sha256:")[:16]
 				break
 			}
 		}
+	}
+	if !s.localDisplay {
+		ext.ID = ext.PolicyID
+		ext.IDHashed = ext.PolicyID != extensionIdentifier(rawID)
 	}
 	if ext.Enabled == "" {
 		ext.Enabled = "unknown"
@@ -546,7 +557,17 @@ func (r *extensionRoot) codexPlugins() {
 }
 
 func collectInventoryExtensions(home, agent, salt string, profileOnly bool) ([]inventoryExtension, []string) {
-	scan := &extensionScan{home: home, salt: salt, extensions: []inventoryExtension{}, errors: map[string]bool{}}
+	return collectExtensions(home, agent, salt, profileOnly, false)
+}
+
+// collectDisplayExtensions is the inventory collector with identifiers left in
+// clear for a local listing. Report hashing is unchanged.
+func collectDisplayExtensions(home, agent, salt string, profileOnly bool) ([]inventoryExtension, []string) {
+	return collectExtensions(home, agent, salt, profileOnly, true)
+}
+
+func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool) ([]inventoryExtension, []string) {
+	scan := &extensionScan{home: home, salt: salt, localDisplay: localDisplay, extensions: []inventoryExtension{}, errors: map[string]bool{}}
 	if agent != "claude-code" && agent != "codex-cli" {
 		return scan.extensions, nil
 	}

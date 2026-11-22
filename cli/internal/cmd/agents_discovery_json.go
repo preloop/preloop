@@ -84,6 +84,10 @@ func isPromptFreeJSONCommand(cmd *cobra.Command) bool {
 	if isGatewayCredentialCommand(cmd) {
 		return true
 	}
+	if _, ok := agentsExtensionsCommand(cmd); ok {
+		asJSON, err := cmd.Flags().GetBool("json")
+		return err == nil && asJSON
+	}
 	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "agents" {
 		return false
 	}

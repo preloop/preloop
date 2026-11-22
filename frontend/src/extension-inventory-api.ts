@@ -101,6 +101,28 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export interface ExtensionPolicyFile {
+  schema: 'preloop.extension-policy.v1';
+  account_ref: string;
+  generated_at: string;
+  entries: Array<{
+    agent_kind: string;
+    extension_kind: ExtensionKey['extension_kind'];
+    extension_id: string;
+    approval_state: ExtensionApprovalState;
+    version_constraint: string | null;
+    content_hashes: string[];
+  }>;
+}
+
+/** Fetch the offline policy file. It has no notes, credentials, or device data. */
+export async function fetchExtensionPolicyText(): Promise<string> {
+  const policy = await request<ExtensionPolicyFile>(
+    '/extension-approvals/export'
+  );
+  return `${JSON.stringify(policy, null, 2)}\n`;
+}
+
 export function getExtensions(
   filters: ExtensionFilters = {}
 ): Promise<ExtensionPage> {

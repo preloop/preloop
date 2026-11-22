@@ -1,11 +1,11 @@
 """Tenant-scoped account decisions and stable pagination helpers."""
 
 import base64
-import builtins
 import binascii
+import builtins
 import json
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -85,6 +85,19 @@ class CRUDExtensionApproval:
         return rows[:limit], encode_cursor([str(rows[limit - 1].id)]) if len(
             rows
         ) > limit else None
+
+    def list_all(
+        self, db: Session, *, account_id: UUID
+    ) -> Sequence[models.ExtensionApproval]:
+        """Return every decision for an account, past the list page size."""
+        model = models.ExtensionApproval
+        return list(
+            db.scalars(
+                select(model)
+                .where(model.account_id == account_id)
+                .order_by(model.agent_kind, model.extension_kind, model.extension_id)
+            )
+        )
 
     def set_state(
         self,

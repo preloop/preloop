@@ -218,6 +218,31 @@ describe('extension inventory', () => {
     expect(calls[2].cursor).to.equal(undefined);
   });
 
+  // protects=the Extensions tab downloads the policy file; fails_when=the
+  // button is missing or the request is not the export; no_claim=fixture
+  // loader and saver stand in for the browser download.
+  it('downloads the extension policy file', async () => {
+    let calls = 0;
+    const saved: string[] = [];
+    const element = await mount({
+      device: true,
+    });
+    element.policyLoader = async () => {
+      calls += 1;
+      return '{"schema":"preloop.extension-policy.v1"}\n';
+    };
+    element.policySaver = (filename: string) => {
+      saved.push(filename);
+    };
+    const button = element.shadowRoot!.querySelector(
+      '[data-testid="download-policy"]'
+    ) as HTMLElement;
+    expect(button.textContent).to.contain('Download policy file');
+    button.click();
+    await waitUntil(() => calls === 1 && saved.length === 1);
+    expect(saved).to.deep.equal(['preloop-extension-policy.json']);
+  });
+
   // protects=saved decisions on failure; fails_when=failed PUT looks successful;
   // no_claim=synthetic rejected request, not network availability.
   it('keeps the prior state and shows a failed approval', async () => {

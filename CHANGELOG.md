@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `preloop agents extensions check` compares installed extensions with an
+  account policy without uploading inventory (#2322). `--policy-file` reads
+  a downloaded file and `--online` fetches the same export. Pinned content
+  hashes are included, so a hash pin fails when the installed content
+  differs. Extensions with no decision stay unknown unless `--fail-on
+  unknown` is set.
 - The **Post review on the pull request** card edits which of a shared
   flow's repositories Preloop posts for: every repository, or only the
   ticked ones, with a filter for long lists. Selecting none is allowed and

@@ -7,10 +7,12 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import { tableScrollStyles } from '../styles/table-scroll';
 import { formatRelativeTime } from '../utils/date';
+import { downloadText } from '../utils/records-format';
 import {
   addExtensionPin,
   deleteExtensionPin,
   extensionAccess,
+  fetchExtensionPolicyText,
   getExtensionPins,
   getExtensions,
   setExtensionApproval,
@@ -52,6 +54,8 @@ export class ExtensionInventory extends LitElement {
   @property({ attribute: false }) loader = getExtensions;
   @property({ attribute: false }) updater = setExtensionApproval;
   @property({ attribute: false }) accessLoader = extensionAccess;
+  @property({ attribute: false }) policyLoader = fetchExtensionPolicyText;
+  @property({ attribute: false }) policySaver = downloadText;
   @property({ attribute: false }) pinLoader = getExtensionPins;
   @property({ attribute: false }) pinAdder = addExtensionPin;
   @property({ attribute: false }) pinRemover = deleteExtensionPin;
@@ -66,6 +70,7 @@ export class ExtensionInventory extends LitElement {
   @state() private canManage = false;
   @state() private error = '';
   @state() private busy = '';
+  @state() private downloading = false;
   @state() private stateFilter = '';
   @state() private sourceFilter = '';
   private requestId = 0;
@@ -246,6 +251,23 @@ export class ExtensionInventory extends LitElement {
         error instanceof Error ? error.message : 'Could not save approval';
     } finally {
       this.busy = '';
+    }
+  }
+
+  private async downloadPolicy(): Promise<void> {
+    if (this.downloading || !this.canView) return;
+    this.downloading = true;
+    this.error = '';
+    try {
+      const text = await this.policyLoader();
+      this.policySaver('preloop-extension-policy.json', text);
+    } catch (error) {
+      this.error =
+        error instanceof Error
+          ? error.message
+          : 'Could not download policy file';
+    } finally {
+      this.downloading = false;
     }
   }
 
@@ -472,6 +494,15 @@ export class ExtensionInventory extends LitElement {
           <sl-option value="">All sources</sl-option
           >${sources.map((source) => html`<sl-option value=${source}>${label(source)}</sl-option>`)}
         </sl-select>
+        <sl-button
+          size="small"
+          data-testid="download-policy"
+          ?loading=${this.downloading}
+          ?disabled=${this.downloading}
+          @click=${() => this.downloadPolicy()}
+        >
+          Download policy file
+        </sl-button>
       </div>
       ${this.error ? html`<p role="alert">${this.error} <sl-button size="small" @click=${() => this.refresh()}>Retry</sl-button></p>` : nothing}
       ${this.page?.completeness !== 'complete' && this.page ? html`<p class="meta" role="note">${this.page.completeness === 'partial' ? 'Collection is incomplete. Previously observed extensions are retained; other installed extensions may be missing.' : 'Collection completeness is unknown. Run discovery with a current collector.'}</p>` : nothing}
