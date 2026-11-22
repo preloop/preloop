@@ -96,3 +96,27 @@ def test_register_generates_missing_secret_and_maps_permission_errors(
         with pytest.raises(HTTPException) as exc:
             fn("t1", None, current_user=MagicMock(), db=MagicMock())
         assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "full_name,allowed",
+    [
+        ("fabrikam/Fabrikam/web", True),
+        ("FABRIKAM/fabrikam/WEB", True),
+        ("fabrikam/Other/web", False),
+        ("fabrikam/Fabrikam/api", False),
+        ("contoso/Fabrikam/web", False),
+        ("fabrikam/web", False),
+    ],
+)
+def test_tracker_client_enforces_the_binding(full_name: str, allowed: bool) -> None:
+    from preloop.api.common import azure_devops_repo_full_name
+
+    config = {"organization": "fabrikam", "project": "Fabrikam", "repository": "web"}
+    project = SimpleNamespace(meta_data={"full_name": full_name}, slug=None)
+    if allowed:
+        assert azure_devops_repo_full_name(config, project) == full_name
+    else:
+        with pytest.raises(HTTPException) as exc:
+            azure_devops_repo_full_name(config, project)
+        assert exc.value.status_code == 403

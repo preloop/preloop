@@ -436,8 +436,13 @@ async def test_ensure_service_hooks_creates_then_updates() -> None:
     assert all(b["consumerInputs"]["httpHeaders"].endswith(":s2") for _m, b in bodies)
 
 
-@pytest.mark.parametrize("status", [400, 500])
-async def test_failed_vote_keeps_the_posted_review(status: int) -> None:
+@pytest.mark.parametrize("status", [400, 429, 500, "network"])
+async def test_failed_vote_keeps_the_posted_review(status: Any) -> None:
+    def vote(_request: httpx.Request) -> httpx.Response:
+        if status == "network":
+            raise httpx.ConnectError("down")
+        return httpx.Response(status, json={"message": "vote rule"})
+
     client, _ = make(
         {
             ("POST", f"{API}/pullRequests/22/threads"): {
@@ -447,9 +452,7 @@ async def test_failed_vote_keeps_the_posted_review(status: int) -> None:
             ("GET", "/fabrikam/_apis/connectionData"): {
                 "authenticatedUser": {"id": "abc"}
             },
-            ("PUT", f"{API}/pullRequests/22/reviewers/abc"): httpx.Response(
-                status, json={"message": "vote rule"}
-            ),
+            ("PUT", f"{API}/pullRequests/22/reviewers/abc"): vote,
         }
     )
     result = await mcp_azure_devops.update_pull_request(
