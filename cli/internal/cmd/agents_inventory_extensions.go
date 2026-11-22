@@ -31,6 +31,7 @@ type inventoryExtension struct {
 	ProjectRefHash string `json:"project_ref_hash,omitempty"`
 	Enabled        string `json:"enabled"`
 	ContentHash    string `json:"content_hash,omitempty"`
+	HashStatus     string `json:"content_hash_status,omitempty"`
 	Event          string `json:"event,omitempty"`
 	Count          int    `json:"count,omitempty"`
 	IDHashed       bool   `json:"id_hashed"`
@@ -264,25 +265,23 @@ func (r *extensionRoot) localFiles(base, scope, project string, skills bool) {
 		if err != nil {
 			continue
 		}
-		kind, id, hash := "command", strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())), ""
+		kind, id := "command", strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		var hash, status string
 		if skills {
 			if !info.IsDir() {
 				continue
 			}
 			kind, id = "skill", entry.Name()
-			data := r.read(filepath.Join(path, "SKILL.md"))
-			if data != nil {
-				hash = extensionHash(data)
-			}
+			// The whole skill directory: scripts and references beside SKILL.md
+			// change behaviour as much as SKILL.md itself does.
+			hash, status = treeHash(r.root, path)
 		} else {
 			if !info.Mode().IsRegular() || !strings.EqualFold(filepath.Ext(path), ".md") {
 				continue
 			}
-			if data := r.read(path); data != nil {
-				hash = extensionHash(data)
-			}
+			hash, status = singleFileHash(r.root, path)
 		}
-		r.scan.add(inventoryExtension{Kind: kind, ID: id, SourceKind: "local", Scope: scope, ProjectRefHash: project, ContentHash: hash})
+		r.scan.add(inventoryExtension{Kind: kind, ID: id, SourceKind: "local", Scope: scope, ProjectRefHash: project, ContentHash: hash, HashStatus: status})
 	}
 }
 
@@ -351,7 +350,7 @@ func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string) {
 		}
 		r.scan.hookHashes[key] = hashes
 		sort.Strings(hashes)
-		r.scan.add(inventoryExtension{Kind: "hook", ID: event, SourceKind: "local", Scope: scope, ProjectRefHash: project, Event: event, Count: len(hashes), ContentHash: extensionHash([]byte(strings.Join(hashes, "\n")))})
+		r.scan.add(inventoryExtension{Kind: "hook", ID: event, SourceKind: "local", Scope: scope, ProjectRefHash: project, Event: event, Count: len(hashes), ContentHash: extensionHash([]byte(strings.Join(hashes, "\n"))), HashStatus: contentHashOK})
 	}
 }
 
@@ -450,12 +449,11 @@ func (r *extensionRoot) plugin(id, marketplace string, record map[string]json.Ra
 			if version := extensionString(manifest["version"]); version != "" {
 				ext.Version = version
 			}
-			// v1 hashes only manifest bytes; full plugin tree hashes are a follow-up.
-			if manifest != nil {
-				data, _ := json.Marshal(manifest)
-				ext.ContentHash = extensionHash(data)
-			}
+			ext.ContentHash, ext.HashStatus = treeHash(r.root, path)
 		}
+	}
+	if ext.HashStatus == "" {
+		ext.HashStatus = contentHashUnreadable
 	}
 	if value, ok := enabled[id]; ok {
 		if value {

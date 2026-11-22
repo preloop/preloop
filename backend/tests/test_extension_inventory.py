@@ -203,6 +203,17 @@ def test_approval_transitions_and_retention(
     )
 
 
+_AGGREGATE_2314_KEYS = (
+    "agent_kind",
+    "extension_kind",
+    "extension_id",
+    "device_count",
+    "versions",
+    "source_kinds",
+    "approval_state",
+)
+
+
 def test_http_ingest_approval_and_aggregate(client: TestClient) -> None:
     """protects=HTTP ingest and decision joins; fails_when=upserts or PUT are
     invisible to GET; no_claim=local app fixture, no browser.
@@ -226,7 +237,8 @@ def test_http_ingest_approval_and_aggregate(client: TestClient) -> None:
             "state": "approved",
         },
     ).json()["items"]
-    assert grouped == [
+    # #2321 adds pin_count and content_hashes; compare the #2314 keys exactly.
+    assert [{key: item[key] for key in _AGGREGATE_2314_KEYS} for item in grouped] == [
         {
             "agent_kind": "claude_code",
             "extension_kind": "plugin",
