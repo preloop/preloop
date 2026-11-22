@@ -1,5 +1,6 @@
 """Synthetic PostgreSQL and HTTP contracts for installed extension inventory."""
 
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
@@ -696,3 +697,86 @@ def test_extension_coverage_is_v3_only(legacy: int) -> None:
     payload["extension_completeness"] = "complete"
     with pytest.raises(ValidationError):
         DiscoveryEvidence.model_validate(payload)
+
+
+EXPORT = "/api/v1/agents/extension-approvals/export"
+
+
+def test_export_requires_view_agents(
+    client: TestClient, test_viewer_user: models.User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """protects=view_agents on the policy download; fails_when=a user without
+    it can export decisions; no_claim=synthetic permission provider, not EE RBAC.
+    """
+    monkeypatch.setattr(
+        "preloop.utils.permissions.members_have_full_access", lambda: False
+    )
+
+    def holds(_db: Any, _user: models.User, permission: str) -> bool:
+        return permission == "view_agents"
+
+    monkeypatch.setattr("preloop.utils.permissions.user_holds_permission", holds)
+    client.app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
+    assert client.get(EXPORT).status_code == 200
+    monkeypatch.setattr(
+        "preloop.utils.permissions.user_holds_permission",
+        lambda _db, _user, _permission: False,
+    )
+    assert client.get(EXPORT).status_code == 403
+
+
+def test_export_policy_file_shape(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """protects=every approval row in the offline file; fails_when=the export
+    stops at the list page size, leaks a note or account id, or includes
+    another account; no_claim=content hashes are empty because pins are absent.
+    """
+    for index in range(51):
+        crud_extension_approval.set_state(
+            db_session,
+            account_id=test_user.account_id,
+            agent_kind="claude_code",
+            extension_kind="plugin",
+            extension_id=f"plugin-{index:03d}",
+            decided_by_user_id=test_user.id,
+            payload=ExtensionApprovalUpdate(
+                approval_state="unknown" if index == 0 else "approved",
+                version_constraint="1.4.*" if index == 1 else None,
+                note="synthetic-note-value" if index == 1 else None,
+            ),
+        )
+    other = crud_account.create(
+        db_session, obj_in={"organization_name": "Example account"}
+    )
+    crud_extension_approval.set_state(
+        db_session,
+        account_id=other.id,
+        agent_kind="claude_code",
+        extension_kind="plugin",
+        extension_id="other-only",
+        decided_by_user_id=test_user.id,
+        payload=ExtensionApprovalUpdate(approval_state="approved"),
+    )
+    db_session.flush()
+    response = client.get(EXPORT)
+    assert response.status_code == 200, response.status_code
+    body = response.json()
+    assert body["schema"] == "preloop.extension-policy.v1"
+    assert (
+        body["account_ref"]
+        == hashlib.sha256(str(test_user.account_id).encode()).hexdigest()[:16]
+    )
+    assert len(body["account_ref"]) == 16
+    assert str(test_user.account_id) not in response.text
+    assert str(test_user.id) not in response.text
+    assert "synthetic-note-value" not in response.text
+    assert "decided_by" not in response.text
+    assert len(body["entries"]) == 51
+    assert [row["extension_id"] for row in body["entries"]] == [
+        f"plugin-{index:03d}" for index in range(51)
+    ]
+    assert body["entries"][0]["approval_state"] == "unknown"
+    assert body["entries"][1]["version_constraint"] == "1.4.*"
+    assert all(row["content_hashes"] == [] for row in body["entries"])
+    assert "other-only" not in response.text

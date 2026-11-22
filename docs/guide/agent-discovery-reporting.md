@@ -372,6 +372,15 @@ reads one decision with `view_agents` permission, or returns 404 when no decisio
 exists. The console uses this lookup to preserve notes and version constraints
 without scanning the account's approval list.
 
+`GET /api/v1/agents/extension-approvals/export` requires `view_agents` and returns
+`preloop.extension-policy.v1`: a hashed account reference, a generation time, and
+one entry per approval row (`agent_kind`, `extension_kind`, `extension_id`,
+`approval_state`, `version_constraint`, `content_hashes`). Notes, user ids, and
+device data are omitted. Content hashes are empty until content pins exist. The
+console Extensions tab offers the same document as **Download policy file**.
+`preloop agents extensions check --policy-file` evaluates it offline;
+`--online` fetches this route and does not upload inventory.
+
 `PUT /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}`
 requires `manage_agents` and accepts `approval_state` (`approved`, `unapproved`,
 `unknown`), optional `note`, and optional `version_constraint`. A constraint is an

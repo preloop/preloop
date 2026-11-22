@@ -287,3 +287,30 @@ Extension inventory uses the larger `preloop.inventory.v3` envelope (one record
 per extension, up to 200 per app context). Allow for the larger report when
 sizing MDM output capture. Existing v1/v2 reports remain accepted; a v3 collector
 retries without extensions only when the server rejects the schema version.
+
+## Extension compliance check
+
+Download the account policy from the console Extensions tab (**Download policy
+file**) or `GET /api/v1/agents/extension-approvals/export` (`view_agents`). The
+file lists approval names, version constraints, and content hashes. It has no
+credentials and no device data. Deliver it with the same reviewed file channel
+as other artifacts, then run this in the user session being checked:
+
+```bash
+preloop agents extensions check --policy-file /path/to/policy.json
+```
+
+| Exit | Script result |
+| --- | --- |
+| 0 | Compliant. Nothing at or above the failure threshold. |
+| 3 | Non-compliant. At least one unapproved extension. |
+| 4 | Non-compliant when the script passed `--fail-on unknown`. An extension has no matching decision and is not builtin. Exit 3 wins when both are present. |
+| 2 | Error. The scan was incomplete, or the policy file was unreadable or invalid. Do not treat this as compliant. |
+| 1 | Error. Any other failure, including `--online` transport or authentication problems. |
+| 64 | Error. The command named both `--policy-file` and `--online`, or neither. |
+
+`--fail-on` defaults to `unapproved`, so an extension with no policy entry exits
+0. Pass `--fail-on unknown` when absence from the policy must fail the job.
+
+The check proves that extension files are present or absent in the locations
+the collector reads. It does not prove what the agent loaded or executed.

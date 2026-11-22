@@ -2214,6 +2214,34 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/extension-approvals/export:
+    get:
+      tags:
+      - Agent discovery
+      summary: Export Approvals
+      description: 'Download every account decision as an offline policy file.
+
+
+        Content hashes stay empty until content pins exist. The file has no
+
+        notes, user ids, credentials, or device data.'
+      operationId: export_approvals_api_v1_agents_extension_approvals_export_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionPolicyFile'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}:
     get:
       tags:
@@ -39518,6 +39546,80 @@ components:
       title: ExtensionMetadata
       description: Only identifiers, version, classification and final hashes leave
         a device.
+    ExtensionPolicyEntry:
+      properties:
+        agent_kind:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_\-]{0,63}$
+          title: Agent Kind
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          title: Extension Kind
+        extension_id:
+          type: string
+          pattern: ^[^\x00-\x1f\x7f/\\]{1,128}$
+          title: Extension Id
+        approval_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          - unknown
+          title: Approval State
+        version_constraint:
+          anyOf:
+          - type: string
+            maxLength: 64
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]*(?:\.\*)?$
+          - type: 'null'
+          title: Version Constraint
+        content_hashes:
+          items:
+            type: string
+            pattern: ^sha256:[0-9a-f]{64}$
+          type: array
+          title: Content Hashes
+      additionalProperties: false
+      type: object
+      required:
+      - agent_kind
+      - extension_kind
+      - extension_id
+      - approval_state
+      title: ExtensionPolicyEntry
+      description: One offline decision. Notes and user ids never leave with the file.
+    ExtensionPolicyFile:
+      properties:
+        schema:
+          type: string
+          const: preloop.extension-policy.v1
+          title: Schema
+          default: preloop.extension-policy.v1
+        account_ref:
+          type: string
+          pattern: ^[0-9a-f]{16}$
+          title: Account Ref
+        generated_at:
+          type: string
+          pattern: ^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$
+          title: Generated At
+        entries:
+          items:
+            $ref: '#/components/schemas/ExtensionPolicyEntry'
+          type: array
+          title: Entries
+      type: object
+      required:
+      - account_ref
+      - generated_at
+      - entries
+      title: ExtensionPolicyFile
+      description: Account policy a device can evaluate without uploading inventory.
     ExternalApprovalResult:
       properties:
         external_reference:

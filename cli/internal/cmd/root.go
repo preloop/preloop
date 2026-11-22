@@ -52,7 +52,7 @@ suppressed too, as they depend on the check-in response.`,
 		// Inventory and managed exports skip telemetry and version/cache work,
 		// even when validation rejects conflicting flags. Managed export handles
 		// explicit --register authentication inside its command handler.
-		if isUnattendedEnrollmentCommand(cmd) || isOfflineInventoryCommand(cmd) || isManagedConfigCommand(cmd) || isAllUsersInventoryCommand(cmd) {
+		if isUnattendedEnrollmentCommand(cmd) || isOfflineInventoryCommand(cmd) || isManagedConfigCommand(cmd) || isAllUsersInventoryCommand(cmd) || isOfflineExtensionsCommand(cmd) || isExtensionsAllUsersCommand(cmd) {
 			silenceUsageForRuntimeErrors(cmd)
 			return
 		}

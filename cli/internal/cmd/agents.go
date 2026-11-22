@@ -902,6 +902,7 @@ func init() {
 	agentsCmd.AddCommand(agentsRemoveCmd)
 	agentsCmd.AddCommand(agentsMergeCmd)
 	agentsCmd.AddCommand(agentsStarterPolicyCmd)
+	agentsCmd.AddCommand(agentsExtensionsCmd)
 
 	agentsDiscoverCmd.Flags().Bool("add", false, "deprecated: use 'preloop agents onboard <agent>' instead")
 	agentsDiscoverCmd.Flags().Bool("json", false, "output safe discovery summaries as JSON (read-only, no prompts)")

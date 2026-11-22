@@ -37,10 +37,11 @@ type inventoryExtension struct {
 }
 
 type extensionScan struct {
-	home, salt string
-	extensions []inventoryExtension
-	errors     map[string]bool
-	hookHashes map[string][]string
+	home, salt   string
+	localDisplay bool
+	extensions   []inventoryExtension
+	errors       map[string]bool
+	hookHashes   map[string][]string
 }
 
 type extensionRoot struct {
@@ -226,7 +227,9 @@ func (s *extensionScan) add(ext inventoryExtension) {
 		s.fail("extension_malformed")
 		return
 	}
-	if (ext.SourceKind == "local" || ext.SourceKind == "git" || ext.Scope == "project") && !(ext.Kind == "plugin" && strings.HasSuffix(ext.SourceKind, "marketplace")) {
+	// Inventory reports hash identifiers that contain a home-path segment.
+	// A local listing keeps those identifiers in clear: nothing is sent.
+	if !s.localDisplay && (ext.SourceKind == "local" || ext.SourceKind == "git" || ext.Scope == "project") && !(ext.Kind == "plugin" && strings.HasSuffix(ext.SourceKind, "marketplace")) {
 		for _, segment := range strings.FieldsFunc(filepath.ToSlash(s.home), func(r rune) bool { return r == '/' || r == '\\' || r == ':' }) {
 			if segment != "" && strings.Contains(strings.ToLower(rawID), strings.ToLower(segment)) {
 				ext.ID = "hash:" + strings.TrimPrefix(extensionHash([]byte(rawID)), "sha256:")[:16]
@@ -548,7 +551,17 @@ func (r *extensionRoot) codexPlugins() {
 }
 
 func collectInventoryExtensions(home, agent, salt string, profileOnly bool) ([]inventoryExtension, []string) {
-	scan := &extensionScan{home: home, salt: salt, extensions: []inventoryExtension{}, errors: map[string]bool{}}
+	return collectExtensions(home, agent, salt, profileOnly, false)
+}
+
+// collectDisplayExtensions is the inventory collector with identifiers left in
+// clear for a local listing. Report hashing is unchanged.
+func collectDisplayExtensions(home, agent, salt string, profileOnly bool) ([]inventoryExtension, []string) {
+	return collectExtensions(home, agent, salt, profileOnly, true)
+}
+
+func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool) ([]inventoryExtension, []string) {
+	scan := &extensionScan{home: home, salt: salt, localDisplay: localDisplay, extensions: []inventoryExtension{}, errors: map[string]bool{}}
 	if agent != "claude-code" && agent != "codex-cli" {
 		return scan.extensions, nil
 	}

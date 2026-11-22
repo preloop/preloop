@@ -120,6 +120,12 @@ preloop agents restore <agent>           # restore the most recent local config 
 preloop agents offboard <agent>          # restore config + remove managed enrollment
 preloop agents offboard --all -y --remove-model yes --remove-mcp-servers yes
 preloop agents starter-policy <mcp-server> [-o file] [--apply]
+preloop agents extensions                 # list installed plugins, skills, hooks, and commands
+preloop agents extensions --json          # preloop.extensions.v1, identifiers in clear
+preloop agents extensions --agent claude-code --kind plugin
+preloop agents extensions check --policy-file policy.json
+preloop agents extensions check --policy-file policy.json --fail-on unknown
+preloop agents extensions check --online  # fetch the policy; sends no inventory
 preloop agents onboard --unattended \
   --enrollment-token-file /private/authority.json \
   --apps claude_code,codex \
@@ -161,6 +167,21 @@ An MDM or other privileged installer can enroll selected local apps without a pe
 This path configures MCP access only. It does not read or import upstream provider credentials, execute application binaries, or transfer subscription OAuth. Local acknowledgment records that the config was written. Application login and runtime validation stay unknown. A symlinked app config is refused by name; attended onboarding is the path that follows the link and keeps the target. Account tokens, `--token`, profiles, config-file overrides, and attended flags such as `--all`, `--dry-run`, and `--model` are rejected. Live Jamf and Intune acceptance is not verified yet.
 
 `discover --json` emits only allowlisted summaries (`name`, `app_id`, `mcp_server_count`, `auth_state`, `runtime_state`). `agents status <agent> --json` reuses that agent allowlist and adds enrollment health: local apply state, remote lifecycle, validation booleans, and model credential status. It does not emit MCP env, headers, auth, config paths, tokens, or raw local or remote config. `--inventory` writes an offline `preloop.inventory.v1` envelope of known-app presence and aggregate MCP counts, with no credentials, prompts, or network calls.
+
+`agents extensions` lists plugins, skills, hooks, and commands for Claude Code and Codex CLI. It is read-only: no login, no network, and no writes. Identifiers are printed in clear, including names an inventory report would hash. `--agent` and `--kind` are repeatable. `--all-users` follows the same elevation rule as `discover --inventory --all-users`. `--json` prints `preloop.extensions.v1`. A partial scan prints `Scan incomplete: <reason>` and exits 2.
+
+`agents extensions check` compares that list with a policy file. Pass exactly one of `--policy-file` (offline) or `--online`. `--online` calls `GET /api/v1/agents/extension-approvals/export` and does not upload inventory. `--fail-on` is `unapproved` (default) or `unknown`. The console Extensions tab downloads the same file.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Nothing at or above `--fail-on` |
+| 3 | At least one unapproved extension |
+| 4 | At least one unknown extension, and `--fail-on unknown` (3 wins when both are present) |
+| 2 | The scan is incomplete, or the policy is unreadable or invalid |
+| 1 | Any other error, including `--online` authentication or transport failures |
+| 64 | Both `--policy-file` and `--online` were set, or neither was |
+
+The check proves files are present or absent in the locations the collector reads. It does not prove what an agent loaded or ran. See [MDM recipes](../operations/mdm-recipes.md#extension-compliance-check).
 
 `discover --all-users` requires either `--inventory` or an explicit `--report`,
 plus root on Linux/macOS or an elevated administrator on Windows. For example,

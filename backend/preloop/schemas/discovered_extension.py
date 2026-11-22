@@ -1,7 +1,7 @@
 """Bounded extension metadata and account approval API contracts."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -134,3 +134,35 @@ class ExtensionApprovalList(BaseModel):
 
     items: list[ExtensionApprovalSummary]
     next_cursor: str | None
+
+
+class ExtensionPolicyEntry(BaseModel):
+    """One offline decision. Notes and user ids never leave with the file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_kind: str = Field(pattern=r"^[a-z0-9][a-z0-9_\-]{0,63}$")
+    extension_kind: ExtensionKind
+    extension_id: str = Field(pattern=IDENTIFIER_PATTERN)
+    approval_state: ApprovalState
+    version_constraint: str | None = Field(
+        default=None, max_length=64, pattern=VERSION_CONSTRAINT_PATTERN
+    )
+    content_hashes: list[Annotated[str, Field(pattern=HASH_PATTERN)]] = Field(
+        default_factory=list
+    )
+
+
+class ExtensionPolicyFile(BaseModel):
+    """Account policy a device can evaluate without uploading inventory."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    policy_schema: Literal["preloop.extension-policy.v1"] = Field(
+        default="preloop.extension-policy.v1",
+        alias="schema",
+        serialization_alias="schema",
+    )
+    account_ref: str = Field(pattern=r"^[0-9a-f]{16}$")
+    generated_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+    entries: list[ExtensionPolicyEntry]
