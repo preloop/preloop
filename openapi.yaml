@@ -31650,6 +31650,14 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ApprovalFlowExecutionSummary'
           - type: 'null'
+        my_decision:
+          anyOf:
+          - type: string
+            enum:
+            - approved
+            - declined
+          - type: 'null'
+          title: My Decision
         risk_level:
           type: string
           title: Risk Level
@@ -60079,7 +60087,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

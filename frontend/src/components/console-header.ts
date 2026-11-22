@@ -86,6 +86,8 @@ interface ApprovalRequest {
   execution_id?: string;
   agent_reasoning?: string;
   managed_agent_name?: string | null;
+  /** The signed-in user's own vote; set means it no longer waits on them. */
+  my_decision?: 'approved' | 'declined' | null;
 }
 
 interface UserNotification {
@@ -683,10 +685,12 @@ export class ConsoleHeader extends LitElement {
             execution_id: approval.execution_id,
             agent_reasoning: approval.agent_reasoning,
             managed_agent_name: approval.managed_agent_name,
+            my_decision: approval.my_decision ?? null,
           }))
           .filter(
             (approval: ApprovalRequest) =>
               this.isUnexpiredPendingApproval(approval) &&
+              !approval.my_decision &&
               !this.resolvedApprovals.has(approval.id)
           );
         this.forgetApprovalsSettledBefore(startedAt);

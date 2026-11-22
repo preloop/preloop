@@ -1038,6 +1038,56 @@ describe('ApprovalsView', () => {
       );
     });
 
+    it('drops a dismissed question that stays pending for other approvers, also after reload', async () => {
+      // Two approvers, one needed: the server records this user's decline as
+      // a vote and the request stays pending for the other approver.
+      const server = [questionRequest()] as Record<string, unknown>[];
+      fetchStub = sinon
+        .stub(window, 'fetch')
+        .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const method = (init?.method || 'GET').toUpperCase();
+          const json = (data: unknown) =>
+            new Response(JSON.stringify(data), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          if (url.includes('/decline') && method === 'POST') {
+            server[0] = { ...server[0], my_decision: 'declined' };
+            return json(server[0]);
+          }
+          return json(server);
+        });
+      const mount = async () => {
+        const view = (await fixture(
+          html`<approvals-view></approvals-view>`
+        )) as ApprovalsView;
+        await waitUntil(() => !(view as any).loading, 'did not load');
+        await view.updateComplete;
+        return view;
+      };
+
+      const element = await mount();
+      const panel = element.shadowRoot?.querySelector(
+        'question-answer-panel'
+      ) as any;
+      await panel.updateComplete;
+      (
+        panel.shadowRoot.querySelector('.dismiss-question') as HTMLElement
+      ).click();
+      await waitUntil(
+        () => !element.shadowRoot?.querySelector('question-answer-panel'),
+        'dismissed question is still listed'
+      );
+      expect(server[0].status).to.equal('pending');
+
+      const reloaded = await mount();
+      expect(
+        reloaded.shadowRoot?.querySelector('question-answer-panel'),
+        'dismissed question came back after reload'
+      ).to.not.exist;
+    });
+
     it('hides the answer field when free text is not allowed', async () => {
       const { panel } = await questionPanel({ allow_free_text: false });
 

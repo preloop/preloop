@@ -7,7 +7,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { approveRequest, declineRequest, getApprovalRequest } from '../api';
 import type { ApprovalRequest, ApprovalDecisionOptions } from '../types';
 import {
-  isUnexpiredPendingRequest,
+  awaitsMyDecision,
   normalizeApprovalRequest,
   approvalStatusLabel,
   approvalStatusVariant,
@@ -144,7 +144,7 @@ export class SessionApprovalCard extends LitElement {
       this.voted ||
       !this.canDecide ||
       hasExternalDecision(this.request) ||
-      !isUnexpiredPendingRequest(this.request)
+      !awaitsMyDecision(this.request)
     )
       return;
     const id = this.request.id;
@@ -252,7 +252,7 @@ export class SessionApprovalCard extends LitElement {
       this.canDecide &&
       !hasExternalDecision(r) &&
       !this.forbidden &&
-      isUnexpiredPendingRequest(r, this.now) &&
+      awaitsMyDecision(r, this.now) &&
       !this.voted;
     const keyboardChoices = enabled && !r.is_question;
     return html`<article
@@ -328,7 +328,7 @@ export class SessionApprovalCard extends LitElement {
             }`
           : nothing
       }
-      ${this.voted ? html`<p role="status">Your vote was recorded. Waiting for the remaining approvers.</p>` : nothing}
+      ${this.voted || (r.status === 'pending' && r.my_decision) ? html`<p role="status">Your vote was recorded. Waiting for the remaining approvers.</p>` : nothing}
       ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
       ${r.resolved_at ? html`<p>Resolved ${parseUTCDate(r.resolved_at).toLocaleString()} · ${r.was_bypassed ? 'Bypass' : r.decided_by_ai ? 'AI decision' : r.decided_by_human ? 'Human decision' : 'Decision attribution unavailable'}</p>` : nothing}
       ${r.approver_comment ? html`<p>${r.approver_comment}</p>` : nothing}

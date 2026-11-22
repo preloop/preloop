@@ -29,6 +29,7 @@ import {
   APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
   approvalStatusVariant,
+  declineOutcome,
   isExpiringSoon,
   isUnexpiredPendingRequest,
   normalizeApprovalRequest,
@@ -1201,7 +1202,13 @@ export class ApprovalsView extends AuthedElement {
 
     // Status filter
     if (this.statusFilter !== 'all') {
-      filtered = filtered.filter((r) => r.status === this.statusFilter);
+      filtered = filtered.filter(
+        (r) =>
+          r.status === this.statusFilter &&
+          // Pending means waiting on you: a request you already voted on
+          // stays pending for the other approvers but leaves your queue.
+          !(this.statusFilter === 'pending' && r.my_decision)
+      );
     }
 
     // Tool filter
@@ -1453,10 +1460,7 @@ export class ApprovalsView extends AuthedElement {
     this.decidingId = request.id;
     try {
       const updated = await declineRequest(request.id);
-      this.applyResolution(request.id, {
-        status: 'declined',
-        resolved_at: updated?.resolved_at ?? null,
-      });
+      this.applyResolution(request.id, declineOutcome(updated));
       showToast(`Denied ${request.tool_name}.`, 'neutral');
     } catch (error: any) {
       showToast(error?.message || 'Failed to deny the request', 'danger');
@@ -1626,10 +1630,7 @@ export class ApprovalsView extends AuthedElement {
     this.answerError = null;
     try {
       const updated = await declineRequest(request.id);
-      this.applyResolution(request.id, {
-        status: 'declined',
-        resolved_at: updated?.resolved_at ?? null,
-      });
+      this.applyResolution(request.id, declineOutcome(updated));
     } catch (error: any) {
       this.answerError = error?.message || 'Failed to dismiss question';
       console.error('Failed to dismiss question:', error);

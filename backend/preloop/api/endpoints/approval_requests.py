@@ -440,6 +440,28 @@ def get_approval_request_stats(
     )
 
 
+def _for_caller(row: Any, current_user: User) -> ApprovalRequestResponse:
+    """Serialize an approval request with the caller's own vote attached.
+
+    Args:
+        row: The approval request row (attribution already attached).
+        current_user: The user the response is for.
+
+    Returns:
+        The response with ``my_decision`` set from the caller's vote, if any.
+    """
+    item = ApprovalRequestResponse.model_validate(row)
+    user_id = str(current_user.id)
+    decision = None
+    for vote in getattr(row, "responses", None) or []:
+        if isinstance(vote, dict) and vote.get("user_id") == user_id:
+            if vote.get("decision") in ("approved", "declined"):
+                decision = vote["decision"]
+    if decision is None:
+        return item
+    return item.model_copy(update={"my_decision": decision})
+
+
 @router.get("/{request_id}", response_model=ApprovalRequestResponse)
 @_require_approval_permission("view_approvals")
 def get_approval_request(
@@ -475,7 +497,7 @@ def get_approval_request(
     # page with four bare ids (the "Agent: AI agent" report), then convert
     # while the request session is still open so serialization cannot hit a
     # detached instance.
-    return ApprovalRequestResponse.model_validate(attributed(db, approval_request))
+    return _for_caller(attributed(db, approval_request), current_user)
 
 
 @router.get("/{request_id}/original-args")
@@ -693,7 +715,7 @@ def list_approval_requests(
     # every row while the request session is still open.
     responses = []
     for row in attach_attribution(db, rows):
-        item = ApprovalRequestResponse.model_validate(row)
+        item = _for_caller(row, current_user)
         if crud_approval_request.is_stale_pending(
             row, now=now, halt_cutoff=halt_cutoff
         ):
@@ -791,9 +813,7 @@ async def approve_request(
         # handler already holds (the sync request session would block the
         # event loop), then convert while the write session is still open to
         # avoid DetachedInstanceError during response serialization.
-        return ApprovalRequestResponse.model_validate(
-            await attributed_async(async_db, updated)
-        )
+        return _for_caller(await attributed_async(async_db, updated), current_user)
 
 
 @router.post(
@@ -875,9 +895,7 @@ async def decline_request(
         # handler already holds (the sync request session would block the
         # event loop), then convert while the write session is still open to
         # avoid DetachedInstanceError during response serialization.
-        return ApprovalRequestResponse.model_validate(
-            await attributed_async(async_db, updated)
-        )
+        return _for_caller(await attributed_async(async_db, updated), current_user)
 
 
 @router.post(
@@ -992,9 +1010,7 @@ async def decide_request(
         # handler already holds (the sync request session would block the
         # event loop), then convert while the write session is still open to
         # avoid DetachedInstanceError during response serialization.
-        return ApprovalRequestResponse.model_validate(
-            await attributed_async(async_db, updated)
-        )
+        return _for_caller(await attributed_async(async_db, updated), current_user)
 
 
 @router.post(

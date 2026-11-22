@@ -243,6 +243,11 @@ export interface AttentionResult {
  */
 export interface AttentionApproval {
   id: string;
+  /** The signed-in user's own vote, when they cast one. With several
+      approvers a Deny or a dismissed question can be one vote of many, so
+      the request stays pending for the others but no longer waits on this
+      user. */
+  my_decision?: 'approved' | 'declined' | null;
   tool_name?: string | null;
   summary?: string | null;
   status?: string;
@@ -425,7 +430,12 @@ function approvalItems(
   now: Date
 ): AttentionItem[] {
   return approvals
-    .filter((approval) => !approval.status || approval.status === 'pending')
+    .filter(
+      (approval) =>
+        (!approval.status || approval.status === 'pending') &&
+        // Already answered by this user: the rest is up to other approvers.
+        !approval.my_decision
+    )
     .map((approval) => {
       const subject =
         approval.summary || approval.tool_name || 'Approval request';

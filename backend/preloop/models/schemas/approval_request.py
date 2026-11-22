@@ -2,7 +2,7 @@
 
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
 from pydantic import (
@@ -286,6 +286,11 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     api_key: Optional[ApprovalApiKeySummary] = None
     session: Optional[ApprovalSessionSummary] = None
     flow_execution: Optional[ApprovalFlowExecutionSummary] = None
+    # The calling user's own vote on this request ("approved" or "declined"),
+    # or None if they have not voted. With several approvers a single vote
+    # (Deny, or Dismiss on a question) can leave the request pending for the
+    # others; surfaces use this to stop asking the same person again.
+    my_decision: Optional[Literal["approved", "declined"]] = None
 
     @computed_field
     def risk_level(self) -> str:

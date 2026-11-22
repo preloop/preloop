@@ -50,6 +50,34 @@ export function isUnexpiredPendingRequest(
 }
 
 /**
+ * True while the request is pending, unexpired and still waits on the
+ * signed-in user. A user who already voted (Deny, or Dismiss on a question,
+ * on a request other approvers can still decide) is not asked again; the
+ * request stays visible to everyone else.
+ */
+export function awaitsMyDecision(
+  request: ApprovalRequest,
+  now: number = Date.now()
+): boolean {
+  return isUnexpiredPendingRequest(request, now) && !request.my_decision;
+}
+
+/**
+ * The local update after a decline. With several approvers the server may
+ * record it as this user's vote and leave the request pending; reporting it
+ * as declined would make the row reappear on the next reload.
+ */
+export function declineOutcome(
+  updated: Partial<ApprovalRequest> | null | undefined
+): Partial<ApprovalRequest> {
+  return {
+    status: updated?.status ?? 'declined',
+    resolved_at: updated?.resolved_at ?? null,
+    my_decision: updated?.my_decision ?? 'declined',
+  };
+}
+
+/**
  * Returns the request as it should be rendered: a pending request whose
  * expiry has passed reads as timed out, resolved at its expiry.
  */

@@ -2715,6 +2715,11 @@ export interface AnswerFieldError {
  * the plain approve/decline UI.
  */
 export interface ApprovalRequest {
+  /** The signed-in user's own vote, when they cast one. With several
+      approvers a Deny or a dismissed question can be one vote of many, so
+      the request stays pending for the others but no longer waits on this
+      user. */
+  my_decision?: 'approved' | 'declined' | null;
   external_url?: string | null;
   external_reference?: string | null;
   external_result?: Record<string, unknown> | null;
