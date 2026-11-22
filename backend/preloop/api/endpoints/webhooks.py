@@ -553,7 +553,8 @@ def _prepare_azure_devops_webhook(
     """Authenticate, validate and normalize one Azure DevOps service hook.
 
     Service hooks are unsigned, so the subscription sends the per-tracker
-    secret as a header (or Basic password); it is compared in constant time
+    secret in the ``X-Preloop-Webhook-Secret`` header (the only accepted
+    form; Basic credentials are rejected); it is compared in constant time
     before the body is parsed. The payload's organization and repository are
     checked against the tracker before anything is dispatched. Logs carry
     the tracker id and a fixed reason code, never the secret or payload.

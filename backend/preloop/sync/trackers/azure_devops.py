@@ -276,6 +276,14 @@ class AzureDevOpsTracker(BaseTracker):
             raise TrackerResponseError(
                 "The repository belongs to another Azure DevOps organization."
             )
+        if (self.project and parts[1].casefold() != self.project.casefold()) or (
+            self.repository and parts[2].casefold() != self.repository.casefold()
+        ):
+            raise TrackerPermissionError(
+                "The repository is outside this tracker's Azure DevOps project "
+                "or repository binding.",
+                status_code=403,
+            )
         return parts[1], parts[2]
 
     def _repo(self, repo_full_name: Optional[str] = None) -> str:
@@ -602,7 +610,16 @@ class AzureDevOpsTracker(BaseTracker):
                 f"{self._pr(pr_id, repo_full_name)}/reviewers/{quote(reviewer)}",
                 json={"vote": int(vote)},
             )
-        except TrackerPermissionError:
+        except (TrackerPermissionError, TrackerResponseError) as exc:
+            # The review threads are already posted; a vote rule (400), a
+            # missing right (403) or a transient error must not fail the
+            # review. Authentication failures stay fatal.
+            logger.info(
+                "Azure DevOps vote skipped for tracker %s: %s (status %s)",
+                self.tracker_id,
+                type(exc).__name__,
+                getattr(exc, "status_code", None),
+            )
             return False
         return True
 

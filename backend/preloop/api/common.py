@@ -221,9 +221,21 @@ async def get_tracker_client(
         # The organization belongs to the tracker; project settings never
         # redirect the token. PR calls address "org/project/repo".
         full_config = dict(tracker.connection_details or {})
-        full_config["repo_full_name"] = (project.meta_data or {}).get(
-            "full_name"
-        ) or project.slug
+        full_name = (project.meta_data or {}).get("full_name") or project.slug
+        parts = str(full_name or "").split("/")
+        bound_project = full_config.get("project")
+        bound_repository = full_config.get("repository")
+        if (
+            len(parts) != 3
+            or parts[0].casefold()
+            != str(full_config.get("organization") or "").casefold()
+            or (bound_project and parts[1].casefold() != bound_project.casefold())
+            or (bound_repository and parts[2].casefold() != bound_repository.casefold())
+        ):
+            raise HTTPException(
+                403, "Repository is outside the Azure DevOps tracker binding"
+            )
+        full_config["repo_full_name"] = full_name
     elif tracker_type == "bitbucket_dc":
         # Deployment/credential identity belongs to the tracker, never to
         # project settings. Discovered metadata selects a repository within it.

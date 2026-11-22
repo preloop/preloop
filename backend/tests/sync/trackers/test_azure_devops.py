@@ -434,3 +434,36 @@ async def test_ensure_service_hooks_creates_then_updates() -> None:
     assert second["created"] == 0
     assert {m for m, _b in bodies} == {"PUT"}
     assert all(b["consumerInputs"]["httpHeaders"].endswith(":s2") for _m, b in bodies)
+
+
+@pytest.mark.parametrize("status", [400, 500])
+async def test_failed_vote_keeps_the_posted_review(status: int) -> None:
+    client, _ = make(
+        {
+            ("POST", f"{API}/pullRequests/22/threads"): {
+                "id": 8,
+                "comments": [{"id": 1}],
+            },
+            ("GET", "/fabrikam/_apis/connectionData"): {
+                "authenticatedUser": {"id": "abc"}
+            },
+            ("PUT", f"{API}/pullRequests/22/reviewers/abc"): httpx.Response(
+                status, json={"message": "vote rule"}
+            ),
+        }
+    )
+    result = await mcp_azure_devops.update_pull_request(
+        client, "22", review_action="approve", review_body="LGTM"
+    )
+    assert result.status == "updated"
+    assert result.pull_request_id == "8"
+    assert "vote skipped" in result.message
+
+
+async def test_repository_outside_the_binding_is_refused() -> None:
+    client, stub = make({})
+    with pytest.raises(TrackerPermissionError):
+        await client.get_pull_request(1, "fabrikam/Other/Fabrikam-Fiber-Git")
+    with pytest.raises(TrackerPermissionError):
+        await client.get_pull_request(1, "fabrikam/Fabrikam-Fiber-Git/other")
+    assert stub.calls == []
