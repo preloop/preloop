@@ -31713,7 +31713,9 @@ components:
           description: 'Rows the question is about, e.g. one per unwaived finding.
 
 
-            Each row is {id, title, description?, severity?, badges?, href?}. The
+            Each row is {id, title, description?, severity?, badges?, href?,
+
+            fields?}. The
 
             console renders them as a table with a checkbox per row, so a human
 

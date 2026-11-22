@@ -497,9 +497,11 @@ def normalize_items(
             if key in _ITEM_KEYS:
                 continue
             key_text = str(key)
-            text = _clean_text(value, MAX_ITEM_FIELD_LENGTH) if isinstance(
-                value, str
-            ) else None
+            text = (
+                _clean_text(value, MAX_ITEM_FIELD_LENGTH)
+                if isinstance(value, str)
+                else None
+            )
             if (
                 text
                 and len(key_text) <= MAX_ITEM_FIELD_KEY_LENGTH
