@@ -45,7 +45,7 @@ def test_backend_shards_partition_before_collection() -> None:
 
     script = step_script(backend, "Run tests")
     assert "scripts/run_backend_shard.py run --plan backend-shard-plan.json" in script
-    assert "--group ${{ matrix.group }}" in script
+    assert '--group "$SHARD_GROUP"' in script
     assert '--workers "$SHARD_WORKERS"' in script
     run_env = next(s for s in backend["steps"] if s.get("name") == "Run tests")["env"]
     assert run_env["SHARD_WORKERS"] == (
@@ -305,4 +305,10 @@ def test_main_runs_refresh_durations_for_pull_requests() -> None:
 def test_coverage_job_summarises_actual_shard_durations() -> None:
     coverage = load_ci_jobs()["test-backend-coverage"]
     script = step_script(coverage, "Summarise actual shard durations")
-    assert "--shards ${{ needs.changes.outputs.backend_shards }} --summary" in script
+    assert '--shards "$SHARDS" --summary' in script
+    step = next(
+        s
+        for s in coverage["steps"]
+        if s.get("name") == "Summarise actual shard durations"
+    )
+    assert step["env"]["SHARDS"] == "${{ needs.changes.outputs.backend_shards }}"

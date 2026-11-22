@@ -821,9 +821,11 @@ jobs:
       - name: Run tests
         env:
           SHARD_WORKERS: ${{ runner.environment == 'self-hosted' && '2' || 'auto' }}
+          # The matrix comes from a job output; pass it as data, not code.
+          SHARD_GROUP: ${{ matrix.group }}
         run: |
           python scripts/run_backend_shard.py run --plan backend-shard-plan.json \
-            --group ${{ matrix.group }} --workers "$SHARD_WORKERS" -- \
+            --group "$SHARD_GROUP" --workers "$SHARD_WORKERS" -- \
             -m "not integration" \
             --cov=preloop \
             --cov-report= \
@@ -949,7 +951,9 @@ jobs:
           path: test-results
 
       - name: Summarise actual shard durations
-        run: python3 scripts/ci_refresh_durations.py test-results --shards ${{ needs.changes.outputs.backend_shards }} --summary
+        env:
+          SHARDS: ${{ needs.changes.outputs.backend_shards }}
+        run: python3 scripts/ci_refresh_durations.py test-results --shards "$SHARDS" --summary
 
   # Main-branch runs whose shards all passed refresh the node durations that
   # backend-plan reads. The cache is written from main, so every PR can
