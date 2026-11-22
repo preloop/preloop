@@ -3144,6 +3144,35 @@ def _audit_attempt(
         logger.warning("Could not audit the review publication of %s", execution.id)
 
 
+def close_out_of_scope_run(db: Session, execution_id: Any) -> None:
+    """Close a run that just finished outside the posting list. Never raises.
+
+    For paths that write a terminal status without the completion publisher
+    (the stale-execution monitor, a failed local dispatch). Recording the
+    skip when the run finishes keeps a later widening of the list from
+    publishing it. A run inside the list, or without a list, is untouched.
+
+    Args:
+        db: Database session; the terminal status is committed.
+        execution_id: The execution that just finished.
+    """
+    try:
+        execution = crud.crud_flow_execution.get(db, execution_id, refresh=True)
+        if execution is None or execution.status not in TERMINAL_STATUSES:
+            return
+        flow = getattr(execution, "flow", None)
+        config = getattr(flow, "git_clone_config", None)
+        if platform_review_mode(config) == MODE_OFF:
+            return
+        binding = parse_stored_review_binding(execution.ci_review_binding)
+        if binding is None or project_in_posting_scope(config, binding.project_id):
+            return
+        _record_out_of_scope(db, execution.id, binding)
+    except Exception:
+        db.rollback()
+        logger.error("Could not close the out-of-scope run %s", execution_id)
+
+
 def _closed_out_of_scope(db: Session, execution_id: Any) -> bool:
     """Whether the execution was closed as outside the posting list."""
     row = crud.crud_platform_review_publication.get_for_execution(

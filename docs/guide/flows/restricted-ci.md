@@ -2251,6 +2251,11 @@ before. With it:
   the list later does not post that run, and its explicit publish call
   still answers 409. A run started after the project is added posts as
   usual. Runs that finished before this rule shipped are not backfilled.
+  The run is closed when it finishes: by the completion step, by the
+  monitor that fails a stale run, or by a failed dispatch. A run that ends
+  on another path without the completion step is closed by the next sweep
+  pass, so adding its project in the minutes before that pass can still
+  post it.
 - A pull request event starts a review only for a listed project. An event
   for another project of the flow inserts no execution.
 - A project removed from the list while its run is in flight is not

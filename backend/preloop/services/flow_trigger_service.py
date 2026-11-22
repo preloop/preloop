@@ -372,6 +372,9 @@ def _record_local_run_failure(
         )
 
         record_execution_finished_safely(db, execution_id)
+        from preloop.services.platform_review import close_out_of_scope_run
+
+        close_out_of_scope_run(db, execution_id)
         return True
     except Exception:
         logger.error(

@@ -429,6 +429,46 @@ async def test_no_list_posts_and_records_no_scope_skip(
     assert all(row.reason != OUT_OF_SCOPE for row in publications(world, execution))
 
 
+@pytest.mark.asyncio
+async def test_run_stopped_outside_the_worker_is_not_posted_after_a_quick_widening(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finish without the publisher, add the project, then sweep."""
+    from preloop.services.execution_monitor import ExecutionMonitor
+
+    world = world_for(db_session, test_user, projects=2)
+    listed, other = world.projects
+    scope(world, listed)
+    execution, _ = ci_run(world, other)
+    # The monitor writes the terminal status itself and closes the run.
+    ExecutionMonitor._record_issue_costs(world.db, [execution.id])
+    scope(world, listed, other)
+    execution.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    world.flow.updated_at = datetime(2020, 1, 1)
+    world.db.commit()
+    github = ci_github(world, monkeypatch)
+    store = crud.crud_platform_review_publication
+    found = store.unclaimed_execution_ids(world.db, finished_within=timedelta(hours=24))
+    assert (world.account.id, execution.id) not in found
+    await post(world, execution)
+    assert github.writes == []
+    row = publications(world, execution)[0]
+    assert (row.state, row.reason) == ("skipped", OUT_OF_SCOPE)
+
+
+def test_closing_a_run_inside_the_list_records_nothing(
+    db_session: Session, test_user: Any
+) -> None:
+    world = world_for(db_session, test_user, projects=2)
+    listed, _other = world.projects
+    scope(world, listed)
+    execution, _ = ci_run(world, listed)
+    platform_review.close_out_of_scope_run(world.db, execution.id)
+    assert publications(world, execution) == []
+
+
 # --- explicit publish --------------------------------------------------------
 
 
