@@ -5105,6 +5105,9 @@ class FlowExecutionOrchestrator:
             from preloop.agents.agent_control import AgentControlExecutor
             from preloop.agents.remote_runner import RemoteRunnerExecutor
             from preloop.services.checkpoint_runtime import checkpoint_context
+            from preloop.services.read_only_review import state_review_deadline
+
+            prompt_before_admission = execution_context.get("prompt")
 
             # Private state stays on its owning host. Persistent Agent Control
             # targets already have a workspace; do not mint hosted artifacts.
@@ -5145,16 +5148,38 @@ class FlowExecutionOrchestrator:
                     )
                     backstop = nudge_timeout + RUNTIME_DEADLINE_GRACE_SECONDS
                 else:
-                    remaining = self._execution_deadline(
+                    run_deadline = self._execution_deadline(
                         self._execution_timeout_budget()
-                    ).remaining_seconds()
+                    )
+                    remaining = run_deadline.remaining_seconds()
                     backstop = remaining + RUNTIME_DEADLINE_GRACE_SECONDS
                     execution_context[RUN_DEADLINE_EPOCH_CONTEXT_KEY] = int(
                         time.time() + remaining
                     )
+                    # A bound review is told the limit the monitor enforces.
+                    state_review_deadline(
+                        execution_context,
+                        run_deadline.budget_seconds,
+                        run_deadline.deadline,
+                    )
                 execution_context[RUNTIME_DEADLINE_CONTEXT_KEY] = backstop
             except Exception:
                 logger.warning("Could not compute the runtime deadline backstop")
+            # Never leave the placeholder: without a computable deadline the
+            # reviewer still gets the guidance, with no time stated.
+            state_review_deadline(execution_context, None, None)
+            stated_prompt = execution_context.get("prompt")
+            if stated_prompt != prompt_before_admission:
+                # A queued private-runner job is leased later from the stored
+                # prompt. Store the one stated at admission, so the limit it
+                # names is the enforced one however late the lease is, and a
+                # retry, which reuses this context, changes nothing.
+                try:
+                    await self._update_execution_log(
+                        resolved_input_prompt=stated_prompt
+                    )
+                except Exception:
+                    logger.warning("Could not store the prompt stated at admission")
 
             if not isinstance(
                 agent_executor, (RemoteRunnerExecutor, AgentControlExecutor)

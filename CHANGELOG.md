@@ -37,6 +37,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actually reached the provider. Nothing changes for flows that set no
   effort.
 
+### Fixed
+
+- Backend Fast stays well under its 15 minute timeout: a changed backend
+  module now selects the test files that import it or are named
+  `test_<module>*` instead of its whole area plus every integration test,
+  and a selection estimated over 240 s of recorded durations narrows to
+  smoke, changed tests and module matches. The receipt records the reason
+  in `fast_reason`. The sharded Backend Tests job still runs everything.
+- A read-only pull request review is now told its time limit: the preamble
+  states the total budget and the UTC time the run is stopped, which is the
+  deadline the orchestrator enforces from admission, and continuation and
+  repair sessions are told the time left. The reviewer is asked to write its
+  answer before the limit and, if it cannot finish, to say so in the result
+  schema's failure or incomplete form instead of reporting a pass. A review
+  result that says it did not finish is kept and readable, but is no longer
+  accepted as a verified review: before this change a schema-valid answer
+  with a status such as `incomplete` or `partial` could succeed and be posted
+  with its verdict.
+
 ### Security
 
 - The console and installer TLS proxy use NGINX 1.30.7 to address HTTP/2

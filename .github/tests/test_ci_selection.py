@@ -132,3 +132,97 @@ def test_every_pr_rerun_forces_full_validation() -> None:
     """Approval reruns cannot reuse the earlier subset selector decision."""
     result = select(["docs/index.md"], POLICY, INVENTORY, attempt=2)
     assert result["full"] and all(result["live"].values())
+
+
+FAKE_INVENTORY = [
+    "backend/tests/endpoints/test_health.py",
+    "backend/tests/services/test_widget.py",
+    "backend/tests/services/test_widget_edge.py",
+    "backend/tests/services/test_other.py",
+    "backend/tests/api/test_uses_widget.py",
+    "backend/tests/api/test_patches_widget.py",
+    "backend/tests/integration/test_flows.py",
+    *SMOKE,
+]
+FAKE_SOURCES = {
+    "backend/tests/api/test_uses_widget.py": (
+        "from preloop.services import (\n    other,\n    widget,\n)\n"
+    ),
+    "backend/tests/api/test_patches_widget.py": (
+        'patch("preloop.services.widget.build")\n'
+    ),
+    "backend/tests/services/test_other.py": "from preloop.services import widgets\n",
+}
+WIDGET = "backend/preloop/services/widget.py"
+
+
+def fake_read(path: str) -> str:
+    """Return synthetic test sources keyed by path."""
+    return FAKE_SOURCES.get(path, "")
+
+
+def test_module_change_maps_to_importers_and_name_matches_only() -> None:
+    """A module maps to its own tests, not its whole area or integration."""
+    tests, reason = impacted_tests([WIDGET], FAKE_INVENTORY, fake_read)
+    assert reason == "module-level match"
+    assert tests == [
+        "backend/tests/api/test_patches_widget.py",
+        "backend/tests/api/test_uses_widget.py",
+        "backend/tests/services/test_widget.py",
+        "backend/tests/services/test_widget_edge.py",
+    ]
+
+
+def test_fast_within_budget_keeps_module_selection() -> None:
+    """A cheap selection is recorded with its impact reason."""
+    result = select([WIDGET], POLICY, FAKE_INVENTORY, durations={}, read=fake_read)
+    assert result["fast_reason"] == "module-level match"
+    assert "backend/tests/api/test_uses_widget.py" in result["fast_tests"]
+
+
+def test_fast_over_budget_drops_importers_and_records_reason() -> None:
+    """Importers that blow the budget leave smoke, changed and test_<mod>."""
+    durations = {f"{path}::t": 1.0 for path in FAKE_INVENTORY}
+    durations["backend/tests/api/test_uses_widget.py::t"] = 10_000.0
+    changed = "backend/tests/services/test_other.py"
+    result = select(
+        [WIDGET, changed],
+        POLICY,
+        FAKE_INVENTORY,
+        durations=durations,
+        read=fake_read,
+    )
+    assert result["fast_reason"].startswith("over fast budget")
+    assert result["fast_reason"].endswith("test_<module> files")
+    assert set(result["fast_tests"]) == set(SMOKE) | {
+        changed,
+        "backend/tests/services/test_widget.py",
+        "backend/tests/services/test_widget_edge.py",
+    }
+    assert result["fast_estimated_seconds"] < 10_000
+    assert result["candidate_tests"] != FAKE_INVENTORY
+
+
+def test_conftest_falls_back_to_budget_not_full_suite() -> None:
+    """Shared fixtures keep the full heavy tier, but fast stays narrow."""
+    paths = ["backend/tests/conftest.py", WIDGET]
+    result = select(paths, POLICY, FAKE_INVENTORY, durations={}, read=fake_read)
+    assert result["candidate_tests"] == FAKE_INVENTORY
+    assert result["fast_reason"] == (
+        "shared fixture or package: smoke, changed tests and module importers"
+    )
+    assert "backend/tests/integration/test_flows.py" not in result["fast_tests"]
+    assert "backend/tests/api/test_uses_widget.py" in result["fast_tests"]
+
+
+def test_full_suite_fast_lane_fits_budget_on_real_inventory() -> None:
+    """Sensitive CI paths still give a fast lane, not the whole inventory."""
+    durations = json.loads((ROOT / ".github/pytest-split-durations.json").read_text())
+    result = select(
+        ["scripts/ci_select.py", "backend/preloop/services/flow_orchestrator.py"],
+        POLICY,
+        INVENTORY,
+        durations=durations,
+    )
+    assert result["full"] and result["candidate_tests"] == INVENTORY
+    assert result["fast_estimated_seconds"] <= 240
