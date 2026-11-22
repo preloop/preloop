@@ -594,7 +594,8 @@ jobs:
 
   # Plan the shards once per run so every shard reads the same partition.
   # Durations come from the newest main-branch cache entry written by
-  # backend-durations; without one the committed file is the fallback.
+  # backend-durations; without one, .github/backend-shard-durations.json
+  # (file-level, measured under xdist) is the fallback.
   # Files are packed heaviest first (non-contiguous); a file heavier than a
   # third of a shard is split at test-node level. The plan step fails when
   # the predicted max shard exceeds 1.15x the mean.
@@ -623,7 +624,7 @@ jobs:
           durations=.ci-durations/pytest-durations.json
           if [ ! -s "$durations" ]; then
             echo "no cached main durations; using the committed fallback"
-            durations=.github/pytest-split-durations.json
+            durations=.github/backend-shard-durations.json
           fi
           python3 scripts/run_backend_shard.py plan --shards 6 \
             --durations "$durations" --out backend-shard-plan.json --max-ratio 1.15
@@ -771,10 +772,14 @@ jobs:
         with:
           name: backend-shard-plan
 
+      # A self-hosted slot shares its VM's CPUs with other slots, so it gets
+      # a fixed small worker count; hosted runners use every CPU they have.
       - name: Run tests
+        env:
+          SHARD_WORKERS: ${{ runner.environment == 'self-hosted' && '2' || 'auto' }}
         run: |
           python scripts/run_backend_shard.py run --plan backend-shard-plan.json \
-            --group ${{ matrix.group }} --workers auto -- \
+            --group ${{ matrix.group }} --workers "$SHARD_WORKERS" -- \
             -m "not integration" \
             --cov=preloop \
             --cov-report= \

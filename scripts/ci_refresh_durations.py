@@ -2,7 +2,8 @@
 
 Main-branch CI runs this after every backend shard passed and caches the output;
 pull requests plan their shards from the newest cached file and fall back to the
-committed ``.github/pytest-split-durations.json``.
+committed ``.github/backend-shard-durations.json`` (``--per-file`` output of a
+green xdist run, so the weights include worker contention).
 """
 
 from __future__ import annotations
@@ -84,6 +85,11 @@ def main() -> None:
     parser.add_argument("--shards", type=int, required=True)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--summary", action="store_true")
+    parser.add_argument(
+        "--per-file",
+        action="store_true",
+        help="sum nodes per file (the small committed planner fallback)",
+    )
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     reports = sorted(
@@ -102,6 +108,12 @@ def main() -> None:
     if args.out is None:
         return
     durations = read_durations(reports, root)
+    if args.per_file:
+        files: dict[str, float] = {}
+        for node, seconds in durations.items():
+            path = node.split("::", 1)[0]
+            files[path] = files.get(path, 0.0) + seconds
+        durations = files
     args.out.write_text(
         json.dumps({k: round(v, 4) for k, v in durations.items()}, sort_keys=True)
         + "\n"

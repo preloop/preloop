@@ -44,7 +44,11 @@ def test_backend_shards_partition_before_collection() -> None:
     script = step_script(backend, "Run tests")
     assert "scripts/run_backend_shard.py run --plan backend-shard-plan.json" in script
     assert "--group ${{ matrix.group }}" in script
-    assert "--workers auto" in script
+    assert '--workers "$SHARD_WORKERS"' in script
+    run_env = next(s for s in backend["steps"] if s.get("name") == "Run tests")["env"]
+    assert run_env["SHARD_WORKERS"] == (
+        "${{ runner.environment == 'self-hosted' && '2' || 'auto' }}"
+    )
     assert "backend-plan" in backend["needs"]
     assert "needs.backend-plan.result == 'success'" in backend["if"]
     assert "--splits" not in script
@@ -253,7 +257,7 @@ def test_backend_plan_job_checks_predicted_balance() -> None:
     script = step_script(plan, "Plan shards and check predicted balance")
     assert f"--shards {BACKEND_TEST_SPLITS}" in script
     assert "--max-ratio 1.15" in script
-    assert ".github/pytest-split-durations.json" in script
+    assert ".github/backend-shard-durations.json" in script
 
 
 def test_main_runs_refresh_durations_for_pull_requests() -> None:

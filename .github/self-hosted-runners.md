@@ -1,9 +1,11 @@
 # Self-hosted runners
 
-After the fast gate succeeds, CI distributes backend shards across available capacity. Each
-online idle general self-hosted runner takes one shard immediately, up to the
-configured general-pool limit; the remaining shards use GitHub-hosted `ubuntu-24.04`. There is
-no hosted-queue delay threshold or fixed half-matrix cap. Unreadable inventory,
+After the fast gate succeeds, CI routes all six backend shards to one runner
+class. They run self-hosted only when six online idle general self-hosted
+runners are available, one per shard; otherwise all six use GitHub-hosted
+`ubuntu-24.04`. Mixing classes made the slower private shards the
+stragglers. Self-hosted shards run two xdist workers each, since a runner slot
+is not a whole VM. Unreadable inventory,
 an absent read token, or `CI_SELF_HOSTED_TESTS=false` keeps every shard hosted.
 Fork and Dependabot PRs always remain hosted. Trusted same-repository PRs and
 pushes may use the general pool.
@@ -234,7 +236,7 @@ Inspect a shard without running tests:
 
 ```bash
 python scripts/run_backend_shard.py plan --shards 6 \
-  --durations .github/pytest-split-durations.json --out plan.json
+  --durations .github/backend-shard-durations.json --out plan.json
 ```
 
 One runner slot is not necessarily one CPU: CodeQL and other analysis tools may
@@ -299,8 +301,9 @@ still requires host maintenance with an exclusive maintenance window.
 The duration hints are refreshed by the `backend-durations` job: every green
 main-branch run converts its six JUnit reports to node durations with
 `scripts/ci_refresh_durations.py` and saves them to the Actions cache. The
-`backend-plan` job restores the newest entry (falling back to the committed
-`.github/pytest-split-durations.json`), packs files longest first, and fails
+`backend-plan` job restores the newest entry (falling back to the committed,
+file-level `.github/backend-shard-durations.json`, regenerated with
+`--per-file`), packs files longest first, and fails
 when the predicted largest shard exceeds 1.15x the mean. The Backend Coverage
 job summarises the actual per-shard pytest seconds. Backend shards all run on
 one runner class: self-hosted only when one idle general runner is available

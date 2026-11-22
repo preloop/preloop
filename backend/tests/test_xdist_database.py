@@ -18,6 +18,16 @@ def test_worker_gets_its_own_clone() -> None:
     assert "FLOW_FEEDBACK_TEST_DATABASE_URL" not in env
 
 
+def test_query_string_is_kept_after_the_worker_suffix() -> None:
+    env = {
+        "PYTEST_XDIST_WORKER": "gw0",
+        "PRELOOP_CI_WORKER_DATABASES": "1",
+        "DATABASE_URL": f"{URL}?sslmode=disable",
+    }
+    use_worker_database(env)
+    assert env["DATABASE_URL"] == f"{URL}_gw0?sslmode=disable"
+
+
 def test_without_clones_or_xdist_the_url_is_unchanged() -> None:
     for env in (
         {"PYTEST_XDIST_WORKER": "gw0", "DATABASE_URL": URL},

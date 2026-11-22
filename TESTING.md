@@ -97,7 +97,7 @@ GitHub Actions (`.github/workflows/ci.yml`) shards backend unit tests
 [pytest-xdist](https://pypi.org/project/pytest-xdist/) with
 `--dist worksteal`. `scripts/run_backend_shard.py` packs files heaviest
 first from the newest main-branch durations (cached by CI, with
-`.github/pytest-split-durations.json` as the fallback) and fails the plan
+`.github/backend-shard-durations.json` as the fallback) and fails the plan
 when the predicted largest shard exceeds 1.15x the mean. A shard reuses a
 Postgres already listening on `127.0.0.1:5432` and creates one database for
 the job plus one clone per xdist worker; otherwise it starts

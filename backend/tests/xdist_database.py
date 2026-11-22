@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import MutableMapping
+from urllib.parse import urlsplit, urlunsplit
 
 DATABASE_URL_VARIABLES = (
     "DATABASE_URL",
@@ -26,5 +27,6 @@ def use_worker_database(environ: MutableMapping[str, str]) -> None:
         return
     for name in DATABASE_URL_VARIABLES:
         url = environ.get(name)
-        if url and "?" not in url:
-            environ[name] = f"{url}_{worker}"
+        if url:
+            parts = urlsplit(url)
+            environ[name] = urlunsplit(parts._replace(path=f"{parts.path}_{worker}"))

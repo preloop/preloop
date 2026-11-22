@@ -269,11 +269,16 @@ def plan_shards(
     for group in packed:
         owned = set(group)
         selected = sorted({name.split("#", 1)[0] for name in group})
+        own_nodes = [n for key in group if key in slices for n in slices[key]]
+        # pytest's --deselect matches node-id prefixes: deselecting
+        # ``test_get`` would also drop an owned ``test_get_user``. Such a
+        # node runs here as well; a duplicate is safe, a lost test is not.
         deselect = sorted(
             node
             for key, members in slices.items()
             if key not in owned and key.split("#", 1)[0] in selected
             for node in members
+            if not any(own.startswith(node) for own in own_nodes)
         )
         plan.append(
             {
@@ -330,6 +335,14 @@ def command_plan(args: argparse.Namespace, root: Path) -> int:
     return 0
 
 
+def available_cpus() -> int:
+    """Return the CPUs this process may run on (affinity, not the host total)."""
+    affinity = getattr(os, "sched_getaffinity", None)
+    if affinity is not None:
+        return max(len(affinity(0)), 1)
+    return os.cpu_count() or 1
+
+
 def command_run(args: argparse.Namespace, root: Path) -> int:
     """Run one planned shard, retaining pytest's exit status."""
     plan = json.loads(args.plan.read_text())
@@ -341,7 +354,7 @@ def command_run(args: argparse.Namespace, root: Path) -> int:
         options = options[1:]
     env = dict(os.environ)
     if args.workers == "auto":
-        workers = os.cpu_count() or 1
+        workers = available_cpus()
     else:
         workers = int(args.workers)
     if workers > 1:

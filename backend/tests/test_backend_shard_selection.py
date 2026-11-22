@@ -162,6 +162,29 @@ def test_heavy_file_is_split_at_node_level(tmp_path: Path) -> None:
     assert peak <= 1.15 * mean
 
 
+def test_split_never_deselects_an_owned_sibling_by_prefix(tmp_path: Path) -> None:
+    """pytest deselects by prefix; ``test_get`` must not hide ``test_get_user``."""
+    files = _files(tmp_path, 7)
+    durations = {f"{p}::test_one": 1.0 for p in files[1:]}
+    heavy = files[0]
+    names = ["test_get", "test_get_user", "test_get_user_admin", "test_put"]
+    names += [f"test_n{i}" for i in range(8)]
+    durations.update({f"{heavy}::{name}": 1.0 for name in names})
+    plan = sharding.plan_shards(files, durations, 3, tmp_path)
+    assert plan["split_files"] == [heavy]
+    selected: set[str] = set()
+    for shard in plan["shards"]:
+        if heavy not in shard["files"]:
+            continue
+        prefixes = tuple(shard["deselect"])
+        selected |= {
+            node
+            for node in durations
+            if node.startswith(heavy) and not node.startswith(prefixes)
+        }
+    assert selected == {n for n in durations if n.startswith(heavy)}
+
+
 def test_plan_command_fails_on_predicted_imbalance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -231,7 +254,7 @@ def test_real_plan_covers_new_files_and_deleted_timings() -> None:
 
 
 def test_committed_durations_plan_within_the_balance_gate() -> None:
-    durations = json.loads((ROOT / ".github/pytest-split-durations.json").read_text())
+    durations = json.loads((ROOT / ".github/backend-shard-durations.json").read_text())
     plan = sharding.plan_shards(sharding.discover_files(ROOT), durations, 6, ROOT)
     peak, mean = sharding.spread(plan)
     assert peak <= sharding.DEFAULT_MAX_RATIO * mean
