@@ -166,6 +166,16 @@ export class FlowPlatformReviewCard extends LitElement {
         gap: var(--sl-spacing-small);
         margin-top: var(--sl-spacing-medium);
       }
+      .project-list {
+        display: grid;
+        gap: var(--sl-spacing-2x-small);
+        max-height: 300px;
+        overflow-y: auto;
+        margin: var(--sl-spacing-x-small) 0 var(--sl-spacing-small);
+      }
+      .project-list code {
+        font-family: var(--sl-font-mono);
+      }
       .loading {
         display: flex;
         align-items: center;
@@ -186,6 +196,7 @@ export class FlowPlatformReviewCard extends LitElement {
   @state() private saving = false;
   @state() private error = '';
   @state() private saved = false;
+  @state() private projectFilter = '';
   private draftFlowId: string | null = null;
 
   private get eventReviewTrigger(): boolean {
@@ -220,6 +231,7 @@ export class FlowPlatformReviewCard extends LitElement {
       if (id !== this.draftFlowId || !this.dirty) {
         this.draftFlowId = id;
         this.draft = this.storedBlock();
+        this.projectFilter = '';
       }
     }
   }
@@ -228,6 +240,37 @@ export class FlowPlatformReviewCard extends LitElement {
     const block = this.flow?.git_clone_config?.platform_review;
     if (!block || typeof block !== 'object') return { enabled: false };
     return JSON.parse(JSON.stringify(block));
+  }
+
+  /** The flow's projects, in order, with the name the card shows. */
+  private get admittedProjects(): { id: string; name: string }[] {
+    const config = this.flow?.git_clone_config || {};
+    const repositories: any[] = Array.isArray(config.repositories)
+      ? config.repositories
+      : [];
+    // The server admits posting ids from trigger_project_ids only; a flow
+    // without it (every project) cannot store a list.
+    const ids: string[] = Array.isArray(this.flow?.trigger_project_ids)
+      ? this.flow.trigger_project_ids.map((id: unknown) => String(id))
+      : [];
+    return [...new Set(ids)].map((id) => {
+      const name = repositories.find(
+        (repo) => String(repo?.project_id) === id
+      )?.identifier;
+      return { id, name: typeof name === 'string' && name ? name : '' };
+    });
+  }
+
+  /** Stored posting ids that are no longer one of the flow's projects. */
+  private get staleProjectIds(): string[] {
+    const listed = this.storedBlock().project_ids;
+    if (
+      !Array.isArray(listed) ||
+      !Array.isArray(this.flow?.trigger_project_ids)
+    )
+      return [];
+    const admitted = new Set(this.admittedProjects.map((p) => p.id));
+    return listed.filter((id) => !admitted.has(String(id)));
   }
 
   private get dirty(): boolean {
@@ -287,6 +330,20 @@ export class FlowPlatformReviewCard extends LitElement {
   /** A save the server would refuse, as a sentence; empty when it would pass. */
   private get blocker(): string {
     if (!this.draft.enabled) return '';
+    const listed = this.draft.project_ids;
+    if (Array.isArray(listed)) {
+      const admitted = new Set(this.admittedProjects.map((p) => p.id));
+      // A stored id that left the flow is flagged and dropped on save.
+      const stale = this.staleProjectIds;
+      const outside = listed.find(
+        (id) => !admitted.has(id) && !stale.includes(id)
+      );
+      if (outside) {
+        return `${outside} is not one of this flow's projects, so Preloop cannot post for it.`;
+      }
+      const duplicate = listed.find((id, i) => listed.indexOf(id) !== i);
+      if (duplicate) return `${duplicate} is listed twice.`;
+    }
     const missing = this.checks.find((check) => check.ok === false);
     if (missing) return missing.reason;
     const status = this.draft.status;
@@ -312,6 +369,33 @@ export class FlowPlatformReviewCard extends LitElement {
         : mode === 'manual'
           ? { ...rest, enabled: true, mode: 'manual' }
           : { ...rest, enabled: true };
+  }
+
+  private setProjectScope(scope: 'all' | 'selected'): void {
+    this.saved = false;
+    const { project_ids: _ids, ...rest } = this.draft;
+    // Starting from every project changes nothing until one is unticked.
+    this.draft =
+      scope === 'all'
+        ? { ...rest }
+        : {
+            ...rest,
+            project_ids: Array.isArray(_ids)
+              ? _ids
+              : this.admittedProjects.map((p) => p.id),
+          };
+  }
+
+  private setProjectSelected(id: string, selected: boolean): void {
+    this.saved = false;
+    const current = this.draft.project_ids || [];
+    const chosen = new Set(selected ? [...current, id] : current);
+    if (!selected) chosen.delete(id);
+    // Keep the flow's order so the stored list does not churn.
+    const ids = this.admittedProjects
+      .map((p) => p.id)
+      .filter((pid) => chosen.has(pid));
+    this.draft = { ...this.draft, project_ids: ids };
   }
 
   private setEvidence(value: 'any' | 'captured' | 'complete'): void {
@@ -370,6 +454,12 @@ export class FlowPlatformReviewCard extends LitElement {
     this.saved = false;
     try {
       const block = normalise(this.draft);
+      const stale = this.staleProjectIds;
+      if (Array.isArray(block.project_ids) && stale.length) {
+        block.project_ids = block.project_ids.filter(
+          (id) => !stale.includes(id)
+        );
+      }
       const config = { ...(this.flow.git_clone_config || {}) };
       if (block.enabled || this.flow.git_clone_config?.platform_review) {
         config.platform_review = block;
@@ -432,38 +522,162 @@ export class FlowPlatformReviewCard extends LitElement {
 
   private reset(): void {
     this.draft = this.storedBlock();
+    this.projectFilter = '';
     this.error = '';
     this.saved = false;
   }
 
-  /** Read-only: which of the flow's projects Preloop posts for. */
+  /** "Posts for N of M repositories", following the draft. */
   private renderPostingProjects() {
     const listed = this.draft.project_ids;
     if (!this.draft.enabled || !Array.isArray(listed)) return nothing;
-    const config = this.flow?.git_clone_config || {};
-    const repositories: any[] = Array.isArray(config.repositories)
-      ? config.repositories
-      : [];
-    const admitted: string[] = Array.isArray(this.flow?.trigger_project_ids)
-      ? this.flow.trigger_project_ids.map((id: unknown) => String(id))
-      : repositories.map((repo) => String(repo?.project_id ?? ''));
-    const names = listed
-      .map(
-        (id) =>
-          repositories.find((repo) => String(repo?.project_id) === id)
-            ?.identifier
-      )
-      .filter((name): name is string => typeof name === 'string' && !!name);
-    const count = listed.filter((id) => admitted.includes(id)).length;
-    const noun = admitted.length === 1 ? 'repository' : 'repositories';
-    const which = names.length ? `: ${names.join(', ')}` : '';
+    const projects = this.admittedProjects;
+    const chosen = projects.filter((p) => listed.includes(p.id));
+    const noun = projects.length === 1 ? 'repository' : 'repositories';
+    const names = chosen.map((p) => p.name).filter((name) => name);
+    const which =
+      names.length && names.length <= 5 ? `: ${names.join(', ')}` : '';
     return html`<p class="meta" data-posting-projects>
-      ${`Posts for ${count} of ${admitted.length} ${noun}${which}.`}
+      ${`Posts for ${chosen.length} of ${projects.length} ${noun}${which}.`}
+    </p>`;
+  }
+
+  /** Every repository of the flow, or only the ticked ones. */
+  private renderPostingProjectsEditor() {
+    const projects = this.admittedProjects;
+    const stale = this.staleProjectIds;
+    const staleNote = stale.length
+      ? html`<sl-alert variant="warning" open data-stale-projects>
+          <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+          ${`Not on this flow any more, so not selected and removed from the list on the next save: ${stale.join(', ')}.`}
+        </sl-alert>`
+      : nothing;
+    const listed = this.draft.project_ids;
+    const selected = Array.isArray(listed);
+    // One project needs no choice, unless a list is stored to undo.
+    if (
+      !this.draft.enabled ||
+      !projects.length ||
+      (projects.length < 2 && !selected)
+    ) {
+      return this.draft.enabled ? staleNote : nothing;
+    }
+    const filter = this.projectFilter.trim().toLowerCase();
+    const shown = filter
+      ? projects.filter((p) =>
+          `${p.name} ${p.id}`.toLowerCase().includes(filter)
+        )
+      : projects;
+    const help = [
+      'Preloop posts only for the selected repositories; the others keep running and keep their results.',
+      this.eventReviewTrigger
+        ? 'Pull request events start reviews only for the selected repositories.'
+        : '',
+      'A repository added to the flow later is not selected.',
+    ]
+      .filter((sentence) => sentence)
+      .join(' ');
+    return html`
+      <sl-radio-group
+        label="Repositories to post for"
+        data-field="project_scope"
+        .value=${selected ? 'selected' : 'all'}
+        @sl-change=${(e: Event) =>
+          this.setProjectScope(
+            (e.target as HTMLInputElement).value as 'all' | 'selected'
+          )}
+      >
+        <sl-radio value="all" ?disabled=${!this.editable}
+          >Every repository of the flow</sl-radio
+        >
+        <sl-radio value="selected" ?disabled=${!this.editable}
+          >Only selected repositories</sl-radio
+        >
+      </sl-radio-group>
       ${
-        count < admitted.length
-          ? 'Other repositories keep running; Preloop does not post their reviews.'
+        selected
+          ? html`
+              <p class="meta" data-posting-projects-help>${help}</p>
+              ${
+                projects.length > 10
+                  ? html`<sl-input
+                      size="small"
+                      type="search"
+                      clearable
+                      placeholder="Filter repositories"
+                      aria-label="Filter repositories"
+                      data-field="project_filter"
+                      .value=${this.projectFilter}
+                      @sl-input=${(e: Event) => {
+                        this.projectFilter = (
+                          e.target as HTMLInputElement
+                        ).value;
+                      }}
+                      @sl-clear=${() => {
+                        this.projectFilter = '';
+                      }}
+                    ></sl-input>`
+                  : nothing
+              }
+              <div
+                class="project-list"
+                role="group"
+                aria-label="Selected repositories"
+                data-field="project_ids"
+              >
+                ${shown.map(
+                  (p) =>
+                    html`<sl-checkbox
+                      data-project=${p.id}
+                      .checked=${listed!.includes(p.id)}
+                      ?disabled=${!this.editable}
+                      @sl-change=${(e: Event) =>
+                        this.setProjectSelected(
+                          p.id,
+                          (e.target as HTMLInputElement).checked
+                        )}
+                      >${p.name || html`<code>${p.id}</code>`}</sl-checkbox
+                    >`
+                )}
+                ${
+                  shown.length
+                    ? nothing
+                    : html`<p class="meta">No repository matches.</p>`
+                }
+              </div>
+              ${
+                !projects.some((p) => listed!.includes(p.id))
+                  ? html`<sl-alert variant="warning" open data-posting-none>
+                      <sl-icon
+                        slot="icon"
+                        name="exclamation-triangle"
+                      ></sl-icon>
+                      No repository is selected. Nothing will be posted, and no
+                      pull request event will start a review.
+                    </sl-alert>`
+                  : nothing
+              }
+            `
           : nothing
       }
+      ${staleNote}
+    `;
+  }
+
+  /** Before saving off: the server clears a stored posting list. */
+  private renderPostingProjectsCleared() {
+    const stored = this.storedBlock();
+    if (
+      this.draft.enabled ||
+      !stored.enabled ||
+      !Array.isArray(stored.project_ids)
+    ) {
+      return nothing;
+    }
+    return html`<p class="meta" data-posting-projects-cleared>
+      Turning posting off clears the list of repositories Preloop posts for.
+      Turned on again, it posts for every repository until you select them
+      again.
     </p>`;
   }
 
@@ -642,7 +856,8 @@ export class FlowPlatformReviewCard extends LitElement {
               </sl-radio-group>`
             : html`<p class="meta" data-mode>${MODE_HELP[storedMode]}</p>`
         }
-        ${this.renderPostingProjects()}
+        ${this.renderPostingProjects()} ${this.renderPostingProjectsEditor()}
+        ${this.renderPostingProjectsCleared()}
         ${
           this.eventReviewTrigger
             ? html`<p data-event-review>
@@ -759,7 +974,7 @@ function normalise(block: PlatformReviewConfig): PlatformReviewConfig {
     out.evidence = block.evidence;
   }
   if (block.action && block.action !== 'comment') out.action = block.action;
-  // The posting list is kept across a save; it is only valid while on.
+  // The posting list is only valid while on; the server clears it on off.
   if (block.enabled && Array.isArray(block.project_ids)) {
     out.project_ids = [...block.project_ids];
   }
