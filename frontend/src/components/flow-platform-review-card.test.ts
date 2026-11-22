@@ -760,8 +760,34 @@ describe('flow-platform-review-card', () => {
         'Not on this flow'
       );
       expect(ticked(element)).to.deep.equal(['p2']);
+      // Not dirty on load: nothing to discard until something changes.
+      expect(q(element, '[data-action="reset"]').disabled).to.equal(true);
+      await tick(element, 'p3', true);
+      q(element, '[data-action="reset"]').click();
+      await element.updateComplete;
+      expect(q(element, '[data-action="reset"]').disabled).to.equal(true);
+      await tick(element, 'p1', true);
+      expect(q(element, '[data-blocker]')).to.equal(null);
       const saved = await save(element);
-      expect(saved.project_ids).to.deep.equal(['p2']);
+      expect(saved.project_ids).to.deep.equal(['p1', 'p2']);
+    });
+
+    it('offers no editor on a flow open to every project', async () => {
+      const element = await mount(
+        scopedFlow(ON, 3, { trigger_project_ids: null })
+      );
+      expect(q(element, '[data-field="project_scope"]')).to.equal(null);
+    });
+
+    it('shows the editor on a one-project flow with a stored empty list', async () => {
+      const element = await mount(scopedFlow({ ...ON, project_ids: [] }, 1));
+      expect(q(element, '[data-field="project_scope"]').value).to.equal(
+        'selected'
+      );
+      expect(q(element, '[data-posting-none]')).to.exist;
+      await tick(element, 'p1', true);
+      const saved = await save(element);
+      expect(saved.project_ids).to.deep.equal(['p1']);
     });
 
     it('handles 45 repositories with a filter and a bounded list', async () => {

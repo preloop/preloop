@@ -230,7 +230,7 @@ export class FlowPlatformReviewCard extends LitElement {
       // Reset the draft when another flow is shown or after a save.
       if (id !== this.draftFlowId || !this.dirty) {
         this.draftFlowId = id;
-        this.draft = this.initialDraft();
+        this.draft = this.storedBlock();
         this.projectFilter = '';
       }
     }
@@ -248,11 +248,11 @@ export class FlowPlatformReviewCard extends LitElement {
     const repositories: any[] = Array.isArray(config.repositories)
       ? config.repositories
       : [];
+    // The server admits posting ids from trigger_project_ids only; a flow
+    // without it (every project) cannot store a list.
     const ids: string[] = Array.isArray(this.flow?.trigger_project_ids)
       ? this.flow.trigger_project_ids.map((id: unknown) => String(id))
-      : repositories
-          .map((repo) => String(repo?.project_id ?? ''))
-          .filter((id) => id);
+      : [];
     return [...new Set(ids)].map((id) => {
       const name = repositories.find(
         (repo) => String(repo?.project_id) === id
@@ -264,19 +264,13 @@ export class FlowPlatformReviewCard extends LitElement {
   /** Stored posting ids that are no longer one of the flow's projects. */
   private get staleProjectIds(): string[] {
     const listed = this.storedBlock().project_ids;
-    if (!Array.isArray(listed)) return [];
+    if (
+      !Array.isArray(listed) ||
+      !Array.isArray(this.flow?.trigger_project_ids)
+    )
+      return [];
     const admitted = new Set(this.admittedProjects.map((p) => p.id));
     return listed.filter((id) => !admitted.has(String(id)));
-  }
-
-  /** The stored block, without posting ids that are not on the flow. */
-  private initialDraft(): PlatformReviewConfig {
-    const block = this.storedBlock();
-    const stale = this.staleProjectIds;
-    if (stale.length && Array.isArray(block.project_ids)) {
-      block.project_ids = block.project_ids.filter((id) => !stale.includes(id));
-    }
-    return block;
   }
 
   private get dirty(): boolean {
@@ -339,7 +333,11 @@ export class FlowPlatformReviewCard extends LitElement {
     const listed = this.draft.project_ids;
     if (Array.isArray(listed)) {
       const admitted = new Set(this.admittedProjects.map((p) => p.id));
-      const outside = listed.find((id) => !admitted.has(id));
+      // A stored id that left the flow is flagged and dropped on save.
+      const stale = this.staleProjectIds;
+      const outside = listed.find(
+        (id) => !admitted.has(id) && !stale.includes(id)
+      );
       if (outside) {
         return `${outside} is not one of this flow's projects, so Preloop cannot post for it.`;
       }
@@ -456,6 +454,12 @@ export class FlowPlatformReviewCard extends LitElement {
     this.saved = false;
     try {
       const block = normalise(this.draft);
+      const stale = this.staleProjectIds;
+      if (Array.isArray(block.project_ids) && stale.length) {
+        block.project_ids = block.project_ids.filter(
+          (id) => !stale.includes(id)
+        );
+      }
       const config = { ...(this.flow.git_clone_config || {}) };
       if (block.enabled || this.flow.git_clone_config?.platform_review) {
         config.platform_review = block;
@@ -468,7 +472,7 @@ export class FlowPlatformReviewCard extends LitElement {
         { revision: this.flow.revision }
       );
       this.flow = updated;
-      this.draft = this.initialDraft();
+      this.draft = this.storedBlock();
       this.saved = true;
       this.dispatchEvent(
         new CustomEvent('flow-updated', {
@@ -517,7 +521,7 @@ export class FlowPlatformReviewCard extends LitElement {
   }
 
   private reset(): void {
-    this.draft = this.initialDraft();
+    this.draft = this.storedBlock();
     this.projectFilter = '';
     this.error = '';
     this.saved = false;
@@ -548,11 +552,16 @@ export class FlowPlatformReviewCard extends LitElement {
           ${`Not on this flow any more, so not selected and removed from the list on the next save: ${stale.join(', ')}.`}
         </sl-alert>`
       : nothing;
-    if (!this.draft.enabled || projects.length < 2) {
-      return this.draft.enabled ? staleNote : nothing;
-    }
     const listed = this.draft.project_ids;
     const selected = Array.isArray(listed);
+    // One project needs no choice, unless a list is stored to undo.
+    if (
+      !this.draft.enabled ||
+      !projects.length ||
+      (projects.length < 2 && !selected)
+    ) {
+      return this.draft.enabled ? staleNote : nothing;
+    }
     const filter = this.projectFilter.trim().toLowerCase();
     const shown = filter
       ? projects.filter((p) =>
@@ -637,7 +646,7 @@ export class FlowPlatformReviewCard extends LitElement {
                 }
               </div>
               ${
-                listed!.length === 0
+                !projects.some((p) => listed!.includes(p.id))
                   ? html`<sl-alert variant="warning" open data-posting-none>
                       <sl-icon
                         slot="icon"
