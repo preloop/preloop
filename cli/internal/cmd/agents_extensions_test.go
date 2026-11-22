@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
@@ -118,6 +119,24 @@ func writeClaudePlugin(t *testing.T, home, name, market, version string) {
 	body := fmt.Sprintf(`{"name":%q,"marketplace":%q,"version":%q,"installPath":%q}`, name, market, version, install)
 	writeInventoryFixture(t, home, ".claude/plugins/store/"+name+".json", body)
 	writeInventoryFixture(t, home, install+"/.claude-plugin/plugin.json", fmt.Sprintf(`{"version":%q}`, version))
+}
+
+func reportExtensionID(t *testing.T, home, clearID string) string {
+	t.Helper()
+	found, errs := collectDisplayExtensions(home, "claude-code", "", false)
+	if len(errs) > 0 {
+		t.Fatalf("scan errors: %v", errs)
+	}
+	for _, ext := range found {
+		if ext.ID == clearID {
+			if ext.PolicyID != "" {
+				return ext.PolicyID
+			}
+			return ext.ID
+		}
+	}
+	t.Fatalf("extension %s was not collected", clearID)
+	return ""
 }
 
 func policyEntry(agent, kind, id, state string, extra map[string]any) map[string]any {
@@ -281,9 +300,10 @@ func TestInventoryExtensionsListFilters(t *testing.T) {
 }
 
 // protects=usage failures stay distinct from compliance failures; fails_when=
-// an unknown agent or kind exits 0, 2, 3, or 4; no_claim=flag parsing only.
+// an unknown agent, an agent the collector does not scan, or a bad kind
+// exits 0, 2, 3, or 4; no_claim=flag parsing only.
 func TestInventoryExtensionsListUsage(t *testing.T) {
-	for _, args := range [][]string{{"--agent", "not-an-agent"}, {"--kind", "theme"}} {
+	for _, args := range [][]string{{"--agent", "not-an-agent"}, {"--agent", "cursor"}, {"--kind", "theme"}} {
 		stdout, stderr, err := runExtensions(t, args...)
 		if ProcessExitCode(err) != extensionUsageExit || !strings.Contains(stdout+stderr, "Usage:") {
 			t.Fatalf("args %v exit=%d", args, ProcessExitCode(err))
@@ -430,7 +450,7 @@ func TestInventoryExtensionsCheckBuiltin(t *testing.T) {
 func TestInventoryExtensionsCheckUnknown(t *testing.T) {
 	home := extensionHome(t)
 	writeInventoryFixture(t, home, ".claude/skills/deploy-notes/SKILL.md", "fixture")
-	ignored := writePolicyFile(t, []map[string]any{policyEntry("claude_code", "skill", "deploy-notes", "unknown", nil)})
+	ignored := writePolicyFile(t, []map[string]any{policyEntry("claude_code", "skill", reportExtensionID(t, home, "deploy-notes"), "unknown", nil)})
 	stdout, _, err := runExtensions(t, "check", "--policy-file", ignored, "--json", "--agent", "claude-code")
 	doc := decodeExtensionCheck(t, stdout)
 	finding := findExtensionFinding(doc, "deploy-notes")
@@ -475,7 +495,7 @@ func TestInventoryExtensionsCheckVersionAndContentEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := "sha256:" + strings.Repeat("ab", 32)
-	path = writePolicyFile(t, []map[string]any{policyEntry("claude_code", "skill", "deploy-notes", "approved", map[string]any{"content_hashes": []string{hash}})})
+	path = writePolicyFile(t, []map[string]any{policyEntry("claude_code", "skill", reportExtensionID(t, skillHome, "deploy-notes"), "approved", map[string]any{"content_hashes": []string{hash}})})
 	stdout, _, err = runExtensions(t, "check", "--policy-file", path, "--json", "--agent", "claude-code")
 	finding = findExtensionFinding(decodeExtensionCheck(t, stdout), "deploy-notes")
 	if ProcessExitCode(err) != 0 || finding.State != "unknown" || finding.Reason != "content_unverified" {
@@ -496,6 +516,9 @@ func TestInventoryExtensionsCheckPolicyErrors(t *testing.T) {
 		{"constraint", `{"schema":"preloop.extension-policy.v1","entries":[{"agent_kind":"claude_code","extension_kind":"plugin","extension_id":"reviewer","approval_state":"approved","version_constraint":">=1"}]}`, "invalid version_constraint"},
 		{"hash", `{"schema":"preloop.extension-policy.v1","entries":[{"agent_kind":"claude_code","extension_kind":"plugin","extension_id":"reviewer","approval_state":"approved","content_hashes":["sha256:abcd"]}]}`, "invalid content hash"},
 		{"duplicate", `{"schema":"preloop.extension-policy.v1","entries":[{"agent_kind":"claude_code","extension_kind":"plugin","extension_id":"reviewer","approval_state":"approved"},{"agent_kind":"claude_code","extension_kind":"plugin","extension_id":"reviewer","approval_state":"unapproved"}]}`, "duplicate policy entry"},
+		{"null-entries", `{"schema":"preloop.extension-policy.v1","entries":null}`, "missing entries"},
+		{"unknown-field", `{"schema":"preloop.extension-policy.v1","entries":[{"agent_kind":"claude_code","extension_kind":"plugin","extension_id":"reviewer","approval_state":"approved","content_hash":"nope"}]}`, `unknown field "content_hash"`},
+		{"account-ref", `{"schema":"preloop.extension-policy.v1","account_ref":1,"entries":[]}`, "invalid account_ref"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -610,5 +633,69 @@ func TestInventoryExtensionsCheckOnlineError(t *testing.T) {
 	_, _, err := runExtensions(t, "check", "--online")
 	if ProcessExitCode(err) != 1 {
 		t.Fatalf("exit=%d", ProcessExitCode(err))
+	}
+}
+
+// protects=an unapproved decision stored under the report hash; fails_when=
+// the clear name is unknown and the default check exits 0;
+// no_claim=one local skill whose name contains a home-path segment.
+func TestInventoryExtensionsCheckMatchesReportID(t *testing.T) {
+	home := testenv.SetHome(t, filepath.Join(t.TempDir(), "fixture-person"))
+	writeInventoryFixture(t, home, ".claude/skills/fixture-person-notes/SKILL.md", "fixture")
+	reportID := "hash:" + strings.TrimPrefix(extensionHash([]byte("fixture-person-notes")), "sha256:")[:16]
+	path := writePolicyFile(t, []map[string]any{policyEntry("claude_code", "skill", reportID, "unapproved", nil)})
+	stdout, _, err := runExtensions(t, "check", "--policy-file", path, "--json", "--agent", "claude-code")
+	finding := findExtensionFinding(decodeExtensionCheck(t, stdout), "fixture-person-notes")
+	if ProcessExitCode(err) != 3 || finding.State != "unapproved" || finding.Reason != "policy" || finding.ID != "fixture-person-notes" || strings.Contains(stdout, reportID) {
+		t.Fatalf("exit=%d state=%s id=%s", ProcessExitCode(err), finding.State, finding.ID)
+	}
+}
+
+// protects=--config on an elevated online check; fails_when=the command reads
+// the default config and never calls the selected account; no_claim=httptest
+// and a stubbed profile lister, not a real account.
+func TestInventoryExtensionsCheckOnlineAllUsersUsesConfigFile(t *testing.T) {
+	home := extensionHome(t)
+	t.Setenv("PRELOOP_TOKEN", "")
+	t.Setenv("PRELOOP_URL", "")
+	old := inventoryProfiles
+	t.Cleanup(func() {
+		inventoryProfiles = old
+		cfgFile = ""
+		if flag := rootCmd.PersistentFlags().Lookup("config"); flag != nil {
+			_ = flag.Value.Set("")
+			flag.Changed = false
+		}
+		config.SetConfigFile("")
+		config.Select("", "")
+	})
+	inventoryProfiles.Elevated = func() bool { return true }
+	inventoryProfiles.Profiles = func() ([]inventoryProfile, bool, error) {
+		return nil, false, nil
+	}
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/api/v1/agents/extension-approvals/export" || r.Method != http.MethodGet {
+			http.Error(w, "unexpected", http.StatusBadRequest)
+			return
+		}
+		fmt.Fprint(w, `{"schema":"preloop.extension-policy.v1","entries":[]}`)
+	}))
+	t.Cleanup(server.Close)
+	explicit := filepath.Join(home, "explicit-config.yaml")
+	config.SetConfigFile(filepath.Join(home, config.ConfigDir, config.ConfigFile))
+	if err := config.Save(&config.Config{AccessToken: "decoy-token", APIURL: "http://127.0.0.1:1"}); err != nil {
+		t.Fatal(err)
+	}
+	config.SetConfigFile(explicit)
+	if err := config.Save(&config.Config{AccessToken: "synthetic-token", APIURL: server.URL}); err != nil {
+		t.Fatal(err)
+	}
+	config.SetConfigFile("")
+	config.Select("", "")
+	stdout, _, err := runExtensions(t, "check", "--online", "--all-users", "--config", explicit, "--json")
+	if ProcessExitCode(err) != 0 || calls != 1 || !strings.Contains(stdout, `"result": "pass"`) {
+		t.Fatalf("exit=%d calls=%d", ProcessExitCode(err), calls)
 	}
 }

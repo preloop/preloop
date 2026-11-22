@@ -34,6 +34,9 @@ type inventoryExtension struct {
 	Event          string `json:"event,omitempty"`
 	Count          int    `json:"count,omitempty"`
 	IDHashed       bool   `json:"id_hashed"`
+	// PolicyID is the identifier an inventory report stores. Listings keep
+	// the clear name in ID and do not print this field.
+	PolicyID string `json:"-"`
 }
 
 type extensionScan struct {
@@ -229,14 +232,19 @@ func (s *extensionScan) add(ext inventoryExtension) {
 	}
 	// Inventory reports hash identifiers that contain a home-path segment.
 	// A local listing keeps those identifiers in clear: nothing is sent.
-	if !s.localDisplay && (ext.SourceKind == "local" || ext.SourceKind == "git" || ext.Scope == "project") && !(ext.Kind == "plugin" && strings.HasSuffix(ext.SourceKind, "marketplace")) {
+	// PolicyID stays the report identifier so a check can match the export.
+	ext.PolicyID = ext.ID
+	if (ext.SourceKind == "local" || ext.SourceKind == "git" || ext.Scope == "project") && !(ext.Kind == "plugin" && strings.HasSuffix(ext.SourceKind, "marketplace")) {
 		for _, segment := range strings.FieldsFunc(filepath.ToSlash(s.home), func(r rune) bool { return r == '/' || r == '\\' || r == ':' }) {
 			if segment != "" && strings.Contains(strings.ToLower(rawID), strings.ToLower(segment)) {
-				ext.ID = "hash:" + strings.TrimPrefix(extensionHash([]byte(rawID)), "sha256:")[:16]
-				ext.IDHashed = true
+				ext.PolicyID = "hash:" + strings.TrimPrefix(extensionHash([]byte(rawID)), "sha256:")[:16]
 				break
 			}
 		}
+	}
+	if !s.localDisplay {
+		ext.ID = ext.PolicyID
+		ext.IDHashed = ext.PolicyID != extensionIdentifier(rawID)
 	}
 	if ext.Enabled == "" {
 		ext.Enabled = "unknown"

@@ -13,7 +13,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"bytes"
+
 	"github.com/preloop/preloop/cli/internal/api"
+	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -326,9 +329,9 @@ func defaultExtensionApps() []extensionApp {
 }
 
 func extensionAppByID(id string) (extensionApp, bool) {
-	for name, appID := range inventoryAppIDs {
-		if appID == id {
-			return extensionApp{id: appID, name: name, kind: managedAgentKindForAgent(name)}, true
+	for _, app := range defaultExtensionApps() {
+		if app.id == id {
+			return app, true
 		}
 	}
 	return extensionApp{}, false
@@ -582,6 +585,7 @@ func loadExtensionPolicy(online bool, path string) ([]byte, string, error) {
 		data, problem := readPolicyFile(path)
 		return data, problem, nil
 	}
+	config.SetConfigFile(cfgFile)
 	applySelection()
 	client, err := api.NewClient(FlagToken, FlagURL)
 	if err != nil {
@@ -621,32 +625,47 @@ func parseExtensionPolicy(data []byte) (map[string]extensionRule, string) {
 	if len(data) == 0 || !json.Valid(data) {
 		return nil, "invalid JSON"
 	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var envelope struct {
+		Schema      string          `json:"schema"`
+		AccountRef  json.RawMessage `json:"account_ref"`
+		GeneratedAt json.RawMessage `json:"generated_at"`
+		Entries     json.RawMessage `json:"entries"`
+	}
+	if err := dec.Decode(&envelope); err != nil {
+		if field, ok := unknownJSONField(err); ok {
+			return nil, "unknown field " + field
+		}
 		return nil, "invalid JSON"
 	}
-	schemaRaw, ok := raw["schema"]
-	var schema string
-	if !ok || json.Unmarshal(schemaRaw, &schema) != nil || schema != extensionPolicySchema {
+	if dec.More() {
+		return nil, "invalid JSON"
+	}
+	if envelope.Schema != extensionPolicySchema {
 		return nil, "wrong schema"
 	}
-	entriesRaw, ok := raw["entries"]
-	if !ok {
+	if len(envelope.Entries) == 0 || string(envelope.Entries) == "null" {
 		return nil, "missing entries"
 	}
-	var entries []json.RawMessage
-	if err := json.Unmarshal(entriesRaw, &entries); err != nil {
+	if problem := requireJSONString(envelope.AccountRef, "account_ref"); problem != "" {
+		return nil, problem
+	}
+	if problem := requireJSONString(envelope.GeneratedAt, "generated_at"); problem != "" {
+		return nil, problem
+	}
+	entryDec := json.NewDecoder(bytes.NewReader(envelope.Entries))
+	entryDec.DisallowUnknownFields()
+	var entries []policyEntryJSON
+	if err := entryDec.Decode(&entries); err != nil {
+		if field, ok := unknownJSONField(err); ok {
+			return nil, "unknown field " + field
+		}
 		return nil, "invalid JSON"
 	}
 	rules := map[string]extensionRule{}
 	seen := map[string]bool{}
-	for _, entryRaw := range entries {
-		var entry policyEntryJSON
-		if err := json.Unmarshal(entryRaw, &entry); err != nil || entry.AgentKind == nil {
-			if err != nil {
-				return nil, "invalid JSON"
-			}
-		}
+	for _, entry := range entries {
 		agent, kind, id, state, problem := policyIdentity(entry)
 		if problem != "" {
 			return nil, problem
@@ -677,6 +696,28 @@ func parseExtensionPolicy(data []byte) (map[string]extensionRule, string) {
 		rules[key] = extensionRule{state: state, constraint: entry.VersionConstraint, hashes: hashes}
 	}
 	return rules, ""
+}
+
+func unknownJSONField(err error) (string, bool) {
+	const prefix = "json: unknown field "
+	if err == nil || !strings.HasPrefix(err.Error(), prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(err.Error(), prefix), true
+}
+
+func requireJSONString(raw json.RawMessage, name string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if string(raw) == "null" {
+		return "invalid " + name
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return "invalid " + name
+	}
+	return ""
 }
 
 func policyIdentity(entry policyEntryJSON) (string, string, string, string, string) {
@@ -731,7 +772,11 @@ func evaluateExtensions(groups []extensionGroup, rules map[string]extensionRule,
 	var counts extensionCheckCounts
 	for _, group := range groups {
 		for _, ext := range group.extensions {
-			rule, ok := rules[group.app.kind+"\x00"+ext.Kind+"\x00"+ext.ID]
+			matchID := ext.PolicyID
+			if matchID == "" {
+				matchID = ext.ID
+			}
+			rule, ok := rules[group.app.kind+"\x00"+ext.Kind+"\x00"+matchID]
 			state, reason := decideExtension(ext, rule, ok)
 			switch state {
 			case "approved":
