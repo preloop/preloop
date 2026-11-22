@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote_plus
 
-_CI_DATABASE_NAME = re.compile(r"^preloop_ci_[0-9]+_[0-9]+_[0-9]+$")
+_CI_DATABASE_NAME = re.compile(r"^preloop_ci_[0-9]+_[0-9]+_[0-9]+(_gw[0-9]+)?$")
 
 POSTGRES_IMAGE = "pgvector/pgvector:pg16"
 DEFAULT_HOST = "127.0.0.1"
@@ -364,6 +364,59 @@ def _drop_database(connection: Any, name: str) -> None:
     print(f"dropped database {name}")
 
 
+def worker_database_name(name: str, worker: int) -> str:
+    """Return the database used by pytest-xdist worker ``gw<worker>``."""
+    return f"{name}_gw{worker}"
+
+
+def clone_worker_databases(workers: int, *, opener: Connect = connect) -> list[str]:
+    """Copy the initialised job database once per pytest-xdist worker.
+
+    Workers share nothing: each gets ``<job db>_gw<N>`` created from the job
+    database as a template, so committed rows in one worker are invisible to
+    the others. Call after the schema is initialised and while nothing is
+    connected to the job database. ``drop`` removes the clones.
+
+    Args:
+        workers: Number of xdist workers.
+        opener: Connection factory, replaced in tests.
+
+    Returns:
+        The clone database names.
+
+    Raises:
+        ValueError: No ``prepare`` marker exists, or ``workers`` is below one.
+    """
+    if workers < 1:
+        raise ValueError("workers must be at least one")
+    marker = _read_marker()
+    if marker is None:
+        raise ValueError("run ci_postgres.py prepare before cloning databases")
+    name = str(marker["database"])
+    password = os.environ.get("PRELOOP_CI_POSTGRES_PASSWORD", DEFAULT_PASSWORD)
+    connection = opener(
+        str(marker["host"]),
+        int(marker["port"]),
+        str(marker["user"]),
+        password,
+        str(marker["maintenance_db"]),
+    )
+    clones = [worker_database_name(name, index) for index in range(workers)]
+    try:
+        with connection.cursor() as cursor:
+            for clone in clones:
+                if _CI_DATABASE_NAME.fullmatch(clone) is None:
+                    raise ValueError(f"unexpected clone name {clone!r}")
+                cursor.execute(f"DROP DATABASE IF EXISTS {clone}")
+                cursor.execute(f"CREATE DATABASE {clone} TEMPLATE {name}")
+    finally:
+        connection.close()
+    marker["workers"] = workers
+    _write_marker(marker)
+    print(f"cloned {name} for {workers} workers")
+    return clones
+
+
 def drop(*, opener: Connect = connect) -> None:
     """Drop the job database. Stop the container only if this job started it."""
     marker = _read_marker()
@@ -378,6 +431,8 @@ def drop(*, opener: Connect = connect) -> None:
     maintenance = str(marker["maintenance_db"])
     connection = opener(host, port, user, password, maintenance)
     try:
+        for index in range(int(marker.get("workers", 0))):
+            _drop_database(connection, worker_database_name(name, index))
         _drop_database(connection, name)
     finally:
         connection.close()

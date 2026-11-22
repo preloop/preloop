@@ -1,7 +1,6 @@
 """Runtime triage credentials cannot escape scoped MCP through ordinary REST."""
 
 from unittest.mock import AsyncMock
-from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
@@ -123,11 +122,11 @@ def test_authenticated_flow_key_cannot_bypass_triage_with_rest_issue_write(
     ("method", "path"),
     [
         ("POST", "/api/v1/issues"),
-        ("POST", f"/api/v1/issues/{uuid4()}/lifecycle/ready"),
-        ("POST", f"/api/v1/flows/{uuid4()}/trigger"),
+        ("POST", "/api/v1/issues/00000000-0000-4000-8000-000000000001/lifecycle/ready"),
+        ("POST", "/api/v1/flows/00000000-0000-4000-8000-000000000002/trigger"),
         ("POST", "/api/v1/flows/run-preset"),
-        ("PUT", f"/api/v1/flows/{uuid4()}"),
-        ("PUT", f"/api/v1/projects/{uuid4()}"),
+        ("PUT", "/api/v1/flows/00000000-0000-4000-8000-000000000003"),
+        ("PUT", "/api/v1/projects/00000000-0000-4000-8000-000000000004"),
         ("POST", "/api/v1/auth/api-keys"),
     ],
 )
@@ -197,7 +196,9 @@ def test_rest_scope_classification_fails_closed(
     assert caught.value.status_code == (403 if isinstance(failure, ValueError) else 503)
 
 
-@pytest.mark.parametrize("execution_id", ["not-a-uuid", str(uuid4())])
+@pytest.mark.parametrize(
+    "execution_id", ["not-a-uuid", "00000000-0000-4000-8000-000000000005"]
+)
 def test_real_unbound_flow_credentials_cannot_write_rest(
     db_session: Session, test_user: models.User, execution_id: str
 ) -> None:

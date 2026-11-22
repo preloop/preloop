@@ -17,15 +17,18 @@ from tests.ci_workflow import REPO_ROOT, load_ci_jobs, step_script
 
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-BACKEND_TEST_SPLITS = 18
+BACKEND_TEST_SPLITS = 6
 
 
-def test_pytest_split_is_a_dev_dependency() -> None:
-    """CI installs ``.[dev]`` from the hash-pinned lock, so the plugin must be there."""
+def test_pytest_plugins_are_dev_dependencies() -> None:
+    """CI installs ``.[dev]`` from the hash-pinned lock, so the plugins must be there."""
     with PYPROJECT.open("rb") as handle:
         data = tomllib.load(handle)
     dev = data["project"]["optional-dependencies"]["dev"]
     assert any(item.startswith("pytest-split") for item in dev)
+    assert any(item.startswith("pytest-xdist") for item in dev)
+    lock = (REPO_ROOT / ".github/requirements/app-dev.txt").read_text()
+    assert "\npytest-xdist==" in lock
 
 
 def test_backend_shards_partition_before_collection() -> None:
@@ -39,8 +42,11 @@ def test_backend_shards_partition_before_collection() -> None:
     assert backend["strategy"]["fail-fast"] is False
 
     script = step_script(backend, "Run tests")
-    assert f"scripts/run_backend_shard.py --shards {BACKEND_TEST_SPLITS}" in script
+    assert "scripts/run_backend_shard.py run --plan backend-shard-plan.json" in script
     assert "--group ${{ matrix.group }}" in script
+    assert "--workers auto" in script
+    assert "backend-plan" in backend["needs"]
+    assert "needs.backend-plan.result == 'success'" in backend["if"]
     assert "--splits" not in script
     assert "--splitting-algorithm" not in script
     assert "--cov-fail-under" not in script
@@ -236,3 +242,36 @@ def test_subscription_compatibility_installs_a_verified_lock() -> None:
     paths = _filter_patterns(_path_filters(), "backend")
     assert ".github/requirements/sqlalchemy-21.in" in paths
     assert ".github/requirements/sqlalchemy-21.txt" in paths
+
+
+def test_backend_plan_job_checks_predicted_balance() -> None:
+    """One plan per run, from the newest main durations, gated at 1.15x."""
+    plan = load_ci_jobs()["backend-plan"]
+    restore = next(s for s in plan["steps"] if s.get("id") == "durations")
+    assert restore["uses"].startswith("actions/cache/restore@")
+    assert restore["with"]["restore-keys"] == "pytest-durations-"
+    script = step_script(plan, "Plan shards and check predicted balance")
+    assert f"--shards {BACKEND_TEST_SPLITS}" in script
+    assert "--max-ratio 1.15" in script
+    assert ".github/pytest-split-durations.json" in script
+
+
+def test_main_runs_refresh_durations_for_pull_requests() -> None:
+    """Only green main runs write the durations cache that PRs restore."""
+    job = load_ci_jobs()["backend-durations"]
+    assert "needs.test-backend.result == 'success'" in job["if"]
+    assert "github.ref == 'refs/heads/main'" in job["if"]
+    assert "pull_request" not in job["if"]
+    script = step_script(job, "Convert JUnit times to node durations")
+    assert f"--shards {BACKEND_TEST_SPLITS}" in script
+    save = next(
+        s for s in job["steps"] if s.get("name") == "Save durations for pull requests"
+    )
+    assert save["uses"].startswith("actions/cache/save@")
+    assert save["with"]["key"].startswith("pytest-durations-")
+
+
+def test_coverage_job_summarises_actual_shard_durations() -> None:
+    coverage = load_ci_jobs()["test-backend-coverage"]
+    script = step_script(coverage, "Summarise actual shard durations")
+    assert f"--shards {BACKEND_TEST_SPLITS} --summary" in script
