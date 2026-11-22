@@ -75,6 +75,7 @@ from preloop.models.crud import (
     CRUDOrganization,
     CRUDIssueComplianceResult,
     crud_flow_execution,
+    crud_tracker_scope_rule,
 )
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.issue import Issue
@@ -532,12 +533,36 @@ def _pr_reference_for(project: Project, number: str) -> str:
     return f"{project.slug or project.identifier}{separator}{number}"
 
 
-def _scope_denial(db: Session, project: Project) -> Optional[str]:
+def _scope_denial(
+    db: Session,
+    project: Project,
+    rules_by_tracker: Optional[Dict[Any, List[Any]]] = None,
+) -> Optional[str]:
+    """Why ``project`` is outside tracker scope, or None when it is inside.
+
+    ``rules_by_tracker`` caches scope rules per tracker id across calls.
+    """
     organization = project.organization
     tracker = getattr(organization, "tracker", None)
     if organization is None or tracker is None:
         return "Access denied: the project has no tracker."
-    return project_scope_denial(db, tracker, organization, project)
+    rules = None
+    if rules_by_tracker is not None:
+        rules = rules_by_tracker.get(tracker.id)
+        if rules is None:
+            rules = crud_tracker_scope_rule.get_by_tracker(
+                db, tracker_id=tracker.id, account_id=tracker.account_id
+            )
+            rules_by_tracker[tracker.id] = rules
+    return project_scope_denial(db, tracker, organization, project, rules)
+
+
+def _relative_url_root(tracker: Any) -> str:
+    """The path prefix of a tracker installed under a relative URL root."""
+    url = getattr(tracker, "url", None)
+    if not isinstance(url, str) or not url:
+        return ""
+    return (urlparse(url).path or "").strip("/").lower()
 
 
 def _projects_for_path(
@@ -546,24 +571,34 @@ def _projects_for_path(
     """Synced projects named by a repository path.
 
     A URL path can carry the prefix of a GitLab installed under a relative
-    URL root (``https://host/gitlab/group/project/-/merge_requests/1``), so a
-    URL that matches nothing is retried without its leading segments, keeping
-    at least ``group/project``.
+    URL root (``https://host/gitlab/group/project/-/merge_requests/1``). A
+    URL that matches nothing is retried without leading segments, and a
+    shorter match counts only when the dropped segments are exactly the path
+    of that project's configured tracker URL. Any other prefix is never
+    dropped, so an unsynced ``company/team/app`` never becomes ``team/app``.
     """
     types = _pr_tracker_types(platform)
     found = crud_project.list_by_repository_path(
         db, account_id=account_id, path=path, tracker_types=types
     )
+    if found or not from_url:
+        return found
     segments = path.split("/")
-    while not found and from_url and len(segments) > 2:
-        segments = segments[1:]
-        found = crud_project.list_by_repository_path(
-            db,
-            account_id=account_id,
-            path="/".join(segments),
-            tracker_types=types,
-        )
-    return found
+    for cut in range(1, len(segments) - 1):
+        prefix = "/".join(segments[:cut]).lower()
+        matches = [
+            candidate
+            for candidate in crud_project.list_by_repository_path(
+                db,
+                account_id=account_id,
+                path="/".join(segments[cut:]),
+                tracker_types=types,
+            )
+            if _relative_url_root(candidate.organization.tracker) == prefix
+        ]
+        if matches:
+            return matches
+    return []
 
 
 def _find_pr_project(
@@ -638,12 +673,13 @@ def _find_pr_project(
         ):
             return trigger
 
+    rules_by_tracker: Dict[Any, List[Any]] = {}
     in_scope = [
         candidate
         for candidate in crud_project.list_active_for_tracker_types(
             db, account_id=account_id, tracker_types=_pr_tracker_types(platform)
         )
-        if _scope_denial(db, candidate) is None
+        if _scope_denial(db, candidate, rules_by_tracker) is None
     ]
     if len(in_scope) == 1:
         return in_scope[0]
@@ -791,12 +827,16 @@ def _trigger_project_from_event(
     identity = payload_repository_identity(event)
     if not identity:
         return None
+    source = str(identity.get("source") or "").lower()
+    # Match only the provider that sent the event; an unknown source (for
+    # example a CI trigger) may match any pull-request tracker.
+    types = _PR_TRACKER_TYPES.get(source) or _ALL_PR_TRACKER_TYPES
     for key in ("path", "external_id"):
         value = identity.get(key)
         if not value:
             continue
         matches = crud_project.list_by_repository_path(
-            db, account_id=account_id, path=str(value)
+            db, account_id=account_id, path=str(value), tracker_types=types
         )
         if len(matches) == 1:
             return str(matches[0].id)
@@ -975,7 +1015,7 @@ def _issue_web_url(issue_obj: Any, preloop_url: str) -> str:
             base = re.sub(
                 r"/api/v3$", "", (getattr(tracker, "url", None) or "").rstrip("/")
             )
-            if not base or "api.github.com" in base:
+            if not base or urlparse(base).hostname == "api.github.com":
                 base = "https://github.com"
             return f"{base}/{path}/issues/{number}"
     base = preloop_url.rstrip("/")

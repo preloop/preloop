@@ -67,21 +67,23 @@ class CRUDProject(CRUDBase[Project]):
         *,
         account_id: Any,
         tracker_types: List[str],
-        limit: int = 500,
     ) -> List[Project]:
         """List the account's active projects on trackers of the given types.
+
+        Organization and tracker are loaded with the rows, so callers can
+        check many projects without a query per project.
 
         Args:
             db: Database session.
             account_id: Account that must own the tracker.
             tracker_types: Tracker types to include.
-            limit: Maximum rows returned.
 
         Returns:
             Projects ordered by slug.
         """
         return (
             self._scope_to_account(db.query(Project), account_id)
+            .options(joinedload(Project.organization).joinedload(Organization.tracker))
             .filter(
                 Project.is_active.is_(True),
                 Tracker.tracker_type.in_(tracker_types),
@@ -89,7 +91,6 @@ class CRUDProject(CRUDBase[Project]):
                 Tracker.is_deleted.is_(False),
             )
             .order_by(Project.slug, Project.id)
-            .limit(limit)
             .all()
         )
 

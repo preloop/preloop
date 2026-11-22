@@ -67,7 +67,11 @@ def azure_devops_repo_full_name(config: Dict[str, Any], project: Any) -> str:
 
 
 def project_scope_denial(
-    db: Session, tracker: Any, organization: Any, project: Any
+    db: Session,
+    tracker: Any,
+    organization: Any,
+    project: Any,
+    scope_rules: Optional[List[Any]] = None,
 ) -> Optional[str]:
     """Say why a project is outside its tracker's scope, or None when inside.
 
@@ -80,13 +84,16 @@ def project_scope_denial(
         tracker: The project's tracker.
         organization: The project's organization.
         project: The project to check.
+        scope_rules: The tracker's scope rules when the caller already has
+            them (checking many projects); read from the database otherwise.
 
     Returns:
         The access-denied detail, or None when the project is in scope.
     """
-    scope_rules = crud_tracker_scope_rule.get_by_tracker(
-        db, tracker_id=tracker.id, account_id=tracker.account_id
-    )
+    if scope_rules is None:
+        scope_rules = crud_tracker_scope_rule.get_by_tracker(
+            db, tracker_id=tracker.id, account_id=tracker.account_id
+        )
     org_identifier = organization.identifier
     scope_identifiers = project_scope_identifiers(
         tracker.tracker_type,

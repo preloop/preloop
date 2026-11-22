@@ -81,7 +81,6 @@ def synced(
         f"http://gitlab.example.com/{MR}/-/merge_requests/350",
         f"https://gitlab.example.com:8443/{MR}/-/merge_requests/350",
         f"https://tunnel.example.net/{MR}/-/merge_requests/350",
-        f"https://example.com/gitlab/{MR}/-/merge_requests/350",
         f"{MR}!350",
         "GRP/Sub/proj!350",
         f"{MR}#350",
@@ -94,6 +93,75 @@ def test_gitlab_forms_resolve_the_project(
     project, info = _resolve_pull_request_target(db_session, synced["user"], reference)
     assert project.id == synced["rows"]["mr"].id
     assert info["pr_number"] == "350"
+
+
+def test_relative_url_root_prefix_is_dropped(
+    db_session: Any,
+    create_account: Any,
+    create_tracker: Any,
+    create_organization: Any,
+    create_project: Any,
+) -> None:
+    account = create_account()
+    gitlab = create_tracker(
+        account=account, tracker_type="gitlab", url="https://example.com/gitlab/"
+    )
+    grp = create_organization(tracker=gitlab, identifier="grp")
+    proj = create_project(identifier="1", slug=MR, organization=grp)
+    _include(db_session, gitlab, "grp")
+    user = SimpleNamespace(account_id=account.id)
+    url = f"https://example.com/gitlab/{MR}/-/merge_requests/350"
+    project, info = _resolve_pull_request_target(db_session, user, url)
+    assert project.id == proj.id
+    assert info["pr_number"] == "350"
+
+
+def test_unknown_nested_path_never_becomes_its_suffix(
+    db_session: Any, synced: Dict[str, Any]
+) -> None:
+    """company/grp/sub/proj is not synced; its suffix grp/sub/proj is."""
+    url = f"{HOST}/company/{MR}/-/merge_requests/350"
+    with pytest.raises(HTTPException) as exc:
+        _resolve_pull_request_target(db_session, synced["user"], url)
+    assert exc.value.status_code == 404
+    assert f"company/{MR}" in exc.value.detail
+
+
+def test_trigger_project_matches_only_the_event_provider(
+    db_session: Any, synced: Dict[str, Any]
+) -> None:
+    """A GitHub event never resolves to a GitLab project with the same path."""
+    event = {"source": "github", "payload": {"repository": {"full_name": MR}}}
+    assert (
+        _trigger_project_from_event(db_session, synced["user"].account_id, event)
+        is None
+    )
+
+
+def test_bare_number_reads_scope_rules_once_per_tracker(
+    db_session: Any, synced: Dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from preloop.api.endpoints import mcp
+
+    for index in range(5):
+        synced["create_project"](
+            identifier=f"10{index}",
+            slug=f"grp/extra{index}",
+            organization=synced["gitlab_org"],
+        )
+    calls = []
+    real = mcp.crud_tracker_scope_rule.get_by_tracker
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs.get("tracker_id"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mcp.crud_tracker_scope_rule, "get_by_tracker", counting)
+    with pytest.raises(HTTPException) as exc:
+        _resolve_pull_request_target(db_session, synced["user"], "350")
+    assert exc.value.status_code == 409
+    assert "grp/extra4!350" in exc.value.detail
+    assert len(calls) == len(set(calls)) == 2
 
 
 @pytest.mark.parametrize(
@@ -296,4 +364,39 @@ def test_issue_url_fallback_has_one_scheme(
     )
     assert _issue_web_url(issue, preloop_url) == (
         f"https://preloop.example.com/issues/{issue.id}"
+    )
+
+
+@pytest.mark.parametrize(
+    "tracker_url,expected",
+    [
+        ("https://api.github.com", "https://github.com"),
+        ("https://ghe.example.com/api/v3", "https://ghe.example.com"),
+        (
+            "https://evil.example.com/api.github.com",
+            "https://evil.example.com/api.github.com",
+        ),
+    ],
+)
+def test_github_issue_url_uses_the_tracker_host(
+    db_session: Any,
+    create_account: Any,
+    create_tracker: Any,
+    create_organization: Any,
+    create_project: Any,
+    create_issue: Any,
+    tracker_url: str,
+    expected: str,
+) -> None:
+    from preloop.api.endpoints.mcp import _issue_web_url
+
+    account = create_account()
+    github = create_tracker(account=account, tracker_type="github", url=tracker_url)
+    org = create_organization(tracker=github)
+    repo = create_project(identifier="3", slug="org/repo", organization=org)
+    issue = create_issue(
+        tracker=github, project=repo, key="org/repo#5", external_url="", meta_data={}
+    )
+    assert _issue_web_url(issue, "https://preloop.example.com") == (
+        f"{expected}/org/repo/issues/5"
     )
