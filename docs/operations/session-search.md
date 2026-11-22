@@ -13,9 +13,23 @@ sessions view calls it in `keyword` mode.
 
 Chunks are written on the request path, as the content is stored. A gateway
 interaction becomes `gateway_interaction` chunks, a tool call becomes a
-`tool_call` chunk, imported transcripts become `transcript_message`, an
-operator note `operator_note`, a flow log `flow_log`, and a session's title
-and summary a `session_summary` chunk. Text is split at about 1200
+`tool_call` chunk, imported transcripts and the messages an operator types
+to an agent from the console (with the agent's progress lines and replies)
+become `transcript_message`, an operator note `operator_note`, and a
+session's title and summary a `session_summary` chunk. A `flow_log` writer
+exists but nothing calls it yet, so flow execution logs are not searchable.
+
+A gateway interaction's text is bounded (256 lines, 16000 characters, 2000
+per value). It is built newest first: the response, then the request
+conversation from the latest turn back. Every call of a long session resends
+the whole history, so the bound drops turns that an earlier call already
+indexed as its newest turn. Before this ordering the bound was spent on the
+opening turns, and the new turn and reply of a long session were never
+indexed. Chunks written that way stay as they are; the backfill below copies
+the stored gateway document text, which has the old order, so it cannot
+recover those turns.
+
+Text is split at about 1200
 characters with 200 of overlap, capped at 64 chunks per source, and the
 `search_vector` column is generated as `to_tsvector('simple', content)`.
 `simple` means no stemming: `patch` does not match `patched`, and

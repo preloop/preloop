@@ -406,7 +406,10 @@ def index_gateway_interaction(
 
     The text is built by the shipped gateway search service, sanitiser
     included and unchanged, so the corpus and the gateway document agree on
-    what a captured interaction looks like.
+    what a captured interaction looks like. It is built newest first: the
+    reply, then the conversation from the latest turn back, so the text
+    ceiling drops the history earlier calls of the session already indexed
+    rather than the turn this call added.
     """
     if not indexing_enabled():
         return []
@@ -426,6 +429,7 @@ def index_gateway_interaction(
             usage=usage,
             request_payload=prepared_request,
             response_payload=prepared_response,
+            newest_first=True,
         )
         meta_data = service.build_document_metadata(
             usage=usage,

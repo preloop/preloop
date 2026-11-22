@@ -68,6 +68,47 @@ def test_build_searchable_text_normalizes_and_redacts_gateway_payloads():
     assert "abc123" not in text
 
 
+def test_newest_first_keeps_the_latest_turn_and_reply_under_the_ceiling():
+    """A long history fills the ceiling with its oldest turns only in request order.
+
+    Newest first, the reply and the turn a call added come before the history
+    that earlier calls already indexed, and each turn keeps its own index.
+    """
+    usage = ApiUsage(
+        endpoint="/openai/v1/chat/completions",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        meta_data={},
+    )
+    messages = [
+        {"role": "user", "content": f"turn {index} " + "history " * 200}
+        for index in range(40)
+    ]
+    messages.append({"role": "user", "content": "latest turn lumenwick"})
+    request = {"model": "gpt-5", "messages": messages}
+    response = {"choices": [{"message": {"content": "reply brambleton"}}]}
+    service = GatewayUsageSearchService()
+
+    in_order = service.build_searchable_text(
+        usage=usage, request_payload=request, response_payload=response
+    )
+    newest = service.build_searchable_text(
+        usage=usage,
+        request_payload=request,
+        response_payload=response,
+        newest_first=True,
+    )
+
+    assert "lumenwick" not in in_order
+    assert "brambleton" not in in_order
+    assert "request.messages.40.content: latest turn lumenwick" in newest
+    assert "response.choices.0.message.content: reply brambleton" in newest
+    assert newest.index("brambleton") < newest.index("lumenwick")
+    assert newest.index("messages.40.") < newest.index("messages.39.")
+    assert "request.messages.0." not in newest
+
+
 def test_index_interaction_upserts_gateway_search_document(db_session, test_user):
     """Indexing should create one corpus row per API usage and update in place."""
     usage = crud_api_usage.log_gateway_request(

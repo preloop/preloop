@@ -82,6 +82,11 @@ class GatewayUsageSearchService:
     MAX_LINE_COUNT = 256
     MAX_TEXT_CHARS = 16000
     REDACTED_VALUE = "[redacted]"
+    #: Request lists that hold a conversation, oldest turn first, in the chat
+    #: completions, Responses and Gemini shapes.
+    _CONVERSATION_PREFIXES = frozenset(
+        {"request.messages", "request.input", "request.contents"}
+    )
     _CONTENT_FIELD_NAMES = {
         "content",
         "input",
@@ -100,8 +105,26 @@ class GatewayUsageSearchService:
         usage: ApiUsage,
         request_payload: Optional[dict[str, Any]],
         response_payload: Optional[dict[str, Any]],
+        newest_first: bool = False,
     ) -> str:
-        """Build a normalized plain-text document for one gateway interaction."""
+        """Build a normalized plain-text document for one gateway interaction.
+
+        Args:
+            usage: The metered gateway call.
+            request_payload: The captured request, or ``None``.
+            response_payload: The captured response, or ``None``.
+            newest_first: Put the response first and walk the conversation
+                from the latest turn back. Every call of a session resends
+                the whole history, so in request order the text ceiling is
+                spent on the opening turns and the new turn and the reply
+                are cut off. The session search corpus wants what is new in
+                this call; older turns were the newest turn of an earlier
+                call and were indexed then.
+
+        Returns:
+            The document text, bounded by ``MAX_LINE_COUNT`` and
+            ``MAX_TEXT_CHARS``.
+        """
         meta_data = usage.meta_data or {}
         lines = _LineBuffer(
             max_lines=self.MAX_LINE_COUNT, max_chars=self.MAX_TEXT_CHARS
@@ -128,13 +151,29 @@ class GatewayUsageSearchService:
         ):
             self._append_scalar(lines, key, value)
 
-        request_count_before = len(lines)
-        self._append_payload(lines, "request", request_payload)
-        request_line_count = len(lines) - request_count_before
+        def append_request() -> int:
+            before = len(lines)
+            self._append_payload(
+                lines,
+                "request",
+                request_payload,
+                reversed_prefixes=(
+                    self._CONVERSATION_PREFIXES if newest_first else frozenset()
+                ),
+            )
+            return len(lines) - before
 
-        response_count_before = len(lines)
-        self._append_payload(lines, "response", response_payload)
-        response_line_count = len(lines) - response_count_before
+        def append_response() -> int:
+            before = len(lines)
+            self._append_payload(lines, "response", response_payload)
+            return len(lines) - before
+
+        if newest_first:
+            response_line_count = append_response()
+            request_line_count = append_request()
+        else:
+            request_line_count = append_request()
+            response_line_count = append_response()
 
         lines.append(f"request_line_count: {request_line_count}", force=True)
         lines.append(f"response_line_count: {response_line_count}", force=True)
@@ -323,14 +362,26 @@ class GatewayUsageSearchService:
 
     @classmethod
     def _append_payload(
-        cls, lines: _LineBuffer, prefix: str, payload: Optional[dict[str, Any]]
+        cls,
+        lines: _LineBuffer,
+        prefix: str,
+        payload: Optional[dict[str, Any]],
+        *,
+        reversed_prefixes: frozenset[str] = frozenset(),
     ) -> None:
         if payload is None:
             return
-        cls._append_value(lines, prefix, payload)
+        cls._append_value(lines, prefix, payload, reversed_prefixes=reversed_prefixes)
 
     @classmethod
-    def _append_value(cls, lines: _LineBuffer, prefix: str, value: Any) -> None:
+    def _append_value(
+        cls,
+        lines: _LineBuffer,
+        prefix: str,
+        value: Any,
+        *,
+        reversed_prefixes: frozenset[str] = frozenset(),
+    ) -> None:
         if lines.full or value is None:
             return
 
@@ -350,13 +401,23 @@ class GatewayUsageSearchService:
                     if lines.full:
                         return
                     continue
-                cls._append_value(lines, next_prefix, value[key])
+                cls._append_value(
+                    lines,
+                    next_prefix,
+                    value[key],
+                    reversed_prefixes=reversed_prefixes,
+                )
                 if lines.full:
                     return
             return
 
         if isinstance(value, list):
-            for index, item in enumerate(value):
+            # A reversed list keeps its original indices in the labels, so a
+            # snippet still names the turn it came from.
+            items = list(enumerate(value))
+            if prefix in reversed_prefixes:
+                items.reverse()
+            for index, item in items:
                 cls._append_value(lines, f"{prefix}.{index}", item)
                 if lines.full:
                     return

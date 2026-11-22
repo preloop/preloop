@@ -1497,6 +1497,45 @@ describe('RuntimeSessionsView', () => {
       expect(buttons[1].textContent).to.contain('Tool call');
     });
 
+    it('shows a session found only by its content, not its title', async () => {
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(async () => {
+        const body = searchResponse({ query: 'quokkaflux' });
+        body.results[0].snippets = [
+          {
+            document_id: 'doc-message',
+            runtime_session_id: 'runtime-session-2',
+            source_kind: 'transcript_message',
+            source_id: 'message-9',
+            chunk_index: 0,
+            occurred_at: '2026-03-09T19:10:00Z',
+            role: 'user',
+            rank: 0.5,
+            redaction_state: 'clear',
+            text: 'check the <mark>quokkaflux</mark> migration',
+          },
+        ];
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      const element = await renderedSearch('quokkaflux');
+
+      // The title does not hold the word; the ranked content search does.
+      const card = element.shadowRoot!.querySelector(
+        '[data-testid="search-result-runtime-session-2"]'
+      ) as HTMLElement;
+      expect(card).to.exist;
+      expect(card.textContent).to.contain('Triage Assistant');
+      expect(card.textContent).to.not.contain('quokkaflux Triage');
+      const buttons = snippetButtons(element);
+      expect(buttons).to.have.length(1);
+      expect(buttons[0].querySelector('mark')!.textContent).to.equal(
+        'quokkaflux'
+      );
+    });
+
     it('opens a session-summary hit without claiming a turn jump', async () => {
       fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(async () => {
         const body = searchResponse();

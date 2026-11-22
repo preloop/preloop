@@ -640,6 +640,34 @@ describe('PreloopSessionObserver', () => {
     ).to.contain('min-height: 520px');
   });
 
+  it('scrolls a long session list inside the bounded panel', async () => {
+    const many = Array.from({ length: 60 }, (_, index) => ({
+      ...session,
+      id: `session-${index}`,
+      title: `Session ${index}`,
+    }));
+    const el = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        layout="full"
+        .sessions=${many}
+      ></preloop-session-observer>`
+    );
+    await el.updateComplete;
+    const panel = el.shadowRoot!.querySelector<HTMLElement>('.observer')!;
+    const sidebar = panel.querySelector<HTMLElement>('.sidebar')!;
+    expect(panel.classList.contains('with-sidebar')).to.equal(true);
+    const filler = document.createElement('div');
+    filler.style.cssText = 'height: 5000px; min-height: 5000px';
+    sidebar.appendChild(filler);
+
+    // The panel is window high, so the list overflows it and must scroll on
+    // its own: the page cannot reach the rows clipped below the panel.
+    expect(sidebar.scrollHeight).to.be.greaterThan(sidebar.clientHeight);
+    expect(getComputedStyle(sidebar).overflowY).to.equal('auto');
+    sidebar.scrollTop = 1000;
+    expect(sidebar.scrollTop).to.be.greaterThan(0);
+  });
+
   it('keeps errors readable above a long transcript in the bounded panel', async () => {
     await loadShoelaceTokens();
     const el = await fixture<PreloopSessionObserver>(
