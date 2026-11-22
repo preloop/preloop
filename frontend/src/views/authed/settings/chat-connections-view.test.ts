@@ -201,6 +201,34 @@ describe('Chat connections', () => {
       ).to.equal(command);
     });
   }
+  it('offers only chat-compatible defaults', async () => {
+    manage = true;
+    stub
+      .withArgs(
+        sinon.match((url: unknown) => String(url).includes('/api/v1/flows'))
+      )
+      .resolves(
+        json([
+          {
+            id: 'normal',
+            name: 'Documents',
+            chat_alias: 'docs',
+            is_enabled: true,
+          },
+          {
+            id: 'review',
+            name: 'Review',
+            chat_alias: 'review',
+            is_enabled: true,
+            git_clone_config: { publication_mode: 'read_only' },
+          },
+        ])
+      );
+    const el = await view();
+    expect(el.shadowRoot!.querySelector('sl-option[value="normal"]')).to.exist;
+    expect(el.shadowRoot!.querySelector('sl-option[value="review"]')).not.to
+      .exist;
+  });
   it('reports denied and expired linking without exposing proof', async () => {
     const el = await view();
     denied = true;

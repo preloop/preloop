@@ -210,7 +210,7 @@ actor-specific permissions through a shared Agents credential are promised.
 
 ## Start a flow from chat
 
-Edit a flow's **Trigger configuration → Chat flow alias** to opt it in. The
+Edit a flow's **Trigger configuration → Chat trigger → Chat flow alias** to opt it in. The
 alias is unique within the account, 1–40 lowercase letters, digits or hyphens.
 An empty alias disables chat starts; existing flows stay off until configured.
 The flow must also be enabled. In **Settings → Chat connections**, optionally

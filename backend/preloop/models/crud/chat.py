@@ -12,6 +12,7 @@ from preloop.models import models
 from preloop.models.crud.audit_chain import postgres_sqlstate
 
 from .base import CRUDBase
+from .flow_execution import CRUDFlowExecution
 
 _CHAT_WORK_EVENT_KEY = "chat_work_connection_id_event_id_key"
 _UNIQUE_VIOLATION = "23505"
@@ -52,6 +53,26 @@ class CRUDChat:
             .order_by(models.Flow.chat_alias)
             .all()
         )
+
+    def resolve_flow(
+        self,
+        db: Session,
+        account_id: uuid.UUID,
+        *,
+        alias: str | None = None,
+        flow_id: uuid.UUID | None = None,
+    ) -> models.Flow | None:
+        """Resolve one enabled chat flow without loading the account catalog."""
+        query = db.query(models.Flow).filter(
+            models.Flow.account_id == account_id,
+            models.Flow.chat_alias.is_not(None),
+            models.Flow.is_enabled.is_(True),
+        )
+        return query.filter(
+            models.Flow.id == flow_id
+            if flow_id is not None
+            else models.Flow.chat_alias == alias
+        ).first()
 
     def reserve_run(
         self, db: Session, row: models.ChatWork, flow_id: uuid.UUID
@@ -100,7 +121,7 @@ class CRUDChat:
                         models.ChatWork.status.in_(["acting", "uncertain"]),
                     ),
                     models.FlowExecution.status.notin_(
-                        ["SUCCEEDED", "FAILED", "STOPPED", "TIMEOUT", "CANCELLED"]
+                        CRUDFlowExecution.TERMINAL_EXECUTION_STATUSES
                     ),
                 ),
             )
@@ -141,7 +162,7 @@ class CRUDChat:
             query = query.filter(models.FlowExecution.id == parent.run_execution_id)
         else:
             query = query.filter(
-                models.FlowExecution.trigger_event_details["chat_origin"][
+                models.FlowExecution.trigger_event_details["_chat_origin"][
                     "request_id"
                 ].astext
                 == str(parent.id)

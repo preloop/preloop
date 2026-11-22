@@ -320,6 +320,9 @@ export class PreloopFlowForm extends LitElement {
       sl-details {
         margin: var(--sl-spacing-medium) 0;
       }
+      sl-details[data-chat-trigger] {
+        margin-top: 0;
+      }
       .form-actions {
         position: sticky;
         bottom: 0;
@@ -4901,20 +4904,22 @@ export class PreloopFlowForm extends LitElement {
             <sl-icon name="calendar-event"></sl-icon> Trigger configuration
           </div>
 
-          <sl-input
-            data-field="chat_alias"
-            label="Chat flow alias (optional)"
-            help-text="Opt in to ask ALIAS TEXT. Leave blank to disable chat. Use lowercase letters, digits, and hyphens; unique in your account."
-            .value=${this.flow.chat_alias || ''}
-            pattern="[a-z0-9-]+"
-            maxlength="40"
-            @sl-input=${(e: Event) => {
-              this.flow = {
-                ...this.flow,
-                chat_alias: (e.target as HTMLInputElement).value || null,
-              };
-            }}
-          ></sl-input>
+          <sl-details summary="Chat trigger (optional)" data-chat-trigger>
+            <sl-input
+              data-field="chat_alias"
+              label="Chat flow alias (optional)"
+              help-text="Opt in to ask ALIAS TEXT. Leave blank to disable chat. Use lowercase letters, digits, and hyphens; unique in your account."
+              .value=${this.flow.chat_alias || ''}
+              pattern="[a-z0-9-]+"
+              maxlength="40"
+              @sl-input=${(e: Event) => {
+                this.flow = {
+                  ...this.flow,
+                  chat_alias: (e.target as HTMLInputElement).value || null,
+                };
+              }}
+            ></sl-input>
+          </sl-details>
           <div style="margin-bottom: var(--sl-spacing-large);">
             <sl-radio-group
               label="Trigger type"

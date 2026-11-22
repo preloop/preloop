@@ -96,6 +96,10 @@ def due(f: Any) -> models.ChatWork:
         ("FAILED", "Flow failed."),
         ("STOPPED", "Flow stopped."),
         ("TIMEOUT", "Flow timeout."),
+        ("TIMED_OUT", "Flow timed_out."),
+        ("ABORTED", "Flow aborted."),
+        ("CANCELED", "Flow canceled."),
+        ("CANCELLED", "Flow cancelled."),
     ],
 )
 async def test_run_payload_and_exact_completion(
@@ -129,7 +133,7 @@ async def test_run_payload_and_exact_completion(
             "connection_name": "Synthetic chat",
         }
     }
-    assert event["chat_origin"]["user_id"] == str(f.user.id)
+    assert event["_chat_origin"]["user_id"] == str(f.user.id)
     url = execution_url(str(parent.run_execution_id))
     assert delivery.call_args.args[2] == f"Flow started. {url}"
     assert delivery.call_args.kwargs["channel_id"] == "channel-test"
@@ -147,6 +151,9 @@ async def test_run_payload_and_exact_completion(
     assert await process_one(f.db, real_app)
     assert delivery.call_args.args[2] == f"{text}\n\n{url}"
     assert delivery.call_args.kwargs["thread_id"] == "123.45"
+    receive(f, text="/ask docs Another question")
+    assert await process_one(f.db, real_app)
+    assert len(dispatch) == 2
 
 
 @pytest.mark.asyncio
@@ -530,6 +537,15 @@ async def test_connection_default_validation(
         assert response.json()["enabled"] is True
         response = await client.patch(path, json={"default_flow_id": None})
         assert response.json()["default_flow_id"] is None
+        chat_flow.git_clone_config = {"publication_mode": "read_only"}
+        f.db.commit()
+        response = await client.patch(path, json={"default_flow_id": str(chat_flow.id)})
+        assert response.status_code == 422
+        assert (
+            response.json()["detail"]
+            == "Default flow must be enabled and opted in to chat"
+        )
+        chat_flow.git_clone_config = None
         chat_flow.chat_alias = None
         f.db.commit()
         response = await client.patch(path, json={"default_flow_id": str(chat_flow.id)})
@@ -548,7 +564,7 @@ def test_chat_provenance_subject() -> None:
         {
             "source": "chat",
             "triggered_by": "Jane Doe",
-            "chat_origin": {"connection_name": "Team chat"},
+            "_chat_origin": {"connection_name": "Team chat"},
         }
     ) == {
         "text": "Chat run by Jane Doe",
@@ -578,3 +594,78 @@ async def test_trigger_fixture_commits_without_audit(
         delivery.call_args.args[2]
         == f"Flow started. {execution_url(str(parent.run_execution_id))}"
     )
+
+
+@pytest.mark.asyncio
+async def test_ask_does_not_scan_catalog(
+    fixture_db: Any,
+    real_app: Any,
+    chat_flow: models.Flow,
+    delivery: AsyncMock,
+    dispatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An alias lookup never loads the full opted-in flow catalog."""
+
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("ask scanned the catalog")
+
+    monkeypatch.setattr(crud_chat, "chat_flows", forbidden)
+    receive(fixture_db, text="/ask docs Question")
+    assert await process_one(fixture_db.db, real_app)
+    assert len(dispatch) == 1
+    assert delivery.call_args.args[2].startswith("Flow started. ")
+
+
+def test_help_catalog_uses_resolved_principal(
+    fixture_db: Any,
+    chat_flow: models.Flow,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Help policies use loaded resources without re-resolving the principal."""
+    from types import SimpleNamespace
+    from preloop.services.chat_flows import available_flows
+
+    def forbidden(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("help re-resolved the principal")
+
+    monkeypatch.setattr(crud_chat, "principal", forbidden)
+    broker = SimpleNamespace(db=fixture_db.db, connection=fixture_db.connection)
+    assert available_flows(broker, fixture_db.user) == [chat_flow]
+
+
+@pytest.mark.asyncio
+async def test_manual_chat_origin_is_template_data(
+    fixture_db: Any,
+    real_app: Any,
+    chat_flow: models.Flow,
+    dispatch: Any,
+) -> None:
+    """Ordinary template data stays compatible; internal provenance is reserved."""
+    import httpx
+    from preloop.api.auth.jwt import create_access_token
+
+    headers = {
+        "Authorization": "Bearer "
+        + create_access_token({"sub": str(fixture_db.user.id)})
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=real_app),
+        base_url="http://test",
+        headers=headers,
+    ) as client:
+        path = f"/api/v1/flows/{chat_flow.id}/trigger"
+        response = await client.post(
+            path, json={"chat_origin": "custom template input"}
+        )
+        assert response.status_code == 200, response.text
+        assert dispatch[0]["test_mode"] is True
+        assert (
+            dispatch[0]["trigger_event_data"]["chat_origin"] == "custom template input"
+        )
+        response = await client.post(
+            path, json={"_chat_origin": {"connection_id": "forged"}}
+        )
+        assert response.status_code == 400
+        assert "reserved key(s) _chat_origin" in response.json()["detail"]
+        assert len(dispatch) == 1

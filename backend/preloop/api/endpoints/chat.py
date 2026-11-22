@@ -215,7 +215,14 @@ def update_connection(
         flow = crud_flow.get(
             db, id=payload.default_flow_id, account_id=current_user.account_id
         )
-        if flow is None or not flow.chat_alias or not flow.is_enabled:
+        from preloop.services.read_only_review import read_only_review
+
+        if (
+            flow is None
+            or not flow.chat_alias
+            or not flow.is_enabled
+            or read_only_review(flow.git_clone_config)
+        ):
             raise HTTPException(
                 422, "Default flow must be enabled and opted in to chat"
             )

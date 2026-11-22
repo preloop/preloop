@@ -80,7 +80,12 @@ export class ChatConnectionsView extends LitElement {
         const flows = await getFlows({ limit: 1000 });
         if (!this.isConnected || generation !== this.generation) return;
         this.chatFlows = Array.isArray(flows)
-          ? flows.filter((flow) => flow.chat_alias && flow.is_enabled)
+          ? flows.filter(
+              (flow) =>
+                flow.chat_alias &&
+                flow.is_enabled &&
+                flow.git_clone_config?.publication_mode !== 'read_only'
+            )
           : [];
       }
       if (!this.canManage) {

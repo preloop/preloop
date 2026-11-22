@@ -26,6 +26,10 @@ describe('Flow chat opt-in', () => {
     while ((el as any)._loadingReferenceData)
       await new Promise((resolve) => setTimeout(resolve, 10));
     await el.updateComplete;
+    const details = el.shadowRoot!.querySelector('[data-chat-trigger]') as any;
+    expect(details.open).to.equal(false);
+    details.open = true;
+    await details.updateComplete;
     return el;
   }
   async function submit(el: PreloopFlowForm): Promise<any> {

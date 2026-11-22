@@ -3629,6 +3629,7 @@ def _reject_oversized_workspace_seeds(
 # the agent clones and pushes to, so it is refused rather than carried.
 RESERVED_TRIGGER_KEYS = frozenset(
     {
+        "_chat_origin",
         "_resume",
         "_answers",
         "_answers_prompt",
@@ -3673,11 +3674,18 @@ def _reject_invalid_product_provenance(
 
 def _reject_reserved_trigger_keys(
     trigger_event_data: Optional[Dict[str, Any]],
+    *,
+    paired_chat: bool = False,
 ) -> None:
     """Reject a manual trigger body that forges platform-internal keys."""
     if not isinstance(trigger_event_data, dict):
         return
-    present = sorted(RESERVED_TRIGGER_KEYS.intersection(trigger_event_data))
+    reserved = (
+        RESERVED_TRIGGER_KEYS - {"_chat_origin"}
+        if paired_chat
+        else RESERVED_TRIGGER_KEYS
+    )
+    present = sorted(reserved.intersection(trigger_event_data))
     if not present:
         return
     raise HTTPException(
@@ -3803,7 +3811,9 @@ async def trigger_flow_execution(
     The response is the status projection of the new execution. The flow
     webhook does not accept CI credentials.
 
-    **Human credential**: starts a test execution (``test_mode`` true). The
+    **Human credential**: starts a test execution (``test_mode`` true), except
+    authenticated paired chat actions, which start production executions.
+    ``_chat_origin`` is reserved for verified paired chat provenance. The
     body is free-form trigger event data, except for the reserved key
     ``matrix``: when present it must be a list of up to 25
     ``{"agent_type"?, "ai_model_id"?}`` objects and the trigger fans out to
@@ -3879,7 +3889,12 @@ async def trigger_flow_execution(
     # share lock right before the insert, which is the authoritative check.
     require_flow_revision(expected_revision, flow)
 
-    _reject_reserved_trigger_keys(trigger_event_data)
+    _reject_reserved_trigger_keys(
+        trigger_event_data,
+        paired_chat=bool(
+            request and getattr(request.state, "paired_channel_action", False)
+        ),
+    )
     _reject_oversized_workspace_seeds(trigger_event_data)
     _reject_invalid_product_provenance(trigger_event_data)
 
@@ -3900,7 +3915,7 @@ async def trigger_flow_execution(
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
-    chat_origin = (trigger_event_data or {}).get("chat_origin")
+    chat_origin = (trigger_event_data or {}).get("_chat_origin")
     if chat_origin is not None:
         from preloop.models.crud import crud_chat
 
@@ -3931,7 +3946,7 @@ async def trigger_flow_execution(
             or not flow.is_enabled
         ):
             raise HTTPException(403, "Flow is not available for chat")
-        trigger_event_data["chat_origin"] = {
+        trigger_event_data["_chat_origin"] = {
             "connection_id": str(connection.id),
             "request_id": str(receipt.id),
             "user_id": str(current_user.id),
@@ -4010,7 +4025,7 @@ async def trigger_flow_execution(
             new_value={
                 "id": result["id"],
                 "flow_id": str(flow.id),
-                "origin": trigger_event_data["chat_origin"],
+                "origin": trigger_event_data["_chat_origin"],
             },
         )
     return result

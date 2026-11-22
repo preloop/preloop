@@ -12,10 +12,10 @@ from fastapi import HTTPException
 from preloop.api.auth.permissions import has_permission
 from preloop.config import settings
 from preloop.models import models
-from preloop.models.crud import crud_chat, crud_approval_request
+from preloop.models.crud import crud_chat, crud_approval_request, crud_flow_execution
 from preloop.services.chat_assistant import ChatBroker
 
-TERMINAL = {"SUCCEEDED", "FAILED", "STOPPED", "TIMEOUT", "CANCELLED"}
+TERMINAL = crud_flow_execution.TERMINAL_EXECUTION_STATUSES
 
 
 def execution_url(execution_id: str) -> str:
@@ -70,22 +70,33 @@ def final_assistant_text(logs: list[dict[str, Any]]) -> str | None:
     return answer if isinstance(answer, str) and answer.strip() else None
 
 
-def available_flows(broker: ChatBroker) -> list[models.Flow]:
-    """Return only aliases the current linked user may execute and read."""
-    flows = crud_chat.chat_flows(broker.db, broker.connection.account_id)
-    visible = []
+def available_flows(broker: ChatBroker, user: models.User) -> list[models.Flow]:
+    """Filter the catalog using one resolved principal and loaded resources."""
+    from preloop.plugins.account_hooks import (
+        AuthorizationContext,
+        ACTION_FLOW_RUN,
+        VISIBLE_FLOW,
+        authorize,
+        filter_viewable,
+    )
     from preloop.services.read_only_review import read_only_review
 
-    for flow in flows:
-        if read_only_review(flow.git_clone_config):
-            continue
-        try:
-            broker.authorize_resource("flow", str(flow.id), "execute_flows")
-            broker.authorize_resource("flow", str(flow.id), "view_flows")
-        except HTTPException:
-            continue
-        visible.append(flow)
-    return visible
+    flows = crud_chat.chat_flows(broker.db, broker.connection.account_id)
+    ctx = AuthorizationContext(
+        account_id=user.account_id,
+        db=broker.db,
+        user=user,
+        attributes={"resource_type": VISIBLE_FLOW},
+    )
+    return [
+        flow
+        for flow in filter_viewable(broker.db, user, VISIBLE_FLOW, flows)
+        if not read_only_review(flow.git_clone_config)
+        and all(
+            authorize(ctx, action, flow).allowed
+            for action in ("execute_flows", "view_flows", ACTION_FLOW_RUN)
+        )
+    ]
 
 
 async def start_or_help(broker: ChatBroker, row: models.ChatWork) -> str:
@@ -101,8 +112,8 @@ async def start_or_help(broker: ChatBroker, row: models.ChatWork) -> str:
         user, "view_flows", broker.db
     ):
         return "You do not have permission to run and read chat flows."
-    flows = available_flows(broker)
     if verb == "/help":
+        flows = available_flows(broker, user)
         crud_chat.transition(
             broker.db,
             row,
@@ -123,14 +134,22 @@ async def start_or_help(broker: ChatBroker, row: models.ChatWork) -> str:
     parts = argument.split(maxsplit=1)
     alias = parts[0]
     question = parts[1] if len(parts) > 1 else ""
-    flow = next((item for item in flows if item.chat_alias == alias), None)
+    flow = crud_chat.resolve_flow(broker.db, broker.connection.account_id, alias=alias)
     if flow is None and broker.connection.default_flow_id:
-        flow = next(
-            (item for item in flows if item.id == broker.connection.default_flow_id),
-            None,
+        flow = crud_chat.resolve_flow(
+            broker.db,
+            broker.connection.account_id,
+            flow_id=broker.connection.default_flow_id,
         )
         question = argument.strip()
-    if flow is None:
+    from preloop.services.read_only_review import read_only_review
+
+    if flow is None or read_only_review(flow.git_clone_config):
+        return "Unknown or unavailable chat flow. Use help to list flows you may run."
+    try:
+        broker.authorize_resource("flow", str(flow.id), "execute_flows")
+        broker.authorize_resource("flow", str(flow.id), "view_flows")
+    except HTTPException:
         return "Unknown or unavailable chat flow. Use help to list flows you may run."
     if not question.strip():
         return "Use ask ALIAS TEXT, or ask TEXT when a default flow is configured."
@@ -156,7 +175,7 @@ async def start_or_help(broker: ChatBroker, row: models.ChatWork) -> str:
                         "connection_name": broker.connection.name,
                     }
                 },
-                "chat_origin": {
+                "_chat_origin": {
                     "connection_id": str(broker.connection.id),
                     "request_id": str(row.id),
                 },

@@ -158,9 +158,8 @@ describe('PreloopFlowForm callable flows picker', () => {
 
     const payload = await submit(element);
     expect('callable_flows' in payload).to.be.false;
-    // Byte identical to the body this form sent before delegation existed:
-    // the keys of the request, pinned, so the field cannot leak into the save
-    // of a flow that does not delegate.
+    // Pin the non-delegation settings so an inactive delegation field cannot
+    // leak into the saved configuration.
     expect(
       Object.keys(JSON.parse(JSON.stringify(payload))).sort()
     ).to.deep.equal([
@@ -169,6 +168,7 @@ describe('PreloopFlowForm callable flows picker', () => {
       'allowed_mcp_servers',
       'allowed_mcp_tools',
       'approval_window_seconds',
+      'chat_alias',
       'description',
       'git_clone_config',
       'is_enabled',

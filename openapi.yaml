@@ -20234,16 +20234,18 @@ paths:
         \ and starts one production execution (``test_mode`` false).\nThe response\
         \ is the status projection of the new execution. The flow\nwebhook does not\
         \ accept CI credentials.\n\n**Human credential**: starts a test execution\
-        \ (``test_mode`` true). The\nbody is free-form trigger event data, except\
-        \ for the reserved key\n``matrix``: when present it must be a list of up to\
-        \ 25\n``{\"agent_type\"?, \"ai_model_id\"?}`` objects and the trigger fans\
-        \ out to\none execution per entry, all sharing a ``batch_id`` (an empty object\
-        \ runs\nthe flow defaults). Without ``matrix`` the behaviour is unchanged.\n\
-        \n**Either credential** may send ``If-Match`` with the flow's ETag. The\n\
-        execution is then created only while the flow is still at that\nconfiguration\
-        \ revision (checked under a share lock in the transaction\nthat inserts it);\
-        \ otherwise the response is 412, carries the current\nETag, and nothing is\
-        \ created. Each execution records the revision it was\ncreated with as ``flow_revision``.\n\
+        \ (``test_mode`` true), except\nauthenticated paired chat actions, which start\
+        \ production executions.\n``_chat_origin`` is reserved for verified paired\
+        \ chat provenance. The\nbody is free-form trigger event data, except for the\
+        \ reserved key\n``matrix``: when present it must be a list of up to 25\n``{\"\
+        agent_type\"?, \"ai_model_id\"?}`` objects and the trigger fans out to\none\
+        \ execution per entry, all sharing a ``batch_id`` (an empty object runs\n\
+        the flow defaults). Without ``matrix`` the behaviour is unchanged.\n\n**Either\
+        \ credential** may send ``If-Match`` with the flow's ETag. The\nexecution\
+        \ is then created only while the flow is still at that\nconfiguration revision\
+        \ (checked under a share lock in the transaction\nthat inserts it); otherwise\
+        \ the response is 412, carries the current\nETag, and nothing is created.\
+        \ Each execution records the revision it was\ncreated with as ``flow_revision``.\n\
         \nArgs:\n    flow_id: Flow to trigger\n    trigger_event_data: ``pr_number``\
         \ and ``head_sha`` for a restricted\n        CI credential; otherwise optional\
         \ custom trigger event data for\n        testing template variables, plus\
