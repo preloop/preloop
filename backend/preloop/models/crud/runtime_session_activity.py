@@ -815,7 +815,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         indexed as transcript messages. The stored summary is the text, so
         the corpus holds exactly what the timeline shows, masked the same way.
         The writer swallows its own failures, so a broken corpus never loses
-        a message.
+        a message. Operator notes are skipped: the notes service owns them.
 
         Args:
             db: Database session.
@@ -829,6 +829,10 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         if activity.id is None:
             db.flush()
         metadata = activity.metadata_ or {}
+        # Delivered operator notes are indexed as ``operator_note`` chunks by
+        # the notes service; indexing them here too would duplicate snippets.
+        if metadata.get("kind") == "operator_note":
+            return
         role = metadata.get("role")
         index_transcript_message(
             db,

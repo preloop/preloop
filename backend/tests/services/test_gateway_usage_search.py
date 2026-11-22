@@ -1,5 +1,6 @@
 """Tests for gateway interaction search corpus helpers."""
 
+import pytest
 from datetime import timedelta
 import hashlib
 from unittest.mock import patch
@@ -107,6 +108,59 @@ def test_newest_first_keeps_the_latest_turn_and_reply_under_the_ceiling():
     assert newest.index("brambleton") < newest.index("lumenwick")
     assert newest.index("messages.40.") < newest.index("messages.39.")
     assert "request.messages.0." not in newest
+
+
+@pytest.mark.parametrize(
+    ("endpoint_kind", "request_payload", "prefix", "reversed_expected"),
+    [
+        (
+            "responses",
+            {"input": [{"role": "user", "content": f"turn {i}"} for i in range(3)]},
+            "request.input",
+            True,
+        ),
+        (
+            "gemini",
+            {
+                "contents": [
+                    {"role": "user", "parts": [{"text": f"turn {i}"}]} for i in range(3)
+                ]
+            },
+            "request.contents",
+            True,
+        ),
+        (
+            "embeddings",
+            {"input": ["first text", "second text", "third text"]},
+            "request.input",
+            False,
+        ),
+    ],
+)
+def test_newest_first_reverses_only_conversation_shapes(
+    endpoint_kind: str,
+    request_payload: dict,
+    prefix: str,
+    reversed_expected: bool,
+) -> None:
+    """Turn histories walk newest first; an embeddings batch keeps its order."""
+    usage = ApiUsage(
+        endpoint="/v1/x",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        meta_data={"endpoint_kind": endpoint_kind},
+    )
+    text = GatewayUsageSearchService().build_searchable_text(
+        usage=usage,
+        request_payload=request_payload,
+        response_payload=None,
+        newest_first=True,
+    )
+
+    first = text.index(f"{prefix}.0")
+    last = text.index(f"{prefix}.2")
+    assert (last < first) is reversed_expected
 
 
 def test_index_interaction_upserts_gateway_search_document(db_session, test_user):

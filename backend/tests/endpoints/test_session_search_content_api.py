@@ -115,3 +115,29 @@ def test_console_message_to_an_agent_and_its_reply_are_found(
     assert _search(client, "vexillon") == [str(session.id)]
     # The title alone is not what matched.
     assert _search(client, "nonexistentword") == []
+
+
+def test_delivered_operator_note_is_indexed_once(
+    db_session: Any, test_user: Any
+) -> None:
+    """The notes service owns note chunks; the control-message writer skips them."""
+    from preloop.models.models.session_search_document import SessionSearchDocument
+
+    session = _session(db_session, test_user.account_id, "note-chat")
+    crud_runtime_session_activity.log_agent_control_message(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        message="note about the quillmoth rollout",
+        status="delivered",
+        metadata={"kind": "operator_note", "note_id": "note-1"},
+    )
+    db_session.flush()
+
+    kinds = [
+        row.source_kind
+        for row in db_session.query(SessionSearchDocument).filter(
+            SessionSearchDocument.runtime_session_id == session.id
+        )
+    ]
+    assert "transcript_message" not in kinds
