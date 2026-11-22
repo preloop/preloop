@@ -201,7 +201,48 @@ class TestNormalizeItems:
         items = normalize_items(
             [{"id": "X", "rank": 1, "path": "/foo", "stacks": ["python"]}]
         )
-        assert items[0] == {"id": "X", "title": "X"}
+        assert items[0] == {"id": "X", "title": "X", "fields": {"path": "/foo"}}
+
+    def test_label_is_a_title_alias_and_string_extras_are_kept(self):
+        items = normalize_items(
+            [
+                {
+                    "id": "lead-1",
+                    "label": "Ada Lovelace, Analytical Engines",
+                    "description": "LinkedIn: https://www.linkedin.com/in/ada",
+                    "linkedin": "https://www.linkedin.com/in/ada",
+                    "hubspot": "https://app.hubspot.com/contacts/1",
+                    "lead_file": "leads/ada.md",
+                    "empty": "  ",
+                    "score": 3,
+                }
+            ]
+        )
+        assert items[0] == {
+            "id": "lead-1",
+            "title": "Ada Lovelace, Analytical Engines",
+            "description": "LinkedIn: https://www.linkedin.com/in/ada",
+            "fields": {
+                "linkedin": "https://www.linkedin.com/in/ada",
+                "hubspot": "https://app.hubspot.com/contacts/1",
+                "lead_file": "leads/ada.md",
+            },
+        }
+
+    def test_title_wins_over_label(self):
+        items = normalize_items([{"id": "X", "title": "T", "label": "L"}])
+        assert items[0]["title"] == "T"
+
+    def test_item_fields_are_bounded(self):
+        dropped: set = set()
+        entry = {"id": "X", "k" * 65: "too long a key"}
+        entry.update({f"f{i}": "v" * 2000 for i in range(15)})
+        items = normalize_items([entry], dropped_keys=dropped)
+        fields = items[0]["fields"]
+        assert len(fields) == 12
+        assert all(len(v) == 1000 for v in fields.values())
+        assert "k" * 65 in dropped
+        assert len(dropped) == 4
 
     def test_extra_keys_recorded_when_dropped_keys_provided(self):
         dropped = set()
@@ -209,8 +250,8 @@ class TestNormalizeItems:
             [{"id": "X", "rank": 1, "path": "/foo", "manifests": ["requirements.txt"]}],
             dropped_keys=dropped,
         )
-        assert dropped == {"rank", "path", "manifests"}
-        assert items[0] == {"id": "X", "title": "X"}
+        assert dropped == {"rank", "manifests"}
+        assert items[0] == {"id": "X", "title": "X", "fields": {"path": "/foo"}}
 
     def test_severity_outside_vocabulary_does_not_refuse(self):
         items = normalize_items([{"id": "X", "severity": "catastrophic"}])

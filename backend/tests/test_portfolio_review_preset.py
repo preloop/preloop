@@ -1265,8 +1265,8 @@ class TestQuestionForms:
     def test_the_documented_row_is_one_the_platform_accepts(self):
         """The prose above is only worth what the validator says: the row
         the preset documents goes through normalize_items unchanged, and
-        the extra keys the dogfood sent (rank, path) are dropped rather
-        than refusing the question.
+        the extra keys the dogfood sent are dropped (rank) or kept as a
+        display field (path) rather than refusing the question.
         """
         from preloop.services.question_schema import normalize_items
 
@@ -1287,8 +1287,8 @@ class TestQuestionForms:
         dropped = set()
         assert normalize_items(
             [dict(documented, path="apps/checkout")], dropped_keys=dropped
-        ) == [documented]
-        assert dropped == {"path"}
+        ) == [dict(documented, fields={"path": "apps/checkout"})]
+        assert dropped == set()
 
     def test_the_question_comes_before_the_fan_out(self):
         """Measured on 2026-09-18 (issue #647): a dogfood run probed a lens

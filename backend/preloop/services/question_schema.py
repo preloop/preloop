@@ -11,8 +11,10 @@ a user interface, and a hand-typed array is not evidence anybody can audit.
 So a question may now carry:
 
 * ``items``: the rows the question is about (findings, files, hosts). Each row
-  is ``{id, title, description?, severity?, badges?, href?}``. Extra keys on a
-  row are dropped rather than refusing the question. ``id`` is at most
+  is ``{id, title, description?, severity?, badges?, href?}``. ``label`` is
+  accepted as an alias for ``title``. Extra string-valued keys (``linkedin``,
+  ``lead_file``) are kept under ``fields`` so the console can show them on the
+  row; other extra keys are dropped rather than refusing the question. ``id`` is at most
   ``MAX_ITEM_ID_LENGTH`` characters (longer ids are refused by name).
   ``severity`` is optional display metadata: known values are lowercased,
   anything else is kept as-is so the console can render a neutral chip.
@@ -89,6 +91,9 @@ MAX_TITLE_LENGTH = 200
 MAX_ITEM_ID_LENGTH = 200
 MAX_DESCRIPTION_LENGTH = 1000
 MAX_BADGES = 6
+MAX_ITEM_FIELDS = 12
+MAX_ITEM_FIELD_KEY_LENGTH = 64
+MAX_ITEM_FIELD_LENGTH = 1000
 
 SCALAR_TYPES = ("string", "number", "integer", "boolean")
 AUTOFILL_KINDS = ("author", "date")
@@ -115,7 +120,7 @@ _FIELD_KEYS = {
     "x-autofill",
 }
 
-_ITEM_KEYS = {"id", "title", "description", "severity", "badges", "href"}
+_ITEM_KEYS = {"id", "title", "label", "description", "severity", "badges", "href"}
 ITEM_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info", "unknown"})
 
 
@@ -486,7 +491,25 @@ def normalize_items(
         path = f"items[{index}]"
         if not isinstance(entry, dict):
             raise QuestionSchemaError(f"{path} must be an object")
-        unknown = set(entry) - _ITEM_KEYS
+        fields: Dict[str, str] = {}
+        unknown: Set[str] = set()
+        for key, value in entry.items():
+            if key in _ITEM_KEYS:
+                continue
+            key_text = str(key)
+            text = _clean_text(value, MAX_ITEM_FIELD_LENGTH) if isinstance(
+                value, str
+            ) else None
+            if (
+                text
+                and len(key_text) <= MAX_ITEM_FIELD_KEY_LENGTH
+                and len(fields) < MAX_ITEM_FIELDS
+            ):
+                fields[key_text] = text
+            elif text is None and isinstance(value, str):
+                continue  # an empty string carries nothing to show or drop
+            else:
+                unknown.add(key_text)
         if unknown and dropped_keys is not None:
             dropped_keys.update(unknown)
 
@@ -504,7 +527,9 @@ def normalize_items(
         seen.add(item_id)
 
         row: Dict[str, Any] = {"id": item_id}
-        title = _clean_text(entry.get("title"), MAX_TITLE_LENGTH)
+        title = _clean_text(entry.get("title"), MAX_TITLE_LENGTH) or _clean_text(
+            entry.get("label"), MAX_TITLE_LENGTH
+        )
         row["title"] = title or item_id
         description = _clean_text(entry.get("description"), MAX_DESCRIPTION_LENGTH)
         if description:
@@ -536,6 +561,10 @@ def normalize_items(
             if not href.lower().startswith(("http://", "https://")):
                 raise QuestionSchemaError(f"{path}.href must be http(s)")
             row["href"] = href
+        if fields:
+            # Display-only text. The console escapes it and links only http(s)
+            # URLs, so nothing here is ever rendered as markup.
+            row["fields"] = fields
         out.append(row)
 
     return out

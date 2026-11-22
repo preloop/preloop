@@ -1,4 +1,5 @@
 import { tableScrollStyles } from '../styles/table-scroll';
+import { linkify } from '../utils/linkify';
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -165,6 +166,33 @@ export class AnswerForm extends LitElement {
         font-size: var(--console-text-meta, 13px);
         color: var(--sl-color-neutral-600);
         margin-top: 0.125rem;
+        overflow-wrap: anywhere;
+      }
+
+      .item-title {
+        overflow-wrap: anywhere;
+      }
+
+      .item-table a {
+        color: var(--console-link-color, var(--sl-color-primary-600));
+      }
+
+      .item-fields {
+        margin: 0.125rem 0 0;
+        display: grid;
+        grid-template-columns: max-content minmax(0, 1fr);
+        column-gap: 0.5rem;
+        font-size: var(--console-text-meta, 13px);
+        color: var(--sl-color-neutral-600);
+      }
+
+      .item-fields dt {
+        font-weight: 500;
+      }
+
+      .item-fields dd {
+        margin: 0;
+        overflow-wrap: anywhere;
       }
 
       .item-chips {
@@ -839,6 +867,10 @@ export class AnswerForm extends LitElement {
   }
 
   private renderItemCell(item: QuestionItem): TemplateResult {
+    const label = item.title || item.id;
+    const fields = Object.entries(item.fields ?? {}).filter(
+      ([, value]) => typeof value === 'string' && value.trim() !== ''
+    );
     return html`
       <div class="item-title">
         ${
@@ -847,14 +879,25 @@ export class AnswerForm extends LitElement {
                 href=${item.href}
                 target="_blank"
                 rel="noopener noreferrer"
-                >${item.title || item.id}</a
+                >${label}</a
               >`
-            : html`${item.title || item.id}`
+            : linkify(label)
         }
       </div>
       ${
         item.description
-          ? html`<div class="item-detail">${item.description}</div>`
+          ? html`<div class="item-detail">${linkify(item.description)}</div>`
+          : nothing
+      }
+      ${
+        fields.length > 0
+          ? html`<dl class="item-fields">
+              ${fields.map(
+                ([key, value]) =>
+                  html`<dt>${this.fieldLabel(key)}</dt>
+                    <dd>${linkify(value)}</dd>`
+              )}
+            </dl>`
           : nothing
       }
       ${
@@ -882,6 +925,12 @@ export class AnswerForm extends LitElement {
           : nothing
       }
     `;
+  }
+
+  /** "lead_file" reads as "Lead file". */
+  private fieldLabel(key: string): string {
+    const words = key.replace(/[_-]+/g, ' ').trim();
+    return words.charAt(0).toUpperCase() + words.slice(1);
   }
 
   private severityVariant(

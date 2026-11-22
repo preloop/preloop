@@ -90,6 +90,62 @@ describe('AnswerForm', () => {
     expect(text(element)).to.contain('KEV');
   });
 
+  it('shows link fields and linked URLs on a row before it is picked', async () => {
+    const lead: QuestionItem = {
+      id: 'lead-1',
+      title: 'Ada Lovelace, Analytical Engines',
+      description:
+        'LinkedIn: https://www.linkedin.com/in/ada | Lead file: leads/ada.md',
+      fields: {
+        linkedin: 'https://www.linkedin.com/in/ada',
+        hubspot: 'https://app.hubspot.com/contacts/1',
+        lead_file: 'leads/ada.md',
+        evil: 'javascript:alert(1) <img src=x onerror=alert(1)>',
+      },
+    };
+    const schema: QuestionSchema = {
+      type: 'object',
+      properties: {
+        waived: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', enum: ['lead-1'] },
+              reason: { type: 'string', title: 'Reason' },
+            },
+          },
+        },
+      },
+    };
+    const element = await mount(schema, [lead]);
+    const row = element.shadowRoot!.querySelector('tr[data-item-id="lead-1"]')!;
+
+    expect(row.querySelectorAll('.row-fields').length).to.equal(0);
+    const keys = [...row.querySelectorAll('.item-fields dt')].map((dt) =>
+      dt.textContent?.trim()
+    );
+    expect(keys).to.deep.equal(['Linkedin', 'Hubspot', 'Lead file', 'Evil']);
+    const hrefs = [...row.querySelectorAll('a')].map((a) => a.getAttribute('href'));
+    expect(hrefs).to.deep.equal([
+      'https://www.linkedin.com/in/ada',
+      'https://www.linkedin.com/in/ada',
+      'https://app.hubspot.com/contacts/1',
+    ]);
+    for (const a of row.querySelectorAll('a')) {
+      expect(a.getAttribute('target')).to.equal('_blank');
+      expect(a.getAttribute('rel')).to.equal('noopener noreferrer');
+    }
+    expect(row.querySelector('img')).to.equal(null);
+    expect(row.textContent).to.contain('javascript:alert(1)');
+  });
+
+  it('keeps rows without extra fields as they were', async () => {
+    const element = await mount(waiverSchema, items);
+    expect(element.shadowRoot?.querySelector('.item-fields')).to.equal(null);
+    expect(element.shadowRoot?.querySelectorAll('tbody a').length).to.equal(0);
+  });
+
   it('reveals the per-row field only for the rows that were picked', async () => {
     const element = await mount(waiverSchema, items);
     expect(
