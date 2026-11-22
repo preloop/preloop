@@ -491,10 +491,10 @@ func TestInventoryExtensionsCheckVersionAndContentEdges(t *testing.T) {
 	if ProcessExitCode(err) != 3 || finding.Reason != "version_unknown" {
 		t.Fatalf("version exit=%d reason=%s", ProcessExitCode(err), finding.Reason)
 	}
-	if runtime.GOOS == "windows" {
-		// os.Chmod(0) only sets the read-only attribute on Windows; the file
-		// stays readable, so there is no portable unreadable-content fixture.
-		return
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		// os.Chmod(0) only sets the read-only attribute on Windows, and root
+		// ignores mode bits, so the file stays readable there.
+		t.Skip("permission bits do not deny reads here")
 	}
 	skillHome := extensionHome(t)
 	// An empty directory now hashes as a real tree. A file the process cannot
