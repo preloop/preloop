@@ -84,6 +84,7 @@ from preloop.utils.azure_devops import (
     AzureDevOpsConfigError,
     validate_azure_devops_config,
 )
+from preloop.utils.azure_devops_work_items import carry_derived_details
 from preloop.utils.bitbucket import BitbucketConfigError, validate_bitbucket_config
 from preloop.utils.bitbucket_dc import (
     BitbucketDCConfigError,
@@ -1405,16 +1406,19 @@ async def update_tracker(
         or "url" in update_data
     ):
         api_key = update_data.get("api_key")
-        update_data["connection_details"] = _azure_devops_details(
-            api_key=(
-                tracker.resolved_api_key if api_key in (None, "unchanged") else api_key
+        token_changed = api_key not in (None, "unchanged")
+        update_data["connection_details"] = carry_derived_details(
+            tracker.connection_details,
+            _azure_devops_details(
+                api_key=tracker.resolved_api_key if not token_changed else api_key,
+                url=str(update_data.get("url") or tracker.url or ""),
+                details=(
+                    update_data.get("connection_details")
+                    if update_data.get("connection_details") is not None
+                    else tracker.connection_details
+                ),
             ),
-            url=str(update_data.get("url") or tracker.url or ""),
-            details=(
-                update_data.get("connection_details")
-                if update_data.get("connection_details") is not None
-                else tracker.connection_details
-            ),
+            token_changed=token_changed,
         )
         update_data["url"] = AZURE_DEVOPS_BASE_URL
     elif tracker.tracker_type == TrackerType.BITBUCKET.value and (

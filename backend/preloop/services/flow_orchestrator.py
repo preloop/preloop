@@ -10486,6 +10486,60 @@ class FlowExecutionOrchestrator:
             )
             return False
 
+    async def _link_pull_request_to_azure_work_item(
+        self, result: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Link the opened pull request on the triggering Azure work item.
+
+        Runs only when the trigger was an Azure Boards work item event and
+        the execution recorded a pull request URL. Never raises.
+
+        Args:
+            result: Terminal result, when the caller has it.
+
+        Returns:
+            True when the link exists afterwards.
+        """
+        try:
+            from preloop.services.azure_work_item_pr_link import (
+                azure_work_item_key,
+                link_pull_request_to_work_item,
+            )
+            from preloop.services.flow_execution_notifications import (
+                extract_opened_pr_url,
+            )
+
+            snapshot = getattr(self.execution_log, "trigger_event_details", None)
+            issue_key = azure_work_item_key(snapshot) or azure_work_item_key(
+                self.trigger_event_data
+            )
+            if not issue_key:
+                return False
+            payload = (
+                result
+                if isinstance(result, dict)
+                else getattr(self.execution_log, "result", None)
+            )
+            payload = payload if isinstance(payload, dict) else {}
+            pr_url = extract_opened_pr_url(payload) or (self._opened_pr or {}).get(
+                "url"
+            )
+            if not pr_url:
+                return False
+            client = await self._get_tracker_client_for_status()
+            return await link_pull_request_to_work_item(
+                client=client,
+                issue_key=issue_key,
+                pr_url=pr_url,
+                execution_id=str(self.execution_log.id),
+            )
+        except Exception:
+            logger.warning(
+                "Azure work item pull request link failed for execution %s",
+                getattr(self.execution_log, "id", "unknown"),
+            )
+            return False
+
     async def _notify_terminal(
         self,
         status: str,
@@ -10578,6 +10632,9 @@ class FlowExecutionOrchestrator:
             # A Jira-triggered run that opened a pull request writes it back
             # onto the issue whatever flow.notifications says (issue #957).
             jira_comment_posted = await self._write_pull_request_back_to_jira(result)
+            # A work item triggered run links the opened pull request on the
+            # Azure Boards work item (Development section).
+            await self._link_pull_request_to_azure_work_item(result)
             # The consecutive-failure alert runs for every terminal run,
             # independently of the tracker-comment notifications below, so a
             # flow with no ``notifications`` blob still has the safety net

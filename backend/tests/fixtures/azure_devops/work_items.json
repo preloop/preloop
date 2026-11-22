@@ -1,0 +1,288 @@
+{
+  "_source": "Shapes follow Microsoft's Azure DevOps REST 7.1 and service hook documentation; each entry's _doc names the page. Names, addresses and ids are synthetic (example.com, Jane Doe).",
+  "rest": {
+    "work_item": {
+      "_doc": "https://learn.microsoft.com/rest/api/azure/devops/wit/work-items/get-work-item (Get work item, $expand=relations)",
+      "id": 297,
+      "rev": 3,
+      "fields": {
+        "System.AreaPath": "Fabrikam-Fiber-Git",
+        "System.TeamProject": "Fabrikam-Fiber-Git",
+        "System.IterationPath": "Fabrikam-Fiber-Git\\Sprint 1",
+        "System.WorkItemType": "Product Backlog Item",
+        "System.State": "New",
+        "System.Reason": "New backlog item",
+        "System.AssignedTo": {
+          "displayName": "Jane Doe",
+          "url": "https://vssps.dev.azure.com/fabrikam/_apis/Identities/d291b0c4-a05c-4ea6-8df1-4b41d5f39eff",
+          "id": "d291b0c4-a05c-4ea6-8df1-4b41d5f39eff",
+          "uniqueName": "jane.doe@example.com",
+          "imageUrl": "https://dev.azure.com/fabrikam/_api/_common/identityImage?id=d291b0c4-a05c-4ea6-8df1-4b41d5f39eff"
+        },
+        "System.CreatedDate": "2014-12-29T20:49:20.77Z",
+        "System.CreatedBy": {
+          "displayName": "John Roe",
+          "id": "a3b2c1d0-1111-2222-3333-444455556666",
+          "uniqueName": "john.roe@example.com"
+        },
+        "System.ChangedDate": "2014-12-29T20:49:23.933Z",
+        "System.ChangedBy": {
+          "displayName": "John Roe",
+          "id": "a3b2c1d0-1111-2222-3333-444455556666",
+          "uniqueName": "john.roe@example.com"
+        },
+        "System.Title": "Customer can sign in using their Microsoft Account",
+        "System.Tags": "auth; customer",
+        "Microsoft.VSTS.Common.Priority": 2,
+        "Microsoft.VSTS.Scheduling.Effort": 8,
+        "System.Description": "<div>Our authorization logic needs to allow for users with <b>Microsoft accounts</b>:</div><ul><li>sign in</li><li>sign out</li></ul>"
+      },
+      "relations": [
+        {
+          "rel": "System.LinkTypes.Hierarchy-Reverse",
+          "url": "https://dev.azure.com/fabrikam/_apis/wit/workItems/296",
+          "attributes": {"isLocked": false, "name": "Parent"}
+        },
+        {
+          "rel": "System.LinkTypes.Related",
+          "url": "https://dev.azure.com/fabrikam/_apis/wit/workItems/298",
+          "attributes": {"isLocked": false, "name": "Related"}
+        },
+        {
+          "rel": "ArtifactLink",
+          "url": "vstfs:///Git/PullRequestId/6ce954b1-ce1f-45d1-b94d-e6bf2464ba2c%2F5febef5a-833d-4e14-b9c0-14cb638f91e6%2F22",
+          "attributes": {"name": "Pull Request"}
+        }
+      ],
+      "_links": {
+        "self": {"href": "https://dev.azure.com/fabrikam/_apis/wit/workItems/297"}
+      },
+      "url": "https://dev.azure.com/fabrikam/_apis/wit/workItems/297"
+    },
+    "work_item_types": {
+      "_doc": "https://learn.microsoft.com/rest/api/azure/devops/wit/work-item-types/list (states carry name, color, category). The process is localized (German), as a non-English organization returns it.",
+      "count": 2,
+      "value": [
+        {
+          "name": "Product Backlog Item",
+          "referenceName": "Microsoft.VSTS.WorkItemTypes.ProductBacklogItem",
+          "states": [
+            {"name": "New", "color": "b2b2b2", "category": "Proposed"},
+            {"name": "Genehmigt", "color": "007acc", "category": "Proposed"},
+            {"name": "In Arbeit", "color": "007acc", "category": "InProgress"},
+            {"name": "Erledigt", "color": "339933", "category": "Completed"},
+            {"name": "Entfernt", "color": "ffffff", "category": "Removed"}
+          ]
+        },
+        {
+          "name": "Bug",
+          "referenceName": "Microsoft.VSTS.WorkItemTypes.Bug",
+          "states": [
+            {"name": "New", "color": "b2b2b2", "category": "Proposed"},
+            {"name": "Erledigt", "color": "339933", "category": "Completed"}
+          ]
+        }
+      ]
+    },
+    "wiql_result": {
+      "_doc": "https://learn.microsoft.com/rest/api/azure/devops/wit/wiql/query-by-wiql (flat query result)",
+      "queryType": "flat",
+      "queryResultType": "workItem",
+      "asOf": "2014-12-29T20:50:00.00Z",
+      "columns": [
+        {"referenceName": "System.Id", "name": "ID", "url": "https://dev.azure.com/fabrikam/_apis/wit/fields/System.Id"}
+      ],
+      "workItems": [
+        {"id": 297, "url": "https://dev.azure.com/fabrikam/_apis/wit/workItems/297"},
+        {"id": 299, "url": "https://dev.azure.com/fabrikam/_apis/wit/workItems/299"}
+      ]
+    },
+    "comments": {
+      "_doc": "https://learn.microsoft.com/rest/api/azure/devops/wit/comments/get-comments (7.1-preview.4)",
+      "totalCount": 1,
+      "count": 1,
+      "comments": [
+        {
+          "workItemId": 297,
+          "id": 50,
+          "version": 1,
+          "text": "<div>Moving to the right area path</div>",
+          "createdBy": {
+            "displayName": "Jane Doe",
+            "id": "d291b0c4-a05c-4ea6-8df1-4b41d5f39eff",
+            "uniqueName": "jane.doe@example.com"
+          },
+          "createdDate": "2019-01-16T03:03:28.97Z",
+          "modifiedBy": {
+            "displayName": "Jane Doe",
+            "id": "d291b0c4-a05c-4ea6-8df1-4b41d5f39eff",
+            "uniqueName": "jane.doe@example.com"
+          },
+          "modifiedDate": "2019-01-16T03:03:28.97Z",
+          "url": "https://dev.azure.com/fabrikam/Fabrikam-Fiber-Git/_apis/wit/workItems/297/comments/50"
+        }
+      ]
+    },
+    "connection_data": {
+      "_doc": "https://learn.microsoft.com/rest/api/azure/devops/ (connectionData: authenticatedUser of the token)",
+      "authenticatedUser": {
+        "id": "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
+        "providerDisplayName": "Preloop Bot",
+        "properties": {"Account": {"$type": "System.String", "$value": "preloop-bot@example.com"}}
+      }
+    }
+  },
+  "events": {
+    "workitem.created": {
+      "_doc": "https://learn.microsoft.com/azure/devops/service-hooks/events#workitem.created",
+      "subscriptionId": "00000000-0000-0000-0000-000000000000",
+      "notificationId": 1,
+      "id": "d2d46fb1-dba5-403c-9373-427583f19e8c",
+      "eventType": "workitem.created",
+      "publisherId": "tfs",
+      "message": {"text": "Bug #5 (Some great new idea!) created by Jane Doe."},
+      "resource": {
+        "id": 5,
+        "rev": 1,
+        "fields": {
+          "System.AreaPath": "FabrikamCloud",
+          "System.TeamProject": "FabrikamCloud",
+          "System.IterationPath": "FabrikamCloud",
+          "System.WorkItemType": "Bug",
+          "System.State": "New",
+          "System.Reason": "New defect reported",
+          "System.CreatedDate": "2014-07-15T17:42:44.663Z",
+          "System.CreatedBy": "Jane Doe <jane.doe@example.com>",
+          "System.ChangedDate": "2014-07-15T17:42:44.663Z",
+          "System.ChangedBy": "Jane Doe <jane.doe@example.com>",
+          "System.Title": "Some great new idea!",
+          "System.Tags": "triage",
+          "Microsoft.VSTS.Common.Severity": "3 - Medium",
+          "Microsoft.VSTS.Common.Priority": 3,
+          "System.Description": "<p>Steps: <code>login</code></p>"
+        },
+        "_links": {
+          "self": {"href": "https://dev.azure.com/fabrikam/_apis/wit/workItems/5"}
+        },
+        "url": "https://dev.azure.com/fabrikam/_apis/wit/workItems/5"
+      },
+      "resourceVersion": "1.0",
+      "resourceContainers": {
+        "collection": {"id": "c12d0eb8-e382-443b-9f9c-c52cba5014c2"},
+        "account": {"id": "f844ec47-a9db-4511-8281-8b63f4eaf94e"},
+        "project": {"id": "be9b3917-87e6-42a4-a549-2bc06a7a878f"}
+      },
+      "createdDate": "2014-07-15T17:42:45.4Z"
+    },
+    "workitem.updated": {
+      "_doc": "https://learn.microsoft.com/azure/devops/service-hooks/events#workitem.updated",
+      "subscriptionId": "00000000-0000-0000-0000-000000000000",
+      "notificationId": 2,
+      "id": "27646e0e-b520-4d2b-9411-bba7524947cd",
+      "eventType": "workitem.updated",
+      "publisherId": "tfs",
+      "message": {"text": "Bug #5 (Some great new idea!) updated by Jane Doe."},
+      "resource": {
+        "id": 2,
+        "workItemId": 5,
+        "rev": 2,
+        "revisedBy": {
+          "id": "e5a5f7f8-6507-4c34-b397-6c4818e002f4",
+          "name": "Jane Doe <jane.doe@example.com>",
+          "displayName": "Jane Doe",
+          "uniqueName": "jane.doe@example.com"
+        },
+        "revisedDate": "9999-01-01T00:00:00Z",
+        "fields": {
+          "System.Rev": {"oldValue": 1, "newValue": 2},
+          "System.AuthorizedDate": {"oldValue": "2014-07-15T16:48:44.663Z", "newValue": "2014-07-15T17:42:44.663Z"},
+          "System.RevisedDate": {"oldValue": "2014-07-15T17:42:44.663Z", "newValue": "9999-01-01T00:00:00Z"},
+          "System.State": {"oldValue": "New", "newValue": "Approved"},
+          "System.Reason": {"oldValue": "New defect reported", "newValue": "Approved by the Product Owner"},
+          "System.AssignedTo": {"newValue": "Jane Doe <jane.doe@example.com>"},
+          "System.ChangedDate": {"oldValue": "2014-07-15T16:48:44.663Z", "newValue": "2014-07-15T17:42:44.663Z"},
+          "System.Watermark": {"oldValue": 2, "newValue": 5},
+          "System.Tags": {"oldValue": "triage", "newValue": "triage; agent-ready"}
+        },
+        "_links": {
+          "self": {"href": "https://dev.azure.com/fabrikam/_apis/wit/workItems/5/updates/2"},
+          "parent": {"href": "https://dev.azure.com/fabrikam/_apis/wit/workItems/5"}
+        },
+        "url": "https://dev.azure.com/fabrikam/_apis/wit/workItems/5/updates/2",
+        "revision": {
+          "id": 5,
+          "rev": 2,
+          "fields": {
+            "System.AreaPath": "FabrikamCloud",
+            "System.TeamProject": "FabrikamCloud",
+            "System.IterationPath": "FabrikamCloud",
+            "System.WorkItemType": "Bug",
+            "System.State": "Approved",
+            "System.Reason": "Approved by the Product Owner",
+            "System.AssignedTo": "Jane Doe <jane.doe@example.com>",
+            "System.CreatedDate": "2014-07-15T16:48:44.663Z",
+            "System.CreatedBy": "Jane Doe <jane.doe@example.com>",
+            "System.ChangedDate": "2014-07-15T17:42:44.663Z",
+            "System.ChangedBy": "Jane Doe <jane.doe@example.com>",
+            "System.Title": "Some great new idea!",
+            "System.Tags": "triage; agent-ready",
+            "Microsoft.VSTS.Common.Severity": "3 - Medium",
+            "Microsoft.VSTS.Common.Priority": 3
+          },
+          "url": "https://dev.azure.com/fabrikam/_apis/wit/workItems/5/revisions/2"
+        }
+      },
+      "resourceVersion": "1.0",
+      "resourceContainers": {
+        "collection": {"id": "c12d0eb8-e382-443b-9f9c-c52cba5014c2"},
+        "account": {"id": "f844ec47-a9db-4511-8281-8b63f4eaf94e"},
+        "project": {"id": "be9b3917-87e6-42a4-a549-2bc06a7a878f"}
+      },
+      "createdDate": "2014-07-15T17:42:45.4Z"
+    },
+    "workitem.commented": {
+      "_doc": "https://learn.microsoft.com/azure/devops/service-hooks/events#workitem.commented (commentVersionRef as delivered by current Azure DevOps Services)",
+      "subscriptionId": "00000000-0000-0000-0000-000000000000",
+      "notificationId": 3,
+      "id": "fb2617ed-60df-4518-81fa-749faa6c5cd6",
+      "eventType": "workitem.commented",
+      "publisherId": "tfs",
+      "message": {"text": "Bug #5 (Some great new idea!) commented on by Jane Doe."},
+      "resource": {
+        "id": 5,
+        "rev": 4,
+        "fields": {
+          "System.AreaPath": "FabrikamCloud",
+          "System.TeamProject": "FabrikamCloud",
+          "System.IterationPath": "FabrikamCloud",
+          "System.WorkItemType": "Bug",
+          "System.State": "New",
+          "System.Reason": "New defect reported",
+          "System.CreatedDate": "2014-07-15T17:42:44.663Z",
+          "System.CreatedBy": "Jane Doe <jane.doe@example.com>",
+          "System.ChangedDate": "2014-07-15T17:42:44.663Z",
+          "System.ChangedBy": "Jane Doe <jane.doe@example.com>",
+          "System.Title": "Some great new idea!",
+          "Microsoft.VSTS.Common.Severity": "3 - Medium",
+          "System.History": "<p>This is a <b>great</b> new idea</p>"
+        },
+        "commentVersionRef": {
+          "commentId": 77,
+          "version": 1,
+          "url": "https://dev.azure.com/fabrikam/be9b3917-87e6-42a4-a549-2bc06a7a878f/_apis/wit/workItems/5/comments/77/versions/1"
+        },
+        "_links": {
+          "self": {"href": "https://dev.azure.com/fabrikam/_apis/wit/workItems/5"}
+        },
+        "url": "https://dev.azure.com/fabrikam/_apis/wit/workItems/5"
+      },
+      "resourceVersion": "1.0",
+      "resourceContainers": {
+        "collection": {"id": "c12d0eb8-e382-443b-9f9c-c52cba5014c2"},
+        "account": {"id": "f844ec47-a9db-4511-8281-8b63f4eaf94e"},
+        "project": {"id": "be9b3917-87e6-42a4-a549-2bc06a7a878f"}
+      },
+      "createdDate": "2014-07-15T17:42:45.4Z"
+    }
+  }
+}

@@ -15,7 +15,8 @@ Contract, from Microsoft's documentation:
   accounts/use-personal-access-tokens-to-authenticate). Git over HTTPS accepts
   the same token as the password with any user name.
 * Service hooks: publisher ``tfs``, events ``git.pullrequest.created`` and
-  ``git.pullrequest.updated``, consumer ``webHooks`` / ``httpRequest``
+  ``git.pullrequest.updated`` (plus the Azure Boards ``workitem.*`` events
+  handled in ``preloop.utils.azure_devops_work_items``), consumer ``webHooks`` / ``httpRequest``
   (https://learn.microsoft.com/azure/devops/service-hooks/events and
   https://learn.microsoft.com/azure/devops/service-hooks/services/webhooks).
   Deliveries carry no signature. The subscription can send fixed HTTP headers
@@ -54,11 +55,24 @@ WEBHOOK_SECRET_HEADER = "X-Preloop-Webhook-Secret"
 WEBHOOK_MAX_BYTES = 1024 * 1024
 
 # Service hook event id -> normalized Preloop event type.
-AZURE_DEVOPS_EVENT_MAP: Dict[str, str] = {
+PULL_REQUEST_EVENT_MAP: Dict[str, str] = {
     "git.pullrequest.created": "pull_request_opened",
     "git.pullrequest.updated": "pull_request_updated",
 }
+# Azure Boards work item events (project scoped). ``workitem.updated``
+# refines to issue_labeled / issue_status_changed / issue_unlabeled in
+# ``preloop.sync.event_normalizer``.
+WORK_ITEM_EVENT_MAP: Dict[str, str] = {
+    "workitem.created": "issue_opened",
+    "workitem.updated": "issue_updated",
+    "workitem.commented": "comment_created",
+}
+AZURE_DEVOPS_EVENT_MAP: Dict[str, str] = {
+    **PULL_REQUEST_EVENT_MAP,
+    **WORK_ITEM_EVENT_MAP,
+}
 AZURE_DEVOPS_WEBHOOK_EVENTS: Tuple[str, ...] = tuple(AZURE_DEVOPS_EVENT_MAP)
+PULL_REQUEST_WEBHOOK_EVENTS: Tuple[str, ...] = tuple(PULL_REQUEST_EVENT_MAP)
 
 LEGACY_HOST_MESSAGE = (
     "Azure DevOps URLs on {organization}.visualstudio.com are not supported. "
@@ -561,7 +575,7 @@ def normalize_delivery(
         raise AzureDevOpsWebhookRejectedError(400, "missing_event_type")
     if payload.get("publisherId") not in (None, "tfs"):
         raise AzureDevOpsWebhookRejectedError(400, "unsupported_publisher")
-    event_type = AZURE_DEVOPS_EVENT_MAP.get(key)
+    event_type = PULL_REQUEST_EVENT_MAP.get(key)
     if event_type is None:
         return AzureDevOpsDelivery(
             accepted=False, event_key=key, reason=REASON_UNSUPPORTED_EVENT

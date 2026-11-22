@@ -53,8 +53,11 @@ SETUP_INSTRUCTIONS = (
     "In Azure DevOps open Project settings, Service hooks, Create subscription, "
     "choose Web Hooks and the event 'Pull request created', filter by the "
     "repository, enter the callback URL and, under HTTP headers, "
-    f"'{WEBHOOK_SECRET_HEADER}:<secret>'. Repeat for 'Pull request updated'. "
-    "Leave resource details at 'All'."
+    f"'{WEBHOOK_SECRET_HEADER}:<secret>'. Repeat for 'Pull request updated', "
+    "and, without a repository filter, for 'Work item created', 'Work item "
+    "updated' and 'Work item commented on'. Leave resource details at 'All'. "
+    "Registering from Preloop also records the token's identity, so changes "
+    "Preloop makes to work items do not trigger flows again."
 )
 
 
@@ -207,7 +210,7 @@ def register_azure_devops_webhook(
     current_user: AuthUserResponse = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> Dict[str, Any]:
-    """Create or update the two subscriptions with the tracker's own token.
+    """Create or update the subscriptions with the tracker's own token.
 
     Idempotent: re-running updates Preloop's subscriptions in place and
     never touches other subscriptions. A secret is generated first when the
@@ -226,12 +229,27 @@ def register_azure_devops_webhook(
         secret = generate_webhook_secret()
         crud_tracker.update(db, db_obj=tracker, obj_in={"jira_webhook_secret": secret})
     repository = body.repository if body else None
-    try:
-        result = asyncio.run(
-            _client(tracker).ensure_service_hooks(
-                url, secret, repo_full_name=repository
-            )
+    client = _client(tracker)
+
+    async def register() -> tuple[Dict[str, Any], Dict[str, Any]]:
+        result = await client.ensure_service_hooks(
+            url, secret, repo_full_name=repository
         )
+        try:
+            context = await client.work_item_context(repository)
+        except TrackerError as exc:
+            # The subscriptions exist; without the identity the loop guard
+            # falls back to bot names, so this is not fatal.
+            logger.warning(
+                "Work item context unavailable for tracker %s: %s",
+                tracker.id,
+                type(exc).__name__,
+            )
+            context = {}
+        return result, context
+
+    try:
+        result, context = asyncio.run(register())
     except (TrackerPermissionError, TrackerAuthenticationError) as exc:
         logger.info(
             "Service hook registration refused for tracker %s: %s",
@@ -251,6 +269,19 @@ def register_azure_devops_webhook(
             status_code=502,
             detail=f"Azure DevOps did not accept the request: {exc}",
         ) from exc
+    # The intake ignores changes made with this token (no self-trigger) and
+    # reads open/closed from the state categories without a network call.
+    if context:
+        crud_tracker.update(
+            db,
+            db_obj=tracker,
+            obj_in={
+                "connection_details": {
+                    **dict(tracker.connection_details or {}),
+                    **context,
+                }
+            },
+        )
     return _status(
         tracker,
         {

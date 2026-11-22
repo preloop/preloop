@@ -2,9 +2,12 @@
 
 An Azure DevOps tracker is bound to one organization and, optionally, one
 project and one repository. Each git repository becomes a Preloop project
-(``slug`` ``org/project/repo``, ``identifier`` the repository GUID). Azure
-Boards work items are not synced: the issue methods report that they are
-unsupported, and the tracker focuses on pull request review.
+(``slug`` ``org/project/repo``, ``identifier`` the repository GUID).
+
+Azure Boards work items are the tracker's issues (key ``org/project#id``).
+A work item belongs to an Azure DevOps project, not a repository, so each
+project's work items attach to one of its repositories' Preloop projects,
+chosen by :func:`preloop.utils.azure_devops_work_items.work_item_home`.
 
 Authentication is a personal access token sent as the password of HTTP
 Basic auth with an empty user name. Every request goes to
@@ -22,7 +25,7 @@ scanner does not register them automatically.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote
 
@@ -37,7 +40,11 @@ from preloop.schemas.tracker_models import (
     IssueComment,
     IssueCreate,
     IssueFilter,
+    IssuePriority,
+    IssueRelation,
+    IssueStatus,
     IssueUpdate,
+    IssueUser,
     ProjectMetadata,
     TrackerConnection,
 )
@@ -46,6 +53,7 @@ from preloop.utils.azure_devops import (
     AZURE_DEVOPS_API_VERSION,
     AZURE_DEVOPS_BASE_URL,
     AZURE_DEVOPS_WEBHOOK_EVENTS,
+    PULL_REQUEST_WEBHOOK_EVENTS,
     WEBHOOK_SECRET_HEADER,
     branch_from_ref,
     clone_url,
@@ -53,6 +61,30 @@ from preloop.utils.azure_devops import (
     pull_request_web_url,
     repository_full_name,
     user_name,
+)
+from preloop.utils.azure_devops_html import markdown_to_html
+from preloop.utils.azure_devops_work_items import (
+    ARTIFACT_LINK,
+    COMMENTS_API_VERSION,
+    DEFAULT_WORK_ITEM_TYPES,
+    FIELD_PROJECT,
+    FIELD_STATE,
+    FIELD_TYPE,
+    PULL_REQUEST_ARTIFACT_NAME,
+    RELATION_LINK_TYPES,
+    WORK_ITEMS_BATCH_LIMIT,
+    build_wiql,
+    comment_summary,
+    parse_datetime,
+    parse_priority,
+    parse_work_item_id,
+    parse_work_item_url,
+    patch_ops,
+    pull_request_artifact_uri,
+    states_snapshot,
+    work_item_home,
+    work_item_summary,
+    work_item_web_url,
 )
 
 from ..exceptions import (
@@ -71,10 +103,6 @@ HTTP_TIMEOUT_SECONDS = 30.0
 MAX_PAGES = 50
 PAGE_SIZE = 100
 CONTINUATION_HEADER = "x-ms-continuationtoken"
-_ISSUES_UNSUPPORTED = (
-    "Azure DevOps trackers sync repositories and pull requests only. Azure "
-    "Boards work items are not supported."
-)
 # GitPullRequestCommentThread status values
 # (https://learn.microsoft.com/rest/api/azure/devops/git/pull-request-threads).
 THREAD_ACTIVE = "active"
@@ -130,6 +158,10 @@ class AzureDevOpsTracker(BaseTracker):
         self.repo_full_name: Optional[str] = repo_full_name or None
         self._transport = transport
         self._identity_id: Optional[str] = None
+        self._identity_unique_name: Optional[str] = None
+        self._states: Dict[str, Dict[str, List[Dict[str, str]]]] = {}
+        self._type_names: Dict[str, List[str]] = {}
+        self._repos: Optional[List[Dict[str, Any]]] = None
 
     # ------------------------------------------------------------------
     # Transport
@@ -395,12 +427,6 @@ class AzureDevOpsTracker(BaseTracker):
             "meta_data": {**meta, "url": proj_data.get("url", "")},
         }
 
-    async def get_issues(
-        self, organization_id: str, project_id: str, since: Optional[datetime] = None
-    ) -> List[Dict[str, Any]]:
-        """Return no issues: Azure Boards is not synced."""
-        return []
-
     async def get_project_metadata(self, project_key: str) -> ProjectMetadata:
         """Return metadata for a repository (``org/project/repo``)."""
         repo = await self._get_json(self._repo(project_key))
@@ -412,6 +438,233 @@ class AzureDevOpsTracker(BaseTracker):
             url=entry["url"],
         )
 
+    # ------------------------------------------------------------------
+    # Azure Boards work items
+    # ------------------------------------------------------------------
+
+    def _board_project(self, project_key: Optional[str]) -> str:
+        """Azure DevOps project for a Preloop project key.
+
+        Accepts ``org/project/repo`` (a repository's Preloop slug),
+        ``org/project`` or a bare project name; falls back to the bound
+        project.
+
+        Raises:
+            TrackerResponseError: When no project can be determined or it
+                belongs to another organization.
+            TrackerPermissionError: When it is outside the bound project.
+        """
+        parts = [p for p in str(project_key or "").split("/") if p]
+        if len(parts) >= 2:
+            if parts[0].casefold() != self.organization.casefold():
+                raise TrackerResponseError(
+                    "The project belongs to another Azure DevOps organization."
+                )
+            project: Optional[str] = parts[1]
+        elif len(parts) == 1 and not is_guid(parts[0]):
+            project = parts[0]
+        else:
+            project = self.project
+        if not project:
+            raise TrackerResponseError(
+                "No Azure DevOps project selected. Pass 'organization/project' "
+                "or bind the tracker to a project."
+            )
+        self._check_board_project(project)
+        return project
+
+    def _check_board_project(self, project: Optional[str]) -> None:
+        if self.project and (project or "").casefold() != self.project.casefold():
+            raise TrackerPermissionError(
+                "The work item is outside this tracker's Azure DevOps project.",
+                status_code=403,
+            )
+
+    async def _project_states(self, project: str) -> Dict[str, List[Dict[str, str]]]:
+        """``{type (casefolded): [{"name", "category"}, ...]}``, cached.
+
+        One ``workitemtypes`` call returns every type's states with their
+        category. Process templates rename and translate states, so
+        open/closed is decided by the category, never by the name.
+        """
+        cache_key = project.casefold()
+        if cache_key not in self._states:
+            values = await self._list(
+                f"{quote(project, safe='')}/_apis/wit/workitemtypes"
+            )
+            self._states[cache_key] = {
+                str(t.get("name") or "").casefold(): [
+                    {"name": str(st["name"]), "category": str(st.get("category") or "")}
+                    for st in t.get("states") or []
+                    if isinstance(st, dict) and st.get("name")
+                ]
+                for t in values
+                if isinstance(t, dict) and t.get("name")
+            }
+            self._type_names[cache_key] = [
+                str(t["name"]) for t in values if isinstance(t, dict) and t.get("name")
+            ]
+        return self._states[cache_key]
+
+    async def _state_categories(
+        self, project: str, work_item_type: str
+    ) -> Dict[str, str]:
+        """``{state name (casefolded): category}`` for a work item type."""
+        states = (await self._project_states(project)).get(
+            work_item_type.casefold(), []
+        )
+        return {st["name"].casefold(): st["category"] for st in states}
+
+    async def _category_of(self, work_item: Dict[str, Any]) -> Optional[str]:
+        fields = work_item.get("fields") or {}
+        project = fields.get(FIELD_PROJECT)
+        wi_type = fields.get(FIELD_TYPE)
+        state = fields.get(FIELD_STATE)
+        if not (project and wi_type and state):
+            return None
+        try:
+            categories = await self._state_categories(str(project), str(wi_type))
+        except (TrackerPermissionError, TrackerResponseError) as exc:
+            logger.info(
+                "Azure DevOps state lookup failed for tracker %s: %s",
+                self.tracker_id,
+                type(exc).__name__,
+            )
+            return None
+        return categories.get(str(state).casefold())
+
+    async def _resolve_state(
+        self, project: str, work_item_type: str, wanted: str
+    ) -> str:
+        """State name for ``open``, ``closed`` or a state name.
+
+        ``closed`` picks the first ``Completed`` state, ``open`` the first
+        ``Proposed`` one, in the order the process defines them.
+
+        Raises:
+            TrackerResponseError: When the type has no such state.
+        """
+        states = (await self._project_states(project)).get(
+            work_item_type.casefold(), []
+        )
+        categories = {st["name"].casefold(): st["category"] for st in states}
+        names = [st["name"] for st in states]
+        target = wanted.strip()
+        if target.casefold() in categories:
+            return next(n for n in names if n.casefold() == target.casefold())
+        category = {"closed": "Completed", "open": "Proposed"}.get(target.casefold())
+        for name in names:
+            if category and categories.get(name.casefold()) == category:
+                return name
+        raise TrackerResponseError(
+            f"Work item type '{work_item_type}' has no state '{target}'. "
+            f"Valid states: {', '.join(names)}."
+        )
+
+    async def _work_item(self, work_item_id: int) -> Dict[str, Any]:
+        data = await self._get_json(
+            f"_apis/wit/workitems/{int(work_item_id)}", params={"$expand": "relations"}
+        )
+        self._check_board_project((data.get("fields") or {}).get(FIELD_PROJECT))
+        return data
+
+    async def _to_issue(
+        self, work_item: Dict[str, Any], comments: Optional[List[IssueComment]] = None
+    ) -> Issue:
+        category = await self._category_of(work_item)
+        summary = work_item_summary(
+            work_item, self.organization, state_category=category
+        )
+        return self._summary_to_issue(summary, comments or [])
+
+    def _summary_to_issue(
+        self, summary: Dict[str, Any], comments: List[IssueComment]
+    ) -> Issue:
+        def user(value: Optional[Dict[str, Any]]) -> Optional[IssueUser]:
+            if not value:
+                return None
+            return IssueUser(
+                id=str(value.get("id")), name=str(value.get("name")), email=None
+            )
+
+        priority = summary.get("priority")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        relations = [
+            IssueRelation(
+                relation_type=r["relation_type"],
+                issue_id=str(r["id"]),
+                issue_key=str(r["id"]),
+            )
+            for r in summary.get("relations") or []
+            if r.get("id") is not None
+        ]
+        parent = next((r for r in relations if r.relation_type == "parent"), None)
+        return Issue(
+            id=str(summary["id"]),
+            key=summary["key"],
+            title=summary["title"],
+            description=summary["body"],
+            status=IssueStatus(
+                id=summary["state_name"] or summary["state"],
+                name=summary["state_name"] or summary["state"],
+                category=summary["state"],
+            ),
+            priority=(
+                IssuePriority(
+                    id=priority["id"], name=priority["name"], level=priority["level"]
+                )
+                if priority
+                else None
+            ),
+            created_at=parse_datetime(summary.get("created_at")) or now,
+            updated_at=parse_datetime(summary.get("updated_at")) or now,
+            resolved_at=parse_datetime(summary.get("closed_at")),
+            reporter=user(summary.get("author")),
+            assignee=user(summary.get("assignee")),
+            labels=list(summary.get("labels") or []),
+            parent=parent,
+            relations=relations,
+            comments=comments,
+            url=summary.get("html_url") or "",
+            api_url=self._url(f"_apis/wit/workitems/{summary['id']}"),
+            tracker_type=self.tracker_type,
+            project_key=f"{self.organization}/{summary.get('project') or ''}",
+            custom_fields={
+                "work_item_type": summary.get("work_item_type"),
+                "state_category": summary.get("state_category"),
+                "revision": summary.get("revision"),
+            },
+        )
+
+    async def _work_items_batch(self, ids: List[int]) -> List[Dict[str, Any]]:
+        """Read work items in batches of 200, keeping the order of ``ids``."""
+        items: Dict[int, Dict[str, Any]] = {}
+        for start in range(0, len(ids), WORK_ITEMS_BATCH_LIMIT):
+            chunk = ids[start : start + WORK_ITEMS_BATCH_LIMIT]
+            response = await self._request(
+                "POST",
+                "_apis/wit/workitemsbatch",
+                json={"ids": chunk, "$expand": "Relations", "errorPolicy": "Omit"},
+            )
+            for item in (response.json() or {}).get("value") or []:
+                if isinstance(item, dict) and isinstance(item.get("id"), int):
+                    items[item["id"]] = item
+        return [items[i] for i in ids if i in items]
+
+    async def _wiql_ids(self, project: str, query: str, top: int) -> List[int]:
+        response = await self._request(
+            "POST",
+            f"{quote(project, safe='')}/_apis/wit/wiql",
+            # timePrecision: compare date fields to the second, not the day.
+            params={"$top": max(1, min(int(top), 20000)), "timePrecision": "true"},
+            json={"query": query},
+        )
+        return [
+            int(w["id"])
+            for w in (response.json() or {}).get("workItems") or []
+            if isinstance(w, dict) and isinstance(w.get("id"), int)
+        ]
+
     async def search_issues(
         self,
         project_key: str,
@@ -419,34 +672,433 @@ class AzureDevOpsTracker(BaseTracker):
         limit: int = 10,
         offset: int = 0,
     ) -> Tuple[List[Issue], int]:
-        """Return no issues: Azure Boards is not synced."""
-        return [], 0
+        """Search work items with WIQL.
+
+        ``status`` accepts ``open`` / ``closed`` (matched through the state
+        category, so any process template and language works) or state
+        names. ``query`` matches the title or description.
+
+        Returns:
+            The requested page and the total number of matches (capped at
+            20000, the WIQL limit).
+        """
+        project = self._board_project(project_key)
+        query = build_wiql(
+            project, filter_params, states=await self._project_states(project)
+        )
+        ids = await self._wiql_ids(project, query, 20000)
+        page = ids[max(0, offset) : max(0, offset) + max(1, limit)]
+        items = await self._work_items_batch(page)
+        return [await self._to_issue(item) for item in items], len(ids)
 
     async def get_issue(self, issue_id: str) -> Issue:
-        """Unsupported for Azure DevOps."""
-        raise NotImplementedError(_ISSUES_UNSUPPORTED)
+        """Read a work item with its links and comments.
+
+        Args:
+            issue_id: Work item id, issue key (``org/project#id``) or URL.
+        """
+        work_item_id = self._work_item_id(issue_id)
+        item = await self._work_item(work_item_id)
+        comments = await self._comments(item)
+        return await self._to_issue(item, comments)
+
+    def _work_item_id(self, issue_id: Any) -> int:
+        parsed = parse_work_item_url(str(issue_id))
+        if parsed and parsed[0].casefold() != self.organization.casefold():
+            raise TrackerResponseError(
+                "The work item belongs to another Azure DevOps organization."
+            )
+        work_item_id = parse_work_item_id(issue_id)
+        if work_item_id is None:
+            raise TrackerResponseError(f"Not an Azure Boards work item: {issue_id!r}")
+        return work_item_id
+
+    async def _default_type(self, project: str) -> str:
+        """The requirement-level type of the project's process."""
+        await self._project_states(project)
+        names = self._type_names.get(project.casefold()) or []
+        for preferred in DEFAULT_WORK_ITEM_TYPES:
+            for name in names:
+                if name.casefold() == preferred.casefold():
+                    return name
+        if not names:
+            raise TrackerResponseError("The project has no work item types.")
+        return names[0]
+
+    def _relation_value(self, relation_type: str, target_id: int) -> Dict[str, Any]:
+        link = RELATION_LINK_TYPES.get(relation_type)
+        if link is None:
+            raise TrackerResponseError(
+                f"Unsupported relation type '{relation_type}'. Use one of: "
+                f"{', '.join(RELATION_LINK_TYPES)}."
+            )
+        return {"rel": link, "url": self._url(f"_apis/wit/workItems/{target_id}")}
 
     async def create_issue(self, project_key: str, issue_data: IssueCreate) -> Issue:
-        """Unsupported for Azure DevOps."""
-        raise NotImplementedError(_ISSUES_UNSUPPORTED)
+        """Create a work item.
+
+        The type is ``custom_fields["work_item_type"]`` or the process's
+        requirement type (Issue, User Story, Product Backlog Item,
+        Requirement). Other ``custom_fields`` entries named like
+        ``Namespace.Field`` are written as fields.
+        """
+        project = self._board_project(project_key)
+        custom = dict(issue_data.custom_fields or {})
+        wi_type = str(custom.pop("work_item_type", "") or "") or (
+            await self._default_type(project)
+        )
+        ops = patch_ops(
+            title=issue_data.title,
+            description_html=(
+                markdown_to_html(issue_data.description)
+                if issue_data.description
+                else None
+            ),
+            assignee=issue_data.assignee or None,
+            labels=issue_data.labels or None,
+            priority=parse_priority(issue_data.priority),
+            extra_fields=custom,
+        )
+        parent_id = parse_work_item_id(issue_data.parent) if issue_data.parent else None
+        if parent_id:
+            ops.append(
+                {
+                    "op": "add",
+                    "path": "/relations/-",
+                    "value": self._relation_value("parent", parent_id),
+                }
+            )
+        response = await self._request(
+            "POST",
+            f"{quote(project, safe='')}/_apis/wit/workitems/${quote(wi_type, safe='')}",
+            json=ops,
+        )
+        item = response.json()
+        if issue_data.status and issue_data.status.strip().casefold() != "open":
+            state = await self._resolve_state(project, wi_type, issue_data.status)
+            item = await self._patch(int(item["id"]), patch_ops(state=state))
+        return await self._to_issue(item)
+
+    async def _patch(
+        self, work_item_id: int, ops: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        response = await self._request(
+            "PATCH",
+            f"_apis/wit/workitems/{int(work_item_id)}",
+            params={"$expand": "relations"},
+            json=ops,
+        )
+        return response.json()
 
     async def update_issue(self, issue_id: str, issue_data: IssueUpdate) -> Issue:
-        """Unsupported for Azure DevOps."""
-        raise NotImplementedError(_ISSUES_UNSUPPORTED)
+        """Update fields with one JSON Patch request.
+
+        ``labels`` replaces the tag list; ``status`` takes ``open``,
+        ``closed`` or a state name of the item's type.
+        """
+        work_item_id = self._work_item_id(issue_id)
+        current = await self._work_item(work_item_id)
+        fields = current.get("fields") or {}
+        state = None
+        if issue_data.status:
+            state = await self._resolve_state(
+                str(fields.get(FIELD_PROJECT)),
+                str(fields.get(FIELD_TYPE)),
+                issue_data.status,
+            )
+        custom = dict(issue_data.custom_fields or {})
+        custom.pop("work_item_type", None)
+        ops = patch_ops(
+            title=issue_data.title,
+            description_html=(
+                markdown_to_html(issue_data.description)
+                if issue_data.description is not None
+                else None
+            ),
+            state=state,
+            assignee=issue_data.assignee,
+            labels=issue_data.labels,
+            priority=parse_priority(issue_data.priority),
+            extra_fields=custom,
+        )
+        if not ops:
+            return await self._to_issue(current)
+        return await self._to_issue(await self._patch(work_item_id, ops))
+
+    def _comments_path(self, project: str, work_item_id: int) -> str:
+        return f"{quote(project, safe='')}/_apis/wit/workItems/{int(work_item_id)}/comments"
+
+    async def _comments(self, work_item: Dict[str, Any]) -> List[IssueComment]:
+        project = str((work_item.get("fields") or {}).get(FIELD_PROJECT) or "")
+        path = self._comments_path(project, int(work_item["id"]))
+        comments: List[Dict[str, Any]] = []
+        params: Dict[str, Any] = {"api-version": COMMENTS_API_VERSION, "$top": 200}
+        for _ in range(MAX_PAGES):
+            data = await self._get_json(path, params=params)
+            comments.extend(data.get("comments") or [])
+            token = data.get("continuationToken")
+            if not token:
+                break
+            params = {**params, "continuationToken": token}
+        return [
+            self._to_comment(c, project, int(work_item["id"]))
+            for c in comments
+            if isinstance(c, dict) and not c.get("isDeleted")
+        ]
+
+    def _to_comment(
+        self, comment: Dict[str, Any], project: str, work_item_id: int
+    ) -> IssueComment:
+        summary = comment_summary(comment)
+        author = summary.get("author") or {"id": "unknown", "name": "unknown"}
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return IssueComment(
+            id=str(summary["id"]),
+            body=summary["body"],
+            created_at=parse_datetime(summary.get("created_at")) or now,
+            updated_at=parse_datetime(summary.get("updated_at")),
+            author=IssueUser(id=str(author["id"]), name=str(author["name"])),
+            url=(
+                f"{work_item_web_url(self.organization, project, work_item_id)}"
+                f"#{summary['id']}"
+            ),
+        )
 
     async def get_comments(self, issue_id: str) -> List[IssueComment]:
-        """Unsupported for Azure DevOps work items; use pull request threads."""
-        raise NotImplementedError(_ISSUES_UNSUPPORTED)
+        """Comments on a work item, oldest first, as markdown."""
+        item = await self._work_item(self._work_item_id(issue_id))
+        return await self._comments(item)
 
     async def add_comment(self, issue_id: str, comment: str) -> IssueComment:
-        """Unsupported for Azure DevOps work items; use pull request threads."""
-        raise NotImplementedError(_ISSUES_UNSUPPORTED)
+        """Add a comment; the markdown is stored as HTML."""
+        work_item_id = self._work_item_id(issue_id)
+        item = await self._work_item(work_item_id)
+        project = str((item.get("fields") or {}).get(FIELD_PROJECT) or "")
+        response = await self._request(
+            "POST",
+            self._comments_path(project, work_item_id),
+            params={"api-version": COMMENTS_API_VERSION},
+            json={"text": markdown_to_html(comment)},
+        )
+        return self._to_comment(response.json(), project, work_item_id)
+
+    async def update_comment(
+        self, issue_id: str, comment_id: str, comment: str
+    ) -> IssueComment:
+        """Replace the text of a work item comment."""
+        work_item_id = self._work_item_id(issue_id)
+        item = await self._work_item(work_item_id)
+        project = str((item.get("fields") or {}).get(FIELD_PROJECT) or "")
+        response = await self._request(
+            "PATCH",
+            f"{self._comments_path(project, work_item_id)}/{int(comment_id)}",
+            params={"api-version": COMMENTS_API_VERSION},
+            json={"text": markdown_to_html(comment)},
+        )
+        return self._to_comment(response.json(), project, work_item_id)
 
     async def add_relation(
         self, issue_id: str, related_issue_id: str, relation_type: str
     ) -> bool:
-        """Unsupported for Azure DevOps."""
-        raise NotImplementedError(_ISSUES_UNSUPPORTED)
+        """Link two work items.
+
+        ``relation_type``: relates_to, parent, child, blocks, blocked_by,
+        duplicates or duplicated_by. Returns False when the link exists.
+        """
+        work_item_id = self._work_item_id(issue_id)
+        target_id = self._work_item_id(related_issue_id)
+        value = self._relation_value(relation_type, target_id)
+        current = await self._work_item(work_item_id)
+        for rel in current.get("relations") or []:
+            if rel.get("rel") == value["rel"] and str(rel.get("url", "")).rstrip(
+                "/"
+            ).endswith(f"/{target_id}"):
+                return False
+        await self._patch(
+            work_item_id, [{"op": "add", "path": "/relations/-", "value": value}]
+        )
+        return True
+
+    async def link_pull_request(
+        self,
+        issue_id: str,
+        *,
+        project_id: str,
+        repository_id: str,
+        pr_id: int,
+    ) -> bool:
+        """Add the Development link from a work item to a pull request.
+
+        Args:
+            issue_id: Work item id or key.
+            project_id: GUID of the repository's Azure DevOps project.
+            repository_id: Repository GUID.
+            pr_id: Pull request id.
+
+        Returns:
+            True when the link was added, False when it already existed.
+        """
+        work_item_id = self._work_item_id(issue_id)
+        uri = pull_request_artifact_uri(project_id, repository_id, int(pr_id))
+        current = await self._work_item(work_item_id)
+        for rel in current.get("relations") or []:
+            if str(rel.get("url") or "").casefold() == uri.casefold():
+                return False
+        await self._patch(
+            work_item_id,
+            [
+                {
+                    "op": "add",
+                    "path": "/relations/-",
+                    "value": {
+                        "rel": ARTIFACT_LINK,
+                        "url": uri,
+                        "attributes": {"name": PULL_REQUEST_ARTIFACT_NAME},
+                    },
+                }
+            ],
+        )
+        return True
+
+    async def token_identity(self) -> str:
+        """Identity id of the token owner (for the self-update guard)."""
+        return await self._own_identity()
+
+    async def get_issues(
+        self, organization_id: str, project_id: str, since: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """Work items for the Preloop project of one repository.
+
+        A repository receives the work items of its Azure DevOps project
+        only when it is that project's work item home (see
+        :func:`preloop.utils.azure_devops_work_items.work_item_home`);
+        other repositories of the project get none, so each work item is
+        stored once.
+
+        Args:
+            organization_id: Unused (one organization per tracker).
+            project_id: Repository GUID (the Preloop project identifier).
+            since: Only items changed after this time.
+
+        Returns:
+            Work item summaries for :meth:`transform_issue`.
+        """
+        if self._repos is None:
+            # One listing per client, not per synced repository.
+            self._repos = await self.get_projects(organization_id)
+        repos = self._repos
+        repo = next(
+            (r for r in repos if r["identifier"] == str(project_id).lower()), None
+        )
+        if repo is None:
+            return []
+        board_project = repo["meta_data"]["project"]
+        siblings = [
+            r["meta_data"]["repository"]
+            for r in repos
+            if r["meta_data"]["project"].casefold() == board_project.casefold()
+        ]
+        home = work_item_home(
+            board_project,
+            siblings,
+            bound_repository=self.repository,
+            overrides=self.connection_details.get("work_item_repositories"),
+        )
+        if (
+            home is None
+            or home.casefold() != repo["meta_data"]["repository"].casefold()
+        ):
+            return []
+        query = build_wiql(
+            board_project,
+            IssueFilter(updated_after=since) if since else IssueFilter(),
+            states={},
+        )
+        ids = await self._wiql_ids(board_project, query, 20000)
+        items = await self._work_items_batch(ids)
+        out: List[Dict[str, Any]] = []
+        for item in items:
+            category = await self._category_of(item)
+            out.append(
+                work_item_summary(item, self.organization, state_category=category)
+            )
+        return out
+
+    def transform_issue(
+        self, issue_data: Dict[str, Any], project: Project
+    ) -> Dict[str, Any]:
+        """Map a work item summary onto issue columns."""
+        created = parse_datetime(issue_data.get("created_at"))
+        updated = parse_datetime(issue_data.get("updated_at")) or created
+        url = issue_data.get("html_url") or ""
+        priority = issue_data.get("priority") or None
+        assignee = issue_data.get("assignee") or None
+        wi_type = str(issue_data.get("work_item_type") or "")
+        issue_type = (
+            "bug"
+            if wi_type.casefold() == "bug"
+            else "feature"
+            if wi_type.casefold() in {"feature", "epic", "user story"}
+            else "task"
+        )
+        return {
+            "project_id": project.id,
+            "tracker_id": self.tracker_id,
+            "external_id": str(issue_data["id"]),
+            "key": issue_data.get("key") or str(issue_data["id"]),
+            "title": issue_data.get("title") or "",
+            "description": issue_data.get("body") or "",
+            "status": issue_data.get("state") or "open",
+            "issue_type": issue_type,
+            "priority": priority["name"] if isinstance(priority, dict) else None,
+            "created_at": created,
+            "updated_at": updated,
+            "last_updated_external": updated,
+            "external_url": url,
+            "last_synced": datetime.now(timezone.utc).replace(tzinfo=None),
+            "meta_data": {
+                "labels": list(issue_data.get("labels") or []),
+                "assignees": [assignee["name"]] if assignee else [],
+                "url": url,
+                "external_url": url,
+                "external_created_at": issue_data.get("created_at"),
+                "external_updated_at": issue_data.get("updated_at"),
+                "work_item_type": wi_type or None,
+                "state_name": issue_data.get("state_name"),
+                "state_category": issue_data.get("state_category"),
+                "azure_project": issue_data.get("project"),
+                "parent_id": issue_data.get("parent_id"),
+                "relations": issue_data.get("relations") or [],
+                "revision": issue_data.get("revision"),
+                "source": "preloop-sync",
+            },
+            "comments": issue_data.get("comments", []),
+        }
+
+    def transform_comment(
+        self,
+        comment_data: Dict[str, Any],
+        issue_db_id: str,
+        author_db_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Map a work item comment summary onto comment columns."""
+        author = comment_data.get("author") or {}
+        created = parse_datetime(comment_data.get("created_at"))
+        return {
+            "issue_id": issue_db_id,
+            "external_id": str(comment_data.get("id")),
+            "author": None,
+            "body": comment_data.get("body") or "",
+            "type": "issue",
+            "meta_data": {
+                "comment_id": str(comment_data.get("id")),
+                "external_author": author.get("name") if author else None,
+                "url": comment_data.get("url"),
+                "source": "preloop-sync",
+            },
+            "created_at": created,
+            "updated_at": parse_datetime(comment_data.get("updated_at")) or created,
+        }
 
     # ------------------------------------------------------------------
     # Pull requests
@@ -584,10 +1236,15 @@ class AzureDevOpsTracker(BaseTracker):
             data = await self._get_json(
                 "_apis/connectionData", params={"api-version": "7.1-preview"}
             )
-            identity = (data.get("authenticatedUser") or {}).get("id")
+            user = data.get("authenticatedUser") or {}
+            identity = user.get("id")
             if not identity:
                 raise TrackerResponseError("Azure DevOps returned no identity.")
             self._identity_id = str(identity)
+            account = ((user.get("properties") or {}).get("Account") or {}).get(
+                "$value"
+            )
+            self._identity_unique_name = str(account) if account else None
         return self._identity_id
 
     async def set_vote(
@@ -757,7 +1414,7 @@ class AzureDevOpsTracker(BaseTracker):
         *,
         repo_full_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create or replace Preloop's two pull request subscriptions.
+        """Create or replace Preloop's pull request and work item subscriptions.
 
         Scope is the bound repository when there is one, else the bound
         project. Only subscriptions that call ``callback_url`` are touched;
@@ -794,7 +1451,9 @@ class AzureDevOpsTracker(BaseTracker):
         created = 0
         for event in AZURE_DEVOPS_WEBHOOK_EVENTS:
             publisher_inputs = {"projectId": project_id}
-            if repository_id:
+            if repository_id and event in PULL_REQUEST_WEBHOOK_EVENTS:
+                # Work item events are project scoped; only pull request
+                # events take a repository filter.
                 publisher_inputs["repository"] = repository_id
             if event == "git.pullrequest.updated":
                 # Only source branch pushes; votes, reviewer and status
@@ -829,6 +1488,42 @@ class AzureDevOpsTracker(BaseTracker):
                 created += 1
             ids.append(str(response.json().get("id")))
         return {"ids": ids, "created": created}
+
+    async def work_item_context(
+        self, repo_full_name: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Settings the webhook intake needs to handle work item events.
+
+        Best effort: a token without Work Items read gets no snapshot, and
+        the intake then falls back to ``ClosedDate``.
+
+        Args:
+            repo_full_name: Repository override for an unbound tracker.
+
+        Returns:
+            ``token_identity_id`` and ``token_identity_unique_name`` (the
+            self-update guard) and
+            ``work_item_states`` (state categories of the project).
+        """
+        context: Dict[str, Any] = {"token_identity_id": await self._own_identity()}
+        if self._identity_unique_name:
+            # Service hook bodies name the changer as "Name <unique name>" on
+            # created and commented events, by GUID on updates.
+            context["token_identity_unique_name"] = self._identity_unique_name
+        target = repo_full_name or self.repo_full_name
+        project = self._split(target)[0] if target else self.project
+        if project:
+            try:
+                states = await self._project_states(project)
+            except (TrackerPermissionError, TrackerResponseError) as exc:
+                logger.info(
+                    "Azure DevOps states snapshot skipped for tracker %s: %s",
+                    self.tracker_id,
+                    type(exc).__name__,
+                )
+            else:
+                context["work_item_states"] = states_snapshot(project, states)
+        return context
 
     # Scanner hooks: service hooks are managed from the tracker page only.
 

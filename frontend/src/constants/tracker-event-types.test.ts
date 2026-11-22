@@ -7,6 +7,8 @@ import {
   GITHUB_TRACKER_EVENTS,
   GITLAB_TRACKER_EVENTS,
   JIRA_TRACKER_EVENTS,
+  trackerHasIssuePriority,
+  trackerHasMilestones,
 } from './tracker-event-types';
 
 describe('getTrackerEventOptions', () => {
@@ -70,6 +72,23 @@ describe('getTrackerEventOptions', () => {
     expect(events.map((event) => event.value)).to.deep.equal([
       'pull_request_opened',
       'pull_request_updated',
+      'issue_opened',
+      'issue_updated',
+      'issue_labeled',
+      'issue_unlabeled',
+      'issue_status_changed',
+      'comment_created',
     ]);
+  });
+});
+
+describe('issue filter capabilities', () => {
+  it('offers priority for Jira and Azure Boards, milestones elsewhere', () => {
+    expect(trackerHasIssuePriority('jira')).to.equal(true);
+    expect(trackerHasIssuePriority('azure_devops')).to.equal(true);
+    expect(trackerHasIssuePriority('github')).to.equal(false);
+    expect(trackerHasMilestones('azure_devops')).to.equal(false);
+    expect(trackerHasMilestones('gitlab')).to.equal(true);
+    expect(trackerHasMilestones(undefined)).to.equal(true);
   });
 });

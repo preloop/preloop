@@ -179,3 +179,150 @@ def test_invalid_json_is_rejected(harness) -> None:
         URL, content=b"{not json", headers={WEBHOOK_SECRET_HEADER: SECRET}
     )
     assert response.status_code == 400
+
+
+# ----------------------------------------------------------------------
+# Azure Boards work items
+# ----------------------------------------------------------------------
+
+WORK_ITEM_FIXTURES: Dict[str, Any] = json.loads(
+    (
+        Path(__file__).resolve().parents[1]
+        / "fixtures"
+        / "azure_devops"
+        / "work_items.json"
+    ).read_text()
+)["events"]
+BOT_ID = "77777777-8888-9999-aaaa-bbbbbbbbbbbb"
+
+
+def wi(key: str) -> Dict[str, Any]:
+    return copy.deepcopy(WORK_ITEM_FIXTURES[key])
+
+
+@pytest.fixture
+def boards(harness):
+    project = MagicMock()
+    project.id = uuid.UUID("99999999-0000-0000-0000-000000000003")
+    project.organization_id = uuid.UUID("99999999-0000-0000-0000-000000000001")
+    project.identifier = "c2c2c2c2-dddd-eeee-ffff-a3a3a3a3a3a3"
+    project.slug = "fabrikam/FabrikamCloud/FabrikamCloud"
+    project.name = "FabrikamCloud"
+    project.meta_data = {"repository": "FabrikamCloud", "project": "FabrikamCloud"}
+    harness["tracker"].connection_details = {
+        "organization": "fabrikam",
+        "token_identity_id": BOT_ID,
+        "token_identity_unique_name": "preloop-bot@example.com",
+        "work_item_states": {
+            "fabrikamcloud": {"bug": {"new": "Proposed", "approved": "Completed"}}
+        },
+    }
+    with (
+        patch(
+            "preloop.api.endpoints.webhooks.resolve_work_item_project",
+            return_value=project,
+        ) as resolve,
+        patch("preloop.api.endpoints.webhooks.crud_issue") as crud_issue,
+        patch("preloop.api.endpoints.webhooks.crud_comment") as crud_comment,
+    ):
+        db_issue = MagicMock()
+        db_issue.id = uuid.UUID("99999999-0000-0000-0000-0000000000aa")
+        crud_issue.upsert.return_value = (db_issue, True)
+        crud_comment.get_by_external_id.return_value = None
+        crud_comment.create.return_value = MagicMock(id="c-1")
+        yield {
+            **harness,
+            "project": project,
+            "resolve": resolve,
+            "crud_issue": crud_issue,
+            "crud_comment": crud_comment,
+        }
+
+
+def test_work_item_created_is_stored_and_dispatched(boards) -> None:
+    response = post(boards, wi("workitem.created"))
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "success"
+    row = boards["crud_issue"].upsert.call_args.kwargs["obj_in"]
+    assert row["external_id"] == "5"
+    assert row["key"] == "fabrikam/FabrikamCloud#5"
+    assert row["title"] == "Some great new idea!"
+    assert row["description"] == "Steps: `login`"
+    assert row["status"] == "open"
+    assert row["meta_data"]["labels"] == ["triage"]
+    assert row["project_id"] == boards["project"].id
+    boards["resolve"].assert_called_once()
+    assert boards["resolve"].call_args.args[2] == "FabrikamCloud"
+    (call,) = dispatched(boards)
+    kwargs = call.kwargs
+    assert kwargs["event_type"] == "workitem.created"
+    assert kwargs["delivery_id"] == (
+        f"azure_devops:{TRACKER_ID}:wi:5:rev:1:workitem.created"
+    )
+    payload = kwargs["payload"]
+    assert payload["project_id"] == str(boards["project"].id)
+    assert payload["repository"]["id"] == boards["project"].identifier
+    assert payload["object_attributes"]["title"] == "Some great new idea!"
+    assert kwargs["embedding_requests"] == [
+        {
+            "issue_id": boards["crud_issue"].upsert.return_value[0].id,
+            "force_update": True,
+        }
+    ]
+
+
+def test_work_item_state_category_comes_from_the_snapshot(boards) -> None:
+    # "Approved" is a Completed state in this (synthetic) process snapshot.
+    post(boards, wi("workitem.updated"))
+    row = boards["crud_issue"].upsert.call_args.kwargs["obj_in"]
+    assert row["status"] == "closed"
+    assert row["meta_data"]["state_name"] == "Approved"
+    assert row["meta_data"]["state_category"] == "Completed"
+    (call,) = dispatched(boards)
+    assert call.kwargs["payload"]["object_attributes"]["state"] == "closed"
+
+
+def test_work_item_comment_is_stored(boards) -> None:
+    post(boards, wi("workitem.commented"))
+    values = boards["crud_comment"].create.call_args.kwargs["obj_in"]
+    assert values["external_id"] == "77"
+    assert values["body"] == "This is a **great** new idea"
+    assert values["meta_data"]["external_author"] == "Jane Doe"
+    (call,) = dispatched(boards)
+    assert call.kwargs["payload"]["comment"]["body"] == "This is a **great** new idea"
+
+
+def test_own_work_item_update_is_marked_self_generated(boards) -> None:
+    payload = wi("workitem.updated")
+    payload["resource"]["revisedBy"]["id"] = BOT_ID
+    post(boards, payload)
+    (call,) = dispatched(boards)
+    assert call.kwargs["payload"]["azure_devops"]["self_generated"] is True
+
+
+def test_work_item_without_a_home_project_is_acknowledged(boards) -> None:
+    boards["resolve"].return_value = None
+    response = post(boards, wi("workitem.created"))
+    assert response.json() == {
+        "status": "ignored",
+        "reason": "no_project_for_work_item",
+        "tracker_id": str(TRACKER_ID),
+    }
+    assert dispatched(boards) == []
+    boards["crud_issue"].upsert.assert_not_called()
+
+
+def test_work_item_of_another_project_is_rejected(boards) -> None:
+    boards["tracker"].connection_details = {
+        "organization": "fabrikam",
+        "project": "Other",
+    }
+    response = post(boards, wi("workitem.created"))
+    assert response.status_code == 403
+    assert dispatched(boards) == []
+
+
+def test_work_item_needs_the_secret(boards) -> None:
+    response = post(boards, wi("workitem.created"), secret="wrong")
+    assert response.status_code == 403
+    boards["crud_issue"].upsert.assert_not_called()

@@ -647,6 +647,12 @@ class FlowTriggerService:
                 return f"bitbucket_dc:{repo_id}:pr:{pr['number']}"
 
         elif source == "azure_devops":
+            # Work items: id is unique in the organization; the Azure DevOps
+            # project prefix mirrors Jira's key prefix.
+            issue = payload.get("issue") or {}
+            info = payload.get("azure_devops") or {}
+            if isinstance(issue, dict) and issue.get("id") and info.get("project"):
+                return f"azure_devops:{info['project']}:issue:{issue['id']}"
             # Keyed on the repository GUID; names can be renamed.
             pr = payload.get("pull_request") or {}
             repo_id = (payload.get("repository") or {}).get("id")
@@ -2204,6 +2210,16 @@ class FlowTriggerService:
                 author = obj_attrs.get("author", {})
                 if isinstance(author, dict):
                     sender = author.get("username", "").lower()
+        elif source == "azure_devops":
+            # The intake compares the work item's changer with the token
+            # owner and normally drops such deliveries already.
+            info = payload.get("azure_devops") or {}
+            if isinstance(info, dict) and info.get("self_generated") is True:
+                logger.info("Ignoring Azure DevOps event sent by Preloop")
+                return True
+            sender_obj = payload.get("sender")
+            if isinstance(sender_obj, str):
+                sender = sender_obj.lower()
         elif source == "bitbucket_dc":
             # The intake compares the actor with the user Preloop acts as on
             # that instance; the configured user slug is not a fixed bot name.

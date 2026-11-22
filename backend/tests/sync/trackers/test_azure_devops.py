@@ -173,13 +173,6 @@ async def test_projects_follow_continuation_and_skip_disabled() -> None:
     assert projects[0]["group"] == "Fabrikam-Fiber-Git"
 
 
-async def test_issue_methods_are_unsupported() -> None:
-    client, _ = make({})
-    assert await client.get_issues("o", "p") == []
-    with pytest.raises(NotImplementedError, match="Azure Boards"):
-        await client.get_issue("1")
-
-
 async def test_factory_and_repository_hosting() -> None:
     assert tracker_hosts_repositories("azure_devops")
     client = await create_tracker_client(
@@ -403,12 +396,14 @@ async def test_ensure_service_hooks_creates_then_updates() -> None:
                 200, json={"value": existing}
             ),
             ("POST", "/fabrikam/_apis/hooks/subscriptions"): create,
-            ("PUT", "/fabrikam/_apis/hooks/subscriptions/sub-0"): replace,
-            ("PUT", "/fabrikam/_apis/hooks/subscriptions/sub-1"): replace,
+            **{
+                ("PUT", f"/fabrikam/_apis/hooks/subscriptions/sub-{i}"): replace
+                for i in range(5)
+            },
         }
     )
     first = await client.ensure_service_hooks(callback, "s1")
-    assert first["created"] == 2
+    assert first["created"] == 5
     created = {body["eventType"]: body for _m, body in bodies}
     updated_hook = created["git.pullrequest.updated"]
     assert updated_hook["publisherId"] == "tfs"
@@ -426,6 +421,12 @@ async def test_ensure_service_hooks_creates_then_updates() -> None:
     assert (
         "notificationType" not in created["git.pullrequest.created"]["publisherInputs"]
     )
+    # Work item events are project scoped: no repository filter.
+    for event in ("workitem.created", "workitem.updated", "workitem.commented"):
+        assert created[event]["publisherInputs"] == {"projectId": PROJECT_ID}
+        assert created[event]["consumerInputs"]["httpHeaders"] == (
+            f"{WEBHOOK_SECRET_HEADER}:s1"
+        )
     status = await client.inspect_service_hooks(callback)
     assert status["status"] == "registered"
 

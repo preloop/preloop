@@ -117,6 +117,7 @@ export class TrackerIssueView extends LitElement {
     const type = this._tracker.tracker_type?.toLowerCase() || '';
     if (type.includes('gitlab')) return 'GitLab';
     if (type.includes('jira')) return 'Jira';
+    if (type === 'azure_devops') return 'Azure Boards';
     return 'GitHub';
   }
 
@@ -140,7 +141,10 @@ export class TrackerIssueView extends LitElement {
   private _canRunImplementer(): boolean {
     const type = this._tracker?.tracker_type?.toLowerCase() || '';
     return (
-      this._isGitTracker() || type.includes('bitbucket') || type === 'jira'
+      this._isGitTracker() ||
+      type.includes('bitbucket') ||
+      type === 'jira' ||
+      type === 'azure_devops'
     );
   }
 

@@ -86,13 +86,32 @@ export const BITBUCKET_TRACKER_EVENTS: TrackerEventOption[] = [
 ];
 
 /**
- * Azure DevOps (Azure Repos) delivers pull request created and updated
- * service hooks only; updates that do not move the source commit are ignored.
+ * Azure DevOps: Azure Repos pull request created and updated service hooks
+ * (updates that do not move the source commit are ignored), and Azure Boards
+ * work item created, updated and commented service hooks. A work item update
+ * is refined like a Jira one: added tag, state change, removed tag.
  */
 export const AZURE_DEVOPS_TRACKER_EVENTS: TrackerEventOption[] = [
   { name: 'Pull Request Opened', value: 'pull_request_opened' },
   { name: 'Pull Request Updated', value: 'pull_request_updated' },
+  { name: 'Work Item Created', value: 'issue_opened' },
+  { name: 'Work Item Updated', value: 'issue_updated' },
+  { name: 'Work Item Tagged', value: 'issue_labeled' },
+  { name: 'Work Item Untagged', value: 'issue_unlabeled' },
+  { name: 'Work Item State Changed', value: 'issue_status_changed' },
+  { name: 'Work Item Commented', value: 'comment_created' },
 ];
+
+/** Trackers whose issues carry a priority field (Jira, Azure Boards). */
+export function trackerHasIssuePriority(trackerType: string | undefined) {
+  const type = (trackerType || '').toLowerCase();
+  return type === 'jira' || type === 'azure_devops';
+}
+
+/** Trackers with issue milestones (GitHub, GitLab, Bitbucket). */
+export function trackerHasMilestones(trackerType: string | undefined) {
+  return !trackerHasIssuePriority(trackerType);
+}
 
 export function getTrackerEventOptions(
   trackerType: string | undefined
