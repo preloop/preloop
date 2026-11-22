@@ -5,6 +5,12 @@ import os
 from typing import Any, Generator
 from unittest.mock import MagicMock, patch
 
+from tests.xdist_database import use_worker_database
+
+# Before any preloop import: settings and engines read DATABASE_URL once.
+use_worker_database(os.environ)
+
+# isort: split
 import fastapi
 import pytest
 from dotenv import load_dotenv

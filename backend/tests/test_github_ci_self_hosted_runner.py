@@ -70,14 +70,14 @@ def _overflow_slot(pyver: str = "3.11") -> dict[str, Any]:
 
 
 def _backend_plan(idle: int, pyver: str = "3.11") -> list[dict[str, Any] | None]:
-    """Available capacity: the last ``idle`` shards go to private VMs.
+    """One runner class per run: every shard is private only with one VM each.
 
     GitHub expressions cannot subtract, so the array is 1-based: a dummy
     ``null`` at index 0 lets ``[matrix.group]`` address groups 1 through
     the shard count. Mirrors pick-runner's jq in Python so GitLab's unit
     image (no ``jq``) can still pin the routing.
     """
-    idle = max(0, min(int(idle), BACKEND_TEST_SPLITS))
+    idle = BACKEND_TEST_SPLITS if int(idle) >= BACKEND_TEST_SPLITS else 0
     threshold = BACKEND_TEST_SPLITS - idle
     shards: list[dict[str, Any] | None] = [None]
     shards.extend(
@@ -179,32 +179,37 @@ def test_pick_runner_requires_an_idle_matching_runner() -> None:
     assert ".busy == false" in script
     for label in ("self-hosted", "Linux", "X64"):
         assert f'index("{label}")' in script
-    # Idle VMs take the tail of the matrix; hosted takes the remainder.
-    assert "SPLITS=18" in script
+    # One runner class per run: all shards private, or all hosted.
+    assert 'SPLITS="${BACKEND_SHARDS:-6}"' in script
+    assert "SPLITS=6 ;;" in script
+    assert 'if [ "$idle" -ge "$SPLITS" ]; then idle=$SPLITS; else idle=0; fi' in script
     assert "$idle / $SPLITS" in script
     assert "/ 8" not in script
     assert "range(0; $splits)" in script
     assert ". >= ($splits - $idle)" in script
     # Dummy at [0] so YAML can index with matrix.group (no minus).
     assert "[null] +" in script
-    assert 'SPLITS="${BACKEND_SHARDS:-18}"' in script
     assert "*int(sys.argv[1])" in script
 
 
-def test_three_idle_runners_only_overflow_the_last_three_shards() -> None:
-    """Three VMs take shards 16-18; groups 1-15 stay hosted."""
+def test_too_few_idle_runners_never_mix_runner_classes() -> None:
+    """Three VMs cannot take six shards, so every shard stays hosted."""
     plan = _backend_plan(3)
     assert plan[0] is None
     assert len(plan) == BACKEND_TEST_SPLITS + 1
-    hosted = plan[1:16]
-    overflow = plan[16:]
-    assert all(slot["runner"] == "ubuntu-24.04" for slot in hosted)
-    assert all("container" not in slot for slot in hosted)
     assert all(
-        slot["runner"] == ["self-hosted", "Linux", "X64", "preloop-ci-general"]
-        for slot in overflow
+        slot is not None and slot["runner"] == "ubuntu-24.04" for slot in plan[1:]
     )
-    assert all("container" not in slot for slot in overflow)
+
+
+def test_one_idle_runner_per_shard_takes_every_shard() -> None:
+    """Enough VMs move the whole matrix to private capacity."""
+    plan = _backend_plan(BACKEND_TEST_SPLITS + 2)
+    assert all(
+        slot is not None
+        and slot["runner"] == ["self-hosted", "Linux", "X64", "preloop-ci-general"]
+        for slot in plan[1:]
+    )
 
 
 def test_zero_idle_runners_keeps_every_shard_on_hosted() -> None:
@@ -307,27 +312,27 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
 @pytest.mark.parametrize(
     ("case", "expected", "shards"),
     [
-        ("available", 3, "18"),
-        ("partial", 1, "18"),
-        ("offline", 0, "18"),
-        ("absent", 0, "18"),
-        ("busy", 0, "18"),
-        ("dedicated", 0, "18"),
-        ("unlabeled", 0, "18"),
-        ("hosted-alias", 0, "18"),
-        ("fork", 0, "18"),
-        ("api-error", 0, "18"),
-        ("malformed", 0, "18"),
-        ("disabled", 0, "18"),
-        ("missing-token", 0, "18"),
-        ("standby", 0, "18"),
-        ("irrelevant", 0, "18"),
-        ("many", 7, "18"),
-        # A narrow selection runs fewer shards; idle VMs still take the tail.
+        ("available", 0, "6"),
+        ("partial", 0, "6"),
+        ("offline", 0, "6"),
+        ("absent", 0, "6"),
+        ("busy", 0, "6"),
+        ("dedicated", 0, "6"),
+        ("unlabeled", 0, "6"),
+        ("hosted-alias", 0, "6"),
+        ("fork", 0, "6"),
+        ("api-error", 0, "6"),
+        ("malformed", 0, "6"),
+        ("disabled", 0, "6"),
+        ("missing-token", 0, "6"),
+        ("standby", 0, "6"),
+        ("irrelevant", 0, "6"),
+        ("many", 6, "6"),
+        # A narrow selection runs fewer shards, so three idle VMs cover all.
         ("available", 2, "2"),
-        ("partial", 1, "4"),
+        ("available", 3, "3"),
         # A malformed count falls back to the whole matrix.
-        ("available", 3, "not-a-number"),
+        ("many", 6, "not-a-number"),
     ],
 )
 def test_real_selector_uses_available_capacity(

@@ -350,6 +350,12 @@ def flow(owner: User, source: tuple[Source, str]) -> Iterator[Flow]:
     async def lifespan(application: fastapi.FastAPI) -> AsyncIterator[Any]:
         manager = get_mcp_lifespan_manager()
         assert manager is not None
+        # An earlier test in this process may have pooled connections on an
+        # event loop that is now closed (test order varies under xdist).
+        # Drop them without closing: closing would run on the dead loop.
+        stale = get_async_engine_if_initialized()
+        if stale is not None:
+            await stale.dispose(close=False)
         try:
             async with outer(application) as state:
                 async with manager:

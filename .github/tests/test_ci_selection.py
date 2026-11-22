@@ -81,7 +81,7 @@ def test_full_event_never_inherits_pr_filters(event: str, ref: str) -> None:
     result = select(["docs/index.md"], POLICY, INVENTORY, event=event, ref=ref)
     assert all(result["live"].values())
     assert result["candidate_tests"] == INVENTORY
-    assert result["backend_full"] and result["backend_shards"] == 18
+    assert result["backend_full"] and result["backend_shards"] == 6
 
 
 def test_label_and_stack_expand_docs_only_changes() -> None:

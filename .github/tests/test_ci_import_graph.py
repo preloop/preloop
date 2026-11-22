@@ -266,7 +266,7 @@ def test_main_rerun_or_missing_diff_runs_everything(
         graph=GRAPH,
     )
     assert result["backend_full"] and result["impact_reason"] == reason
-    assert result["backend_shards"] == 18
+    assert result["backend_shards"] == 6
 
 
 def test_security_path_runs_every_job_but_selects_tests_by_graph() -> None:
@@ -295,10 +295,10 @@ def test_shard_count_scales_with_estimated_time() -> None:
     """Narrow selections use fewer shards of about a full shard's length."""
     inventory = [f"backend/tests/test_{i}.py" for i in range(36)]
     durations = {f"{test}::t": 10.0 for test in inventory}
-    assert shard_count(inventory, inventory, durations) == 18
+    assert shard_count(inventory, inventory, durations) == 6
     assert shard_count(inventory[:1], inventory, durations) == 1
-    assert shard_count(inventory[:4], inventory, durations) == 2
-    assert shard_count(inventory[:35], inventory, durations) == 18
+    assert shard_count(inventory[:7], inventory, durations) == 2
+    assert shard_count(inventory[:35], inventory, durations) == 6
     assert shard_count([], inventory, durations) == 1
 
 

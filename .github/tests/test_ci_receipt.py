@@ -93,21 +93,19 @@ def test_duration_refresh_rejects_partial_failures_and_duplicates(
         '<testsuite><testcase classname="test_example" name="test_one" time="1.5"/></testsuite>'
     )
     assert read_durations([report], tmp_path) == {"test_example.py::test_one": 1.5}
-    with pytest.raises(ValueError, match="Duplicate"):
-        read_durations([report, report], tmp_path)
+    # A new test in a split file runs in each owning shard; keep the longest.
+    slower = tmp_path / "slower.xml"
+    slower.write_text(
+        '<testsuite><testcase classname="test_example" name="test_one" time="2.5"/></testsuite>'
+    )
+    assert read_durations([report, slower], tmp_path) == {
+        "test_example.py::test_one": 2.5
+    }
     report.write_text(
         '<testsuite><testcase classname="test_example" name="test_one" time="1.5"><failure/></testcase></testsuite>'
     )
     with pytest.raises(ValueError, match="successful"):
         read_durations([report], tmp_path)
-
-
-def test_refreshed_measured_weights_meet_the_balance_target() -> None:
-    """Record a measured execution replay, without claiming wall-time savings."""
-    receipt = json.loads((ROOT / ".github/ci-duration-receipt.json").read_text())
-    assert len(receipt["group_seconds"]) == 18
-    assert receipt["max_over_median"] <= 1.25
-    assert receipt["test_cases"] == 30045
 
 
 def test_fork_prs_may_skip_the_secret_bound_claude_leaf() -> None:

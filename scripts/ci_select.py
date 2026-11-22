@@ -78,7 +78,7 @@ GENERIC_NAMES = {
     "requirements.txt",
 }
 GRAPH_CACHE = ROOT / ".ci-import-graph.json"
-SHARDS = 18
+SHARDS = 6
 # Backend Fast runs serially under a 15 minute job timeout. Recorded file
 # durations track the real serial runtime closely (a 755 s estimate ran in
 # 824 s), so 240 s keeps the lane near four minutes of tests. The sharded

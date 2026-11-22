@@ -39,7 +39,7 @@ class _Cursor:
             self._row = (1,) if params[0] in self.databases else None
             return
         if sql.startswith("CREATE DATABASE "):
-            self.databases.add(sql.removeprefix("CREATE DATABASE ").strip())
+            self.databases.add(sql.split()[2])
         if sql.startswith("DROP DATABASE"):
             self.databases.discard(sql.split()[-1])
         self._row = None
@@ -262,3 +262,43 @@ def test_sweep_drops_only_stale_ci_databases() -> None:
 
     ci_postgres._sweep_stale_databases(_Sweep(), keep="preloop_ci_9_1_2")
     assert dropped == ["preloop_ci_1_1_1"]
+
+
+def test_worker_clones_come_from_the_job_database_and_are_dropped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    databases = {"preloop_ci_15_1_3"}
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    (tmp_path / "preloop-ci-postgres.json").write_text(
+        json.dumps(
+            {
+                "database": "preloop_ci_15_1_3",
+                "host": "127.0.0.1",
+                "port": 5432,
+                "user": "test_user",
+                "maintenance_db": "postgres",
+                "container": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    connections: list[_Connection] = []
+
+    def opener(*_args: Any) -> _Connection:
+        connections.append(_Connection(databases))
+        return connections[-1]
+
+    clones = ci_postgres.clone_worker_databases(2, opener=opener)
+    assert clones == ["preloop_ci_15_1_3_gw0", "preloop_ci_15_1_3_gw1"]
+    statements = [sql for sql, _ in connections[0].cursor_impl.statements]
+    assert "CREATE DATABASE preloop_ci_15_1_3_gw0 TEMPLATE preloop_ci_15_1_3" in (
+        statements
+    )
+    assert all(c.closed for c in connections)
+    ci_postgres.drop(opener=opener)
+    assert databases == set()
+
+
+def test_stale_sweep_matches_worker_clones() -> None:
+    assert ci_postgres._CI_DATABASE_NAME.fullmatch("preloop_ci_1_1_2_gw11")
+    assert not ci_postgres._CI_DATABASE_NAME.fullmatch("preloop_ci_1_1_2_x")

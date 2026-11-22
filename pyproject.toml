@@ -137,6 +137,7 @@ dev = [
     "pytest-asyncio>=0.21.1",
     "pytest-mock>=3.12.0",
     "pytest-split>=0.10.0",
+    "pytest-xdist>=3.6.0",
     "python-dotenv>=0.21.0", # Added python-dotenv
     "black>=23.7.0",
     "isort>=5.12.0",
@@ -201,6 +202,10 @@ target-version = "py310"
 select = ["E", "F", "B", "I", "N", "W"]
 ignore = ["B008", "E501", "F841", "E741", "B904", "N805", "F821"]  # Ignore problematic rules for now
 extend-ignore = ["I001"]
+
+[tool.ruff.lint.per-file-ignores]
+# The xdist worker database is chosen before any preloop import reads it.
+"backend/tests/conftest.py" = ["E402"]
 
 # Format configuration
 [tool.ruff.format]
