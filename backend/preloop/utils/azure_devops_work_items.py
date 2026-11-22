@@ -966,6 +966,8 @@ def work_item_home(
 # connection_details keys Preloop derives from the token at registration.
 DERIVED_IDENTITY_KEYS = ("token_identity_id", "token_identity_unique_name")
 DERIVED_KEYS = (*DERIVED_IDENTITY_KEYS, "work_item_states")
+# Set through the API only; the tracker form never sends it.
+API_ONLY_KEYS = ("work_item_repositories",)
 
 
 def carry_derived_details(
@@ -977,7 +979,9 @@ def carry_derived_details(
     """Keep registration-derived keys across a tracker edit.
 
     An edit sends the user-facing details only. The recorded token identity
-    (loop guard) and state categories survive it; the identity is dropped
+    (loop guard), the state categories and the API-only
+    ``work_item_repositories`` override survive it unless the edit sends
+    them; the identity is dropped
     when the token changes, because a new token may belong to another user
     (register again to record it).
 
@@ -992,6 +996,7 @@ def carry_derived_details(
     carried = {
         key: value
         for key, value in (previous or {}).items()
-        if key in DERIVED_KEYS and not (token_changed and key in DERIVED_IDENTITY_KEYS)
+        if (key in DERIVED_KEYS or key in API_ONLY_KEYS)
+        and not (token_changed and key in DERIVED_IDENTITY_KEYS)
     }
     return {**carried, **requested}

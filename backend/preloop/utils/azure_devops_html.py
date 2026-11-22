@@ -26,7 +26,7 @@ from __future__ import annotations
 import html
 import re
 from html.parser import HTMLParser
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 _BLOCK_TAGS = {
     "p",
@@ -260,14 +260,40 @@ def html_to_markdown(value: Optional[str]) -> str:
 # ----------------------------------------------------------------------
 
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
-_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+|mailto:[^\s)]+)\)")
-_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((https?://[^\s)]+)\)")
+# Link targets may hold one level of balanced parentheses (Wikipedia style).
+_TARGET = r"(?:[^\s()]|\([^\s()]*\))+"
+_LINK_RE = re.compile(rf"\[([^\]]+)\]\(((?:https?://|mailto:){_TARGET})\)")
+_IMAGE_RE = re.compile(rf"!\[([^\]]*)\]\((https?://{_TARGET})\)")
+_AUTOLINK_RE = re.compile(r"<(https?://[^\s<>]+)>")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
 _ITALIC_RE = re.compile(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?!\w)|(?<!\w)_(.+?)_(?!\w)")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _ITEM_RE = re.compile(r"^(\s*)([-*+]|\d+\.)\s+(.*)$")
-_URL_RE = re.compile(r"(?<![\"'=(>])\bhttps?://[^\s<]+")
+_URL_RE = re.compile(r"(?<![\"'=>])\bhttps?://[^\s<>]+")
+_TRAILING = ".,;:!?"
+
+
+def _split_url(url: str) -> tuple[str, str]:
+    """Split trailing punctuation and unbalanced ``)`` off a bare URL."""
+    tail = ""
+    while url:
+        if url[-1] in _TRAILING:
+            tail, url = url[-1] + tail, url[:-1]
+        elif url[-1] == ")" and url.count(")") > url.count("("):
+            tail, url = url[-1] + tail, url[:-1]
+        else:
+            break
+    return url, tail
+
+
+def _anchor(url: str) -> str:
+    return f'<a href="{html.escape(url)}">{html.escape(url, quote=False)}</a>'
+
+
+def _bare_url(match: "re.Match[str]", keep: "Callable[[str], str]") -> str:
+    url, tail = _split_url(match.group(0))
+    return keep(_anchor(url)) + tail
 
 
 def _inline(text: str) -> str:
@@ -294,13 +320,8 @@ def _inline(text: str) -> str:
         ),
         text,
     )
-    text = _URL_RE.sub(
-        lambda m: keep(
-            f'<a href="{html.escape(m.group(0))}">'
-            f"{html.escape(m.group(0), quote=False)}</a>"
-        ),
-        text,
-    )
+    text = _AUTOLINK_RE.sub(lambda m: keep(_anchor(m.group(1))), text)
+    text = _URL_RE.sub(lambda m: _bare_url(m, keep), text)
     text = html.escape(text, quote=False)
     text = _BOLD_RE.sub(lambda m: f"<strong>{m.group(1) or m.group(2)}</strong>", text)
     text = _ITALIC_RE.sub(lambda m: f"<em>{m.group(1) or m.group(2)}</em>", text)

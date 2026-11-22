@@ -361,6 +361,7 @@ async def test_get_issues_only_for_the_work_item_home_repository() -> None:
                 "value": [fx("work_item")]
             },
             ("GET", TYPES): fx("work_item_types"),
+            ("GET", COMMENTS): fx("comments"),
         }
     )
     # Two repositories: the one named like the project is the home.
@@ -368,6 +369,10 @@ async def test_get_issues_only_for_the_work_item_home_repository() -> None:
     items = await client.get_issues("fabrikam", REPO_ID)
     assert [i["key"] for i in items] == ["fabrikam/Fabrikam-Fiber-Git#297"]
     assert items[0]["state_category"] == "Proposed"
+    # Existing comments are synced (the fixture item has System.CommentCount).
+    (comment,) = items[0]["comments"]
+    assert comment["body"] == "Moving to the right area path"
+    assert comment["url"].endswith("/_workitems/edit/297#50")
     listing = [c for c in stub.calls if c.url.path.endswith("/git/repositories")]
     assert len(listing) == 1  # cached across repositories
 
@@ -381,6 +386,12 @@ async def test_get_issues_only_for_the_work_item_home_repository() -> None:
     assert row["meta_data"]["work_item_type"] == "Product Backlog Item"
     assert row["priority"] == "High"
     assert row["updated_at"].year == 2014
+    stored = client.transform_comment(row["comments"][0], "issue-1")
+    assert (stored["external_id"], stored["body"]) == (
+        "50",
+        "Moving to the right area path",
+    )
+    assert stored["updated_at"].year == 2019
 
 
 async def test_service_hook_context_records_identity_and_states() -> None:

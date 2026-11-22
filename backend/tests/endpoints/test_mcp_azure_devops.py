@@ -217,7 +217,6 @@ class FakeBoards:
 
     def __init__(self) -> None:
         self.calls: List[tuple] = []
-        self.client = self
 
     async def add_comment(self, issue_id: str, comment: str) -> Any:
         self.calls.append(("add", issue_id, comment))

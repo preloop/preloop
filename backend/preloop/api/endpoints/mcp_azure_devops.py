@@ -551,12 +551,13 @@ async def update_comment(
 
 
 async def update_work_item_comment(
-    tracker_client: Any, issue_key: str, comment_id: str, body: str
+    client: AzureDevOpsTracker, issue_key: str, comment_id: str, body: str
 ) -> UpdateCommentResponse:
     """Replace the text of an Azure Boards work item comment.
 
     Args:
-        tracker_client: A ``TrackerClient`` for the azure_devops tracker.
+        client: The tracker's ``AzureDevOpsTracker`` (as returned by
+            ``get_tracker_client``).
         issue_key: Work item key (``org/project#id``) or id.
         comment_id: Numeric comment id.
         body: New markdown body (stored as HTML).
@@ -569,7 +570,7 @@ async def update_work_item_comment(
     """
     if not str(comment_id).isdigit():
         raise ValueError("Azure Boards comment ids are numeric.")
-    comment = await tracker_client.client.update_comment(issue_key, comment_id, body)
+    comment = await client.update_comment(issue_key, comment_id, body)
     return UpdateCommentResponse(
         comment_id=str(comment.id),
         status="updated",

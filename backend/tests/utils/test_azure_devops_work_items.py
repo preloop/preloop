@@ -115,6 +115,29 @@ def test_html_from_azure_editor_becomes_markdown() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("markdown", "href", "after"),
+    [
+        (
+            "[Foo](https://en.wikipedia.org/wiki/Foo_(bar))",
+            "https://en.wikipedia.org/wiki/Foo_(bar)",
+            "</a>",
+        ),
+        ("See https://example.com.", "https://example.com", "</a>."),
+        ("Go <https://example.com/x>!", "https://example.com/x", "</a>!"),
+        ("(https://example.com/y)", "https://example.com/y", "</a>)"),
+    ],
+)
+def test_link_targets_are_not_truncated_or_extended(
+    markdown: str, href: str, after: str
+) -> None:
+    html = markdown_to_html(markdown)
+    assert f'<a href="{href}">' in html
+    assert after in html
+    if not markdown.startswith("Go <"):
+        assert html_to_markdown(html) == markdown
+
+
 def test_empty_fields() -> None:
     assert html_to_markdown(None) == ""
     assert markdown_to_html("  ") == ""
@@ -445,6 +468,17 @@ def test_tracker_edit_keeps_derived_keys_and_drops_identity_on_new_token() -> No
     requested = {"organization": "fabrikam", "project": "New"}
     kept = carry_derived_details(stored, requested, token_changed=False)
     assert kept == {**stored, "project": "New"}
+    # The API-only override survives a form edit that omits it, and an edit
+    # that sends it wins.
+    with_override = {**stored, "work_item_repositories": {"P": "api"}}
+    assert carry_derived_details(with_override, requested, token_changed=False)[
+        "work_item_repositories"
+    ] == {"P": "api"}
+    assert carry_derived_details(
+        with_override,
+        {**requested, "work_item_repositories": {"P": "web"}},
+        token_changed=False,
+    )["work_item_repositories"] == {"P": "web"}
     rotated = carry_derived_details(stored, requested, token_changed=True)
     assert rotated == {
         "organization": "fabrikam",

@@ -33,6 +33,7 @@
         },
         "System.Title": "Customer can sign in using their Microsoft Account",
         "System.Tags": "auth; customer",
+        "System.CommentCount": 1,
         "Microsoft.VSTS.Common.Priority": 2,
         "Microsoft.VSTS.Scheduling.Effort": 8,
         "System.Description": "<div>Our authorization logic needs to allow for users with <b>Microsoft accounts</b>:</div><ul><li>sign in</li><li>sign out</li></ul>"

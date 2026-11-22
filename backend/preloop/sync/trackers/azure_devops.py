@@ -828,7 +828,8 @@ class AzureDevOpsTracker(BaseTracker):
     def _comments_path(self, project: str, work_item_id: int) -> str:
         return f"{quote(project, safe='')}/_apis/wit/workItems/{int(work_item_id)}/comments"
 
-    async def _comments(self, work_item: Dict[str, Any]) -> List[IssueComment]:
+    async def _raw_comments(self, work_item: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Undeleted ``Comment`` objects of a work item, oldest first."""
         project = str((work_item.get("fields") or {}).get(FIELD_PROJECT) or "")
         path = self._comments_path(project, int(work_item["id"]))
         comments: List[Dict[str, Any]] = []
@@ -840,10 +841,13 @@ class AzureDevOpsTracker(BaseTracker):
             if not token:
                 break
             params = {**params, "continuationToken": token}
+        return [c for c in comments if isinstance(c, dict) and not c.get("isDeleted")]
+
+    async def _comments(self, work_item: Dict[str, Any]) -> List[IssueComment]:
+        project = str((work_item.get("fields") or {}).get(FIELD_PROJECT) or "")
         return [
             self._to_comment(c, project, int(work_item["id"]))
-            for c in comments
-            if isinstance(c, dict) and not c.get("isDeleted")
+            for c in await self._raw_comments(work_item)
         ]
 
     def _to_comment(
@@ -1019,9 +1023,18 @@ class AzureDevOpsTracker(BaseTracker):
         out: List[Dict[str, Any]] = []
         for item in items:
             category = await self._category_of(item)
-            out.append(
-                work_item_summary(item, self.organization, state_category=category)
+            summary = work_item_summary(
+                item, self.organization, state_category=category
             )
+            # Existing comments are synced too, not only those delivered by
+            # workitem.commented; items without comments cost no request.
+            summary["comments"] = []
+            if (item.get("fields") or {}).get("System.CommentCount"):
+                for raw in await self._raw_comments(item):
+                    comment = comment_summary(raw)
+                    comment["url"] = f"{summary['html_url']}#{comment['id']}"
+                    summary["comments"].append(comment)
+            out.append(summary)
         return out
 
     def transform_issue(
