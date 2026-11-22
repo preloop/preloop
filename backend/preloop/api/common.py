@@ -66,6 +66,56 @@ def azure_devops_repo_full_name(config: Dict[str, Any], project: Any) -> str:
     return str(full_name)
 
 
+def project_scope_denial(
+    db: Session, tracker: Any, organization: Any, project: Any
+) -> Optional[str]:
+    """Say why a project is outside its tracker's scope, or None when inside.
+
+    Rule 1: the organization must be included and not excluded. Rule 2: the
+    project must not be excluded. Rule 3: when project-level includes exist,
+    the project must be one of them.
+
+    Args:
+        db: Database session.
+        tracker: The project's tracker.
+        organization: The project's organization.
+        project: The project to check.
+
+    Returns:
+        The access-denied detail, or None when the project is in scope.
+    """
+    scope_rules = crud_tracker_scope_rule.get_by_tracker(
+        db, tracker_id=tracker.id, account_id=tracker.account_id
+    )
+    org_identifier = organization.identifier
+    scope_identifiers = project_scope_identifiers(
+        tracker.tracker_type,
+        project.identifier,
+        jira_key=project.slug if tracker.tracker_type == "jira" else None,
+    )
+    org_rules = [rule for rule in scope_rules if rule.scope_type == "ORGANIZATION"]
+    project_rules = [rule for rule in scope_rules if rule.scope_type == "PROJECT"]
+    if any(
+        rule.rule_type == "EXCLUDE" and rule.identifier == org_identifier
+        for rule in org_rules
+    ):
+        return "Access denied: Organization is explicitly excluded."
+    if not any(
+        rule.rule_type == "INCLUDE" and rule.identifier == org_identifier
+        for rule in org_rules
+    ):
+        return "Access denied: Organization is not included in tracker scope."
+    if any(
+        rule.rule_type == "EXCLUDE" and rule.identifier in scope_identifiers
+        for rule in project_rules
+    ):
+        return "Access denied: Project is explicitly excluded."
+    includes = [rule for rule in project_rules if rule.rule_type == "INCLUDE"]
+    if includes and not any(rule.identifier in scope_identifiers for rule in includes):
+        return "Access denied: Project is not in the tracker's include list."
+    return None
+
+
 async def get_tracker_client(
     organization_id: Union[str, UUID],
     project_id: Union[str, UUID],
@@ -151,66 +201,9 @@ async def get_tracker_client(
         )
     # --- End Authorization Check ---
 
-    # --- New Scoping Logic ---
-    scope_rules = crud_tracker_scope_rule.get_by_tracker(
-        db, tracker_id=tracker.id, account_id=current_user.account_id
-    )
-
-    org_identifier = organization.identifier
-    scope_identifiers = project_scope_identifiers(
-        tracker.tracker_type,
-        project.identifier,
-        jira_key=project.slug if tracker.tracker_type == "jira" else None,
-    )
-
-    org_rules = [rule for rule in scope_rules if rule.scope_type == "ORGANIZATION"]
-    project_rules = [rule for rule in scope_rules if rule.scope_type == "PROJECT"]
-
-    # Rule 1: Organization must be included
-    org_included = any(
-        rule.rule_type == "INCLUDE" and rule.identifier == org_identifier
-        for rule in org_rules
-    )
-    org_excluded = any(
-        rule.rule_type == "EXCLUDE" and rule.identifier == org_identifier
-        for rule in org_rules
-    )
-
-    if org_excluded:
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: Organization is explicitly excluded.",
-        )
-    if not org_included:
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: Organization is not included in tracker scope.",
-        )
-
-    # Rule 2: Project must not be excluded
-    project_excluded = any(
-        rule.rule_type == "EXCLUDE" and rule.identifier in scope_identifiers
-        for rule in project_rules
-    )
-    if project_excluded:
-        raise HTTPException(
-            status_code=403, detail="Access denied: Project is explicitly excluded."
-        )
-
-    # Rule 3: If project-level includes exist, project must be in the list
-    project_level_includes = [
-        rule for rule in project_rules if rule.rule_type == "INCLUDE"
-    ]
-    if project_level_includes:
-        project_included = any(
-            rule.identifier in scope_identifiers for rule in project_level_includes
-        )
-        if not project_included:
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: Project is not in the tracker's include list.",
-            )
-    # --- End New Scoping Logic ---
+    denial = project_scope_denial(db, tracker, organization, project)
+    if denial:
+        raise HTTPException(status_code=403, detail=denial)
 
     tracker_type = tracker.tracker_type
 
