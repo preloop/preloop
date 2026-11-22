@@ -1508,16 +1508,25 @@ request** card under the publication policy:
    **Only when requested** (manual: nothing is posted until the publish call
    is made). **Off** turns posting off. The badge on the card shows the saved
    mode.
-3. Under **Tool evidence**, choose **Any** (post whether or not the run's
+3. On a flow with more than one project, choose under **Repositories to
+   post for** between **Every repository of the flow** (no `project_ids`)
+   and **Only selected repositories**, then tick the repositories. Preloop
+   posts only for those; the others keep running and keep their results,
+   and on a flow with pull request event triggers an event starts a review
+   only for them. A repository added to the flow later is not selected.
+   With none ticked nothing is posted, and the card says so. An id that is
+   no longer one of the flow's projects is flagged and dropped on the next
+   save. Turning posting off clears the list.
+4. Under **Tool evidence**, choose **Any** (post whether or not the run's
    tool evidence is complete), **Captured** (every model request has an
    evidence record, and the only incomplete records are masked credentials)
    or **Complete** (no record is incomplete, including masked credentials).
-4. To set a commit status, tick **Set a commit status for each verdict** and
+5. To set a commit status, tick **Set a commit status for each verdict** and
    choose Success, Failure or Error for every verdict of your schema. Keep
    the status name (`preloop/review` by default) stable if a branch
    protection rule requires it. Optionally choose what to set when a run
    stops, fails or returns no valid result.
-5. **Save**. The card refuses a save the server would refuse and says why;
+6. **Save**. The card refuses a save the server would refuse and says why;
    a refusal from the server is shown as it was returned.
 
 Users who may not edit flows see the card read-only.

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The **Post review on the pull request** card edits which of a shared
+  flow's repositories Preloop posts for: every repository, or only the
+  ticked ones, with a filter for long lists. Selecting none is allowed and
+  stated before the save. An id no longer on the flow is flagged and
+  dropped on the next save, and turning posting off says the list is
+  cleared.
 - macOS and Windows runners now report sleep before it happens, so a
   closed lid shows `asleep` instead of `offline` (#1487, #1507). macOS
   uses IOKit system power notifications (loaded without cgo) and Windows
@@ -23,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Runs of other projects run and are read as before and are not posted; an
   explicit publish answers 409 `project_not_in_posting_scope`. Unset keeps
   today's behaviour. `preloop flow review-posting enable --project` and
-  `set-projects` manage the list; the console shows it read-only.
+  `set-projects` manage the list, and so does the flow's posting card.
 - The flow form has a **Reasoning effort** select next to the flow's AI
   model (Model default, Low, Medium, High), so the flow-wide effort no
   longer needs the API. The execution page shows **Effort sent**, the effort
