@@ -132,6 +132,7 @@ def _orchestrator(activities: list[Any], monkeypatch: pytest.MonkeyPatch) -> Any
         execution_log=SimpleNamespace(id=uuid.uuid4()),
         flow=SimpleNamespace(account_id=uuid.uuid4()),
         seen=seen,
+        _review_gate_failed=FlowExecutionOrchestrator._review_gate_failed,
     )
     return orch
 
@@ -140,10 +141,12 @@ def test_orchestrator_describes_stop_after_review(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     orch = _orchestrator([EYES_ADDED, _review()], monkeypatch)
-    text = FlowExecutionOrchestrator._describe_incomplete_review(
+    described = FlowExecutionOrchestrator._describe_incomplete_review(
         orch, "STOPPED", {"status": "running"}
     )
-    assert text is not None
+    assert described is not None
+    state, text = described
+    assert state == "failure"
     assert text.startswith("Review submitted (approved); run stopped")
     assert rc.STEP_RESULT in text
     assert orch.seen["args"] == (orch.flow.account_id, orch.execution_log.id)
@@ -163,7 +166,102 @@ def test_orchestrator_confirmed_result_is_not_listed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     orch = _orchestrator([_review(), DESCRIPTION, EYES_REMOVED], monkeypatch)
-    text = FlowExecutionOrchestrator._describe_incomplete_review(
+    described = FlowExecutionOrchestrator._describe_incomplete_review(
         orch, "FAILED", {"status": "success"}
     )
-    assert text == "Review submitted (approved); run failed, post-review steps done"
+    # A FAILED run may have failed a gate on the review itself: it stays red.
+    assert described == (
+        "failure",
+        "Review submitted (approved); run failed, post-review steps done",
+    )
+
+
+def test_stop_after_every_post_review_step_is_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A review that finished all its steps before a stop is not a failure."""
+    orch = _orchestrator(
+        [EYES_ADDED, _review(), DESCRIPTION, EYES_REMOVED], monkeypatch
+    )
+    described = FlowExecutionOrchestrator._describe_incomplete_review(
+        orch, "STOPPED", {"status": "success"}
+    )
+    assert described == (
+        "success",
+        "Review submitted (approved); run stopped, post-review steps done",
+    )
+
+
+def test_stop_with_a_step_remaining_stays_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orch = _orchestrator([_review(), DESCRIPTION], monkeypatch)
+    described = FlowExecutionOrchestrator._describe_incomplete_review(
+        orch, "STOPPED", {"status": "success"}
+    )
+    assert described is not None
+    assert described[0] == "failure"
+    assert rc.STEP_REACTION in described[1]
+
+
+@pytest.mark.asyncio
+async def test_settle_commit_status_posts_success_for_completed_stopped_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The settlement path uses the same verdict as the main run."""
+    orch = _orchestrator([_review(), DESCRIPTION, EYES_REMOVED], monkeypatch)
+    orch.flow.name = "Pull Request Reviewer"
+    posted: dict[str, Any] = {}
+
+    async def fake_update(*, state: str, description: str) -> None:
+        posted.update(state=state, description=description)
+
+    orch._update_commit_status = fake_update
+    orch._describe_incomplete_review = (
+        lambda status, result: FlowExecutionOrchestrator._describe_incomplete_review(
+            orch, status, result
+        )
+    )
+    await FlowExecutionOrchestrator.settle_commit_status(
+        orch, "STOPPED", result={"status": "success"}
+    )
+    assert posted == {
+        "state": "success",
+        "description": (
+            "Review submitted (approved); run stopped, post-review steps done"
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "gate",
+    [
+        {"review_publication": {"status": "not_published"}},
+        {"review_publication": {"status": "unexpected"}},
+        {"_review_integrity": {"status": "rejected"}},
+    ],
+)
+def test_stop_with_a_failed_review_gate_stays_failure(
+    monkeypatch: pytest.MonkeyPatch, gate: dict[str, Any]
+) -> None:
+    """A stop that won the status write over a gate's FAILED stays red."""
+    orch = _orchestrator([_review(), DESCRIPTION, EYES_REMOVED], monkeypatch)
+    described = FlowExecutionOrchestrator._describe_incomplete_review(
+        orch, "STOPPED", {"status": "success", **gate}
+    )
+    assert described is not None
+    assert described[0] == "failure"
+
+
+@pytest.mark.parametrize("status", ["published", "already_reviewed", "unverified"])
+def test_stop_after_an_accepted_publication_is_success(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    orch = _orchestrator([_review(), DESCRIPTION, EYES_REMOVED], monkeypatch)
+    described = FlowExecutionOrchestrator._describe_incomplete_review(
+        orch,
+        "STOPPED",
+        {"status": "success", "review_publication": {"status": status}},
+    )
+    assert described is not None
+    assert described[0] == "success"

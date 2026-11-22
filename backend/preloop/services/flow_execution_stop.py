@@ -60,6 +60,52 @@ STOP_REQUESTED_AUDIT_ACTION = "flow_execution_stop_requested"
 #: ``error_message`` written by an operator's stop.
 MANUAL_STOP_MESSAGE = "Manually stopped by user"
 
+#: ``stop_source`` of a stop sent with an account API token rather than from
+#: a signed-in console session: usually automation (a CI cleanup step), not a
+#: person pressing Stop, so it must not read as "stopped by user".
+STOP_SOURCE_API_TOKEN = "api_token"
+
+
+@dataclass(frozen=True)
+class StopAttribution:
+    """Who a stop command is recorded as coming from.
+
+    Attributes:
+        source: ``stop_source`` to write, or None for the default ``manual``.
+        reason: ``stop_reason`` naming the actor, or None for a person.
+        error_message: ``error_message`` written with the stop.
+    """
+
+    source: Optional[str] = None
+    reason: Optional[str] = None
+    error_message: str = MANUAL_STOP_MESSAGE
+
+
+def api_token_stop_attribution(user: Any) -> StopAttribution:
+    """Attribute a stop command to the API token that sent it, if any.
+
+    Args:
+        user: The authenticated user; API key authentication leaves the key
+            on ``_auth_api_key``.
+
+    Returns:
+        The token attribution, or the default (a person's manual stop) when
+        the request came from a console session.
+    """
+    api_key = getattr(user, "__dict__", {}).get("_auth_api_key")
+    if api_key is None:
+        return StopAttribution()
+    name = str(getattr(api_key, "name", "") or "").strip()[:100]
+    reason = (
+        f'Stopped through the API with token "{name}"'
+        if name
+        else "Stopped through the API with an account token"
+    )
+    return StopAttribution(
+        source=STOP_SOURCE_API_TOKEN, reason=reason, error_message=reason
+    )
+
+
 #: Statuses in which a runtime (runner job, container, or a queue slot) may
 #: exist and has to be torn down. A parked run holds no runtime: its stop is
 #: the status write alone.
