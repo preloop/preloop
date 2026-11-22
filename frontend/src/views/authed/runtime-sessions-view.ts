@@ -1,7 +1,8 @@
 import { stripBillingHeader } from '../../utils/session-subject';
 import { randomUuid } from '../../utils/random-uuid';
 import { ConsoleStatus } from '../../controllers/console-status';
-import { parseUTCDate } from '../../utils/date';
+import { formatRelativeTime, parseUTCDate } from '../../utils/date';
+import { AGENT_KIND_PRESENTATION } from '../../utils/agent-kinds';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { validFilterDate } from '../../utils/list-filter-url';
 import { agentStateChip } from '../../utils/agent-status';
@@ -160,6 +161,22 @@ export function formatCueStart(seconds: number): string {
  * same ids. Session summaries, operator notes and flow logs name something
  * else, so a click opens the session rather than a turn.
  */
+/**
+ * Join marks the server split at a hyphen or other word joiner, so a hit on
+ * `alpha-beta` is one highlight rather than two with a gap.
+ */
+export function joinSplitMarks(text: string): string {
+  return text.replace(/<\/mark>([-_./:]+)<mark>/g, '$1');
+}
+
+/** Source types offered before any session is loaded. */
+const BASE_SOURCE_TYPES: readonly string[] = [
+  'flow_execution',
+  ...Object.keys(AGENT_KIND_PRESENTATION).filter(
+    (kind) => kind !== 'geminicli'
+  ),
+];
+
 const TURN_JUMP_KINDS = new Set([
   'gateway_interaction',
   'tool_call',
@@ -747,6 +764,16 @@ export class RuntimeSessionsView extends LitElement {
         margin-top: var(--sl-spacing-2x-small);
         font-size: var(--console-text-meta);
         color: var(--console-meta-color);
+      }
+
+      .search-meta {
+        margin: 0;
+        font-size: var(--console-text-meta);
+        color: var(--console-meta-color);
+      }
+
+      a.snippet {
+        text-decoration: none;
       }
 
       .search-notices {
@@ -1531,9 +1558,13 @@ export class RuntimeSessionsView extends LitElement {
   }
 
   private handleSessionSourceTypeChange(event: Event) {
-    this.sessionSourceType = (
-      event.target as HTMLInputElement & { value: string }
-    ).value;
+    const value = (event.target as HTMLInputElement & { value: string }).value;
+    // The select re-reports its value when its options change; that is not
+    // the operator choosing a filter, and reloading on it loops.
+    if (!value || value === this.sessionSourceType) {
+      return;
+    }
+    this.sessionSourceType = value;
     void this.applyFilters();
   }
 
@@ -1722,6 +1753,65 @@ export class RuntimeSessionsView extends LitElement {
     // (possibly of another session) must not ride along in the URL.
     this.focusArtifactId = null;
     this.syncUrl({ push: true });
+  }
+
+  /**
+   * The location a snippet opens, as a real href so cmd/middle-click opens it
+   * in a new tab and the link can be copied.
+   */
+  private snippetHref(
+    result: SessionSearchResult,
+    snippet: SessionSearchSnippet
+  ): string {
+    const url = new URL(window.location.href);
+    url.searchParams.set('sessionId', result.runtime_session_id);
+    const turn = this.snippetTurnId(snippet);
+    if (turn) url.searchParams.set('turn', turn);
+    else url.searchParams.delete('turn');
+    url.searchParams.delete('artifact');
+    return `${url.pathname}${url.search}`;
+  }
+
+  private handleSnippetClick(
+    event: MouseEvent,
+    result: SessionSearchResult,
+    snippet: SessionSearchSnippet
+  ): void {
+    if (
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+    event.preventDefault();
+    this.openSnippet(result, snippet);
+  }
+
+  /**
+   * Source type choices: every kind the console can name, plus any kind seen
+   * on a loaded page (a newer product the table does not list yet) and the
+   * current filter, so a linked filter is never shown as blank.
+   */
+  /** Grows only, so the option list never shrinks under the select. */
+  private seenSourceTypes = new Set<string>(BASE_SOURCE_TYPES);
+
+  private sourceTypeOptions(): string[] {
+    for (const row of this.sessions?.items ?? []) {
+      if (row.session_source_type) {
+        this.seenSourceTypes.add(row.session_source_type);
+      }
+    }
+    if (this.sessionSourceType !== 'all') {
+      this.seenSourceTypes.add(this.sessionSourceType);
+    }
+    return [...this.seenSourceTypes];
+  }
+
+  private sourceTypeLabel(kind: string): string {
+    return AGENT_KIND_PRESENTATION[kind]?.label ?? this.getSourceLabel(kind);
   }
 
   private formatNumber(value: number | null | undefined): string {
@@ -2010,44 +2100,51 @@ export class RuntimeSessionsView extends LitElement {
     if (!coverage && !floor && !degraded) {
       return '';
     }
+    // One muted line rather than stacked alerts: the reach of the index is
+    // context for the count, not a problem with the answer. Only "nothing in
+    // this range is indexed" stays a warning, since then an empty answer
+    // means nothing at all.
+    const metaParts = [];
+    if (floor && !floorCoversNothing) {
+      metaParts.push(
+        html`<span
+          data-testid="coverage-floor-notice"
+          title="Sessions older than this are not indexed yet, so they cannot match. An operator switches on the history backfill to widen this."
+          >Search reaches back to ${this.formatDateTime(floor)}</span
+        >`
+      );
+    }
+    if (coverage) {
+      metaParts.push(
+        html`<span
+          data-testid="coverage-notice"
+          title="The newest content the index holds for this account."
+          >indexed through ${this.formatDateTime(coverage)}</span
+        >`
+      );
+    }
     return html`
       <div class="search-notices">
         ${
-          floor
-            ? html`
-                <sl-alert
-                  variant=${floorCoversNothing ? 'warning' : 'neutral'}
-                  open
-                  data-testid="coverage-floor-notice"
-                >
-                  <sl-icon slot="icon" name="clock-history"></sl-icon>
-                  ${
-                    floorCoversNothing
-                      ? html`Nothing in this date range is indexed: search
-                        reaches back only to ${this.formatDateTime(floor)}. An
-                        empty answer here means not indexed, not that nothing
-                        happened. An operator switches on the history backfill
-                        to widen this.`
-                      : html`Search reaches back to
-                        ${this.formatDateTime(floor)}. Sessions older than that
-                        are not indexed yet, so they cannot match whatever they
-                        contain. An operator switches on the history backfill to
-                        widen this.`
-                  }
-                </sl-alert>
-              `
+          floor && floorCoversNothing
+            ? html`<sl-alert
+                variant="warning"
+                open
+                data-testid="coverage-floor-notice"
+              >
+                <sl-icon slot="icon" name="clock-history"></sl-icon>
+                Nothing in this date range is indexed: search reaches back only
+                to ${this.formatDateTime(floor)}. An empty answer here means not
+                indexed, not that nothing happened. An operator switches on the
+                history backfill to widen this.
+              </sl-alert>`
             : ''
         }
         ${
-          coverage
-            ? html`
-                <sl-alert variant="neutral" open data-testid="coverage-notice">
-                  <sl-icon slot="icon" name="clock-history"></sl-icon>
-                  Search covers content indexed through
-                  ${this.formatDateTime(coverage)}. Anything newer in this range
-                  is not searchable yet.
-                </sl-alert>
-              `
+          metaParts.length
+            ? html`<p class="search-meta" data-testid="search-meta">
+                ${metaParts.map((part, i) => html`${i ? ' · ' : ''}${part}`)}
+              </p>`
             : ''
         }
         ${
@@ -2135,7 +2232,9 @@ export class RuntimeSessionsView extends LitElement {
         session to see the turn.</span
       >`;
     }
-    const parts = this.snippetBody(snippet).split(/<mark>|<\/mark>/);
+    const parts = joinSplitMarks(this.snippetBody(snippet)).split(
+      /<mark>|<\/mark>/
+    );
     return html`<span class="snippet-text"
       >${parts.map((part, index) =>
         index % 2 === 1 ? html`<mark>${part}</mark>` : part
@@ -2185,24 +2284,42 @@ export class RuntimeSessionsView extends LitElement {
           <div class="search-result-meta">
             ${result.matched_chunk_count}
             match${result.matched_chunk_count === 1 ? '' : 'es'} ·
-            ${this.formatDateTime(result.last_match_at ?? result.started_at)}
+            <span
+              title=${this.formatDateTime(
+                result.last_match_at ?? result.started_at
+              )}
+              >${
+                (result.last_match_at ?? result.started_at)
+                  ? formatRelativeTime(
+                      (result.last_match_at ?? result.started_at) as string
+                    )
+                  : 'Unknown'
+              }</span
+            >
           </div>
         </div>
         <div class="snippet-list">
           ${result.snippets.map(
             (snippet) => html`
-              <button
+              <a
                 class="snippet"
-                type="button"
+                href=${this.snippetHref(result, snippet)}
                 data-testid=${`snippet-${snippet.document_id}`}
-                @click=${() => this.openSnippet(result, snippet)}
+                @click=${(event: MouseEvent) =>
+                  this.handleSnippetClick(event, result, snippet)}
               >
                 <div class="snippet-header">
                   <sl-badge variant="neutral" pill
                     >${this.matchTag(snippet)}</sl-badge
                   >
                   ${this.renderArtifactMeta(snippet)}
-                  <span>${this.formatDateTime(snippet.occurred_at)}</span>
+                  <span title=${this.formatDateTime(snippet.occurred_at)}
+                    >${
+                      snippet.occurred_at
+                        ? formatRelativeTime(snippet.occurred_at)
+                        : 'Unknown'
+                    }</span
+                  >
                 </div>
                 ${this.renderSnippetText(snippet)}
                 ${
@@ -2212,9 +2329,33 @@ export class RuntimeSessionsView extends LitElement {
                         Opens the session
                       </div>`
                 }
-              </button>
+              </a>
             `
           )}
+        </div>
+      </sl-card>
+    `;
+  }
+
+  /**
+   * The list failed to load. Say so once, offer a retry, and show nothing
+   * else: the first-run empty state and the live pill under an error read
+   * as "you have no sessions", which is not what happened.
+   */
+  private renderLoadError() {
+    return html`
+      <sl-card>
+        <div class="empty-state" role="alert" data-testid="sessions-load-error">
+          <sl-icon name="exclamation-triangle"></sl-icon>
+          <div>
+            Sessions could not be loaded. Check your connection and try again.
+          </div>
+          <sl-button
+            size="small"
+            data-testid="sessions-retry"
+            @click=${() => void this.loadSessions()}
+            >Retry</sl-button
+          >
         </div>
       </sl-card>
     `;
@@ -2239,7 +2380,16 @@ export class RuntimeSessionsView extends LitElement {
       return html`
         <sl-alert variant="danger" open data-testid="search-error">
           <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-          ${this.searchError}
+          <span title=${this.searchError}
+            >Search is unavailable right now. Try again in a moment.</span
+          >
+          <sl-button
+            size="small"
+            variant="text"
+            data-testid="search-retry"
+            @click=${() => void this.loadSearchResults()}
+            >Retry</sl-button
+          >
         </sl-alert>
       `;
     }
@@ -2944,13 +3094,12 @@ export class RuntimeSessionsView extends LitElement {
                 @sl-change=${this.handleSessionSourceTypeChange}
               >
                 <sl-option value="all">All sources</sl-option>
-                <sl-option value="flow_execution">Flow execution</sl-option>
-                <sl-option value="claude_code">Claude Code</sl-option>
-                <sl-option value="claude_desktop">Claude Desktop</sl-option>
-                <sl-option value="codex">Codex</sl-option>
-                <sl-option value="openclaw">OpenClaw</sl-option>
-                <sl-option value="desktop_agent">Desktop agent</sl-option>
-                <sl-option value="custom">Custom</sl-option>
+                ${this.sourceTypeOptions().map(
+                  (kind) =>
+                    html`<sl-option value=${kind}
+                      >${this.sourceTypeLabel(kind)}</sl-option
+                    >`
+                )}
               </sl-select>
               <sl-select
                 label="Status"
@@ -3003,7 +3152,7 @@ export class RuntimeSessionsView extends LitElement {
                   `
             }
             ${
-              this.error
+              this.error && this.sessions
                 ? html`
                     <sl-alert variant="danger" open>
                       <sl-icon
@@ -3016,29 +3165,35 @@ export class RuntimeSessionsView extends LitElement {
                 : ''
             }
             ${
-              this.isSearching
-                ? html`
-                    ${this.renderSearchNotices()} ${this.renderSearchResults()}
-                    ${
-                      this.selectedSessionId &&
-                      (this.searchResults?.results.length ?? 0) > 0
-                        ? this.renderObserver(this.searchResultSessions())
-                        : ''
-                    }
-                  `
-                : this.loading
+              this.error && !this.sessions && !this.isSearching
+                ? this.renderLoadError()
+                : this.isSearching
                   ? html`
-                      <sl-card>
-                        <div class="loading-state">
-                          <sl-spinner></sl-spinner>
-                          <div>Loading sessions…</div>
-                        </div>
-                      </sl-card>
+                      ${this.renderSearchNotices()}
+                      ${this.renderSearchResults()}
+                      ${
+                        this.selectedSessionId &&
+                        (this.searchResults?.results ?? []).some(
+                          (result) =>
+                            result.runtime_session_id === this.selectedSessionId
+                        )
+                          ? this.renderObserver(this.searchResultSessions())
+                          : ''
+                      }
                     `
-                  : html`
-                      ${this.renderObserver(this.observerSessions())}
-                      ${this.renderLoadMoreSessions()}
-                    `
+                  : this.loading
+                    ? html`
+                        <sl-card>
+                          <div class="loading-state">
+                            <sl-spinner></sl-spinner>
+                            <div>Loading sessions…</div>
+                          </div>
+                        </sl-card>
+                      `
+                    : html`
+                        ${this.renderObserver(this.observerSessions())}
+                        ${this.renderLoadMoreSessions()}
+                      `
             }
           </div>
         </div>

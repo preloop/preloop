@@ -1466,10 +1466,67 @@ describe('RuntimeSessionsView', () => {
     });
   });
 
+  describe('list load failure and source filter (sessions UX audit)', () => {
+    it('shows one error with Retry and no first-run empty state', async () => {
+      let fail = true;
+      const failing = sinon.match(
+        (value: unknown) =>
+          fail && String(value).startsWith('/api/v1/runtime-sessions?')
+      );
+      fetchStub.withArgs(failing, sinon.match.any).callsFake(
+        async () =>
+          new Response(JSON.stringify({ detail: 'boom' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          })
+      );
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      const root = element.shadowRoot!;
+      expect(root.querySelector('[data-testid="sessions-load-error"]')).to
+        .exist;
+      expect(getDeepText(root)).to.not.contain('No sessions yet');
+      expect(root.querySelector('preloop-session-observer')).to.equal(null);
+
+      fail = false;
+      (
+        root.querySelector('[data-testid="sessions-retry"]') as HTMLElement
+      ).click();
+      await waitUntil(() => root.querySelector('preloop-session-observer'));
+      expect(
+        root.querySelector('[data-testid="sessions-load-error"]')
+      ).to.equal(null);
+    });
+
+    it('lists every known agent kind as a source type, Cursor included', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      const select = Array.from(
+        element.shadowRoot!.querySelectorAll('sl-select')
+      ).find((el) => el.getAttribute('label') === 'Source type')!;
+      const values = Array.from(select.querySelectorAll('sl-option')).map(
+        (option) => option.getAttribute('value')
+      );
+      expect(values).to.include.members([
+        'all',
+        'flow_execution',
+        'claude_code',
+        'cursor',
+        'copilot_cli',
+      ]);
+      expect(values).to.not.include('geminicli');
+    });
+  });
   describe('content search', () => {
     function snippetButtons(element: RuntimeSessionsView): HTMLElement[] {
       return Array.from(
-        element.shadowRoot!.querySelectorAll('button.snippet')
+        element.shadowRoot!.querySelectorAll('a.snippet')
       ) as HTMLElement[];
     }
 
@@ -1484,8 +1541,14 @@ describe('RuntimeSessionsView', () => {
       expect(first.textContent).to.contain('Model call');
       expect(first.textContent).to.contain('user');
       expect(first.querySelector('mark')!.textContent).to.equal('rollout');
-      // The timestamp of the turn, not of the session.
-      expect(first.textContent).to.contain(
+      // The timestamp of the turn, not of the session: relative, with the
+      // absolute value in the title (DESIGN.md).
+      expect(first.textContent).to.contain('ago');
+      expect(
+        first
+          .querySelector('.snippet-header span[title]')!
+          .getAttribute('title')
+      ).to.contain(
         new Intl.DateTimeFormat(undefined, {
           month: 'short',
           day: 'numeric',
@@ -1495,6 +1558,88 @@ describe('RuntimeSessionsView', () => {
         }).format(new Date('2026-03-09T19:05:00Z'))
       );
       expect(buttons[1].textContent).to.contain('Tool call');
+    });
+
+    it('renders each hit as a link that a modified click leaves to the browser', async () => {
+      const element = await renderedSearch();
+      const link = snippetButtons(element)[1] as HTMLAnchorElement;
+      const href = new URL(link.href);
+      expect(href.searchParams.get('sessionId')).to.equal('runtime-session-2');
+      expect(href.searchParams.get('turn')).to.equal('tool-7');
+
+      // A cmd-click must not be swallowed: the browser opens a tab.
+      const modified = new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        metaKey: true,
+      });
+      link.dispatchEvent(modified);
+      expect(modified.defaultPrevented).to.equal(false);
+      expect((element as any).selectedSessionId).to.not.equal(
+        'runtime-session-2'
+      );
+
+      const plain = new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+      });
+      link.dispatchEvent(plain);
+      expect(plain.defaultPrevented).to.equal(true);
+      expect((element as any).selectedSessionId).to.equal('runtime-session-2');
+    });
+
+    it('keeps a hyphenated term in one highlight', async () => {
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(async () => {
+        const body = searchResponse();
+        body.results[0].snippets = [
+          {
+            ...body.results[0].snippets[0],
+            text: 'saw <mark>alpha</mark>-<mark>beta</mark> fail',
+          },
+        ];
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      const element = await renderedSearch('alpha-beta');
+      const marks = snippetButtons(element)[0].querySelectorAll('mark');
+      expect(marks).to.have.length(1);
+      expect(marks[0].textContent).to.equal('alpha-beta');
+    });
+
+    it('does not show the detail of a selected session that did not match', async () => {
+      const element = await renderedSearch();
+      // runtime-session-1 was selected from the list; only session 2 matched.
+      expect((element as any).selectedSessionId).to.equal('runtime-session-1');
+      expect(
+        element.shadowRoot!.querySelector('preloop-session-observer')
+      ).to.equal(null);
+    });
+
+    it('offers a friendly message and a retry when search fails', async () => {
+      let fail = true;
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(async () =>
+        fail
+          ? new Response(JSON.stringify({ detail: 'search down' }), {
+              status: 500,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          : new Response(JSON.stringify(searchResponse()), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            })
+      );
+      const element = await renderedSearch();
+      const alert = element.shadowRoot!.querySelector(
+        '[data-testid="search-error"]'
+      )!;
+      expect(alert.textContent).to.contain('Search is unavailable');
+      fail = false;
+      (
+        alert.querySelector('[data-testid="search-retry"]') as HTMLElement
+      ).click();
+      await waitUntil(() => snippetButtons(element).length === 2);
     });
 
     it('shows a session found only by its content, not its title', async () => {
