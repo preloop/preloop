@@ -64,6 +64,7 @@ def dispatch(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
                 trigger_event_details=kwargs["trigger_event_data"],
             ),
         )
+        service.db.commit()
         return {"id": str(execution.id), "status": execution.status}
 
     monkeypatch.setattr(
@@ -355,8 +356,12 @@ async def test_default_help_and_audit(
     chat_flow: models.Flow,
     delivery: AsyncMock,
     dispatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Alias discovery, default selection and audit retain the linked actor."""
+    from preloop.services.audit import get_audit_service
+
+    monkeypatch.setattr(get_audit_service(), "enabled", True)
     f = fixture_db
     receive(f, text="/help")
     await process_one(f.db, real_app)
@@ -550,3 +555,26 @@ def test_chat_provenance_subject() -> None:
         "event": "Chat question",
         "ci": "Team chat",
     }
+
+
+@pytest.mark.asyncio
+async def test_trigger_fixture_commits_without_audit(
+    fixture_db: Any,
+    real_app: Any,
+    chat_flow: models.Flow,
+    delivery: AsyncMock,
+    dispatch: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fake trigger must model the service's commit independently of audit."""
+    from preloop.services.audit import get_audit_service
+
+    monkeypatch.setattr(get_audit_service(), "enabled", False)
+    parent = receive(fixture_db, text="/ask docs Question")
+    await process_one(fixture_db.db, real_app)
+    fixture_db.db.refresh(parent)
+    assert parent.status == "delivered"
+    assert (
+        delivery.call_args.args[2]
+        == f"Flow started. {execution_url(str(parent.run_execution_id))}"
+    )
