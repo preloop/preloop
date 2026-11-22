@@ -411,9 +411,9 @@ async def test_registered_session_search_keeps_user_scope(
     monkeypatch.setattr(
         get_plugin_manager().get_service("artifact_read_policy"),
         "resolve",
-        lambda db, *, account_id, subject: scopes
-        if subject.get("user_id") == str(test_user.id)
-        else None,
+        lambda db, *, account_id, subject: (
+            scopes if subject.get("user_id") == str(test_user.id) else None
+        ),
     )
     monkeypatch.setattr(
         "preloop.services.dynamic_fastmcp_http.get_current_user_context",
@@ -473,9 +473,9 @@ def test_gateway_list_preserves_runtime_scope(
     monkeypatch.setattr(
         get_plugin_manager().get_service("artifact_read_policy"),
         "resolve",
-        lambda db, *, account_id, subject: scopes
-        if subject.get("runtime_principal_id") == "synthetic-agent"
-        else None,
+        lambda db, *, account_id, subject: (
+            scopes if subject.get("runtime_principal_id") == "synthetic-agent" else None
+        ),
     )
     result = list_runtime_session_artifacts(
         runtime_session_id=str(session.id),

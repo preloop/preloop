@@ -22,6 +22,78 @@ class CRUDProject(CRUDBase[Project]):
             .filter(Tracker.account_id == account_id)
         )
 
+    def list_by_repository_path(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        path: str,
+        tracker_types: Optional[List[str]] = None,
+    ) -> List[Project]:
+        """List the account's active projects whose repository path is ``path``.
+
+        Code hosts store the repository path (``owner/name``,
+        ``group/subgroup/name``) as the slug; the provider id is the
+        identifier. The match is case-insensitive because GitHub and GitLab
+        treat paths that way. Several rows mean the path is ambiguous (for
+        example the same path on two trackers).
+
+        Args:
+            db: Database session.
+            account_id: Account that must own the tracker.
+            path: Repository path or provider project id.
+            tracker_types: Only consider trackers of these types.
+
+        Returns:
+            Matching projects, most recently updated first.
+        """
+        lowered = path.strip().lower()
+        query = self._scope_to_account(db.query(Project), account_id).filter(
+            Project.is_active.is_(True),
+            Tracker.is_active.is_(True),
+            Tracker.is_deleted.is_(False),
+            or_(
+                func.lower(Project.slug) == lowered,
+                func.lower(Project.identifier) == lowered,
+            ),
+        )
+        if tracker_types:
+            query = query.filter(Tracker.tracker_type.in_(tracker_types))
+        return query.order_by(Project.updated_at.desc()).all()
+
+    def list_active_for_tracker_types(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        tracker_types: List[str],
+    ) -> List[Project]:
+        """List the account's active projects on trackers of the given types.
+
+        Organization and tracker are loaded with the rows, so callers can
+        check many projects without a query per project.
+
+        Args:
+            db: Database session.
+            account_id: Account that must own the tracker.
+            tracker_types: Tracker types to include.
+
+        Returns:
+            Projects ordered by slug.
+        """
+        return (
+            self._scope_to_account(db.query(Project), account_id)
+            .options(joinedload(Project.organization).joinedload(Organization.tracker))
+            .filter(
+                Project.is_active.is_(True),
+                Tracker.tracker_type.in_(tracker_types),
+                Tracker.is_active.is_(True),
+                Tracker.is_deleted.is_(False),
+            )
+            .order_by(Project.slug, Project.id)
+            .all()
+        )
+
     def get_all_active_by_identifier_or_name_globally(
         self,
         db: Session,

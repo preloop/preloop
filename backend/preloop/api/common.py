@@ -33,6 +33,96 @@ crud_organization = CRUDOrganization(Organization)
 crud_project = CRUDProject(Project)
 
 
+def azure_devops_repo_full_name(config: Dict[str, Any], project: Any) -> str:
+    """Return a project's ``org/project/repo`` if it is inside the binding.
+
+    Args:
+        config: The tracker's connection details (``organization`` and the
+            optional ``project`` / ``repository`` binding).
+        project: The Preloop project row.
+
+    Returns:
+        The repository full name.
+
+    Raises:
+        HTTPException: 403 when the repository is outside the tracker's
+            organization, bound project or bound repository.
+    """
+    full_name = (project.meta_data or {}).get("full_name") or project.slug
+    parts = str(full_name or "").split("/")
+    bound_project = config.get("project")
+    bound_repository = config.get("repository")
+    if (
+        len(parts) != 3
+        or parts[0].casefold() != str(config.get("organization") or "").casefold()
+        or (bound_project and parts[1].casefold() != str(bound_project).casefold())
+        or (
+            bound_repository and parts[2].casefold() != str(bound_repository).casefold()
+        )
+    ):
+        raise HTTPException(
+            403, "Repository is outside the Azure DevOps tracker binding"
+        )
+    return str(full_name)
+
+
+def project_scope_denial(
+    db: Session,
+    tracker: Any,
+    organization: Any,
+    project: Any,
+    scope_rules: Optional[List[Any]] = None,
+) -> Optional[str]:
+    """Say why a project is outside its tracker's scope, or None when inside.
+
+    Rule 1: the organization must be included and not excluded. Rule 2: the
+    project must not be excluded. Rule 3: when project-level includes exist,
+    the project must be one of them.
+
+    Args:
+        db: Database session.
+        tracker: The project's tracker.
+        organization: The project's organization.
+        project: The project to check.
+        scope_rules: The tracker's scope rules when the caller already has
+            them (checking many projects); read from the database otherwise.
+
+    Returns:
+        The access-denied detail, or None when the project is in scope.
+    """
+    if scope_rules is None:
+        scope_rules = crud_tracker_scope_rule.get_by_tracker(
+            db, tracker_id=tracker.id, account_id=tracker.account_id
+        )
+    org_identifier = organization.identifier
+    scope_identifiers = project_scope_identifiers(
+        tracker.tracker_type,
+        project.identifier,
+        jira_key=project.slug if tracker.tracker_type == "jira" else None,
+    )
+    org_rules = [rule for rule in scope_rules if rule.scope_type == "ORGANIZATION"]
+    project_rules = [rule for rule in scope_rules if rule.scope_type == "PROJECT"]
+    if any(
+        rule.rule_type == "EXCLUDE" and rule.identifier == org_identifier
+        for rule in org_rules
+    ):
+        return "Access denied: Organization is explicitly excluded."
+    if not any(
+        rule.rule_type == "INCLUDE" and rule.identifier == org_identifier
+        for rule in org_rules
+    ):
+        return "Access denied: Organization is not included in tracker scope."
+    if any(
+        rule.rule_type == "EXCLUDE" and rule.identifier in scope_identifiers
+        for rule in project_rules
+    ):
+        return "Access denied: Project is explicitly excluded."
+    includes = [rule for rule in project_rules if rule.rule_type == "INCLUDE"]
+    if includes and not any(rule.identifier in scope_identifiers for rule in includes):
+        return "Access denied: Project is not in the tracker's include list."
+    return None
+
+
 async def get_tracker_client(
     organization_id: Union[str, UUID],
     project_id: Union[str, UUID],
@@ -118,66 +208,9 @@ async def get_tracker_client(
         )
     # --- End Authorization Check ---
 
-    # --- New Scoping Logic ---
-    scope_rules = crud_tracker_scope_rule.get_by_tracker(
-        db, tracker_id=tracker.id, account_id=current_user.account_id
-    )
-
-    org_identifier = organization.identifier
-    scope_identifiers = project_scope_identifiers(
-        tracker.tracker_type,
-        project.identifier,
-        jira_key=project.slug if tracker.tracker_type == "jira" else None,
-    )
-
-    org_rules = [rule for rule in scope_rules if rule.scope_type == "ORGANIZATION"]
-    project_rules = [rule for rule in scope_rules if rule.scope_type == "PROJECT"]
-
-    # Rule 1: Organization must be included
-    org_included = any(
-        rule.rule_type == "INCLUDE" and rule.identifier == org_identifier
-        for rule in org_rules
-    )
-    org_excluded = any(
-        rule.rule_type == "EXCLUDE" and rule.identifier == org_identifier
-        for rule in org_rules
-    )
-
-    if org_excluded:
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: Organization is explicitly excluded.",
-        )
-    if not org_included:
-        raise HTTPException(
-            status_code=403,
-            detail="Access denied: Organization is not included in tracker scope.",
-        )
-
-    # Rule 2: Project must not be excluded
-    project_excluded = any(
-        rule.rule_type == "EXCLUDE" and rule.identifier in scope_identifiers
-        for rule in project_rules
-    )
-    if project_excluded:
-        raise HTTPException(
-            status_code=403, detail="Access denied: Project is explicitly excluded."
-        )
-
-    # Rule 3: If project-level includes exist, project must be in the list
-    project_level_includes = [
-        rule for rule in project_rules if rule.rule_type == "INCLUDE"
-    ]
-    if project_level_includes:
-        project_included = any(
-            rule.identifier in scope_identifiers for rule in project_level_includes
-        )
-        if not project_included:
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied: Project is not in the tracker's include list.",
-            )
-    # --- End New Scoping Logic ---
+    denial = project_scope_denial(db, tracker, organization, project)
+    if denial:
+        raise HTTPException(status_code=403, detail=denial)
 
     tracker_type = tracker.tracker_type
 
@@ -216,6 +249,13 @@ async def get_tracker_client(
             project.slug
             or (project.meta_data or {}).get("full_name")
             or f"{organization.identifier}/{project.name}"
+        )
+    elif tracker_type == "azure_devops":
+        # The organization belongs to the tracker; project settings never
+        # redirect the token. PR calls address "org/project/repo".
+        full_config = dict(tracker.connection_details or {})
+        full_config["repo_full_name"] = azure_devops_repo_full_name(
+            full_config, project
         )
     elif tracker_type == "bitbucket_dc":
         # Deployment/credential identity belongs to the tracker, never to

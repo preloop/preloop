@@ -273,6 +273,7 @@ nav:
           - GitLab self-hosted: guide/gitlab-self-hosted.md
           - Bitbucket Cloud: guide/bitbucket-tracker.md
           - Bitbucket Data Center: guide/bitbucket-data-center.md
+          - Azure DevOps: guide/azure-devops-tracker.md
           - Jira Cloud: guide/jira-tracker.md
           - Moving a GitHub repository: guide/github-repository-transfer.md
           - Forge reconciliation: guide/forge-reconciliation.md

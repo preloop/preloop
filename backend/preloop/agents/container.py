@@ -7102,6 +7102,21 @@ trap _preloop_publication_cleanup EXIT
                     self.logger.info(f"Constructed Bitbucket clone URL for {slug}")
                     return clone_url
 
+                elif tracker_type == "azure_devops":
+                    # Azure Repos: https://dev.azure.com/{org}/{project}/_git/{repo}
+                    from preloop.utils.azure_devops import clone_url as azure_url
+
+                    parts = (slug or "").split("/")
+                    if len(parts) != 3 or not all(parts):
+                        self.logger.warning(
+                            f"Azure DevOps project {project_id} has no "
+                            "org/project/repo slug"
+                        )
+                        return None
+                    clone_url = azure_url(*parts)
+                    self.logger.info(f"Constructed Azure Repos clone URL for {slug}")
+                    return clone_url
+
                 else:
                     self.logger.warning(
                         f"Tracker type '{tracker_type}' not supported for git clone"

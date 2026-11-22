@@ -769,6 +769,29 @@ ISSUE_REFERENCE_FORMS = (
     "key results are not issues."
 )
 
+PR_REFERENCE_FORMS = (
+    "Accepted forms: a merge request reference 'group/project!12' (any "
+    "subgroup depth) or 'group/project#12' for GitLab; 'owner/repo#12' for "
+    "GitHub, Bitbucket and Azure Repos; a pull or merge request URL (GitLab "
+    "'.../group/project/-/merge_requests/12', GitHub "
+    "'.../owner/repo/pull/12', Bitbucket '.../workspace/repo/pull-requests/12',"
+    " Azure Repos '.../_git/repo/pullrequest/12'; suffixes such as /diffs or "
+    "#note_1 are ignored); or a bare number '12', '!12' or '#12', which "
+    "resolves against the project that triggered the flow run, or else must "
+    "name the only project in scope. A number may be passed as an integer."
+)
+
+PULL_REQUEST_PARAMETER_DESCRIPTION = "Pull or merge request. " + PR_REFERENCE_FORMS
+PR_PROJECT_PARAMETER_DESCRIPTION = (
+    "Optional project path ('group/project' or 'owner/repo') that a bare "
+    "number belongs to. Ignored when pull_request names its project."
+)
+
+GET_PULL_REQUEST_DESCRIPTION = (
+    "Get details of a pull request (GitHub, Bitbucket, Azure Repos) or merge "
+    "request (GitLab): metadata, comments and file changes. " + PR_REFERENCE_FORMS
+)
+
 GET_ISSUE_DESCRIPTION = (
     "Get detailed information about an issue by its identifier (URL, key, "
     "number or ID). "

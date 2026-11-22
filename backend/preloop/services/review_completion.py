@@ -7,7 +7,10 @@ then ends without succeeding (stopped, timed out, failed), the commit status
 must still say that a review was submitted and which step never completed,
 instead of a bare "execution was stopped" that hides the review outcome.
 
-The run stays a failure: a submitted review is not a completed run.
+The status stays a failure while any post-review step is missing: a
+submitted review alone is not a completed run. When every step completed
+before the run was stopped, the review did its whole job and the status is
+a success that still says how the run ended.
 """
 
 from __future__ import annotations

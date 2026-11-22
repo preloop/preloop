@@ -134,6 +134,10 @@ class TrackerClient:
                 self.client = JiraTracker(
                     tracker.id, "", connection_details, initialize_client=False
                 )
+            elif self.tracker_type == "azure_devops":
+                from ..trackers.azure_devops import AzureDevOpsTracker
+
+                self.client = AzureDevOpsTracker(tracker.id, "", connection_details)
             else:
                 raise ValueError(f"Unsupported tracker type: {self.tracker_type}")
             return
@@ -211,6 +215,12 @@ class TrackerClient:
                 self.client = JiraTracker(
                     tracker.id, tracker.resolved_api_key, connection_details
                 )
+        elif self.tracker_type == "azure_devops":
+            from ..trackers.azure_devops import AzureDevOpsTracker
+
+            self.client = AzureDevOpsTracker(
+                tracker.id, tracker.resolved_api_key, connection_details
+            )
         elif self.tracker_type == "bitbucket_dc":
             from ..trackers.bitbucket_dc import BitbucketDCTracker
 
@@ -466,8 +476,9 @@ class TrackerClient:
         force_update: bool = False,
     ) -> Tuple[List[Issue], int]:
         """Scan and update issues for a project."""
-        if self.tracker_type == "bitbucket_dc":
-            # DC is a repository host. Issue sync belongs to the Jira tracker.
+        if self.tracker_type in ("bitbucket_dc", "azure_devops"):
+            # Repository hosts without issue sync (Jira / Azure Boards are
+            # not synced through these trackers).
             return [], 0
         logger.info(
             f"Scanning issues for project {project.id} ({project.name}) since {since}"
@@ -685,7 +696,9 @@ async def _process_organization(
         logger.warning(
             "PRELOOP_URL environment variable not set. Skipping webhook registration."
         )
-    elif client.tracker_type != "bitbucket_dc":
+    elif client.tracker_type not in ("bitbucket_dc", "azure_devops"):
+        # Data Center hooks and Azure DevOps service hooks are registered
+        # from the tracker page, with a per-tracker secret.
         try:
             webhook_target_path = (
                 f"/api/v1/private/webhooks/{client.tracker_type}/{org.id}"

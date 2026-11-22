@@ -84,7 +84,9 @@ def test_generated_wrapper_loads_custom_provider_from_nested_checkout(
     monkeypatch.setattr(
         agent,
         "_prepare_git_clone_command",
-        lambda _: "mkdir -p /workspace/workspace\ngit init -q /workspace/workspace\ncd /workspace",
+        lambda _: (
+            "mkdir -p /workspace/workspace\ngit init -q /workspace/workspace\ncd /workspace"
+        ),
     )
     context = {
         "prompt": "Reply with FLOW_EXECUTION_SUCCESS and stop. Do not use tools.",

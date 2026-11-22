@@ -78,7 +78,7 @@ def client(db_session: Session, session: _Session) -> Iterator[TestClient]:
     install_rate_limit_handler(app)
     app.include_router(account_endpoints.public_router, prefix="/api/v1")
     app.dependency_overrides[get_db_session] = lambda: db_session
-    app.dependency_overrides[get_current_active_user_optional] = lambda: (session.user)
+    app.dependency_overrides[get_current_active_user_optional] = lambda: session.user
     yield TestClient(app)
 
 

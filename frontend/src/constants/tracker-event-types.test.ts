@@ -1,6 +1,7 @@
 import { expect } from '@open-wc/testing';
 
 import {
+  AZURE_DEVOPS_TRACKER_EVENTS,
   BITBUCKET_TRACKER_EVENTS,
   getTrackerEventOptions,
   GITHUB_TRACKER_EVENTS,
@@ -61,5 +62,14 @@ describe('getTrackerEventOptions', () => {
       'push',
     ]);
     expect(values.some((value) => value.startsWith('issue_'))).to.be.false;
+  });
+
+  it('offers only the Azure DevOps pull request opened and updated events', () => {
+    const events = getTrackerEventOptions('azure_devops');
+    expect(events).to.deep.equal(AZURE_DEVOPS_TRACKER_EVENTS);
+    expect(events.map((event) => event.value)).to.deep.equal([
+      'pull_request_opened',
+      'pull_request_updated',
+    ]);
   });
 });

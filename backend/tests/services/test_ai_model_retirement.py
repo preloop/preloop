@@ -53,7 +53,7 @@ def test_discovery_excludes_only_explicitly_retired_global_rows(shared: bool) ->
     assert retired.meta_data == {"retired": True}
 
 
-@pytest.mark.parametrize("account_id", [None, str(uuid4())])
+@pytest.mark.parametrize("account_id", [None, "00000000-0000-4000-8000-000000000001"])
 def test_retired_global_default_cannot_win_or_be_fallback(
     account_id: str | None,
 ) -> None:

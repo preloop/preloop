@@ -60,10 +60,13 @@ from fastmcp import FastMCP
 
 mcp = FastMCP("test-server")
 
+
 @mcp.tool()
 async def get_random_number() -> str:
     import random
+
     return str(random.randint(1, 100))
+
 
 if __name__ == "__main__":
     mcp.run(transport="streamable-http", port=8002)

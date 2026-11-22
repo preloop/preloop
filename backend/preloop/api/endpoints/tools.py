@@ -58,6 +58,9 @@ from preloop.utils.permissions import ensure_permission_in_oss, require_permissi
 
 from preloop.tools.builtin_defs import (
     ISSUE_REFERENCE_FORMS,
+    GET_PULL_REQUEST_DESCRIPTION,
+    PR_PROJECT_PARAMETER_DESCRIPTION,
+    PULL_REQUEST_PARAMETER_DESCRIPTION,
     ASK_USER_TOOL,
     DEPOSIT_ARTIFACT_TOOL,
     GET_ARTIFACT_TOOL,
@@ -236,6 +239,7 @@ BUILTIN_TOOLS = [
                 "target": {
                     "type": "string",
                     "description": "Issue, PR, or MR identifier (URL, key, or ID). "
+                    "For a merge request: 'group/project!12' or its URL. "
                     "For an issue: " + ISSUE_REFERENCE_FORMS,
                 },
                 "comment": {
@@ -269,7 +273,7 @@ BUILTIN_TOOLS = [
         "description": "Update or resolve an existing comment on a pull request or merge request. Supports both inline review comments and PR conversation comments (issue comments). To update the comment text: provide body with new content. To resolve/unresolve a thread: provide resolved as true/false (only works for review_comment type). Use comment_type to specify the comment type, or omit to auto-detect.",
         "source": "builtin",
         "requires_tracker": True,
-        "required_tracker_types": ["github", "gitlab", "bitbucket"],
+        "required_tracker_types": ["github", "gitlab", "bitbucket", "azure_devops"],
         "schema": {
             "type": "object",
             "properties": {
@@ -304,16 +308,16 @@ BUILTIN_TOOLS = [
     },
     {
         "name": "get_pull_request",
-        "description": "Get details of a pull request (GitHub, Bitbucket Cloud) or merge request (GitLab). Auto-detects platform from URL. Returns PR metadata, comments, and file changes.",
+        "description": GET_PULL_REQUEST_DESCRIPTION,
         "source": "builtin",
         "requires_tracker": True,
-        "required_tracker_types": ["github", "gitlab", "bitbucket"],
+        "required_tracker_types": ["github", "gitlab", "bitbucket", "azure_devops"],
         "schema": {
             "type": "object",
             "properties": {
                 "pull_request": {
                     "type": "string",
-                    "description": "PR/MR identifier (URL, slug, or number)",
+                    "description": PULL_REQUEST_PARAMETER_DESCRIPTION,
                 },
                 "include_comments": {
                     "type": "boolean",
@@ -325,6 +329,10 @@ BUILTIN_TOOLS = [
                     "description": "Include file changes",
                     "default": True,
                 },
+                "project": {
+                    "type": "string",
+                    "description": PR_PROJECT_PARAMETER_DESCRIPTION,
+                },
             },
             "required": ["pull_request"],
         },
@@ -334,13 +342,17 @@ BUILTIN_TOOLS = [
         "description": "Update a pull request's metadata, submit a review, and/or manage reactions. To update PR properties: provide title, description, labels, state, assignees, reviewers, draft. To submit a review: provide review_action (approve/request_changes/comment) with optional review_body and review_comments for inline feedback. To add/remove reactions: use add_reaction or remove_reaction with emoji names.",
         "source": "builtin",
         "requires_tracker": True,
-        "required_tracker_types": ["github", "gitlab", "bitbucket"],
+        "required_tracker_types": ["github", "gitlab", "bitbucket", "azure_devops"],
         "schema": {
             "type": "object",
             "properties": {
                 "pull_request": {
                     "type": "string",
-                    "description": "PR/MR identifier",
+                    "description": PULL_REQUEST_PARAMETER_DESCRIPTION,
+                },
+                "project": {
+                    "type": "string",
+                    "description": PR_PROJECT_PARAMETER_DESCRIPTION,
                 },
                 "title": {"type": "string", "description": "New title"},
                 "description": {

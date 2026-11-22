@@ -44,6 +44,7 @@ const KIND_LABELS: Record<string, string> = {
   jira: 'Jira',
   bitbucket: 'Bitbucket Cloud',
   bitbucket_dc: 'Bitbucket Data Center',
+  azure_devops: 'Azure DevOps',
 };
 
 export function trackerKindLabel(kind: string): string {

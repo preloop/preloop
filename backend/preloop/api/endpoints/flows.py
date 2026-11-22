@@ -3456,7 +3456,10 @@ async def send_execution_command(
         )
     import logging
 
-    from preloop.services.flow_execution_stop import stop_execution
+    from preloop.services.flow_execution_stop import (
+        api_token_stop_attribution,
+        stop_execution,
+    )
     from preloop.sync.services.event_bus import get_nats_client
 
     logger = logging.getLogger(__name__)
@@ -3521,11 +3524,17 @@ async def send_execution_command(
         raise HTTPException(status_code=404, detail="Flow execution not found")
 
     if command_data.command == "stop":
+        # A stop sent with an API token is automation more often than a
+        # person (a CI job's cleanup step): record it as such.
+        attribution = api_token_stop_attribution(current_user)
         outcome = await stop_execution(
             db,
             execution,
             account_id=current_user.account_id,
             nats_client=nats_client,
+            error_message=attribution.error_message,
+            stop_reason=attribution.reason,
+            stop_source=attribution.source,
             command_payload=command_data.payload,
             user_id=current_user.id,
         )

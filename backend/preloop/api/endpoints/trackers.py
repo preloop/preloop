@@ -79,6 +79,11 @@ from preloop.services.tracker_probe import (
     run_tracker_probe,
 )
 from preloop.utils.audit import log_config_change
+from preloop.utils.azure_devops import (
+    AZURE_DEVOPS_BASE_URL,
+    AzureDevOpsConfigError,
+    validate_azure_devops_config,
+)
 from preloop.utils.bitbucket import BitbucketConfigError, validate_bitbucket_config
 from preloop.utils.bitbucket_dc import (
     BitbucketDCConfigError,
@@ -497,6 +502,33 @@ def _bitbucket_dc_details(
     return config
 
 
+def _azure_devops_details(
+    *, api_key: Optional[str], url: Optional[str], details: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Validate an Azure DevOps configuration before any network call.
+
+    Args:
+        api_key: The personal access token.
+        url: The requested tracker URL; only ``https://dev.azure.com``.
+        details: The requested connection details.
+
+    Returns:
+        Normalized connection details.
+
+    Raises:
+        HTTPException: 400 for an unusable or unsupported configuration.
+    """
+    try:
+        return validate_azure_devops_config(
+            api_key=api_key,
+            auth_type="api_token",
+            connection_details=details,
+            url=url,
+        )
+    except AzureDevOpsConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _bitbucket_auth_details(
     tracker_type: TrackerType,
     request_data: TrackerTestRequest,
@@ -527,6 +559,14 @@ def _bitbucket_auth_details(
             details=request_data.connection_details,
         )
         return {"auth_type": auth_type}
+    if tracker_type == TrackerType.AZURE_DEVOPS:
+        request_data.connection_details = _azure_devops_details(
+            api_key=request_data.api_key,
+            url=str(request_data.url) if request_data.url else None,
+            details=request_data.connection_details,
+        )
+        request_data.url = AZURE_DEVOPS_BASE_URL
+        return {"auth_type": "api_token"}
     if tracker_type != TrackerType.BITBUCKET:
         return {}
     auth_type = (
@@ -731,6 +771,11 @@ async def register_tracker(
             api_key=api_key, auth_type=auth_type, url=url_str, details=config
         )
         url_str = config["instance_url"]
+        extra_connection_details["auth_type"] = auth_type
+    if tracker_type == TrackerType.AZURE_DEVOPS:
+        config = _azure_devops_details(api_key=api_key, url=url_str, details=config)
+        url_str = AZURE_DEVOPS_BASE_URL
+        auth_type = "api_token"
         extra_connection_details["auth_type"] = auth_type
     if tracker_type == TrackerType.BITBUCKET:
         try:
@@ -1354,6 +1399,24 @@ async def update_tracker(
                     detail="Bitbucket tracker requires 'workspace' in connection_details.",
                 )
             update_data["connection_details"] = merged
+    elif tracker.tracker_type == TrackerType.AZURE_DEVOPS.value and (
+        "api_key" in update_data
+        or "connection_details" in update_data
+        or "url" in update_data
+    ):
+        api_key = update_data.get("api_key")
+        update_data["connection_details"] = _azure_devops_details(
+            api_key=(
+                tracker.resolved_api_key if api_key in (None, "unchanged") else api_key
+            ),
+            url=str(update_data.get("url") or tracker.url or ""),
+            details=(
+                update_data.get("connection_details")
+                if update_data.get("connection_details") is not None
+                else tracker.connection_details
+            ),
+        )
+        update_data["url"] = AZURE_DEVOPS_BASE_URL
     elif tracker.tracker_type == TrackerType.BITBUCKET.value and (
         "api_key" in update_data or "connection_details" in update_data
     ):

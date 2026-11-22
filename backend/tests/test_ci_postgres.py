@@ -20,6 +20,28 @@ ci_postgres = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(ci_postgres)
 
 
+@pytest.fixture(autouse=True)
+def isolate_runner_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep every test away from the runner's real files and settings.
+
+    In CI ``GITHUB_ENV`` names the job's environment file; anything appended
+    there becomes ``DATABASE_URL`` for every later step of the job.
+    """
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    for name in (
+        "GITHUB_ENV",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "PRELOOP_CI_SHARD",
+        "PRELOOP_CI_POSTGRES_HOST",
+        "PRELOOP_CI_POSTGRES_PORT",
+        "PRELOOP_CI_POSTGRES_USER",
+        "PRELOOP_CI_POSTGRES_PASSWORD",
+        "PRELOOP_CI_MAINTENANCE_DB",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 class _Cursor:
     def __init__(self, databases: set[str]) -> None:
         self.databases = databases
@@ -39,7 +61,7 @@ class _Cursor:
             self._row = (1,) if params[0] in self.databases else None
             return
         if sql.startswith("CREATE DATABASE "):
-            self.databases.add(sql.removeprefix("CREATE DATABASE ").strip())
+            self.databases.add(sql.split()[2])
         if sql.startswith("DROP DATABASE"):
             self.databases.discard(sql.split()[-1])
         self._row = None
@@ -203,28 +225,56 @@ def test_drop_leaves_a_reused_server_running(
     assert databases == set()
 
 
-def test_prepare_publishes_the_three_ci_urls(
+def test_prepare_as_a_library_leaves_the_runner_env_file_alone(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Regression: a test's fake URL leaked into later steps of the CI job."""
     env_file = tmp_path / "github.env"
-    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
-    monkeypatch.setenv("GITHUB_ENV", str(env_file))
-    monkeypatch.setenv("GITHUB_RUN_ID", "9")
-    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
-    monkeypatch.setenv("PRELOOP_CI_SHARD", "2")
     env_file.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_ENV", str(env_file))
+    monkeypatch.setenv("GITHUB_RUN_ID", "15")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
+    monkeypatch.setenv("PRELOOP_CI_SHARD", "18")
 
     ci_postgres.prepare(
         opener=lambda *_args: _Connection(set()), start_server=lambda *_a: None
     )
-    published = env_file.read_text(encoding="utf-8")
-    assert (
-        "DATABASE_URL=postgresql://test_user@127.0.0.1:5432/preloop_ci_9_1_2"
-        in published
+
+    assert env_file.read_text(encoding="utf-8") == ""
+
+
+def test_main_prepare_publishes_the_three_ci_urls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env_file = tmp_path / "github.env"
+    monkeypatch.setenv("GITHUB_ENV", str(env_file))
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        ci_postgres,
+        "prepare",
+        lambda: "postgresql://test_user@127.0.0.1:5432/preloop_ci_9_1_2",
     )
-    assert "test_password" not in published
-    assert "FLOW_FEEDBACK_TEST_DATABASE_URL=" in published
-    assert "CHAT_TEST_DATABASE_URL=" in published
+
+    assert ci_postgres.main(["ci_postgres.py", "prepare"]) == 0
+    published = env_file.read_text(encoding="utf-8").splitlines()
+    url = "postgresql://test_user@127.0.0.1:5432/preloop_ci_9_1_2"
+    assert published == [
+        f"DATABASE_URL={url}",
+        f"FLOW_FEEDBACK_TEST_DATABASE_URL={url}",
+        f"CHAT_TEST_DATABASE_URL={url}",
+    ]
+
+
+def test_prepare_url_omits_the_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_RUN_ID", "9")
+    monkeypatch.setenv("PRELOOP_CI_SHARD", "2")
+    url = ci_postgres.prepare(
+        opener=lambda *_args: _Connection(set()), start_server=lambda *_a: None
+    )
+    assert url == "postgresql://test_user@127.0.0.1:5432/preloop_ci_9_1_2"
+    assert "test_password" not in url
 
 
 def test_ephemeral_fallback_does_not_share_a_name_or_port() -> None:
@@ -262,3 +312,43 @@ def test_sweep_drops_only_stale_ci_databases() -> None:
 
     ci_postgres._sweep_stale_databases(_Sweep(), keep="preloop_ci_9_1_2")
     assert dropped == ["preloop_ci_1_1_1"]
+
+
+def test_worker_clones_come_from_the_job_database_and_are_dropped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    databases = {"preloop_ci_15_1_3"}
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    (tmp_path / "preloop-ci-postgres.json").write_text(
+        json.dumps(
+            {
+                "database": "preloop_ci_15_1_3",
+                "host": "127.0.0.1",
+                "port": 5432,
+                "user": "test_user",
+                "maintenance_db": "postgres",
+                "container": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    connections: list[_Connection] = []
+
+    def opener(*_args: Any) -> _Connection:
+        connections.append(_Connection(databases))
+        return connections[-1]
+
+    clones = ci_postgres.clone_worker_databases(2, opener=opener)
+    assert clones == ["preloop_ci_15_1_3_gw0", "preloop_ci_15_1_3_gw1"]
+    statements = [sql for sql, _ in connections[0].cursor_impl.statements]
+    assert "CREATE DATABASE preloop_ci_15_1_3_gw0 TEMPLATE preloop_ci_15_1_3" in (
+        statements
+    )
+    assert all(c.closed for c in connections)
+    ci_postgres.drop(opener=opener)
+    assert databases == set()
+
+
+def test_stale_sweep_matches_worker_clones() -> None:
+    assert ci_postgres._CI_DATABASE_NAME.fullmatch("preloop_ci_1_1_2_gw11")
+    assert not ci_postgres._CI_DATABASE_NAME.fullmatch("preloop_ci_1_1_2_x")

@@ -2,6 +2,7 @@
 Tracker abstraction layer for preloop.sync.
 """
 
+from .azure_devops import AzureDevOpsTracker
 from .base import BaseTracker
 from .bitbucket import BitbucketTracker
 from .factory import create_tracker_client
@@ -10,6 +11,7 @@ from .gitlab import GitLabTracker
 from .jira import JiraTracker
 
 __all__ = [
+    "AzureDevOpsTracker",
     "BaseTracker",
     "BitbucketTracker",
     "create_tracker_client",

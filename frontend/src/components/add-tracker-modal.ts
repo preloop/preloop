@@ -21,6 +21,19 @@ import { groupProjectsByGroup } from '../utils/tracker-scope';
 
 const BITBUCKET_WEB_URL = 'https://bitbucket.org';
 
+/** Azure DevOps Services host. Only dev.azure.com organizations are supported. */
+export const AZURE_DEVOPS_URL = 'https://dev.azure.com';
+
+const AZURE_DEVOPS_GUIDE_URL =
+  'https://docs.preloop.ai/guide/azure-devops-tracker/';
+
+/** Connection details sent for an Azure DevOps tracker. */
+export interface AzureDevOpsConnectionDetails {
+  organization: string;
+  project?: string;
+  repository?: string;
+}
+
 /**
  * The only Bitbucket Data Center release the adapter is validated against.
  * Other releases are reported by the backend as unsupported or unvalidated;
@@ -317,6 +330,18 @@ export class AddTrackerModal extends LitElement {
   @state()
   private bitbucketDcRepositorySlug = '';
 
+  /** Azure DevOps: organization name (dev.azure.com/{organization}). */
+  @state()
+  private azureDevOpsOrganization = '';
+
+  /** Azure DevOps: optional project name that limits the repositories listed. */
+  @state()
+  private azureDevOpsProject = '';
+
+  /** Azure DevOps: optional repository name; requires a project. */
+  @state()
+  private azureDevOpsRepository = '';
+
   @state()
   private orgs: any[] = [];
 
@@ -447,6 +472,13 @@ export class AddTrackerModal extends LitElement {
             : String(details.repository_id);
         this.bitbucketDcRepositorySlug = details.repository_slug ?? '';
       }
+      if (this.tracker.tracker_type === 'azure_devops') {
+        const details = this.tracker.connection_details ?? {};
+        this.trackerUrl = AZURE_DEVOPS_URL;
+        this.azureDevOpsOrganization = details.organization ?? '';
+        this.azureDevOpsProject = details.project ?? '';
+        this.azureDevOpsRepository = details.repository ?? '';
+      }
       this.authMethod = this.isOAuthAuthType(this.tracker.auth_type)
         ? 'github_app'
         : 'api_token';
@@ -527,6 +559,10 @@ export class AddTrackerModal extends LitElement {
 
   private get isBitbucketDc(): boolean {
     return this.trackerType === 'bitbucket_dc';
+  }
+
+  private get isAzureDevOps(): boolean {
+    return this.trackerType === 'azure_devops';
   }
 
   /**
@@ -1297,6 +1333,8 @@ export class AddTrackerModal extends LitElement {
           ) as HTMLInputElement;
           if (this.trackerType === 'bitbucket') {
             this.trackerUrl = BITBUCKET_WEB_URL;
+          } else if (this.trackerType === 'azure_devops') {
+            this.trackerUrl = AZURE_DEVOPS_URL;
           } else if (this.trackerType === 'bitbucket_dc') {
             // The canonical instance URL is derived from the DC field on
             // submit; keep the shared url state in step with it.
@@ -1324,6 +1362,7 @@ export class AddTrackerModal extends LitElement {
         <sl-option value="gitlab">GitLab</sl-option>
         <sl-option value="jira">Jira</sl-option>
         <sl-option value="bitbucket">Bitbucket Cloud</sl-option>
+        <sl-option value="azure_devops">Azure DevOps</sl-option>
         ${
           this.bitbucketDcEnabled ||
           this.tracker?.tracker_type === 'bitbucket_dc'
@@ -1358,15 +1397,17 @@ export class AddTrackerModal extends LitElement {
             ? this.renderBitbucketFields()
             : this.isBitbucketDc
               ? this.renderBitbucketDcFields()
-              : html`
-                  <sl-input
-                    label="URL"
-                    name="url"
-                    .value=${this.trackerUrl}
-                    @sl-input=${(e: any) => (this.trackerUrl = e.target.value)}
-                    placeholder="e.g., https://github.example.com"
-                  ></sl-input>
-                `
+              : this.isAzureDevOps
+                ? this.renderAzureDevOpsFields()
+                : html`
+                    <sl-input
+                      label="URL"
+                      name="url"
+                      .value=${this.trackerUrl}
+                      @sl-input=${(e: any) => (this.trackerUrl = e.target.value)}
+                      placeholder="e.g., https://github.example.com"
+                    ></sl-input>
+                  `
       }
       ${
         this.trackerType === 'jira' && !this.offersJiraConnect
@@ -1465,7 +1506,9 @@ export class AddTrackerModal extends LitElement {
                     ></sl-input>
                   </details>
                 `
-              : this.isBitbucketDc || this.hidesPastedTokenInput
+              : this.isBitbucketDc ||
+                  this.isAzureDevOps ||
+                  this.hidesPastedTokenInput
                 ? ''
                 : html`
                     <sl-input
@@ -1603,6 +1646,112 @@ export class AddTrackerModal extends LitElement {
         help-text="Optional. The current repository slug; discovery resolves it against the repository id."
       ></sl-input>
     `;
+  }
+
+  /**
+   * Azure DevOps Services settings: organization, optional project and
+   * repository, and a personal access token.
+   */
+  renderAzureDevOpsFields() {
+    return html`
+      <sl-input
+        label="Organization"
+        name="azure_devops_organization"
+        .value=${this.azureDevOpsOrganization}
+        @sl-input=${(e: any) => (this.azureDevOpsOrganization = e.target.value)}
+        placeholder="example-org"
+        help-text="The organization name in https://dev.azure.com/{organization}. Old {organization}.visualstudio.com URLs are not accepted."
+        required
+      ></sl-input>
+      <sl-input
+        label="Project"
+        name="azure_devops_project"
+        .value=${this.azureDevOpsProject}
+        @sl-input=${(e: any) => (this.azureDevOpsProject = e.target.value)}
+        help-text="Optional. Limit the repositories listed to one Azure DevOps project."
+      ></sl-input>
+      <sl-input
+        label="Repository"
+        name="azure_devops_repository"
+        .value=${this.azureDevOpsRepository}
+        @sl-input=${(e: any) => (this.azureDevOpsRepository = e.target.value)}
+        help-text="Optional. Limit to one Azure Repos repository. Requires a project."
+      ></sl-input>
+      <sl-input
+        type="password"
+        password-toggle
+        label="Personal access token"
+        name="api_key"
+        .value=${this.trackerToken}
+        @sl-input=${(e: any) => (this.trackerToken = e.target.value)}
+        help-text=${
+          this.tracker
+            ? 'Leave as is to keep the stored token. Enter a new token to replace it.'
+            : 'Minimum scopes: Code (Read), Pull Request Threads (Read & write), and Service Hooks (Read, write & manage) only for automatic webhook registration.'
+        }
+        required
+      ></sl-input>
+      <p
+        class="azure-devops-guide"
+        style="font-size: var(--sl-font-size-small);"
+      >
+        <a href=${AZURE_DEVOPS_GUIDE_URL} target="_blank" rel="noopener"
+          >Azure DevOps setup guide</a
+        >
+      </p>
+    `;
+  }
+
+  /**
+   * Connection details sent for an Azure DevOps tracker.
+   *
+   * @throws Error when the organization is missing, is a URL, or a
+   *   repository is set without a project.
+   */
+  azureDevOpsConnectionDetails(): AzureDevOpsConnectionDetails {
+    const organization = this.azureDevOpsOrganization.trim();
+    if (!organization) {
+      throw new Error('Enter the Azure DevOps organization name.');
+    }
+    if (/[/:]/.test(organization) || /visualstudio\.com/i.test(organization)) {
+      throw new Error(
+        'Enter only the organization name from https://dev.azure.com/{organization}, not a URL.'
+      );
+    }
+    const details: AzureDevOpsConnectionDetails = { organization };
+    const project = this.azureDevOpsProject.trim();
+    const repository = this.azureDevOpsRepository.trim();
+    if (repository && !project) {
+      throw new Error(
+        'Enter the Azure DevOps project that holds the repository.'
+      );
+    }
+    if (project) {
+      details.project = project;
+    }
+    if (repository) {
+      details.repository = repository;
+    }
+    return details;
+  }
+
+  /**
+   * Validate the Azure DevOps form. Returns null (with `errorMessage` set)
+   * when the form cannot be submitted.
+   */
+  private prepareAzureDevOps(): AzureDevOpsConnectionDetails | null {
+    if (!this.tracker && !this.trackerToken.trim()) {
+      this.errorMessage = 'Enter a personal access token to continue.';
+      return null;
+    }
+    try {
+      const details = this.azureDevOpsConnectionDetails();
+      this.trackerUrl = AZURE_DEVOPS_URL;
+      return details;
+    } catch (error: any) {
+      this.errorMessage = error.message;
+      return null;
+    }
   }
 
   /**
@@ -2251,6 +2400,12 @@ export class AddTrackerModal extends LitElement {
         authType: 'api_token',
       };
     }
+    if (this.isAzureDevOps) {
+      return {
+        connectionDetails: { ...this.azureDevOpsConnectionDetails() },
+        authType: 'api_token',
+      };
+    }
     if (this.trackerType !== 'bitbucket') {
       return {};
     }
@@ -2450,6 +2605,10 @@ export class AddTrackerModal extends LitElement {
 
     // Data Center: validate the form before the PAT leaves the browser.
     if (this.isBitbucketDc && !this.prepareBitbucketDc()) {
+      this.isLoading = false;
+      return;
+    }
+    if (this.isAzureDevOps && !this.prepareAzureDevOps()) {
       this.isLoading = false;
       return;
     }
@@ -2807,6 +2966,14 @@ export class AddTrackerModal extends LitElement {
         return;
       }
     }
+    let azureDevOpsDetails: AzureDevOpsConnectionDetails | null = null;
+    if (this.isAzureDevOps) {
+      azureDevOpsDetails = this.prepareAzureDevOps();
+      if (!azureDevOpsDetails) {
+        this.isLoading = false;
+        return;
+      }
+    }
     // An org whose listing failed has no project selection; saving it would
     // silently widen a project-level scope to the whole organization.
     const unlisted = this.orgs.filter(
@@ -2865,11 +3032,13 @@ export class AddTrackerModal extends LitElement {
 
     const connectionDetails: Record<string, unknown> = bitbucketDcDetails
       ? bitbucketDcDetails
-      : this.trackerType === 'bitbucket'
-        ? this.bitbucketConnectionDetails()
-        : {
-            username: this.trackerUsername,
-          };
+      : azureDevOpsDetails
+        ? { ...azureDevOpsDetails }
+        : this.trackerType === 'bitbucket'
+          ? this.bitbucketConnectionDetails()
+          : {
+              username: this.trackerUsername,
+            };
     const trackerData: any = {
       name: this.trackerName,
       type: this.trackerType,
@@ -2929,6 +3098,12 @@ export class AddTrackerModal extends LitElement {
       // Only manual PAT auth is supported; an untouched token stays
       // 'unchanged' so the stored secret is preserved on edit.
       trackerData.url = bitbucketDcDetails.instance_url;
+      trackerData.auth_type = 'api_token';
+      trackerData.api_key = this.trackerToken;
+    }
+
+    if (azureDevOpsDetails) {
+      trackerData.url = AZURE_DEVOPS_URL;
       trackerData.auth_type = 'api_token';
       trackerData.api_key = this.trackerToken;
     }

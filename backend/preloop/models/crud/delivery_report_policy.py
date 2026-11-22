@@ -147,7 +147,7 @@ def code_repositories(
             models.Tracker.is_deleted.is_(False),
             models.Project.is_active.is_(True),
             models.Tracker.tracker_type.in_(
-                ("github", "gitlab", "bitbucket", "bitbucket_dc")
+                ("github", "gitlab", "bitbucket", "bitbucket_dc", "azure_devops")
             ),
         )
         .order_by(models.Project.slug, models.Project.id)

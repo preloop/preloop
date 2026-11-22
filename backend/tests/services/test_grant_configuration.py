@@ -105,9 +105,9 @@ def test_grant_rule_import_requires_configured_referenced_server(
     monkeypatch.setattr(
         crud_mcp_server,
         "get_active_by_account",
-        lambda *a, **k: []
-        if declared
-        else [SimpleNamespace(name="protected", auth_config=auth)],
+        lambda *a, **k: (
+            [] if declared else [SimpleNamespace(name="protected", auth_config=auth)]
+        ),
     )
     monkeypatch.setattr(
         crud_approval_workflow, "get_names_by_account", lambda *a, **k: set()

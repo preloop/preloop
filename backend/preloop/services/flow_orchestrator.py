@@ -895,7 +895,7 @@ def _project_identity_rank(
         3 for a path match, 2 for an identifier match, 0 for no match.
     """
     source = str(identity.get("source") or "")
-    if source in {"github", "gitlab", "bitbucket"} and tracker_type:
+    if source in {"github", "gitlab", "bitbucket", "azure_devops"} and tracker_type:
         if tracker_type != source:
             return 0
     slug = _normalize_repository_path(str(project.slug or ""))
@@ -1645,16 +1645,23 @@ class FlowExecutionOrchestrator:
 
     def _describe_incomplete_review(
         self, stored_status: str, merged_result: Any
-    ) -> Optional[str]:
+    ) -> Optional[tuple[str, str]]:
         """Describe a review this run submitted before ending unsuccessfully.
+
+        A run that submitted its review and completed every post-review step
+        (description, reaction, confirmed result) did the review's whole job:
+        a stop that lands after that (a CI job cancelled for an unrelated
+        reason) does not make the review a failure, so the state is
+        ``success``. A remaining step, or an end other than a stop, keeps it
+        ``failure`` (#1683).
 
         Args:
             stored_status: The execution's terminal status.
             merged_result: The result document the run stored.
 
         Returns:
-            The commit status description, or None when the run submitted no
-            review (or its tool calls cannot be read).
+            The commit status state and description, or None when the run
+            submitted no review (or its tool calls cannot be read).
         """
         if not self.execution_log or not self.flow:
             return None
@@ -1692,7 +1699,48 @@ class FlowExecutionOrchestrator:
             progress.review_state,
             ", ".join(progress.remaining) or "none",
         )
-        return describe_incomplete_review(progress, stored_status)
+        # Only a stop is overridden: a FAILED run may have failed a gate on
+        # the review itself (integrity, publication), which still counts.
+        # A stop can also win the status write over a gate's FAILED, so a
+        # gate verdict recorded on the result keeps the status red too.
+        completed = (
+            stored_status == "STOPPED"
+            and not progress.remaining
+            and not self._review_gate_failed(merged_result)
+        )
+        state = "success" if completed else "failure"
+        return state, describe_incomplete_review(progress, stored_status)
+
+    @staticmethod
+    def _review_gate_failed(merged_result: Any) -> bool:
+        """Whether the stored result records a failed review gate.
+
+        Args:
+            merged_result: The result document the run stored.
+
+        Returns:
+            True when the publication gate recorded anything but a delivered
+            review (``unverified`` is a delivered review whose receipt is
+            unavailable, which the gate does not fail), or the integrity gate recorded a verdict at all (it only
+            writes one when it rejects the review).
+        """
+        from preloop.services.review_publication import (
+            REVIEW_PUBLICATION_RESULT_KEY,
+            STATUS_ALREADY_REVIEWED,
+            STATUS_PUBLISHED,
+            STATUS_UNVERIFIED,
+        )
+
+        if not isinstance(merged_result, dict):
+            return False
+        publication = merged_result.get(REVIEW_PUBLICATION_RESULT_KEY)
+        if isinstance(publication, dict) and publication.get("status") not in {
+            STATUS_PUBLISHED,
+            STATUS_ALREADY_REVIEWED,
+            STATUS_UNVERIFIED,
+        }:
+            return True
+        return merged_result.get("_review_integrity") is not None
 
     async def _update_commit_status(
         self,
@@ -1981,9 +2029,10 @@ class FlowExecutionOrchestrator:
         elif stored_status != "SUCCEEDED":
             detail = error_message or "Unknown error"
             description = f"Preloop review failed: {str(detail)[:80]}"
+        if stored_status != "SUCCEEDED":
             incomplete = self._describe_incomplete_review(stored_status, result)
             if incomplete:
-                description = incomplete
+                state, description = incomplete
         await self._update_commit_status(state=state, description=description)
 
     @staticmethod
@@ -3682,6 +3731,7 @@ class FlowExecutionOrchestrator:
                 "github",
                 "gitlab",
                 "bitbucket",
+                "azure_devops",
             }:
                 logger.warning(
                     "Could not determine tracker type for %s; "
@@ -8988,6 +9038,36 @@ class FlowExecutionOrchestrator:
         reason = stop_request.get("reason")
         return reason or f"Execution stopped ({source}) after {elapsed} seconds."
 
+    def _signalled_stop_message(self, elapsed: Any) -> str:
+        """``error_message`` of a run ended by a stop command over NATS.
+
+        The stop path records who asked before it signals the run, so the
+        durable stop request names the actor: an API token stop (a CI job's
+        cleanup step) must not read as a person's.
+
+        Args:
+            elapsed: Seconds the run had been going.
+
+        Returns:
+            The message for the stored row.
+        """
+        manual = f"Execution stopped by user request after {elapsed} seconds."
+        try:
+            stop_request = crud_flow_execution.get_stop_request(
+                self.db, execution_id=self.execution_log.id
+            )
+        except Exception:
+            logger.warning(
+                "Could not read the stop request of execution %s",
+                getattr(self.execution_log, "id", None),
+            )
+            return manual
+        finally:
+            self._end_read_transaction()
+        if not isinstance(stop_request, dict) or not stop_request.get("source"):
+            return manual
+        return self._durable_stop_message(stop_request, elapsed)
+
     async def _monitor_agent_execution(
         self, session_reference: str, agent_executor: Any
     ) -> Dict[str, Any]:
@@ -9176,9 +9256,7 @@ class FlowExecutionOrchestrator:
                         # 3600s timeouts).
                         return {
                             "status": "STOPPED",
-                            "error_message": (
-                                f"Execution stopped by user request after {elapsed} seconds."
-                            ),
+                            "error_message": self._signalled_stop_message(elapsed),
                             "actions_taken": self.execution_logger.get_actions_taken(),
                             "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                             # An eval run may have already written result.json
@@ -12235,13 +12313,13 @@ class FlowExecutionOrchestrator:
                 status_description = f"Preloop review failed: {str(detail)[:80]}"
             if stored_status != "SUCCEEDED":
                 # A run that already submitted its review says so, and names
-                # the post-review step it never completed (#1683). It still
-                # fails: the review alone is not a completed run.
+                # the post-review step it never completed (#1683). It fails
+                # unless every post-review step completed before the stop.
                 incomplete = self._describe_incomplete_review(
                     stored_status, merged_result
                 )
                 if incomplete:
-                    status_description = incomplete
+                    status_state, status_description = incomplete
             await self._update_commit_status(
                 state=status_state,
                 description=status_description,

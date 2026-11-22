@@ -42,6 +42,9 @@ export class TrackerPill extends LitElement {
     if (type.includes('bitbucket')) {
       return 'bucket';
     }
+    if (type.includes('azure')) {
+      return 'microsoft';
+    }
     return 'box-seam';
   }
 

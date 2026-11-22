@@ -246,8 +246,8 @@ def test_unrelated_principal_and_tenant_denied(
     _, _, foreign = provision(db_session, foreign_resources)
     assert export(client, scenario, grant_id, token=foreign).status_code == 404
     assert export(client, scenario, str(uuid4())).status_code == 404
-    client.app.dependency_overrides[get_current_active_user] = (
-        lambda: foreign_resources[0]
+    client.app.dependency_overrides[get_current_active_user] = lambda: (
+        foreign_resources[0]
     )
     assert (
         client.post(scenario.path + "/result-export", json=scenario.payload).status_code
