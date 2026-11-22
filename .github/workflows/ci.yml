@@ -11,7 +11,7 @@
 # graph, scripts/ci_select.py) on PRs and on `main` pushes, in as many shards
 # as that selection needs. Version tags, the `ci:full` label, full reruns,
 # stacked PRs, the merge queue, the nightly schedule and manual runs run the
-# whole suite in all 18 shards. The receipt (ci-selection artifact) records
+# whole suite in all 6 shards (ci_select.SHARDS). The receipt (ci-selection artifact) records
 # which files ran and why.
 #
 # Make the `CI` aggregator the required check. Individual shards may be
