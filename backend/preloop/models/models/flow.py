@@ -13,6 +13,7 @@ from sqlalchemy import (  # Added JSON
     event,
     func,
     text,
+    UniqueConstraint,
 )
 from sqlalchemy import inspect as sa_inspect
 
@@ -26,6 +27,11 @@ from .base import Base
 
 class Flow(Base):
     __tablename__ = "flow"
+    __table_args__ = (
+        UniqueConstraint("account_id", "chat_alias", name="uq_flow_chat_alias"),
+    )
+
+    chat_alias = Column(String(40), nullable=True)
 
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)

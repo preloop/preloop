@@ -40,6 +40,118 @@ class CRUDChat:
     drafts = CRUDBase(models.ChatSetupDraft)
     listeners = CRUDBase(models.ChatListener)
 
+    def chat_flows(self, db: Session, account_id: uuid.UUID) -> list[models.Flow]:
+        """List opted-in flows within one account."""
+        return (
+            db.query(models.Flow)
+            .filter(
+                models.Flow.account_id == account_id,
+                models.Flow.chat_alias.is_not(None),
+                models.Flow.is_enabled.is_(True),
+            )
+            .order_by(models.Flow.chat_alias)
+            .all()
+        )
+
+    def reserve_run(
+        self, db: Session, row: models.ChatWork, flow_id: uuid.UUID
+    ) -> str | None:
+        """Serialize account reservations before enforcing shared abuse bounds."""
+        db.query(models.Account).filter_by(id=row.account_id).with_for_update().one()
+        now = datetime.utcnow()
+        owned = (
+            db.query(models.ChatWork)
+            .filter(
+                models.ChatWork.id == row.id,
+                models.ChatWork.lease_token
+                == getattr(row, "_chat_lease_token", row.lease_token),
+                models.ChatWork.lease_until > now,
+            )
+            .with_for_update()
+            .first()
+        )
+        if owned is None:
+            db.rollback()
+            raise ChatLeaseLostError("Chat reservation lease expired")
+        recent = db.query(models.ChatWork).filter(
+            models.ChatWork.account_id == row.account_id,
+            models.ChatWork.run_reserved_at > now - timedelta(minutes=1),
+        )
+        if (
+            recent.filter(models.ChatWork.user_id == row.user_id).count() >= 5
+            or recent.filter(models.ChatWork.connection_id == row.connection_id).count()
+            >= 20
+        ):
+            db.rollback()
+            return "Chat run rate limit reached. Try again in one minute."
+        active = (
+            db.query(models.ChatWork)
+            .outerjoin(
+                models.FlowExecution,
+                models.ChatWork.run_execution_id == models.FlowExecution.id,
+            )
+            .filter(
+                models.ChatWork.account_id == row.account_id,
+                models.ChatWork.user_id == row.user_id,
+                models.ChatWork.run_flow_id == flow_id,
+                or_(
+                    and_(
+                        models.ChatWork.run_execution_id.is_(None),
+                        models.ChatWork.status.in_(["acting", "uncertain"]),
+                    ),
+                    models.FlowExecution.status.notin_(
+                        ["SUCCEEDED", "FAILED", "STOPPED", "TIMEOUT", "CANCELLED"]
+                    ),
+                ),
+            )
+            .first()
+        )
+        if active is not None:
+            db.rollback()
+            return "You already have a chat run in progress for this flow."
+        row.run_flow_id = flow_id
+        row.run_reserved_at = now
+        row.status = "acting"
+        # Persist the observer before calling the API. It can discover an execution
+        # even when the worker dies after the API commits and before it replies.
+        db.add(
+            models.ChatWork(
+                account_id=row.account_id,
+                connection_id=row.connection_id,
+                external_user_id=row.external_user_id,
+                user_id=row.user_id,
+                event_id=f"flow-watch:{row.id}",
+                payload={**row.payload, "flow_watch": str(row.id)},
+                next_attempt_at=now + timedelta(seconds=5),
+            )
+        )
+        db.commit()
+        return None
+
+    def find_run(
+        self, db: Session, parent: models.ChatWork
+    ) -> models.FlowExecution | None:
+        """Recover the execution from the durable, server-authored origin."""
+        query = (
+            db.query(models.FlowExecution)
+            .join(models.Flow)
+            .filter(models.Flow.account_id == parent.account_id)
+        )
+        if parent.run_execution_id is not None:
+            query = query.filter(models.FlowExecution.id == parent.run_execution_id)
+        else:
+            query = query.filter(
+                models.FlowExecution.trigger_event_details["chat_origin"][
+                    "request_id"
+                ].astext
+                == str(parent.id)
+            )
+        execution = query.first()
+        if execution is not None and parent.run_execution_id != execution.id:
+            parent.run_execution_id = execution.id
+            db.commit()
+        return execution
+
     def connection_states(
         self, db: Session, connection_ids: list[uuid.UUID], user_id: uuid.UUID
     ) -> dict[uuid.UUID, tuple[models.ChatIdentity | None, models.ChatListener | None]]:

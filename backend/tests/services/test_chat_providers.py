@@ -256,3 +256,39 @@ def synthetic_provider_dns(monkeypatch: pytest.MonkeyPatch) -> None:
         "preloop.services.ai_model_provider._resolve_endpoint_host",
         lambda _: [ipaddress.ip_address("93.184.216.34")],
     )
+
+
+@pytest.mark.asyncio
+async def test_slack_flow_reply_uses_original_thread() -> None:
+    """Flow delivery posts once to the authenticated ingress conversation."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((str(request.url), json.loads(request.content)))
+        return httpx.Response(200, json={"ok": True, "ts": "123.46"})
+
+    config = ChatProviderConfig("slack", "team-test", "secret", "bot-test")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await send_private_reply(
+            config,
+            "user-test",
+            "Answer",
+            delivery_id="delivery-test",
+            client=client,
+            channel_id="channel-test",
+            thread_id="123.45",
+        )
+    assert calls == [
+        (
+            "https://slack.com/api/chat.postMessage",
+            {
+                "channel": "channel-test",
+                "text": "Answer",
+                "mrkdwn": False,
+                "unfurl_links": False,
+                "unfurl_media": False,
+                "client_msg_id": "delivery-test",
+                "thread_ts": "123.45",
+            },
+        )
+    ]

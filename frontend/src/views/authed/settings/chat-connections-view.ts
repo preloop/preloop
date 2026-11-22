@@ -1,4 +1,6 @@
 import '../../../components/chat-setup-wizard';
+import { getFlows } from '../../../api';
+import type { Flow } from '../../../types';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
@@ -16,6 +18,7 @@ import {
   listChatConnections,
   listChatDeliveries,
   setChatConnectionEnabled,
+  setChatDefaultFlow,
   unlinkChatIdentity,
 } from '../../../services/chat-api';
 import type {
@@ -27,6 +30,7 @@ import type {
 @customElement('chat-connections-view')
 export class ChatConnectionsView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
+  @state() private chatFlows: Flow[] = [];
   @state() private connections: ChatConnection[] = [];
   @state() private canManage = false;
   @state() private loading = true;
@@ -72,6 +76,13 @@ export class ChatConnectionsView extends LitElement {
       if (!this.isConnected || generation !== this.generation) return;
       this.connections = result.connections;
       this.canManage = result.can_manage;
+      if (this.canManage) {
+        const flows = await getFlows({ limit: 1000 });
+        if (!this.isConnected || generation !== this.generation) return;
+        this.chatFlows = Array.isArray(flows)
+          ? flows.filter((flow) => flow.chat_alias && flow.is_enabled)
+          : [];
+      }
       if (!this.canManage) {
         this.showForm = false;
       }
@@ -129,6 +140,20 @@ export class ChatConnectionsView extends LitElement {
       if (!this.isConnected || generation !== this.generation) return;
       this.clearCode();
       await this.load();
+    });
+  }
+
+  private async setDefault(connection: ChatConnection, flowId: string) {
+    const generation = this.generation;
+    await this.act(async () => {
+      const updated = await setChatDefaultFlow(
+        connection.id,
+        flowId === 'none' ? null : flowId
+      );
+      if (!this.isConnected || generation !== this.generation) return;
+      this.connections = this.connections.map((row) =>
+        row.id === updated.id ? updated : row
+      );
     });
   }
 
@@ -194,6 +219,21 @@ export class ChatConnectionsView extends LitElement {
         ${connection.linked ? `Your account is linked (${connection.external_user_id}).` : 'Your account is not linked yet.'}
       </p>
       ${this.canManage ? html`<p class="endpoint">Request URL: <code>${ingressUrl}</code><sl-copy-button value=${ingressUrl} copy-label="Copy request URL"></sl-copy-button></p>` : nothing}
+      ${
+        this.canManage
+          ? html` <sl-select
+              label="Default chat flow"
+              help-text="Used for ask TEXT without an alias. Plain messages keep their existing behavior."
+              data-field="default-flow"
+              .value=${connection.default_flow_id || 'none'}
+              ?disabled=${this.busy}
+              @sl-change=${(e: Event) => this.setDefault(connection, (e.target as HTMLSelectElement).value)}
+            >
+              <sl-option value="none">No default</sl-option>
+              ${this.chatFlows.map((flow) => html`<sl-option value=${flow.id!}>${flow.name} (${flow.chat_alias})</sl-option>`)}
+            </sl-select>`
+          : nothing
+      }
       <div class="actions">
         ${
           connection.linked

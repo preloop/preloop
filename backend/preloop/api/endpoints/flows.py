@@ -3775,6 +3775,7 @@ async def trigger_flow_execution(
     *,
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
+    request: Request = None,
     current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
     trigger_event_data: Optional[Dict[str, Any]] = None,
     if_match: Optional[str] = Header(
@@ -3899,6 +3900,44 @@ async def trigger_flow_execution(
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    chat_origin = (trigger_event_data or {}).get("chat_origin")
+    if chat_origin is not None:
+        from preloop.models.crud import crud_chat
+
+        if not request or not getattr(request.state, "paired_channel_action", False):
+            raise HTTPException(403, "Chat origin requires a paired channel action")
+        if not isinstance(chat_origin, dict):
+            raise HTTPException(422, "Invalid chat origin")
+        try:
+            connection_id = uuid.UUID(chat_origin["connection_id"])
+            request_id = uuid.UUID(chat_origin["request_id"])
+        except (KeyError, ValueError, TypeError):
+            raise HTTPException(422, "Invalid chat origin") from None
+        connection = crud_chat.connections.get(
+            db, connection_id, account_id=str(current_user.account_id)
+        )
+        receipt = crud_chat.work.get(
+            db, request_id, account_id=str(current_user.account_id)
+        )
+        if (
+            connection is None
+            or not connection.enabled
+            or receipt is None
+            or receipt.connection_id != connection.id
+            or receipt.user_id != current_user.id
+            or receipt.run_flow_id != flow.id
+            or receipt.status != "acting"
+            or not flow.chat_alias
+            or not flow.is_enabled
+        ):
+            raise HTTPException(403, "Flow is not available for chat")
+        trigger_event_data["chat_origin"] = {
+            "connection_id": str(connection.id),
+            "request_id": str(receipt.id),
+            "user_id": str(current_user.id),
+            "connection_name": connection.name,
+        }
+
     # Pop the reserved matrix key so it never leaks into template variables.
     matrix = None
     if trigger_event_data and "matrix" in trigger_event_data:
@@ -3941,7 +3980,7 @@ async def trigger_flow_execution(
     try:
         result = await trigger_service.trigger_flow(
             flow_id=flow_id,
-            test_mode=True,
+            test_mode=chat_origin is None,
             trigger_event_data=trigger_event_data,
             triggered_by=_display_name(current_user),
             authorization_context=AuthorizationContext(
@@ -3962,6 +4001,18 @@ async def trigger_flow_execution(
     except FlowHaltActiveError:
         raise _halted_response()
 
+    if chat_origin is not None:
+        log_config_change(
+            db,
+            user=current_user,
+            config_type="flow_execution",
+            action="chat_started",
+            new_value={
+                "id": result["id"],
+                "flow_id": str(flow.id),
+                "origin": trigger_event_data["chat_origin"],
+            },
+        )
     return result
 
 

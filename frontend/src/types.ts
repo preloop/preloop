@@ -125,6 +125,7 @@ export interface FlowExecutionStats {
  * saved filters" on update; absent means "leave them untouched".
  */
 export interface Flow {
+  chat_alias?: string | null;
   id?: string;
   /**
    * Configuration revision; increases on every configuration change. Sent

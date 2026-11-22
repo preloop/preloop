@@ -857,6 +857,14 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
     # provenance before the early returns below. Those returns handle runs a
     # person (or the scheduler) started; a run carrying a ``ci`` block is not
     # one of those and must keep its real event label and CI hint.
+    chat = event_data.get("chat_origin")
+    if isinstance(chat, dict) and source == "chat":
+        name = str(event_data.get("triggered_by") or "user")
+        return {
+            "text": f"Chat run by {name}",
+            "event": "Chat question",
+            "ci": str(chat.get("connection_name") or "Chat"),
+        }
     ci = _ci_provenance(event_data.get("ci"))
 
     # A scheduled run and a manual run carry no repo and no reference, so

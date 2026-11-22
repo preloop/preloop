@@ -98,6 +98,46 @@ describe('Chat connections', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     await el.updateComplete;
   }
+  it('saves the selected default flow and can clear it', async () => {
+    manage = true;
+    stub.callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/flows'))
+        return json([
+          {
+            id: 'flow-1',
+            name: 'Documents',
+            chat_alias: 'docs',
+            is_enabled: true,
+          },
+        ]);
+      if (init?.method === 'PATCH')
+        return json({ ...row, ...JSON.parse(init.body as string) });
+      return json({ connections: [row], can_manage: true });
+    });
+    const el = await view();
+    const select = el.shadowRoot!.querySelector(
+      '[data-field="default-flow"]'
+    ) as any;
+    expect(select.textContent).to.contain('Documents (docs)');
+    select.value = 'flow-1';
+    select.dispatchEvent(new Event('sl-change'));
+    await waitUntil(() =>
+      stub.getCalls().some((call) => call.args[1]?.method === 'PATCH')
+    );
+    const patch = stub
+      .getCalls()
+      .find((call) => call.args[1]?.method === 'PATCH')!;
+    expect(JSON.parse(patch.args[1].body)).to.deep.equal({
+      default_flow_id: 'flow-1',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    select.value = 'none';
+    select.dispatchEvent(new Event('sl-change'));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(JSON.parse(stub.lastCall.args[1].body)).to.deep.equal({
+      default_flow_id: null,
+    });
+  });
   it('discards old identity responses after disconnect and reconnect', async () => {
     let finish!: (response: Response) => void;
     stub.onFirstCall().returns(

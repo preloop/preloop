@@ -36061,11 +36061,17 @@ components:
     ConnectionUpdate:
       properties:
         enabled:
-          type: boolean
+          anyOf:
+          - type: boolean
+          - type: 'null'
           title: Enabled
+        default_flow_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Default Flow Id
       type: object
-      required:
-      - enabled
       title: ConnectionUpdate
     ContentHashBucket:
       properties:
@@ -40993,6 +40999,16 @@ components:
       description: Non-blocking advice about a saved flow's configuration.
     FlowCreate:
       properties:
+        chat_alias:
+          anyOf:
+          - type: string
+            maxLength: 40
+            minLength: 1
+            pattern: ^[a-z0-9-]+$
+          - type: 'null'
+          title: Chat Alias
+          description: Opt in to chat with an account-unique alias; null disables
+            chat.
         name:
           type: string
           title: Name
@@ -42081,6 +42097,16 @@ components:
       description: Per-flow terminal notifications. NULL on the row means none.
     FlowResponse:
       properties:
+        chat_alias:
+          anyOf:
+          - type: string
+            maxLength: 40
+            minLength: 1
+            pattern: ^[a-z0-9-]+$
+          - type: 'null'
+          title: Chat Alias
+          description: Opt in to chat with an account-unique alias; null disables
+            chat.
         name:
           anyOf:
           - type: string
@@ -42563,6 +42589,16 @@ components:
       description: A flow row without prompts, agent configuration or tool definitions.
     FlowUpdate:
       properties:
+        chat_alias:
+          anyOf:
+          - type: string
+            maxLength: 40
+            minLength: 1
+            pattern: ^[a-z0-9-]+$
+          - type: 'null'
+          title: Chat Alias
+          description: Opt in to chat with an account-unique alias; null disables
+            chat.
         name:
           anyOf:
           - type: string
@@ -60099,7 +60135,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
