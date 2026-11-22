@@ -562,3 +562,13 @@ class TestSummaries:
             question_summary([{"id": "a"}, {"id": "b"}], schema) == "2 items, 3 fields"
         )
         assert question_summary([], None) == ""
+
+
+def test_shared_item_catalog_declares_the_label_alias():
+    """PR #2433 review: the catalog advertised label in prose only."""
+    from preloop.services.question_schema import normalize_items
+    from preloop.tools.builtin_defs import QUESTION_ITEMS_SCHEMA
+
+    props = QUESTION_ITEMS_SCHEMA["items"]["properties"]
+    assert props["label"]["type"] == "string"
+    assert normalize_items([{"id": "X", "label": "L"}])[0]["title"] == "L"

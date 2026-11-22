@@ -1186,14 +1186,18 @@ class TestQuestionForms:
         """Measured on 2026-09-18 (issue #647): a dogfood run sent the
         discovery row as the question row, the channel refused the whole
         call for the extra keys, and the run degraded to inventory only
-        without ever telling the human a question had been meant."""
+        without ever telling the human a question had been meant. Since
+        #2433 extra text keys are shown on the row rather than dropped, so
+        the prose says what happens to a stray key instead of promising a
+        refusal."""
         norm = _norm(_prompt())
         assert "THOSE FIVE KEYS AND NO OTHER" in norm
         assert (
-            "accepts exactly id, title, description, severity, badges and "
-            "href on a row, and REFUSES the whole call when a row carries "
-            "anything else: rank, path, stacks, triage, manifests" in norm
+            "draws id, title, description, severity, badges and href as the "
+            "row; any other text key is shown under the row as extra detail "
+            "and any other value is dropped" in norm
         )
+        assert "rank, path, stacks, triage, manifests" in norm
         assert (
             "an unknown key inside the items object is dropped in silence, "
             "and minItems on the array field is accepted and kept" in norm

@@ -340,11 +340,12 @@ prompt_template: |
        count, and the fired triage reasons, verbatim from PHASE 2>",
      "severity": "high|medium|low" (the triage band),
      "badges": ["<stack>", "<triage reason>"]}
-  THOSE FIVE KEYS AND NO OTHER. The question channel accepts exactly
-  id, title, description, severity, badges and href on a row, and
-  REFUSES the whole call when a row carries anything else: rank, path,
-  stacks, triage, manifests and every other discovery field belong in
-  the report, never in an item. The array field in the schema below
+  THOSE FIVE KEYS AND NO OTHER. The question channel draws id, title,
+  description, severity, badges and href as the row; any other text key
+  is shown under the row as extra detail and any other value is
+  dropped, so a stray key either clutters the row or vanishes: rank,
+  path, stacks, triage, manifests and every other discovery field
+  belong in the report, never in an item. The array field in the schema below
   carries title, description and items, and its items object carries
   enum and nothing else. Do not rely on an error to catch a stray
   keyword there: an unknown key inside the items object is dropped in

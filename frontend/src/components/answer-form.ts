@@ -160,16 +160,13 @@ export class AnswerForm extends LitElement {
       .item-title {
         font-weight: 500;
         color: var(--sl-color-neutral-900);
+        overflow-wrap: anywhere;
       }
 
       .item-detail {
         font-size: var(--console-text-meta, 13px);
         color: var(--sl-color-neutral-600);
         margin-top: 0.125rem;
-        overflow-wrap: anywhere;
-      }
-
-      .item-title {
         overflow-wrap: anywhere;
       }
 

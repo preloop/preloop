@@ -34,6 +34,10 @@ QUESTION_ITEMS_SCHEMA: Dict[str, Any] = {
                 ),
             },
             "title": {"type": "string", "description": "One-line label for the row"},
+            "label": {
+                "type": "string",
+                "description": "Alias for title; title wins when both are set",
+            },
             "description": {"type": "string", "description": "Supporting detail"},
             "severity": {
                 "type": "string",
