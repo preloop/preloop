@@ -167,8 +167,16 @@ def _read_marker() -> dict[str, Any] | None:
     return loaded
 
 
-def _publish(url: str) -> None:
-    """Expose the job URL to later steps and to a local shell."""
+def publish(url: str) -> None:
+    """Expose the job URL to later steps and to a local shell.
+
+    Appends to the file named by ``GITHUB_ENV``, so every later step of the
+    job inherits the URLs. Only ``main`` calls this: ``prepare`` used as a
+    library (tests) must not reach the runner's environment file.
+
+    Args:
+        url: The job database URL.
+    """
     print(f"DATABASE_URL={url}")
     github_env = os.environ.get("GITHUB_ENV")
     if not github_env:
@@ -283,6 +291,8 @@ def prepare(
 ) -> str:
     """Reuse a listening Postgres, or start one, then create the job database.
 
+    Does not export anything: ``main`` publishes the returned URL.
+
     Returns:
         The job database URL.
 
@@ -350,7 +360,6 @@ def prepare(
             "container": container_name if started else None,
         }
     )
-    _publish(url)
     return url
 
 
@@ -455,7 +464,7 @@ def main(argv: list[str]) -> int:
         return 2
     try:
         if argv[1] == "prepare":
-            prepare()
+            publish(prepare())
         else:
             drop()
     except (PostgresRejectedError, PostgresUnavailableError, ValueError) as exc:

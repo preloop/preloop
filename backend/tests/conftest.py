@@ -5,7 +5,7 @@ import os
 from typing import Any, Generator
 from unittest.mock import MagicMock, patch
 
-from tests.xdist_database import use_worker_database
+from tests.xdist_database import check_job_database, use_worker_database
 
 # Before any preloop import: settings and engines read DATABASE_URL once.
 use_worker_database(os.environ)
@@ -36,6 +36,18 @@ async def maybe_await(result):
     if inspect.iscoroutine(result):
         return await result
     return result
+
+
+@pytest.fixture(autouse=True)
+def isolate_github_runner_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests from writing to the CI job's environment and output files.
+
+    Lines appended to ``GITHUB_ENV`` become environment variables of every
+    later step in the job, so a test that exercises a CI script must never
+    reach the real file. Tests that need one set it to a ``tmp_path`` file.
+    """
+    for name in ("GITHUB_ENV", "GITHUB_OUTPUT", "GITHUB_PATH", "GITHUB_STEP_SUMMARY"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -169,6 +181,7 @@ def db_engine():
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         raise ValueError("DATABASE_URL environment variable not set")
+    check_job_database(os.environ)
 
     engine = create_engine(database_url)
     # NOTE: Tables are created via Alembic, not here!
