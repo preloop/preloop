@@ -311,6 +311,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI runs the backend suite as six balanced shards instead of eighteen.
+  Each shard runs pytest-xdist with work stealing, one cloned database per
+  worker. Files are packed heaviest first from node durations that green
+  main runs cache for pull requests; the plan fails when the predicted
+  largest shard exceeds 1.15x the mean, and all shards use one runner class.
 - Delivery Report: connecting a tracker no longer creates a Delivery Report
   flow; a user adds it from the preset or an operator enables it with
   `python -m preloop.services.delivery_report_maintenance enable`. The same

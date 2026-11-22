@@ -100,9 +100,11 @@ jobs:
   # ==========================================================================
   # Bootstrap and aggregation always run hosted: optional spot capacity must
   # not gate the picker that decides whether self-hosted capacity is available.
-  # Use online idle general CI runners immediately, one backend shard per
-  # available slot, with remaining shards on GitHub-hosted capacity. Missing
-  # inventory, absent credentials, forks and disabled routing select hosted.
+  # Every backend shard runs on one runner class: all shards go to idle
+  # general CI runners only when there is one per shard, otherwise all run
+  # hosted. Mixing the slower self-hosted VMs with hosted shards made one
+  # straggler set the wall clock. Missing inventory, absent credentials,
+  # forks and disabled routing select hosted.
   # A selection-time snapshot cannot reserve capacity or guarantee acquisition
   # if another run takes a slot or a spot VM stops afterwards; see
   # .github/self-hosted-runners.md for automatic hosted recovery and its limits.
@@ -150,9 +152,8 @@ jobs:
             SELF_HOSTED_REASON="untrusted source uses hosted runners"
           fi
 
-          # Whole-file weights come from all 18 successful JUnit reports.
-          # Source and replay ratio: .github/ci-duration-receipt.json.
-          SPLITS=18
+          # Six shards, each running pytest-xdist; see backend-plan.
+          SPLITS=6
 
           emit() {
             idle="$1"
@@ -160,7 +161,8 @@ jobs:
             case "$idle" in
               ''|*[!0-9]*) idle=0 ;;
             esac
-            if [ "$idle" -gt 7 ]; then idle=7; fi
+            # One runner class per run: all shards self-hosted or none.
+            if [ "$idle" -ge "$SPLITS" ]; then idle=$SPLITS; else idle=0; fi
 
             plan=$(IDLE="$idle" SPLITS="$SPLITS" jq -cn '
               def slot($runner): {runner:$runner};
@@ -172,7 +174,7 @@ jobs:
             if [ -z "$plan" ]; then
               idle=0
               reason="$reason (plan fallback: all public)"
-              plan=$(python3 -c 'import json; print(json.dumps([None]+[{"runner":"ubuntu-24.04"}]*18))')
+              plan=$(python3 -c 'import json; print(json.dumps([None]+[{"runner":"ubuntu-24.04"}]*6))')
             fi
 
             {
@@ -228,7 +230,7 @@ jobs:
 
           echo "idle general runners: $available"
           if [ "$available" -ge 1 ]; then
-            emit "$available" "idle general CI runners take shards immediately; hosted takes the remainder"
+            emit "$available" "one idle general CI runner per shard takes every shard; fewer runs all hosted"
           fi
 
           emit 0 "no idle self-hosted Linux/X64 runner is online"
@@ -590,9 +592,52 @@ jobs:
           PRELOOP_NGINX_SMOKE: '1'
         run: python -m pytest backend/tests/test_nginx_headers_smoke.py -q
 
-  # Partition complete files before pytest imports tests. Historical durations
-  # balance contiguous groups, preserving file/test order and including new files.
-  # Coverage is still collected in every shard and combined before the 60% floor.
+  # Plan the shards once per run so every shard reads the same partition.
+  # Durations come from the newest main-branch cache entry written by
+  # backend-durations; without one, .github/backend-shard-durations.json
+  # (file-level, measured under xdist) is the fallback.
+  # Files are packed heaviest first (non-contiguous); a file heavier than a
+  # third of a shard is split at test-node level. The plan step fails when
+  # the predicted max shard exceeds 1.15x the mean.
+  backend-plan:
+    permissions:
+      contents: read
+    name: Plan backend shards
+    runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Restore latest main test durations
+        id: durations
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ci-durations/pytest-durations.json
+          key: pytest-durations-${{ github.run_id }}
+          restore-keys: pytest-durations-
+      - name: Plan shards and check predicted balance
+        run: |
+          durations=.ci-durations/pytest-durations.json
+          if [ ! -s "$durations" ]; then
+            echo "no cached main durations; using the committed fallback"
+            durations=.github/backend-shard-durations.json
+          fi
+          python3 scripts/run_backend_shard.py plan --shards 6 \
+            --durations "$durations" --out backend-shard-plan.json --max-ratio 1.15
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          overwrite: true
+          name: backend-shard-plan
+          path: backend-shard-plan.json
+          retention-days: 7
+
+  # Each shard runs its planned files with pytest-xdist (--dist worksteal),
+  # one cloned database per worker. Coverage is still collected in every
+  # shard and combined before the 60% floor.
   #
   # Postgres is not a service container. scripts/ci_postgres.py checks
   # 127.0.0.1:5432 first. A server that accepts test_user gets one new
@@ -600,28 +645,27 @@ jobs:
   # pgvector/pgvector:pg16 and the drop step removes that container.
   # Runner setup: .github/self-hosted-runners.md.
   #
-  # Runner: pick-runner assigns the last N shards (idle self-hosted count)
-  # to general private VMs immediately; hosted takes the remaining shards. They
+  # Runner: pick-runner sends all shards to general private VMs when one is
+  # idle per shard, otherwise all to hosted. Self-hosted shards
   # run on the machine, not in a nested container, so that address is the
   # VM's Postgres. The VM needs Docker for the fallback start, and the
   # runner user in the docker group. A persistent server avoids the pull.
   test-backend:
     permissions:
       contents: read
-    name: Backend Tests (${{ matrix.group }}/18)
+    name: Backend Tests (${{ matrix.group }}/6)
     # Retry attempts bypass cached picker outputs: rerun-failed-jobs does not
     # rerun a successful picker. Recovery must never requeue a lost spot slot.
     runs-on: ${{ github.run_attempt > 1 && 'ubuntu-24.04' || fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
-    needs: [changes, pick-runner, fast]
-    if: ${{ !cancelled() && needs.pick-runner.result == 'success' && needs.fast.result == 'success' && (needs.changes.outputs.backend == 'true') }}
-    # Hang bound, not a speed target: hosted shards take 5-12 min, but the
-    # self-hosted pool (6-CPU slice shared by three runners) measured 11-15+,
-    # and 15 cancelled healthy shards there.
+    needs: [changes, backend-plan, pick-runner, fast]
+    if: ${{ !cancelled() && needs.backend-plan.result == 'success' && needs.pick-runner.result == 'success' && needs.fast.result == 'success' && (needs.changes.outputs.backend == 'true') }}
+    # Hang bound, not a speed target: the self-hosted pool (6-CPU slice
+    # shared by three runners) measured 11-15+ min for one serial shard.
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+        group: [1, 2, 3, 4, 5, 6]
 
     env:
       OPENAI_API_KEY: mock_key
@@ -724,10 +768,18 @@ jobs:
       - name: Initialize database
         run: python scripts/init_db.py --force
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: backend-shard-plan
+
+      # A self-hosted slot shares its VM's CPUs with other slots, so it gets
+      # a fixed small worker count; hosted runners use every CPU they have.
       - name: Run tests
+        env:
+          SHARD_WORKERS: ${{ runner.environment == 'self-hosted' && '2' || 'auto' }}
         run: |
-          python scripts/run_backend_shard.py --shards 18 \
-            --group ${{ matrix.group }} -- -v \
+          python scripts/run_backend_shard.py run --plan backend-shard-plan.json \
+            --group ${{ matrix.group }} --workers "$SHARD_WORKERS" -- \
             -m "not integration" \
             --cov=preloop \
             --cov-report= \
@@ -819,8 +871,8 @@ jobs:
       - name: Combine coverage and enforce floor
         run: |
           mapfile -t coverage_files < <(find coverage-shards -name 'coverage-data.*' -type f | sort)
-          if [ ${#coverage_files[@]} -ne 18 ]; then
-            echo "Expected 18 shard coverage files, found ${#coverage_files[@]}"
+          if [ ${#coverage_files[@]} -ne 6 ]; then
+            echo "Expected 6 shard coverage files, found ${#coverage_files[@]}"
             find coverage-shards -type f -print
             exit 1
           fi
@@ -835,6 +887,47 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Download shard test results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: backend-test-results-*
+          path: test-results
+
+      - name: Summarise actual shard durations
+        run: python3 scripts/ci_refresh_durations.py test-results --shards 6 --summary
+
+  # Main-branch runs whose shards all passed refresh the node durations that
+  # backend-plan reads. The cache is written from main, so every PR can
+  # restore the newest entry; a failed main run leaves the last good one.
+  backend-durations:
+    permissions:
+      contents: read
+    name: Refresh backend test durations
+    runs-on: ubuntu-24.04
+    needs: [changes, test-backend]
+    if: ${{ !cancelled() && needs.test-backend.result == 'success' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule') }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Download shard test results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: backend-test-results-*
+          path: test-results
+      - name: Convert JUnit times to node durations
+        run: |
+          mkdir -p .ci-durations
+          python3 scripts/ci_refresh_durations.py test-results --shards 6 \
+            --out .ci-durations/pytest-durations.json
+      - name: Save durations for pull requests
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ci-durations/pytest-durations.json
+          key: pytest-durations-${{ github.run_id }}
 
   # ==========================================================================
   # Frontend Tests

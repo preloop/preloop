@@ -93,12 +93,15 @@ Significant progress has been made in increasing unit test coverage for the back
 ### CI/CD Integration
 
 GitHub Actions (`.github/workflows/ci.yml`) shards backend unit tests
-(`pytest -m "not integration"`) across eighteen jobs with
-[pytest-split](https://pypi.org/project/pytest-split/). Shard boundaries
-come from `.github/pytest-split-durations.json`, so each job stays under
-seven minutes. A shard reuses a Postgres already listening on
-`127.0.0.1:5432` and creates one database for the job; otherwise it
-starts `pgvector/pgvector:pg16`. Self-hosted setup is
+(`pytest -m "not integration"`) across six jobs, each running
+[pytest-xdist](https://pypi.org/project/pytest-xdist/) with
+`--dist worksteal`. `scripts/run_backend_shard.py` packs files heaviest
+first from the newest main-branch durations (cached by CI, with
+`.github/backend-shard-durations.json` as the fallback) and fails the plan
+when the predicted largest shard exceeds 1.15x the mean. A shard reuses a
+Postgres already listening on `127.0.0.1:5432` and creates one database for
+the job plus one clone per xdist worker; otherwise it starts
+`pgvector/pgvector:pg16`. Self-hosted setup is
 [`.github/self-hosted-runners.md`](.github/self-hosted-runners.md).
 Coverage data is combined in a follow-up **Backend Coverage** job before
 the 60% floor is applied; a single shard only exercises part of the tree,

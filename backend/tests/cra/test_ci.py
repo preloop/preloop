@@ -458,7 +458,7 @@ def test_fetch_evidence_missing_is_error() -> None:
 
 @pytest.mark.parametrize(
     "payload",
-    [b"", b"<html>not gzip</html>", gzip.compress(b"not a tar")],
+    [b"", b"<html>not gzip</html>", gzip.compress(b"not a tar", mtime=0)],
 )
 def test_fetch_evidence_rejects_invalid_200_bodies(
     tmp_path: Path, payload: bytes
