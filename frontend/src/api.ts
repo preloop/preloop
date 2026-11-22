@@ -1374,6 +1374,11 @@ export interface GatewayUsageSearchParams extends GatewayUsageSummaryParams {
 export interface RuntimeSessionListParams extends GatewayUsageSummaryParams {
   query?: string;
   sessionSourceType?: string;
+  /**
+   * Agent kind: sessions of managed agents of that kind or recorded from
+   * that source, so a live Cursor enrollment (source `desktop_agent`) counts.
+   */
+  agentKind?: string;
   status?: 'all' | 'active' | 'ended';
   /** Only sessions holding an available artifact: `any` or one kind. */
   hasArtifacts?: string;
@@ -1483,6 +1488,9 @@ function buildRuntimeSessionListQuery(
   }
   if (params.sessionSourceType) {
     queryParams.set('session_source_type', params.sessionSourceType);
+  }
+  if (params.agentKind) {
+    queryParams.set('agent_kind', params.agentKind);
   }
   if (params.status) {
     queryParams.set('status', params.status);

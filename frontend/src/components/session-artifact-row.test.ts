@@ -598,7 +598,7 @@ describe('artifacts in the session timeline', () => {
     const trigger = el.shadowRoot!.querySelector(
       '[data-testid="artifact-summary-empty"]'
     ) as HTMLButtonElement;
-    expect(trigger.textContent).to.contain('Artifacts 0');
+    expect(trigger.textContent).to.contain('No artifacts');
     trigger.click();
     await el.updateComplete;
     const popover = el.shadowRoot!.querySelector(

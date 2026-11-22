@@ -134,7 +134,7 @@ export class SessionArtifactSummary extends LitElement {
           aria-controls="artifact-help"
           @click=${() => (this.helpOpen = !this.helpOpen)}
         >
-          <sl-icon name="paperclip"></sl-icon> Artifacts 0
+          <sl-icon name="paperclip"></sl-icon> No artifacts
         </button>
         ${
           this.helpOpen
