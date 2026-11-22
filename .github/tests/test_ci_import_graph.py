@@ -310,12 +310,21 @@ def test_last_green_main_without_token_falls_back(
     assert ci_select.last_green_main("HEAD") == ""
 
 
-def test_last_green_main_skips_non_ancestors(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_last_green_main_skips_non_ancestors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A green run from a rewritten or unrelated history is never a base."""
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    parent = subprocess.check_output(
-        ["git", "rev-parse", "HEAD^"], text=True, cwd=ROOT
-    ).strip()
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Jane Doe")
+    git("config", "user.email", "jane@example.com")
+    git("commit", "-q", "--allow-empty", "-m", "base")
+    parent = git("rev-parse", "HEAD")
+    git("commit", "-q", "--allow-empty", "-m", "head")
+    head = git("rev-parse", "HEAD")
     runs = {
         "workflow_runs": [
             {"head_sha": head},
@@ -337,7 +346,7 @@ def test_last_green_main_skips_non_ancestors(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
     monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
     monkeypatch.setattr(ci_select.urllib.request, "urlopen", lambda *a, **k: Response())
-    monkeypatch.chdir(ROOT)
+    monkeypatch.chdir(tmp_path)
     assert ci_select.last_green_main(head) == parent
 
 
