@@ -518,6 +518,7 @@ _PR_TRACKER_TYPES: Dict[Optional[str], List[str]] = {
     "gitlab": [TrackerType.GITLAB.value],
     "bitbucket": [TrackerType.BITBUCKET.value, TrackerType.BITBUCKET_DC.value],
     "azure_devops": [TrackerType.AZURE_DEVOPS.value],
+    "bitbucket_dc": [TrackerType.BITBUCKET_DC.value],
 }
 _ALL_PR_TRACKER_TYPES = sorted({t for ts in _PR_TRACKER_TYPES.values() for t in ts})
 

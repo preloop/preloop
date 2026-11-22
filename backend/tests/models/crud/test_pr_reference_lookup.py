@@ -138,6 +138,16 @@ def test_trigger_project_matches_only_the_event_provider(
     )
 
 
+def test_bitbucket_dc_event_never_resolves_another_provider(
+    db_session: Any, synced: Dict[str, Any]
+) -> None:
+    event = {"source": "bitbucket_dc", "payload": {"repository": {"name": MR}}}
+    assert (
+        _trigger_project_from_event(db_session, synced["user"].account_id, event)
+        is None
+    )
+
+
 def test_bare_number_reads_scope_rules_once_per_tracker(
     db_session: Any, synced: Dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
