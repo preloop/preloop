@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Backend Fast stays well under its 15 minute timeout: a changed backend
+  module now selects the test files that import it or are named
+  `test_<module>*` instead of its whole area plus every integration test,
+  and a selection estimated over 240 s of recorded durations narrows to
+  smoke, changed tests and module matches. The receipt records the reason
+  in `fast_reason`. The sharded Backend Tests job still runs everything.
 - A read-only pull request review is now told its time limit: the preamble
   states the total budget and the UTC time the run is stopped, which is the
   deadline the orchestrator enforces from admission, and continuation and
