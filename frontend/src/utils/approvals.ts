@@ -50,6 +50,45 @@ export function isUnexpiredPendingRequest(
 }
 
 /**
+ * True while the request is pending, unexpired and still waits on the
+ * signed-in user. A user who already voted (Deny, or Dismiss on a question,
+ * on a request other approvers can still decide) is not asked again; the
+ * request stays visible to everyone else.
+ */
+export function awaitsMyDecision(
+  request: ApprovalRequest,
+  now: number = Date.now()
+): boolean {
+  return isUnexpiredPendingRequest(request, now) && !request.my_decision;
+}
+
+/**
+ * The local update after this user's decision. With several approvers the
+ * server may record it as a vote and leave the request pending; reporting it
+ * as resolved would make the row reappear on the next reload.
+ */
+export function decisionOutcome(
+  decision: 'approved' | 'declined',
+  updated: Partial<ApprovalRequest> | null | undefined
+): Partial<ApprovalRequest> {
+  return {
+    status: updated?.status ?? decision,
+    resolved_at: updated?.resolved_at ?? null,
+    my_decision: updated?.my_decision ?? decision,
+  };
+}
+
+/** True once the request reached a final state (not pending). */
+export function isResolvedStatus(status: string | undefined): boolean {
+  return (
+    status === 'approved' ||
+    status === 'declined' ||
+    status === 'expired' ||
+    status === 'cancelled'
+  );
+}
+
+/**
  * Returns the request as it should be rendered: a pending request whose
  * expiry has passed reads as timed out, resolved at its expiry.
  */
@@ -98,7 +137,9 @@ export function partitionApprovalRequests(
   const waiting: ApprovalRequest[] = [];
   const history: ApprovalRequest[] = [];
   for (const request of requests) {
-    if (isUnexpiredPendingRequest(request, now)) {
+    // A pending request this user already voted on waits on the other
+    // approvers, not on this user, so it belongs with the history.
+    if (awaitsMyDecision(request, now)) {
       waiting.push(request);
     } else {
       history.push(request);

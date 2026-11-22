@@ -325,12 +325,17 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         search: Optional[str] = None,
         now: Optional[datetime] = None,
         halt_cutoff: Optional[datetime] = None,
+        not_voted_by: Optional[Union[UUID, str]] = None,
     ) -> "Query[ApprovalRequest]":
         """The account's requests with the list filters applied, unordered.
 
         When ``now`` is given, a status filter uses the effective status: a
         pending request past its deadline matches ``expired``, not
         ``pending``, before the periodic sweep has written it.
+
+        ``not_voted_by`` drops requests that user already voted on, so a page
+        of requests waiting on other approvers cannot crowd out the ones that
+        still wait on this user.
         """
         query = db.query(self.model).filter(self.model.account_id == account_id)
 
@@ -353,6 +358,14 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
 
         if tool_name:
             query = query.filter(self.model.tool_name == tool_name)
+
+        if not_voted_by:
+            query = query.filter(
+                or_(
+                    self.model.responses.is_(None),
+                    ~self.model.responses.contains([{"user_id": str(not_voted_by)}]),
+                )
+            )
 
         if search and search.strip():
             # The console's search box: tool, summary, agent, execution,
@@ -384,6 +397,7 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         limit: int = 100,
         now: Optional[datetime] = None,
         halt_cutoff: Optional[datetime] = None,
+        not_voted_by: Optional[Union[UUID, str]] = None,
     ) -> list[ApprovalRequest]:
         """Get approval requests for an account with optional filters.
 
@@ -409,6 +423,7 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
             search=search,
             now=now,
             halt_cutoff=halt_cutoff,
+            not_voted_by=not_voted_by,
         )
         return (
             query.order_by(self.model.requested_at.desc(), self.model.id.desc())
@@ -429,6 +444,7 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         search: Optional[str] = None,
         now: Optional[datetime] = None,
         halt_cutoff: Optional[datetime] = None,
+        not_voted_by: Optional[Union[UUID, str]] = None,
     ) -> int:
         """How many rows ``get_multi_by_account`` pages over, same filters."""
         query = self._account_query(
@@ -441,6 +457,7 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
             search=search,
             now=now,
             halt_cutoff=halt_cutoff,
+            not_voted_by=not_voted_by,
         )
         return int(
             query.with_entities(func.count(self.model.id)).order_by(None).scalar() or 0

@@ -33,6 +33,7 @@ import {
   approvalStatusVariant,
   formatNextWaitingLabel,
   isExpiringSoon,
+  awaitsMyDecision,
   isUnexpiredPendingRequest,
   millisUntilExpiry,
   normalizeApprovalRequest,
@@ -1188,7 +1189,7 @@ export class ApprovalView extends AuthedElement {
         this.waitingNext = (data as ApprovalRequest[]).filter(
           (request) =>
             request.id !== this.requestId &&
-            isUnexpiredPendingRequest(request, Date.now())
+            awaitsMyDecision(request, Date.now())
         );
       }
     } catch (error) {
@@ -1488,7 +1489,9 @@ export class ApprovalView extends AuthedElement {
     // A request whose expiry passed is timed out, whatever the record says:
     // the buttons would post a decision the backend refuses.
     const request = normalizeApprovalRequest(this.approvalRequest, this.nowMs);
-    const isPending = isUnexpiredPendingRequest(request, this.nowMs);
+    // A request this user already voted on stays pending for the other
+    // approvers, but offers this user nothing more to decide.
+    const isPending = awaitsMyDecision(request, this.nowMs);
     const isResolved = [
       'approved',
       'declined',

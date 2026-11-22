@@ -4,6 +4,7 @@ import {
   APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
   approvalStatusVariant,
+  decisionOutcome,
   formatNextWaitingLabel,
   isExpiringSoon,
   isUnexpiredPendingRequest,
@@ -112,6 +113,40 @@ describe('partitionApprovalRequests', () => {
       'no-expiry',
     ]);
     expect(history.map((r) => r.id)).to.deep.equal(['approved', 'stale']);
+  });
+
+  it('keeps a pending request this user already voted on out of waiting', () => {
+    const voted = request({ id: 'voted', my_decision: 'declined' });
+    const open = request({ id: 'open' });
+
+    const { waiting, history } = partitionApprovalRequests([voted, open], NOW);
+
+    expect(waiting.map((r) => r.id)).to.deep.equal(['open']);
+    expect(history.map((r) => r.id)).to.deep.equal(['voted']);
+  });
+});
+
+describe('decisionOutcome', () => {
+  it('follows the server when a vote leaves the request pending', () => {
+    expect(
+      decisionOutcome('approved', {
+        status: 'pending',
+        resolved_at: null,
+        my_decision: 'approved',
+      })
+    ).to.deep.equal({
+      status: 'pending',
+      resolved_at: null,
+      my_decision: 'approved',
+    });
+  });
+
+  it('assumes the decision when the server sends no body', () => {
+    expect(decisionOutcome('declined', null)).to.deep.equal({
+      status: 'declined',
+      resolved_at: null,
+      my_decision: 'declined',
+    });
   });
 });
 

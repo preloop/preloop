@@ -8,7 +8,10 @@
  * row) but they all ask this module what is on offer.
  */
 import type { ApprovalRequest } from '../types';
-import { isUnexpiredPendingRequest } from '../utils/approvals';
+import {
+  awaitsMyDecision,
+  isUnexpiredPendingRequest,
+} from '../utils/approvals';
 import type { ResourceAction } from '../components/resource-actions';
 import { defineActions, type ActionContext } from './registry';
 
@@ -54,7 +57,7 @@ export function isDecidableRequest(
   now: number = Date.now()
 ): boolean {
   return (
-    isUnexpiredPendingRequest(request, now) &&
+    awaitsMyDecision(request, now) &&
     !isApprovalQuestion(request) &&
     !hasExternalDecision(request)
   );

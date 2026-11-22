@@ -1038,6 +1038,106 @@ describe('ApprovalsView', () => {
       );
     });
 
+    it('drops a dismissed question that stays pending for other approvers, also after reload', async () => {
+      // Two approvers, one needed: the server records this user's decline as
+      // a vote and the request stays pending for the other approver.
+      const server = [questionRequest()] as Record<string, unknown>[];
+      fetchStub = sinon
+        .stub(window, 'fetch')
+        .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const method = (init?.method || 'GET').toUpperCase();
+          const json = (data: unknown) =>
+            new Response(JSON.stringify(data), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          if (url.includes('/decline') && method === 'POST') {
+            server[0] = { ...server[0], my_decision: 'declined' };
+            return json(server[0]);
+          }
+          return json(server);
+        });
+      const mount = async () => {
+        const view = (await fixture(
+          html`<approvals-view></approvals-view>`
+        )) as ApprovalsView;
+        await waitUntil(() => !(view as any).loading, 'did not load');
+        await view.updateComplete;
+        return view;
+      };
+
+      const element = await mount();
+      const panel = element.shadowRoot?.querySelector(
+        'question-answer-panel'
+      ) as any;
+      await panel.updateComplete;
+      (
+        panel.shadowRoot.querySelector('.dismiss-question') as HTMLElement
+      ).click();
+      await waitUntil(
+        () => !element.shadowRoot?.querySelector('question-answer-panel'),
+        'dismissed question is still listed'
+      );
+      expect(server[0].status).to.equal('pending');
+
+      const reloaded = await mount();
+      expect(
+        reloaded.shadowRoot?.querySelector('question-answer-panel'),
+        'dismissed question came back after reload'
+      ).to.not.exist;
+    });
+
+    it('keeps an approve vote pending, unresolved and out of the waiting group', async () => {
+      window.history.replaceState(null, '', '?status=all');
+      const server = [baseRequest()] as Record<string, unknown>[];
+      fetchStub = sinon
+        .stub(window, 'fetch')
+        .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          const method = (init?.method || 'GET').toUpperCase();
+          const json = (data: unknown) =>
+            new Response(JSON.stringify(data), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          if (url.includes('/approve') && method === 'POST') {
+            server[0] = { ...server[0], my_decision: 'approved' };
+            return json(server[0]);
+          }
+          if (url.includes('awaiting_me=true')) {
+            return json(server.filter((r) => !r.my_decision));
+          }
+          return json(server);
+        });
+      const element = (await fixture(
+        html`<approvals-view></approvals-view>`
+      )) as ApprovalsView;
+      await waitUntil(() => !(element as any).loading, 'did not load');
+      expect(
+        fetchStub
+          .getCalls()
+          .some(
+            (c) =>
+              String(c.args[0]).includes('status=pending') &&
+              String(c.args[0]).includes('awaiting_me=true')
+          ),
+        'pending page is not filtered on the server'
+      ).to.be.true;
+
+      await (element as any).handleRowApprove(
+        (element as any).approvalRequests[0]
+      );
+      await element.updateComplete;
+
+      const row = (element as any).approvalRequests[0];
+      expect(row.status).to.equal('pending');
+      expect(row.my_decision).to.equal('approved');
+      expect(row.resolved_at).to.equal(null);
+      expect((element as any).waitingRequests).to.deep.equal([]);
+      window.history.replaceState(null, '', '?');
+    });
+
     it('hides the answer field when free text is not allowed', async () => {
       const { panel } = await questionPanel({ allow_free_text: false });
 

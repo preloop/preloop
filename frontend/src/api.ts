@@ -7931,11 +7931,14 @@ export async function listApprovalRequests(params?: {
   status?: string;
   execution_id?: string;
   runtime_session_id?: string;
+  /** Leave out requests the signed-in user already voted on. */
+  awaiting_me?: boolean;
   limit?: number;
   skip?: number;
 }): Promise<any[]> {
   const queryParams = new URLSearchParams();
   if (params?.status) queryParams.append('status', params.status);
+  if (params?.awaiting_me) queryParams.append('awaiting_me', 'true');
   if (params?.execution_id)
     queryParams.append('execution_id', params.execution_id);
   if (params?.runtime_session_id)

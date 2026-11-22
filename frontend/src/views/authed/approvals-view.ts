@@ -29,6 +29,8 @@ import {
   APPROVAL_REQUESTS_PAGE_LIMIT,
   approvalStatusLabel,
   approvalStatusVariant,
+  decisionOutcome,
+  isResolvedStatus,
   isExpiringSoon,
   isUnexpiredPendingRequest,
   normalizeApprovalRequest,
@@ -1016,6 +1018,9 @@ export class ApprovalsView extends AuthedElement {
           {
             ...this.filterParams(),
             status: 'pending',
+            // Filtered on the server, so requests this user already voted
+            // on cannot fill the page and push out ones still waiting.
+            awaiting_me: 'true',
             limit: String(APPROVAL_REQUESTS_PAGE_LIMIT),
           },
           controller.signal
@@ -1201,7 +1206,13 @@ export class ApprovalsView extends AuthedElement {
 
     // Status filter
     if (this.statusFilter !== 'all') {
-      filtered = filtered.filter((r) => r.status === this.statusFilter);
+      filtered = filtered.filter(
+        (r) =>
+          r.status === this.statusFilter &&
+          // Pending means waiting on you: a request you already voted on
+          // stays pending for the other approvers but leaves your queue.
+          !(this.statusFilter === 'pending' && r.my_decision)
+      );
     }
 
     // Tool filter
@@ -1389,10 +1400,15 @@ export class ApprovalsView extends AuthedElement {
       {
         ...this.approvalRequests[index],
         ...updated,
-        resolved_at:
-          updated.resolved_at ??
-          this.approvalRequests[index].resolved_at ??
-          new Date().toISOString(),
+        // Only a final state gets a resolved time: a recorded vote on a
+        // request still pending for other approvers is not a resolution.
+        resolved_at: isResolvedStatus(
+          updated.status ?? this.approvalRequests[index].status
+        )
+          ? (updated.resolved_at ??
+            this.approvalRequests[index].resolved_at ??
+            new Date().toISOString())
+          : null,
       },
       ...this.approvalRequests.slice(index + 1),
     ];
@@ -1421,11 +1437,14 @@ export class ApprovalsView extends AuthedElement {
     this.decidingId = request.id;
     try {
       const updated = await approveRequest(request.id);
-      this.applyResolution(request.id, {
-        status: 'approved',
-        resolved_at: updated?.resolved_at ?? null,
-      });
-      showToast(`Approved ${request.tool_name}.`, 'success');
+      const outcome = decisionOutcome('approved', updated);
+      this.applyResolution(request.id, outcome);
+      showToast(
+        outcome.status === 'pending'
+          ? `Vote recorded for ${request.tool_name}. Waiting for the other approvers.`
+          : `Approved ${request.tool_name}.`,
+        'success'
+      );
     } catch (error: any) {
       showToast(error?.message || 'Failed to approve the request', 'danger');
       console.error('Failed to approve request:', error);
@@ -1453,10 +1472,7 @@ export class ApprovalsView extends AuthedElement {
     this.decidingId = request.id;
     try {
       const updated = await declineRequest(request.id);
-      this.applyResolution(request.id, {
-        status: 'declined',
-        resolved_at: updated?.resolved_at ?? null,
-      });
+      this.applyResolution(request.id, decisionOutcome('declined', updated));
       showToast(`Denied ${request.tool_name}.`, 'neutral');
     } catch (error: any) {
       showToast(error?.message || 'Failed to deny the request', 'danger');
@@ -1607,8 +1623,7 @@ export class ApprovalsView extends AuthedElement {
         answer_text: answerText ?? null,
       });
       this.applyResolution(request.id, {
-        status: 'approved',
-        resolved_at: updated?.resolved_at ?? null,
+        ...decisionOutcome('approved', updated),
         approver_comment:
           updated?.approver_comment ?? answerText ?? selectedOption ?? null,
       });
@@ -1626,10 +1641,7 @@ export class ApprovalsView extends AuthedElement {
     this.answerError = null;
     try {
       const updated = await declineRequest(request.id);
-      this.applyResolution(request.id, {
-        status: 'declined',
-        resolved_at: updated?.resolved_at ?? null,
-      });
+      this.applyResolution(request.id, decisionOutcome('declined', updated));
     } catch (error: any) {
       this.answerError = error?.message || 'Failed to dismiss question';
       console.error('Failed to dismiss question:', error);

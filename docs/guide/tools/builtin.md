@@ -100,6 +100,11 @@ Slack, email, console).
 **Returns:** a string containing the user's answer, e.g. `User answered:
 production`, or `No answer provided.` if the human dismissed the question.
 
+Dismissing a question declines it; it never answers or approves it. When the
+workflow names several approvers, one person's dismissal is recorded as their
+decline vote: the question leaves that person's inbox and approvals queue, and
+stays open for the other approvers until the workflow's quorum resolves it.
+
 **Example:**
 
 ```python
