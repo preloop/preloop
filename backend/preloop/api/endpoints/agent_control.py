@@ -54,6 +54,7 @@ from preloop.schemas.agent_control import (
     AgentControlVoiceTranscriptRequest,
     RuntimeSessionControlResponse,
 )
+from preloop.services.session_search_index import request_embedding
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AGENT_CONTROL,
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
@@ -1012,16 +1013,22 @@ def _persist_agent_control_result(
     inbound: AgentControlInboundEnvelope,
     *,
     commit: bool = True,
-) -> None:
+) -> Any:
+    """Record a command result or error on the command's session.
+
+    Returns:
+        The account the result was recorded for, or ``None`` when the frame
+        was not a recordable result.
+    """
     if inbound.type != "status" or inbound.name not in {
         "command_result",
         "command_error",
     }:
-        return
+        return None
 
     command_id = inbound.payload.get("command_id")
     if not isinstance(command_id, str) or not command_id.strip():
-        return
+        return None
 
     command = crud_agent_control_command.get_by_command_id(
         db,
@@ -1030,11 +1037,11 @@ def _persist_agent_control_result(
         command_id=command_id.strip(),
     )
     if command is None or command.kind != "command":
-        return
+        return None
     # Results are recorded after ack. Errors may land on a still-pending
     # command if the runtime never acknowledged delivery.
     if inbound.name == "command_result" and command.status != "acked":
-        return
+        return None
 
     default_status = "failed" if inbound.name == "command_error" else "completed"
     result_status = str(inbound.payload.get("status") or default_status)
@@ -1047,9 +1054,10 @@ def _persist_agent_control_result(
         message = error_text.strip()
 
     sanitized = _sanitize_agent_control_payload(inbound.payload)
+    result_account_id = command.consuming_account_id or context.account_id
     crud_runtime_session_activity.log_agent_control_result(
         db,
-        account_id=command.consuming_account_id or context.account_id,
+        account_id=result_account_id,
         command_id=command_id.strip(),
         fallback_runtime_session_id=command.runtime_session_id
         or context.runtime_session_id,
@@ -1087,16 +1095,22 @@ def _persist_agent_control_result(
         error=error_text if isinstance(error_text, str) else None,
         commit=commit,
     )
+    return result_account_id
 
 
 def _persist_agent_control_progress(
     db: Session,
     context: AgentControlConnectionContext,
     inbound: AgentControlInboundEnvelope,
-) -> None:
-    """Accept progress only for a command dispatched to this authenticated agent."""
+) -> Any:
+    """Accept progress only for a command dispatched to this authenticated agent.
+
+    Returns:
+        The account the progress line was recorded for, or ``None`` when the
+        frame was not accepted.
+    """
     if inbound.type != "event" or inbound.name != "command_progress":
-        return
+        return None
     command_id = inbound.payload.get("command_id")
     summary = inbound.payload.get("summary")
     if (
@@ -1105,7 +1119,7 @@ def _persist_agent_control_progress(
         or not isinstance(inbound.message_id, str)
         or not inbound.message_id
     ):
-        return
+        return None
     command = crud_agent_control_command.get_by_command_id(
         db,
         account_id=context.account_id,
@@ -1113,19 +1127,19 @@ def _persist_agent_control_progress(
         command_id=command_id,
     )
     if command is None or command.kind != "command" or command.status != "acked":
-        return
+        return None
     kind = inbound.payload.get("kind")
     call_id = inbound.payload.get("call_id")
     tool_name = inbound.payload.get("tool_name")
     if not isinstance(kind, str) or kind not in {"assistant", "tool", "summary"}:
-        return
+        return None
     if kind == "tool" and not (
         isinstance(call_id, str)
         and 0 < len(call_id) <= 200
         and isinstance(tool_name, str)
         and 0 < len(tool_name) <= 100
     ):
-        return
+        return None
     consuming_account_id = command.consuming_account_id or context.account_id
     activity = crud_runtime_session_activity.log_agent_control_progress(
         db,
@@ -1146,6 +1160,7 @@ def _persist_agent_control_progress(
         call_id=call_id if isinstance(call_id, str) else None,
         tool_name=tool_name if isinstance(tool_name, str) else None,
     )
+    return consuming_account_id
 
 
 def _broadcast_command_progress(
@@ -1552,9 +1567,15 @@ def _process_control_message(
     )
     _mark_control_verified_from_capabilities(db, connection, inbound, commit=False)
     _handle_command_ack(db, connection, inbound, commit=False)
-    _persist_agent_control_result(db, connection, inbound, commit=False)
-    _persist_agent_control_progress(db, connection, inbound)
+    indexed_accounts = {
+        _persist_agent_control_result(db, connection, inbound, commit=False),
+        _persist_agent_control_progress(db, connection, inbound),
+    }
     control_connection.commit(db)
+    # The control-message chunks were written inside this transaction, so
+    # the embedding worker is nudged only now that they are visible.
+    for indexed_account_id in indexed_accounts - {None}:
+        request_embedding(indexed_account_id)
     return True
 
 

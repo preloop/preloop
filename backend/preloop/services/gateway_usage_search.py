@@ -96,6 +96,23 @@ class GatewayUsageSearchService:
         "text",
     }
 
+    @classmethod
+    def _conversation_prefixes(cls, endpoint_kind: Any) -> frozenset[str]:
+        """Return the request lists that hold a conversation for an endpoint.
+
+        The embeddings endpoint's ``input`` is a batch of independent texts,
+        not a turn history, so it keeps its original order.
+
+        Args:
+            endpoint_kind: The gateway's ``endpoint_kind`` for the call.
+
+        Returns:
+            The prefixes to walk newest first.
+        """
+        if endpoint_kind == "embeddings":
+            return cls._CONVERSATION_PREFIXES - {"request.input"}
+        return cls._CONVERSATION_PREFIXES
+
     def __init__(self, db: Optional[Session] = None) -> None:
         self.db = db
 
@@ -158,7 +175,9 @@ class GatewayUsageSearchService:
                 "request",
                 request_payload,
                 reversed_prefixes=(
-                    self._CONVERSATION_PREFIXES if newest_first else frozenset()
+                    self._conversation_prefixes(meta_data.get("endpoint_kind"))
+                    if newest_first
+                    else frozenset()
                 ),
             )
             return len(lines) - before
