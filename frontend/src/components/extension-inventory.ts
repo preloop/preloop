@@ -303,7 +303,7 @@ export class ExtensionInventory extends LitElement {
   ): TemplateResult {
     return html`${
       pinCount
-        ? html`<sl-badge variant="primary" pill class="pinned"
+        ? html`<sl-badge variant="neutral" pill class="pinned"
             >Pinned (${pinCount})</sl-badge
           >`
         : nothing
