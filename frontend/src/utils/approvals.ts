@@ -63,18 +63,29 @@ export function awaitsMyDecision(
 }
 
 /**
- * The local update after a decline. With several approvers the server may
- * record it as this user's vote and leave the request pending; reporting it
- * as declined would make the row reappear on the next reload.
+ * The local update after this user's decision. With several approvers the
+ * server may record it as a vote and leave the request pending; reporting it
+ * as resolved would make the row reappear on the next reload.
  */
-export function declineOutcome(
+export function decisionOutcome(
+  decision: 'approved' | 'declined',
   updated: Partial<ApprovalRequest> | null | undefined
 ): Partial<ApprovalRequest> {
   return {
-    status: updated?.status ?? 'declined',
+    status: updated?.status ?? decision,
     resolved_at: updated?.resolved_at ?? null,
-    my_decision: updated?.my_decision ?? 'declined',
+    my_decision: updated?.my_decision ?? decision,
   };
+}
+
+/** True once the request reached a final state (not pending). */
+export function isResolvedStatus(status: string | undefined): boolean {
+  return (
+    status === 'approved' ||
+    status === 'declined' ||
+    status === 'expired' ||
+    status === 'cancelled'
+  );
 }
 
 /**
@@ -126,7 +137,9 @@ export function partitionApprovalRequests(
   const waiting: ApprovalRequest[] = [];
   const history: ApprovalRequest[] = [];
   for (const request of requests) {
-    if (isUnexpiredPendingRequest(request, now)) {
+    // A pending request this user already voted on waits on the other
+    // approvers, not on this user, so it belongs with the history.
+    if (awaitsMyDecision(request, now)) {
       waiting.push(request);
     } else {
       history.push(request);

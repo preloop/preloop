@@ -49,12 +49,14 @@ def _pending_with_vote(
     """Store a pending question that one approver has already voted on."""
     workflow = crud_approval_workflow.create(
         db,
-        obj_in=ApprovalWorkflowCreate(name="Two approvers", approval_type="manual"),
+        obj_in=ApprovalWorkflowCreate(
+            name=f"Two approvers {uuid4().hex[:8]}", approval_type="manual"
+        ),
         account_id=str(account_id),
     )
     db.flush()
     tool_config = ToolConfiguration(
-        tool_name="ask_user",
+        tool_name=f"ask_user_{uuid4().hex[:8]}",
         tool_source="builtin",
         account_id=account_id,
         approval_workflow_id=workflow.id,
@@ -187,3 +189,28 @@ async def test_one_of_two_approvers_declining_records_a_vote() -> None:
             "timestamp": result.responses[0]["timestamp"],
         }
     ]
+
+
+def test_awaiting_me_filters_voted_rows_before_the_page_limit(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """A full page of voted rows cannot hide an older request still for me."""
+    voted = [
+        _pending_with_vote(db_session, test_user.account_id, test_user.id, "declined")
+        for _ in range(2)
+    ]
+    older = _pending_with_vote(db_session, test_user.account_id, uuid4(), "declined")
+    older.requested_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1)
+    db_session.flush()
+
+    page = client.get(
+        "/api/v1/approval-requests",
+        params={"status": "pending", "awaiting_me": "true", "limit": 2},
+    )
+    assert page.status_code == 200, page.text
+    assert [r["id"] for r in page.json()] == [str(older.id)]
+    assert page.headers["X-Total-Count"] == "1"
+
+    everything = client.get("/api/v1/approval-requests", params={"status": "pending"})
+    ids = {r["id"] for r in everything.json()}
+    assert {str(v.id) for v in voted} | {str(older.id)} <= ids

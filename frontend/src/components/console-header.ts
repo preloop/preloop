@@ -672,6 +672,7 @@ export class ConsoleHeader extends LitElement {
         const startedAt = ++this.approvalFetchesStarted;
         const approvals = await api.listApprovalRequests({
           status: 'pending',
+          awaiting_me: true,
         });
         if (!this.isConnected) return;
         this._pendingApprovals = approvals

@@ -7930,13 +7930,14 @@ paths:
         \ ``X-Total-Count`` header.\n    status: Filter by status (pending, approved,\
         \ declined, etc.)\n    execution_id: Filter by execution ID\n    runtime_session_id:\
         \ Filter by a validated runtime session ID\n        (agent conversation)\n\
-        \    tool_name: Filter by tool name\n    q: Text search\n    limit: Maximum\
-        \ number of results\n    skip: Number of results to skip\n    current_user:\
-        \ Current authenticated user\n\nReturns:\n    List of approval requests\n\n\
-        Raises:\n    HTTPException: 422 when ``runtime_session_id`` is not a UUID.\
-        \ The\n        filter is typed rather than string-matched so a typo returns\
-        \ an\n        explicit validation error instead of an empty list that reads\
-        \ as\n        \"this session needs nothing\"."
+        \    tool_name: Filter by tool name\n    q: Text search\n    awaiting_me:\
+        \ Leave out requests the caller already voted on\n    limit: Maximum number\
+        \ of results\n    skip: Number of results to skip\n    current_user: Current\
+        \ authenticated user\n\nReturns:\n    List of approval requests\n\nRaises:\n\
+        \    HTTPException: 422 when ``runtime_session_id`` is not a UUID. The\n \
+        \       filter is typed rather than string-matched so a typo returns an\n\
+        \        explicit validation error instead of an empty list that reads as\n\
+        \        \"this session needs nothing\"."
       operationId: list_approval_requests_api_v1_approval_requests_get
       security:
       - bearerAuth: []
@@ -7995,6 +7996,17 @@ paths:
           title: Q
         description: Case-insensitive text match on tool, summary, agent, execution
           id, reasoning and arguments
+      - name: awaiting_me
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Leave out requests the caller already voted on. With several
+            approvers such a request stays pending for the others.
+          default: false
+          title: Awaiting Me
+        description: Leave out requests the caller already voted on. With several
+          approvers such a request stays pending for the others.
       - name: limit
         in: query
         required: false

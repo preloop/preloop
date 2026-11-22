@@ -648,6 +648,15 @@ def list_approval_requests(
             ),
         ),
     ] = None,
+    awaiting_me: Annotated[
+        bool,
+        Query(
+            description=(
+                "Leave out requests the caller already voted on. With several "
+                "approvers such a request stays pending for the others."
+            )
+        ),
+    ] = False,
     limit: int = Query(50, ge=1, le=100, description="Maximum number of results"),
     skip: int = Query(0, ge=0, description="Number of results to skip"),
     current_user: User = Depends(get_current_active_user),
@@ -667,6 +676,7 @@ def list_approval_requests(
             (agent conversation)
         tool_name: Filter by tool name
         q: Text search
+        awaiting_me: Leave out requests the caller already voted on
         limit: Maximum number of results
         skip: Number of results to skip
         current_user: Current authenticated user
@@ -701,6 +711,8 @@ def list_approval_requests(
         "now": now,
         "halt_cutoff": halt_cutoff,
     }
+    if awaiting_me:
+        filters["not_voted_by"] = current_user.id
     rows = crud_approval_request.get_multi_by_account(
         db, skip=skip, limit=limit, **filters
     )
