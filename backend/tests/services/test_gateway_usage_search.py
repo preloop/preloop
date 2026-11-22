@@ -1,5 +1,6 @@
 """Tests for gateway interaction search corpus helpers."""
 
+import pytest
 from datetime import timedelta
 import hashlib
 from unittest.mock import patch
@@ -66,6 +67,100 @@ def test_build_searchable_text_normalizes_and_redacts_gateway_payloads():
     assert "request.nested.session_token: [redacted]" in text
     assert "sk-secret" not in text
     assert "abc123" not in text
+
+
+def test_newest_first_keeps_the_latest_turn_and_reply_under_the_ceiling():
+    """A long history fills the ceiling with its oldest turns only in request order.
+
+    Newest first, the reply and the turn a call added come before the history
+    that earlier calls already indexed, and each turn keeps its own index.
+    """
+    usage = ApiUsage(
+        endpoint="/openai/v1/chat/completions",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        meta_data={},
+    )
+    messages = [
+        {"role": "user", "content": f"turn {index} " + "history " * 200}
+        for index in range(40)
+    ]
+    messages.append({"role": "user", "content": "latest turn lumenwick"})
+    request = {"model": "gpt-5", "messages": messages}
+    response = {"choices": [{"message": {"content": "reply brambleton"}}]}
+    service = GatewayUsageSearchService()
+
+    in_order = service.build_searchable_text(
+        usage=usage, request_payload=request, response_payload=response
+    )
+    newest = service.build_searchable_text(
+        usage=usage,
+        request_payload=request,
+        response_payload=response,
+        newest_first=True,
+    )
+
+    assert "lumenwick" not in in_order
+    assert "brambleton" not in in_order
+    assert "request.messages.40.content: latest turn lumenwick" in newest
+    assert "response.choices.0.message.content: reply brambleton" in newest
+    assert newest.index("brambleton") < newest.index("lumenwick")
+    assert newest.index("messages.40.") < newest.index("messages.39.")
+    assert "request.messages.0." not in newest
+
+
+@pytest.mark.parametrize(
+    ("endpoint_kind", "request_payload", "prefix", "reversed_expected"),
+    [
+        (
+            "responses",
+            {"input": [{"role": "user", "content": f"turn {i}"} for i in range(3)]},
+            "request.input",
+            True,
+        ),
+        (
+            "gemini",
+            {
+                "contents": [
+                    {"role": "user", "parts": [{"text": f"turn {i}"}]} for i in range(3)
+                ]
+            },
+            "request.contents",
+            True,
+        ),
+        (
+            "embeddings",
+            {"input": ["first text", "second text", "third text"]},
+            "request.input",
+            False,
+        ),
+    ],
+)
+def test_newest_first_reverses_only_conversation_shapes(
+    endpoint_kind: str,
+    request_payload: dict,
+    prefix: str,
+    reversed_expected: bool,
+) -> None:
+    """Turn histories walk newest first; an embeddings batch keeps its order."""
+    usage = ApiUsage(
+        endpoint="/v1/x",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        meta_data={"endpoint_kind": endpoint_kind},
+    )
+    text = GatewayUsageSearchService().build_searchable_text(
+        usage=usage,
+        request_payload=request_payload,
+        response_payload=None,
+        newest_first=True,
+    )
+
+    first = text.index(f"{prefix}.0")
+    last = text.index(f"{prefix}.2")
+    assert (last < first) is reversed_expected
 
 
 def test_index_interaction_upserts_gateway_search_document(db_session, test_user):

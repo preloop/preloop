@@ -80,3 +80,70 @@ def test_command_progress_without_session_is_not_broadcast() -> None:
         commands.get_by_command_id.return_value = command
         agent_control._persist_agent_control_progress(MagicMock(), context, inbound)
     assert events == []
+
+
+def test_progress_chunks_nudge_embedding_only_after_the_frame_commits() -> None:
+    """Chunks written with ``commit=False`` are handed to the worker post commit."""
+    consuming_account = uuid4()
+    order: list[str] = []
+    with (
+        patch.object(agent_control.control_connection, "authorize"),
+        patch.object(agent_control, "_touch_presence"),
+        patch.object(agent_control, "_mark_control_verified_from_capabilities"),
+        patch.object(agent_control, "_handle_command_ack"),
+        patch.object(agent_control, "_persist_agent_control_result", return_value=None),
+        patch.object(
+            agent_control,
+            "_persist_agent_control_progress",
+            return_value=consuming_account,
+        ),
+        patch.object(
+            agent_control.control_connection,
+            "commit",
+            side_effect=lambda db: order.append("commit"),
+        ),
+        patch.object(
+            agent_control,
+            "request_embedding",
+            side_effect=lambda account_id: order.append(f"nudge:{account_id}"),
+        ),
+    ):
+        handled = agent_control._process_control_message(
+            MagicMock(),
+            MagicMock(),
+            SimpleNamespace(payload={}),
+            MagicMock(),
+        )
+
+    assert handled is True
+    assert order == ["commit", f"nudge:{consuming_account}"]
+
+
+def test_progress_persister_reports_the_consuming_account() -> None:
+    """The account it returns is the one whose corpus received the chunks."""
+    consuming_account = uuid4()
+    context = SimpleNamespace(account_id=uuid4(), managed_agent_id=uuid4())
+    inbound = SimpleNamespace(
+        type="event",
+        name="command_progress",
+        message_id="event-2",
+        payload={"command_id": "command-2", "summary": "step", "kind": "assistant"},
+    )
+    command = SimpleNamespace(
+        kind="command", status="acked", consuming_account_id=consuming_account
+    )
+    with (
+        patch.object(agent_control, "crud_agent_control_command") as commands,
+        patch.object(
+            crud_runtime_session_activity,
+            "log_agent_control_progress",
+            return_value=SimpleNamespace(runtime_session_id=uuid4()),
+        ),
+        patch.object(agent_control, "emit_account_event"),
+    ):
+        commands.get_by_command_id.return_value = command
+        account = agent_control._persist_agent_control_progress(
+            MagicMock(), context, inbound
+        )
+
+    assert account == consuming_account

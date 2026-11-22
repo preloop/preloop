@@ -800,7 +800,51 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         if commit:
             db.commit()
             db.refresh(db_obj)
+
+        self._index_control_message_chunks(db, activity=db_obj, commit=commit)
         return db_obj
+
+    @staticmethod
+    def _index_control_message_chunks(
+        db: Session, *, activity: RuntimeSessionActivity, commit: bool
+    ) -> None:
+        """Write an operator or agent control message into the search corpus.
+
+        Messages typed to an agent from the console, its progress lines and
+        its replies are session content like a pushed transcript, so they are
+        indexed as transcript messages. The stored summary is the text, so
+        the corpus holds exactly what the timeline shows, masked the same way.
+        The writer swallows its own failures, so a broken corpus never loses
+        a message. Operator notes are skipped: the notes service owns them.
+
+        Args:
+            db: Database session.
+            activity: The stored ``agent_control_message`` row.
+            commit: Whether the writer commits its chunks.
+        """
+        from preloop.services.session_search_index import index_transcript_message
+
+        if not activity.summary or activity.runtime_session_id is None:
+            return
+        if activity.id is None:
+            db.flush()
+        metadata = activity.metadata_ or {}
+        # Delivered operator notes are indexed as ``operator_note`` chunks by
+        # the notes service; indexing them here too would duplicate snippets.
+        if metadata.get("kind") == "operator_note":
+            return
+        role = metadata.get("role")
+        index_transcript_message(
+            db,
+            account_id=activity.account_id,
+            runtime_session_id=activity.runtime_session_id,
+            source_id=activity.id,
+            text=activity.summary,
+            role=role if isinstance(role, str) and role else "user",
+            occurred_at=activity.timestamp,
+            meta_data={"activity_type": activity.activity_type},
+            commit=commit,
+        )
 
     def command_message(
         self, db: Session, *, account_id: Any, command_id: str

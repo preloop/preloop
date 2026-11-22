@@ -699,9 +699,14 @@ export class PreloopSessionObserver extends LitElement {
         grid-template-columns: minmax(0px, 0px) minmax(0, 1fr);
       }
 
+      /* The collapse animation only needs the column clipped sideways. The
+         full layout gives the panel a fixed height, so the list must keep
+         scrolling vertically: a plain overflow: hidden here outranked the
+         .sidebar rule below and cut the list off past the first screen. */
       .observer.with-sidebar .sidebar {
         min-width: 0;
-        overflow: hidden;
+        overflow-x: hidden;
+        overflow-y: auto;
       }
 
       .observer.with-sidebar.sidebar-anim-closed .sidebar {
