@@ -3187,6 +3187,8 @@ def _record_out_of_scope(db: Session, execution_id: Any, binding: Any) -> None:
             reason=OUT_OF_SCOPE_REASON,
             review_state=STATE_SKIPPED,
             review_reason=OUT_OF_SCOPE_REASON,
+            status_state=STATE_SKIPPED,
+            status_reason=OUT_OF_SCOPE_REASON,
             retryable=False,
             next_attempt_at=None,
         )

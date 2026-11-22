@@ -255,11 +255,12 @@ async def test_ci_run_of_the_unlisted_project_finishes_and_is_not_posted(
 
 
 @pytest.mark.asyncio
-async def test_sweep_does_not_select_runs_outside_the_list(
+async def test_sweep_closes_runs_outside_the_list_without_posting(
     db_session: Session,
     test_user: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A run no worker published is closed as skipped by the sweep."""
     world = world_for(db_session, test_user, projects=2)
     listed, other = world.projects
     scope(world, listed)
@@ -269,11 +270,54 @@ async def test_sweep_does_not_select_runs_outside_the_list(
     inside.end_time = outside.end_time = finished_at
     world.flow.updated_at = datetime(2020, 1, 1)
     world.db.commit()
-    found = crud.crud_platform_review_publication.unclaimed_execution_ids(
-        world.db, finished_within=timedelta(hours=24)
-    )
+    store = crud.crud_platform_review_publication
+    found = store.unclaimed_execution_ids(world.db, finished_within=timedelta(hours=24))
     assert (world.account.id, inside.id) in found
+    assert (world.account.id, outside.id) in found
+    github = ci_github(world, monkeypatch)
+    assert await post(world, outside) is None
+    assert github.writes == []
+    row = publications(world, outside)[0]
+    assert (row.state, row.reason, row.retryable) == ("skipped", OUT_OF_SCOPE, False)
+    assert (row.status_state, row.status_reason) == ("skipped", OUT_OF_SCOPE)
+    found = store.unclaimed_execution_ids(world.db, finished_within=timedelta(hours=24))
     assert (world.account.id, outside.id) not in found
+
+
+@pytest.mark.asyncio
+async def test_unpublished_run_is_not_posted_after_its_project_is_added(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finished outside the list with no completion publisher (a stopped run)."""
+    world = world_for(db_session, test_user, projects=2)
+    listed, other = world.projects
+    scope(world, listed)
+    execution, _ = ci_run(world, other)
+    execution.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    world.flow.updated_at = datetime(2020, 1, 1)
+    world.db.commit()
+    github = ci_github(world, monkeypatch)
+    store = crud.crud_platform_review_publication
+    # A sweep pass while the project is outside the list closes the run.
+    for account_id, execution_id in store.unclaimed_execution_ids(
+        world.db, finished_within=timedelta(hours=24)
+    ):
+        await platform_review.publish_platform_review(
+            world.db, account_id=account_id, execution_id=execution_id
+        )
+    scope(world, listed, other)
+    # Keep the save of the list from hiding the run behind the opt-in bound.
+    world.flow.updated_at = datetime(2020, 1, 1)
+    world.db.commit()
+    found = store.unclaimed_execution_ids(world.db, finished_within=timedelta(hours=24))
+    assert (world.account.id, execution.id) not in found
+    for account_id, execution_id in found:
+        await platform_review.publish_platform_review(
+            world.db, account_id=account_id, execution_id=execution_id
+        )
+    assert github.writes == []
 
 
 # --- the list as it stood when the run finished --------------------------------
