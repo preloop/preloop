@@ -284,3 +284,104 @@ def importers(graph: Graph, changed: list[str], lazy_hops: int = 1) -> set[str]:
         frontier = _walk(top, crossed) - reached
         reached |= frontier
     return {by_name[name] for name in reached if name in by_name}
+
+
+APP_BUILDERS = frozenset({"create_app", "TestClient", "AsyncClient"})
+
+
+def _fixture_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    """Return a pytest fixture's name, honouring ``name=``, or ``None``."""
+    for decorator in node.decorator_list:
+        call = decorator if isinstance(decorator, ast.Call) else None
+        target = call.func if call else decorator
+        label = ast.unparse(target)
+        if not label.endswith("fixture"):
+            continue
+        for keyword in call.keywords if call else []:
+            if keyword.arg == "name" and isinstance(keyword.value, ast.Constant):
+                return str(keyword.value.value)
+        return node.name
+    return None
+
+
+def _functions(tree: ast.AST) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+
+
+def _parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    args = node.args
+    return {a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]}
+
+
+def _calls(node: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for call in ast.walk(node):
+        if isinstance(call, ast.Call):
+            func = call.func
+            if isinstance(func, ast.Name):
+                names.add(func.id)
+            elif isinstance(func, ast.Attribute):
+                names.add(func.attr)
+    return names
+
+
+def app_fixture_tests(sources: dict[str, str]) -> set[str]:
+    """Return test files that request a conftest fixture serving the app.
+
+    Such a test reaches routers and their dependencies over HTTP without
+    importing them, so the import graph alone does not tie it to an
+    endpoint change. A conftest fixture counts when it calls ``create_app``,
+    ``TestClient`` or ``AsyncClient``, or requests a fixture that does.
+    Fixture scoping by directory is ignored, which only over-selects.
+
+    Args:
+        sources: ``backend/tests`` file path to source text.
+
+    Returns:
+        Test file paths whose functions request an app fixture by parameter
+        or ``usefixtures``.
+    """
+    builds: set[str] = set()
+    needs: dict[str, set[str]] = {}
+    trees: dict[str, ast.AST] = {}
+    for path, source in sources.items():
+        try:
+            trees[path] = ast.parse(source)
+        except (SyntaxError, ValueError):
+            continue
+    for path, tree in trees.items():
+        if not path.endswith("conftest.py"):
+            continue
+        for node in _functions(tree):
+            name = _fixture_name(node)
+            if name is None:
+                continue
+            needs.setdefault(name, set()).update(_parameters(node))
+            if _calls(node) & APP_BUILDERS:
+                builds.add(name)
+    changed = True
+    while changed:
+        grown = {name for name, params in needs.items() if params & builds}
+        changed = not grown <= builds
+        builds |= grown
+    selected: set[str] = set()
+    for path, tree in trees.items():
+        if path.endswith("conftest.py"):
+            continue
+        requested: set[str] = set()
+        for node in _functions(tree):
+            requested |= _parameters(node)
+        for call in ast.walk(tree):
+            if isinstance(call, ast.Call) and ast.unparse(call.func).endswith(
+                "usefixtures"
+            ):
+                requested |= {
+                    str(arg.value) for arg in call.args if isinstance(arg, ast.Constant)
+                }
+        if requested & builds:
+            selected.add(path)
+    return selected

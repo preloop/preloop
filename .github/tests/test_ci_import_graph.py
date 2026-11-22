@@ -349,3 +349,75 @@ def test_real_repository_graph_selects_a_bounded_subset() -> None:
     )
     assert reason.startswith("import graph:")
     assert 0 < len(tests) < len(inventory) // 2
+
+
+CONFTEST = """
+import pytest
+from fastapi.testclient import TestClient
+
+@pytest.fixture
+def app(db_session):
+    return create_app()
+
+@pytest.fixture
+def client(app):
+    with TestClient(app) as c:
+        yield c
+
+@pytest.fixture(name="authed")
+def _authed(client):
+    return client
+
+@pytest.fixture
+def db_session():
+    return None
+"""
+
+
+def test_app_fixture_tests_follow_fixture_dependencies() -> None:
+    """Tests requesting app, client or a fixture built on them are found."""
+    sources = {
+        "backend/tests/conftest.py": CONFTEST,
+        "backend/tests/test_http.py": "def test_get(client):\n    pass\n",
+        "backend/tests/test_named.py": "async def test_x(authed):\n    pass\n",
+        "backend/tests/test_marked.py": (
+            "import pytest\n"
+            "pytestmark = pytest.mark.usefixtures('app')\n"
+            "def test_x():\n    pass\n"
+        ),
+        "backend/tests/test_plain.py": "def test_x(db_session):\n    pass\n",
+        "backend/tests/test_broken.py": "def broken(:\n",
+    }
+    assert graph_mod.app_fixture_tests(sources) == {
+        "backend/tests/test_http.py",
+        "backend/tests/test_named.py",
+        "backend/tests/test_marked.py",
+    }
+
+
+def test_api_change_selects_tests_that_reach_it_over_http() -> None:
+    """A router change runs client-fixture tests that never import it."""
+    graph = GRAPH | {
+        "backend/preloop/api/routes.py": {"top": [], "lazy": []},
+        "backend/tests/conftest.py": {"top": [], "lazy": []},
+        "backend/tests/test_http.py": {"top": [], "lazy": []},
+    }
+    sources = {
+        "backend/tests/conftest.py": CONFTEST,
+        "backend/tests/test_http.py": "def test_get(client):\n    pass\n",
+    }
+    inventory = [*INVENTORY, "backend/tests/test_http.py"]
+    tests, _ = impacted_tests(
+        ["backend/preloop/api/routes.py"],
+        inventory,
+        lambda path: sources.get(path, ""),
+        graph,
+    )
+    assert tests == ["backend/tests/test_http.py"]
+    service, _ = impacted_tests(
+        ["backend/preloop/later.py"],
+        inventory,
+        lambda path: sources.get(path, ""),
+        graph,
+    )
+    assert "backend/tests/test_http.py" not in service

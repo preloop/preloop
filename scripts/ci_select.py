@@ -212,6 +212,23 @@ def _graph() -> ci_import_graph.Graph:
     return ci_import_graph.build(ROOT, GRAPH_CACHE)
 
 
+_APP_TESTS: list[tuple[ci_import_graph.Graph, Callable[[str], str], set[str]]] = []
+
+
+def _app_fixture_tests(
+    graph: ci_import_graph.Graph, read: Callable[[str], str]
+) -> set[str]:
+    """Find app-fixture tests once per graph and reader (the parse is slow)."""
+    for cached_graph, cached_read, cached in _APP_TESTS:
+        if cached_graph is graph and cached_read is read:
+            return cached
+    tests: set[str] = ci_import_graph.app_fixture_tests(
+        {path: read(path) for path in graph if path.startswith("backend/tests/")}
+    )
+    _APP_TESTS[:] = [(graph, read, tests)]
+    return tests
+
+
 def impacted_tests(
     paths: list[str],
     inventory: list[str],
@@ -251,6 +268,10 @@ def impacted_tests(
             if any(needle in read(source) for needle in needles):
                 modules.add(ci_import_graph.module_name(source))
     loaders = ci_import_graph.importers(graph, sorted(modules), LAZY_HOPS)
+    # Endpoint tests often reach a router only over HTTP, through a conftest
+    # app or client fixture, so an API change also selects those tests.
+    if any(m == "preloop.api" or m.startswith("preloop.api.") for m in modules):
+        loaders |= _app_fixture_tests(graph, read)
     known = set(inventory)
     selected = sorted((loaders | set(paths)) & known)
     return selected, (
