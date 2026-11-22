@@ -222,8 +222,13 @@ class ExecutionMonitor:
             record_execution_finished_safely,
         )
 
+        from preloop.services.platform_review import close_out_of_scope_run
+
         for execution_id in execution_ids:
             record_execution_finished_safely(db, execution_id)
+            # No completion publisher runs here: close a run outside the
+            # posting list now, before the list can grow to include it.
+            close_out_of_scope_run(db, execution_id)
 
     async def _check_execution(self, db: Session, execution: FlowExecution):
         """
