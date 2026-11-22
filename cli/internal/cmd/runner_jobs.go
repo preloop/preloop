@@ -54,6 +54,21 @@ type runnerJobs struct {
 	// power carries host sleep and wake events (runner_power.go); nil when
 	// no watcher runs, and a nil channel never fires.
 	power <-chan runnerPowerEvent
+	// keepAwake holds the optional idle-sleep assertion while work runs
+	// (runner_keep_awake.go); nil in one-shot and test loops.
+	keepAwake *runnerKeepAwake
+}
+
+// updateKeepAwake takes the idle-sleep assertion while a job or a remote
+// session is active and the host opted in, and releases it otherwise.
+func (s *runnerJobs) updateKeepAwake(loadConfig func() (map[string]any, error)) {
+	if s.keepAwake == nil {
+		return
+	}
+	doc, err := loadConfig()
+	enabled := err == nil && runnerKeepAwakeEnabled(doc)
+	busy := len(s.running) > 0 || (s.sessions != nil && s.sessions.liveCount() > 0)
+	s.keepAwake.update(enabled, busy)
 }
 
 func newRunnerJobs(concurrency int) *runnerJobs {

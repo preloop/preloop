@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   observed hashes with Pin and Unpin, the two new badges and filters, and
   **Approve this exact content**. Downgrading drops the pins, which turns
   pinned approvals back into the more permissive name approvals.
+- macOS and Windows runners now report sleep before it happens, so a
+  closed lid shows `asleep` instead of `offline` (#1487, #1507). macOS
+  uses IOKit system power notifications (loaded without cgo) and Windows
+  uses `PowerRegisterSuspendResumeNotification`; both reconnect at once on
+  wake. A failed registration falls back to `offline` as before.
+- Optional, off by default: `{"power": {"keep_awake_while_busy": true}}` in
+  `~/.preloop/runner.json` keeps a Mac from idle sleep (`caffeinate -i`)
+  while a flow job or remote session runs. Lid close still sleeps.
 - A shared read-only review flow can post for some of its projects only:
   `git_clone_config.platform_review.project_ids` lists them, and the same
   list decides which projects a pull request event starts a review for.

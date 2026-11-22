@@ -320,9 +320,13 @@ completion, injection rejection). Windows specifics:
 
 ## Sleep and wake
 
-A sleeping Windows PC shows `offline` in the console once heartbeats are 45
-seconds old: this build has no pre-sleep signal on Windows. After wake the
-runner reconnects at once. Heartbeats report the idle time of the signed-in
+A Windows PC that sleeps shows `asleep` in the console: the runner hears
+Windows announce the suspend (`PBT_APMSUSPEND`) and sends `going_to_sleep`
+within at most 1.5 seconds. On Modern Standby laptops that announcement
+comes when the system really suspends, which can be some minutes after the
+lid closes. A PC that loses its network without sleeping shows `offline`
+once heartbeats are 45 seconds old. After wake the runner reconnects at
+once. Heartbeats report the idle time of the signed-in
 session: the runner shows `online` when that time is under 5 minutes and
 `idle` otherwise, including on the first heartbeat after wake. See
 [Runner presence](quickstart-linux.md#runner-presence) for every state and

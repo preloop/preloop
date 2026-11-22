@@ -5,6 +5,7 @@ go 1.26.0
 toolchain go1.26.11
 
 require (
+	github.com/ebitengine/purego v0.11.3
 	github.com/godbus/dbus/v5 v5.2.4
 	github.com/gorilla/websocket v1.5.3
 	github.com/pelletier/go-toml/v2 v2.4.3

@@ -7,8 +7,9 @@ package cmd
 // drop reads as offline after the heartbeat timeout. This file feeds that
 // contract from the host:
 //
-//   - Before sleep, where the OS announces it (Linux logind PrepareForSleep),
-//     the session sends going_to_sleep and stops heartbeating, because any
+//   - Before sleep, where the OS announces it (Linux logind PrepareForSleep,
+//     macOS IOKit kIOMessageSystemWillSleep, Windows PBT_APMSUSPEND through
+//     PowerRegisterSuspendResumeNotification), the session sends going_to_sleep and stops heartbeating, because any
 //     later heartbeat clears the flag on the server.
 //   - On wake, detected from the OS signal or from a gap in wall-clock time
 //     between two detector samples far larger than the sample interval, the
@@ -17,8 +18,9 @@ package cmd
 //     the monotonic clock does differs (it stops on macOS and Linux, and may
 //     not on Windows), so only the wall-clock gap is used.
 //
-// Hosts without a pre-sleep signal (macOS and Windows in this build) fall
-// back to offline, then return to online right after wake.
+// Hosts without a pre-sleep signal (Linux without logind or a system bus,
+// other platforms, or a failed registration) fall back to offline, then
+// return to online right after wake.
 
 import (
 	"errors"
