@@ -179,7 +179,7 @@ Tools that take an issue (`get_issue`, `update_issue`, `add_comment`,
 | GitLab work item URL (GitLab 18.10 and later) | `https://gitlab.example.com/group/project/-/work_items/12` |
 | GitHub key or URL | `owner/repo#12`, `https://github.com/owner/repo/issues/12` |
 | Jira key or URL | `PROJ-12`, `https://jira.example.com/browse/PROJ-12` |
-| Bare number | `12` or `#12` |
+| Bare number | `12` or `#12` (also the integer `12`) |
 | Preloop issue ID | the issue's UUID |
 
 Both GitLab URL forms name the same issue; query strings and `#note_...`
@@ -439,15 +439,49 @@ update_comment(
 
 Available with a GitHub or GitLab tracker. Platform is auto-detected from the URL or project.
 
+### Pull request references
+
+`get_pull_request` and `update_pull_request` take a pull or merge request in
+any of these forms. `add_comment` accepts the URL and `group/project!12`
+forms for a merge request.
+
+| Form | Example |
+| --- | --- |
+| GitLab merge request reference (any subgroup depth) | `group/subgroup/project!12` |
+| Path reference | `group/project#12`, `owner/repo#12` |
+| GitLab merge request URL | `https://gitlab.example.com/group/project/-/merge_requests/12` |
+| GitHub pull request URL | `https://github.com/owner/repo/pull/12` |
+| Bitbucket / Azure Repos URL | `.../workspace/repo/pull-requests/12`, `.../_git/repo/pullrequest/12` |
+| Bare number | `12`, `!12`, `#12` (also the integer `12`) |
+
+URL suffixes such as `/diffs`, `/files` and `#note_1` are ignored. The URL
+host is not compared with the tracker URL, so a GitLab reached through
+another host name still resolves. A GitLab installed under a relative URL
+root (`https://example.com/gitlab/group/project/...`) resolves as well.
+Paths match case-insensitively.
+
+A bare number resolves against the project that triggered the flow run
+(`!12` considers only GitLab projects).
+Outside a flow run, or when the trigger names no project, pass `project`
+(`group/project`). Without `project`, the number must belong to the only
+pull-request project in tracker scope. If several projects are in scope, the
+error lists `group/project!12` candidates to choose from.
+
+Errors say what was looked up. A project path that matches no synced project
+returns 404 with the accepted forms. The "outside this tracker's scope"
+error appears only for a project that really is outside the tracker scope,
+and it names that project.
+
 ### `get_pull_request`
 
 Get details of a pull request (GitHub) or merge request (GitLab): metadata, comments, and file changes.
 
 **Arguments:**
 
-- `pull_request` (string, required) - PR/MR identifier or URL
+- `pull_request` (string or integer, required) - PR/MR in any [accepted form](#pull-request-references)
 - `include_comments` (boolean, optional, default `true`) - Include comments
 - `include_diff` (boolean, optional, default `true`) - Include file changes
+- `project` (string, optional) - Project path a bare number belongs to
 
 **When to preloop:**
 
@@ -485,7 +519,8 @@ Update a pull request's metadata, submit a review, and/or manage reactions.
 
 **Arguments:**
 
-- `pull_request` (string, required) - PR/MR identifier or URL
+- `pull_request` (string or integer, required) - PR/MR in any [accepted form](#pull-request-references)
+- `project` (string, optional) - Project path a bare number belongs to
 - `title`, `description`, `state`, `labels`, `assignees`, `reviewers`, `draft` (optional) - Metadata updates (`state`: open/closed)
 - `review_action` (string, optional) - `approve`, `request_changes`, or `comment`
 - `review_body` (string, optional) - Review summary text

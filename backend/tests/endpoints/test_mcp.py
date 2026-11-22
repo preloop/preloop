@@ -944,6 +944,71 @@ async def test_add_comment_inline_gitlab_mr(db_session: Session, test_user: User
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "target",
+    [
+        "group/project!5",
+        "https://gitlab.com/group/project/-/merge_requests/5/diffs#note_1",
+        "https://gitlab.com/group/project/merge_requests/5",
+    ],
+)
+async def test_add_comment_gitlab_mr_reference_forms(
+    db_session: Session, test_user: User, target: str
+) -> None:
+    """GitLab's own MR reference and MR page URLs reach the right MR."""
+    tracker = Tracker(
+        name="test-tracker",
+        account_id=test_user.account_id,
+        tracker_type="gitlab",
+        api_key="test_key",
+        url="https://gitlab.com",
+    )
+    db_session.add(tracker)
+    db_session.commit()
+    organization = Organization(
+        name="test-org", identifier="test-org", tracker_id=tracker.id
+    )
+    db_session.add(organization)
+    db_session.commit()
+    project = Project(
+        name="group/project",
+        identifier="42",
+        slug="group/project",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    db_session.commit()
+
+    with (
+        patch("preloop.api.endpoints.mcp.get_http_request") as mock_get_request,
+        patch(
+            "preloop.api.endpoints.mcp.get_user_from_token_if_valid",
+            new_callable=AsyncMock,
+        ) as mock_get_user,
+        patch("preloop.api.endpoints.mcp.get_db") as mock_get_db,
+        patch(
+            "preloop.api.endpoints.mcp.get_tracker_client",
+            new_callable=AsyncMock,
+        ) as mock_get_tracker,
+    ):
+        mock_get_request.return_value.headers = {"authorization": "Bearer testtoken"}
+        mock_get_user.return_value = test_user
+        mock_get_db.return_value = iter([db_session])
+        mock_tracker = MagicMock()
+        mock_tracker.tracker_type = "gitlab"
+        mock_tracker.create_mr_discussion = AsyncMock(return_value={"id": "disc-1"})
+        mock_get_tracker.return_value = mock_tracker
+
+        response = await mcp.add_comment(
+            target=target, comment="Looks good", path="a.py", line=3
+        )
+
+    assert response.comment_id == "disc-1"
+    assert mock_get_tracker.await_args.args[1] == project.id
+    assert mock_tracker.create_mr_discussion.call_args.kwargs["mr_iid"] == "5"
+
+
+@pytest.mark.asyncio
 async def test_add_comment_threaded_reply_github(db_session: Session, test_user: User):
     """
     Tests replying to an existing GitHub review comment (threaded reply).

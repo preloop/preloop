@@ -8,6 +8,7 @@ to interact with the Preloop platform using FastMCP.
 import asyncio
 import logging
 import re
+import uuid
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from typing import (
     Callable,
     ParamSpec,
     TypeVar,
+    Union,
 )
 from sqlalchemy.orm import Session
 from urllib.parse import urlparse, urlunparse
@@ -33,6 +35,7 @@ from preloop.api.endpoints import mcp_azure_devops, mcp_bitbucket
 from preloop.api.common import (
     get_tracker_client,
     load_compliance_prompts_config,
+    project_scope_denial,
 )
 
 from preloop.api.endpoints.issues import (
@@ -62,7 +65,7 @@ from preloop.schemas.mcp import (
     SuggestedUpdate,
     UpdateIssueRequest,
 )
-from preloop.tools.builtin_defs import GET_ISSUE_SCHEMA
+from preloop.tools.builtin_defs import GET_ISSUE_SCHEMA, PR_REFERENCE_FORMS
 
 from preloop.services.duplicate_detection import DuplicateDetector
 from preloop.config import get_settings
@@ -72,6 +75,7 @@ from preloop.models.crud import (
     CRUDOrganization,
     CRUDIssueComplianceResult,
     crud_flow_execution,
+    crud_tracker_scope_rule,
 )
 from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.issue import Issue
@@ -391,8 +395,9 @@ def _parse_pr_key_from_url(url: str) -> Optional[Dict[str, Any]]:
                 "pr_number": str(number),
             }
 
-    # GitLab: /group/subgroup/project/-/merge_requests/28
-    m = re.match(r"^/(.+?)/-/merge_requests/(\d+)$", path)
+    # GitLab: /group/subgroup/project/-/merge_requests/28[/diffs|/commits|...]
+    # The /-/ separator is optional (older GitLab and some proxies drop it).
+    m = re.match(r"^/(.+?)(?:/-)?/merge_requests/(\d+)(?:/.*)?$", path)
     if m:
         project_path = m.group(1)
         parts = project_path.rsplit("/", 1)
@@ -404,8 +409,8 @@ def _parse_pr_key_from_url(url: str) -> Optional[Dict[str, Any]]:
             "pr_number": m.group(2),
         }
 
-    # GitHub: /org/repo/pull/123
-    m = re.match(r"^/([^/]+)/([^/]+)/pull/(\d+)$", path)
+    # GitHub: /org/repo/pull/123[/files|/commits|...]
+    m = re.match(r"^/([^/]+)/([^/]+)/pull/(\d+)(?:/.*)?$", path)
     if m:
         return {
             "platform": "github",
@@ -418,143 +423,440 @@ def _parse_pr_key_from_url(url: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _parse_pr_identifier(pr_identifier: str) -> Dict[str, Any]:
-    """Parse a PR/MR identifier (URL, slug, or number) into structured components.
+class PullRequestReferenceError(ValueError):
+    """A pull/merge request reference is not in an accepted form."""
+
+
+def _pr_reference_error(reference: Any) -> PullRequestReferenceError:
+    return PullRequestReferenceError(
+        f"Cannot read pull/merge request reference {str(reference)!r}. "
+        + PR_REFERENCE_FORMS
+    )
+
+
+def _parse_pr_identifier(pr_identifier: Union[str, int]) -> Dict[str, Any]:
+    """Parse a PR/MR reference (URL, path reference, or number).
 
     Handles:
-      - Full URLs (GitHub pull requests, GitLab merge requests)
-      - Slug format: owner/repo#123
-      - Plain number: 123
+      - Full URLs (GitHub, GitLab, Bitbucket Cloud, Azure Repos); trailing
+        pages such as ``/diffs`` and fragments such as ``#note_1`` are ignored
+      - GitLab references: ``group/sub/project!123``
+      - Path references: ``owner/repo#123`` or ``group/sub/project#123``
+      - Bare numbers: ``123``, ``!123``, ``#123`` or the integer ``123``
 
-    Returns dict with: platform, project_path, owner, repo, pr_number.
+    Args:
+        pr_identifier: The reference as the caller passed it.
+
+    Returns:
+        Dict with platform, project_path, owner, repo, pr_number and
+        from_url. project_path is None for a bare number (and for a URL whose
+        project could not be read).
+
+    Raises:
+        PullRequestReferenceError: The reference is in no accepted form.
     """
-    pr_identifier = pr_identifier.strip()
+    if isinstance(pr_identifier, bool) or not isinstance(pr_identifier, (str, int)):
+        raise _pr_reference_error(pr_identifier)
+    reference = str(pr_identifier).strip()
     result: Dict[str, Any] = {
         "platform": None,
         "project_path": None,
         "owner": None,
         "repo": None,
-        "pr_number": pr_identifier,
+        "pr_number": None,
+        "from_url": False,
     }
 
-    if pr_identifier.startswith("http"):
-        # Normalize URL first (strip query/fragment/trailing slash)
-        normalized = _normalize_url(pr_identifier)
-
-        # Try structured URL parsing
+    if re.match(r"^https?://", reference, re.IGNORECASE):
+        normalized = _normalize_url(reference)
         parsed = _parse_pr_key_from_url(normalized)
         if parsed:
-            return parsed
+            return {**parsed, "from_url": True}
 
-        # Fallback: try platform detection + basic extraction
+        # An unrecognised URL shape: keep only its trailing number. The
+        # project is resolved like a bare number, never guessed.
         try:
-            result["platform"] = _detect_platform_from_url(pr_identifier)
+            result["platform"] = _detect_platform_from_url(reference)
         except ValueError:
-            # URL may not match a known tracker host; fall back to regex extraction.
+            # Unknown host; the trailing number alone decides below.
             pass
         m = re.search(r"/(\d+)/?$", urlparse(normalized).path)
-        if m:
-            result["pr_number"] = m.group(1)
+        if not m:
+            raise _pr_reference_error(pr_identifier)
+        result["pr_number"] = m.group(1)
+        result["from_url"] = True
+        return result
 
-    elif "/" in pr_identifier and "#" in pr_identifier:
-        # Slug format: owner/repo#123 or group/subgroup/project#123
-        slug_parts = pr_identifier.split("#", 1)
-        result["pr_number"] = slug_parts[1]
-        result["project_path"] = slug_parts[0]
-        repo_parts = slug_parts[0].rsplit("/", 1)
-        if len(repo_parts) == 2:
-            result["owner"] = repo_parts[0]
-            result["repo"] = repo_parts[1]
-        else:
-            result["repo"] = repo_parts[0]
+    m = re.match(r"^([!#]?)(\d+)$", reference)
+    if m:
+        result["pr_number"] = m.group(2)
+        if m.group(1) == "!":
+            # '!' is GitLab's merge request sigil.
+            result["platform"] = "gitlab"
+        return result
 
+    m = re.match(r"^(.+?)([!#])(\d+)$", reference)
+    if not m or not m.group(1).strip("/"):
+        raise _pr_reference_error(pr_identifier)
+    project_path = m.group(1).strip("/")
+    result["pr_number"] = m.group(3)
+    result["project_path"] = project_path
+    if m.group(2) == "!":
+        result["platform"] = "gitlab"
+    repo_parts = project_path.rsplit("/", 1)
+    if len(repo_parts) == 2:
+        result["owner"] = repo_parts[0]
+        result["repo"] = repo_parts[1]
+    else:
+        result["repo"] = repo_parts[0]
     return result
 
 
-def _find_pr_project(
-    db,
-    project_path: Optional[str],
-    owner: Optional[str],
-    repo: Optional[str],
-    platform: Optional[str],
-    account_id: str,
-) -> Project:
-    """Find the project for a PR/MR using parsed identifier components."""
-    project_obj = None
+#: Tracker types whose projects carry pull or merge requests.
+_PR_TRACKER_TYPES: Dict[Optional[str], List[str]] = {
+    "github": [TrackerType.GITHUB.value],
+    "gitlab": [TrackerType.GITLAB.value],
+    "bitbucket": [TrackerType.BITBUCKET.value, TrackerType.BITBUCKET_DC.value],
+    "azure_devops": [TrackerType.AZURE_DEVOPS.value],
+    "bitbucket_dc": [TrackerType.BITBUCKET_DC.value],
+}
+_ALL_PR_TRACKER_TYPES = sorted({t for ts in _PR_TRACKER_TYPES.values() for t in ts})
 
-    # Try full project path first (handles GitLab nested groups)
-    if project_path:
-        project_obj = crud_project.get_by_slug_or_identifier(
-            db,
-            slug_or_identifier=project_path,
-            account_id=account_id,
-        )
-    if not project_obj and owner and repo:
-        project_obj = crud_project.get_by_slug_or_identifier(
-            db,
-            slug_or_identifier=f"{owner}/{repo}",
-            account_id=account_id,
-        )
 
-    if not project_obj:
-        from preloop.models.crud import crud_tracker
+def _pr_tracker_types(platform: Optional[str]) -> List[str]:
+    return _PR_TRACKER_TYPES.get(platform) or _ALL_PR_TRACKER_TYPES
 
-        if platform == "bitbucket":
-            tracker_type = TrackerType.BITBUCKET
-        elif platform == "azure_devops":
-            tracker_type = TrackerType.AZURE_DEVOPS
-        elif platform == "gitlab":
-            tracker_type = TrackerType.GITLAB
-        else:
-            tracker_type = TrackerType.GITHUB
-        trackers = crud_tracker.get_by_type(
-            db,
-            tracker_type=tracker_type,
-            account_id=account_id,
-        )
 
-        if not trackers and platform is None:
-            tracker_type = TrackerType.GITLAB
-            trackers = crud_tracker.get_by_type(
+def _pr_reference_for(project: Project, number: str) -> str:
+    """How a pull/merge request in ``project`` is referenced by path."""
+    tracker = getattr(project.organization, "tracker", None)
+    separator = "!" if getattr(tracker, "tracker_type", None) == "gitlab" else "#"
+    return f"{project.slug or project.identifier}{separator}{number}"
+
+
+def _scope_denial(
+    db: Session,
+    project: Project,
+    rules_by_tracker: Optional[Dict[Any, List[Any]]] = None,
+) -> Optional[str]:
+    """Why ``project`` is outside tracker scope, or None when it is inside.
+
+    ``rules_by_tracker`` caches scope rules per tracker id across calls.
+    """
+    organization = project.organization
+    tracker = getattr(organization, "tracker", None)
+    if organization is None or tracker is None:
+        return "Access denied: the project has no tracker."
+    rules = None
+    if rules_by_tracker is not None:
+        rules = rules_by_tracker.get(tracker.id)
+        if rules is None:
+            rules = crud_tracker_scope_rule.get_by_tracker(
+                db, tracker_id=tracker.id, account_id=tracker.account_id
+            )
+            rules_by_tracker[tracker.id] = rules
+    return project_scope_denial(db, tracker, organization, project, rules)
+
+
+def _relative_url_root(tracker: Any) -> str:
+    """The path prefix of a tracker installed under a relative URL root."""
+    url = getattr(tracker, "url", None)
+    if not isinstance(url, str) or not url:
+        return ""
+    return (urlparse(url).path or "").strip("/").lower()
+
+
+def _projects_for_path(
+    db: Session, account_id: str, path: str, platform: Optional[str], from_url: bool
+) -> List[Project]:
+    """Synced projects named by a repository path.
+
+    A URL path can carry the prefix of a GitLab installed under a relative
+    URL root (``https://host/gitlab/group/project/-/merge_requests/1``). A
+    URL that matches nothing is retried without leading segments, and a
+    shorter match counts only when the dropped segments are exactly the path
+    of that project's configured tracker URL. Any other prefix is never
+    dropped, so an unsynced ``company/team/app`` never becomes ``team/app``.
+    """
+    types = _pr_tracker_types(platform)
+    found = crud_project.list_by_repository_path(
+        db, account_id=account_id, path=path, tracker_types=types
+    )
+    if found or not from_url:
+        return found
+    segments = path.split("/")
+    for cut in range(1, len(segments) - 1):
+        prefix = "/".join(segments[:cut]).lower()
+        matches = [
+            candidate
+            for candidate in crud_project.list_by_repository_path(
                 db,
-                tracker_type=tracker_type,
                 account_id=account_id,
+                path="/".join(segments[cut:]),
+                tracker_types=types,
             )
+            if _relative_url_root(candidate.organization.tracker) == prefix
+        ]
+        if matches:
+            return matches
+    return []
 
-        if not trackers:
-            raise HTTPException(
-                status_code=404,
-                detail="No tracker found. Please provide full PR/MR identifier.",
-            )
 
-        tracker = trackers[0]
-        from preloop.models.crud import crud_organization
+def _find_pr_project(
+    db: Session,
+    current_user: Any,
+    pr_info: Dict[str, Any],
+    reference: Union[str, int],
+    project: Optional[str] = None,
+    trigger_project_id: Optional[str] = None,
+) -> Project:
+    """Find the in-scope project a parsed PR/MR reference names.
 
-        organizations = crud_organization.get_for_tracker(
-            db,
-            tracker_id=tracker.id,
-            account_id=account_id,
+    A reference with a project path must match a synced project. A bare
+    number uses ``project`` when given, else the flow run's trigger project,
+    else the only pull-request project in tracker scope. Nothing ever falls
+    back to an arbitrary project.
+
+    Args:
+        db: Database session.
+        current_user: The authenticated principal.
+        pr_info: Output of :func:`_parse_pr_identifier`.
+        reference: The reference as passed, for error messages.
+        project: Optional project path or id passed next to a bare number.
+        trigger_project_id: Project that triggered the current flow run.
+
+    Returns:
+        The project.
+
+    Raises:
+        HTTPException: 404 when nothing matches, 409 when the reference is
+            ambiguous. A named project is returned even when it is outside
+            tracker scope; :func:`_pull_request_client` refuses it.
+    """
+    account_id = str(current_user.account_id)
+    number = pr_info["pr_number"]
+    platform = pr_info.get("platform")
+    path = pr_info.get("project_path") or (project.strip() if project else None)
+    shown = repr(str(reference).strip())
+
+    if path:
+        candidates = _projects_for_path(
+            db, account_id, path, platform, bool(pr_info.get("from_url"))
         )
-        if not organizations:
+        if not candidates:
             raise HTTPException(
                 status_code=404,
-                detail="No organizations found for tracker.",
+                detail=(
+                    f"No synced project matches '{path}' (looked up from "
+                    f"{shown}). Check the path and that the project is synced. "
+                    + PR_REFERENCE_FORMS
+                ),
             )
+        if len(candidates) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Project '{path}' (from {shown}) matches "
+                    f"{len(candidates)} synced projects on different trackers; "
+                    "pass the full pull/merge request URL instead."
+                ),
+            )
+        # The scope check runs in get_tracker_client (_pull_request_client).
+        return candidates[0]
 
-        projects = crud_project.get_for_organization(
-            db,
-            organization_id=organizations[0].id,
-            account_id=account_id,
+    if trigger_project_id:
+        trigger = crud_project.get(db, id=trigger_project_id, account_id=account_id)
+        tracker = getattr(getattr(trigger, "organization", None), "tracker", None)
+        if (
+            trigger is not None
+            and getattr(tracker, "tracker_type", None) in _pr_tracker_types(platform)
+            and _scope_denial(db, trigger) is None
+        ):
+            return trigger
+
+    rules_by_tracker: Dict[Any, List[Any]] = {}
+    in_scope = [
+        candidate
+        for candidate in crud_project.list_active_for_tracker_types(
+            db, account_id=account_id, tracker_types=_pr_tracker_types(platform)
         )
-        if not projects:
-            raise HTTPException(
-                status_code=404,
-                detail="No projects found. Please provide full PR/MR identifier.",
-            )
+        if _scope_denial(db, candidate, rules_by_tracker) is None
+    ]
+    if len(in_scope) == 1:
+        return in_scope[0]
+    if not in_scope:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Cannot resolve pull/merge request {shown}: no project with pull "
+                "or merge requests is in tracker scope. " + PR_REFERENCE_FORMS
+            ),
+        )
+    listed = [_pr_reference_for(candidate, number) for candidate in in_scope[:10]]
+    more = f" and {len(in_scope) - 10} more" if len(in_scope) > 10 else ""
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            f"Pull/merge request number {shown} is ambiguous: {len(in_scope)} "
+            "projects in scope could hold it. Pass one of "
+            + ", ".join(listed)
+            + more
+            + " or the pull/merge request URL."
+        ),
+    )
 
-        project_obj = projects[0]
 
-    return project_obj
+def _resolve_pull_request_target(
+    db: Session,
+    current_user: Any,
+    reference: Union[str, int],
+    project: Optional[str] = None,
+    trigger_project_id: Optional[str] = None,
+) -> tuple[Project, Dict[str, Any]]:
+    """Parse a PR/MR reference and find its in-scope project.
+
+    Args:
+        db: Database session.
+        current_user: The authenticated principal.
+        reference: URL, path reference or number, as passed by the caller.
+        project: Optional project path passed next to a bare number.
+        trigger_project_id: Project that triggered the current flow run.
+
+    Returns:
+        The project and the parsed reference.
+
+    Raises:
+        HTTPException: 400 for a malformed reference, otherwise as
+            :func:`_find_pr_project`.
+    """
+    try:
+        pr_info = _parse_pr_identifier(reference)
+    except PullRequestReferenceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    found = _find_pr_project(
+        db,
+        current_user,
+        pr_info,
+        reference,
+        project=project,
+        trigger_project_id=trigger_project_id,
+    )
+    return found, pr_info
+
+
+async def _pull_request_client(
+    db: Session, current_user: Any, project_obj: Project, reference: Any
+) -> Any:
+    """The tracker client for a resolved PR/MR, naming the project on denial.
+
+    Args:
+        db: Database session.
+        current_user: The authenticated principal.
+        project_obj: The project the reference resolved to.
+        reference: The reference as passed, for error messages.
+
+    Returns:
+        The tracker client.
+
+    Raises:
+        HTTPException: As get_tracker_client; a 403 names the project.
+    """
+    try:
+        return await get_tracker_client(
+            project_obj.organization_id, project_obj.id, db, current_user
+        )
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        name = getattr(project_obj, "slug", None) or getattr(
+            project_obj, "identifier", None
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Project '{name}' (looked up from {str(reference).strip()!r}) "
+                f"is outside this tracker's scope. {exc.detail}"
+            ),
+        ) from exc
+
+
+def _resolved_project_path(given: Optional[str], project_obj: Any) -> Optional[str]:
+    """The repository path to report for a resolved PR/MR.
+
+    The path is kept as given, except that a missing one (bare number) or one
+    carrying a relative URL root prefix is replaced by the project's slug.
+    """
+    slug = getattr(project_obj, "slug", None)
+    if not given:
+        return slug
+    if isinstance(slug, str) and given.lower().endswith("/" + slug.lower()):
+        return slug
+    return given
+
+
+def _trigger_project_from_event(
+    db: Session, account_id: Any, event: Any
+) -> Optional[str]:
+    """The project a flow run's trigger event names, if any.
+
+    Args:
+        db: Database session.
+        account_id: Account the project must belong to.
+        event: The execution's stored trigger event.
+
+    Returns:
+        The internal project id, or None for a manual or scheduled run and
+        for a repository that is not synced (or synced more than once).
+    """
+    if not isinstance(event, dict):
+        return None
+    explicit = event.get("project_id")
+    if explicit:
+        try:
+            project_uuid = uuid.UUID(str(explicit))
+        except ValueError:
+            project_uuid = None
+        found = (
+            crud_project.get(db, id=project_uuid, account_id=account_id)
+            if project_uuid
+            else None
+        )
+        if found is not None:
+            return str(found.id)
+    from preloop.services.flow_orchestrator import payload_repository_identity
+
+    identity = payload_repository_identity(event)
+    if not identity:
+        return None
+    source = str(identity.get("source") or "").lower()
+    # Match only the provider that sent the event; an unknown source (for
+    # example a CI trigger) may match any pull-request tracker.
+    types = _PR_TRACKER_TYPES.get(source) or _ALL_PR_TRACKER_TYPES
+    for key in ("path", "external_id"):
+        value = identity.get(key)
+        if not value:
+            continue
+        matches = crud_project.list_by_repository_path(
+            db, account_id=account_id, path=str(value), tracker_types=types
+        )
+        if len(matches) == 1:
+            return str(matches[0].id)
+    return None
+
+
+def _flow_run_trigger_project_id(db: Session, current_user: Any) -> Optional[str]:
+    """The trigger project of the flow run behind this call, if any."""
+    execution_id = _review_receipt_execution_id(db, current_user)
+    if not execution_id:
+        return None
+    execution = crud_flow_execution.get_without_workspace(
+        db, id=execution_id, account_id=current_user.account_id
+    )
+    if execution is None:
+        return None
+    return _trigger_project_from_event(
+        db, current_user.account_id, execution.trigger_event_details
+    )
 
 
 def _normalize_url(url: str) -> str:
@@ -680,6 +982,47 @@ def _find_issue_by_identifier(db, identifier: str, account_id: str) -> Issue:
         pass
 
     raise IssueNotFoundError(f"Issue not found: {identifier}")
+
+
+def _issue_web_url(issue_obj: Any, preloop_url: str) -> str:
+    """The web page of a synced issue.
+
+    Rows synced before the provider page URL was stored have an empty
+    ``external_url``; for GitLab and GitHub the page is rebuilt from the
+    tracker URL and the issue key. Otherwise the Preloop issue page is used.
+    ``preloop_url`` normally carries its scheme already.
+
+    Args:
+        issue_obj: The issue row.
+        preloop_url: The configured Preloop base URL.
+
+    Returns:
+        An absolute URL.
+    """
+    meta = issue_obj.meta_data if isinstance(issue_obj.meta_data, dict) else {}
+    stored = issue_obj.external_url or meta.get("external_url") or meta.get("url")
+    if isinstance(stored, str) and stored.startswith(("http://", "https://")):
+        return stored
+    project = getattr(issue_obj, "project", None)
+    tracker = getattr(getattr(project, "organization", None), "tracker", None)
+    tracker_type = getattr(tracker, "tracker_type", None)
+    key = issue_obj.key or ""
+    path, _, number = key.rpartition("#")
+    if path and number.isdigit():
+        tracker_url = getattr(tracker, "url", None)
+        if tracker_type == "gitlab" and isinstance(tracker_url, str) and tracker_url:
+            return f"{tracker_url.rstrip('/')}/{path}/-/issues/{number}"
+        if tracker_type == "github":
+            base = re.sub(
+                r"/api/v3$", "", (getattr(tracker, "url", None) or "").rstrip("/")
+            )
+            if not base or urlparse(base).hostname == "api.github.com":
+                base = "https://github.com"
+            return f"{base}/{path}/issues/{number}"
+    base = preloop_url.rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        base = f"https://{base}"
+    return f"{base}/issues/{issue_obj.id}"
 
 
 def _validate_issues_input(issues: List[str]) -> List[str]:
@@ -1135,8 +1478,7 @@ async def get_issue(
         project=project_name,
         project_id=str(issue_obj.project_id),
         project_identifier=project_identifier,
-        url=issue_obj.external_url
-        or f"https://{settings.preloop_url}/issues/{issue_obj.id}",
+        url=_issue_web_url(issue_obj, settings.preloop_url),
         created_at=issue_obj.created_at,
         updated_at=issue_obj.updated_at,
         meta_data=meta_data,
@@ -1587,8 +1929,7 @@ async def update_issue(
         project=project_name,
         project_id=str(issue_obj.project_id),
         project_identifier=project_identifier,
-        url=issue_obj.external_url
-        or f"https://{settings.preloop_url}/issues/{issue_obj.id}",
+        url=_issue_web_url(issue_obj, settings.preloop_url),
         created_at=issue_obj.created_at,
         updated_at=issue_obj.updated_at,
         meta_data=meta_data,
@@ -2043,12 +2384,10 @@ async def add_comment(
         # Use hostname-derived platform (not substring match) to avoid host confusion.
         if platform == "github" and "/pull/" in target:
             is_pull_request = True
-            parts = target.split("/")
-            if len(parts) >= 7:
-                owner = parts[3]
-                repo = parts[4]
-                pr_mr_number = parts[6].rstrip("/").split("?")[0].split("#")[0]
-                project_path = f"{owner}/{repo}"
+            gh = _parse_pr_key_from_url(_normalize_url(target))
+            if gh:
+                pr_mr_number = gh["pr_number"]
+                project_path = gh["project_path"]
                 logger.info(f"Detected GitHub PR: {project_path}#{pr_mr_number}")
         # GitLab MR URL: https://gitlab.com/owner/repo/-/merge_requests/1
         # Also handles self-hosted GitLab where platform was detected via URL patterns
@@ -2070,12 +2409,17 @@ async def add_comment(
                 logger.info(f"Detected Bitbucket PR: {project_path}#{pr_mr_number}")
         elif platform == "gitlab" and "/merge_requests/" in target:
             is_merge_request = True
-            mr_parts = target.split("/merge_requests/")
-            pr_mr_number = mr_parts[-1].rstrip("/").split("?")[0].split("#")[0]
-            url_path = mr_parts[0].split("://")[1].split("/")
-            if len(url_path) >= 3:
-                project_path = "/".join(url_path[1:]).rstrip("/-")
-                logger.info(f"Detected GitLab MR: {project_path}#{pr_mr_number}")
+            # Ignores trailing pages (/diffs) and fragments (#note_1).
+            mr = _parse_pr_key_from_url(_normalize_url(target))
+            if mr:
+                pr_mr_number = mr["pr_number"]
+                project_path = mr["project_path"]
+                logger.info(f"Detected GitLab MR: {project_path}!{pr_mr_number}")
+    # GitLab's own merge request reference: group/sub/project!123
+    elif re.match(r"^[^\s!#]+![0-9]+$", target):
+        is_merge_request = True
+        project_path, pr_mr_number = target.rsplit("!", 1)
+        logger.info(f"Detected GitLab MR reference: {project_path}!{pr_mr_number}")
     # Parse slug format for PRs/MRs: owner/repo#123 or repo#123
     elif "#" in target:
         slug_parts = target.split("#")
@@ -2092,6 +2436,16 @@ async def add_comment(
                 slug_or_identifier=project_path,
                 account_id=str(current_user.account_id),
             )
+            if not project_obj:
+                # Case-insensitive path, or a URL under a relative URL root.
+                matches = _projects_for_path(
+                    db,
+                    str(current_user.account_id),
+                    project_path,
+                    platform,
+                    target.startswith("http"),
+                )
+                project_obj = matches[0] if len(matches) == 1 else None
             if not project_obj:
                 raise HTTPException(
                     status_code=404,
@@ -2414,9 +2768,10 @@ async def add_comment(
 
 @_with_tool_db
 async def get_pull_request(
-    pull_request: str,
+    pull_request: Union[str, int],
     include_comments: bool = True,
     include_diff: bool = True,
+    project: Optional[str] = None,
 ) -> "PullRequestResponse":
     """
     Handles the 'get_pull_request' tool call.
@@ -2425,9 +2780,10 @@ async def get_pull_request(
     Auto-detects the platform from the URL.
 
     Args:
-        pull_request: PR/MR identifier (URL, slug, or number).
+        pull_request: PR/MR reference; see ``PR_REFERENCE_FORMS``.
         include_comments: Whether to include comments in the response.
         include_diff: Whether to include diff/changes in the response.
+        project: Optional project path that a bare number belongs to.
 
     Returns:
         PullRequestResponse with PR/MR details.
@@ -2436,28 +2792,24 @@ async def get_pull_request(
 
     db, current_user = await _get_authenticated_user(get_http_request().headers)
 
-    pr_info = _parse_pr_identifier(pull_request)
+    project_obj, pr_info = _resolve_pull_request_target(
+        db,
+        current_user,
+        pull_request,
+        project=project,
+        trigger_project_id=_flow_run_trigger_project_id(db, current_user),
+    )
     pr_number = pr_info["pr_number"]
-    project_path = pr_info["project_path"]
+    project_path = _resolved_project_path(pr_info["project_path"], project_obj)
     owner = pr_info["owner"]
     repo = pr_info["repo"]
     platform: Optional[Literal["github", "gitlab", "bitbucket", "azure_devops"]] = (
         pr_info["platform"]
     )
 
-    # Find the project
-    project_obj = _find_pr_project(
-        db,
-        project_path=project_path,
-        owner=owner,
-        repo=repo,
-        platform=platform,
-        account_id=str(current_user.account_id),
-    )
-
     # Get tracker client
-    tracker_client = await get_tracker_client(
-        project_obj.organization_id, project_obj.id, db, current_user
+    tracker_client = await _pull_request_client(
+        db, current_user, project_obj, pull_request
     )
     # Client configuration is materialized; provider I/O needs no DB checkout.
     db.close()
@@ -2567,7 +2919,7 @@ async def get_pull_request(
 
 @_with_tool_db
 async def update_pull_request(
-    pull_request: str,
+    pull_request: Union[str, int],
     title: Optional[str] = None,
     description: Optional[str] = None,
     state: Optional[str] = None,
@@ -2584,6 +2936,7 @@ async def update_pull_request(
         str
     ] = None,  # Emoji name to add (e.g., "eyes", "+1", "rocket")
     remove_reaction: Optional[str] = None,  # Emoji name to remove
+    project: Optional[str] = None,
 ) -> "UpdatePullRequestResponse":
     """
     Handles the 'update_pull_request' tool call.
@@ -2592,7 +2945,7 @@ async def update_pull_request(
     Auto-detects the platform from the URL.
 
     Args:
-        pull_request: PR/MR identifier (URL, slug, or number).
+        pull_request: PR/MR reference; see ``PR_REFERENCE_FORMS``.
         title: New title for the PR/MR.
         description: New description for the PR/MR.
         state: New state ("open"/"closed" for GitHub, "close"/"reopen" for GitLab).
@@ -2611,6 +2964,7 @@ async def update_pull_request(
             GitHub uses: +1, -1, laugh, confused, heart, hooray, rocket, eyes
             GitLab uses: thumbsup, thumbsdown, smile, grinning, eyes, rocket, etc.
         remove_reaction: Emoji name to remove from reactions.
+        project: Optional project path that a bare number belongs to.
 
     Returns:
         UpdatePullRequestResponse with update status.
@@ -2619,28 +2973,24 @@ async def update_pull_request(
 
     db, current_user = await _get_authenticated_user(get_http_request().headers)
 
-    pr_info = _parse_pr_identifier(pull_request)
+    project_obj, pr_info = _resolve_pull_request_target(
+        db,
+        current_user,
+        pull_request,
+        project=project,
+        trigger_project_id=_flow_run_trigger_project_id(db, current_user),
+    )
     pr_number = pr_info["pr_number"]
-    project_path = pr_info["project_path"]
+    project_path = _resolved_project_path(pr_info["project_path"], project_obj)
     owner = pr_info["owner"]
     repo = pr_info["repo"]
     platform: Optional[Literal["github", "gitlab", "bitbucket", "azure_devops"]] = (
         pr_info["platform"]
     )
 
-    # Find the project
-    project_obj = _find_pr_project(
-        db,
-        project_path=project_path,
-        owner=owner,
-        repo=repo,
-        platform=platform,
-        account_id=str(current_user.account_id),
-    )
-
     # Get tracker client
-    tracker_client = await get_tracker_client(
-        project_obj.organization_id, project_obj.id, db, current_user
+    tracker_client = await _pull_request_client(
+        db, current_user, project_obj, pull_request
     )
     receipt_execution_id = (
         _review_receipt_execution_id(db, current_user) if review_action else None

@@ -66,6 +66,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `get_pull_request` and `update_pull_request` find the right merge request
+  for GitLab's own `group/project!12` reference and for a bare `12`, `!12`
+  or `#12`. A bare number uses the project that triggered the flow run, or a
+  new `project` argument; otherwise it must belong to the only project in
+  scope, and the error lists candidates when it does not. These forms used to
+  fall back to an unrelated project, which failed with "Organization is not
+  included in tracker scope" or read another repository's pull request. URLs
+  with `/diffs` or `/files` pages, without GitLab's `/-/`, or under a GitLab
+  relative URL root now resolve as well. Errors say what was looked up and
+  which forms are accepted.
+- `get_issue`, `update_issue`, `add_comment`, `get_pull_request` and
+  `update_pull_request` accept a number sent as a JSON integer
+  (`{"issue": 12}`). Some models send numbers that way, and the call used
+  to fail argument validation before any lookup.
+- An issue whose provider page was not stored when it was synced now links
+  to its GitLab or GitHub page. The Preloop fallback link no longer has a
+  doubled `https://https://` scheme.
 - Backend Fast stays well under its 15 minute timeout: a changed backend
   module now selects the test files that import it or are named
   `test_<module>*` instead of its whole area plus every integration test,
