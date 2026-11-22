@@ -2,10 +2,7 @@
 
 package cmd
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
 // Registration against the real root power domain must succeed and stop
 // cleanly; a sleep cannot be triggered from a test.
@@ -21,20 +18,17 @@ func TestDarwinPowerSourceRegistersAndStops(t *testing.T) {
 	if !registered {
 		t.Fatal("IORegisterForSystemPower did not register")
 	}
+	// Stopping right after start used to race CFRunLoopStop against the
+	// loop entering its mode; stop now waits for the source to be gone.
 	stopPlatform()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		darwinPowerMu.Lock()
-		cleared := darwinPowerBridge == nil
-		darwinPowerMu.Unlock()
-		if cleared {
-			// A second runner loop in the same process can register again.
-			startPlatformPowerSource(events, make(chan struct{}), &runnerPowerEpoch{})()
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	darwinPowerMu.Lock()
+	cleared := darwinPowerBridge == nil
+	darwinPowerMu.Unlock()
+	if !cleared {
+		t.Fatal("source still registered after stop returned")
 	}
-	t.Fatal("run loop did not stop")
+	// A second runner loop in the same process can register again.
+	startPlatformPowerSource(events, make(chan struct{}), &runnerPowerEpoch{})()
 }
 
 func TestDarwinKeepAwakeStartsAndReleasesCaffeinate(t *testing.T) {

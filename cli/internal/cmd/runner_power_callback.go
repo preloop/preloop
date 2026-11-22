@@ -41,10 +41,18 @@ func (b *callbackPowerBridge) willSleep() {
 // woke reports that the host resumed. It invalidates any sleep event still
 // queued and asks the session to reconnect at once.
 func (b *callbackPowerBridge) woke() {
+	b.epoch.mu.Lock()
+	prevWake := b.epoch.lastWakeWall
+	b.epoch.mu.Unlock()
 	event := b.epoch.wakeEvent()
 	select {
 	case b.events <- event:
 	default:
+		// Dropped: keep the generation bump so queued sleep goes stale,
+		// but leave the clock-jump detector free to report this wake.
+		b.epoch.mu.Lock()
+		b.epoch.lastWakeWall = prevWake
+		b.epoch.mu.Unlock()
 	}
 }
 

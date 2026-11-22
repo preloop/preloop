@@ -161,3 +161,21 @@ func TestCallbackSleepAndWakeDriveRunnerSession(t *testing.T) {
 		t.Fatal("session did not end on wake")
 	}
 }
+
+// A wake the full queue dropped must not hide the next clock jump, or a
+// session that sent going_to_sleep could stay asleep.
+func TestCallbackDroppedWakeLeavesClockFallback(t *testing.T) {
+	bridge, events := newTestPowerBridge(time.Minute)
+	for i := 0; i < cap(events); i++ {
+		events <- runnerPowerEvent{kind: runnerPowerSleep}
+	}
+	before := bridge.epoch.generation.Load()
+	bridge.woke()
+	if bridge.epoch.generation.Load() == before {
+		t.Fatal("dropped wake must still invalidate queued sleep")
+	}
+	prev := time.Now().Add(-time.Minute).Round(0)
+	if _, woke := bridge.epoch.clockWakeEvent(prev, time.Now().Round(0), runnerWakeCheckEvery); !woke {
+		t.Fatal("clock-jump fallback suppressed by a dropped wake")
+	}
+}

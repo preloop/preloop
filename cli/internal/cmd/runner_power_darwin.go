@@ -5,6 +5,7 @@ package cmd
 import (
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ebitengine/purego"
@@ -31,7 +32,7 @@ type darwinPowerAPI struct {
 	serviceClose             func(connect uint32) int32
 	runLoopGetCurrent        func() uintptr
 	runLoopAddSource         func(rl, source, mode uintptr)
-	runLoopRun               func()
+	runLoopRunInMode         func(mode uintptr, seconds float64, returnAfterSourceHandled bool) int32
 	runLoopStop              func(rl uintptr)
 	stringCreateWithCString  func(alloc uintptr, cstr string, encoding uint32) uintptr
 }
@@ -62,6 +63,13 @@ func loadDarwinPowerAPI() *darwinPowerAPI {
 		if err != nil {
 			return
 		}
+		// RegisterLibFunc panics on a missing symbol; keep the offline
+		// fallback instead of crashing the CLI.
+		defer func() {
+			if recover() != nil {
+				darwinPower = nil
+			}
+		}()
 		api := &darwinPowerAPI{}
 		purego.RegisterLibFunc(&api.registerForSystemPower, iokit, "IORegisterForSystemPower")
 		purego.RegisterLibFunc(&api.deregisterForSystemPower, iokit, "IODeregisterForSystemPower")
@@ -71,7 +79,7 @@ func loadDarwinPowerAPI() *darwinPowerAPI {
 		purego.RegisterLibFunc(&api.serviceClose, iokit, "IOServiceClose")
 		purego.RegisterLibFunc(&api.runLoopGetCurrent, cf, "CFRunLoopGetCurrent")
 		purego.RegisterLibFunc(&api.runLoopAddSource, cf, "CFRunLoopAddSource")
-		purego.RegisterLibFunc(&api.runLoopRun, cf, "CFRunLoopRun")
+		purego.RegisterLibFunc(&api.runLoopRunInMode, cf, "CFRunLoopRunInMode")
 		purego.RegisterLibFunc(&api.runLoopStop, cf, "CFRunLoopStop")
 		purego.RegisterLibFunc(&api.stringCreateWithCString, cf, "CFStringCreateWithCString")
 		darwinPowerCallback = purego.NewCallback(darwinPowerMessage)
@@ -105,7 +113,10 @@ func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct
 		return func() {}
 	}
 	started := make(chan uintptr, 1)
+	done := make(chan struct{})
+	var stopping atomic.Bool
 	go func() {
+		defer close(done)
 		// The run loop and its source belong to this OS thread.
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
@@ -136,7 +147,11 @@ func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct
 		mode := api.stringCreateWithCString(0, "kCFRunLoopDefaultMode", cfStringEncodingUTF8)
 		api.runLoopAddSource(rl, api.notificationPortGetRLS(port), mode)
 		started <- rl
-		api.runLoopRun()
+		// Run in bounded slices: CFRunLoopStop is lost if it lands before
+		// the loop entered a mode, so the flag ends the loop regardless.
+		for !stopping.Load() {
+			api.runLoopRunInMode(mode, 1.0, false)
+		}
 
 		darwinPowerMu.Lock()
 		darwinPowerBridge = nil
@@ -151,5 +166,11 @@ func startPlatformPowerSource(events chan<- runnerPowerEvent, stop <-chan struct
 		return func() {}
 	}
 	var once sync.Once
-	return func() { once.Do(func() { api.runLoopStop(rl) }) }
+	return func() {
+		once.Do(func() {
+			stopping.Store(true)
+			api.runLoopStop(rl)
+			<-done
+		})
+	}
 }
