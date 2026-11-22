@@ -11,6 +11,7 @@ conditional flow triggering based on author, labels, assignee, etc.
 from typing import Dict, Any, List, Optional, Tuple
 
 from preloop.models.models.flow_execution import TRIGGER_SUBJECT_KEY
+from preloop.utils.azure_devops import AZURE_DEVOPS_EVENT_MAP
 from preloop.utils.bitbucket_dc_webhooks import BITBUCKET_DC_EVENT_MAP
 from preloop.utils.schedule_text import describe_schedule_config
 
@@ -523,6 +524,9 @@ def normalize_event_type(
     elif tracker_type_lower == "bitbucket_dc":
         return BITBUCKET_DC_EVENT_MAP.get(raw_event_type, raw_event_type)
 
+    elif tracker_type_lower == "azure_devops":
+        return AZURE_DEVOPS_EVENT_MAP.get(raw_event_type, raw_event_type)
+
     # Unknown tracker type - return as-is
     return raw_event_type
 
@@ -703,6 +707,26 @@ def _bitbucket_dc_subject(payload: Dict[str, Any]) -> Dict[str, Any]:
             if last.get("branch"):
                 parts["reference"] = last["branch"]
             parts["commit"] = _short_sha(last.get("to_hash"))
+    return parts
+
+
+def _azure_devops_subject(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract subject parts from a normalized Azure DevOps payload."""
+    parts: Dict[str, Any] = {}
+    repo = payload.get("repository") or {}
+    if isinstance(repo, dict) and repo.get("full_name"):
+        parts["repo"] = repo["full_name"]
+    pr = payload.get("pull_request")
+    if isinstance(pr, dict) and pr:
+        if pr.get("number"):
+            parts["reference"] = f"!{pr['number']}"
+        if pr.get("title"):
+            parts["title"] = pr["title"]
+        if pr.get("html_url"):
+            parts["url"] = pr["html_url"]
+        head = pr.get("head")
+        if isinstance(head, dict):
+            parts["commit"] = _short_sha(head.get("sha"))
     return parts
 
 
@@ -891,6 +915,8 @@ def extract_trigger_subject(event_data: Dict[str, Any]) -> Optional[Dict[str, An
         parts = _bitbucket_subject(payload)
     elif source == "bitbucket_dc":
         parts = _bitbucket_dc_subject(payload)
+    elif source == "azure_devops":
+        parts = _azure_devops_subject(payload)
     else:
         parts = {}
 
@@ -1292,6 +1318,23 @@ def extract_filter_fields(
             last = changes[-1] if isinstance(changes, list) and changes else {}
             if isinstance(last, dict) and last.get("branch"):
                 filter_fields["ref"] = last["branch"]
+
+    elif tracker_type_lower == "azure_devops":
+        # The intake already normalized the payload (see
+        # preloop.utils.azure_devops.normalize_delivery).
+        pr = payload.get("pull_request")
+        filter_fields["action"] = raw_event_type.rsplit(".", 1)[-1]
+        if isinstance(pr, dict) and pr:
+            filter_fields["author"] = (pr.get("user") or {}).get("login")
+            filter_fields["state"] = pr.get("state")
+            filter_fields["merged"] = pr.get("state") == "merged"
+            filter_fields["draft"] = bool(pr.get("draft", False))
+            head = pr.get("head") or {}
+            base = pr.get("base") or {}
+            if head.get("ref"):
+                filter_fields["source_branch"] = head["ref"]
+            if base.get("ref"):
+                filter_fields["target_branch"] = base["ref"]
 
     return filter_fields
 

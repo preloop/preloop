@@ -33,6 +33,39 @@ crud_organization = CRUDOrganization(Organization)
 crud_project = CRUDProject(Project)
 
 
+def azure_devops_repo_full_name(config: Dict[str, Any], project: Any) -> str:
+    """Return a project's ``org/project/repo`` if it is inside the binding.
+
+    Args:
+        config: The tracker's connection details (``organization`` and the
+            optional ``project`` / ``repository`` binding).
+        project: The Preloop project row.
+
+    Returns:
+        The repository full name.
+
+    Raises:
+        HTTPException: 403 when the repository is outside the tracker's
+            organization, bound project or bound repository.
+    """
+    full_name = (project.meta_data or {}).get("full_name") or project.slug
+    parts = str(full_name or "").split("/")
+    bound_project = config.get("project")
+    bound_repository = config.get("repository")
+    if (
+        len(parts) != 3
+        or parts[0].casefold() != str(config.get("organization") or "").casefold()
+        or (bound_project and parts[1].casefold() != str(bound_project).casefold())
+        or (
+            bound_repository and parts[2].casefold() != str(bound_repository).casefold()
+        )
+    ):
+        raise HTTPException(
+            403, "Repository is outside the Azure DevOps tracker binding"
+        )
+    return str(full_name)
+
+
 async def get_tracker_client(
     organization_id: Union[str, UUID],
     project_id: Union[str, UUID],
@@ -216,6 +249,13 @@ async def get_tracker_client(
             project.slug
             or (project.meta_data or {}).get("full_name")
             or f"{organization.identifier}/{project.name}"
+        )
+    elif tracker_type == "azure_devops":
+        # The organization belongs to the tracker; project settings never
+        # redirect the token. PR calls address "org/project/repo".
+        full_config = dict(tracker.connection_details or {})
+        full_config["repo_full_name"] = azure_devops_repo_full_name(
+            full_config, project
         )
     elif tracker_type == "bitbucket_dc":
         # Deployment/credential identity belongs to the tracker, never to

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Same shape as ``extract_jira_issue_key_from_trigger``: a bare key, not a
 # GitHub/GitLab issue number.
 _JIRA_ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,30}-[0-9]{1,10}$")
-_CODE_HOST_SOURCES = {"github", "gitlab", "bitbucket", "bitbucket_dc"}
+_CODE_HOST_SOURCES = {"github", "gitlab", "bitbucket", "bitbucket_dc", "azure_devops"}
 
 
 def _flatten_label_names(labels: Any) -> list[str]:

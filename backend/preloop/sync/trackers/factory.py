@@ -8,6 +8,7 @@ from preloop.services.managed_credentials import (
     is_managed_auth_type,
 )
 
+from .azure_devops import AzureDevOpsTracker
 from .base import BaseTracker
 from .bitbucket import BitbucketTracker
 from .bitbucket_dc import BitbucketDCTracker
@@ -29,6 +30,7 @@ TRACKER_CLASSES: Dict[str, Type[BaseTracker]] = {
     "jira": JiraTracker,
     "bitbucket": BitbucketTracker,
     "bitbucket_dc": BitbucketDCTracker,
+    "azure_devops": AzureDevOpsTracker,
 }
 
 
@@ -173,6 +175,8 @@ async def create_tracker_client(
             return JiraTracker(tracker_id, api_key, connection_details)
         elif tracker_type == "bitbucket_dc":
             return BitbucketDCTracker(tracker_id, api_key, connection_details)
+        elif tracker_type == "azure_devops":
+            return AzureDevOpsTracker(tracker_id, api_key, connection_details)
         elif tracker_type == "bitbucket":
             return BitbucketTracker(
                 tracker_id,

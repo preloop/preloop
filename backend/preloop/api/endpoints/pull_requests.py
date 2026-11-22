@@ -90,6 +90,8 @@ def _tracker_kind(tracker_type: str) -> str:
         return "github"
     if "bitbucket" in lowered:
         return "bitbucket"
+    if lowered == "azure_devops":
+        return "azure_devops"
     return "other"
 
 
@@ -115,7 +117,7 @@ def list_project_pull_requests(
     except PresetRunnerError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     kind = _tracker_kind(tracker.tracker_type)
-    if kind not in ("github", "gitlab", "bitbucket"):
+    if kind not in ("github", "gitlab", "bitbucket", "azure_devops"):
         return _unsupported_response(page, limit)
 
     cache_key = _cache_key(current_user.account_id, project.id, state, page, limit)

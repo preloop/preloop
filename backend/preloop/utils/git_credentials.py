@@ -52,6 +52,8 @@ GITLAB_CREDENTIAL_USER = "gitlab-ci-token"
 # made per tracker (``tracker_git_token.resolve_tracker_git_username``) and
 # carried in ``git_credentials_map``. The account email is never valid here.
 BITBUCKET_CREDENTIAL_USER = "x-bitbucket-api-token-auth"
+# Azure Repos accepts a personal access token with any non-empty username.
+AZURE_DEVOPS_CREDENTIAL_USER = "azure-devops"
 DEFAULT_CREDENTIAL_USER = "oauth2"
 
 
@@ -65,6 +67,8 @@ def credential_username(host_kind: Optional[str], tracker_type: Optional[str]) -
         return GITLAB_CREDENTIAL_USER
     if kind == "bitbucket":
         return BITBUCKET_CREDENTIAL_USER
+    if kind == "azure_devops":
+        return AZURE_DEVOPS_CREDENTIAL_USER
     return DEFAULT_CREDENTIAL_USER
 
 

@@ -269,7 +269,7 @@ BUILTIN_TOOLS = [
         "description": "Update or resolve an existing comment on a pull request or merge request. Supports both inline review comments and PR conversation comments (issue comments). To update the comment text: provide body with new content. To resolve/unresolve a thread: provide resolved as true/false (only works for review_comment type). Use comment_type to specify the comment type, or omit to auto-detect.",
         "source": "builtin",
         "requires_tracker": True,
-        "required_tracker_types": ["github", "gitlab", "bitbucket"],
+        "required_tracker_types": ["github", "gitlab", "bitbucket", "azure_devops"],
         "schema": {
             "type": "object",
             "properties": {
@@ -307,7 +307,7 @@ BUILTIN_TOOLS = [
         "description": "Get details of a pull request (GitHub, Bitbucket Cloud) or merge request (GitLab). Auto-detects platform from URL. Returns PR metadata, comments, and file changes.",
         "source": "builtin",
         "requires_tracker": True,
-        "required_tracker_types": ["github", "gitlab", "bitbucket"],
+        "required_tracker_types": ["github", "gitlab", "bitbucket", "azure_devops"],
         "schema": {
             "type": "object",
             "properties": {
@@ -334,7 +334,7 @@ BUILTIN_TOOLS = [
         "description": "Update a pull request's metadata, submit a review, and/or manage reactions. To update PR properties: provide title, description, labels, state, assignees, reviewers, draft. To submit a review: provide review_action (approve/request_changes/comment) with optional review_body and review_comments for inline feedback. To add/remove reactions: use add_reaction or remove_reaction with emoji names.",
         "source": "builtin",
         "requires_tracker": True,
-        "required_tracker_types": ["github", "gitlab", "bitbucket"],
+        "required_tracker_types": ["github", "gitlab", "bitbucket", "azure_devops"],
         "schema": {
             "type": "object",
             "properties": {

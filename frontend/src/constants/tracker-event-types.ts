@@ -85,6 +85,15 @@ export const BITBUCKET_TRACKER_EVENTS: TrackerEventOption[] = [
   { name: 'Push to Repository', value: 'push' },
 ];
 
+/**
+ * Azure DevOps (Azure Repos) delivers pull request created and updated
+ * service hooks only; updates that do not move the source commit are ignored.
+ */
+export const AZURE_DEVOPS_TRACKER_EVENTS: TrackerEventOption[] = [
+  { name: 'Pull Request Opened', value: 'pull_request_opened' },
+  { name: 'Pull Request Updated', value: 'pull_request_updated' },
+];
+
 export function getTrackerEventOptions(
   trackerType: string | undefined
 ): TrackerEventOption[] {
@@ -97,6 +106,8 @@ export function getTrackerEventOptions(
       return JIRA_TRACKER_EVENTS;
     case 'bitbucket':
       return BITBUCKET_TRACKER_EVENTS;
+    case 'azure_devops':
+      return AZURE_DEVOPS_TRACKER_EVENTS;
     default:
       return [];
   }

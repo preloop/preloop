@@ -646,6 +646,13 @@ class FlowTriggerService:
             if isinstance(pr, dict) and pr.get("number") and repo_id:
                 return f"bitbucket_dc:{repo_id}:pr:{pr['number']}"
 
+        elif source == "azure_devops":
+            # Keyed on the repository GUID; names can be renamed.
+            pr = payload.get("pull_request") or {}
+            repo_id = (payload.get("repository") or {}).get("id")
+            if isinstance(pr, dict) and pr.get("number") and repo_id:
+                return f"azure_devops:{repo_id}:pr:{pr['number']}"
+
         elif source == "jira":
             # Webhook and manual-run payloads both carry issue.key. Derive the
             # whole key from the payload: callers that rebuild event data from
@@ -1226,6 +1233,11 @@ class FlowTriggerService:
             if isinstance(repo, dict) and repo.get("id"):
                 return f"bitbucket_dc:{repo['id']}"
 
+        elif source == "azure_devops":
+            repo = payload.get("repository") or {}
+            if isinstance(repo, dict) and repo.get("id"):
+                return f"azure_devops:{repo['id']}"
+
         return None
 
     def _extract_project_id(self, event_data: Dict[str, Any]) -> Optional[str]:
@@ -1283,6 +1295,17 @@ class FlowTriggerService:
 
         elif source == "jira":
             return self._extract_jira_project_id(payload, tracker_id)
+
+        elif source == "azure_devops":
+            # Projects store the repository GUID as the identifier.
+            repo = payload.get("repository") or {}
+            repo_id = repo.get("id") if isinstance(repo, dict) else None
+            if not repo_id:
+                return None
+            project = crud_project.get_for_tracker_by_identifier(
+                self.db, tracker_id=tracker_id, identifier=str(repo_id)
+            )
+            return str(project.id) if project else None
 
         elif source == "bitbucket_dc":
             # Data Center projects store the immutable repository id as the

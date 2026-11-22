@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 
 def tracker_host_kind(url: str) -> Optional[str]:
-    """Return ``github``/``gitlab``/``bitbucket`` from a hostname allowlist.
+    """Return ``github``/``gitlab``/``bitbucket``/``azure_devops`` by hostname.
 
     Matches exact hostnames (and subdomains), never substrings.
     """
@@ -36,6 +36,11 @@ def tracker_host_kind(url: str) -> Optional[str]:
 
     if hostname == "bitbucket.org" or hostname.endswith(".bitbucket.org"):
         return "bitbucket"
+
+    # Azure DevOps Services. Legacy ``{org}.visualstudio.com`` hosts are
+    # recognised so callers can refuse them with a clear message.
+    if hostname == "dev.azure.com" or hostname.endswith(".visualstudio.com"):
+        return "azure_devops"
 
     return None
 

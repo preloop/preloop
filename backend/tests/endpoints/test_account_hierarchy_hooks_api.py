@@ -533,8 +533,9 @@ def test_h4_list_endpoints_drop_rows_denied_resource_view(
 
     hidden = names[0]
     recorder = _Recorder(
-        lambda action, resource: action == ACTION_RESOURCE_VIEW
-        and _name_of(resource) == hidden
+        lambda action, resource: (
+            action == ACTION_RESOURCE_VIEW and _name_of(resource) == hidden
+        )
     )
     account_hooks.register_authorizer(recorder)
     after = client.get(path)

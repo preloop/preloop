@@ -55,8 +55,9 @@ def test_lit_app_successful_login(page: Page):
     # 1. Navigate directly to the login page to avoid any landing page routing issues
     # The features response decides which first step the login view renders.
     with page.expect_response(
-        lambda r: r.request.method == "GET"
-        and r.url.split("?", 1)[0].endswith("/features"),
+        lambda r: (
+            r.request.method == "GET" and r.url.split("?", 1)[0].endswith("/features")
+        ),
         timeout=15000,
     ) as features_response:
         page.goto(f"{BASE_URL}/login", wait_until="domcontentloaded")

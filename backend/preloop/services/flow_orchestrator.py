@@ -895,7 +895,7 @@ def _project_identity_rank(
         3 for a path match, 2 for an identifier match, 0 for no match.
     """
     source = str(identity.get("source") or "")
-    if source in {"github", "gitlab", "bitbucket"} and tracker_type:
+    if source in {"github", "gitlab", "bitbucket", "azure_devops"} and tracker_type:
         if tracker_type != source:
             return 0
     slug = _normalize_repository_path(str(project.slug or ""))
@@ -3731,6 +3731,7 @@ class FlowExecutionOrchestrator:
                 "github",
                 "gitlab",
                 "bitbucket",
+                "azure_devops",
             }:
                 logger.warning(
                     "Could not determine tracker type for %s; "
