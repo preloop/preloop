@@ -182,6 +182,9 @@ class ExtensionAggregate(BaseModel):
     versions: list[str]
     source_kinds: list[SourceKind]
     approval_state: ApprovalState
+    effective_state: EffectiveState = Field(
+        description="Worst per-device state among the devices counted in this row"
+    )
     pin_count: int = 0
     content_hashes: list[ContentHashBucket] = Field(default_factory=list)
 

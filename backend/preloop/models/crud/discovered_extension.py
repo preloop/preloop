@@ -253,6 +253,8 @@ class CRUDDiscoveredExtension:
                     func.array_agg(func.distinct(model.source_kind)),
                     approval_state,
                     func.max(approval.id.cast(String)),
+                    func.bool_or(effective_state_sql() == "content_changed"),
+                    func.bool_or(effective_state_sql() == "content_unverified"),
                 )
                 .outerjoin(approval, approval_join())
                 .where(*filters)
@@ -285,6 +287,17 @@ class CRUDDiscoveredExtension:
                         versions=sorted(v for v in r[4] if v is not None),
                         source_kinds=sorted(r[5]),
                         approval_state=r[6],
+                        # Worst state over exactly the rows counted above, so
+                        # filters and bucket truncation cannot change the badge.
+                        effective_state=(
+                            r[6]
+                            if r[6] != "approved"
+                            else "content_changed"
+                            if r[8]
+                            else "content_unverified"
+                            if r[9]
+                            else "approved"
+                        ),
                         pin_count=len(pinned),
                         content_hashes=hash_buckets(
                             buckets.get(tuple(r[:3]), []), pinned

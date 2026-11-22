@@ -39433,6 +39433,16 @@ components:
           - unapproved
           - unknown
           title: Approval State
+        effective_state:
+          type: string
+          enum:
+          - approved
+          - unapproved
+          - unknown
+          - content_changed
+          - content_unverified
+          title: Effective State
+          description: Worst per-device state among the devices counted in this row
         pin_count:
           type: integer
           title: Pin Count
@@ -39451,6 +39461,7 @@ components:
       - versions
       - source_kinds
       - approval_state
+      - effective_state
       title: ExtensionAggregate
       description: Distinct installed extensions across the account's devices.
     ExtensionApprovalList:

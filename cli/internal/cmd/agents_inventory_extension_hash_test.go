@@ -107,7 +107,8 @@ func TestExtensionTreeHashSymlinkContributesPathOnly(t *testing.T) {
 	}
 }
 
-// protects=the 500-entry, 16 MiB and depth-8 bounds; fails_when=an oversized
+// protects=the 500-entry, 2000-scanned-entry, 16 MiB and depth-8 bounds;
+// fails_when=an oversized
 // extension still reports a hash or a non-too_large status; no_claim=sparse
 // files stand in for real 16 MiB content, so disk throughput is not measured.
 func TestExtensionTreeHashBounds(t *testing.T) {
@@ -121,6 +122,14 @@ func TestExtensionTreeHashBounds(t *testing.T) {
 			path := writeInventoryFixture(t, home, ".claude/skills/s/SKILL.md", "")
 			if err := os.Truncate(path, extensionHashByteLimit+1); err != nil {
 				t.Fatal(err)
+			}
+		},
+		"2001 empty directories": func(t *testing.T, home string) {
+			writeInventoryFixture(t, home, ".claude/skills/s/SKILL.md", "x")
+			for i := 0; i < extensionHashScanLimit; i++ {
+				if err := os.Mkdir(filepath.Join(home, fmt.Sprintf(".claude/skills/s/d%04d", i)), 0700); err != nil {
+					t.Fatal(err)
+				}
 			}
 		},
 		"depth 9": func(t *testing.T, home string) {

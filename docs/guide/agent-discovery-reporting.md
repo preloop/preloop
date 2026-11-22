@@ -355,13 +355,16 @@ file names and file contents never do.
 
 The tree hash lists one entry per regular file, `<relative path>\0<lowercase
 hex sha256 of the bytes>\n`, with `/` as the separator on every OS. A symlink is
-never followed; it contributes `<relative path>\0symlink\n`. Entries are sorted
+never followed; it contributes `<relative path>\0symlink\n`. The pin therefore
+covers the link's name but not where it points: re-pointing a link, or changing
+the file it points to, does not change the hash. Entries are sorted
 by path as raw bytes, concatenated, and hashed: `sha256:<lowercase hex>`. Changing
 one byte of any file or renaming a file changes the hash; directory listing order
 does not.
 
 A tree hash reads at most 500 entries (files and symlinks), 16 MiB in total, and
-directories 8 levels below the extension root. Beyond a bound, `content_hash` is
+directories 8 levels below the extension root. It enumerates at most 2,000
+directory entries of any type, directories included. Beyond a bound, `content_hash` is
 null and the status is `too_large`. An unreadable file or directory, a special
 file, or a file whose size changes while it is read gives `unreadable` (no retry).
 
@@ -422,7 +425,11 @@ per-device `effective_state`. Device rows carry `effective_state`,
 account aggregates with distinct device counts, versions, source kinds,
 `pin_count`, and `content_hashes`: up to 20 `{content_hash, status,
 device_count, pinned}` buckets, most common first (ties by hash), where
-`device_count` counts distinct present device/profile pairs. All null hashes share
+`device_count` counts distinct present device/profile pairs (the console labels
+it "device profiles"). The aggregate's `effective_state` is the worst per-device
+state among the rows it counts (`content_changed`, then `content_unverified`,
+then `approved`), so it follows the active filters and does not depend on the
+20-bucket cut. All null hashes share
 one bucket. Every pinned hash is listed, with a count of 0 when no device reports
 it.
 `GET /api/v1/agents/extension-approvals` lists durable decisions. Both use `limit`

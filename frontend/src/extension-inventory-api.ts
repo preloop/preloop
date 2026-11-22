@@ -56,6 +56,8 @@ export interface ExtensionAggregate extends ExtensionKey {
   device_count: number;
   versions: string[];
   source_kinds: ExtensionSource[];
+  /** Worst per-device state among the devices this row counts. */
+  effective_state?: ExtensionEffectiveState;
   pin_count?: number;
   content_hashes?: ContentHashBucket[];
 }

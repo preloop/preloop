@@ -320,18 +320,6 @@ export class ExtensionInventory extends LitElement {
     }`;
   }
 
-  /** The worst state any device of an aggregate is in, derived from buckets. */
-  private aggregateState(
-    row: ExtensionAggregate
-  ): ExtensionEffectiveState | undefined {
-    if (row.approval_state !== 'approved' || !row.pin_count) return undefined;
-    const buckets = (row.content_hashes ?? []).filter((b) => b.device_count);
-    if (buckets.some((b) => b.content_hash && !b.pinned))
-      return 'content_changed';
-    if (buckets.some((b) => !b.content_hash)) return 'content_unverified';
-    return undefined;
-  }
-
   private hashList(row: ExtensionAggregate): TemplateResult {
     const pinned = new Map(this.pins.map((pin) => [pin.content_hash, pin]));
     const canPin = this.canManage && row.approval_state === 'approved';
@@ -350,7 +338,7 @@ export class ExtensionInventory extends LitElement {
                     >`
                   : html`<span>No hash (${label(bucket.status)})</span>`
               }
-              <span class="meta">${bucket.device_count} devices</span>
+              <span class="meta">${bucket.device_count} device profiles</span>
               ${
                 pin
                   ? html`<span class="meta"
@@ -533,7 +521,7 @@ export class ExtensionInventory extends LitElement {
                               ${row.source_kinds.map(label).join(', ')}
                             </td>
                             <td data-label="Approval">
-                              ${this.approval(row)}${this.stateBadges(this.aggregateState(row), row.pin_count)}
+                              ${this.approval(row)}${this.stateBadges(row.effective_state, row.pin_count)}
                               ${
                                 row.content_hashes?.length
                                   ? html`<sl-button

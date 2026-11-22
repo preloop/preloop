@@ -18,6 +18,10 @@ const (
 	extensionHashFileLimit  = 500
 	extensionHashByteLimit  = 16 << 20
 	extensionHashDepthLimit = 8
+	// Every directory entry enumerated, of any type, counts here so that wide
+	// or deeply branched trees of empty directories stay bounded too.
+	extensionHashScanLimit = 4 * extensionHashFileLimit
+	extensionHashReadChunk = 256
 
 	contentHashOK         = "ok"
 	contentHashTooLarge   = "too_large"
@@ -34,6 +38,7 @@ type extensionTreeWalk struct {
 	base    string
 	entries [][]byte
 	total   int64
+	scanned int
 }
 
 // fileDigest streams one regular file and rejects a size that changed between
@@ -69,11 +74,25 @@ func (w *extensionTreeWalk) walk(rel string, depth int) error {
 	if err != nil {
 		return errExtensionUnreadable
 	}
-	after, statErr := handle.Stat()
-	entries, readErr := handle.ReadDir(-1)
-	handle.Close()
-	if statErr != nil || !os.SameFile(before, after) || readErr != nil {
+	defer handle.Close()
+	after, err := handle.Stat()
+	if err != nil || !os.SameFile(before, after) {
 		return errExtensionUnreadable
+	}
+	var entries []os.DirEntry
+	for {
+		chunk, err := handle.ReadDir(extensionHashReadChunk)
+		w.scanned += len(chunk)
+		if w.scanned > extensionHashScanLimit {
+			return errExtensionTooLarge
+		}
+		entries = append(entries, chunk...)
+		if err == io.EOF || (err == nil && len(chunk) == 0) {
+			break
+		}
+		if err != nil {
+			return errExtensionUnreadable
+		}
 	}
 	for _, entry := range entries {
 		name := path.Join(rel, entry.Name())

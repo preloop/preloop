@@ -307,3 +307,36 @@ def test_http_pin_requires_manage(
     assert client.post(PINS, json={"content_hash": H1}).status_code == 403
     pin_id = "00000000-0000-0000-0000-000000000001"
     assert client.delete(f"{PINS}/{pin_id}").status_code == 403
+
+
+def test_http_aggregate_state_follows_filters_and_truncation(
+    client: TestClient,
+) -> None:
+    """protects=the aggregate badge state; fails_when=a state filter combined
+    with group=extension reports another state, or a changed hash outside the
+    top 20 buckets hides content_changed; no_claim=synthetic reports.
+    """
+    pinned = [f"sha256:{i:064x}" for i in range(1, 21)]
+    reports = [(f"{i:064x}", h) for i, h in enumerate(pinned * 2, start=1)]
+    reports += [("e" * 64, H3), ("f" * 64, None)]
+    for fingerprint, content_hash in reports:
+        response = client.post(REPORTS, json=device_report(fingerprint, content_hash))
+        assert response.status_code == 202, response.text
+    assert client.put(APPROVAL, json={"approval_state": "approved"}).status_code == 200
+    for content_hash in pinned:
+        assert client.post(PINS, json={"content_hash": content_hash}).status_code == 201
+
+    def aggregate(**params: str) -> dict[str, Any]:
+        response = client.get(EXTENSIONS, params={"group": "extension", **params})
+        return response.json()["items"][0]
+
+    whole = aggregate()
+    assert whole["effective_state"] == "content_changed"
+    # H3 and the null bucket have one device each, behind 20 two-device pins.
+    assert H3 not in {b["content_hash"] for b in whole["content_hashes"]}
+    unverified = aggregate(state="content_unverified")
+    assert unverified["effective_state"] == "content_unverified"
+    assert unverified["device_count"] == 1
+    approved = aggregate(state="approved")
+    assert approved["effective_state"] == "approved"
+    assert approved["device_count"] == 40

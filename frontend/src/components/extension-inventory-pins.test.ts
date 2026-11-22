@@ -46,6 +46,7 @@ const aggregate: ExtensionAggregate = {
   versions: [],
   source_kinds: ['local'],
   approval_state: 'approved',
+  effective_state: 'content_changed',
   pin_count: 1,
   content_hashes: [
     { content_hash: H1, status: 'ok', device_count: 2, pinned: true },
@@ -164,7 +165,7 @@ describe('extension inventory content pins', () => {
       root.querySelector('.hashes')!.textContent!.includes('jane.doe')
     );
     const text = root.querySelector('.hashes')!.textContent!;
-    expect(text).to.include('2 devices');
+    expect(text).to.include('2 device profiles');
     expect(text).to.include('No hash (Too large)');
     const pinButtons = root.querySelectorAll<HTMLElement>('.pin');
     expect(pinButtons.length).to.equal(1);
@@ -217,5 +218,18 @@ describe('extension inventory content pins', () => {
     select.dispatchEvent(new Event('sl-change'));
     await waitUntil(() => calls.filters.length === 2);
     expect(calls.filters[1].state).to.equal('content_changed');
+  });
+
+  // protects=the aggregate badge comes from the server's filtered state;
+  // fails_when=the console re-derives it from truncated, unfiltered buckets;
+  // no_claim=fixture page stands in for a state-filtered response.
+  it('badges aggregates from the server state, not the bucket list', async () => {
+    const [element] = await mount({
+      page: page([{ ...aggregate, effective_state: 'content_unverified' }]),
+      manage: false,
+    });
+    const root = element.shadowRoot!;
+    expect(root.querySelector('.content-unverified')).to.exist;
+    expect(root.querySelector('.content-changed')).to.be.null;
   });
 });
