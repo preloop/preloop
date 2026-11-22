@@ -19,7 +19,9 @@ QUESTION_ITEMS_SCHEMA: Dict[str, Any] = {
         "console renders them as a table with a checkbox per row, so the "
         "human reads the finding instead of matching an opaque id against "
         "prose. Each row: id (required, the value an answer refers to), "
-        "title, description, severity, badges, href."
+        "title (or label), description, severity, badges, href. Any other "
+        "string key (e.g. linkedin, lead_file) is shown on the row as a "
+        "labelled detail; http(s) URLs in text render as links."
     ),
     "items": {
         "type": "object",
@@ -32,6 +34,10 @@ QUESTION_ITEMS_SCHEMA: Dict[str, Any] = {
                 ),
             },
             "title": {"type": "string", "description": "One-line label for the row"},
+            "label": {
+                "type": "string",
+                "description": "Alias for title; title wins when both are set",
+            },
             "description": {"type": "string", "description": "Supporting detail"},
             "severity": {
                 "type": "string",

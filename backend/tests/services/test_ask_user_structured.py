@@ -155,8 +155,10 @@ class TestAskUserForm:
             )
 
         arguments = captured["arguments"]
-        assert arguments["dropped_item_keys"] == ["path", "rank", "stacks"]
-        assert arguments["items"] == [{"id": "F-1", "title": "F-1"}]
+        assert arguments["dropped_item_keys"] == ["rank", "stacks"]
+        assert arguments["items"] == [
+            {"id": "F-1", "title": "F-1", "fields": {"path": "/foo"}}
+        ]
 
     async def test_answer_round_trips_as_json(self):
         answer = {

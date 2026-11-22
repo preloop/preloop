@@ -2644,6 +2644,11 @@ export interface QuestionItem {
   badges?: string[];
   /** http(s) source link. The server refuses anything else. */
   href?: string;
+  /**
+   * Extra string keys the agent put on the row (linkedin, lead_file), kept
+   * by the server for display. Plain text: http(s) URLs render as links.
+   */
+  fields?: Record<string, string>;
 }
 
 /**

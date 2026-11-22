@@ -359,7 +359,8 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     def question_items(self) -> list[Dict[str, Any]]:
         """Rows the question is about, e.g. one per unwaived finding.
 
-        Each row is {id, title, description?, severity?, badges?, href?}. The
+        Each row is {id, title, description?, severity?, badges?, href?,
+        fields?}. The
         console renders them as a table with a checkbox per row, so a human
         picks findings instead of transcribing ids. Empty for every question
         that has no rows, which surfaces render as before.
