@@ -1701,9 +1701,43 @@ class FlowExecutionOrchestrator:
         )
         # Only a stop is overridden: a FAILED run may have failed a gate on
         # the review itself (integrity, publication), which still counts.
-        completed = stored_status == "STOPPED" and not progress.remaining
+        # A stop can also win the status write over a gate's FAILED, so a
+        # gate verdict recorded on the result keeps the status red too.
+        completed = (
+            stored_status == "STOPPED"
+            and not progress.remaining
+            and not self._review_gate_failed(merged_result)
+        )
         state = "success" if completed else "failure"
         return state, describe_incomplete_review(progress, stored_status)
+
+    @staticmethod
+    def _review_gate_failed(merged_result: Any) -> bool:
+        """Whether the stored result records a failed review gate.
+
+        Args:
+            merged_result: The result document the run stored.
+
+        Returns:
+            True when the publication gate recorded anything but an accepted
+            review, or the integrity gate recorded a verdict at all (it only
+            writes one when it rejects the review).
+        """
+        from preloop.services.review_publication import (
+            REVIEW_PUBLICATION_RESULT_KEY,
+            STATUS_ALREADY_REVIEWED,
+            STATUS_PUBLISHED,
+        )
+
+        if not isinstance(merged_result, dict):
+            return False
+        publication = merged_result.get(REVIEW_PUBLICATION_RESULT_KEY)
+        if isinstance(publication, dict) and publication.get("status") not in {
+            STATUS_PUBLISHED,
+            STATUS_ALREADY_REVIEWED,
+        }:
+            return True
+        return merged_result.get("_review_integrity") is not None
 
     async def _update_commit_status(
         self,
