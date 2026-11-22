@@ -43,9 +43,7 @@ export function linkify(text: string): Array<string | TemplateResult> {
     if (!href) continue;
     if (start > last) parts.push(text.slice(last, start));
     parts.push(
-      html`<a href=${href} target="_blank" rel="noopener noreferrer"
-        >${raw}</a
-      >`
+      html`<a href=${href} target="_blank" rel="noopener noreferrer">${raw}</a>`
     );
     last = start + raw.length;
   }

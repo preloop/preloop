@@ -126,7 +126,9 @@ describe('AnswerForm', () => {
       dt.textContent?.trim()
     );
     expect(keys).to.deep.equal(['Linkedin', 'Hubspot', 'Lead file', 'Evil']);
-    const hrefs = [...row.querySelectorAll('a')].map((a) => a.getAttribute('href'));
+    const hrefs = [...row.querySelectorAll('a')].map((a) =>
+      a.getAttribute('href')
+    );
     expect(hrefs).to.deep.equal([
       'https://www.linkedin.com/in/ada',
       'https://www.linkedin.com/in/ada',

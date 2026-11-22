@@ -25,8 +25,12 @@ describe('linkify', () => {
   });
 
   it('leaves trailing punctuation out of the link', async () => {
-    const el = await render('See https://example.com/a. Or (https://example.com/b).');
-    const hrefs = [...el.querySelectorAll('a')].map((a) => a.getAttribute('href'));
+    const el = await render(
+      'See https://example.com/a. Or (https://example.com/b).'
+    );
+    const hrefs = [...el.querySelectorAll('a')].map((a) =>
+      a.getAttribute('href')
+    );
     expect(hrefs).to.deep.equal([
       'https://example.com/a',
       'https://example.com/b',
@@ -49,7 +53,9 @@ describe('linkify', () => {
     const el = await render(
       'javascript:alert(1) JAVASCRIPT:alert(1) data:text/html,<b>x</b> javascript://https://example.com'
     );
-    const hrefs = [...el.querySelectorAll('a')].map((a) => a.getAttribute('href'));
+    const hrefs = [...el.querySelectorAll('a')].map((a) =>
+      a.getAttribute('href')
+    );
     for (const href of hrefs) {
       expect(href).to.match(/^https?:\/\//);
     }
