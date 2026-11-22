@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CI runs only the backend test files a change can affect, chosen by a static
+  import graph, on pull requests and `main` pushes, in as many shards as they
+  need. Version tags, `ci:full`, full reruns and the nightly run keep the
+  whole suite, and a newer `main` push cancels the older run.
+
 - `preloop agents extensions check` compares installed extensions with an
   account policy without uploading inventory (#2322). `--policy-file` reads
   a downloaded file and `--online` fetches the same export. Pinned content
