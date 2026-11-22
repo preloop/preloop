@@ -671,4 +671,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert fingerprints.down_revision == traffic.revision
     readback = script.get_revision("20261225_review_readback")
     assert readback.down_revision == fingerprints.revision
-    assert script.get_heads() == [readback.revision]
+    pins = script.get_revision("20261226_ext_approval_pin")
+    assert pins.down_revision == readback.revision
+    assert script.get_heads() == [pins.revision]

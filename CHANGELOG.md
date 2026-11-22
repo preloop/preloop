@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stated before the save. An id no longer on the flow is flagged and
   dropped on the next save, and turning posting off says the list is
   cleared.
+- Extension approvals can be pinned to content hashes (#2321). A pinned
+  approval approves only the pinned hashes; a device reporting other content
+  reads `content_changed`, or `content_unverified` when no hash could be
+  computed. Skill and plugin hashes now cover every file in the extension's
+  directory (bounded to 500 files, 16 MiB and depth 8). The upgrade pins
+  existing approved extensions to the hashes reported at that moment, so
+  later changes need a fresh pin. The console's Extensions tab shows the
+  observed hashes with Pin and Unpin, the two new badges and filters, and
+  **Approve this exact content**. Downgrading drops the pins, which turns
+  pinned approvals back into the more permissive name approvals.
 - macOS and Windows runners now report sleep before it happens, so a
   closed lid shows `asleep` instead of `offline` (#1487, #1507). macOS
   uses IOKit system power notifications (loaded without cgo) and Windows

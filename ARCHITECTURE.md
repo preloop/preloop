@@ -110,8 +110,11 @@ edition extension.
 
 Installed agent extension inventory uses a bounded, metadata-only v3 discovery
 contract. `discovered_extension` stores presence per account, device, profile and
-agent; `extension_approval` stores account-wide name decisions independently of
-inventory retention. CRUD owns reconciliation and approval joins. Only complete
+agent; `extension_approval` stores account-wide decisions independently of
+inventory retention, and `extension_approval_pin` pins a decision to reviewed
+content hashes. CRUD owns reconciliation, approval joins and the single
+`effective_state` derivation (`content_changed` when a pinned approval meets an
+unpinned hash). Only complete
 app scans prove absence; older reports cannot replace newer inventory. Extension
 files, commands and source URLs remain on the device. See the
 [discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions).
