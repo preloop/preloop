@@ -235,8 +235,11 @@ async def test_ci_run_of_the_unlisted_project_finishes_and_is_not_posted(
     assert await post(world, execution) is None
     assert github.calls == []
     assert github.mints == []
-    # Nothing that reads as a failure or a pending retry.
-    assert publications(world, execution) == []
+    # A terminal skip: nothing that reads as a failure or a pending retry.
+    rows = publications(world, execution)
+    assert [(row.state, row.reason, row.retryable) for row in rows] == [
+        ("skipped", OUT_OF_SCOPE, False)
+    ]
     world.db.refresh(execution)
     assert execution.status == "SUCCEEDED"
     projection = platform_review.platform_review_projection(world.db, execution)
@@ -271,6 +274,115 @@ async def test_sweep_does_not_select_runs_outside_the_list(
     )
     assert (world.account.id, inside.id) in found
     assert (world.account.id, outside.id) not in found
+
+
+# --- the list as it stood when the run finished --------------------------------
+
+
+def _skipped_row(world: SimpleNamespace, execution: Any) -> Any:
+    rows = publications(world, execution)
+    assert len(rows) == 1
+    return rows[0]
+
+
+@pytest.mark.asyncio
+async def test_automatic_finish_outside_the_list_records_a_terminal_skip(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = world_for(db_session, test_user, projects=2)
+    listed, other = world.projects
+    scope(world, listed)
+    execution, _ = ci_run(world, other)
+    github = ci_github(world, monkeypatch)
+    assert await post(world, execution) is None
+    row = _skipped_row(world, execution)
+    assert row.state == "skipped"
+    assert row.reason == OUT_OF_SCOPE
+    assert row.retryable is False and row.next_attempt_at is None
+    assert github.calls == [] and github.writes == []
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_the_run_after_its_project_is_added(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = world_for(db_session, test_user, projects=2)
+    listed, other = world.projects
+    scope(world, listed)
+    execution, _ = ci_run(world, other)
+    github = ci_github(world, monkeypatch)
+    assert await post(world, execution) is None
+    scope(world, listed, other)
+    execution.end_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    world.flow.updated_at = datetime(2020, 1, 1)
+    world.db.commit()
+    store = crud.crud_platform_review_publication
+    found = store.unclaimed_execution_ids(world.db, finished_within=timedelta(hours=24))
+    assert (world.account.id, execution.id) not in found
+    assert (world.account.id, execution.id) not in store.due_execution_ids(world.db)
+    # An automatic retry after the list grew does not post it either.
+    await post(world, execution)
+    assert github.writes == []
+    assert _skipped_row(world, execution).state == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_explicit_publish_is_refused_before_and_after_the_list_grows(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = world_for(db_session, test_user, projects=2)
+    listed, other = world.projects
+    scope(world, listed)
+    execution, _ = ci_run(world, other)
+    github = ci_github(world, monkeypatch)
+    await post(world, execution)
+    with pytest.raises(PlatformReviewRefusedError) as before:
+        await post(world, execution, explicit=True)
+    assert before.value.reason == OUT_OF_SCOPE and before.value.status_code == 409
+    scope(world, listed, other)
+    with pytest.raises(PlatformReviewRefusedError) as after:
+        await post(world, execution, explicit=True)
+    assert after.value.reason == OUT_OF_SCOPE and after.value.status_code == 409
+    assert github.writes == []
+
+
+@pytest.mark.asyncio
+async def test_new_run_started_after_the_project_is_added_is_posted(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = world_for(db_session, test_user, projects=2)
+    listed, other = world.projects
+    scope(world, listed)
+    old, _ = ci_run(world, other)
+    ci_github(world, monkeypatch)
+    await post(world, old)
+    scope(world, listed, other)
+    fresh, _ = ci_run(world, other)
+    outcome = await post(world, fresh)
+    assert outcome is not None and outcome["status"] == "posted"
+
+
+@pytest.mark.asyncio
+async def test_no_list_posts_and_records_no_scope_skip(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = world_for(db_session, test_user, projects=2)
+    assert "project_ids" not in world.flow.git_clone_config["platform_review"]
+    execution, _ = ci_run(world, world.projects[1])
+    ci_github(world, monkeypatch)
+    outcome = await post(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert all(row.reason != OUT_OF_SCOPE for row in publications(world, execution))
 
 
 # --- explicit publish --------------------------------------------------------

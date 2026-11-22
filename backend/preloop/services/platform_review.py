@@ -2906,10 +2906,19 @@ async def publish_platform_review(
             raise PlatformReviewRefusedError("no_review_binding")
         return None
     # The project of the stored binding decides, never anything the caller
-    # sends. Outside the list nothing is claimed, so no failure and no retry
-    # is recorded; a retry left from before the list changed stops here.
+    # sends. A retry left from before the list changed stops here. A finished
+    # run seen by the automatic path is closed as a terminal skip, so the
+    # sweep does not publish it later should the list grow to include it.
     if not project_in_posting_scope(flow.git_clone_config, binding.project_id):
         _stop_retrying(db, execution.id, OUT_OF_SCOPE_REASON)
+        if explicit:
+            raise PlatformReviewRefusedError(OUT_OF_SCOPE_REASON)
+        if execution.status in TERMINAL_STATUSES:
+            _record_out_of_scope(db, execution.id, binding)
+        return None
+    # The list at the time the run finished decides: a run closed outside it
+    # stays unposted after the project is added.
+    if _closed_out_of_scope(db, execution.id):
         if explicit:
             raise PlatformReviewRefusedError(OUT_OF_SCOPE_REASON)
         return None
@@ -3133,6 +3142,57 @@ def _audit_attempt(
     except Exception:
         db.rollback()
         logger.warning("Could not audit the review publication of %s", execution.id)
+
+
+def _closed_out_of_scope(db: Session, execution_id: Any) -> bool:
+    """Whether the execution was closed as outside the posting list."""
+    row = crud.crud_platform_review_publication.get_for_execution(
+        db, execution_id=execution_id
+    )
+    return (
+        row is not None
+        and row.state == STATE_SKIPPED
+        and row.reason == OUT_OF_SCOPE_REASON
+    )
+
+
+def _record_out_of_scope(db: Session, execution_id: Any, binding: Any) -> None:
+    """Close a finished run outside the posting list as a terminal skip.
+
+    Nothing is posted. The row is not a failure and is never retried. An
+    execution that already has a row keeps it.
+
+    Args:
+        db: Database session.
+        execution_id: The finished execution.
+        binding: Its stored review binding.
+    """
+    store = crud.crud_platform_review_publication
+    try:
+        row = store.claim(
+            db,
+            account_id=binding.account_id,
+            execution_id=str(execution_id),
+            repository=binding.repository_slug,
+            pull_request=binding.pr_number,
+            head_sha=binding.head_sha,
+            reclaim_states=(),
+        )
+        if row is None:
+            return
+        store.record(
+            db,
+            row=row,
+            state=STATE_SKIPPED,
+            reason=OUT_OF_SCOPE_REASON,
+            review_state=STATE_SKIPPED,
+            review_reason=OUT_OF_SCOPE_REASON,
+            retryable=False,
+            next_attempt_at=None,
+        )
+    except Exception:
+        db.rollback()
+        logger.error("Could not record the skipped publication of %s", execution_id)
 
 
 def _stop_retrying(db: Session, execution_id: Any, reason: str) -> None:
