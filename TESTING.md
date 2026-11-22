@@ -92,25 +92,35 @@ Significant progress has been made in increasing unit test coverage for the back
 
 ### CI/CD Integration
 
-GitHub Actions (`.github/workflows/ci.yml`) shards backend unit tests
-(`pytest -m "not integration"`) across six jobs, each running
+GitHub Actions (`.github/workflows/ci.yml`) runs backend unit tests
+(`pytest -m "not integration"`) in up to six jobs, each running
 [pytest-xdist](https://pypi.org/project/pytest-xdist/) with
-`--dist worksteal`. `scripts/run_backend_shard.py` packs files heaviest
-first from the newest main-branch durations (cached by CI, with
-`.github/backend-shard-durations.json` as the fallback) and fails the plan
-when the predicted largest shard exceeds 1.15x the mean. A shard reuses a
-Postgres already listening on `127.0.0.1:5432` and creates one database for
-the job plus one clone per xdist worker; otherwise it starts
-`pgvector/pgvector:pg16`. Self-hosted setup is
-[`.github/self-hosted-runners.md`](.github/self-hosted-runners.md).
-Coverage data is combined in a follow-up **Backend Coverage** job before
-the 60% floor is applied; a single shard only exercises part of the tree,
-so `--cov-fail-under` cannot run there.
+`--dist worksteal`. On pull requests and `main` pushes,
+`scripts/ci_select.py` first selects only the test files the diff can
+affect (static import graph, `scripts/ci_import_graph.py`) and sizes the
+matrix to them, from one to six shards. Shared roots (models, CRUD and
+migrations, `config.py`, any `conftest.py`, packaging and lock files,
+`.github/**`), version tags, the `ci:full` label, full reruns, the nightly
+schedule and manual runs select the whole suite in six shards. The
+`ci-selection` artifact records which files ran and why.
+`scripts/run_backend_shard.py` packs the selected files heaviest first from
+the newest whole-suite main durations (cached by CI, with
+`.github/backend-shard-durations.json` as the fallback). For whole-suite
+plans it fails when the predicted largest shard exceeds 1.15x the mean. A
+shard reuses a Postgres already listening on `127.0.0.1:5432` and creates
+one database for the job plus one clone per xdist worker; otherwise it
+starts `pgvector/pgvector:pg16`. Self-hosted setup and the selection rules
+are in [`.github/self-hosted-runners.md`](.github/self-hosted-runners.md).
+Coverage data is combined in a follow-up **Backend Coverage** job, which
+applies the 60% floor to whole-suite runs only; a selective run or a single
+shard exercises only part of the tree.
 Pull requests skip backend, frontend, CLI, plugin, and Helm jobs when
-those trees did not change; `main` always runs every suite. The
-required check is the **CI** aggregator (a skipped suite is success; a
-failed suite is not). A new push to the same PR cancels the in-progress
-run. Docker image builds run on `main` and tags, not on pull requests.
+those trees did not change; `main` pushes run every job, with backend tests
+selected from the diff against the last green `main` commit. The required
+check is the **CI** aggregator (a skipped suite is success; a failed suite
+is not). A new push to the same PR, or a newer push to `main`, cancels the
+in-progress run; tag, merge-queue, schedule and manual runs are never
+cancelled. Docker image builds run on `main` and tags, not on pull requests.
 
 GitLab CI (`.gitlab-ci.yml`) splits the same suite into per-component
 jobs for parallel execution and reporting, such as

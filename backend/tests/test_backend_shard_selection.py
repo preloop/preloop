@@ -217,8 +217,9 @@ def test_run_uses_worksteal_and_worker_databases(
     monkeypatch.setattr(
         sharding.subprocess,
         "run",
-        lambda cmd, cwd, env: calls.append((cmd, env))
-        or argparse.Namespace(returncode=0),
+        lambda cmd, cwd, env: (
+            calls.append((cmd, env)) or argparse.Namespace(returncode=0)
+        ),
     )
     fake = types.ModuleType("ci_postgres")
     fake.clone_worker_databases = cloned.append  # type: ignore[attr-defined]
@@ -258,3 +259,49 @@ def test_committed_durations_plan_within_the_balance_gate() -> None:
     plan = sharding.plan_shards(sharding.discover_files(ROOT), durations, 6, ROOT)
     peak, mean = sharding.spread(plan)
     assert peak <= sharding.DEFAULT_MAX_RATIO * mean
+
+
+def test_plan_command_packs_only_selected_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A selection receipt narrows the plan; a removed file is ignored."""
+    files = _files(tmp_path, 4)
+    durations = tmp_path / "durations.json"
+    durations.write_text(json.dumps({f"{f}::test_one": 1.0 for f in files}))
+    receipt = tmp_path / "ci-selection.json"
+    receipt.write_text(
+        json.dumps({"candidate_tests": [files[2], files[0], "backend/tests/gone.py"]})
+    )
+    monkeypatch.setattr(sharding, "discover_files", lambda root: files)
+    args = argparse.Namespace(
+        shards=2,
+        durations=durations,
+        out=tmp_path / "plan.json",
+        max_ratio=1.15,
+        selection=receipt,
+    )
+    assert sharding.command_plan(args, tmp_path) == 0
+    plan = json.loads(args.out.read_text())
+    planned = sorted(f for shard in plan["shards"] for f in shard["files"])
+    assert planned == sorted([files[0], files[2]])
+
+
+def test_plan_command_rejects_an_empty_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty selection fails loudly, never falls back to all of pytest."""
+    files = _files(tmp_path, 2)
+    durations = tmp_path / "durations.json"
+    durations.write_text("{}")
+    receipt = tmp_path / "ci-selection.json"
+    receipt.write_text(json.dumps({"candidate_tests": []}))
+    monkeypatch.setattr(sharding, "discover_files", lambda root: files)
+    args = argparse.Namespace(
+        shards=1,
+        durations=durations,
+        out=tmp_path / "plan.json",
+        max_ratio=1.15,
+        selection=receipt,
+    )
+    assert sharding.command_plan(args, tmp_path) == 2
+    assert not args.out.exists()

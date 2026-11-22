@@ -305,9 +305,15 @@ def _load_durations(path: Path) -> dict[str, float]:
 
 def command_plan(args: argparse.Namespace, root: Path) -> int:
     """Write a plan, print predicted seconds, and enforce the balance ratio."""
-    plan = plan_shards(
-        discover_files(root), _load_durations(args.durations), args.shards, root
-    )
+    files = discover_files(root)
+    selection = getattr(args, "selection", None)
+    if selection is not None:
+        chosen = set(json.loads(selection.read_text())["candidate_tests"])
+        files = [path for path in files if path in chosen]
+        if not files:
+            print("::error::the selection receipt names no collectable test file")
+            return 2
+    plan = plan_shards(files, _load_durations(args.durations), args.shards, root)
     plan["durations"] = str(args.durations)
     peak, mean = spread(plan)
     plan["predicted_max_over_mean"] = round(peak / mean, 4)
@@ -386,6 +392,11 @@ def main() -> int:
     planner.add_argument("--durations", type=Path, required=True)
     planner.add_argument("--out", type=Path, required=True)
     planner.add_argument("--max-ratio", type=float, default=DEFAULT_MAX_RATIO)
+    planner.add_argument(
+        "--selection",
+        type=Path,
+        help="ci-selection.json receipt; plan only its candidate_tests",
+    )
     runner = sub.add_parser("run", help="run one planned shard")
     runner.add_argument("--plan", type=Path, required=True)
     runner.add_argument("--group", type=int, required=True)

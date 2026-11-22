@@ -35,15 +35,17 @@ def test_backend_shards_partition_before_collection() -> None:
     """Each matrix group must match the pre-collection file partition."""
     backend = load_ci_jobs()["test-backend"]
     groups = backend["strategy"]["matrix"]["group"]
-    assert groups == list(range(1, BACKEND_TEST_SPLITS + 1))
+    # The selection sizes the matrix: BACKEND_TEST_SPLITS for the whole suite.
+    assert groups == "${{ fromJSON(needs.changes.outputs.backend_groups) }}"
     assert backend["name"] == (
-        f"Backend Tests (${{{{ matrix.group }}}}/{BACKEND_TEST_SPLITS})"
+        "Backend Tests (${{ matrix.group }}/"
+        "${{ needs.changes.outputs.backend_shards }})"
     )
     assert backend["strategy"]["fail-fast"] is False
 
     script = step_script(backend, "Run tests")
     assert "scripts/run_backend_shard.py run --plan backend-shard-plan.json" in script
-    assert "--group ${{ matrix.group }}" in script
+    assert '--group "$SHARD_GROUP"' in script
     assert '--workers "$SHARD_WORKERS"' in script
     run_env = next(s for s in backend["steps"] if s.get("name") == "Run tests")["env"]
     assert run_env["SHARD_WORKERS"] == (
@@ -93,7 +95,17 @@ def test_backend_coverage_job_combines_shards_before_floor() -> None:
     script = step_script(coverage, "Combine coverage and enforce floor")
     assert "coverage combine" in script
     assert "--fail-under=60" in script
-    assert f"-ne {BACKEND_TEST_SPLITS}" in script
+    assert '-ne "$SHARDS"' in script
+    assert 'if [ "$BACKEND_FULL" = "true" ]' in script
+    step = next(
+        s
+        for s in coverage["steps"]
+        if s.get("name") == "Combine coverage and enforce floor"
+    )
+    assert step["env"] == {
+        "SHARDS": "${{ needs.changes.outputs.backend_shards }}",
+        "BACKEND_FULL": "${{ needs.changes.outputs.backend_full }}",
+    }
     assert "coverage-data.*" in script
 
 
@@ -255,8 +267,21 @@ def test_backend_plan_job_checks_predicted_balance() -> None:
     assert restore["uses"].startswith("actions/cache/restore@")
     assert restore["with"]["restore-keys"] == "pytest-durations-"
     script = step_script(plan, "Plan shards and check predicted balance")
-    assert f"--shards {BACKEND_TEST_SPLITS}" in script
-    assert "--max-ratio 1.15" in script
+    assert '--shards "$SHARDS"' in script
+    assert "--selection ci-selection.json" in script
+    assert "ratio=1.15" in script
+    assert '--max-ratio "$ratio"' in script
+    step = next(
+        s
+        for s in plan["steps"]
+        if s.get("name") == "Plan shards and check predicted balance"
+    )
+    assert step["env"]["SHARDS"] == "${{ needs.changes.outputs.backend_shards }}"
+    assert step["env"]["BACKEND_FULL"] == ("${{ needs.changes.outputs.backend_full }}")
+    names = [s.get("name") for s in plan["steps"]]
+    assert names.index("Download test selection") < names.index(
+        "Plan shards and check predicted balance"
+    )
     assert ".github/backend-shard-durations.json" in script
 
 
@@ -266,6 +291,8 @@ def test_main_runs_refresh_durations_for_pull_requests() -> None:
     assert "needs.test-backend.result == 'success'" in job["if"]
     assert "github.ref == 'refs/heads/main'" in job["if"]
     assert "pull_request" not in job["if"]
+    # A selective run times only its own files; never let it be the cache.
+    assert "needs.changes.outputs.backend_full == 'true'" in job["if"]
     script = step_script(job, "Convert JUnit times to node durations")
     assert f"--shards {BACKEND_TEST_SPLITS}" in script
     save = next(
@@ -278,4 +305,10 @@ def test_main_runs_refresh_durations_for_pull_requests() -> None:
 def test_coverage_job_summarises_actual_shard_durations() -> None:
     coverage = load_ci_jobs()["test-backend-coverage"]
     script = step_script(coverage, "Summarise actual shard durations")
-    assert f"--shards {BACKEND_TEST_SPLITS} --summary" in script
+    assert '--shards "$SHARDS" --summary' in script
+    step = next(
+        s
+        for s in coverage["steps"]
+        if s.get("name") == "Summarise actual shard durations"
+    )
+    assert step["env"]["SHARDS"] == "${{ needs.changes.outputs.backend_shards }}"

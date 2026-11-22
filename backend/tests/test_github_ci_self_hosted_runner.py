@@ -180,7 +180,8 @@ def test_pick_runner_requires_an_idle_matching_runner() -> None:
     for label in ("self-hosted", "Linux", "X64"):
         assert f'index("{label}")' in script
     # One runner class per run: all shards private, or all hosted.
-    assert "SPLITS=6" in script
+    assert 'SPLITS="${BACKEND_SHARDS:-6}"' in script
+    assert "SPLITS=6 ;;" in script
     assert 'if [ "$idle" -ge "$SPLITS" ]; then idle=$SPLITS; else idle=0; fi' in script
     assert "$idle / $SPLITS" in script
     assert "/ 8" not in script
@@ -188,7 +189,7 @@ def test_pick_runner_requires_an_idle_matching_runner() -> None:
     assert ". >= ($splits - $idle)" in script
     # Dummy at [0] so YAML can index with matrix.group (no minus).
     assert "[null] +" in script
-    assert "]*6" in script
+    assert "*int(sys.argv[1])" in script
 
 
 def test_too_few_idle_runners_never_mix_runner_classes() -> None:
@@ -309,28 +310,33 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
 
 
 @pytest.mark.parametrize(
-    ("case", "expected"),
+    ("case", "expected", "shards"),
     [
-        ("available", 0),
-        ("partial", 0),
-        ("offline", 0),
-        ("absent", 0),
-        ("busy", 0),
-        ("dedicated", 0),
-        ("unlabeled", 0),
-        ("hosted-alias", 0),
-        ("fork", 0),
-        ("api-error", 0),
-        ("malformed", 0),
-        ("disabled", 0),
-        ("missing-token", 0),
-        ("standby", 0),
-        ("irrelevant", 0),
-        ("many", 6),
+        ("available", 0, "6"),
+        ("partial", 0, "6"),
+        ("offline", 0, "6"),
+        ("absent", 0, "6"),
+        ("busy", 0, "6"),
+        ("dedicated", 0, "6"),
+        ("unlabeled", 0, "6"),
+        ("hosted-alias", 0, "6"),
+        ("fork", 0, "6"),
+        ("api-error", 0, "6"),
+        ("malformed", 0, "6"),
+        ("disabled", 0, "6"),
+        ("missing-token", 0, "6"),
+        ("standby", 0, "6"),
+        ("irrelevant", 0, "6"),
+        ("many", 6, "6"),
+        # A narrow selection runs fewer shards, so three idle VMs cover all.
+        ("available", 2, "2"),
+        ("available", 3, "3"),
+        # A malformed count falls back to the whole matrix.
+        ("many", 6, "not-a-number"),
     ],
 )
 def test_real_selector_uses_available_capacity(
-    tmp_path: Path, case: str, expected: int
+    tmp_path: Path, case: str, expected: int, shards: str
 ) -> None:
     """Execute the workflow's actual selector against synthetic API responses."""
     if not shutil.which("jq"):
@@ -367,6 +373,7 @@ print(json.dumps({'runners': runners}))
         PATH=f"{tmp_path}:{os.environ['PATH']}",
         CASE=case,
         BACKEND_REQUIRED="false" if case == "irrelevant" else "true",
+        BACKEND_SHARDS=shards,
         TRUSTED_SOURCE="false" if case == "fork" else "true",
         RUNNER_READ_TOKEN="" if case == "missing-token" else "synthetic",
         SELF_HOSTED_TESTS="false" if case == "disabled" else "true",
@@ -385,11 +392,12 @@ print(json.dumps({'runners': runners}))
     plan = json.loads(
         output.read_text().split("backend_plan<<EOF\n", 1)[1].splitlines()[0]
     )
-    assert len(plan) == BACKEND_TEST_SPLITS + 1
+    splits = int(shards) if shards.isdigit() else BACKEND_TEST_SPLITS
+    assert len(plan) == splits + 1
     assert plan[0] is None
     private = [slot for slot in plan[1:] if isinstance(slot["runner"], list)]
     assert len(private) == expected
     assert all("preloop-ci-general" in slot["runner"] for slot in private)
     assert sum(slot["runner"] == "ubuntu-24.04" for slot in plan[1:]) == (
-        BACKEND_TEST_SPLITS - expected
+        splits - expected
     )
