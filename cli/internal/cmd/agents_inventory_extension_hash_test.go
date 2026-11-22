@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -146,11 +147,11 @@ func TestExtensionTreeHashBounds(t *testing.T) {
 }
 
 // protects=an unreadable file never yields a partial hash; fails_when=a
-// skipped file still produces an "ok" hash; no_claim=skipped when running as
-// root, where permission bits do not deny reads.
+// skipped file still produces an "ok" hash; no_claim=skipped as root and on
+// Windows, where permission bits do not deny reads.
 func TestExtensionTreeHashUnreadableFile(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores file permissions")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("permission bits do not deny reads here")
 	}
 	home := t.TempDir()
 	writeInventoryFixture(t, home, ".claude/skills/s/SKILL.md", "x")
