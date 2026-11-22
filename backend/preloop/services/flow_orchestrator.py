@@ -1719,14 +1719,16 @@ class FlowExecutionOrchestrator:
             merged_result: The result document the run stored.
 
         Returns:
-            True when the publication gate recorded anything but an accepted
-            review, or the integrity gate recorded a verdict at all (it only
+            True when the publication gate recorded anything but a delivered
+            review (``unverified`` is a delivered review whose receipt is
+            unavailable, which the gate does not fail), or the integrity gate recorded a verdict at all (it only
             writes one when it rejects the review).
         """
         from preloop.services.review_publication import (
             REVIEW_PUBLICATION_RESULT_KEY,
             STATUS_ALREADY_REVIEWED,
             STATUS_PUBLISHED,
+            STATUS_UNVERIFIED,
         )
 
         if not isinstance(merged_result, dict):
@@ -1735,6 +1737,7 @@ class FlowExecutionOrchestrator:
         if isinstance(publication, dict) and publication.get("status") not in {
             STATUS_PUBLISHED,
             STATUS_ALREADY_REVIEWED,
+            STATUS_UNVERIFIED,
         }:
             return True
         return merged_result.get("_review_integrity") is not None

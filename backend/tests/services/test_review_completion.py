@@ -237,7 +237,7 @@ async def test_settle_commit_status_posts_success_for_completed_stopped_review(
     "gate",
     [
         {"review_publication": {"status": "not_published"}},
-        {"review_publication": {"status": "unverified"}},
+        {"review_publication": {"status": "unexpected"}},
         {"_review_integrity": {"status": "rejected"}},
     ],
 )
@@ -253,14 +253,15 @@ def test_stop_with_a_failed_review_gate_stays_failure(
     assert described[0] == "failure"
 
 
+@pytest.mark.parametrize("status", ["published", "already_reviewed", "unverified"])
 def test_stop_after_an_accepted_publication_is_success(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, status: str
 ) -> None:
     orch = _orchestrator([_review(), DESCRIPTION, EYES_REMOVED], monkeypatch)
     described = FlowExecutionOrchestrator._describe_incomplete_review(
         orch,
         "STOPPED",
-        {"status": "success", "review_publication": {"status": "published"}},
+        {"status": "success", "review_publication": {"status": status}},
     )
     assert described is not None
     assert described[0] == "success"
