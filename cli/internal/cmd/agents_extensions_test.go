@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -489,6 +490,11 @@ func TestInventoryExtensionsCheckVersionAndContentEdges(t *testing.T) {
 	finding := findExtensionFinding(decodeExtensionCheck(t, stdout), "reviewer@community")
 	if ProcessExitCode(err) != 3 || finding.Reason != "version_unknown" {
 		t.Fatalf("version exit=%d reason=%s", ProcessExitCode(err), finding.Reason)
+	}
+	if runtime.GOOS == "windows" {
+		// os.Chmod(0) only sets the read-only attribute on Windows; the file
+		// stays readable, so there is no portable unreadable-content fixture.
+		return
 	}
 	skillHome := extensionHome(t)
 	// An empty directory now hashes as a real tree. A file the process cannot
