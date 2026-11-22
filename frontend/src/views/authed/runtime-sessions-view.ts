@@ -773,6 +773,7 @@ export class RuntimeSessionsView extends LitElement {
       }
 
       a.snippet {
+        box-sizing: border-box;
         text-decoration: none;
       }
 
@@ -1079,8 +1080,20 @@ export class RuntimeSessionsView extends LitElement {
     // The query no longer reaches the list endpoint at all: a typed query is
     // a question about content, and the list filter only ever matched four
     // identifier columns.
+    // A product option is an agent kind, not a source type: a live Cursor
+    // or Copilot CLI session is recorded as `desktop_agent` with that kind,
+    // so the kind filter is the one that finds it.
     if (this.sessionSourceType !== 'all') {
-      params.sessionSourceType = this.sessionSourceType;
+      if (
+        Object.prototype.hasOwnProperty.call(
+          AGENT_KIND_PRESENTATION,
+          this.sessionSourceType
+        )
+      ) {
+        params.agentKind = this.sessionSourceType;
+      } else {
+        params.sessionSourceType = this.sessionSourceType;
+      }
     }
     if (this.hasArtifacts !== 'all') {
       params.hasArtifacts = this.hasArtifacts;

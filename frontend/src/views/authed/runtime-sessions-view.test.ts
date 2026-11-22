@@ -1522,6 +1522,78 @@ describe('RuntimeSessionsView', () => {
       ]);
       expect(values).to.not.include('geminicli');
     });
+
+    it('filters a product option by agent kind, once, and finds its live session', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      // A live enrollment: recorded as desktop_agent, with the cursor kind.
+      const live = {
+        ...(element as any).sessions.items[0],
+        id: 'runtime-session-cursor',
+        session_source_type: 'desktop_agent',
+        agent_kind: 'cursor',
+      };
+      const cursorList = sinon.match(
+        (value: unknown) =>
+          String(value).startsWith('/api/v1/runtime-sessions?') &&
+          String(value).includes('agent_kind=cursor')
+      );
+      fetchStub.withArgs(cursorList).callsFake(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ...(element as any).sessions,
+              total: 1,
+              items: [live],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+      );
+      const listUrls = () =>
+        fetchStub
+          .getCalls()
+          .map((call) => String(call.args[0]))
+          .filter((url) => url.startsWith('/api/v1/runtime-sessions?'));
+      const before = listUrls().length;
+      const select = Array.from(
+        element.shadowRoot!.querySelectorAll('sl-select')
+      ).find((el) => el.getAttribute('label') === 'Source type')! as any;
+
+      select.value = 'cursor';
+      select.dispatchEvent(new Event('sl-change'));
+      await waitUntil(
+        () =>
+          (element as any).sessions?.items?.[0]?.id ===
+          'runtime-session-cursor',
+        'The live Cursor session was not listed'
+      );
+      // The select re-reports its value when its options change.
+      select.dispatchEvent(new Event('sl-change'));
+      await element.updateComplete;
+
+      const requests = listUrls().slice(before);
+      expect(requests).to.have.length(1);
+      const params = new URL(requests[0], window.location.origin).searchParams;
+      expect(params.get('agent_kind')).to.equal('cursor');
+      expect(params.get('session_source_type')).to.equal(null);
+      expect(
+        (element as any).sessions.items.map((item: any) => item.id)
+      ).to.deep.equal(['runtime-session-cursor']);
+    });
+
+    it('filters a non-product source by source type', async () => {
+      const element = (await fixture(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      )) as RuntimeSessionsView;
+      await waitUntil(() => !(element as any).loading);
+      (element as any).sessionSourceType = 'flow_execution';
+      const built = (element as any).buildListParams();
+      expect(built.sessionSourceType).to.equal('flow_execution');
+      expect(built.agentKind).to.equal(undefined);
+    });
   });
   describe('content search', () => {
     function snippetButtons(element: RuntimeSessionsView): HTMLElement[] {
@@ -1567,14 +1639,24 @@ describe('RuntimeSessionsView', () => {
       expect(href.searchParams.get('sessionId')).to.equal('runtime-session-2');
       expect(href.searchParams.get('turn')).to.equal('tool-7');
 
-      // A cmd-click must not be swallowed: the browser opens a tab.
+      // A cmd-click must not be swallowed: the browser opens a tab. Record
+      // what the view decided, then cancel the default here: on Linux a
+      // meta-click navigates this page instead, which aborts the run.
+      let leftToBrowser = false;
+      const cancelNavigation = (event: Event) => {
+        leftToBrowser = !event.defaultPrevented;
+        event.preventDefault();
+      };
+      // Registered after the view's listener, so it runs after it.
+      link.addEventListener('click', cancelNavigation);
       const modified = new MouseEvent('click', {
         bubbles: true,
         cancelable: true,
         metaKey: true,
       });
       link.dispatchEvent(modified);
-      expect(modified.defaultPrevented).to.equal(false);
+      link.removeEventListener('click', cancelNavigation);
+      expect(leftToBrowser).to.equal(true);
       expect((element as any).selectedSessionId).to.not.equal(
         'runtime-session-2'
       );
