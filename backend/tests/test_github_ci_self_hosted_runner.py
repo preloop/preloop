@@ -187,7 +187,8 @@ def test_pick_runner_requires_an_idle_matching_runner() -> None:
     assert ". >= ($splits - $idle)" in script
     # Dummy at [0] so YAML can index with matrix.group (no minus).
     assert "[null] +" in script
-    assert "]*18" in script
+    assert 'SPLITS="${BACKEND_SHARDS:-18}"' in script
+    assert "*int(sys.argv[1])" in script
 
 
 def test_three_idle_runners_only_overflow_the_last_three_shards() -> None:
@@ -304,28 +305,33 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
 
 
 @pytest.mark.parametrize(
-    ("case", "expected"),
+    ("case", "expected", "shards"),
     [
-        ("available", 3),
-        ("partial", 1),
-        ("offline", 0),
-        ("absent", 0),
-        ("busy", 0),
-        ("dedicated", 0),
-        ("unlabeled", 0),
-        ("hosted-alias", 0),
-        ("fork", 0),
-        ("api-error", 0),
-        ("malformed", 0),
-        ("disabled", 0),
-        ("missing-token", 0),
-        ("standby", 0),
-        ("irrelevant", 0),
-        ("many", 7),
+        ("available", 3, "18"),
+        ("partial", 1, "18"),
+        ("offline", 0, "18"),
+        ("absent", 0, "18"),
+        ("busy", 0, "18"),
+        ("dedicated", 0, "18"),
+        ("unlabeled", 0, "18"),
+        ("hosted-alias", 0, "18"),
+        ("fork", 0, "18"),
+        ("api-error", 0, "18"),
+        ("malformed", 0, "18"),
+        ("disabled", 0, "18"),
+        ("missing-token", 0, "18"),
+        ("standby", 0, "18"),
+        ("irrelevant", 0, "18"),
+        ("many", 7, "18"),
+        # A narrow selection runs fewer shards; idle VMs still take the tail.
+        ("available", 2, "2"),
+        ("partial", 1, "4"),
+        # A malformed count falls back to the whole matrix.
+        ("available", 3, "not-a-number"),
     ],
 )
 def test_real_selector_uses_available_capacity(
-    tmp_path: Path, case: str, expected: int
+    tmp_path: Path, case: str, expected: int, shards: str
 ) -> None:
     """Execute the workflow's actual selector against synthetic API responses."""
     if not shutil.which("jq"):
@@ -362,6 +368,7 @@ print(json.dumps({'runners': runners}))
         PATH=f"{tmp_path}:{os.environ['PATH']}",
         CASE=case,
         BACKEND_REQUIRED="false" if case == "irrelevant" else "true",
+        BACKEND_SHARDS=shards,
         TRUSTED_SOURCE="false" if case == "fork" else "true",
         RUNNER_READ_TOKEN="" if case == "missing-token" else "synthetic",
         SELF_HOSTED_TESTS="false" if case == "disabled" else "true",
@@ -380,11 +387,12 @@ print(json.dumps({'runners': runners}))
     plan = json.loads(
         output.read_text().split("backend_plan<<EOF\n", 1)[1].splitlines()[0]
     )
-    assert len(plan) == BACKEND_TEST_SPLITS + 1
+    splits = int(shards) if shards.isdigit() else BACKEND_TEST_SPLITS
+    assert len(plan) == splits + 1
     assert plan[0] is None
     private = [slot for slot in plan[1:] if isinstance(slot["runner"], list)]
     assert len(private) == expected
     assert all("preloop-ci-general" in slot["runner"] for slot in private)
     assert sum(slot["runner"] == "ubuntu-24.04" for slot in plan[1:]) == (
-        BACKEND_TEST_SPLITS - expected
+        splits - expected
     )

@@ -1,7 +1,10 @@
 """File sharding must neither import unrelated tests nor lose new tests."""
 
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -120,3 +123,55 @@ def test_real_plan_covers_new_files_and_deleted_timings() -> None:
     groups = sharding.partition_files(files, {}, 18)
     assert "backend/tests/test_backend_shard_selection.py" in files
     assert [path for group in groups for path in group] == files
+
+
+def _plan(*args: str) -> list[str]:
+    """Run the real CLI in plan mode and return the files it would collect."""
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/run_backend_shard.py"), "--plan", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_selection_partitions_only_selected_files(tmp_path: Path) -> None:
+    """Shards cover the receipt's files exactly once, in inventory order."""
+    files = sharding.discover_files(ROOT)
+    chosen = [files[3], files[0], files[10], "backend/tests/test_removed_file.py"]
+    receipt = tmp_path / "ci-selection.json"
+    receipt.write_text(json.dumps({"candidate_tests": chosen}))
+    planned = [
+        path
+        for group in (1, 2)
+        for path in _plan(
+            "--shards", "2", "--group", str(group), "--selection", str(receipt)
+        )
+    ]
+    assert planned == [files[0], files[3], files[10]]
+
+
+def test_selection_without_collectable_files_is_an_error(tmp_path: Path) -> None:
+    """An empty selection must fail loudly, never fall back to all of pytest."""
+    receipt = tmp_path / "ci-selection.json"
+    receipt.write_text(json.dumps({"candidate_tests": []}))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/run_backend_shard.py"),
+            "--plan",
+            "--shards",
+            "1",
+            "--group",
+            "1",
+            "--selection",
+            str(receipt),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "names no collectable test file" in result.stderr

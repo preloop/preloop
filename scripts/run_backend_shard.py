@@ -172,13 +172,24 @@ def main() -> int:
     parser.add_argument("--shards", type=int, required=True)
     parser.add_argument("--group", type=int, required=True)
     parser.add_argument("--plan", action="store_true")
+    parser.add_argument(
+        "--selection",
+        type=Path,
+        help="ci-selection.json receipt; partition only its candidate_tests",
+    )
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if not 1 <= args.group <= args.shards:
         parser.error("group must be between one and shards")
     root = Path(__file__).resolve().parents[1]
     durations = json.loads((root / ".github/pytest-split-durations.json").read_text())
-    groups = partition_files(discover_files(root), durations, args.shards)
+    files = discover_files(root)
+    if args.selection is not None:
+        chosen = set(json.loads(args.selection.read_text())["candidate_tests"])
+        files = [path for path in files if path in chosen]
+        if not files:
+            parser.error("the selection receipt names no collectable test file")
+    groups = partition_files(files, durations, args.shards)
     selected = groups[args.group - 1]
     if args.plan:
         print(json.dumps(selected))

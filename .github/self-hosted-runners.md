@@ -219,7 +219,21 @@ without importing them, then assigns whole files to contiguous, duration-weighte
 shards. New files receive an estimated weight and are always included. Pytest
 collects only the assigned files; tests within a file retain their normal order.
 The duration file is a balancing hint, not an allowlist. Coverage remains enabled
-on all shards and the combined job still enforces the coverage floor.
+on all shards; the combined job enforces the coverage floor on whole-suite runs.
+
+On pull requests and `main` pushes, `scripts/ci_select.py` first narrows the
+inventory to the files the diff can affect. `scripts/ci_import_graph.py` parses
+every `backend/preloop` and `backend/tests` module with `ast` (nothing is
+imported) and a test file is selected when it loads a changed module through
+module-level imports, crossing at most one function-local import. Changed test
+files and the smoke set always run. Shared roots (models, CRUD and migrations,
+`config.py`, any `conftest.py`, packaging and lock files, `.github/**`,
+`scripts/ci_*.py`) select everything. The selection decides the shard count:
+enough shards to keep each about as long as a whole-suite shard, from 1 to 18.
+`--selection ci-selection.json` partitions only those files. Version tags, the
+`ci:full` label, a full rerun, stacked PRs, the merge queue, the nightly
+schedule and manual runs use all 18 shards. The `ci-selection` artifact
+records the files, the reason and the count.
 Discovery honors static `collect_ignore` and `collect_ignore_glob` declarations in
 in-scope `conftest.py` files, path-qualified `norecursedirs`, and virtualenv
 directories. Dynamic `pytest_ignore_collect` hooks or computed ignore lists are

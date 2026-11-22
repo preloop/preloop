@@ -8,6 +8,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
+import ci_import_graph  # noqa: E402
 from ci_select import SMOKE, changed_paths, impacted_tests, matches, select  # noqa: E402
 from run_backend_shard import discover_files  # noqa: E402
 
@@ -20,7 +21,7 @@ REPLAY = json.loads((ROOT / ".github/tests/fixtures/merged-pr-paths.json").read_
 def test_historical_diffs_never_reduce_live_coverage(pr: dict) -> None:
     """Every historical legacy selection survives comparison-mode rollout."""
     result = select(pr["paths"], POLICY, INVENTORY)
-    assert result["mode"] == "comparison"
+    assert result["mode"] == "impact"
     assert result["legacy"] == pr["legacy_jobs"]
     assert all(
         not enabled or result["live"][name]
@@ -29,8 +30,11 @@ def test_historical_diffs_never_reduce_live_coverage(pr: dict) -> None:
     assert result["live"]["parity"]
     assert set(result["candidate_tests"]) <= set(INVENTORY)
     assert set(result["fast_tests"]) <= set(INVENTORY)
+    assert set(SMOKE) <= set(result["candidate_tests"])
+    assert result["backend_count"] == len(result["candidate_tests"])
     if result["full"]:
         assert all(result["live"].values())
+    if result["backend_full"]:
         assert result["candidate_tests"] == INVENTORY
 
 
@@ -64,13 +68,20 @@ def test_sensitive_paths_force_every_validation(path: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "event", ["push", "merge_group", "schedule", "workflow_dispatch"]
+    ("event", "ref"),
+    [
+        ("push", "refs/tags/v1.2.3"),
+        ("merge_group", "refs/heads/gh-readonly-queue/main/pr-1"),
+        ("schedule", "refs/heads/main"),
+        ("workflow_dispatch", "refs/heads/main"),
+    ],
 )
-def test_full_event_never_inherits_pr_filters(event: str) -> None:
-    """Full gate and backstops discover the entire inventory."""
-    result = select(["docs/index.md"], POLICY, INVENTORY, event=event)
+def test_full_event_never_inherits_pr_filters(event: str, ref: str) -> None:
+    """Tags, the merge queue and backstops run the entire inventory."""
+    result = select(["docs/index.md"], POLICY, INVENTORY, event=event, ref=ref)
     assert all(result["live"].values())
     assert result["candidate_tests"] == INVENTORY
+    assert result["backend_full"] and result["backend_shards"] == 18
 
 
 def test_label_and_stack_expand_docs_only_changes() -> None:
@@ -80,15 +91,33 @@ def test_label_and_stack_expand_docs_only_changes() -> None:
         assert all(result["live"].values())
 
 
-def test_unknown_and_deleted_test_impact_selects_all() -> None:
-    """A selector miss is evidence to expand, never evidence to skip."""
-    for path in [
-        "backend/tests/deleted_test.py",
-        "backend/preloop/new_area/new.py",
+@pytest.mark.parametrize(
+    "path",
+    [
         "backend/tests/conftest.py",
-    ]:
-        tests, _ = impacted_tests([path], INVENTORY)
-        assert tests == INVENTORY
+        "backend/tests/services/audit/conftest.py",
+        "backend/preloop/models/crud/user.py",
+        "backend/preloop/models/alembic/versions/new.py",
+        "backend/preloop/config.py",
+        "pyproject.toml",
+        ".github/requirements/app-dev.txt",
+        "requirements/base.txt",
+        "uv.lock",
+        ".github/workflows/ci.yml",
+        "scripts/ci_import_graph.py",
+    ],
+)
+def test_shared_roots_select_every_test(path: str) -> None:
+    """Fixtures, models, config, packaging and CI files have unbounded reach."""
+    tests, reason = impacted_tests([path, "docs/index.md"], INVENTORY)
+    assert tests == INVENTORY
+    assert reason == f"shared root: {path}"
+
+
+def test_deleted_test_file_selects_nothing_extra() -> None:
+    """A deleted test cannot run, and nothing that remains imports it."""
+    tests, _ = impacted_tests(["backend/tests/test_deleted_example.py"], INVENTORY)
+    assert tests == []
 
 
 def test_test_only_diff_maps_complete_file() -> None:
@@ -161,22 +190,38 @@ def fake_read(path: str) -> str:
     return FAKE_SOURCES.get(path, "")
 
 
-def test_module_change_maps_to_importers_and_name_matches_only() -> None:
-    """A module maps to its own tests, not its whole area or integration."""
-    tests, reason = impacted_tests([WIDGET], FAKE_INVENTORY, fake_read)
-    assert reason == "module-level match"
+FAKE_GRAPH = {
+    path: ci_import_graph.direct_references(
+        fake_read(path), ci_import_graph.module_name(path), False, is_test=True
+    )
+    for path in FAKE_INVENTORY
+} | {WIDGET: {"top": [], "lazy": []}}
+
+
+def test_module_change_maps_to_importers_only() -> None:
+    """A module maps to the tests that load it, not its area or integration."""
+    tests, reason = impacted_tests([WIDGET], FAKE_INVENTORY, fake_read, FAKE_GRAPH)
+    assert reason == (
+        "import graph: 1 changed or mentioning modules select 2 test files"
+    )
+    # Import graph, not file names: test_widget*.py import nothing here.
     assert tests == [
         "backend/tests/api/test_patches_widget.py",
         "backend/tests/api/test_uses_widget.py",
-        "backend/tests/services/test_widget.py",
-        "backend/tests/services/test_widget_edge.py",
     ]
 
 
 def test_fast_within_budget_keeps_module_selection() -> None:
     """A cheap selection is recorded with its impact reason."""
-    result = select([WIDGET], POLICY, FAKE_INVENTORY, durations={}, read=fake_read)
-    assert result["fast_reason"] == "module-level match"
+    result = select(
+        [WIDGET],
+        POLICY,
+        FAKE_INVENTORY,
+        durations={},
+        read=fake_read,
+        graph=FAKE_GRAPH,
+    )
+    assert result["fast_reason"].startswith("import graph:")
     assert "backend/tests/api/test_uses_widget.py" in result["fast_tests"]
 
 
@@ -191,6 +236,7 @@ def test_fast_over_budget_drops_importers_and_records_reason() -> None:
         FAKE_INVENTORY,
         durations=durations,
         read=fake_read,
+        graph=FAKE_GRAPH,
     )
     assert result["fast_reason"].startswith("over fast budget")
     assert result["fast_reason"].endswith("test_<module> files")
@@ -206,10 +252,18 @@ def test_fast_over_budget_drops_importers_and_records_reason() -> None:
 def test_conftest_falls_back_to_budget_not_full_suite() -> None:
     """Shared fixtures keep the full heavy tier, but fast stays narrow."""
     paths = ["backend/tests/conftest.py", WIDGET]
-    result = select(paths, POLICY, FAKE_INVENTORY, durations={}, read=fake_read)
-    assert result["candidate_tests"] == FAKE_INVENTORY
+    result = select(
+        paths,
+        POLICY,
+        FAKE_INVENTORY,
+        durations={},
+        read=fake_read,
+        graph=FAKE_GRAPH,
+    )
+    assert result["candidate_tests"] == sorted(set(FAKE_INVENTORY))
     assert result["fast_reason"] == (
-        "shared fixture or package: smoke, changed tests and module importers"
+        "shared root: backend/tests/conftest.py: smoke, changed tests and "
+        "module importers"
     )
     assert "backend/tests/integration/test_flows.py" not in result["fast_tests"]
     assert "backend/tests/api/test_uses_widget.py" in result["fast_tests"]

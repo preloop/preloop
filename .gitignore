@@ -94,3 +94,4 @@ cli/cmd/preloop/rsrc_windows_*.syso
 
 # Generated SBOMs (scripts/generate_sbom.sh); published as release assets
 /sbom/
+.ci-import-graph.json
