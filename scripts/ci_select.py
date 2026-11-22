@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import functools
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Any
+import re
+from typing import Any, Callable
 
 from run_backend_shard import discover_files
 
@@ -28,6 +30,12 @@ SMOKE = (
     "backend/tests/services/test_permission_prompt.py",
     "backend/tests/services/test_policy_evaluator.py",
 )
+MAPPED_AREAS = {"sync", "agents", "services", "utils", "tools", "api"}
+# Backend Fast runs serially under a 15 minute job timeout. Recorded file
+# durations track the real serial runtime closely (a 755 s estimate ran in
+# 824 s), so 240 s keeps the lane near four minutes of tests. The sharded
+# Backend Tests job still runs the whole inventory.
+FAST_BUDGET_SECONDS = 240.0
 
 
 def matches(path: str, pattern: str) -> bool:
@@ -48,7 +56,102 @@ def relevant(paths: list[str], patterns: list[str]) -> bool:
     )
 
 
-def impacted_tests(paths: list[str], inventory: list[str]) -> tuple[list[str], str]:
+def _module_name(path: str) -> str:
+    """Return the dotted import name of a ``backend/`` source file."""
+    parts = Path(path).relative_to("backend").with_suffix("").parts
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+@functools.lru_cache(maxsize=None)
+def _read_source(path: str) -> str:
+    """Read a test file for import matching; unreadable files match nothing."""
+    try:
+        return (ROOT / path).read_text(errors="replace")
+    except OSError:
+        return ""
+
+
+_DOTTED = re.compile(r"\bpreloop(?:\.\w+)+")
+_FROM_IMPORT = re.compile(r"from\s+(preloop(?:\.\w+)*)\s+import\s+(\([^)]*\)|[^\n]*)")
+
+
+@functools.lru_cache(maxsize=8)
+def _import_index(
+    inventory: tuple[str, ...], read: Callable[[str], str]
+) -> dict[str, frozenset[str]]:
+    """Map each test file to every ``preloop`` module name it references.
+
+    A dotted reference also covers its parents (``a.b.c`` names ``a.b``), and
+    ``from a import b`` names ``a.b``, so a submodule imported by name counts.
+    """
+    index: dict[str, frozenset[str]] = {}
+    for test in inventory:
+        source = read(test)
+        names: set[str] = set()
+        for match in _DOTTED.finditer(source):
+            parts = match.group(0).split(".")
+            names.update(".".join(parts[:i]) for i in range(2, len(parts) + 1))
+        for match in _FROM_IMPORT.finditer(source):
+            for member in re.findall(r"\w+", match.group(2)):
+                names.add(f"{match.group(1)}.{member}")
+        index[test] = frozenset(names)
+    return index
+
+
+def module_tests(
+    path: str,
+    inventory: list[str],
+    read: Callable[[str], str] = _read_source,
+    *,
+    importers: bool = True,
+) -> list[str]:
+    """Select test files that import a module or are named after it.
+
+    Args:
+        path: Changed ``backend/preloop/**/*.py`` source file.
+        inventory: Every collectable test file.
+        read: Returns a test file's source text.
+        importers: Also select files that import the module, not just the
+            ``test_<module>*`` files.
+
+    Returns:
+        Sorted test files naming ``test_<module>*`` or referencing the dotted
+        module (``import``, ``from ... import`` or a ``patch`` target string).
+    """
+    dotted = _module_name(path)
+    name = dotted.rpartition(".")[2]
+    index = _import_index(tuple(inventory), read) if importers else {}
+    selected = [
+        test
+        for test in inventory
+        if Path(test).stem.startswith(f"test_{name}")
+        or dotted in index.get(test, frozenset())
+    ]
+    return sorted(selected)
+
+
+def narrow_tests(
+    paths: list[str],
+    inventory: list[str],
+    read: Callable[[str], str] = _read_source,
+    *,
+    importers: bool = True,
+) -> list[str]:
+    """Return changed test files plus module-level matches for changed code."""
+    selected = {p for p in paths if p in inventory}
+    for path in paths:
+        if path.startswith("backend/preloop/") and path.endswith(".py"):
+            selected.update(module_tests(path, inventory, read, importers=importers))
+    return sorted(selected)
+
+
+def impacted_tests(
+    paths: list[str],
+    inventory: list[str],
+    read: Callable[[str], str] = _read_source,
+) -> tuple[list[str], str]:
     """Map whole files conservatively; unknown or shared impact selects all."""
     selected: set[str] = set()
     for path in paths:
@@ -63,20 +166,69 @@ def impacted_tests(paths: list[str], inventory: list[str]) -> tuple[list[str], s
             continue
         if not path.startswith("backend/preloop/"):
             return inventory, "unmapped backend path"
-        relative = path.removeprefix("backend/preloop/")
-        if relative.startswith("api/endpoints/"):
-            stem = Path(relative).stem
-            mapped = [p for p in inventory if Path(p).stem.startswith(f"test_{stem}")]
-        else:
-            area = relative.split("/", 1)[0]
-            if area not in {"sync", "agents", "services", "utils", "tools", "api"}:
-                return inventory, "shared or unmapped module"
-            mapped = [p for p in inventory if p.startswith(f"backend/tests/{area}/")]
+        area = path.removeprefix("backend/preloop/").split("/", 1)[0]
+        if area not in MAPPED_AREAS or not path.endswith(".py"):
+            return inventory, "shared or unmapped module"
+        mapped = module_tests(path, inventory, read)
         if not mapped:
             return inventory, "no matching tests"
         selected.update(mapped)
-        selected.update(p for p in inventory if "/integration/" in p)
-    return sorted(selected), "structural candidate"
+    return sorted(selected), "module-level match"
+
+
+def estimated_seconds(tests: list[str], durations: dict[str, float]) -> float:
+    """Estimate serial runtime; files without history use the median file."""
+    weights: dict[str, float] = {}
+    for node, seconds in durations.items():
+        file = node.split("::", 1)[0]
+        weights[file] = weights.get(file, 0.0) + seconds
+    known = sorted(w for w in weights.values() if w > 0)
+    fallback = known[len(known) // 2] if known else 1.0
+    return sum(weights.get(test, fallback) for test in tests)
+
+
+def fast_selection(
+    paths: list[str],
+    inventory: list[str],
+    tests: list[str],
+    impact_reason: str,
+    durations: dict[str, float],
+    read: Callable[[str], str] = _read_source,
+) -> tuple[list[str], str]:
+    """Choose Backend Fast files within the serial time budget.
+
+    Unknown impact (``tests == inventory``) keeps the full heavy tier in the
+    shards, so fast feedback narrows to smoke, changed tests and module
+    matches. Any selection over ``FAST_BUDGET_SECONDS`` narrows the same way;
+    if module importers alone still exceed it, only ``test_<module>*`` files
+    are kept.
+
+    Args:
+        paths: Changed repository paths.
+        inventory: Every collectable test file.
+        tests: The impact selection for the heavy tier.
+        impact_reason: Why ``tests`` was chosen.
+        durations: Recorded per-node durations in seconds.
+        read: Returns a test file's source text.
+
+    Returns:
+        The sorted fast files and the reason recorded in the receipt.
+    """
+    fast = sorted(set(SMOKE) | set(tests))
+    if tests == inventory:
+        why = impact_reason
+    else:
+        cost = estimated_seconds(fast, durations)
+        if cost <= FAST_BUDGET_SECONDS:
+            return fast, impact_reason
+        why = f"over fast budget ({cost:.0f}s > {FAST_BUDGET_SECONDS:.0f}s)"
+    fast = sorted(set(SMOKE) | set(narrow_tests(paths, inventory, read)))
+    if estimated_seconds(fast, durations) <= FAST_BUDGET_SECONDS:
+        return fast, f"{why}: smoke, changed tests and module importers"
+    fast = sorted(
+        set(SMOKE) | set(narrow_tests(paths, inventory, read, importers=False))
+    )
+    return fast, f"{why}: smoke, changed tests and test_<module> files"
 
 
 def select(
@@ -88,6 +240,8 @@ def select(
     labels: tuple[str, ...] = (),
     base_ref: str = "main",
     attempt: int = 1,
+    durations: dict[str, float] | None = None,
+    read: Callable[[str], str] = _read_source,
 ) -> dict[str, Any]:
     """Return live and shadow decisions with an explicit expansion reason."""
     legacy = {k: relevant(paths, v) for k, v in policy["legacy"].items()}
@@ -111,14 +265,15 @@ def select(
     live.update(candidate)
     live["parity"] = True
     live["windows"] = full or relevant(paths, policy["leaves"]["windows"])
-    tests, impact_reason = impacted_tests(paths, inventory)
+    tests, impact_reason = impacted_tests(paths, inventory, read)
     if full or (live["backend"] and not tests):
         tests, impact_reason = inventory, reason or "unknown backend impact"
-    fast = sorted(set(SMOKE) | set(tests)) if live["backend"] else []
-    # Unknown impact retains the full heavy tier; fast feedback still runs the
-    # smoke contract plus known changed tests, without duplicating all shards.
-    if tests == inventory:
-        fast = sorted(set(SMOKE) | {p for p in paths if p in inventory})
+    fast: list[str] = []
+    fast_reason = "backend not selected"
+    if live["backend"]:
+        fast, fast_reason = fast_selection(
+            paths, inventory, tests, impact_reason, durations or {}, read
+        )
     return {
         "version": policy["version"],
         "mode": "comparison",
@@ -131,6 +286,8 @@ def select(
         "candidate_tests": tests,
         "impact_reason": impact_reason,
         "fast_tests": fast,
+        "fast_reason": fast_reason,
+        "fast_estimated_seconds": round(estimated_seconds(fast, durations or {}), 1),
     }
 
 
@@ -194,6 +351,9 @@ def main() -> int:
         labels=tuple(label["name"] for label in pr.get("labels", [])),
         base_ref=pr.get("base", {}).get("ref", "main"),
         attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),
+        durations=json.loads(
+            (ROOT / ".github/pytest-split-durations.json").read_text()
+        ),
     )
     receipt.update(
         head_sha=head,

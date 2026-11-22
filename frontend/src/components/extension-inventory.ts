@@ -9,12 +9,18 @@ import { tableScrollStyles } from '../styles/table-scroll';
 import { formatRelativeTime } from '../utils/date';
 import { downloadText } from '../utils/records-format';
 import {
+  addExtensionPin,
+  deleteExtensionPin,
   extensionAccess,
   fetchExtensionPolicyText,
+  getExtensionPins,
   getExtensions,
   setExtensionApproval,
+  type ExtensionAggregate,
   type ExtensionApprovalState,
+  type ExtensionEffectiveState,
   type ExtensionFilters,
+  type ExtensionPin,
   type ExtensionKey,
   type ExtensionPage,
   type ExtensionSource,
@@ -30,6 +36,12 @@ const sources: ExtensionSource[] = [
   'unknown',
 ];
 const states: ExtensionApprovalState[] = ['approved', 'unapproved', 'unknown'];
+const filterStates: ExtensionEffectiveState[] = [
+  ...states,
+  'content_changed',
+  'content_unverified',
+];
+const shortHash = (value: string): string => `${value.slice(0, 19)}…`;
 const label = (value: string): string =>
   value.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 const keyOf = (row: ExtensionKey): string =>
@@ -44,6 +56,14 @@ export class ExtensionInventory extends LitElement {
   @property({ attribute: false }) accessLoader = extensionAccess;
   @property({ attribute: false }) policyLoader = fetchExtensionPolicyText;
   @property({ attribute: false }) policySaver = downloadText;
+  @property({ attribute: false }) pinLoader = getExtensionPins;
+  @property({ attribute: false }) pinAdder = addExtensionPin;
+  @property({ attribute: false }) pinRemover = deleteExtensionPin;
+  @property({ attribute: false }) confirmUnpin = (message: string): boolean =>
+    window.confirm(message);
+  @state() private expanded = '';
+  private expandedRow: ExtensionKey | null = null;
+  @state() private pins: ExtensionPin[] = [];
   @state() private page: ExtensionPage | null = null;
   @state() private loading = true;
   @state() private canView = false;
@@ -110,6 +130,22 @@ export class ExtensionInventory extends LitElement {
       code {
         font-size: var(--console-text-meta);
       }
+      sl-badge {
+        margin-left: 4px;
+      }
+      .hashes ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 8px;
+      }
+      .hashes li {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
       .footer {
         display: flex;
         justify-content: space-between;
@@ -171,7 +207,7 @@ export class ExtensionInventory extends LitElement {
       const filters: ExtensionFilters = {
         fingerprint: this.fingerprint || undefined,
         state: (this.stateFilter || undefined) as
-          ExtensionApprovalState | undefined,
+          ExtensionEffectiveState | undefined,
         source_kind: (this.sourceFilter || undefined) as
           ExtensionSource | undefined,
         cursor: append ? (this.page?.next_cursor ?? undefined) : undefined,
@@ -182,6 +218,11 @@ export class ExtensionInventory extends LitElement {
         append && this.page
           ? { ...page, items: [...this.page.items, ...page.items] }
           : page;
+      // An open hash list re-reads its pins so pin and unpin show at once.
+      if (this.expandedRow && !append) {
+        const pins = await this.pinLoader(this.expandedRow);
+        if (id === this.requestId) this.pins = pins;
+      }
     } catch (error) {
       if (id === this.requestId)
         this.error =
@@ -230,6 +271,134 @@ export class ExtensionInventory extends LitElement {
     }
   }
 
+  /** Run one account-wide write, then refresh every visible occurrence. */
+  private async act(
+    row: ExtensionKey,
+    work: () => Promise<unknown>
+  ): Promise<void> {
+    if (!this.canManage || this.busy) return;
+    this.busy = keyOf(row);
+    this.error = '';
+    try {
+      await work();
+      await this.refresh();
+    } catch (error) {
+      this.error =
+        error instanceof Error ? error.message : 'Could not save approval';
+    } finally {
+      this.busy = '';
+    }
+  }
+
+  private async toggle(row: ExtensionAggregate): Promise<void> {
+    const key = keyOf(row);
+    if (this.expanded === key) {
+      this.expanded = '';
+      this.expandedRow = null;
+      return;
+    }
+    this.expanded = key;
+    this.expandedRow = row;
+    this.pins = [];
+    try {
+      const pins = await this.pinLoader(row);
+      if (this.expanded === key) this.pins = pins;
+    } catch (error) {
+      this.error =
+        error instanceof Error ? error.message : 'Could not load pins';
+    }
+  }
+
+  private unpin(row: ExtensionAggregate, pin: ExtensionPin): void {
+    const last = this.pins.length === 1;
+    const message = last
+      ? 'Unpin the last content hash? The approval becomes a name approval and any content is approved again.'
+      : 'Unpin this content hash? Devices reporting it will show Content changed.';
+    if (!this.confirmUnpin(message)) return;
+    void this.act(row, () => this.pinRemover(row, pin.id));
+  }
+
+  /** Badges for states a name-only select cannot express. */
+  private stateBadges(
+    state: ExtensionEffectiveState | undefined,
+    pinCount = 0
+  ): TemplateResult {
+    return html`${
+      pinCount
+        ? html`<sl-badge variant="neutral" pill class="pinned"
+            >Pinned (${pinCount})</sl-badge
+          >`
+        : nothing
+    }${
+      state === 'content_changed'
+        ? html`<sl-badge variant="warning" pill class="content-changed"
+            >Content changed</sl-badge
+          >`
+        : state === 'content_unverified'
+          ? html`<sl-badge variant="neutral" pill class="content-unverified"
+              >Content unverified</sl-badge
+            >`
+          : nothing
+    }`;
+  }
+
+  private hashList(row: ExtensionAggregate): TemplateResult {
+    const pinned = new Map(this.pins.map((pin) => [pin.content_hash, pin]));
+    const canPin = this.canManage && row.approval_state === 'approved';
+    return html`<tr class="hashes">
+      <td colspan="7">
+        <ul aria-label=${`Content hashes for ${row.extension_id}`}>
+          ${(row.content_hashes ?? []).map((bucket) => {
+            const pin = bucket.content_hash
+              ? pinned.get(bucket.content_hash)
+              : undefined;
+            return html`<li>
+              ${
+                bucket.content_hash
+                  ? html`<code title=${bucket.content_hash}
+                      >${shortHash(bucket.content_hash)}</code
+                    >`
+                  : html`<span>No hash (${label(bucket.status)})</span>`
+              }
+              <span class="meta">${bucket.device_count} device profiles</span>
+              ${
+                pin
+                  ? html`<span class="meta"
+                      >Pinned by ${pin.pinned_by ?? 'a removed user'}
+                      ${formatRelativeTime(pin.pinned_at)}</span
+                    >`
+                  : nothing
+              }
+              ${
+                this.canManage && pin
+                  ? html`<sl-button
+                      size="small"
+                      class="unpin"
+                      ?disabled=${!!this.busy}
+                      @click=${() => this.unpin(row, pin)}
+                      >Unpin</sl-button
+                    >`
+                  : canPin && bucket.content_hash && !bucket.pinned
+                    ? html`<sl-button
+                        size="small"
+                        class="pin"
+                        ?disabled=${!!this.busy}
+                        @click=${() => this.act(row, () => this.pinAdder(row, bucket.content_hash as string))}
+                        >Pin this content</sl-button
+                      >`
+                    : nothing
+              }
+            </li>`;
+          })}
+        </ul>
+        <p class="meta">
+          A hash shows the files changed, not what changed or whether an agent
+          loaded them.
+        </p>
+      </td>
+    </tr>`;
+  }
+
   private approval(row: ExtensionKey): TemplateResult {
     if (!this.canManage) return html`<span>${label(row.approval_state)}</span>`;
     return html`<sl-select
@@ -274,7 +443,22 @@ export class ExtensionInventory extends LitElement {
       <td data-label="First seen" title=${row.first_seen_at}>
         ${formatRelativeTime(row.first_seen_at)}
       </td>
-      <td data-label="Approval">${this.approval(row)}</td>
+      <td data-label="Approval">
+        ${this.approval(row)}${this.stateBadges(row.effective_state)}
+        ${
+          this.canManage &&
+          row.content_hash &&
+          row.effective_state !== 'approved'
+            ? html`<sl-button
+                size="small"
+                class="approve-exact"
+                ?disabled=${!!this.busy}
+                @click=${() => this.act(row, () => this.updater(row, 'approved', row.content_hash as string))}
+                >Approve this exact content</sl-button
+              >`
+            : nothing
+        }
+      </td>
     </tr>`;
   }
 
@@ -296,7 +480,7 @@ export class ExtensionInventory extends LitElement {
           }}
         >
           <sl-option value="">All states</sl-option
-          >${states.map((state) => html`<sl-option value=${state}>${label(state)}</sl-option>`)}
+          >${filterStates.map((state) => html`<sl-option value=${state}>${label(state)}</sl-option>`)}
         </sl-select>
         <sl-select
           size="small"
@@ -351,24 +535,39 @@ export class ExtensionInventory extends LitElement {
                     'fingerprint' in row
                       ? this.deviceRow(row)
                       : html`<tr>
-                          <td data-label="Agent">${row.agent_kind}</td>
-                          <td data-label="Kind">
-                            ${label(row.extension_kind)}
-                          </td>
-                          <td class="identity" data-label="Extension">
-                            ${row.extension_id}
-                          </td>
-                          <td class="number" data-label="Devices">
-                            ${row.device_count}
-                          </td>
-                          <td data-label="Versions seen">
-                            ${row.versions.join(', ') || 'Unknown'}
-                          </td>
-                          <td data-label="Sources">
-                            ${row.source_kinds.map(label).join(', ')}
-                          </td>
-                          <td data-label="Approval">${this.approval(row)}</td>
-                        </tr>`
+                            <td data-label="Agent">${row.agent_kind}</td>
+                            <td data-label="Kind">
+                              ${label(row.extension_kind)}
+                            </td>
+                            <td class="identity" data-label="Extension">
+                              ${row.extension_id}
+                            </td>
+                            <td class="number" data-label="Devices">
+                              ${row.device_count}
+                            </td>
+                            <td data-label="Versions seen">
+                              ${row.versions.join(', ') || 'Unknown'}
+                            </td>
+                            <td data-label="Sources">
+                              ${row.source_kinds.map(label).join(', ')}
+                            </td>
+                            <td data-label="Approval">
+                              ${this.approval(row)}${this.stateBadges(row.effective_state, row.pin_count)}
+                              ${
+                                row.content_hashes?.length
+                                  ? html`<sl-button
+                                      size="small"
+                                      variant="text"
+                                      class="toggle-hashes"
+                                      aria-expanded=${this.expanded === keyOf(row) ? 'true' : 'false'}
+                                      @click=${() => this.toggle(row)}
+                                      >Content hashes</sl-button
+                                    >`
+                                  : nothing
+                              }
+                            </td>
+                          </tr>
+                          ${this.expanded === keyOf(row) ? this.hashList(row) : nothing}`
                   )}
                 </tbody>
               </table>

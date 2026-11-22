@@ -27,7 +27,10 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.schemas.agent_discovery import DiscoveryReportRequest
-from preloop.schemas.discovered_extension import ExtensionApprovalUpdate
+from preloop.schemas.discovered_extension import (
+    ExtensionApprovalUpdate,
+    ExtensionPinCreate,
+)
 from preloop.schemas.discovery_evidence import DiscoveryEvidence
 
 NOW = datetime(2026, 11, 16, tzinfo=UTC)
@@ -204,6 +207,17 @@ def test_approval_transitions_and_retention(
     )
 
 
+_AGGREGATE_2314_KEYS = (
+    "agent_kind",
+    "extension_kind",
+    "extension_id",
+    "device_count",
+    "versions",
+    "source_kinds",
+    "approval_state",
+)
+
+
 def test_http_ingest_approval_and_aggregate(client: TestClient) -> None:
     """protects=HTTP ingest and decision joins; fails_when=upserts or PUT are
     invisible to GET; no_claim=local app fixture, no browser.
@@ -227,7 +241,8 @@ def test_http_ingest_approval_and_aggregate(client: TestClient) -> None:
             "state": "approved",
         },
     ).json()["items"]
-    assert grouped == [
+    # #2321 adds pin_count and content_hashes; compare the #2314 keys exactly.
+    assert [{key: item[key] for key in _AGGREGATE_2314_KEYS} for item in grouped] == [
         {
             "agent_kind": "claude_code",
             "extension_kind": "plugin",
@@ -728,10 +743,12 @@ def test_export_requires_view_agents(
 def test_export_policy_file_shape(
     client: TestClient, db_session: Session, test_user: models.User
 ) -> None:
-    """protects=every approval row in the offline file; fails_when=the export
-    stops at the list page size, leaks a note or account id, or includes
-    another account; no_claim=content hashes are empty because pins are absent.
+    """protects=every approval row and its pinned hashes in the offline file;
+    fails_when=the export stops at the list page size, leaks a note or account
+    id, drops a pin, or includes another account; no_claim=one synthetic pin,
+    not the pin limit.
     """
+    pinned = "sha256:" + "ab" * 32
     for index in range(51):
         crud_extension_approval.set_state(
             db_session,
@@ -744,6 +761,11 @@ def test_export_policy_file_shape(
                 approval_state="unknown" if index == 0 else "approved",
                 version_constraint="1.4.*" if index == 1 else None,
                 note="synthetic-note-value" if index == 1 else None,
+                pin=(
+                    ExtensionPinCreate(content_hash=pinned, note="synthetic-pin-note")
+                    if index == 1
+                    else None
+                ),
             ),
         )
     other = crud_account.create(
@@ -778,5 +800,11 @@ def test_export_policy_file_shape(
     ]
     assert body["entries"][0]["approval_state"] == "unknown"
     assert body["entries"][1]["version_constraint"] == "1.4.*"
-    assert all(row["content_hashes"] == [] for row in body["entries"])
+    assert body["entries"][1]["content_hashes"] == [pinned]
+    assert all(
+        row["content_hashes"] == []
+        for row in body["entries"]
+        if row["extension_id"] != "plugin-001"
+    )
+    assert "synthetic-pin-note" not in response.text
     assert "other-only" not in response.text

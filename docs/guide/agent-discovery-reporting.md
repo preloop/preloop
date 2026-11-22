@@ -340,12 +340,70 @@ last two occur only on hooks). `enabled` is the string `true`, `false` or
 `local`, `builtin` or `unknown`. Only Claude's `claude-plugins-official` and
 Codex's `openai-curated-remote` are classified as official marketplaces.
 
-A skill hash covers `SKILL.md`; a command hash covers the command file. A plugin
-hash, when available, covers canonical JSON of its manifest, not its entire
-installation. For hooks the collector hashes each command locally, sorts the
-`sha256:<hex>` values, joins them with newlines (no trailing newline), then hashes
-that string. Neither commands nor intermediate hashes leave the device. These
-hashes are inventory metadata; approval is by name and does not pin content.
+### Content hashes
+
+Every extension record carries `content_hash` and `content_hash_status`
+(`ok`, `too_large` or `unreadable`). Only the final hash leaves the device:
+file names and file contents never do.
+
+| Kind | Hash input |
+|---|---|
+| Skill | Tree hash of every file under the skill directory, including scripts and references beside `SKILL.md` |
+| Command | SHA-256 of the command file bytes |
+| Hook | SHA-256 over the sorted per-command hashes (below) |
+| Plugin | Tree hash of the plugin's install directory |
+
+The tree hash lists one entry per regular file, `<relative path>\0<lowercase
+hex sha256 of the bytes>\n`, with `/` as the separator on every OS. A symlink is
+never followed; it contributes `<relative path>\0symlink\n`. The pin therefore
+covers the link's name but not where it points: re-pointing a link, or changing
+the file it points to, does not change the hash. Entries are sorted
+by path as raw bytes, concatenated, and hashed: `sha256:<lowercase hex>`. Changing
+one byte of any file or renaming a file changes the hash; directory listing order
+does not.
+
+A tree hash reads at most 500 entries (files and symlinks), 16 MiB in total, and
+directories 8 levels below the extension root. It enumerates at most 2,000
+directory entries of any type, directories included. Beyond a bound, `content_hash` is
+null and the status is `too_large`. An unreadable file or directory, a special
+file, or a file whose size changes while it is read gives `unreadable` (no retry).
+
+For hooks the collector hashes each command locally, sorts the `sha256:<hex>`
+values, joins them with newlines (no trailing newline), then hashes that string.
+Neither commands nor intermediate hashes leave the device.
+
+A hash shows that the files changed. It does not show what changed, and it does
+not prove an agent loaded those files.
+
+### Pinned approvals
+
+An approval with no pins is a name approval: any content of that extension is
+approved. Pinning makes it a pinned approval: only the pinned hashes are approved.
+Each device row reports an `effective_state`:
+
+| Approval | Pins | Device hash | `effective_state` |
+|---|---|---|---|
+| none | | | `unknown` |
+| `unapproved` | | | `unapproved` |
+| `approved` | none | any | `approved` |
+| `approved` | some | pinned | `approved` |
+| `approved` | some | not pinned | `content_changed` |
+| `approved` | some | null | `content_unverified` |
+
+The lifecycle: approve this exact content (a `PUT` with `pin`), or approve by name
+and pin hashes later. When a device reports new content it reads
+`content_changed` until someone with `manage_agents` pins the new hash. Deleting
+the last pin returns the approval to a name approval. Changing the approval to
+`unapproved` keeps its pins; approving again restores them. An approval holds at
+most 50 pins.
+
+The upgrade that adds pins pins every existing `approved` decision to the hashes
+its devices reported at that moment (at most 50, most widely installed first), so
+content that changes afterwards reads as `content_changed` instead of staying
+approved. An approved extension with no reported hash stays a name approval.
+Collectors from this release hash skills and plugins over their whole directory,
+so a skill or plugin reported by an older collector reads as `content_changed`
+after the device upgrades until its new hash is pinned.
 
 At most 200 extensions are emitted per app context, with a 4 MiB per-file cap,
 64 profiles and 100 app contexts. Directory enumeration is bounded to 256 entries.
@@ -361,8 +419,19 @@ reports do not reconcile extensions. Discovery retention removes inventory with
 its source observation after 90 days; account approval decisions survive.
 
 `GET /api/v1/agents/discovery-extensions` lists present inventory, with filters
-`fingerprint`, `agent_kind`, `state`, and `source_kind`. `group=extension` returns
-account aggregates with distinct device counts, versions and source kinds.
+`fingerprint`, `agent_kind`, `state`, and `source_kind`. `state` filters on the
+per-device `effective_state`. Device rows carry `effective_state`,
+`content_hash` and `content_hash_status`. `group=extension` returns
+account aggregates with distinct device counts, versions, source kinds,
+`pin_count`, and `content_hashes`: up to 20 `{content_hash, status,
+device_count, pinned}` buckets, most common first (ties by hash), where
+`device_count` counts distinct present device/profile pairs (the console labels
+it "device profiles"). The aggregate's `effective_state` is the worst per-device
+state among the rows it counts (`content_changed`, then `content_unverified`,
+then `approved`), so it follows the active filters and does not depend on the
+20-bucket cut. All null hashes share
+one bucket. Every pinned hash is listed, with a count of 0 when no device reports
+it.
 `GET /api/v1/agents/extension-approvals` lists durable decisions. Both use `limit`
 (default 50, maximum 500) and an opaque `cursor`, returning `next_cursor` until
 all results have been read. Approval is `unknown` when no decision exists.
@@ -376,22 +445,38 @@ without scanning the account's approval list.
 `preloop.extension-policy.v1`: a hashed account reference, a generation time, and
 one entry per approval row (`agent_kind`, `extension_kind`, `extension_id`,
 `approval_state`, `version_constraint`, `content_hashes`). Notes, user ids, and
-device data are omitted. Content hashes are empty until content pins exist. The
-console Extensions tab offers the same document as **Download policy file**.
+device data are omitted. `content_hashes` lists that row's pinned hashes, oldest
+first. An approval with no pins exports an empty list, which the check treats as
+a name approval. The console Extensions tab offers the same document as
+**Download policy file**.
 `preloop agents extensions check --policy-file` evaluates it offline;
 `--online` fetches this route and does not upload inventory.
 
 `PUT /api/v1/agents/extension-approvals/{agent_kind}/{extension_kind}/{extension_id}`
 requires `manage_agents` and accepts `approval_state` (`approved`, `unapproved`,
 `unknown`), optional `note`, and optional `version_constraint`. A constraint is an
-exact version or a prefix ending in `.*`; null means any version. The list shows
+exact version or a prefix ending in `.*`; null means any version. An optional
+`pin: {content_hash, version, note}` with `approval_state: approved` creates the
+approval and its pin in one transaction. The list shows
 the stored name decision, not a claim that a particular version complies.
 Approvals apply account-wide, not per device. Inventory and approvals do not
 block an extension from loading or running.
 
+`POST .../{extension_id}/pins` with `{"content_hash": "sha256:...", "version":
+null, "note": null}` pins a hash and `DELETE .../{extension_id}/pins/{pin_id}`
+removes one; both require `manage_agents`. A malformed hash or an approval that
+is not `approved` returns 422, a missing approval or a pin of another approval
+404, and a duplicate or a 51st pin 409. Approval reads include `pins: [{id,
+content_hash, version, note, pinned_by_user_id, pinned_by, pinned_at}]`.
+
 In the console, the Agents page's **Extensions** tab lists distinct extensions
 with device counts and versions seen. Device detail shows per-profile inventory,
 source/project hash prefixes, scope and enabled state. Both views filter by
-approval state and source. Users with `manage_agents` can change an approval;
-other viewers see the decision without an editor. The table warns when collection
+effective state (including **Content changed** and **Content unverified**) and
+source. A pinned approval shows **Pinned (n)**; **Content hashes** expands the
+observed hashes with device counts, who pinned each and when, and **Pin this
+content** or **Unpin** (Unpin asks first, and says when it would return the
+approval to a name approval). A device row whose content is not approved offers
+**Approve this exact content**. Users with `manage_agents` can change an approval;
+other viewers see the decision and badges without an editor or pin actions. The table warns when collection
 is partial or unknown, and **Load more** follows the server's cursor.

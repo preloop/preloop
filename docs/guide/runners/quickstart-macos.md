@@ -222,9 +222,13 @@ completion, injection rejection, process-group halt). macOS specifics:
 
 ## Sleep and wake
 
-A sleeping Mac shows `offline` in the console once heartbeats are 45
-seconds old: this build has no pre-sleep signal on macOS. After wake the
-runner reconnects at once. Heartbeats report the Mac's idle time: the runner
+A Mac that sleeps (lid close, Apple menu Sleep, idle sleep) shows `asleep`
+in the console: the runner hears macOS announce the sleep, sends
+`going_to_sleep` and then lets it proceed (waiting at most 3 seconds). A Mac
+that loses its network without sleeping shows `offline` once heartbeats are
+45 seconds old. After wake the runner reconnects at once. To keep the Mac
+from idle sleep while work runs, see
+[Keeping the host awake](quickstart-linux.md#keeping-the-host-awake-during-work-macos-optional). Heartbeats report the Mac's idle time: the runner
 shows `online` when that time is under 5 minutes and `idle` otherwise,
 including on the first heartbeat after wake. See
 [Runner presence](quickstart-linux.md#runner-presence) for every state and

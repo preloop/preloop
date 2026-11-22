@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `preloop agents extensions check` compares installed extensions with an
+  account policy without uploading inventory (#2322). `--policy-file` reads
+  a downloaded file and `--online` fetches the same export. Pinned content
+  hashes are included, so a hash pin fails when the installed content
+  differs. Extensions with no decision stay unknown unless `--fail-on
+  unknown` is set.
+- Extension approvals can be pinned to content hashes (#2321). A pinned
+  approval approves only the pinned hashes; a device reporting other content
+  reads `content_changed`, or `content_unverified` when no hash could be
+  computed. Skill and plugin hashes now cover every file in the extension's
+  directory (bounded to 500 files, 16 MiB and depth 8). The upgrade pins
+  existing approved extensions to the hashes reported at that moment, so
+  later changes need a fresh pin. The console's Extensions tab shows the
+  observed hashes with Pin and Unpin, the two new badges and filters, and
+  **Approve this exact content**. Downgrading drops the pins, which turns
+  pinned approvals back into the more permissive name approvals.
+- macOS and Windows runners now report sleep before it happens, so a
+  closed lid shows `asleep` instead of `offline` (#1487, #1507). macOS
+  uses IOKit system power notifications (loaded without cgo) and Windows
+  uses `PowerRegisterSuspendResumeNotification`; both reconnect at once on
+  wake. A failed registration falls back to `offline` as before.
+- Optional, off by default: `{"power": {"keep_awake_while_busy": true}}` in
+  `~/.preloop/runner.json` keeps a Mac from idle sleep (`caffeinate -i`)
+  while a flow job or remote session runs. Lid close still sleeps.
 - A shared read-only review flow can post for some of its projects only:
   `git_clone_config.platform_review.project_ids` lists them, and the same
   list decides which projects a pull request event starts a review for.
@@ -28,6 +52,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   detail now includes `effective_requests`, which shows the effort that
   actually reached the provider. Nothing changes for flows that set no
   effort.
+
+### Fixed
+
+- Backend Fast stays well under its 15 minute timeout: a changed backend
+  module now selects the test files that import it or are named
+  `test_<module>*` instead of its whole area plus every integration test,
+  and a selection estimated over 240 s of recorded durations narrows to
+  smoke, changed tests and module matches. The receipt records the reason
+  in `fast_reason`. The sharded Backend Tests job still runs everything.
+- A read-only pull request review is now told its time limit: the preamble
+  states the total budget and the UTC time the run is stopped, which is the
+  deadline the orchestrator enforces from admission, and continuation and
+  repair sessions are told the time left. The reviewer is asked to write its
+  answer before the limit and, if it cannot finish, to say so in the result
+  schema's failure or incomplete form instead of reporting a pass. A review
+  result that says it did not finish is kept and readable, but is no longer
+  accepted as a verified review: before this change a schema-valid answer
+  with a status such as `incomplete` or `partial` could succeed and be posted
+  with its verdict.
 
 ### Security
 

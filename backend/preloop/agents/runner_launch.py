@@ -252,7 +252,13 @@ async def build_runner_launch(context: dict[str, Any]) -> dict[str, Any]:
     # chunks (preloop.utils.execve_limits). The runner applies `env` to the
     # container it starts, so the chunks must be part of the launch or the
     # script aborts with PRELOOP_LAUNCH_PAYLOAD_MISSING.
-    env.update(prompt_transport_env(context["prompt"]))
+    from preloop.services.read_only_review import (
+        without_review_deadline_placeholder,
+    )
+
+    env.update(
+        prompt_transport_env(without_review_deadline_placeholder(context["prompt"]))
+    )
     agent._apply_git_credential_env(env, context)
     from preloop.agents.credential_bootstrap import bootstrap_source
 

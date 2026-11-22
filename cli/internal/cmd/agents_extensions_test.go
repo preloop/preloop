@@ -478,9 +478,9 @@ func TestInventoryExtensionsCheckPrecedence(t *testing.T) {
 	}
 }
 
-// protects=missing and unparseable versions, and unverifiable content;
+// protects=missing and unparseable versions, and unreadable content;
 // fails_when=either case is approved or labeled version/content_changed;
-// no_claim=fixture metadata with the version or hash omitted.
+// no_claim=a mode-000 file stands in for an unreadable skill tree.
 func TestInventoryExtensionsCheckVersionAndContentEdges(t *testing.T) {
 	home := extensionHome(t)
 	writeInventoryFixture(t, home, ".claude/plugins/store/reviewer.json", `{"name":"reviewer","marketplace":"community"}`)
@@ -491,7 +491,10 @@ func TestInventoryExtensionsCheckVersionAndContentEdges(t *testing.T) {
 		t.Fatalf("version exit=%d reason=%s", ProcessExitCode(err), finding.Reason)
 	}
 	skillHome := extensionHome(t)
-	if err := os.MkdirAll(filepath.Join(skillHome, ".claude", "skills", "deploy-notes"), 0o700); err != nil {
+	// An empty directory now hashes as a real tree. A file the process cannot
+	// read is what leaves the skill with no content hash.
+	skillFile := writeInventoryFixture(t, skillHome, ".claude/skills/deploy-notes/SKILL.md", "fixture")
+	if err := os.Chmod(skillFile, 0); err != nil {
 		t.Fatal(err)
 	}
 	hash := "sha256:" + strings.Repeat("ab", 32)

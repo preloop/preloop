@@ -39,6 +39,10 @@ class DiscoveredExtension(Base):
         CheckConstraint("extension_kind IN ('plugin','skill','hook','command')"),
         CheckConstraint("scope IN ('user','project')"),
         CheckConstraint("enabled IN ('true','false','unknown')"),
+        CheckConstraint(
+            "content_hash_status IN ('ok','too_large','unreadable')",
+            name="ck_discovered_extension_hash_status",
+        ),
         Index(
             "ix_discovered_extension_account_ext",
             "account_id",
@@ -68,6 +72,7 @@ class DiscoveredExtension(Base):
     project_ref_hash: Mapped[str | None] = mapped_column(String(80))
     enabled: Mapped[str] = mapped_column(String(8), server_default="unknown")
     content_hash: Mapped[str | None] = mapped_column(String(80))
+    content_hash_status: Mapped[str] = mapped_column(String(16), server_default="ok")
     event: Mapped[str | None] = mapped_column(String(32))
     hook_count: Mapped[int | None]
     id_hashed: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
