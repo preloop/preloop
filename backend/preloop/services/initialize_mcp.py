@@ -7,10 +7,11 @@ preloop.tools.builtin_defs (and BUILTIN_TOOLS in tools.py).
 import logging
 import weakref
 from copy import deepcopy
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 from uuid import UUID
 
 from fastmcp import Context
+from pydantic import Field
 from fastmcp.tools import FunctionTool
 from fastmcp.tools import ToolResult
 
@@ -31,8 +32,11 @@ from preloop.tools.builtin_defs import (
     SEARCH_ARTIFACTS_TOOL,
     GET_EXECUTION_TOOL,
     GET_ISSUE_DESCRIPTION,
+    GET_PULL_REQUEST_DESCRIPTION,
     GET_ISSUE_SCHEMA,
     PERMISSION_PROMPT_TOOL,
+    PR_PROJECT_PARAMETER_DESCRIPTION,
+    PULL_REQUEST_PARAMETER_DESCRIPTION,
     REQUEST_APPROVAL_TOOL,
     RESOLVE_SBOM_UPSTREAMS_TOOL,
     RUN_FLOW_TOOL,
@@ -187,11 +191,13 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
 
     # Register Tool 1: get_issue
     async def get_issue(
-        issue: str,
+        issue: str | int,
         include: list[str] | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
         """Apply the configured approval policy before reading an issue."""
+        # Models often send a bare issue number as a JSON integer.
+        issue = str(issue)
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 
@@ -281,7 +287,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
 
     # Register Tool 3: update_issue
     async def update_issue(
-        issue: str,
+        issue: str | int,
         title: str | None = None,
         description: str | None = None,
         status: str | None = None,
@@ -298,6 +304,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         ctx: Optional[Context] = None,
     ) -> str:
         """Apply the configured approval policy before updating an issue."""
+        issue = str(issue)
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 
@@ -1907,7 +1914,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
     # Register Tool 8: add_comment
     @mcp.tool()
     async def add_comment(
-        target: str,
+        target: str | int,
         comment: str,
         path: str | None = None,
         line: int | None = None,
@@ -1915,7 +1922,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         in_reply_to: str | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
-        """Add a comment to an issue, pull request, or merge request. For general comments: provide just target and comment. For inline code comments: also provide path and line. To reply to a thread: provide in_reply_to with the comment ID. An issue target takes the same forms as get_issue, including GitLab /-/issues/<iid> and /-/work_items/<iid> URLs."""
+        """Add a comment to an issue, pull request, or merge request. For general comments: provide just target and comment. For inline code comments: also provide path and line. To reply to a thread: provide in_reply_to with the comment ID. An issue target takes the same forms as get_issue, including GitLab /-/issues/<iid> and /-/work_items/<iid> URLs. A merge request target can be 'group/project!12' or its URL."""
+        target = str(target)
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 
@@ -2009,14 +2017,21 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         return result.model_dump_json()
 
     # Register Tool 9: get_pull_request
-    @mcp.tool()
+    @mcp.tool(description=GET_PULL_REQUEST_DESCRIPTION)
     async def get_pull_request(
-        pull_request: str,
+        pull_request: Annotated[
+            str | int, Field(description=PULL_REQUEST_PARAMETER_DESCRIPTION)
+        ],
         include_comments: bool = True,
         include_diff: bool = True,
+        project: Annotated[
+            str | None, Field(description=PR_PROJECT_PARAMETER_DESCRIPTION)
+        ] = None,
         ctx: Optional[Context] = None,
     ) -> str:
-        """Get details of a pull request (GitHub) or merge request (GitLab). Auto-detects platform from URL. Returns PR metadata, comments, and file changes."""
+        """Read a pull or merge request after the approval policy allows it."""
+        # Models often send a bare number as a JSON integer.
+        pull_request = str(pull_request)
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 
@@ -2034,6 +2049,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 "pull_request": pull_request,
                 "include_comments": include_comments,
                 "include_diff": include_diff,
+                "project": project,
             },
             ctx=ctx,
             workflow_id=_rule_workflow_id_var.get(None),
@@ -2048,13 +2064,16 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             pull_request=pull_request,
             include_comments=include_comments,
             include_diff=include_diff,
+            project=project,
         )
         return result.model_dump_json()
 
     # Register Tool 10: update_pull_request
     @mcp.tool()
     async def update_pull_request(
-        pull_request: str,
+        pull_request: Annotated[
+            str | int, Field(description=PULL_REQUEST_PARAMETER_DESCRIPTION)
+        ],
         title: str | None = None,
         description: str | None = None,
         state: str | None = None,
@@ -2067,9 +2086,13 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         review_comments: list[dict] | None = None,
         add_reaction: str | None = None,
         remove_reaction: str | None = None,
+        project: Annotated[
+            str | None, Field(description=PR_PROJECT_PARAMETER_DESCRIPTION)
+        ] = None,
         ctx: Optional[Context] = None,
     ) -> str:
         """Update a pull request's metadata, submit a review, and/or manage reactions. To update PR properties: provide title, description, labels, state (open/closed), etc. To submit a review: provide review_action (approve/request_changes/comment) with optional review_body and review_comments for inline feedback. On Bitbucket, unapprove and remove_request_changes withdraw a verdict, and a review comment with task: true also opens a task. On Azure DevOps, the review is posted as pull request threads (file comments become general threads naming the file and line) and approve/request_changes also cast the token owner's vote when permitted. To add/remove reactions: use add_reaction or remove_reaction with emoji names (GitHub: +1, -1, laugh, confused, heart, hooray, rocket, eyes; GitLab: thumbsup, thumbsdown, smile, eyes, rocket, etc.)."""
+        pull_request = str(pull_request)
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 
@@ -2097,6 +2120,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 "review_comments": review_comments,
                 "add_reaction": add_reaction,
                 "remove_reaction": remove_reaction,
+                "project": project,
             },
             ctx=ctx,
             workflow_id=_rule_workflow_id_var.get(None),
@@ -2121,6 +2145,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             review_comments=review_comments,
             add_reaction=add_reaction,
             remove_reaction=remove_reaction,
+            project=project,
         )
         return result.model_dump_json()
 

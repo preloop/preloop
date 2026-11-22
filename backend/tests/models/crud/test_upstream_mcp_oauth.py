@@ -308,6 +308,8 @@ async def test_two_workers_refresh_once_and_rotate_atomically(storage):
         (time.time() + 3600, None, "connected"),
         (time.time() - 1, None, "reconnect_required"),
     ],
+    # Stable ids: pytest-xdist workers must collect identical node ids.
+    ids=["no-expiry", "future-expiry", "past-expiry"],
 )
 async def test_expiry_and_missing_refresh(storage, expires, refresh, expected):
     grant(storage, expires_at=expires, refresh_token=refresh)

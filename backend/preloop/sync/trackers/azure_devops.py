@@ -89,6 +89,7 @@ from preloop.utils.azure_devops_work_items import (
 
 from ..exceptions import (
     TrackerAuthenticationError,
+    TrackerError,
     TrackerConnectionError,
     TrackerPermissionError,
     TrackerRateLimitError,
@@ -1280,10 +1281,12 @@ class AzureDevOpsTracker(BaseTracker):
                 f"{self._pr(pr_id, repo_full_name)}/reviewers/{quote(reviewer)}",
                 json={"vote": int(vote)},
             )
-        except (TrackerPermissionError, TrackerResponseError) as exc:
+        except TrackerAuthenticationError:
+            raise
+        except TrackerError as exc:
             # The review threads are already posted; a vote rule (400), a
-            # missing right (403) or a transient error must not fail the
-            # review. Authentication failures stay fatal.
+            # missing right (403), a rate limit or a network error must not
+            # fail the review. Authentication failures stay fatal.
             logger.info(
                 "Azure DevOps vote skipped for tracker %s: %s (status %s)",
                 self.tracker_id,

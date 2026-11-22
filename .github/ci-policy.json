@@ -56,7 +56,8 @@
       ".github/actions/setup-ci-python/**",
       ".github/actions/install-ci-python-deps/**",
       "scripts/run_backend_shard.py",
-      ".github/pytest-split-durations.json"
+      ".github/pytest-split-durations.json",
+      ".github/backend-shard-durations.json"
     ],
     "requirements": [
       "requirements/**",

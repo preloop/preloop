@@ -1,9 +1,11 @@
 # Self-hosted runners
 
-After the fast gate succeeds, CI distributes backend shards across available capacity. Each
-online idle general self-hosted runner takes one shard immediately, up to the
-configured general-pool limit; the remaining shards use GitHub-hosted `ubuntu-24.04`. There is
-no hosted-queue delay threshold or fixed half-matrix cap. Unreadable inventory,
+After the fast gate succeeds, CI routes all six backend shards to one runner
+class. They run self-hosted only when six online idle general self-hosted
+runners are available, one per shard; otherwise all six use GitHub-hosted
+`ubuntu-24.04`. Mixing classes made the slower private shards the
+stragglers. Self-hosted shards run two xdist workers each, since a runner slot
+is not a whole VM. Unreadable inventory,
 an absent read token, or `CI_SELF_HOSTED_TESTS=false` keeps every shard hosted.
 Fork and Dependabot PRs always remain hosted. Trusted same-repository PRs and
 pushes may use the general pool.
@@ -215,11 +217,29 @@ tests yield to hosted flow executions and use a reduced fuzz worker budget.
 ## Backend collection and CPU budgets
 
 `scripts/run_backend_shard.py` discovers test files from the pytest configuration
-without importing them, then assigns whole files to contiguous, duration-weighted
-shards. New files receive an estimated weight and are always included. Pytest
-collects only the assigned files; tests within a file retain their normal order.
-The duration file is a balancing hint, not an allowlist. Coverage remains enabled
-on all shards and the combined job still enforces the coverage floor.
+without importing them, then packs them into shards greedily, heaviest first, so
+groups are not contiguous. A file heavier than a third of a shard is split at
+test-node level: each owning shard runs the file and deselects the recorded
+nodes of the other slices. Tests without history run, weighed at the median test
+duration. The duration file is a balancing hint, not an allowlist. Each shard
+runs pytest-xdist with `--dist worksteal`, one cloned database per worker
+(`scripts/ci_postgres.py` makes `<job db>_gwN` from the initialised job
+database and drops the clones afterwards). Coverage remains enabled on all
+shards; the combined job enforces the coverage floor on whole-suite runs.
+
+On pull requests and `main` pushes, `scripts/ci_select.py` first narrows the
+inventory to the files the diff can affect. `scripts/ci_import_graph.py` parses
+every `backend/preloop` and `backend/tests` module with `ast` (nothing is
+imported) and a test file is selected when it loads a changed module through
+module-level imports, crossing at most one function-local import. Changed test
+files and the smoke set always run. Shared roots (models, CRUD and migrations,
+`config.py`, any `conftest.py`, packaging and lock files, `.github/**`,
+`scripts/ci_*.py`) select everything. The selection decides the shard count:
+enough shards to keep each about as long as a whole-suite shard, from 1 to 6.
+`plan --selection ci-selection.json` packs only those files. Version tags, the
+`ci:full` label, a full rerun, stacked PRs, the merge queue, the nightly
+schedule and manual runs use all 6 shards. The `ci-selection` artifact
+records the files, the reason and the count.
 Discovery honors static `collect_ignore` and `collect_ignore_glob` declarations in
 in-scope `conftest.py` files, path-qualified `norecursedirs`, and virtualenv
 directories. Dynamic `pytest_ignore_collect` hooks or computed ignore lists are
@@ -229,7 +249,8 @@ conftest code before sharding.
 Inspect a shard without running tests:
 
 ```bash
-python scripts/run_backend_shard.py --shards 18 --group 1 --plan
+python scripts/run_backend_shard.py plan --shards 6 \
+  --durations .github/backend-shard-durations.json --out plan.json
 ```
 
 One runner slot is not necessarily one CPU: CodeQL and other analysis tools may
@@ -291,8 +312,13 @@ loss. Shared tool and uv caches, Docker images, volumes and other runner slots
 are untouched. This bounds temporary environment retention; cache/image growth
 still requires host maintenance with an exclusive maintenance window.
 
-The duration hints are refreshed from a complete successful JUnit shard set
-using `scripts/ci_refresh_durations.py`. The source run, test count and replay
-ratio live in `.github/ci-duration-receipt.json`. The current measured replay
-has max/median 1.104; job receipts report observed execution separately by
-runner class. Setup and queue time remain separate from test-time weights.
+The duration hints are refreshed by the `backend-durations` job: every green
+main-branch run converts its six JUnit reports to node durations with
+`scripts/ci_refresh_durations.py` and saves them to the Actions cache. The
+`backend-plan` job restores the newest entry (falling back to the committed,
+file-level `.github/backend-shard-durations.json`, regenerated with
+`--per-file`), packs files longest first, and fails
+when the predicted largest shard exceeds 1.15x the mean. The Backend Coverage
+job summarises the actual per-shard pytest seconds. Backend shards all run on
+one runner class: self-hosted only when one idle general runner is available
+per shard, otherwise hosted. Setup and queue time remain separate from test-time weights.

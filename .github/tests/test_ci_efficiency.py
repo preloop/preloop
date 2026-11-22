@@ -102,7 +102,6 @@ def test_cleanup_removes_only_its_own_temporary_environments(tmp_path: Path) -> 
 def test_non_pr_runs_have_unique_concurrency_groups() -> None:
     """GitHub also cancels pending runs in a shared group when cancel is false."""
     for name in (
-        "ci.yml",
         "windows-security.yml",
         "discovery-parity.yml",
         "secret-scan.yml",
@@ -117,3 +116,17 @@ def test_non_pr_runs_have_unique_concurrency_groups() -> None:
             concurrency["cancel-in-progress"]
             == "${{ github.event_name == 'pull_request' }}"
         )
+
+
+def test_ci_cancels_superseded_pr_and_main_runs_only() -> None:
+    """PRs and main pushes share a slot; tags, queue and backstops never do."""
+    concurrency = workflow("ci.yml")["concurrency"]
+    assert concurrency["group"] == (
+        "${{ github.workflow }}-${{ github.event_name }}-"
+        "${{ github.event.pull_request.number || (github.event_name == 'push' "
+        "&& github.ref == 'refs/heads/main' && 'main') || github.run_id }}"
+    )
+    assert concurrency["cancel-in-progress"] == (
+        "${{ github.event_name == 'pull_request' || (github.event_name == 'push' "
+        "&& github.ref == 'refs/heads/main') }}"
+    )
