@@ -63,6 +63,31 @@ def review_deadline_text(budget_seconds: int | None, deadline: datetime | None) 
     )
 
 
+def review_output_limit_text(limit_tokens: int | None) -> str:
+    """The per-result output limit paragraph of a bound-review preamble.
+
+    Args:
+        limit_tokens: The catalog limit in effect, in tokens, or None when it
+            is not known where the prompt is finished.
+
+    Returns:
+        The paragraph, ending in a newline.
+    """
+    if limit_tokens is None:
+        stated = "Each command result has a size limit"
+    else:
+        stated = (
+            f"Each command result is limited to {limit_tokens} tokens "
+            f"(about {limit_tokens * 4} bytes); request max_output_tokens up "
+            "to that on long reads, since the default is lower"
+        )
+    return (
+        f"Output limit: {stated}. A longer result is cut in the middle and "
+        "starts with `Warning: truncated output`. Read a long patch per file "
+        "or in line ranges, and confirm you reached its end.\n"
+    )
+
+
 def without_review_deadline_placeholder(prompt: Any) -> Any:
     """A prompt that is safe to send: no unfilled time-limit placeholder.
 
@@ -80,7 +105,8 @@ def without_review_deadline_placeholder(prompt: Any) -> Any:
     """
     if isinstance(prompt, str) and REVIEW_DEADLINE_PLACEHOLDER in prompt:
         return prompt.replace(
-            REVIEW_DEADLINE_PLACEHOLDER, review_deadline_text(None, None)
+            REVIEW_DEADLINE_PLACEHOLDER,
+            review_deadline_text(None, None) + review_output_limit_text(None),
         )
     return prompt
 
@@ -90,7 +116,7 @@ def state_review_deadline(
     budget_seconds: int | None,
     deadline: datetime | None,
 ) -> None:
-    """Replace the preamble placeholder with the enforced time limit.
+    """Replace the preamble placeholder with the time and output limits.
 
     A prompt without the placeholder (any run that is not a bound read-only
     review, or one already stated) is left unchanged.
@@ -102,9 +128,19 @@ def state_review_deadline(
     """
     prompt = context.get("prompt")
     if isinstance(prompt, str) and REVIEW_DEADLINE_PLACEHOLDER in prompt:
+        from preloop.agents.codex_model_catalog import (
+            tool_output_limit_for_context,
+        )
+
+        try:
+            limit: int | None = tool_output_limit_for_context(context)
+        except Exception:  # noqa: BLE001 - never block a launch on wording
+            logger.warning("Could not resolve the Codex tool output limit")
+            limit = None
         context["prompt"] = prompt.replace(
             REVIEW_DEADLINE_PLACEHOLDER,
-            review_deadline_text(budget_seconds, deadline),
+            review_deadline_text(budget_seconds, deadline)
+            + review_output_limit_text(limit),
             1,
         )
 

@@ -3406,6 +3406,10 @@ async def test_captured_refuses_incomplete_evidence(
         "incomplete_records",
         "masking_only_records",
         "masking_by_rule",
+        "agent_clipped_results",
+        "bound_reads",
+        "clipped_bound_reads",
+        "unknown_bound_reads",
     }
     if mutate == "missing":
         assert counts["missing_records"] == 1
@@ -3604,3 +3608,126 @@ def test_evidence_values_are_validated_and_content_capture_is_required(
         )
     monkeypatch.setattr(settings, "model_gateway_capture_content", True)
     platform_review.validate_platform_review_flow(flow, enforce_content_capture=True)
+
+
+def _exchange_document(execution: Any, output: str, *, cmd: str | None = None) -> Any:
+    """One request-side exec call and its result, as Codex sends them."""
+    from preloop.services.execution_tool_evidence import capture_tools
+
+    binding = execution.ci_review_binding
+    command = cmd or f"git diff {binding['base_sha']}...{binding['head_sha']}"
+    return capture_tools(
+        {
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "call-diff",
+                    "name": "exec_command",
+                    "arguments": json.dumps(
+                        {"cmd": command, "max_output_tokens": 20000}
+                    ),
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-diff",
+                    "output": output,
+                },
+            ]
+        },
+        {},
+        capture_content=True,
+    )
+
+
+_EXEC_HEADER = (
+    "Chunk ID: 3fa2c1\nWall time: 0.0123 seconds\nProcess exited with code 0\n"
+)
+_CLIPPED_DIFF = (
+    _EXEC_HEADER + "Original token count: 4650\nOutput:\n"
+    "Warning: truncated output (original token count: 4650)\n\n"
+    "diff --git a/app.py b/app.py\n…2150 tokens truncated…+end\n"
+)
+_WHOLE_DIFF = _EXEC_HEADER + "Original token count: 9\nOutput:\ndiff --git a b\n"
+
+
+def _clip_counts(world: SimpleNamespace, client: TestClient, output: str) -> Any:
+    _set_evidence(world, "captured")
+    who = identity(world, world.projects[0])
+    execution = finished(world, who)
+    _age(world, execution)
+    row = _gateway_usage(world, execution)
+    _store_gateway(world, execution, row, _exchange_document(execution, output))
+    response = client.get(
+        f"/api/v1/flows/executions/{execution.id}/result",
+        headers={"Authorization": f"Bearer {who.token}"},
+    )
+    assert response.status_code == 200, response.text
+    return execution, response.json()["tool_evidence"]
+
+
+def test_summary_counts_a_clipped_bound_read(
+    world: SimpleNamespace, client: TestClient
+) -> None:
+    _execution, counts = _clip_counts(world, client, _CLIPPED_DIFF)
+    assert counts["incomplete_records"] == 0
+    assert counts["agent_clipped_results"] == 1
+    assert counts["bound_reads"] == 1
+    assert counts["clipped_bound_reads"] == 1
+    assert counts["unknown_bound_reads"] == 0
+
+
+def test_summary_reports_zero_clips_for_a_whole_read(
+    world: SimpleNamespace, client: TestClient
+) -> None:
+    _execution, counts = _clip_counts(world, client, _WHOLE_DIFF)
+    assert counts["agent_clipped_results"] == 0
+    assert counts["bound_reads"] == 1
+    assert counts["clipped_bound_reads"] == 0
+    assert counts["unknown_bound_reads"] == 0
+
+
+def test_running_session_read_is_unknown_not_whole(
+    world: SimpleNamespace, client: TestClient
+) -> None:
+    running = (
+        "Chunk ID: 3fa2c1\nWall time: 10.0000 seconds\n"
+        "Process running with session ID 4\nOutput:\ndiff --git a b\n"
+    )
+    _execution, counts = _clip_counts(world, client, running)
+    assert counts["bound_reads"] == 0
+    assert counts["unknown_bound_reads"] == 1
+
+
+def test_clipped_unrelated_result_is_not_a_bound_read(
+    world: SimpleNamespace, client: TestClient
+) -> None:
+    _set_evidence(world, "captured")
+    who = identity(world, world.projects[0])
+    execution = finished(world, who)
+    _age(world, execution)
+    row = _gateway_usage(world, execution)
+    document = _exchange_document(execution, _CLIPPED_DIFF, cmd="ls -R")
+    _store_gateway(world, execution, row, document)
+    counts = platform_review.stored_tool_evidence(world.db, execution)
+    assert counts["agent_clipped_results"] == 1
+    assert counts["bound_reads"] == counts["clipped_bound_reads"] == 0
+
+
+@pytest.mark.asyncio
+async def test_clipped_diff_read_still_posts_under_captured(
+    world: SimpleNamespace,
+) -> None:
+    """A clip is exposed, not refused: every affected run has clips."""
+    _set_evidence(world, "captured")
+    project = world.projects[0]
+    execution = finished(world, identity(world, project))
+    _age(world, execution)
+    row = _gateway_usage(world, execution)
+    document = _exchange_document(execution, _CLIPPED_DIFF)
+    assert document["capture_complete"] is True
+    _store_gateway(world, execution, row, document)
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert outcome["review"] == "posted"
+    assert outcome["tool_evidence"]["clipped_bound_reads"] == 1
+    assert len(world.github.reviews[(project.slug, 7)]) == 1

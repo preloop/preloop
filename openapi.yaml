@@ -59344,6 +59344,31 @@ components:
           type: object
           title: Masking By Rule
           description: How many times each named masking rule fired. Rule ids only.
+        agent_clipped_results:
+          type: integer
+          title: Agent Clipped Results
+          description: 'Tool results the agent CLI cut to its per-result limit before
+            the model saw them. Not an incompleteness: the record is whole.'
+          default: 0
+        bound_reads:
+          type: integer
+          title: Bound Reads
+          description: Successful commands the inspection floor's matcher accepts
+            as printing the bound patch or a changed file, joined to their result
+            by call id.
+          default: 0
+        clipped_bound_reads:
+          type: integer
+          title: Clipped Bound Reads
+          description: Of bound_reads, those whose result the agent CLI clipped.
+          default: 0
+        unknown_bound_reads:
+          type: integer
+          title: Unknown Bound Reads
+          description: Shell calls that may be bound reads but whose command, working
+            directory, result or exit code could not be joined. Zero here and in clipped_bound_reads
+            means every joined read was seen whole.
+          default: 0
       additionalProperties: false
       type: object
       required:
@@ -60381,7 +60406,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
