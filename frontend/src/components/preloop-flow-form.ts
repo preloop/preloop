@@ -4915,7 +4915,8 @@ export class PreloopFlowForm extends LitElement {
           </div>
 
           <sl-details
-            summary="Interactive conversation (optional)"
+            summary="Conversations and chat (optional)"
+            data-chat-trigger
             data-interactive-settings
           >
             <sl-switch
@@ -4947,9 +4948,7 @@ export class PreloopFlowForm extends LitElement {
               ?disabled=${!this.flow.agent_config?.interactive?.enabled}
               @sl-input=${(event: Event) => this.setInteractiveSetting('idle_timeout_seconds', Number((event.target as HTMLInputElement).value))}
             ></sl-input>
-          </sl-details>
 
-          <sl-details summary="Chat trigger (optional)" data-chat-trigger>
             <sl-input
               data-field="chat_alias"
               label="Chat flow alias (optional)"
