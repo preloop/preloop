@@ -263,6 +263,19 @@ def bound_resume(db: Session, context: dict[str, Any]) -> dict[str, Any] | None:
         id=row.id, account_id=row.account_id, flow_id=row.flow_id, execution_id=prior_id
     )
     native = resume_checkpoint(db, previous)
+    workspace = flow_artifact.latest(
+        db,
+        account_id=row.account_id,
+        flow_id=row.flow_id,
+        thread_id=str(row.id),
+        execution_id=prior_id,
+        kind="workspace",
+    )
+    if workspace is None:
+        raise ValueError(EXPIRED_NOTICE)
+    context["conversation_workspace_repositories"] = (
+        workspace.manifest.get("metadata") or {}
+    ).get("repositories", [])
     context["checkpoint_resume_authorized"] = True
     return native
 
