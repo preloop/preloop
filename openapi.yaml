@@ -44890,8 +44890,8 @@ components:
           - type: string
           - type: 'null'
           title: Source Branch
-          description: Branch to check out as the base. Empty uses the trigger's branch,
-            then the repository's default branch
+          description: Branch to checkout for base code
+          default: main
         target_branch:
           anyOf:
           - type: string
@@ -45052,8 +45052,8 @@ components:
           - type: string
           - type: 'null'
           title: Source Branch
-          description: Branch to check out as the base. Empty uses the trigger's branch,
-            then the repository's default branch
+          description: Branch to checkout for base code
+          default: main
         target_branch:
           anyOf:
           - type: string
@@ -60898,6 +60898,7 @@ components:
           - type: number
             minimum: 0.0
           - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
