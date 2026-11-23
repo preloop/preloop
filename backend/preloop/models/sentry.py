@@ -62,11 +62,12 @@ def init_sentry() -> None:
                     before_send_transaction=sentry_before_send_transaction,
                 )
             except Exception as exc:  # noqa: BLE001 - never block startup
+                detail = f"{type(exc).__name__}: {exc}".replace(
+                    sentry_dsn, "[redacted]"
+                )
                 logger.warning(
-                    "Sentry SDK initialisation failed; error reporting disabled: "
-                    "%s: %s",
-                    type(exc).__name__,
-                    exc,
+                    "Sentry SDK initialisation failed; error reporting disabled: %s",
+                    detail,
                 )
                 return
             logger.info("Sentry SDK initialized.")
