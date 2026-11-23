@@ -28,7 +28,7 @@ from preloop.models.crud import (
 )
 from preloop.models.models import Account, Flow
 from preloop.models.models.user import User
-from preloop.models.schemas.flow import FlowCreate
+from preloop.models.schemas.flow import FlowCreate, FlowUpdate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.services.flow_failure_category import derive_failure_category
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
@@ -338,3 +338,29 @@ async def test_handover_of_the_reported_run_succeeds(
     assert stored.status == "SUCCEEDED", stored.error_message
     assert stored.result == answer
     assert stored.result_schema_validation["valid"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started_with", [True, False])
+async def test_peer_follows_the_stored_decision_over_a_later_flow_edit(
+    db_session: Session, account: Account, user: User, started_with: bool
+) -> None:
+    """The decision the run started with wins over the flow's current setting."""
+    flow = make_flow(db_session, account, native=started_with)
+    execution = start(db_session, flow)
+    crud_flow.update(
+        db_session,
+        db_obj=flow,
+        flow_in=FlowUpdate(agent_config={"native_result": not started_with}),
+        account_id=account.id,
+    )
+    db_session.commit()
+    db_session.refresh(flow)
+    assert flow.agent_config["native_result"] is not started_with
+
+    answer = make_review()
+    document = envelope(answer) if started_with else answer
+    stored = await finish_on_peer(db_session, flow, execution, fake_container(document))
+
+    assert stored.status == "SUCCEEDED", stored.error_message
+    assert stored.result == answer
