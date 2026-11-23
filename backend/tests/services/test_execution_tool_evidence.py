@@ -766,3 +766,10 @@ def test_plain_native_command_stays_ok_without_a_database() -> None:
     assert document["capture_complete"] is True
     assert _record_class(document, valid=True) == "ok"
     assert evidence_satisfied(_gate_summary(document), "complete") is True
+
+
+def test_deeply_nested_native_command_fails_soft_with_value_depth() -> None:
+    document = _persist_native_for_test("[" * 300 + "]" * 300, email_rule=False)
+    assert document["observations"][0]["value"] is None
+    assert document["capture_complete"] is False
+    assert document["incomplete_reasons"] == ["value_depth"]

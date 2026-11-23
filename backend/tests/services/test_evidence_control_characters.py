@@ -252,3 +252,71 @@ def test_masked_nested_arguments_with_control_chars_keep_them() -> None:
     assert value["chars"] == "\x03\x0c\x1b"
     assert "sk-1234567890abcdefghij" not in value["command"]
     assert document["incomplete_reasons"] == ["masking"]
+
+
+@pytest.mark.parametrize("depth", [200, 5000])
+def test_deeply_nested_arguments_fail_soft_with_a_named_reason(depth: int) -> None:
+    """Nesting past the bound drops the value with reason ``value_depth``."""
+    arguments = "[" * depth + "]" * depth
+    document = capture_tools(
+        {},
+        {
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "c",
+                    "name": "exec_command",
+                    "arguments": arguments,
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "d",
+                    "name": "exec_command",
+                    "arguments": '{"command": "ls"}',
+                },
+            ]
+        },
+        capture_content=True,
+    )
+    deep, plain = document["observations"]
+    assert deep["value"] is None
+    assert deep["redacted"] is True
+    assert document["incomplete_reasons"] == ["value_depth"]
+    assert plain["value"] == '{"command": "ls"}'
+
+
+def test_deeply_nested_structured_input_fails_soft() -> None:
+    nested: Any = "leaf"
+    for _ in range(300):
+        nested = {"k": nested}
+    document = capture_tools(
+        {},
+        {"content": [{"type": "tool_use", "id": "t", "name": "x", "input": nested}]},
+        capture_content=True,
+    )
+    assert document["observations"][0]["value"] is None
+    assert document["incomplete_reasons"] == ["value_depth"]
+
+
+def test_legacy_masked_and_storage_redacted_record_is_unstated() -> None:
+    """``incomplete_by_reason`` agrees with the gate on a reason-less record."""
+    from preloop.models.crud.execution_tool_evidence import _incomplete_labels
+
+    document = {
+        "version": 1,
+        "capture_complete": True,
+        "storage_redacted": True,
+        "content_capture_enabled": True,
+        "observations": [
+            {
+                "value": "x",
+                "redacted": True,
+                "redactions": [{"rule": "sk_key", "count": 1}],
+            }
+        ],
+    }
+    assert _record_class(document, valid=True) == "incomplete"
+    assert _incomplete_labels(document, valid=True) == ["unstated"]
+    document["storage_redacted"] = False
+    assert _record_class(document, valid=True) == "masking_only"
+    assert _incomplete_labels(document, valid=True) == ["masking"]

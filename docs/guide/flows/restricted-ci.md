@@ -1127,6 +1127,7 @@ kept as is.
 | `truncated` | An observation did not fit the 2 MiB record and was left out. |
 | `capped` | More than 512 observations; the rest were left out. |
 | `scan_depth` | The message nesting was deeper than the capture walks. |
+| `value_depth` | An observation value (call arguments included) nested deeper than 64 levels. Its `value` is null, because masking cannot walk it. |
 | `missing_id` | A call or result had no usable id. |
 | `invalid_name` | A tool name was not a string or longer than 256 characters. |
 | `unsafe_text` | The stored value differs from the wire value and nothing above explains it. No known path sets it; it is kept so that an unexplained change is still refused. |

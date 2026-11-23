@@ -360,6 +360,8 @@ def _persist_native_command_evidence(
         MAX_EVIDENCE_BYTES,
         REASON_TRUNCATED,
         REASON_UNSAFE_TEXT,
+        REASON_VALUE_DEPTH,
+        ValueTooDeepError,
         _redact_value,
         removed_facts,
     )
@@ -389,14 +391,18 @@ def _persist_native_command_evidence(
 
     raw = item.get("command")
     scrubbed = False
+    too_deep = False
     removed: dict[str, int] = {}
     if settings.model_gateway_capture_content:
-        value, redaction_facts, scrubbed = _redact_value(raw)
+        try:
+            value, redaction_facts, scrubbed = _redact_value(raw)
+        except ValueTooDeepError:
+            value, redaction_facts, too_deep = None, [], True
         value, removed = remove_unencodable(value)
     else:
         value, redaction_facts = None, []
     bounded = len(canonical_bytes(value)) <= MAX_EVIDENCE_BYTES
-    storage_redacted = bool(removed)
+    storage_redacted = bool(removed) or too_deep
     complete = bounded and not storage_redacted
     observation: dict[str, Any] = {
         "source": "native",
@@ -419,6 +425,8 @@ def _persist_native_command_evidence(
         reasons.append(REASON_TRUNCATED)
     if removed:
         reasons.append(REASON_LONE_SURROGATES)
+    if too_deep:
+        reasons.append(REASON_VALUE_DEPTH)
     # A named rule keeps capture_complete. The credential scrubber, or a
     # change nothing accounts for, is incomplete, as on the gateway path.
     if scrubbed:
@@ -427,7 +435,7 @@ def _persist_native_command_evidence(
     if (
         settings.model_gateway_capture_content
         and value != raw
-        and not (redaction_facts or removed or scrubbed)
+        and not (redaction_facts or removed or scrubbed or too_deep)
     ):
         complete = False
         reasons.append(REASON_UNSAFE_TEXT)
@@ -721,7 +729,13 @@ def _incomplete_labels(document: Any, *, valid: bool) -> list[str]:
     )
     if document.get("content_capture_enabled") is False:
         return sorted({*reasons, "content_capture_off"})
-    return reasons or ([REASON_MASKING] if _masking_counts(document) else ["unstated"])
+    if reasons:
+        return reasons
+    # Without stored reasons, agree with the gate: masking only when the
+    # record is masking_only, never for a record storage_redacted refuses.
+    if _record_class(document, valid=True) == "masking_only":
+        return [REASON_MASKING]
+    return ["unstated"]
 
 
 def _removed_counts(document: dict[str, Any]) -> dict[str, int]:

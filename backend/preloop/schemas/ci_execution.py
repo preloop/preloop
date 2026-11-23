@@ -442,7 +442,8 @@ class ToolEvidenceSummary(BaseModel):
         description=(
             "Incomplete records by reason: a stored reason (masking, "
             "lone_surrogates, credential_scrub, storage_rule, truncated, "
-            "capped, scan_depth, missing_id, invalid_name, unsafe_text) or "
+            "capped, scan_depth, value_depth, missing_id, invalid_name, "
+            "unsafe_text) or "
             "integrity_invalid, capture_failed, content_capture_off, unstated. "
             "A record with two reasons counts under both."
         ),

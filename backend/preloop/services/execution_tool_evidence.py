@@ -42,6 +42,12 @@ REASON_TRUNCATED = "truncated"
 REASON_CAPPED = "capped"
 REASON_SCAN_DEPTH = "scan_depth"
 REASON_MASKING = "masking"
+#: A value nested deeper than :data:`MAX_VALUE_DEPTH` was left out.
+REASON_VALUE_DEPTH = "value_depth"
+#: Nesting bound for one observation value, nested argument JSON included.
+#: Masking walks the value, so a deeper one is left out rather than stored
+#: unmasked or allowed to exhaust the stack.
+MAX_VALUE_DEPTH = 64
 INCOMPLETE_REASONS = frozenset(
     {
         REASON_MISSING_ID,
@@ -54,8 +60,13 @@ INCOMPLETE_REASONS = frozenset(
         REASON_CAPPED,
         REASON_SCAN_DEPTH,
         REASON_MASKING,
+        REASON_VALUE_DEPTH,
     }
 )
+
+
+class ValueTooDeepError(ValueError):
+    """An observation value nests deeper than :data:`MAX_VALUE_DEPTH`."""
 
 
 def note_incomplete(document: dict[str, Any], reason: str) -> None:
@@ -127,10 +138,14 @@ def _sensitive_field(key: Any) -> bool:
     ) or ("token" in lowered and "tokens" not in lowered)
 
 
-def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]], bool]:
+def _redact_value(value: Any, depth: int = 0) -> tuple[Any, list[dict[str, Any]], bool]:
     """Scrub one observation value.
 
     Control characters are not touched: masking is the only change.
+
+    Args:
+        value: The wire value.
+        depth: Nesting depth of ``value``, nested argument JSON included.
 
     Returns:
         The stored value, the rule counts that fired while producing it, and
@@ -138,6 +153,9 @@ def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]], bool]:
         the named rules (:data:`REASON_CREDENTIAL_SCRUB`). Pattern rules run
         on the original string before the known-token scrubber, so a match is
         counted even when both would mask it.
+
+    Raises:
+        ValueTooDeepError: The value nests deeper than :data:`MAX_VALUE_DEPTH`.
     """
     from preloop.services.model_gateway_events import (
         _REDACTION_MARKERS,
@@ -146,6 +164,8 @@ def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]], bool]:
     )
 
     unexplained = False
+    if isinstance(value, (dict, list)) and depth >= MAX_VALUE_DEPTH:
+        raise ValueTooDeepError("observation value nests too deeply")
     if isinstance(value, dict):
         redacted: dict[Any, Any] = {}
         facts: list[dict[str, Any]] = []
@@ -162,7 +182,7 @@ def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]], bool]:
                     redacted[key] = "[REDACTED]"
                     field_hits += 1
                 continue
-            child, child_facts, child_unexplained = _redact_value(item)
+            child, child_facts, child_unexplained = _redact_value(item, depth + 1)
             redacted[key] = child
             facts = merge_redactions(facts, child_facts)
             unexplained = unexplained or child_unexplained
@@ -175,7 +195,7 @@ def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]], bool]:
         items: list[Any] = []
         facts = []
         for item in value:
-            child, child_facts, child_unexplained = _redact_value(item)
+            child, child_facts, child_unexplained = _redact_value(item, depth + 1)
             items.append(child)
             facts = merge_redactions(facts, child_facts)
             unexplained = unexplained or child_unexplained
@@ -190,8 +210,10 @@ def _redact_value(value: Any) -> tuple[Any, list[dict[str, Any]], bool]:
             parsed = json.loads(text, parse_constant=_reject_constant)
         except ValueError:
             return text, facts, unexplained
+        except RecursionError:
+            raise ValueTooDeepError("observation value nests too deeply") from None
         if isinstance(parsed, (dict, list)):
-            clean, nested, nested_unexplained = _redact_value(parsed)
+            clean, nested, nested_unexplained = _redact_value(parsed, depth)
             facts = merge_redactions(facts, nested)
             unexplained = unexplained or nested_unexplained
             if clean != parsed:
@@ -251,13 +273,17 @@ def capture_tools(
         for category, count in removed_name.items():
             removed[category] = removed.get(category, 0) + count
         facts: list[dict[str, Any]] = []
+        too_deep = False
         if capture_content:
             from preloop.services.model_gateway_events import (
                 merge_redactions,
                 redact_sensitive_text,
             )
 
-            value, facts, scrubbed = _redact_value(raw)
+            try:
+                value, facts, scrubbed = _redact_value(raw)
+            except ValueTooDeepError:
+                value, facts, scrubbed, too_deep = None, [], False, True
             if isinstance(value, str):
                 # Keep exact wire argument strings. This redacts recognized
                 # secrets without reserializing JSON or applying the preview cap.
@@ -269,11 +295,14 @@ def capture_tools(
         else:
             value = None
             scrubbed = False
-        redacted = not capture_content or value != raw or bool(removed)
+        if too_deep:
+            storage_redacted = True
+            mark(REASON_VALUE_DEPTH)
+        redacted = not capture_content or too_deep or value != raw or bool(removed)
         if removed:
             storage_redacted = True
             mark(REASON_LONE_SURROGATES)
-        if capture_content and value != raw:
+        if capture_content and value != raw and not too_deep:
             storage_redacted = True
             # Each change is named by what made it, and several can apply.
             # A change nothing here accounts for is still recorded.

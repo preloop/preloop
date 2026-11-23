@@ -59,6 +59,11 @@ def _is_lone_surrogate(char: str) -> bool:
     return 0xD800 <= ord(char) <= 0xDFFF
 
 
+#: Nesting bound for :func:`remove_unencodable`. Evidence values are bounded
+#: well below this by capture; deeper input is refused, not walked.
+MAX_UNENCODABLE_DEPTH = 128
+
+
 def remove_unencodable(value: Any) -> tuple[Any, dict[str, int]]:
     """Remove only what tool evidence cannot store, and count it.
 
@@ -78,6 +83,9 @@ def remove_unencodable(value: Any) -> tuple[Any, dict[str, int]]:
     Returns:
         The value with lone surrogates removed from strings and keys, and
         ``{category: count}`` for what was removed (empty when nothing was).
+
+    Raises:
+        ValueError: ``value`` nests deeper than :data:`MAX_UNENCODABLE_DEPTH`.
     """
     counts: dict[str, int] = {}
 
@@ -88,19 +96,21 @@ def remove_unencodable(value: Any) -> tuple[Any, dict[str, int]]:
         counts[LONE_SURROGATES] = counts.get(LONE_SURROGATES, 0) + found
         return "".join(char for char in item if not _is_lone_surrogate(char))
 
-    def walk(item: Any) -> Any:
+    def walk(item: Any, depth: int) -> Any:
         if isinstance(item, str):
             return text(item)
+        if isinstance(item, (dict, list)) and depth >= MAX_UNENCODABLE_DEPTH:
+            raise ValueError("value nests too deeply")
         if isinstance(item, dict):
             return {
-                (text(key) if isinstance(key, str) else key): walk(child)
+                (text(key) if isinstance(key, str) else key): walk(child, depth + 1)
                 for key, child in item.items()
             }
         if isinstance(item, list):
-            return [walk(child) for child in item]
+            return [walk(child, depth + 1) for child in item]
         return item
 
-    cleaned = walk(value)
+    cleaned = walk(value, 0)
     return (cleaned if counts else value), counts
 
 

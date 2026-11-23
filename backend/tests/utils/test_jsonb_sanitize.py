@@ -146,3 +146,15 @@ def test_remove_unencodable_counts_lone_surrogates_in_keys_and_values() -> None:
     assert counts == {"lone_surrogates": 3}
     # A real surrogate pair is one code point in Python and is kept.
     assert remove_unencodable("\U0001f600") == ("\U0001f600", {})
+
+
+def test_remove_unencodable_refuses_unbounded_nesting() -> None:
+    import pytest
+
+    from preloop.utils.jsonb_sanitize import remove_unencodable
+
+    nested: list = []
+    for _ in range(5000):
+        nested = [nested]
+    with pytest.raises(ValueError):
+        remove_unencodable(nested)
