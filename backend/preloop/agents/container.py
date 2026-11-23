@@ -4841,6 +4841,7 @@ fi
             # the existing review, not a new branch off main.
             source_branch = resume_branch
             target_branch = resume_branch
+            execution_context["_git_explicit_source_branch"] = resume_branch
             if not execution_context.get("resume_from"):
                 prior = resume.get("execution_id") if isinstance(resume, dict) else None
                 execution_context["resume_from"] = (
@@ -4853,6 +4854,9 @@ fi
         else:
             if not source_branch:
                 source_branch = self._extract_source_branch_from_trigger(trigger_data)
+            # Only a configured or trigger-given branch applies to every
+            # repository; a derived default belongs to the first one alone.
+            execution_context["_git_explicit_source_branch"] = source_branch or ""
             if not source_branch:
                 # The repository's own default branch, never a literal
                 # ``main``. Empty means it is not known before the clone, so
@@ -4933,16 +4937,65 @@ fi
                 break
         return self._default_branch_from_trigger(trigger_data)
 
+    def _repository_source_branch(
+        self,
+        repo_config: Dict[str, Any],
+        repo_index: int,
+        explicit_source: Optional[str],
+        trigger_data: Any,
+    ) -> str:
+        """The branch one repository entry is cloned from, or empty.
+
+        Order: the entry's ``source_branch``/``branch``, then a configured or
+        trigger-given source branch, then the entry's own ``default_branch``,
+        then (first entry only, the repository the event came from) the
+        trigger payload's default branch. Empty means follow the remote HEAD.
+        One repository's default never decides another's branch.
+
+        Args:
+            repo_config: The repository entry.
+            repo_index: Position of the entry in the repository list.
+            explicit_source: Source branch from configuration, trigger or
+                resume; empty when none was given.
+            trigger_data: The trigger event data.
+
+        Returns:
+            The branch name, or an empty string.
+        """
+        entry = str(repo_config.get("source_branch") or repo_config.get("branch") or "")
+        if entry:
+            return entry
+        if explicit_source:
+            return str(explicit_source)
+        own_default = _validated_git_ref(repo_config.get("default_branch"))
+        if own_default:
+            return own_default
+        if repo_index == 0:
+            return self._default_branch_from_trigger(trigger_data)
+        return ""
+
     def _resolve_resume_base_branch(
         self,
         git_config: Dict[str, Any],
         repo_config: Optional[Dict[str, Any]] = None,
+        trigger_data: Any = None,
+        repo_index: int = 0,
     ) -> str:
         """Return the flow base branch a resume rebase should land on.
 
         Prefers ``repositories[].branch``, then top-level ``git_clone_config.branch``,
-        then ``source_branch``, then the repository's default branch. ``main``
-        is the last resort only when no default branch is known at all.
+        then ``source_branch``, then the repository's default branch, then (for
+        the first repository) the trigger's PR/MR target or default branch.
+        ``main`` is the last resort only when no default branch is known at all.
+
+        Args:
+            git_config: The flow's ``git_clone_config``.
+            repo_config: The repository entry, when resolving for one.
+            trigger_data: The trigger event data.
+            repo_index: Position of the entry; trigger branches apply to 0.
+
+        Returns:
+            The base branch name.
         """
 
         if repo_config:
@@ -4954,6 +5007,16 @@ fi
             return str(configured)
         if repo_config and _validated_git_ref(repo_config.get("default_branch")):
             return str(repo_config["default_branch"])
+        if repo_index == 0 and isinstance(trigger_data, dict):
+            # The event's PR/MR target, then the repository default it names.
+            target = _validated_git_ref(
+                self._extract_target_branch_from_trigger(trigger_data)
+            )
+            if target:
+                return target
+            default = self._default_branch_from_trigger(trigger_data)
+            if default:
+                return default
         return "main"
 
     def _build_git_global_setup_commands(
@@ -5701,10 +5764,9 @@ true
         # The URL that reaches `git clone` is always credential-free.
         repo_url = strip_url_credentials(repo_url)
         full_path = self._resolve_repository_clone_path(repo_config, repo_index)
-        repo_source = (
-            str(repo_config.get("source_branch") or repo_config.get("branch") or "")
-            or source_branch
-            or str(_validated_git_ref(repo_config.get("default_branch")) or "")
+        explicit = execution_context.get("_git_explicit_source_branch", source_branch)
+        repo_source = self._repository_source_branch(
+            repo_config, repo_index, explicit, trigger_data
         )
         # No branch known before the clone: follow the remote HEAD, which is
         # the repository's default branch whatever its name.
@@ -5760,7 +5822,9 @@ true
                 git_config = execution_context.get("git_clone_config") or {}
                 if not isinstance(git_config, dict):
                     git_config = {}
-                base_branch = self._resolve_resume_base_branch(git_config, repo_config)
+                base_branch = self._resolve_resume_base_branch(
+                    git_config, repo_config, trigger_data, repo_index
+                )
                 rebase_shell = self._build_git_resume_rebase_shell(
                     full_path=full_path,
                     base_branch=base_branch,
@@ -6544,7 +6608,11 @@ true
                     else ""
                 )
 
-                def repair_shell(path: str, repo_config: Dict[str, Any]) -> str:
+                resume_trigger = execution_context.get("trigger_event_data") or {}
+
+                def repair_shell(
+                    path: str, repo_config: Dict[str, Any], idx: int = 0
+                ) -> str:
                     profile = verification_policy.profile
                     if verification_policy.mode != "gate" or profile is None:
                         return ""
@@ -6554,7 +6622,9 @@ true
                         base_branch=str(
                             repo_config.get("pin_sha")
                             or "origin/"
-                            + self._resolve_resume_base_branch(git_config, repo_config)
+                            + self._resolve_resume_base_branch(
+                                git_config, repo_config, resume_trigger, idx
+                            )
                         ),
                     )
 
@@ -6602,7 +6672,8 @@ true
                         )
                     dest = f"{EVIDENCE_DIR_PATH}/repos/{slug}"
                     parts.append(
-                        repair_shell(path, repo_config) + f"cd {shlex.quote(path)}\n"
+                        repair_shell(path, repo_config, idx)
+                        + f"cd {shlex.quote(path)}\n"
                         f"mkdir -p {shlex.quote(dest)}\n"
                         f"git bundle create {shlex.quote(dest)}/branch.bundle HEAD || exit 1\n"
                         f"git rev-parse HEAD > {shlex.quote(dest)}/HEAD.txt || exit 1\n"
@@ -6705,11 +6776,25 @@ true
 
             post_commands = []
 
+            publication_trigger = execution_context.get("trigger_event_data") or {}
+            explicit_source = execution_context.get(
+                "_git_explicit_source_branch", source_branch
+            )
             for idx, repo_config in enumerate(repositories):
-                publication_base = safe_source
-                if safe_source == safe_target:
+                # Each repository's PR targets its own base, not the first's.
+                publication_base = (
+                    _validated_git_ref(
+                        self._repository_source_branch(
+                            repo_config, idx, explicit_source, publication_trigger
+                        )
+                    )
+                    or safe_source
+                )
+                if publication_base == safe_target:
                     publication_base = _validated_git_ref(
-                        self._resolve_resume_base_branch(git_config, repo_config)
+                        self._resolve_resume_base_branch(
+                            git_config, repo_config, publication_trigger, idx
+                        )
                     )
                     if not publication_base or publication_base == safe_target:
                         self.logger.warning("Cannot identify a distinct PR base branch")

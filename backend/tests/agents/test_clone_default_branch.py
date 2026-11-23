@@ -264,3 +264,154 @@ def test_disabled_config_with_listed_repositories_says_why_it_clones(
 
     assert "git clone" in command
     assert "Git workspace cloning is off, but this flow lists" in command
+
+
+@pytest.fixture
+def main_repo(tmp_path: Path, git: Callable[..., str]) -> Path:
+    """A bare repository whose only branch, and default branch, is ``main``."""
+    source = tmp_path / "source-main"
+    git("init", "-b", "main", str(source))
+    (source / "README.md").write_text("example\n")
+    git("-C", str(source), "add", "README.md")
+    git("-C", str(source), "commit", "-m", "Initial example")
+    bare = tmp_path / "example-main.git"
+    git("clone", "--bare", str(source), str(bare))
+    return bare
+
+
+def _two_repo_context(main_repo: Path, master_repo: Path) -> dict[str, Any]:
+    return {
+        "flow_id": "example-flow",
+        "execution_id": "example-execution",
+        "flow_name": "reviewer",
+        "trigger_event_data": {},
+        "git_clone_config": {
+            "enabled": True,
+            "create_pull_request": True,
+            "repositories": [
+                {
+                    "repository_url": main_repo.as_uri(),
+                    "clone_path": "/workspace/first",
+                    "default_branch": "main",
+                },
+                {
+                    "repository_url": master_repo.as_uri(),
+                    "clone_path": "/workspace/second",
+                    "default_branch": "master",
+                },
+            ],
+        },
+    }
+
+
+@pytest.mark.parametrize("executor_class", HARNESSES)
+def test_each_repository_clones_its_own_default_branch(
+    executor_class: type[ContainerAgentExecutor],
+    main_repo: Path,
+    master_repo: Path,
+    tmp_path: Path,
+    git_env: dict[str, str],
+    git: Callable[..., str],
+) -> None:
+    """The first repository's ``main`` never decides the second's ``master``."""
+    executor = _executor(executor_class)
+    context = _two_repo_context(main_repo, master_repo)
+    result, command = _run_clone(executor, context, tmp_path, git_env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"git clone -b main {main_repo.as_uri()}" in command
+    assert f"git clone -b master {master_repo.as_uri()}" in command
+    second = tmp_path / "workspace" / "second"
+    assert git("-C", str(second), "rev-parse", "master") == git(
+        "-C", str(master_repo), "rev-parse", "master"
+    )
+
+
+def test_each_repository_opens_its_pr_against_its_own_default(
+    main_repo: Path, master_repo: Path
+) -> None:
+    executor = _executor(ContainerAgentExecutor)
+    context = _two_repo_context(main_repo, master_repo)
+    executor._prepare_git_clone_command(context)
+    commands = executor._prepare_git_post_execution_commands(context)
+
+    first, second = commands.split("/workspace/second", 1)
+    assert "origin/main" in first and "origin/master" not in first
+    assert "origin/master" in second and "origin/main" not in second
+
+
+def test_configured_source_branch_still_applies_to_every_repository(
+    main_repo: Path, master_repo: Path
+) -> None:
+    executor = _executor(ContainerAgentExecutor)
+    context = _two_repo_context(main_repo, master_repo)
+    context["git_clone_config"]["source_branch"] = "release"
+    command = executor._prepare_git_clone_command(context)
+
+    assert command.count("git clone -b release ") == 2
+
+
+def test_host_exec_checkout_uses_each_repository_default(
+    main_repo: Path, master_repo: Path
+) -> None:
+    from preloop.services.host_exec_delivery import build_host_exec_checkout
+
+    checkout = build_host_exec_checkout(_two_repo_context(main_repo, master_repo))
+
+    assert checkout is not None
+    assert [repo["branch"] for repo in checkout["repositories"]] == [
+        "main",
+        "master",
+    ]
+
+
+def test_second_repository_without_a_default_follows_its_remote_head(
+    main_repo: Path, master_repo: Path
+) -> None:
+    """A trigger's default names the first repository, not the others."""
+    executor = _executor(ContainerAgentExecutor)
+    context = _two_repo_context(main_repo, master_repo)
+    for repo in context["git_clone_config"]["repositories"]:
+        repo.pop("default_branch")
+    context["trigger_event_data"] = {
+        "source": "github",
+        "payload": {"repository": {"full_name": "o/r", "default_branch": "main"}},
+    }
+    command = executor._prepare_git_clone_command(context)
+
+    assert f"git clone -b main {main_repo.as_uri()}" in command
+    assert f"git clone {master_repo.as_uri()}" in command
+
+
+def test_resume_base_uses_the_trigger_payload_default_branch() -> None:
+    """A raw ``repository_url`` flow: the event is the only branch source."""
+    executor = _executor(ContainerAgentExecutor)
+    repo = {"repository_url": "https://example.com/o/r.git"}
+    gitlab = {"payload": {"project": {"default_branch": "master"}}}
+    github = {"payload": {"repository": {"default_branch": "master"}}}
+    pull = {
+        "payload": {
+            "pull_request": {"base": {"ref": "develop"}},
+            "repository": {"default_branch": "master"},
+        }
+    }
+
+    assert executor._resolve_resume_base_branch({}, repo, gitlab) == "master"
+    assert executor._resolve_resume_base_branch({}, repo, github) == "master"
+    assert executor._resolve_resume_base_branch({}, repo, pull) == "develop"
+    assert executor._resolve_resume_base_branch({}, repo, github, 1) == "main"
+
+
+def test_resume_rebase_lands_on_the_trigger_default_branch() -> None:
+    executor = _executor(ContainerAgentExecutor)
+    context = _context(
+        {"repository_url": "https://example.com/o/r.git"},
+        trigger={
+            "payload": {"project": {"default_branch": "master"}},
+            "_resume": {"execution_id": "prior", "source_branch": "preloop/x-1"},
+        },
+    )
+    command = executor._prepare_git_clone_command(context)
+
+    assert "origin/master" in command
+    assert "origin/main" not in command

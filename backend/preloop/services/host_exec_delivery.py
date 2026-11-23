@@ -144,9 +144,11 @@ def build_host_exec_checkout(context: Dict[str, Any]) -> Optional[Dict[str, Any]
         if pin_sha:
             entry["commit"] = pin_sha
         else:
-            repo_source = (
-                str(repo_config.get("source_branch") or repo_config.get("branch") or "")
-                or source_branch
+            repo_source = agent._repository_source_branch(
+                repo_config,
+                index,
+                context.get("_git_explicit_source_branch", source_branch),
+                trigger_data,
             )
             entry["branch"] = agent._resolve_repository_clone_branch(
                 repo_config,
