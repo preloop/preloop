@@ -415,3 +415,182 @@ class TestBuiltinDefsParity:
         mcp = initialize_mcp_with_tools()
         ask = await mcp.get_tool("ask_user")
         assert ask.description == ASK_USER_TOOL["description"]
+
+
+# Rows the way an agent sent them on prod (2026-11-22): label instead of
+# title plus extra keys the console shows as row fields.
+LEAD_ITEMS = [
+    {
+        "id": "lead-1",
+        "label": "Ada Lovelace",
+        "description": "CTO, Analytical Engines",
+        "linkedin": "https://linkedin.com/in/ada",
+        "hubspot": "https://app.hubspot.com/contacts/1",
+        "lead_file": "leads/ada/lead.md",
+        "score": 7,
+    }
+]
+LEAD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "rows": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "enum": ["lead-1"]},
+                    "answer": {"type": "string"},
+                    "follow_up": {"type": "boolean"},
+                },
+                "required": ["id"],
+            },
+        }
+    },
+}
+
+
+async def _stored_tool_args(name, **call):
+    """Run the tool once and return the tool_args it stores for approval."""
+    fn = await _tool_fn(name)
+    captured = {}
+
+    async def _require(**kwargs):
+        captured.update(kwargs)
+        return False, '{"status": "pending_approval"}'
+
+    p1, p2, p3 = _workflow_patches()
+    with (
+        p1,
+        p2,
+        p3,
+        patch(
+            "preloop.services.initialize_mcp.require_approval",
+            new=AsyncMock(side_effect=_require),
+        ),
+    ):
+        await fn(**call)
+    return captured["arguments"]
+
+
+async def _replay(name, tool_args, answer):
+    """Re-run the approved call the way get_approval_status does."""
+    from preloop.services.dynamic_fastmcp import (
+        _approved_answer_var,
+        _approved_id_var,
+        _bypass_approval_var,
+    )
+    from preloop.services.initialize_mcp import initialize_mcp_with_tools
+
+    tool = await initialize_mcp_with_tools().get_tool(name)
+    p1, p2, p3 = _workflow_patches()
+    _bypass_approval_var.set(True)
+    _approved_answer_var.set(answer)
+    _approved_id_var.set("11111111-2222-3333-4444-555555555555")
+    halt_db = MagicMock()
+    halt_db.run_sync = AsyncMock(return_value=set())
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=halt_db)
+    session_cm.__aexit__ = AsyncMock(return_value=False)
+    try:
+        with (
+            p1,
+            p2,
+            p3,
+            patch(
+                "preloop.models.db.session.get_async_db_session",
+                return_value=session_cm,
+            ),
+        ):
+            return await tool.run(tool_args)
+    finally:
+        _bypass_approval_var.set(False)
+        _approved_answer_var.set(None)
+        _approved_id_var.set(None)
+
+
+def _result_text(result):
+    content = getattr(result, "content", result)
+    return "".join(getattr(block, "text", "") for block in content)
+
+
+@pytest.mark.asyncio
+class TestApprovedReplay:
+    """get_approval_status re-invokes the tool with the stored tool_args."""
+
+    async def test_form_with_extra_item_keys_returns_validated_answer(self):
+        from preloop.services.question_schema import replay_arguments
+
+        stored = await _stored_tool_args(
+            "ask_user",
+            question="Follow up with these leads?",
+            items=LEAD_ITEMS,
+            input_schema=LEAD_SCHEMA,
+        )
+        assert stored["is_question"] is True
+        assert stored["dropped_item_keys"] == ["score"]
+        # The extra keys the answer and the console need are kept, not dropped.
+        assert stored["items"][0]["title"] == "Ada Lovelace"
+        assert stored["items"][0]["fields"] == {
+            "linkedin": "https://linkedin.com/in/ada",
+            "hubspot": "https://app.hubspot.com/contacts/1",
+            "lead_file": "leads/ada/lead.md",
+        }
+
+        answer = {"rows": [{"id": "lead-1", "answer": "yes", "follow_up": True}]}
+        result = await _replay("ask_user", replay_arguments("ask_user", stored), answer)
+        payload = json.loads(_result_text(result))
+        assert payload["status"] == "answered"
+        assert payload["answer"] == answer
+        assert payload["approval_id"] == "11111111-2222-3333-4444-555555555555"
+
+    async def test_unstripped_args_are_what_failed_on_prod(self):
+        stored = await _stored_tool_args(
+            "ask_user", question="Ship it?", items=LEAD_ITEMS
+        )
+        with pytest.raises(Exception, match="is_question|dropped_item_keys"):
+            await _replay("ask_user", stored, None)
+
+    async def test_is_question_only_replay_returns_the_answer(self):
+        from preloop.services.question_schema import replay_arguments
+
+        stored = await _stored_tool_args(
+            "ask_user", question="Ship it?", options=["yes", "no"]
+        )
+        assert stored["is_question"] is True
+        assert "dropped_item_keys" not in stored
+        args = replay_arguments("ask_user", stored)
+        assert "is_question" not in args
+        result = await _replay("ask_user", args, None)
+        assert "validation error" not in _result_text(result).lower()
+
+    async def test_request_approval_form_replays(self):
+        from preloop.services.question_schema import replay_arguments
+
+        stored = await _stored_tool_args(
+            "request_approval",
+            operation="Contact leads",
+            context="c",
+            reasoning="r",
+            items=LEAD_ITEMS,
+            input_schema=LEAD_SCHEMA,
+        )
+        assert "dropped_item_keys" in stored
+        answer = {"rows": [{"id": "lead-1", "follow_up": False}]}
+        result = await _replay(
+            "request_approval", replay_arguments("request_approval", stored), answer
+        )
+        assert '"answer": {"rows"' in _result_text(result)
+
+    async def test_other_tools_keep_their_arguments(self):
+        from preloop.services.question_schema import replay_arguments
+
+        args = {"is_question": True, "dropped_item_keys": ["x"]}
+        assert replay_arguments("some_upstream_tool", args) == args
+
+    async def test_normalized_items_renormalize_unchanged(self):
+        from preloop.services.question_schema import normalize_items
+
+        once = normalize_items(LEAD_ITEMS)
+        dropped: set[str] = set()
+        assert normalize_items(once, dropped_keys=dropped) == once
+        assert dropped == set()

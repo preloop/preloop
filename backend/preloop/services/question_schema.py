@@ -124,6 +124,30 @@ _ITEM_KEYS = {"id", "title", "label", "description", "severity", "badges", "href
 ITEM_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info", "unknown"})
 
 
+# Keys the ask_user / request_approval tools write into the stored tool_args
+# for the console and the notifications. They are not tool parameters, so
+# the approval replay (get_approval_status re-running the approved call) must
+# remove them or the tool's validated signature rejects the call.
+SERVER_ONLY_ARGUMENT_KEYS = frozenset({"is_question", "dropped_item_keys"})
+_FORM_TOOLS = frozenset({"ask_user", "request_approval"})
+
+
+def replay_arguments(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Return stored tool_args fit to re-invoke a built-in form tool.
+
+    Args:
+        tool_name: Name of the approved tool.
+        arguments: The tool_args persisted on the approval request.
+
+    Returns:
+        The arguments without server-only keys for ask_user and
+        request_approval; any other tool's arguments unchanged.
+    """
+    if tool_name not in _FORM_TOOLS or not isinstance(arguments, dict):
+        return arguments
+    return {k: v for k, v in arguments.items() if k not in SERVER_ONLY_ARGUMENT_KEYS}
+
+
 class QuestionSchemaError(ValueError):
     """The agent handed us a schema the console could not draw."""
 
@@ -495,6 +519,24 @@ def normalize_items(
         unknown: Set[str] = set()
         for key, value in entry.items():
             if key in _ITEM_KEYS:
+                continue
+            if key == "fields" and isinstance(value, dict):
+                # Already-normalized rows (an approval replay re-runs the
+                # tool on the stored items) keep their display fields.
+                for sub_key, sub_value in value.items():
+                    sub_text = (
+                        _clean_text(sub_value, MAX_ITEM_FIELD_LENGTH)
+                        if isinstance(sub_value, str)
+                        else None
+                    )
+                    if (
+                        sub_text
+                        and len(str(sub_key)) <= MAX_ITEM_FIELD_KEY_LENGTH
+                        and len(fields) < MAX_ITEM_FIELDS
+                    ):
+                        fields[str(sub_key)] = sub_text
+                    elif sub_text is not None or not isinstance(sub_value, str):
+                        unknown.add(str(sub_key))
                 continue
             key_text = str(key)
             text = (
