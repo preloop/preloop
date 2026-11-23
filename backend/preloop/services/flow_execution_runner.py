@@ -19,7 +19,6 @@ from preloop.services.flow_execution_dispatcher import (
     dispatch_resume,
     get_orchestrator_worker_id,
 )
-from preloop.services.flow_failure_category import derive_failure_category
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 from preloop.services.flow_pr_binding import merge_result_preserving_pr_binding
 from preloop.services.kill_switch import flows_halted
@@ -320,6 +319,12 @@ async def resume_existing_execution(
     if flow is None:
         raise ValueError("Flow not found for resumed execution")
 
+    # This process did not run the start of the run. Take the per-run
+    # decisions the result handling depends on from what the execution
+    # stored, not from defaults on a fresh orchestrator.
+    orchestrator._restore_native_result()
+    orchestrator._read_only_review_execution = orchestrator._read_only_review_mode()
+
     from preloop.services.isolated_publication import isolated_publication_enabled
     from preloop.services.trusted_publisher import PublicationError
 
@@ -385,10 +390,11 @@ async def resume_existing_execution(
             await orchestrator._finish_isolated_publication(agent_result)
         final_status = agent_result.get("status", "FAILED")
         agent_result = orchestrator._explain_schema_rejection(agent_result)
-        resume_category = derive_failure_category(
-            status=final_status,
-            error_message=agent_result.get("error_message"),
-            failure_analysis=agent_result.get("failure_analysis"),
+        # The same derivation as the first worker's terminal write, so a
+        # category the monitor named (result_schema_invalid, a selection
+        # failure) is not replaced by the log analysis's guess.
+        resume_category = orchestrator._terminal_failure_category(
+            final_status, agent_result
         )
         merged_result = merge_result_preserving_pr_binding(
             getattr(orchestrator.execution_log, "result", None),

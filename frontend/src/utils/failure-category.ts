@@ -149,6 +149,11 @@ export const FAILURE_CATEGORY_META: Record<string, FailureCategoryMeta> = {
     tooltip:
       'The agent finished, but its result.json does not match the result schema set on this flow, so the result is not usable. The errors are listed on the execution.',
   },
+  result_selection_failed: {
+    label: 'result selection failed',
+    tooltip:
+      "The agent finished and its answer arrived, but Preloop could not select the run's result from it. This is a Preloop failure, not the model's or the agent's.",
+  },
   repository_access: {
     label: 'repository access',
     tooltip:

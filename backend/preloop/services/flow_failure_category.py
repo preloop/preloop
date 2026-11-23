@@ -192,6 +192,9 @@ FAILURE_CATEGORY_PUBLICATION_MISSING = "publication_missing"
 # The run finished but its result.json does not match the flow result schema
 # (#868), so the result is not usable even though the agent reported success.
 FAILURE_CATEGORY_RESULT_SCHEMA_INVALID = "result_schema_invalid"
+#: The agent finished and its answer arrived, but Preloop could not select the
+#: result from the native result transport. Our failure, never the model's.
+FAILURE_CATEGORY_RESULT_SELECTION_FAILED = "result_selection_failed"
 #: A read-only review result names a revision other than the admitted one
 #: (for example an all-zero ``head_sha``), so it does not review this change.
 FAILURE_CATEGORY_REVIEW_BINDING_MISMATCH = "review_binding_mismatch"
@@ -255,6 +258,7 @@ FAILURE_CATEGORIES = (
     FAILURE_CATEGORY_AGENT_NO_PROGRESS,
     FAILURE_CATEGORY_PUBLICATION_MISSING,
     FAILURE_CATEGORY_RESULT_SCHEMA_INVALID,
+    FAILURE_CATEGORY_RESULT_SELECTION_FAILED,
     FAILURE_CATEGORY_REVIEW_BINDING_MISMATCH,
     FAILURE_CATEGORY_REVIEW_NOT_INSPECTED,
     FAILURE_CATEGORY_REVIEW_DEGENERATE,
@@ -543,6 +547,7 @@ _AGENT_ERROR_RE = re.compile(
 _RESULT_SCHEMA_INVALID_RE = re.compile(
     r"^Result document does not match the flow result schema\b"
 )
+_RESULT_SELECTION_FAILED_RE = re.compile(r"^Result selection failed:")
 
 # The gateway's breaker for identical failing model calls (#1336); see
 # flow_execution_limits.repeated_failure_message.
@@ -688,6 +693,7 @@ _STRUCTURAL_MESSAGE_RULES = (
     (_APPROVAL_UNAVAILABLE_RE, FAILURE_CATEGORY_APPROVAL_UNAVAILABLE),
     (_RESUME_FAILED_RE, FAILURE_CATEGORY_RESUME_FAILED),
     (_RESULT_SCHEMA_INVALID_RE, FAILURE_CATEGORY_RESULT_SCHEMA_INVALID),
+    (_RESULT_SELECTION_FAILED_RE, FAILURE_CATEGORY_RESULT_SELECTION_FAILED),
     (_AGENT_NO_PROGRESS_RE, FAILURE_CATEGORY_AGENT_NO_PROGRESS),
     (_HOSTED_TARIFF_RE, FAILURE_CATEGORY_MODEL_CONFIG),
     (_REPEATED_UPSTREAM_FAILURE_RE, FAILURE_CATEGORY_REPEATED_UPSTREAM_FAILURE),

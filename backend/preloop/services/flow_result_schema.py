@@ -38,6 +38,12 @@ NO_RESULT_CAPTURED = "No result.json was captured"
 NO_NATIVE_ANSWER = "No final answer was captured"
 NATIVE_ANSWER_NOT_JSON = "The final answer was not valid JSON"
 NATIVE_ANSWER_NOT_OBJECT = "The final answer was not a JSON object"
+#: The answer arrived in the native result transport, but the process that
+#: finished the run could not select from it. A control-plane failure.
+NATIVE_SELECTION_UNAVAILABLE = (
+    "Result selection failed: the agent's answer arrived in the native result "
+    "transport, but this run had no native result decision to select it with"
+)
 #: A native-result run whose model request failed before any answer existed.
 MODEL_REQUEST_FAILED = (
     "No final answer was written because the model request failed; see the "
