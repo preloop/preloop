@@ -481,6 +481,7 @@ export class FlowView extends LitElement {
   @state() private conversationFirstMessage = '';
   @state() private startingConversation = false;
   private conversationStartRequest: {
+    flowId: string;
     request_id: string;
     message: string;
   } | null = null;
@@ -1938,20 +1939,21 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
   }
 
   private async startConversation(): Promise<void> {
-    if (this.startingConversation) return;
+    if (this.startingConversation || !this.flowId) return;
     this.startingConversation = true;
     if (
       !this.conversationStartRequest ||
+      this.conversationStartRequest.flowId !== this.flowId ||
       this.conversationStartRequest.message !== this.conversationFirstMessage
     ) {
       this.conversationStartRequest = {
+        flowId: this.flowId,
         request_id: crypto.randomUUID(),
         message: this.conversationFirstMessage,
       };
     }
-    const options = {
-      conversationId: this.conversationStartRequest.request_id,
-    };
+    const { flowId, request_id, message } = this.conversationStartRequest;
+    const options = { conversationId: request_id };
     const agent = {
       id: options.conversationId,
       display_name: this.flow?.name || 'Flow conversation',
@@ -1964,8 +1966,8 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
         });
     try {
       await conversationRequest<FlowConversation>(
-        `flows/${this.flowId}/conversations`,
-        this.conversationStartRequest
+        `flows/${flowId}/conversations`,
+        { request_id, message }
       );
       this.conversationStartRequest = null;
       this.showConversationStart = false;

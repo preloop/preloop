@@ -1649,6 +1649,22 @@ describe('FlowView conversation start', () => {
       first.request_id
     );
   });
+  it('scopes retry identity to the flow after navigation following a lost response', async () => {
+    fetch.rejects(new TypeError('Response lost'));
+    await element.startConversation();
+    const first = JSON.parse(fetch.firstCall.args[1].body);
+    element.flowId = 'another-flow';
+    await element.startConversation();
+    const next = JSON.parse(fetch.secondCall.args[1].body);
+    expect(String(fetch.secondCall.args[0])).to.contain(
+      '/flows/another-flow/conversations'
+    );
+    expect(next.request_id).not.to.equal(first.request_id);
+    expect(next.message).to.equal(first.message);
+    expect(Object.keys(next).sort()).to.deep.equal(['message', 'request_id']);
+    await element.startConversation();
+    expect(JSON.parse(fetch.thirdCall.args[1].body)).to.deep.equal(next);
+  });
   it('reserves a blank popup synchronously and navigates only after the start succeeds', async () => {
     let respond!: (value: Response) => void;
     fetch.returns(
