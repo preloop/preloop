@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from collections.abc import Mapping
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -4844,19 +4845,109 @@ def test_call_litellm_passes_bedrock_api_key(stream: bool) -> None:
     )
 
 
+# LiteLLM writes this the first time ``default_encoding`` loads. It is a
+# tokenizer cache path, not an AWS or IAM credential, and the write only
+# shows up when this test is the first in the process to load that module.
+_LITELLM_LIBRARY_CACHE_ENV_KEYS = frozenset({"TIKTOKEN_CACHE_DIR"})
+
+_CREDENTIAL_ENV_MARKERS = (
+    "CREDENTIAL",
+    "SECRET_ACCESS_KEY",
+    "ACCESS_KEY_ID",
+    "SESSION_TOKEN",
+)
+
+
+def _warm_litellm_tokenizer_cache() -> None:
+    """Load LiteLLM's tokenizer so its cache dir is set before the snapshot.
+
+    ``litellm.litellm_core_utils.default_encoding`` assigns
+    ``TIKTOKEN_CACHE_DIR`` at import time. That assignment runs once per
+    process, so a snapshot taken before the first load changes when this
+    test is the first on the worker to import LiteLLM.
+    """
+    from litellm.litellm_core_utils.default_encoding import encoding
+
+    # Importing the module assigns TIKTOKEN_CACHE_DIR. Touch the encoding so
+    # the import is real and the tokenizer path has actually loaded.
+    if getattr(encoding, "name", "") != "cl100k_base":
+        raise RuntimeError("LiteLLM default encoding failed to load")
+
+
+def _is_aws_or_credential_env_key(key: str) -> bool:
+    """Return whether ``key`` names an AWS or other credential variable.
+
+    Args:
+        key: Environment variable name.
+
+    Returns:
+        True for ``AWS_*`` names and names that carry credential material.
+    """
+    normalized = key.upper()
+    if normalized.startswith("AWS_"):
+        return True
+    return any(marker in normalized for marker in _CREDENTIAL_ENV_MARKERS)
+
+
+def _credential_environment(env: Mapping[str, str]) -> dict[str, str]:
+    """Return AWS and credential entries, dropping named library cache vars.
+
+    Args:
+        env: Process environment mapping.
+
+    Returns:
+        The entries the Bedrock API-key path must not add or change.
+    """
+    return {
+        key: value
+        for key, value in env.items()
+        if key not in _LITELLM_LIBRARY_CACHE_ENV_KEYS
+        and _is_aws_or_credential_env_key(key)
+    }
+
+
+def test_credential_environment_ignores_tokenizer_cache_and_keeps_aws_keys() -> None:
+    """The env snapshot drops LiteLLM's cache dir and still reports AWS keys."""
+    observed = _credential_environment(
+        {
+            "PATH": "/usr/bin",
+            "HOME": "/tmp",
+            "TIKTOKEN_CACHE_DIR": "/cache/tokenizers",
+            "AWS_ACCESS_KEY_ID": "synthetic-access-key",
+            "AWS_SECRET_ACCESS_KEY": "synthetic-secret",
+            "AWS_SESSION_TOKEN": "synthetic-session",
+            "AWS_BEARER_TOKEN_BEDROCK": "ambient-key",
+            "AWS_REGION_NAME": "us-west-2",
+        }
+    )
+    assert observed == {
+        "AWS_ACCESS_KEY_ID": "synthetic-access-key",
+        "AWS_SECRET_ACCESS_KEY": "synthetic-secret",
+        "AWS_SESSION_TOKEN": "synthetic-session",
+        "AWS_BEARER_TOKEN_BEDROCK": "ambient-key",
+        "AWS_REGION_NAME": "us-west-2",
+    }
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_real_litellm_bedrock_api_key_never_resolves_iam_credentials(
     stream: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
+    """A Bedrock API-key call must not read or add AWS/IAM credential env vars.
+
+    The tokenizer cache is warmed first. The snapshot then compares AWS and
+    credential keys only, and ignores ``TIKTOKEN_CACHE_DIR`` by name, so the
+    first tokenizer import in a worker cannot fail the assertion.
+    """
     import httpx
     from litellm.llms.bedrock.base_aws_llm import BaseAWSLLM
     from litellm.llms.custom_httpx.http_handler import HTTPHandler
     from preloop.services.openai_gateway import LiteLLMModelGatewayBackend
 
+    _warm_litellm_tokenizer_cache()
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "ambient-key")
     monkeypatch.setenv("AWS_REGION_NAME", "us-west-2")
-    before = dict(os.environ)
+    before = _credential_environment(os.environ)
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -4915,7 +5006,7 @@ def test_real_litellm_bedrock_api_key_never_resolves_iam_credentials(
         assert request.headers["Authorization"] == f"Bearer {key}"
         assert request.url.host == f"bedrock-runtime.{region}.amazonaws.com"
         assert request.url.path.endswith("/converse-stream" if stream else "/converse")
-    assert dict(os.environ) == before
+    assert _credential_environment(os.environ) == before
 
 
 @pytest.mark.parametrize("metadata_region", ["us-west-2", None])
