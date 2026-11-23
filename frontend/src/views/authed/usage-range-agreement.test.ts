@@ -87,12 +87,11 @@ describe('usage range agreement', () => {
     requestedWindows = {};
     // Every page rounds its clock up to the next minute. With a live clock,
     // pages that mount on either side of a minute boundary ask for windows a
-    // minute apart, so start the clock just past a minute boundary. Only
-    // Date is faked: the fixtures still need real timers to settle.
+    // minute apart, so freeze Date just past a minute boundary. Only Date
+    // is faked: the fixtures still need real timers to settle.
     clock = sinon.useFakeTimers({
       now: new Date('2026-01-15T12:00:05Z'),
       toFake: ['Date'],
-      shouldAdvanceTime: true,
     });
 
     fetchStub = sinon.stub(window, 'fetch');
