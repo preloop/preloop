@@ -511,6 +511,11 @@ Automatically clone repositories before the agent starts.
 **1. Enable Git Workspace Cloning**
 - Toggle **Enable Git Workspace Cloning** to ON
 
+With the toggle off, the agent runs without a checkout: the trigger repository
+is not cloned. A flow created through the API that turns cloning off but still
+lists `repositories` keeps cloning those entries, and the run log says so;
+remove the list or turn cloning on to make the intent explicit.
+
 **2. Git User Info**
 ```yaml
 Git User Name: Preloop
@@ -526,9 +531,14 @@ Target Branch:       # Branch to create for commits (auto-generated if empty)
 
 **Source branch** is optional, and blank is usually right. Blank means "use
 the branch from the trigger payload": for a pull or merge request, its source
-branch. The form saves a blank field as `null`; a flow created through the API
-with `source_branch` omitted gets `main`, so send `null` explicitly there. A value pins every run to that branch, whatever branch the trigger
-names. Pin a branch only for flows that always work on the same branch, such
+branch. When the trigger names no branch (an issue, a comment, a schedule),
+the run uses the repository's default branch: the one the code host reports
+for the synced project or in the event, otherwise whatever the remote's HEAD
+points to. A repository whose default branch is `master` or `develop` works
+without configuration. A flow created through the API with `source_branch`
+omitted behaves the same way. A value pins every run to that branch, whatever
+branch the trigger names. If a clone fails, the run log names the branch it
+tried and the repository's default branch. Pin a branch only for flows that always work on the same branch, such
 as a scheduled sweep of `main`. A pull request reviewer must leave it blank, or
 every review starts from the pinned branch instead of the change under review;
 the form warns when a reviewer flow pins a branch.
@@ -552,8 +562,8 @@ directory. Select **Make default** on another entry to move it first. Each entry
 needs a distinct clone path; for example, `/workspace/backend` and
 `/workspace/frontend` make both repositories available in the same execution.
 
-With no explicit repositories, cloning falls back to the trigger project or
-[Jira repository bindings](jira-repository-binding.md). Explicit entries take
+With cloning enabled and no explicit repositories, cloning falls back to the
+trigger project or [Jira repository bindings](jira-repository-binding.md). Explicit entries take
 precedence over those bindings; adding or removing entries preserves the saved
 bindings.
 

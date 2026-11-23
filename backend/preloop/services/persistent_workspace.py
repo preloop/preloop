@@ -235,6 +235,8 @@ def ephemeral_clone_identity(
         str(repo.get("branch") or "").strip()
         or host._extract_source_branch_from_trigger(trigger)
         or git_config.get("source_branch")
+        or str(repo.get("default_branch") or "").strip()
+        or host._default_branch_from_trigger(trigger)
         or "main"
     )
     ref = host._resolve_repository_clone_branch(

@@ -256,6 +256,24 @@ describe('PreloopFlowForm repository checkouts', () => {
     expect((await saved(element)).repositories).to.deep.equal(repositories);
   });
 
+  it('says a disabled Git workspace means no checkout', async () => {
+    const element = await mount({ enabled: false, repositories: [] });
+    const help = element.shadowRoot!.querySelector(
+      '[data-git-clone-off-help]'
+    ) as HTMLElement;
+    expect(help.textContent!.trim()).to.equal(
+      'Off: the agent runs without a checkout of the trigger repository.'
+    );
+    const toggle = element.shadowRoot!.querySelector(
+      '[data-git-clone-enabled]'
+    ) as any;
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('sl-change'));
+    await element.updateComplete;
+    expect(element.shadowRoot!.querySelector('[data-git-clone-off-help]')).to.be
+      .null;
+  });
+
   it('loads repository choices only after enabling cloning', async () => {
     const element = await mount({
       enabled: false,

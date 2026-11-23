@@ -210,6 +210,7 @@ class TestGitLabTracker(unittest.IsolatedAsyncioTestCase):
             "description": "A test project",
             "web_url": "http://gitlab.com/test-group/test-project",
             "path_with_namespace": "test-group/test-project",
+            "default_branch": "master",
         }
         mock_group.projects.list.return_value = [mock_project]
 
@@ -218,6 +219,9 @@ class TestGitLabTracker(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(projects), 1)
         self.assertEqual(projects[0]["name"], "Test Project")
+        # Stored so a clone that names no branch uses it, not "main".
+        stored = tracker.transform_project(projects[0], "org-1")
+        self.assertEqual(stored["meta_data"]["default_branch"], "master")
 
     @patch("preloop.sync.trackers.gitlab.gitlab.Gitlab")
     async def test_get_issue(self, mock_gitlab_constructor):

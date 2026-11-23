@@ -270,7 +270,13 @@ def resolve_repository_binding(
             f"{host_type} tracker. Sync the tracker or fix the binding in {where}."
         )
 
-    base_branch = binding.base_branch or git_clone_config.get("source_branch") or "main"
+    project_meta = project.meta_data if isinstance(project.meta_data, dict) else {}
+    base_branch = (
+        binding.base_branch
+        or git_clone_config.get("source_branch")
+        or project_meta.get("default_branch")
+        or "main"
+    )
     effective = copy.deepcopy(git_clone_config)
     effective["repositories"] = [
         {

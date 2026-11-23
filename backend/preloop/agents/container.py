@@ -4366,6 +4366,18 @@ class ContainerAgentExecutor(AgentExecutor):
                     git_cmd = self._wrap_clone_with_workspace_restore(
                         git_cmd, execution_context
                     )
+                    if not is_enabled and not review_checkout:
+                        # Kept for flows created through the API with an
+                        # explicit list and the flag off. The console clears
+                        # the list when it saves cloning disabled, and the
+                        # orchestrator no longer adds the trigger repository
+                        # to a disabled flow, so only such a list gets here.
+                        commands.append(
+                            "echo 'Git workspace cloning is off, but this flow "
+                            "lists repositories in its git_clone_config; "
+                            "cloning them. Remove the list or turn cloning on "
+                            "to make this explicit.'"
+                        )
                     commands.append(git_cmd)
                     # After the clone-or-restore wrapper, so a restored
                     # workspace (which skips the clone) is covered too.
@@ -4842,7 +4854,13 @@ fi
             if not source_branch:
                 source_branch = self._extract_source_branch_from_trigger(trigger_data)
             if not source_branch:
-                source_branch = "main"
+                # The repository's own default branch, never a literal
+                # ``main``. Empty means it is not known before the clone, so
+                # the clone follows the remote HEAD instead.
+                source_branch = self._resolve_default_branch(
+                    trigger_data,
+                    self._resolve_git_clone_repositories(execution_context, git_config),
+                )
 
             if not target_branch:
                 execution_id = execution_context.get("execution_id", "exec")
@@ -4878,6 +4896,43 @@ fi
             resume.get("execution_id") or resume.get("source_branch")
         )
 
+    @staticmethod
+    def _default_branch_from_trigger(trigger_data: Any) -> str:
+        """The repository default branch a webhook payload reports, or empty.
+
+        GitHub sends ``repository.default_branch``, GitLab
+        ``project.default_branch``.
+        """
+        if not isinstance(trigger_data, dict):
+            return ""
+        payload = trigger_data.get("payload", trigger_data)
+        if not isinstance(payload, dict):
+            return ""
+        for key in ("repository", "project"):
+            holder = payload.get(key)
+            if isinstance(holder, dict):
+                branch = _validated_git_ref(holder.get("default_branch"))
+                if branch:
+                    return branch
+        return ""
+
+    def _resolve_default_branch(
+        self, trigger_data: Any, repositories: Optional[list] = None
+    ) -> str:
+        """The default branch of the repository this run checks out, or empty.
+
+        Prefers the ``default_branch`` the orchestrator copied from the synced
+        project onto the first repository entry, then the trigger payload.
+        Empty when neither knows it: the clone then follows the remote HEAD.
+        """
+        for repo in repositories or []:
+            if isinstance(repo, dict):
+                branch = _validated_git_ref(repo.get("default_branch"))
+                if branch:
+                    return branch
+                break
+        return self._default_branch_from_trigger(trigger_data)
+
     def _resolve_resume_base_branch(
         self,
         git_config: Dict[str, Any],
@@ -4886,7 +4941,8 @@ fi
         """Return the flow base branch a resume rebase should land on.
 
         Prefers ``repositories[].branch``, then top-level ``git_clone_config.branch``,
-        then ``source_branch``, then ``main``.
+        then ``source_branch``, then the repository's default branch. ``main``
+        is the last resort only when no default branch is known at all.
         """
 
         if repo_config:
@@ -4896,6 +4952,8 @@ fi
         configured = git_config.get("branch") or git_config.get("source_branch")
         if configured:
             return str(configured)
+        if repo_config and _validated_git_ref(repo_config.get("default_branch")):
+            return str(repo_config["default_branch"])
         return "main"
 
     def _build_git_global_setup_commands(
@@ -5179,7 +5237,7 @@ fi
             return str(repo_branch)
         if commit_sha:
             clone_branch = (
-                self._extract_target_branch_from_trigger(trigger_data) or "main"
+                self._extract_target_branch_from_trigger(trigger_data) or source_branch
             )
             self.logger.info(
                 "Commit SHA %s available; cloning branch '%s' "
@@ -5305,13 +5363,21 @@ fi
         """Build the guarded ``git clone`` shell command."""
 
         branch_arg = f" -b {shlex.quote(clone_branch)}" if clone_branch else ""
+        tried = shlex.quote(clone_branch or "remote default (HEAD)")
+        q_url = shlex.quote(repo_url)
         return f"""
 echo "Cloning repository to {full_path}..."
-if ! git clone{branch_arg} {shlex.quote(repo_url)} {shlex.quote(full_path)}; then
+if ! git clone{branch_arg} {q_url} {shlex.quote(full_path)}; then
+    _pl_default=$(git ls-remote --symref {q_url} HEAD 2>/dev/null \\
+        | sed -n 's|^ref: refs/heads/\\(.*\\)[[:space:]]HEAD$|\\1|p' | head -n 1)
     echo "========================================="
     echo "FATAL ERROR: Git clone failed!"
     echo "Could not clone repository to {full_path}"
-    echo "Check repository URL, credentials, and network connectivity."
+    echo "Tried branch:" {tried}
+    echo "Repository default branch: ${{_pl_default:-unknown}}"
+    echo "Set the Source branch in the flow's Git workspace settings if the"
+    echo "branch above does not exist, or check the repository URL,"
+    echo "credentials, and network connectivity."
     echo "========================================="
     exit 1
 fi
@@ -5398,6 +5464,7 @@ cd /workspace
         if use_remote_default:
             return f"""
 cd {q_path}
+echo "Following the repository default branch $(git rev-parse --abbrev-ref HEAD)"
 echo Creating agent target branch {q_target} from remote default HEAD
 if ! git checkout -b {q_target}; then
     echo "FATAL ERROR: Could not create target branch {q_target}"
@@ -5637,6 +5704,12 @@ true
         repo_source = (
             str(repo_config.get("source_branch") or repo_config.get("branch") or "")
             or source_branch
+            or str(_validated_git_ref(repo_config.get("default_branch")) or "")
+        )
+        # No branch known before the clone: follow the remote HEAD, which is
+        # the repository's default branch whatever its name.
+        follow_remote_head = bool(repo_config.get("use_remote_default")) or (
+            not repo_source
         )
         repo_target = str(repo_config.get("target_branch") or "") or target_branch
         pin_sha = self._repository_pin_sha(repo_config)
@@ -5669,14 +5742,14 @@ true
                     source_branch=repo_source,
                     target_branch=repo_target,
                     trigger_data=trigger_data,
-                    use_remote_default=bool(repo_config.get("use_remote_default")),
+                    use_remote_default=follow_remote_head,
                     execution_context=execution_context,
                 ),
                 self._build_git_clone_validation_shell(
                     full_path=full_path,
                     source_branch=(
                         "remote HEAD"
-                        if repo_config.get("use_remote_default") and not commit_sha
+                        if follow_remote_head and not commit_sha
                         else repo_source
                     ),
                     target_branch=repo_target,

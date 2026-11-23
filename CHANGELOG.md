@@ -66,6 +66,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A flow with **Enable git workspace cloning** off no longer clones the
+  trigger repository. A run that names no branch now checks out the
+  repository's default branch instead of assuming `main`, so repositories
+  whose default branch is `master` or another name work without setting a
+  source branch. GitLab sync now records each project's default branch, and
+  a failed clone names the branch it tried and the repository's default
+  branch.
+
 - An approved `ask_user` or `request_approval` form now returns the human's
   answer to the agent. The approval replay re-ran the tool with the
   server-only `is_question` and `dropped_item_keys` keys from the stored
@@ -89,6 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An issue whose provider page was not stored when it was synced now links
   to its GitLab or GitHub page. The Preloop fallback link no longer has a
   doubled `https://https://` scheme.
+
 - Backend Fast stays well under its 15 minute timeout: a changed backend
   module now selects the test files that import it or are named
   `test_<module>*` instead of its whole area plus every integration test,

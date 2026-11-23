@@ -137,7 +137,12 @@ def _label_names(labels: Any) -> List[str]:
     return names
 
 
-def _default_branch(project: Any) -> str:
+def _default_branch(project: Any) -> Optional[str]:
+    """The project's synced default branch, or None when sync never stored it.
+
+    The synthetic payload carries it as ``repository.default_branch``, which
+    the clone reads; a guessed ``main`` would fail on any other default.
+    """
     settings = (
         project.settings if isinstance(getattr(project, "settings", None), dict) else {}
     )
@@ -146,7 +151,8 @@ def _default_branch(project: Any) -> str:
         if isinstance(getattr(project, "meta_data", None), dict)
         else {}
     )
-    return str(settings.get("default_branch") or meta.get("default_branch") or "main")
+    branch = settings.get("default_branch") or meta.get("default_branch")
+    return str(branch) if branch else None
 
 
 def _tracker_host(tracker: Any, fallback: str) -> str:
