@@ -23,6 +23,7 @@ from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 from preloop.services.read_only_review import (
     REVIEW_DEADLINE_PLACEHOLDER,
     review_deadline_text,
+    review_output_limit_text,
     state_review_deadline,
 )
 from tests.agents.test_native_result_repair import _blocks, _context, _run
@@ -214,7 +215,9 @@ def test_state_review_deadline_replaces_once() -> None:
     context = {"prompt": "A\n" + REVIEW_DEADLINE_PLACEHOLDER + "B"}
     at = datetime(2026, 11, 20, 12, 10, 0, 999, tzinfo=timezone.utc)
     state_review_deadline(context, 600, at)
-    assert context["prompt"] == "A\n" + review_deadline_text(600, at) + "B"
+    assert context["prompt"] == (
+        "A\n" + review_deadline_text(600, at) + review_output_limit_text(10_000) + "B"
+    )
     assert "2026-11-20T12:10:00Z" in context["prompt"]
     before = context["prompt"]
     state_review_deadline(context, 900, at)
@@ -448,3 +451,19 @@ async def test_runner_launch_never_carries_an_unfilled_placeholder() -> None:
 
     assert captured and REVIEW_DEADLINE_PLACEHOLDER not in captured[0]
     assert "Time limit: this run has a time limit." in captured[0]
+
+
+def test_preamble_names_the_tool_output_limit() -> None:
+    """The reviewer is told the per-result limit and how to read past it."""
+    context = {
+        "prompt": "A\n" + REVIEW_DEADLINE_PLACEHOLDER + "B",
+        "model_identifier": "example/custom",
+        "model_provider": "example",
+        "model_parameters": {"context_window": 128_000},
+    }
+    state_review_deadline(context, 600, None)
+    prompt = context["prompt"]
+    assert "limited to 12800 tokens" in prompt
+    assert "cut in the middle" in prompt
+    assert "per file or in line ranges" in prompt
+    assert "reached its end" in prompt

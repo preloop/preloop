@@ -1784,6 +1784,43 @@ the counts. They contain no observation values, paths or text:
 | `incomplete_records` | Records that are incomplete, unreadable, a capture failure, or stored with content capture off. |
 | `masking_only_records` | Incomplete records whose only stored reason is a named masking rule. |
 | `masking_by_rule` | How many times each masking rule fired. Rule ids only. |
+| `agent_clipped_results` | Tool results the agent CLI cut to its per-result limit before the model saw them. |
+| `bound_reads` | Successful commands that print the bound patch or a changed file, by the inspection floor's own matcher, joined to their result by call id. |
+| `clipped_bound_reads` | Of `bound_reads`, those whose result was clipped. |
+| `unknown_bound_reads` | Shell calls that may be bound reads but could not be joined to a result with an exit code (a session still running, a different working directory, a non-`exec_command` shell tool, or arguments not stored). |
+
+#### Tool output limit and clipped results
+
+Hosted Codex cuts each tool result to a per-result limit before the model
+sees it, keeping the start and end, and writes
+`Warning: truncated output (original token count: N)` at the top of the
+result. For a model Codex does not know, Preloop writes the limit into the
+model catalog as one tenth of the model's context window in tokens, at most
+64,000: 3,200 tokens for a 32K window, 12,800 for 128K, 20,000 for 200K,
+64,000 for 1M, and 27,200 when no window is registered (Codex's 272K
+fallback). Models Codex ships keep Codex's own 10,000-token profile. A call
+can only lower the limit: Codex uses the smaller of the catalog limit and
+the call's `max_output_tokens`, 10,000 when the model sends none. The
+read-only review preamble states the limit and tells the reviewer to read a
+long patch per file or in line ranges.
+
+A gateway result observation that Codex cut carries `agent_clipped: true`
+and `agent_original_tokens`, the count Codex reported; every other result
+carries `agent_clipped: false`. Only Codex's warning at the position Codex
+writes it counts, so a file that quotes the sentence is not a clip. This is
+separate from `truncated`, which still means only that Preloop's own
+storage limit dropped data. A clipped result is a whole record of what the
+model saw: it keeps `capture_complete: true` and does not affect
+`platform_review.evidence`.
+
+The inspection floor accepts a successful command that prints the bound
+patch or a changed file. It is not proof of coverage: a read whose output
+was clipped still satisfies it. To check that the reviewer saw every such
+read whole, read `tool_evidence` from the result and require
+`bound_reads > 0`, `clipped_bound_reads == 0` and
+`unknown_bound_reads == 0`. Preloop does not refuse publication for a
+clipped read; a controller that wants that can make the check itself before
+calling publish in manual mode.
 
 On the publish call, `expected_evidence` of `captured` or `complete` is a
 precondition. It can only tighten the flow setting: `captured` does not post
@@ -1886,7 +1923,11 @@ omit it:
     "records": 2,
     "incomplete_records": 0,
     "masking_only_records": 0,
-    "masking_by_rule": {}
+    "masking_by_rule": {},
+    "agent_clipped_results": 0,
+    "bound_reads": 1,
+    "clipped_bound_reads": 0,
+    "unknown_bound_reads": 0
   },
   "readback_check": null
 }

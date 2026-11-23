@@ -437,6 +437,33 @@ class ToolEvidenceSummary(BaseModel):
     masking_by_rule: dict[str, int] = Field(
         description="How many times each named masking rule fired. Rule ids only."
     )
+    agent_clipped_results: int = Field(
+        default=0,
+        description=(
+            "Tool results the agent CLI cut to its per-result limit before the "
+            "model saw them. Not an incompleteness: the record is whole."
+        ),
+    )
+    bound_reads: int = Field(
+        default=0,
+        description=(
+            "Successful commands the inspection floor's matcher accepts as "
+            "printing the bound patch or a changed file, joined to their "
+            "result by call id."
+        ),
+    )
+    clipped_bound_reads: int = Field(
+        default=0,
+        description="Of bound_reads, those whose result the agent CLI clipped.",
+    )
+    unknown_bound_reads: int = Field(
+        default=0,
+        description=(
+            "Shell calls that may be bound reads but whose command, working "
+            "directory, result or exit code could not be joined. Zero here and "
+            "in clipped_bound_reads means every joined read was seen whole."
+        ),
+    )
 
 
 class ReviewCompletion(BaseModel):
