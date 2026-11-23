@@ -675,4 +675,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert pins.down_revision == readback.revision
     chat_flows = script.get_revision("20261227_chat_flows")
     assert chat_flows.down_revision == pins.revision
-    assert script.get_heads() == [chat_flows.revision]
+    conversations = script.get_revision("20261228_flow_conversations")
+    assert conversations.down_revision == chat_flows.revision
+    assert script.get_heads() == [conversations.revision]

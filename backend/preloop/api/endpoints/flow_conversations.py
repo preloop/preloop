@@ -5,10 +5,12 @@ from typing import Any
 from uuid import UUID
 
 import jwt
+from anyio import from_thread
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import crud_flow, crud_flow_execution
@@ -120,7 +122,9 @@ async def dispatch(
         details["_resume"] = {
             "execution_id": str(previous),
             "cli_session": native,
-            "resume_root": str(crud.executions(db, row.id)[0]),
+            "resume_root": str(
+                await run_db_off_loop(lambda: crud.executions(db, row.id)[0])
+            ),
         }
     try:
         await FlowTriggerService(db).trigger_flow(
@@ -143,7 +147,7 @@ async def dispatch(
 
 @router.post("/flows/{flow_id}/conversations", response_model=ConversationResponse)
 @require_permission("execute_flows")
-async def start_conversation(
+def start_conversation(
     flow_id: UUID,
     body: ConversationStart,
     db: Session = Depends(get_db_session),
@@ -193,7 +197,8 @@ async def start_conversation(
             )
         return response(db, row, user=current_user)
     crud.admit(db, row, text=body.message, request_id=body.request_id, starting=True)
-    await dispatch(db, row, current_user)
+    # Keep orchestration on the application loop so local execution tasks survive.
+    from_thread.run(dispatch, db, row, current_user)
     audit(db, current_user, row, "started")
     return response(db, row, user=current_user)
 
@@ -246,7 +251,7 @@ def get_conversation(
     response_model=ConversationResponse,
 )
 @require_permission("execute_flows")
-async def send_message(
+def send_message(
     conversation_id: UUID,
     body: ConversationSend,
     db: Session = Depends(get_db_session),
@@ -266,7 +271,8 @@ async def send_message(
         raise HTTPException(409, notice)
     flow = visible_flow(db, current_user, row.flow_id)
     try:
-        await FlowTriggerService(db)._authorize_flow_run(
+        from_thread.run(
+            FlowTriggerService(db)._authorize_flow_run,
             flow,
             AuthorizationContext(
                 account_id=current_user.account_id, db=db, user=current_user
@@ -300,7 +306,7 @@ async def send_message(
         starting=native is not None,
     )
     if native:
-        await dispatch(db, row, current_user, native)
+        from_thread.run(dispatch, db, row, current_user, native)
     else:
         db.commit()
     audit(db, current_user, row, "message_sent")

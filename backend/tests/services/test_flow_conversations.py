@@ -1,9 +1,10 @@
 """Conversation content, admission, attribution and aggregate cost invariants."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -520,6 +521,14 @@ def test_http_start_keeps_first_message_and_owner(
     from unittest.mock import AsyncMock
 
     monkeypatch.setattr(api.settings, "flow_artifact_direct_upload", True)
+    original_visible_flow = api.visible_flow
+
+    def visible_off_loop(db: Session, user: models.User, flow_id: UUID) -> models.Flow:
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        return original_visible_flow(db, user, flow_id)
+
+    monkeypatch.setattr(api, "visible_flow", visible_off_loop)
 
     async def launch(
         db: Session,
@@ -527,6 +536,7 @@ def test_http_start_keeps_first_message_and_owner(
         user: models.User,
         native: dict | None = None,
     ) -> None:
+        assert asyncio.get_running_loop().is_running()
         assert user.id == test_user.id
         execution = crud_flow_execution.create(
             db, FlowExecutionCreate(flow_id=row.flow_id, status="PENDING")
