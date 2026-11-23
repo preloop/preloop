@@ -136,6 +136,12 @@ export interface TalkSessionAlternative {
 
 @customElement('talk-composer')
 export class TalkComposer extends LitElement {
+  /** Hosted conversations share the composer without Agent Control takeover. */
+  @property({ attribute: false }) sendMessage:
+    ((text: string) => Promise<void>) | null = null;
+  @property({ type: Boolean }) transportDisabled = false;
+  @property({ type: String }) transportNotice = '';
+
   @property({ attribute: false })
   agent: ManagedAgentSummary | null = null;
 
@@ -895,6 +901,13 @@ export class TalkComposer extends LitElement {
 
   private handleKeydown(event: KeyboardEvent): void {
     if (event.isComposing) return;
+    if (this.sendMessage) {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        void this.send();
+      }
+      return;
+    }
     const menu = this.menuCommands;
     if (menu.length) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -986,6 +999,25 @@ export class TalkComposer extends LitElement {
 
   private async send(): Promise<void> {
     const text = this.message.trim();
+    if (this.sendMessage) {
+      if (!text || this.transportDisabled || this.sending) return;
+      this.sending = true;
+      this.controlError = null;
+      this.requestUpdate();
+      try {
+        await this.sendMessage(text);
+        this.setMessage('');
+      } catch (error) {
+        this.controlError =
+          error instanceof Error
+            ? error.message
+            : 'Your message was not sent. Try again.';
+      } finally {
+        this.sending = false;
+        this.requestUpdate();
+      }
+      return;
+    }
     if (!text || !this.agent) return;
     if (!getAgentControlState(this.agent).enabled) return;
     // A turn typed into an ended session would go nowhere the operator can
@@ -1332,14 +1364,15 @@ export class TalkComposer extends LitElement {
   render() {
     const state = getAgentControlState(this.agent);
     const hint = getAgentControlInstallHint(this.agent);
-    const enabled = state.enabled;
+    const enabled = this.sendMessage ? !this.transportDisabled : state.enabled;
     const microphoneAvailable =
+      !this.sendMessage &&
       this.agent?.supports_voice !== false &&
       (this.localSpeechRecognitionAvailable || this.mediaRecorderAvailable);
     const listening = this.listening || this.recordingFallback;
 
-    const showControlRow = this.controlRowVisible;
-    const menu = this.menuCommands;
+    const showControlRow = !this.sendMessage && this.controlRowVisible;
+    const menu = this.sendMessage ? [] : this.menuCommands;
     return html`
       ${
         showControlRow && this.noteMode
@@ -1457,7 +1490,9 @@ export class TalkComposer extends LitElement {
                 this.statusMessage ? html` · ${this.statusMessage}` : nothing
               }
             </div>`
-          : this.renderDisabledHelp()
+          : this.sendMessage
+            ? html`<div class="helptext">${this.transportNotice}</div>`
+            : this.renderDisabledHelp()
       }
       ${this.renderEndedGuard()}
       ${

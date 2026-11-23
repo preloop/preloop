@@ -816,3 +816,14 @@ results are rejected before revision binding. The monitor publishes only
 nonterminal agent status; terminal execution events follow final result,
 integrity and publication checks. See [restricted CI](../guide/flows/restricted-ci.md#result-binding-and-repository-inspection)
 for the supported command forms and gateway output-format compatibility scope.
+
+## Hosted flow conversations
+
+`FlowConversation` is the durable owner and admission lock for a hosted thread;
+`FlowConversationMessage` records each accepted input and streamed answer. Console,
+mobile and chat clients share the conversation API. OpenCode's pinned server stays
+alive inside the execution container; an execution-scoped driver submits turns and
+persists text from its SSE stream. Idle executions retain their hosted capacity
+slot. After shutdown, a new execution restores the explicit native session and
+workspace artifacts. Gateway usage and active runtime are charged across all
+executions bound to the conversation. See the [API and lifecycle guide](../guide/flows/interactive-conversations.md).

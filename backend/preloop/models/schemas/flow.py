@@ -2063,6 +2063,9 @@ class FlowBase(BaseModel):
             return self
         if self.agent_type is None:
             return self
+        from preloop.services.flow_conversations import interactive_settings
+
+        interactive_settings(self.agent_type, self.agent_config)
         from preloop.services.host_exec import harness_selector_config_error
 
         error = harness_selector_config_error(self.agent_type, self.agent_config)

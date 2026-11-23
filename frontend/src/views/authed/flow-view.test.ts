@@ -1,4 +1,5 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import { resetTalkWindowsForTests } from '../../utils/talk-window';
 import { Router } from '../../router';
 import sinon from 'sinon';
 
@@ -1601,5 +1602,123 @@ describe('FlowView configuration warnings', () => {
     } finally {
       element.remove();
     }
+  });
+});
+
+describe('FlowView conversation start', () => {
+  let element: any;
+  let fetch: sinon.SinonStub;
+  let popup: any;
+  let open: sinon.SinonStub;
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-token');
+    resetTalkWindowsForTests();
+    sinon.stub(window, 'innerWidth').value(1200);
+    popup = {
+      closed: false,
+      focus: sinon.stub(),
+      close: sinon.stub(),
+      location: { replace: sinon.stub() },
+    };
+    open = sinon.stub(window, 'open').returns(popup);
+    fetch = sinon.stub(window, 'fetch');
+    element = document.createElement('flow-view');
+    element.flowId = 'flow-example';
+    element.flow = { name: 'Repository questions' };
+    element.conversationFirstMessage = 'Inspect the README.';
+  });
+  afterEach(() => {
+    sinon.restore();
+    resetTalkWindowsForTests();
+    localStorage.clear();
+  });
+  it('reuses the start identity after a lost response, and renews it after success', async () => {
+    fetch.onFirstCall().rejects(new TypeError('Response lost'));
+    fetch.callsFake(
+      async (_url, init) =>
+        new Response(JSON.stringify({ id: JSON.parse(init.body).request_id }))
+    );
+    await element.startConversation();
+    await element.startConversation();
+    const first = JSON.parse(fetch.firstCall.args[1].body);
+    const retry = JSON.parse(fetch.secondCall.args[1].body);
+    expect(retry).to.deep.equal(first);
+    expect(retry.message).to.equal('Inspect the README.');
+    await element.startConversation();
+    expect(JSON.parse(fetch.thirdCall.args[1].body).request_id).not.to.equal(
+      first.request_id
+    );
+  });
+  it('scopes retry identity to the flow after navigation following a lost response', async () => {
+    fetch.rejects(new TypeError('Response lost'));
+    await element.startConversation();
+    const first = JSON.parse(fetch.firstCall.args[1].body);
+    element.flowId = 'another-flow';
+    await element.startConversation();
+    const next = JSON.parse(fetch.secondCall.args[1].body);
+    expect(String(fetch.secondCall.args[0])).to.contain(
+      '/flows/another-flow/conversations'
+    );
+    expect(next.request_id).not.to.equal(first.request_id);
+    expect(next.message).to.equal(first.message);
+    expect(Object.keys(next).sort()).to.deep.equal(['message', 'request_id']);
+    await element.startConversation();
+    expect(JSON.parse(fetch.thirdCall.args[1].body)).to.deep.equal(next);
+  });
+  it('reserves a blank popup synchronously and navigates only after the start succeeds', async () => {
+    let respond!: (value: Response) => void;
+    fetch.returns(
+      new Promise<Response>((resolve) => {
+        respond = resolve;
+      })
+    );
+    const pending = element.startConversation();
+    expect(open.calledOnce).to.equal(true);
+    expect(open.firstCall.args[0]).to.equal('about:blank');
+    expect(popup.location.replace.called).to.equal(false);
+    await waitUntil(() => fetch.called);
+    const id = JSON.parse(fetch.firstCall.args[1].body).request_id;
+    respond(new Response(JSON.stringify({ id })));
+    await pending;
+    expect(popup.location.replace.firstCall.args[0]).to.equal(
+      `/console/flow-conversations/${id}/talk?window=1`
+    );
+  });
+  it('navigates on phones only after the conversation exists', async () => {
+    sinon.restore();
+    sinon.stub(window, 'innerWidth').value(390);
+    open = sinon.stub(window, 'open');
+    const navigate = sinon.stub(Router, 'go');
+    let respond!: (value: Response) => void;
+    fetch = sinon.stub(window, 'fetch').returns(
+      new Promise<Response>((resolve) => {
+        respond = resolve;
+      })
+    );
+    const pending = element.startConversation();
+    expect(navigate.called).to.equal(false);
+    expect(open.called).to.equal(false);
+    await waitUntil(() => fetch.called);
+    const id = JSON.parse(fetch.firstCall.args[1].body).request_id;
+    respond(new Response(JSON.stringify({ id })));
+    await pending;
+    expect(navigate.firstCall.args[0]).to.equal(
+      `/console/flow-conversations/${id}/talk`
+    );
+  });
+  it('assigns a new identity when the first message changes after failure', async () => {
+    fetch.rejects(new TypeError('Response lost'));
+    await element.startConversation();
+    element.conversationFirstMessage = 'Inspect the tests instead.';
+    await element.startConversation();
+    const first = JSON.parse(fetch.firstCall.args[1].body);
+    const changed = JSON.parse(fetch.secondCall.args[1].body);
+    expect(changed.request_id).not.to.equal(first.request_id);
+    expect(changed.message).to.equal('Inspect the tests instead.');
+  });
+  it('closes the reserved popup if starting fails', async () => {
+    fetch.rejects(new TypeError('Response lost'));
+    await element.startConversation();
+    expect(popup.close.calledOnce).to.equal(true);
   });
 });

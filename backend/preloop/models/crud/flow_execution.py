@@ -3723,6 +3723,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 models.FlowExecution.id == execution_id,
                 models.FlowExecution.status.in_(self.ACTIVE_ORCHESTRATOR_STATUSES),
                 models.FlowExecution.park_request_id.is_(None),
+                # Interactive sessions wait in the live runtime for decisions.
+                # Their controller owns checkpointing and native resume; the
+                # independent approval/child park controller cannot rebind it.
+                models.FlowExecution.trigger_event_details.op("->>")(
+                    "_conversation_id"
+                ).is_(None),
             )
             .update(
                 {

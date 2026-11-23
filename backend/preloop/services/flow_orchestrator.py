@@ -1522,6 +1522,8 @@ class FlowExecutionOrchestrator:
         from preloop.services.native_result import apply_native_result_default
 
         config = self.flow.agent_config
+        if (self.trigger_event_data or {}).get("_conversation_id"):
+            config = {**(config or {}), "workspace_snapshots": "always"}
         enabled = getattr(self, "_native_result_effective", None)
         if enabled is None:
             return config
@@ -2521,6 +2523,14 @@ class FlowExecutionOrchestrator:
         # success-confirmation instruction, which must stay last.
         resolved_prompt = resolved_prompt + resume_prompt_hints(self.trigger_event_data)
 
+        if (self.trigger_event_data or {}).get("_conversation_id"):
+            message = str(self.trigger_event_data.get("_conversation_message") or "")
+            if self.trigger_event_data.get("_resume"):
+                return message
+            if "{{conversation.message}}" in resolved_prompt:
+                return resolved_prompt.replace("{{conversation.message}}", message)
+            return resolved_prompt + ("\n\n" + message if message else "")
+
         # Append the success-confirmation instruction so the agent can signal
         # completion. MUST stay at the very END of the prompt (recency): after
         # multi-million-token runs the model is far more likely to honor the
@@ -2694,6 +2704,9 @@ class FlowExecutionOrchestrator:
                 # The model this execution actually runs, after overrides,
                 # routing and the unavailable-routing fallback.
                 ai_model_id=getattr(getattr(self, "ai_model", None), "id", None),
+                owner_user_id=(self.trigger_event_data or {}).get(
+                    "_conversation_owner_user_id"
+                ),
             )
         except Exception as exc:
             logger.error(
@@ -4336,6 +4349,13 @@ class FlowExecutionOrchestrator:
                     self.flow.account_id,
                 )
 
+        if (self.trigger_event_data or {}).get(
+            "_conversation_id"
+        ) and effective_agent_type != "opencode":
+            raise ValueError(
+                "Interactive conversations require hosted OpenCode; model routing selected an unsupported harness."
+            )
+
         execution_context = {
             "flow_id": str(self.flow_id),
             "flow_name": self.flow.name,  # Used for generating git branch names
@@ -4394,7 +4414,9 @@ class FlowExecutionOrchestrator:
         from preloop.services.model_routing import validate_native_resume_identity
 
         resume = (self.trigger_event_data or {}).get("_resume") or {}
-        native = (
+        from preloop.services.flow_conversations import bound_resume
+
+        native = bound_resume(self.db, execution_context) or (
             resolve_native_checkpoint(
                 self.db,
                 account_id=self.flow.account_id,
@@ -5167,6 +5189,11 @@ class FlowExecutionOrchestrator:
                     agent_executor, (RemoteRunnerExecutor, AgentControlExecutor)
                 )
                 else checkpoint_context(self.db, execution_context)
+            )
+            from preloop.services.flow_conversations import runtime_environment
+
+            execution_context["conversation_env"] = runtime_environment(
+                self.db, execution_context
             )
             if "evidence_env" not in execution_context:
                 from preloop.services.checkpoint_runtime import (
@@ -7922,6 +7949,16 @@ class FlowExecutionOrchestrator:
         Returns:
             True when the caller must stop the run as ``agent_no_progress``.
         """
+        if (self.trigger_event_data or {}).get("_conversation_id"):
+            from preloop.models.crud import flow_conversation as conversations
+
+            thread = conversations.get(
+                self.db,
+                uuid.UUID(self.trigger_event_data["_conversation_id"]),
+                self.flow.account_id,
+            )
+            if thread and thread.state == "waiting":
+                return False
         config = self._no_progress_guard_config()
         if config is None or self._workspace_change_seen:
             return False
@@ -8705,6 +8742,14 @@ class FlowExecutionOrchestrator:
         """Agent wall clock already spent by the park chain this run continues."""
         from preloop.services.approval_park import consumed_seconds_from_details
 
+        if (self.trigger_event_data or {}).get("_conversation_id"):
+            from preloop.services.flow_conversations import consumed_seconds
+
+            return consumed_seconds(
+                self.db,
+                uuid.UUID(self.trigger_event_data["_conversation_id"]),
+                self.execution_log.id,
+            )
         return consumed_seconds_from_details(self.trigger_event_data)
 
     def _budget_after_park(self, budget: TimeoutBudget) -> TimeoutBudget:
@@ -8717,7 +8762,12 @@ class FlowExecutionOrchestrator:
         consumed = self._chain_consumed_seconds()
         if consumed <= 0:
             return budget
-        remaining = max(FLOW_TIMEOUT_SECONDS_MIN, budget.seconds - consumed)
+        remaining = max(
+            0
+            if (self.trigger_event_data or {}).get("_conversation_id")
+            else FLOW_TIMEOUT_SECONDS_MIN,
+            budget.seconds - consumed,
+        )
         logger.info(
             "Resumed execution budget: %ss of %ss remain after %ss spent "
             "before the park",
@@ -9666,7 +9716,9 @@ class FlowExecutionOrchestrator:
                 # the container is still running (post-exec commands).
                 # The sentinel is only armed after AGENT_EXEC_START_MARKER is
                 # seen, so prompt echoes cannot trigger it.
-                if self._success_sentinel_seen.is_set():
+                if self._success_sentinel_seen.is_set() and not (
+                    self.trigger_event_data or {}
+                ).get("_conversation_id"):
                     if sentinel_seen_at is None:
                         sentinel_seen_at = monitored
                         logger.info(

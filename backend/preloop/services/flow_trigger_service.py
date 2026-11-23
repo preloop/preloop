@@ -3118,6 +3118,7 @@ class FlowTriggerService:
         triggered_by: Optional[str] = None,
         source_execution_id: Optional[uuid.UUID] = None,
         *,
+        conversation_id: uuid.UUID | None = None,
         parent_execution_id: Optional[uuid.UUID] = None,
         root_execution_id: Optional[uuid.UUID] = None,
         delegation_depth: int = 0,
@@ -3222,6 +3223,24 @@ class FlowTriggerService:
         trigger_details.pop("_thread_id", None)
         if feedback_policy(flow):
             trigger_details["_session_thread_id"] = str(uuid.uuid4())
+        conversation = None
+        if conversation_id is not None:
+            from preloop.models.crud import flow_conversation as conversations
+
+            conversation = conversations.get(
+                self.db, conversation_id, flow.account_id, lock=True
+            )
+            if conversation is None or conversation.flow_id != flow.id:
+                raise ValueError("Conversation does not belong to this flow")
+            turn = conversations.messages(
+                self.db, conversation.id, after=conversation.turns - 1, limit=1
+            )[0]
+            trigger_details["_conversation_id"] = str(conversation.id)
+            trigger_details["_session_thread_id"] = str(conversation.id)
+            trigger_details["_conversation_owner_user_id"] = str(
+                conversation.owner_user_id
+            )
+            trigger_details["_conversation_message"] = turn.text
         pin_source_id = retry_of_execution_id or source_execution_id
         source_execution = None
         pin_kind = None
@@ -3304,6 +3323,8 @@ class FlowTriggerService:
             trigger_details = execution.trigger_event_details
         else:
             execution = crud_flow_execution.create(self.db, obj_in=execution_data)
+            if conversation is not None:
+                conversations.bind_execution(self.db, conversation, execution.id)
             self.db.commit()
             self.db.refresh(execution)
 

@@ -1,3 +1,4 @@
+import '../../components/flow-conversation-list';
 import { stripBillingHeader } from '../../utils/session-subject';
 import { randomUuid } from '../../utils/random-uuid';
 import { ConsoleStatus } from '../../controllers/console-status';
@@ -3042,6 +3043,7 @@ export class RuntimeSessionsView extends LitElement {
           >New session</sl-button
         >
       </view-header>
+      <flow-conversation-list></flow-conversation-list>
       ${
         this.newSessionError
           ? html`<sl-alert

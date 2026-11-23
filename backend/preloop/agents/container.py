@@ -4270,6 +4270,7 @@ class ContainerAgentExecutor(AgentExecutor):
             ) or execution_context.get("_publication_refresh_env"):
                 raise ValueError("Write API tokens cannot enter an isolated agent")
         env.update(execution_context.get("checkpoint_env") or {})
+        env.update(execution_context.get("conversation_env") or {})
         env.update(execution_context.get("evidence_env") or {})
         if self.use_kubernetes:
             env["PRELOOP_EVIDENCE_LOG_PLAINTEXT"] = (
