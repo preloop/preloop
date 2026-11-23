@@ -24,6 +24,7 @@ def _profiles_sample_rate() -> float:
 
 
 def init_sentry() -> None:
+    """Initialise Sentry when configured; never raise on SDK init failure."""
     # Initialize Sentry if DSN is configured
     sentry_dsn = os.getenv("SENTRY_DSN")
     if sentry_dsn:
@@ -46,17 +47,26 @@ def init_sentry() -> None:
             sentry_env = preloop_url.split(".")[0].split("//")[-1]
 
         if sentry_env:
-            sentry_sdk.init(
-                dsn=sentry_dsn,
-                # Set traces_sample_rate to 1.0 to capture 100%
-                # of transactions for performance monitoring.
-                traces_sample_rate=1.0,
-                # Error reporting and tracing do not require the background
-                # stack sampler. Keep native frame introspection opt-in.
-                profiles_sample_rate=_profiles_sample_rate(),
-                enable_tracing=True,
-                environment=sentry_env,
-                before_send=sentry_before_send,
-                before_send_transaction=sentry_before_send_transaction,
-            )
+            try:
+                sentry_sdk.init(
+                    dsn=sentry_dsn,
+                    # Set traces_sample_rate to 1.0 to capture 100%
+                    # of transactions for performance monitoring.
+                    traces_sample_rate=1.0,
+                    # Error reporting and tracing do not require the background
+                    # stack sampler. Keep native frame introspection opt-in.
+                    profiles_sample_rate=_profiles_sample_rate(),
+                    enable_tracing=True,
+                    environment=sentry_env,
+                    before_send=sentry_before_send,
+                    before_send_transaction=sentry_before_send_transaction,
+                )
+            except Exception as exc:  # noqa: BLE001 - never block startup
+                logger.warning(
+                    "Sentry SDK initialisation failed; error reporting disabled: "
+                    "%s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+                return
             logger.info("Sentry SDK initialized.")
