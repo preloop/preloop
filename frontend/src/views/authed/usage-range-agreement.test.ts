@@ -162,7 +162,11 @@ describe('usage range agreement', () => {
     });
   });
 
+  let clock: sinon.SinonFakeTimers | undefined;
+
   afterEach(() => {
+    clock?.restore();
+    clock = undefined;
     fetchStub.restore();
     localStorage.clear();
     sessionStorage.clear();
@@ -179,6 +183,13 @@ describe('usage range agreement', () => {
   };
 
   it('asks for one window and prints one total on Cost, API usage and Models', async () => {
+    // Pages round their window up to the next whole minute. Freeze only the
+    // wall clock, mid-minute, so mounts that straddle a minute boundary cannot
+    // ask for windows a minute apart. Timers and promises still run.
+    clock = sinon.useFakeTimers({
+      now: new Date('2026-01-15T12:00:30Z'),
+      toFake: ['Date'],
+    });
     const cost = (await fixture(html`<cost-view></cost-view>`)) as HTMLElement;
     await untilLoaded(cost);
 
