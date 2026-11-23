@@ -196,18 +196,36 @@ def test_resume_uses_prior_native_identity(
             "_resume": {"execution_id": str(prior_id)},
         },
     }
-    with patch.object(
-        service,
-        "resume_checkpoint",
-        return_value={
-            "session_id": "ses_example",
-            "artifact_reference": {"artifact_id": "example"},
-        },
-    ) as checkpoint:
+    records = [{"path": ".", "branch": "preloop/repository-questions-11111111"}]
+    with (
+        patch.object(
+            service,
+            "resume_checkpoint",
+            return_value={
+                "session_id": "ses_example",
+                "artifact_reference": {"artifact_id": "example"},
+            },
+        ) as checkpoint,
+        patch.object(
+            service.flow_artifact,
+            "latest",
+            return_value=SimpleNamespace(
+                manifest={"metadata": {"repositories": records}}
+            ),
+        ) as workspace,
+    ):
         result = service.bound_resume(db_session, context)
     assert result["session_id"] == "ses_example"
     assert checkpoint.call_args.args[1].execution_id == prior_id
     assert context["checkpoint_resume_authorized"] is True
+    assert context["conversation_workspace_repositories"] == records
+    assert workspace.call_args.kwargs == {
+        "account_id": thread.account_id,
+        "flow_id": thread.flow_id,
+        "thread_id": str(thread.id),
+        "execution_id": prior_id,
+        "kind": "workspace",
+    }
     context["trigger_event_data"]["_resume"]["execution_id"] = str(uuid4())
     with pytest.raises(ValueError, match="does not belong"):
         service.bound_resume(db_session, context)
