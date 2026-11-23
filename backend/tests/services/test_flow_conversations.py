@@ -20,6 +20,7 @@ from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.schemas.flow_conversation import InteractiveSettings
 from preloop.services import flow_conversations as service
+from preloop.services.audit.service import AuditService
 from preloop.services.flow_execution_limits import (
     ExecutionLimits,
     evaluate_execution_limits,
@@ -283,7 +284,9 @@ def test_start_audit_attributes_initiator(
     db_session: Session, test_user: models.User, thread: models.FlowConversation
 ) -> None:
     """The durable audit row records the initiating human, not an account default."""
-    api.audit(db_session, test_user, thread, "started")
+    # Other application lifecycle tests may have shut down the global service.
+    with patch("preloop.utils.audit._get_audit_service", return_value=AuditService()):
+        api.audit(db_session, test_user, thread, "started")
     row = (
         db_session.query(models.AuditLog)
         .filter_by(account_id=test_user.account_id, user_id=test_user.id)
