@@ -4366,6 +4366,18 @@ class ContainerAgentExecutor(AgentExecutor):
                     git_cmd = self._wrap_clone_with_workspace_restore(
                         git_cmd, execution_context
                     )
+                    if not is_enabled and not review_checkout:
+                        # Kept for flows created through the API with an
+                        # explicit list and the flag off. The console clears
+                        # the list when it saves cloning disabled, and the
+                        # orchestrator no longer adds the trigger repository
+                        # to a disabled flow, so only such a list gets here.
+                        commands.append(
+                            "echo 'Git workspace cloning is off, but this flow "
+                            "lists repositories in its git_clone_config; "
+                            "cloning them. Remove the list or turn cloning on "
+                            "to make this explicit.'"
+                        )
                     commands.append(git_cmd)
                     # After the clone-or-restore wrapper, so a restored
                     # workspace (which skips the clone) is covered too.
@@ -4829,6 +4841,7 @@ fi
             # the existing review, not a new branch off main.
             source_branch = resume_branch
             target_branch = resume_branch
+            execution_context["_git_explicit_source_branch"] = resume_branch
             if not execution_context.get("resume_from"):
                 prior = resume.get("execution_id") if isinstance(resume, dict) else None
                 execution_context["resume_from"] = (
@@ -4841,8 +4854,17 @@ fi
         else:
             if not source_branch:
                 source_branch = self._extract_source_branch_from_trigger(trigger_data)
+            # Only a configured or trigger-given branch applies to every
+            # repository; a derived default belongs to the first one alone.
+            execution_context["_git_explicit_source_branch"] = source_branch or ""
             if not source_branch:
-                source_branch = "main"
+                # The repository's own default branch, never a literal
+                # ``main``. Empty means it is not known before the clone, so
+                # the clone follows the remote HEAD instead.
+                source_branch = self._resolve_default_branch(
+                    trigger_data,
+                    self._resolve_git_clone_repositories(execution_context, git_config),
+                )
 
             if not target_branch:
                 execution_id = execution_context.get("execution_id", "exec")
@@ -4878,15 +4900,103 @@ fi
             resume.get("execution_id") or resume.get("source_branch")
         )
 
+    @staticmethod
+    def _default_branch_from_trigger(trigger_data: Any) -> str:
+        """The repository default branch a webhook payload reports, or empty.
+
+        GitHub sends ``repository.default_branch``, GitLab
+        ``project.default_branch``.
+        """
+        if not isinstance(trigger_data, dict):
+            return ""
+        payload = trigger_data.get("payload", trigger_data)
+        if not isinstance(payload, dict):
+            return ""
+        for key in ("repository", "project"):
+            holder = payload.get(key)
+            if isinstance(holder, dict):
+                branch = _validated_git_ref(holder.get("default_branch"))
+                if branch:
+                    return branch
+        return ""
+
+    def _resolve_default_branch(
+        self, trigger_data: Any, repositories: Optional[list] = None
+    ) -> str:
+        """The default branch of the repository this run checks out, or empty.
+
+        Prefers the ``default_branch`` the orchestrator copied from the synced
+        project onto the first repository entry, then the trigger payload.
+        Empty when neither knows it: the clone then follows the remote HEAD.
+        """
+        for repo in repositories or []:
+            if isinstance(repo, dict):
+                branch = _validated_git_ref(repo.get("default_branch"))
+                if branch:
+                    return branch
+                break
+        return self._default_branch_from_trigger(trigger_data)
+
+    def _repository_source_branch(
+        self,
+        repo_config: Dict[str, Any],
+        repo_index: int,
+        explicit_source: Optional[str],
+        trigger_data: Any,
+    ) -> str:
+        """The branch one repository entry is cloned from, or empty.
+
+        Order: the entry's ``source_branch``/``branch``, then a configured or
+        trigger-given source branch, then the entry's own ``default_branch``,
+        then (first entry only, the repository the event came from) the
+        trigger payload's default branch. Empty means follow the remote HEAD.
+        One repository's default never decides another's branch.
+
+        Args:
+            repo_config: The repository entry.
+            repo_index: Position of the entry in the repository list.
+            explicit_source: Source branch from configuration, trigger or
+                resume; empty when none was given.
+            trigger_data: The trigger event data.
+
+        Returns:
+            The branch name, or an empty string.
+        """
+        entry = str(repo_config.get("source_branch") or repo_config.get("branch") or "")
+        if entry:
+            return entry
+        if explicit_source:
+            return str(explicit_source)
+        own_default = _validated_git_ref(repo_config.get("default_branch"))
+        if own_default:
+            return own_default
+        if repo_index == 0:
+            return self._default_branch_from_trigger(trigger_data)
+        return ""
+
     def _resolve_resume_base_branch(
         self,
         git_config: Dict[str, Any],
         repo_config: Optional[Dict[str, Any]] = None,
+        trigger_data: Any = None,
+        repo_index: int = 0,
     ) -> str:
         """Return the flow base branch a resume rebase should land on.
 
         Prefers ``repositories[].branch``, then top-level ``git_clone_config.branch``,
-        then ``source_branch``, then ``main``.
+        then ``source_branch``, then (for the first repository) the trigger's
+        PR/MR target branch, then the repository's default branch, then the
+        trigger's default branch.
+        ``main`` is the last resort only when no default branch is known at all.
+
+        Args:
+            git_config: The flow's ``git_clone_config``.
+            repo_config: The repository entry, when resolving for one.
+            trigger_data: The trigger event data.
+            repo_index: Position of the entry; trigger branches apply to 0.
+
+        Returns:
+            The base branch name.
         """
 
         if repo_config:
@@ -4896,6 +5006,21 @@ fi
         configured = git_config.get("branch") or git_config.get("source_branch")
         if configured:
             return str(configured)
+        event_repo = repo_index == 0 and isinstance(trigger_data, dict)
+        if event_repo:
+            # The PR/MR the event is about targets this base, which may not
+            # be the repository default.
+            target = _validated_git_ref(
+                self._extract_target_branch_from_trigger(trigger_data)
+            )
+            if target:
+                return target
+        if repo_config and _validated_git_ref(repo_config.get("default_branch")):
+            return str(repo_config["default_branch"])
+        if event_repo:
+            default = self._default_branch_from_trigger(trigger_data)
+            if default:
+                return default
         return "main"
 
     def _build_git_global_setup_commands(
@@ -5179,7 +5304,7 @@ fi
             return str(repo_branch)
         if commit_sha:
             clone_branch = (
-                self._extract_target_branch_from_trigger(trigger_data) or "main"
+                self._extract_target_branch_from_trigger(trigger_data) or source_branch
             )
             self.logger.info(
                 "Commit SHA %s available; cloning branch '%s' "
@@ -5305,13 +5430,21 @@ fi
         """Build the guarded ``git clone`` shell command."""
 
         branch_arg = f" -b {shlex.quote(clone_branch)}" if clone_branch else ""
+        tried = shlex.quote(clone_branch or "remote default (HEAD)")
+        q_url = shlex.quote(repo_url)
         return f"""
 echo "Cloning repository to {full_path}..."
-if ! git clone{branch_arg} {shlex.quote(repo_url)} {shlex.quote(full_path)}; then
+if ! git clone{branch_arg} {q_url} {shlex.quote(full_path)}; then
+    _pl_default=$(git ls-remote --symref {q_url} HEAD 2>/dev/null \\
+        | sed -n 's|^ref: refs/heads/\\(.*\\)[[:space:]]HEAD$|\\1|p' | head -n 1)
     echo "========================================="
     echo "FATAL ERROR: Git clone failed!"
     echo "Could not clone repository to {full_path}"
-    echo "Check repository URL, credentials, and network connectivity."
+    echo "Tried branch:" {tried}
+    echo "Repository default branch: ${{_pl_default:-unknown}}"
+    echo "Set the Source branch in the flow's Git workspace settings if the"
+    echo "branch above does not exist, or check the repository URL,"
+    echo "credentials, and network connectivity."
     echo "========================================="
     exit 1
 fi
@@ -5398,6 +5531,7 @@ cd /workspace
         if use_remote_default:
             return f"""
 cd {q_path}
+echo "Following the repository default branch $(git rev-parse --abbrev-ref HEAD)"
 echo Creating agent target branch {q_target} from remote default HEAD
 if ! git checkout -b {q_target}; then
     echo "FATAL ERROR: Could not create target branch {q_target}"
@@ -5634,9 +5768,14 @@ true
         # The URL that reaches `git clone` is always credential-free.
         repo_url = strip_url_credentials(repo_url)
         full_path = self._resolve_repository_clone_path(repo_config, repo_index)
-        repo_source = (
-            str(repo_config.get("source_branch") or repo_config.get("branch") or "")
-            or source_branch
+        explicit = execution_context.get("_git_explicit_source_branch", source_branch)
+        repo_source = self._repository_source_branch(
+            repo_config, repo_index, explicit, trigger_data
+        )
+        # No branch known before the clone: follow the remote HEAD, which is
+        # the repository's default branch whatever its name.
+        follow_remote_head = bool(repo_config.get("use_remote_default")) or (
+            not repo_source
         )
         repo_target = str(repo_config.get("target_branch") or "") or target_branch
         pin_sha = self._repository_pin_sha(repo_config)
@@ -5669,14 +5808,14 @@ true
                     source_branch=repo_source,
                     target_branch=repo_target,
                     trigger_data=trigger_data,
-                    use_remote_default=bool(repo_config.get("use_remote_default")),
+                    use_remote_default=follow_remote_head,
                     execution_context=execution_context,
                 ),
                 self._build_git_clone_validation_shell(
                     full_path=full_path,
                     source_branch=(
                         "remote HEAD"
-                        if repo_config.get("use_remote_default") and not commit_sha
+                        if follow_remote_head and not commit_sha
                         else repo_source
                     ),
                     target_branch=repo_target,
@@ -5687,7 +5826,9 @@ true
                 git_config = execution_context.get("git_clone_config") or {}
                 if not isinstance(git_config, dict):
                     git_config = {}
-                base_branch = self._resolve_resume_base_branch(git_config, repo_config)
+                base_branch = self._resolve_resume_base_branch(
+                    git_config, repo_config, trigger_data, repo_index
+                )
                 rebase_shell = self._build_git_resume_rebase_shell(
                     full_path=full_path,
                     base_branch=base_branch,
@@ -6471,7 +6612,11 @@ true
                     else ""
                 )
 
-                def repair_shell(path: str, repo_config: Dict[str, Any]) -> str:
+                resume_trigger = execution_context.get("trigger_event_data") or {}
+
+                def repair_shell(
+                    path: str, repo_config: Dict[str, Any], idx: int = 0
+                ) -> str:
                     profile = verification_policy.profile
                     if verification_policy.mode != "gate" or profile is None:
                         return ""
@@ -6481,7 +6626,9 @@ true
                         base_branch=str(
                             repo_config.get("pin_sha")
                             or "origin/"
-                            + self._resolve_resume_base_branch(git_config, repo_config)
+                            + self._resolve_resume_base_branch(
+                                git_config, repo_config, resume_trigger, idx
+                            )
                         ),
                     )
 
@@ -6529,7 +6676,8 @@ true
                         )
                     dest = f"{EVIDENCE_DIR_PATH}/repos/{slug}"
                     parts.append(
-                        repair_shell(path, repo_config) + f"cd {shlex.quote(path)}\n"
+                        repair_shell(path, repo_config, idx)
+                        + f"cd {shlex.quote(path)}\n"
                         f"mkdir -p {shlex.quote(dest)}\n"
                         f"git bundle create {shlex.quote(dest)}/branch.bundle HEAD || exit 1\n"
                         f"git rev-parse HEAD > {shlex.quote(dest)}/HEAD.txt || exit 1\n"
@@ -6632,11 +6780,26 @@ true
 
             post_commands = []
 
+            publication_trigger = execution_context.get("trigger_event_data") or {}
+            explicit_source = execution_context.get(
+                "_git_explicit_source_branch", source_branch
+            )
             for idx, repo_config in enumerate(repositories):
-                publication_base = safe_source
-                if safe_source == safe_target:
+                # Each repository's PR targets its own base, not the first's.
+                publication_base = (
+                    _validated_git_ref(
+                        self._repository_source_branch(
+                            repo_config, idx, explicit_source, publication_trigger
+                        )
+                    )
+                    or safe_source
+                )
+                resumed_on_target = publication_base == safe_target
+                if resumed_on_target:
                     publication_base = _validated_git_ref(
-                        self._resolve_resume_base_branch(git_config, repo_config)
+                        self._resolve_resume_base_branch(
+                            git_config, repo_config, publication_trigger, idx
+                        )
                     )
                     if not publication_base or publication_base == safe_target:
                         self.logger.warning("Cannot identify a distinct PR base branch")
@@ -6755,6 +6918,11 @@ export GIT_TERMINAL_PROMPT=0"""
                 # under /workspace/evidence *before* push so a failed push
                 # still leaves a recoverable artifact in the log stream.
                 # Note: Directory is guaranteed to exist because git clone validation would have failed earlier
+                recovery_base = (
+                    f"origin/{publication_base}"
+                    if resumed_on_target
+                    else publication_base
+                )
                 repo_post_commands = [
                     build_whitespace_repair_shell(
                         profile=(
@@ -6764,10 +6932,11 @@ export GIT_TERMINAL_PROMPT=0"""
                             else {}
                         ),
                         working_dir=full_path,
+                        # This repository's own base, never the first one's.
                         base_branch=(
-                            safe_source
-                            if safe_source != safe_target
-                            else f"origin/{publication_base}"
+                            f"origin/{publication_base}"
+                            if resumed_on_target
+                            else publication_base
                         ),
                     ),
                     f"cd {full_path}",
@@ -6775,7 +6944,7 @@ export GIT_TERMINAL_PROMPT=0"""
                     # still counts local commits the branch-vs-branch range
                     # would miss. Branch names are validated above; do not
                     # shlex.quote mid-token (that yields origin/'feat/x').
-                    f'COMMIT_COUNT=$(git rev-list --count origin/{safe_target}..HEAD 2>/dev/null || git rev-list --count {safe_source}..{safe_target} 2>/dev/null || echo "0")',
+                    f'COMMIT_COUNT=$(git rev-list --count origin/{safe_target}..HEAD 2>/dev/null || git rev-list --count {publication_base}..{safe_target} 2>/dev/null || echo "0")',
                     "PUSH_COMMIT_COUNT=$COMMIT_COUNT",
                     # Already-pushed commits still need a review surface.
                     f'BRANCH_COMMIT_COUNT=$(git rev-list --count {publication_base}..HEAD 2>/dev/null || git rev-list --count origin/{publication_base}..HEAD 2>/dev/null || echo "0")',
@@ -6785,10 +6954,11 @@ export GIT_TERMINAL_PROMPT=0"""
                     f"  mkdir -p {EVIDENCE_DIR_PATH}",
                     f"  git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
                     f"  git log -1 --format='%H %s' >> {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
-                    f"  git format-patch --stdout {safe_source}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
+                    # Recovery artifacts diff against this repository's base.
+                    f"  git format-patch --stdout {recovery_base}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
                     (
                         f"  git bundle create {EVIDENCE_DIR_PATH}/branch.bundle "
-                        f"{safe_source}..HEAD 2>/dev/null "
+                        f"{recovery_base}..HEAD 2>/dev/null "
                         f"|| git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD "
                         f"2>/dev/null || true"
                     ),
@@ -6817,9 +6987,9 @@ export GIT_TERMINAL_PROMPT=0"""
                             # unknown_default. Verify against the PR base the
                             # resume rebase just fetched.
                             base_branch=(
-                                safe_source
-                                if safe_source != safe_target
-                                else f"origin/{publication_base}"
+                                f"origin/{publication_base}"
+                                if resumed_on_target
+                                else publication_base
                             ),
                             evidence_dir=EVIDENCE_DIR_PATH,
                             gate_budget_seconds=(
@@ -7296,6 +7466,15 @@ trap _preloop_publication_cleanup EXIT
             if isinstance(obj_attrs, dict) and obj_attrs.get("target_branch"):
                 branch = obj_attrs["target_branch"]
                 self.logger.info(f"Extracted target branch from GitLab MR: {branch}")
+                return branch
+
+            # GitLab MR note: the MR rides alongside the note attributes.
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("target_branch"):
+                branch = mr["target_branch"]
+                self.logger.info(
+                    f"Extracted target branch from GitLab MR note: {branch}"
+                )
                 return branch
 
             # Bitbucket Cloud PR - pullrequest.destination.branch.name

@@ -679,7 +679,11 @@ class GitCloneConfig(BaseModel):
         default="git@preloop.ai", description="Email to use for git commits"
     )
     source_branch: Optional[str] = Field(
-        default="main", description="Branch to checkout for base code"
+        default=None,
+        description=(
+            "Branch to check out as the base. Empty uses the trigger's branch, "
+            "then the repository's default branch"
+        ),
     )
     target_branch: Optional[str] = Field(
         default=None,

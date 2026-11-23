@@ -149,7 +149,8 @@ class Flow(Base):
     #     ],
     #     "git_user_name": str (default: "Preloop"),
     #     "git_user_email": str (default: "git@preloop.ai"),
-    #     "source_branch": str (branch to checkout, default: "main"),
+    #     "source_branch": str (base branch, default: the trigger branch, then the
+    #         repository default branch),
     #     "target_branch": str (branch to create for commits, optional - auto-generated if empty),
     #     "create_pull_request": bool (create PR/MR after commits, default: False),
     #     "pull_request_title": str (optional - title for PR/MR),

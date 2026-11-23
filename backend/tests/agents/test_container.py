@@ -2535,7 +2535,8 @@ class TestResolveGitBranchPlan:
             },
             {"source_branch": None, "target_branch": None},
         )
-        assert source == "main"
+        # No branch anywhere: empty, so the clone follows the remote HEAD.
+        assert source == ""
         assert target == "preloop/automated-issue-implementation-83021dcc"
 
     def test_issue_trigger_names_branch_from_issue_number(self, container_executor):
@@ -2554,7 +2555,7 @@ class TestResolveGitBranchPlan:
             },
             {"source_branch": None, "target_branch": None},
         )
-        assert source == "main"
+        assert source == ""
         assert target == "preloop/issue-356-08095fd6"
 
 

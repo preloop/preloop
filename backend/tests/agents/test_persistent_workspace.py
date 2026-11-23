@@ -1,5 +1,6 @@
 """Persistent workspace metadata matches the container clone identity."""
 
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import uuid4
@@ -447,3 +448,75 @@ class TestFlowWorkspace:
                 **base,
                 agent_config={"workspace": {"kind": "path", "path": "relative"}},
             )
+
+
+def test_master_only_raw_url_checks_out_the_remote_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No branch known: the identity follows the remote HEAD, not ``main``."""
+    import preloop.services.persistent_workspace as module
+
+    calls: list[list[str]] = []
+
+    def ls_remote(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args, 0, stdout=f"ref: refs/heads/master\tHEAD\n{SHA}\tHEAD\n"
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", ls_remote)
+    url = "https://example.com/example/repo.git"
+    config = {"enabled": True, "repositories": [{"repository_url": url}]}
+    identity = ephemeral_clone_identity(config, {})
+
+    assert identity is not None
+    assert identity["ref"] == "master"
+    assert calls == [["git", "ls-remote", "--symref", "--", url, "HEAD"]]
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        subprocess.CompletedProcess([], 128, stdout="", stderr="not found"),
+        subprocess.TimeoutExpired(cmd="git", timeout=15),
+        OSError("git missing"),
+    ],
+)
+def test_unreadable_remote_head_falls_back_to_main(
+    monkeypatch: pytest.MonkeyPatch, outcome: object
+) -> None:
+    """A failed, timed-out or missing ``git ls-remote`` never escapes."""
+    import preloop.services.persistent_workspace as module
+
+    def ls_remote(args: list[str], **_: object) -> object:
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(module.subprocess, "run", ls_remote)
+    url = "https://example.com/example/repo.git"
+    config = {"enabled": True, "repositories": [{"repository_url": url}]}
+    identity = ephemeral_clone_identity(config, {})
+
+    assert identity is not None
+    assert identity["ref"] == "main"
+
+
+def test_workspace_mode_does_not_read_the_remote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The async prompt path only asks whether a repository resolves."""
+    import preloop.services.persistent_workspace as module
+
+    def ls_remote(*_: object, **__: object) -> object:
+        raise AssertionError("workspace_mode must not run git ls-remote")
+
+    monkeypatch.setattr(module.subprocess, "run", ls_remote)
+    url = "https://example.com/example/repo.git"
+    mode = workspace_mode(
+        agent_config={"execution_path": "persistent"},
+        git_clone_config={"enabled": True, "repositories": [{"repository_url": url}]},
+        trigger_event_data={},
+    )
+
+    assert mode == "persistent_checkout"

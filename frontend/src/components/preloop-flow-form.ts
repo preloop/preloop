@@ -171,7 +171,11 @@ export function showsReviewInstructionsField(
 
 /** Help for the flow-level source branch: blank follows the trigger. */
 export const SOURCE_BRANCH_HELP =
-  "Leave blank to use the branch from the trigger: for a pull or merge request, its source branch. A value pins every run to that branch, whatever the trigger's branch is.";
+  "Leave blank to use the branch from the trigger: for a pull or merge request, its source branch. With no trigger branch, the repository's default branch is used, whatever it is named. A value pins every run to that branch, whatever the trigger's branch is.";
+
+/** What the Git workspace switch promises when it is off. */
+export const GIT_CLONE_OFF_HELP =
+  'Off: the agent runs without a checkout of the trigger repository.';
 
 /** Help for a repository's branch: blank falls back to the flow, then the trigger. */
 export const REPOSITORY_BRANCH_HELP =
@@ -5476,6 +5480,13 @@ export class PreloopFlowForm extends LitElement {
             >
               Enable git workspace cloning
             </sl-checkbox>
+            ${
+              this.flow.git_clone_config?.enabled
+                ? nothing
+                : html`<p class="checkbox-help" data-git-clone-off-help>
+                    ${GIT_CLONE_OFF_HELP}
+                  </p>`
+            }
             ${
               !this.flow.git_clone_config?.enabled &&
               this.flow.git_clone_config?.repositories?.length

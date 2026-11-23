@@ -912,6 +912,19 @@ def _project_identity_rank(
     return 0
 
 
+def _first_repository_default_branch(git_clone_config: Any) -> Optional[str]:
+    """``default_branch`` of the first clone entry, as the orchestrator set it."""
+
+    if not isinstance(git_clone_config, dict):
+        return None
+    repositories = git_clone_config.get("repositories")
+    if not isinstance(repositories, list) or not repositories:
+        return None
+    first = repositories[0]
+    branch = first.get("default_branch") if isinstance(first, dict) else None
+    return str(branch) if branch else None
+
+
 def _repository_entry_matches(
     repo: Mapping[str, Any],
     identity: Mapping[str, Any],
@@ -3361,6 +3374,60 @@ class FlowExecutionOrchestrator:
         return found
 
     def _git_clone_config_for_trigger(self) -> Any:
+        """Clone config for this run, each entry with its default branch.
+
+        See :meth:`_select_git_clone_repositories` for which repositories are
+        chosen. Every chosen entry tied to a synced project also gets the
+        project's ``default_branch``, so a run that configures no branch
+        clones that branch rather than assuming ``main``.
+        """
+        config = self._select_git_clone_repositories()
+        if not isinstance(config, dict):
+            return config
+        repositories = config.get("repositories")
+        if not isinstance(repositories, list) or not repositories:
+            return config
+        annotated = []
+        for repo in repositories:
+            if (
+                isinstance(repo, dict)
+                and repo.get("project_id")
+                and not repo.get("default_branch")
+            ):
+                branch = self._project_default_branch(repo["project_id"])
+                if branch:
+                    repo = {**repo, "default_branch": branch}
+            annotated.append(repo)
+        return {**config, "repositories": annotated}
+
+    def _project_default_branch(self, project_id: Any) -> Optional[str]:
+        """The synced project's default branch, or None when sync never stored it."""
+
+        try:
+            from preloop.models.crud import crud_project
+
+            account_id = self._flow_account_id()
+            if account_id is None:
+                return None
+            project = crud_project.get(
+                self.db, id=str(project_id), account_id=account_id
+            )
+        except Exception:
+            logger.debug("Could not read project %s default branch", project_id)
+            return None
+        if project is None:
+            return None
+        for source in (
+            getattr(project, "settings", None),
+            getattr(project, "meta_data", None),
+        ):
+            if isinstance(source, dict):
+                branch = source.get("default_branch")
+                if isinstance(branch, str) and branch.strip():
+                    return branch.strip()
+        return None
+
+    def _select_git_clone_repositories(self) -> Any:
         """Clone config for the triggered repository or a scheduled report.
 
         The stored config is not modified. Clone entries are a hard selection:
@@ -3480,7 +3547,9 @@ class FlowExecutionOrchestrator:
             narrowed["repositories"] = [chosen]
             return narrowed
 
-        if project_id:
+        if project_id and config.get("enabled") is True:
+            # Only an enabled Git workspace clones the trigger repository:
+            # "Enable git workspace cloning: off" means no checkout.
             # A tracker-only entry configures auto-detected clones. Preserve its
             # credentials and checkout options, but only after the payload has
             # resolved to a permitted project. Explicit repository matches above
@@ -7460,7 +7529,11 @@ class FlowExecutionOrchestrator:
                 client=clients[0],
                 allow_create=receipt.get("status") == "pushed",
                 branch=branch,
-                base_branch=str(checkout["repositories"][0].get("branch") or "main"),
+                base_branch=str(
+                    checkout["repositories"][0].get("branch")
+                    or _first_repository_default_branch(configured)
+                    or "main"
+                ),
                 title=title,
                 description=body,
             )

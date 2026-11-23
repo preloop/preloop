@@ -796,6 +796,7 @@ class GitLabTracker(BaseTracker):
                         "path_with_namespace"
                     ),
                     "meta_data": {
+                        "default_branch": project_attributes.get("default_branch"),
                         "created_at": project_attributes.get("created_at"),
                         "updated_at": project_attributes.get("last_activity_at"),
                     },
@@ -818,6 +819,9 @@ class GitLabTracker(BaseTracker):
                 "external_id": proj_data.get("id", ""),
                 "source": "preloop-sync",
                 "path_with_namespace": proj_data.get("path_with_namespace"),
+                "default_branch": (proj_data.get("meta_data") or {}).get(
+                    "default_branch"
+                ),
             },
         }
 

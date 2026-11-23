@@ -13,7 +13,9 @@ tokens stay on the control plane.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import subprocess
 from typing import Any, Dict, Mapping, Optional
 from urllib.parse import urlparse
 
@@ -131,6 +133,39 @@ def _default_branch(
     return "main"
 
 
+def remote_default_branch(repository_url: str) -> Optional[str]:
+    """Branch the remote ``HEAD`` points at, like a ``git clone`` without ``-b``.
+
+    Args:
+        repository_url: Credential-free clone URL.
+
+    Returns:
+        The default branch name, or ``None`` when the remote cannot be read.
+    """
+
+    if not repository_url:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--symref", "--", repository_url, "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.info("Could not read the remote HEAD of a repository: %s", exc)
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        match = re.match(r"^ref: refs/heads/(\S+)\s+HEAD$", line)
+        if match:
+            return match.group(1)
+    return None
+
+
 def _pr_number(payload: Mapping[str, Any]) -> Optional[int]:
     pull = payload.get("pull_request")
     if isinstance(pull, dict) and pull.get("number") is not None:
@@ -191,8 +226,18 @@ def credential_free_clone_url(url: str) -> Optional[str]:
 def ephemeral_clone_identity(
     git_clone_config: Any,
     trigger_event_data: Any,
+    *,
+    resolve_remote_head: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Values the container clone uses, without credentials.
+
+    Args:
+        git_clone_config: The flow's Git workspace settings.
+        trigger_event_data: The triggering event.
+        resolve_remote_head: Read the remote HEAD with ``git ls-remote``
+            when no branch is known. This blocks, so async callers run it
+            in a thread; callers that only need to know whether a
+            repository resolves pass ``False``.
 
     Returns:
         The checkout identity, or ``None`` when clone is disabled or the
@@ -235,6 +280,11 @@ def ephemeral_clone_identity(
         str(repo.get("branch") or "").strip()
         or host._extract_source_branch_from_trigger(trigger)
         or git_config.get("source_branch")
+        or str(repo.get("default_branch") or "").strip()
+        or host._default_branch_from_trigger(trigger)
+        # No branch known: follow the remote HEAD, as the container clone
+        # does, so a repository whose default is not ``main`` still works.
+        or (remote_default_branch(repository_url) if resolve_remote_head else None)
         or "main"
     )
     ref = host._resolve_repository_clone_branch(
@@ -304,7 +354,9 @@ def workspace_mode(
         config = agent_config if isinstance(agent_config, dict) else {}
     if config.get("execution_path") != "persistent":
         return MODE_EPHEMERAL
-    identity = ephemeral_clone_identity(git_clone_config, trigger_event_data)
+    identity = ephemeral_clone_identity(
+        git_clone_config, trigger_event_data, resolve_remote_head=False
+    )
     if identity is None:
         return MODE_CLONE_LESS
     return MODE_PERSISTENT_CHECKOUT

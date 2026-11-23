@@ -648,7 +648,10 @@ class AgentControlExecutor(AgentExecutor):
                 f"{agent_kind or 'unknown'}",
                 category="runner_error",
             )
-        metadata = _flow_dispatch_metadata(
+        # Building the workspace may read the remote HEAD with git
+        # ls-remote, so keep it off the event loop.
+        metadata = await asyncio.to_thread(
+            _flow_dispatch_metadata,
             dispatch_context,
             timeout_seconds=self._timeout_seconds(),
             agent_config=self.config,
