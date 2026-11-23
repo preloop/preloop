@@ -6918,6 +6918,11 @@ export GIT_TERMINAL_PROMPT=0"""
                 # under /workspace/evidence *before* push so a failed push
                 # still leaves a recoverable artifact in the log stream.
                 # Note: Directory is guaranteed to exist because git clone validation would have failed earlier
+                recovery_base = (
+                    f"origin/{publication_base}"
+                    if resumed_on_target
+                    else publication_base
+                )
                 repo_post_commands = [
                     build_whitespace_repair_shell(
                         profile=(
@@ -6949,10 +6954,11 @@ export GIT_TERMINAL_PROMPT=0"""
                     f"  mkdir -p {EVIDENCE_DIR_PATH}",
                     f"  git rev-parse HEAD > {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
                     f"  git log -1 --format='%H %s' >> {EVIDENCE_DIR_PATH}/HEAD.txt 2>/dev/null || true",
-                    f"  git format-patch --stdout {safe_source}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
+                    # Recovery artifacts diff against this repository's base.
+                    f"  git format-patch --stdout {recovery_base}..HEAD > {EVIDENCE_DIR_PATH}/branch.patch 2>/dev/null || true",
                     (
                         f"  git bundle create {EVIDENCE_DIR_PATH}/branch.bundle "
-                        f"{safe_source}..HEAD 2>/dev/null "
+                        f"{recovery_base}..HEAD 2>/dev/null "
                         f"|| git bundle create {EVIDENCE_DIR_PATH}/branch.bundle HEAD "
                         f"2>/dev/null || true"
                     ),

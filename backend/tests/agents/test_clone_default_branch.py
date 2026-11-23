@@ -486,3 +486,28 @@ def test_resume_rebase_prefers_the_pr_target_over_the_project_default() -> None:
 
     assert "origin/develop" in command
     assert "origin/main" not in command
+
+
+def test_recovery_artifacts_use_each_repositorys_own_base(
+    main_repo: Path, master_repo: Path
+) -> None:
+    """branch.patch and branch.bundle diff each repository against its own base."""
+    executor = _executor(ContainerAgentExecutor)
+    context = _two_repo_context(main_repo, master_repo)
+    for repo in context["git_clone_config"]["repositories"]:
+        repo["tracker_id"] = "tracker-1"
+    context["git_credentials_map"] = {
+        "tracker-1": {"token": "fake-token", "tracker_type": "github"}
+    }
+    executor._prepare_git_clone_command(context)
+    command = executor._prepare_git_post_execution_commands(context)
+
+    second = command[command.index("cd /workspace/second") :]
+    first = command[: command.index("cd /workspace/second")]
+    assert "git format-patch --stdout main..HEAD" in first
+    assert "git bundle create /workspace/evidence/branch.bundle main..HEAD" in first
+    assert "git format-patch --stdout master..HEAD" in second
+    assert "git bundle create /workspace/evidence/branch.bundle master..HEAD" in (
+        second
+    )
+    assert "main..HEAD > /workspace/evidence/branch.patch" not in second
