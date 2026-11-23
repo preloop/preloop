@@ -475,6 +475,9 @@ export function buildConversation(
     if (
       toolResultPrefixes === null &&
       event.type !== 'model_gateway_request_started' &&
+      // A hosted conversation turn is the durable user text and answer, not
+      // a captured request, so it has no raw body to lose.
+      event.type !== 'conversation_turn' &&
       !Array.isArray(event.payload?.tools)
     )
       stats.eventsWithoutRawBody += 1;

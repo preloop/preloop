@@ -1,9 +1,16 @@
 import {
-  conversationRequest,
+  conversationActivityLine,
+  conversationCanSend,
   conversationEvents,
+  conversationIntro,
   conversationLabel,
+  conversationLiveReply,
+  conversationNotice,
+  conversationPlaceholder,
+  conversationRequest,
   type FlowConversation,
 } from '../../utils/flow-conversations';
+import type { AgentStatus } from '../../utils/agent-status';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 /**
@@ -113,11 +120,27 @@ const TURN_HISTORY_WINDOW = 40;
 export class AgentTalkView extends LitElement {
   @state() private conversationId = '';
   @state() private conversation: FlowConversation | null = null;
+  /** Ticks once a second so the countdown and elapsed time move on their own. */
+  @state() private conversationNow = Date.now();
+  /** Last successful poll; a failing poll says when the thread was current. */
+  @state() private conversationUpdatedAt = 0;
+  @state() private conversationPollFailing = false;
   private conversationTimer: number | null = null;
+  private conversationClock: number | null = null;
   private conversationRequestId: string | null = null;
   private conversationRequestText = '';
+  /** `state:turn` of the busy phase on screen and when this window first saw it. */
+  private conversationBusyKey = '';
+  private conversationBusySince = 0;
+
+  /** Poll interval for the durable thread, in ms. */
+  static readonly CONVERSATION_POLL_MS = 1000;
 
   private async loadConversation(): Promise<void> {
+    if (this.conversationClock === null)
+      this.conversationClock = window.setInterval(() => {
+        this.conversationNow = Date.now();
+      }, 1000);
     try {
       const thread = await conversationRequest<FlowConversation>(
         `flow-conversations/${this.conversationId}`
@@ -129,21 +152,51 @@ export class AgentTalkView extends LitElement {
         if (!page.messages.length) break;
         thread.messages.push(...page.messages);
       }
-      this.conversation = thread;
+      this.setConversation(thread);
+      this.conversationUpdatedAt = Date.now();
+      this.conversationPollFailing = false;
       this.error = null;
     } catch (error) {
-      this.error =
-        error instanceof Error
-          ? error.message
-          : 'Could not load the conversation.';
+      // With a thread on screen a failed poll is a reconnect, not an error:
+      // the last answer is still true and the next poll retries.
+      if (this.conversation) this.conversationPollFailing = true;
+      else
+        this.error =
+          error instanceof Error
+            ? error.message
+            : 'Could not load the conversation.';
     } finally {
       this.loading = false;
       if (this.isConnected)
         this.conversationTimer = window.setTimeout(
           () => void this.loadConversation(),
-          1000
+          AgentTalkView.CONVERSATION_POLL_MS
         );
     }
+  }
+
+  private setConversation(thread: FlowConversation): void {
+    const previous = this.conversation?.state;
+    const busy = thread.state === 'starting' || thread.state === 'working';
+    const key = busy ? `${thread.state}:${thread.turns}` : '';
+    if (key !== this.conversationBusyKey) {
+      this.conversationBusyKey = key;
+      this.conversationBusySince = Date.now();
+    }
+    this.conversation = thread;
+    // The answer arrived: the next move is the user's, so the cursor is there.
+    if (
+      thread.state === 'waiting' &&
+      previous !== 'waiting' &&
+      thread.can_write
+    )
+      void this.updateComplete.then(() =>
+        this.renderRoot
+          .querySelector<HTMLElement & { focusInput?: () => void }>(
+            'talk-composer'
+          )
+          ?.focusInput?.()
+      );
   }
 
   private sendConversationMessage = async (message: string): Promise<void> => {
@@ -154,18 +207,22 @@ export class AgentTalkView extends LitElement {
       this.conversationRequestId = crypto.randomUUID();
       this.conversationRequestText = message;
     }
-    this.conversation = await conversationRequest<FlowConversation>(
-      `flow-conversations/${this.conversationId}/messages`,
-      { message, request_id: this.conversationRequestId }
+    this.setConversation(
+      await conversationRequest<FlowConversation>(
+        `flow-conversations/${this.conversationId}/messages`,
+        { message, request_id: this.conversationRequestId }
+      )
     );
     this.conversationRequestId = null;
   };
 
   private async endConversation(): Promise<void> {
     try {
-      this.conversation = await conversationRequest<FlowConversation>(
-        `flow-conversations/${this.conversationId}/end`,
-        {}
+      this.setConversation(
+        await conversationRequest<FlowConversation>(
+          `flow-conversations/${this.conversationId}/end`,
+          {}
+        )
       );
     } catch (error) {
       this.error =
@@ -175,28 +232,64 @@ export class AgentTalkView extends LitElement {
     }
   }
 
+  /** The in-thread indicator while the container starts or the agent works. */
+  private conversationWorkingStatus(
+    thread: FlowConversation
+  ): AgentStatus | null {
+    const elapsed = Math.max(
+      0,
+      Math.floor((this.conversationNow - this.conversationBusySince) / 1000)
+    );
+    const line = conversationActivityLine(thread, elapsed);
+    if (!line) return null;
+    return {
+      phase: thread.state === 'starting' ? 'queued' : 'thinking',
+      chip: { label: 'Working', variant: 'neutral' },
+      line,
+      glyph: 'codex',
+      tone: 'neutral',
+      footer: null,
+      marker: null,
+    };
+  }
+
   private renderConversation() {
     const thread = this.conversation;
     if (!thread)
       return html`<div class="state" role="status">
-        ${this.error || 'Starting your conversation…'}
+        ${this.error || 'Opening the conversation…'}
       </div>`;
-    const canSend =
-      thread.can_write && ['waiting', 'stopped'].includes(thread.state);
+    const finished = thread.state === 'ended' || thread.state === 'failed';
+    const notice = conversationNotice(thread, this.conversationNow);
     return html`
       <header class="talk-header">
         <a href=${`/console/flows/${thread.flow_id}`}
           >${thread.flow_name || 'Flow conversation'}</a
         >
-        <span role="status" aria-live="polite"
-          >${conversationLabel(thread)}</span
+        <span
+          class="conversation-state"
+          data-state=${thread.state}
+          data-testid="conversation-state"
+          role="status"
+          aria-live="polite"
+          >${conversationLabel(thread)}${
+            this.conversationPollFailing
+              ? html`<span class="conversation-transport">
+                  · Reconnecting · last update
+                  ${new Date(this.conversationUpdatedAt).toLocaleTimeString(
+                    [],
+                    { hour: 'numeric', minute: '2-digit', second: '2-digit' }
+                  )}</span
+                >`
+              : nothing
+          }</span
         >
         <span>${thread.turns} / ${thread.max_turns} turns</span>
         <a href="/console/approvals">Approvals</a>
         ${thread.execution_id ? html`<a href=${`/console/flows/executions/${thread.execution_id}`}>Execution</a>` : nothing}
         <sl-button
           size="small"
-          ?disabled=${!thread.can_write || thread.state === 'ended'}
+          ?disabled=${!thread.can_write || finished}
           @click=${() => void this.endConversation()}
           >End conversation</sl-button
         >
@@ -205,15 +298,39 @@ export class AgentTalkView extends LitElement {
       <session-chat-view
         scrollable
         followLive
+        hideLiveActivity
+        .liveEnabled=${false}
         .events=${conversationEvents(thread)}
-        .ended=${['ended', 'failed'].includes(thread.state)}
+        .liveReply=${conversationLiveReply(thread)}
+        .workingStatus=${this.conversationWorkingStatus(thread)}
+        .threadIntro=${conversationIntro(thread)}
+        .ended=${finished}
+        emptyText="No messages yet."
       ></session-chat-view>
-      <div class="talk-error" role="status">${thread.notice}</div>
-      ${['ended', 'failed'].includes(thread.state) ? html`<sl-button href=${`/console/flows/${thread.flow_id}`}>Start a new conversation from the flow</sl-button>` : nothing}
+      ${
+        notice
+          ? html`<div
+              class="conversation-notice ${notice.tone === 'danger' ? 'failed' : ''}"
+              data-testid="conversation-notice"
+              role=${notice.tone === 'danger' ? 'alert' : 'status'}
+            >
+              <span>${notice.text}</span>
+              ${
+                finished
+                  ? html`<a href=${`/console/flows/${thread.flow_id}`}
+                      >Start a new conversation from the flow</a
+                    >`
+                  : nothing
+              }
+            </div>`
+          : nothing
+      }
       <talk-composer
         .sendMessage=${this.sendConversationMessage}
-        .transportDisabled=${!canSend || Boolean(this.error)}
-        .transportNotice=${thread.can_write ? thread.notice : 'Only the person who started this conversation can send messages or end it.'}
+        .transportDisabled=${!conversationCanSend(thread) || Boolean(this.error)}
+        .transportPlaceholder=${conversationPlaceholder(thread)}
+        .transportLabel=${thread.flow_name || 'the agent'}
+        .transportNotice=${''}
       ></talk-composer>
     `;
   }
@@ -380,6 +497,31 @@ export class AgentTalkView extends LitElement {
         white-space: nowrap;
       }
 
+      .conversation-notice {
+        align-items: baseline;
+        background: var(--console-surface);
+        border-top: 1px solid var(--console-hairline);
+        color: var(--console-meta-color);
+        display: flex;
+        flex-shrink: 0;
+        flex-wrap: wrap;
+        font-size: var(--console-text-meta);
+        gap: var(--sl-spacing-small);
+        padding: var(--sl-spacing-2x-small) var(--sl-spacing-medium);
+      }
+
+      .conversation-notice.failed {
+        color: var(--sl-color-danger-700);
+      }
+
+      .conversation-notice a {
+        color: var(--console-link-color);
+      }
+
+      .conversation-transport {
+        color: var(--console-meta-color);
+      }
+
       .talk-error {
         background: var(--console-surface);
         border-bottom: 1px solid var(--console-hairline);
@@ -529,6 +671,9 @@ export class AgentTalkView extends LitElement {
   disconnectedCallback(): void {
     if (this.conversationTimer !== null)
       window.clearTimeout(this.conversationTimer);
+    if (this.conversationClock !== null)
+      window.clearInterval(this.conversationClock);
+    this.conversationClock = null;
     this.sessionGeneration += 1;
     this.eventsAbort?.abort();
     this.eventsRequest = null;

@@ -237,6 +237,77 @@ describe('FlowView recent executions', () => {
   });
 });
 
+describe('FlowView interactive conversation rows', () => {
+  it('says a live conversation is waiting and links its Talk window', async () => {
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flow = {
+      id: 'flow-1',
+      name: 'Example flow',
+      agent_type: 'opencode',
+      trigger_event_source: 'webhook',
+      agent_config: {},
+    };
+    element.recentExecutions = [
+      {
+        id: 'execution-live',
+        status: 'RUNNING',
+        start_time: '2026-03-09T10:00:00Z',
+      },
+      {
+        id: 'execution-done',
+        status: 'RUNNING',
+        start_time: '2026-03-09T09:00:00Z',
+      },
+    ];
+    const conversation = (id: string, execution: string, state: string) => ({
+      id,
+      flow_id: 'flow-1',
+      owner_user_id: 'owner-1',
+      execution_id: execution,
+      state,
+      notice: '',
+      can_write: true,
+      turns: 1,
+      max_turns: 30,
+      idle_deadline: null,
+      messages: [],
+    });
+    element.conversationsByExecution = new Map([
+      [
+        'execution-live',
+        conversation('conversation-live', 'execution-live', 'waiting'),
+      ],
+      [
+        'execution-done',
+        conversation('conversation-done', 'execution-done', 'ended'),
+      ],
+    ]);
+    document.body.appendChild(element);
+    await element.updateComplete;
+    try {
+      const rows = element.shadowRoot!.querySelectorAll(
+        '.executions-table tbody tr'
+      );
+      expect(rows[0].textContent).to.contain('Conversation · Waiting for you');
+      expect(rows[0].textContent).not.to.contain('Running');
+      const talk = [...rows[0].querySelectorAll('a')].find(
+        (a: any) => a.textContent.trim() === 'Open Talk'
+      ) as HTMLAnchorElement;
+      expect(talk.getAttribute('href')).to.equal(
+        '/console/flow-conversations/conversation-live/talk'
+      );
+      // A finished conversation falls back to the execution's own status.
+      expect(rows[1].textContent).not.to.contain('Conversation ·');
+    } finally {
+      element.remove();
+    }
+  });
+});
+
 describe('FlowView compact counts (U-01)', () => {
   it('states the executions total compactly with the exact count in the title', async () => {
     const element = document.createElement('flow-view') as any;
