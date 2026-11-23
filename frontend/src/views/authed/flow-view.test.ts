@@ -346,16 +346,21 @@ describe('FlowView conversation row refresh', () => {
       agent_config: { interactive: { enabled: true } },
     };
     element.recentExecutions = [
-      { id: 'execution-live', status: 'RUNNING', start_time: '2026-03-09T10:00:00Z' },
+      {
+        id: 'execution-live',
+        status: 'RUNNING',
+        start_time: '2026-03-09T10:00:00Z',
+      },
     ];
     document.body.appendChild(element);
     try {
       await element.loadExecutionConversations(element.flowLoadGeneration);
       await element.updateComplete;
       const url = String(
-        fetch.getCalls().find((call) =>
-          String(call.args[0]).includes('flow-conversations')
-        )!.args[0]
+        fetch
+          .getCalls()
+          .find((call) => String(call.args[0]).includes('flow-conversations'))!
+          .args[0]
       );
       expect(url).to.contain('flow_id=flow-1');
       const row = () =>
@@ -365,9 +370,12 @@ describe('FlowView conversation row refresh', () => {
       // A stale generation is dropped.
       fetch.callsFake(
         async () =>
-          new Response(JSON.stringify([{ ...conversation, state: 'waiting' }]), {
-            headers: { 'Content-Type': 'application/json' },
-          })
+          new Response(
+            JSON.stringify([{ ...conversation, state: 'waiting' }]),
+            {
+              headers: { 'Content-Type': 'application/json' },
+            }
+          )
       );
       await element.loadExecutionConversations(element.flowLoadGeneration - 1);
       await element.updateComplete;
@@ -398,9 +406,9 @@ describe('FlowView conversation row refresh', () => {
     element.flow = { id: 'flow-1', agent_config: {} };
     await element.loadExecutionConversations(element.flowLoadGeneration);
     expect(
-      fetch.getCalls().some((call) =>
-        String(call.args[0]).includes('flow-conversations')
-      )
+      fetch
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('flow-conversations'))
     ).to.equal(false);
   });
 });
