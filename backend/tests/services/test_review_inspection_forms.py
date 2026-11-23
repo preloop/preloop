@@ -259,9 +259,9 @@ def _context() -> dict[str, Any]:
 
 
 @pytest.fixture(scope="module")
-def checkout(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
+def _template(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
     """A repository whose bound change edits README.md only."""
-    repo = tmp_path_factory.mktemp("checkout") / "repo"
+    repo = tmp_path_factory.mktemp("template") / "repo"
     repo.mkdir()
     env = {**os.environ, "PRELOOP_DISABLE_TELEMETRY": "true"}
 
@@ -284,6 +284,22 @@ def checkout(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
     git("commit", "-qam", "Change")
     head = git("rev-parse", "HEAD")
     return {"repo": str(repo), "base": base, "head": head}
+
+
+@pytest.fixture
+def checkout(tmp_path: Path, _template: dict[str, str]) -> dict[str, str]:
+    """A private clone of the template, so no test sees another's writes.
+
+    The forms run for real: ``git checkout -q {B}`` detaches HEAD and the
+    controller's diff then reports ``head_mismatch`` for any later test that
+    shares the repository.
+    """
+    repo = tmp_path / "checkout"
+    subprocess.check_call(
+        ["git", "clone", "-q", _template["repo"], str(repo)],
+        env={**os.environ, "PRELOOP_DISABLE_TELEMETRY": "true"},
+    )
+    return {**_template, "repo": str(repo)}
 
 
 def _container_accepts(
@@ -422,6 +438,27 @@ def test_budget_case_is_not_continued(tmp_path: Path, checkout: dict[str, str]) 
     calls, _ = _container_accepts(tmp_path, checkout, commands)
     assert calls == 1
     assert _controller_accepts(checkout, commands, [0] * len(commands))
+
+
+@pytest.mark.parametrize("step", ["move", "read"])
+def test_moved_head_does_not_leak_into_the_next_test(
+    tmp_path: Path, checkout: dict[str, str], step: str
+) -> None:
+    """A form that detaches HEAD leaves the next test's checkout bound.
+
+    The ``move`` step runs the ``git checkout -q {B}`` form for real; the
+    ``read`` step, run right after it, must still find HEAD at the bound head.
+    """
+    base, head = checkout["base"], checkout["head"]
+    if step == "move":
+        _container_accepts(tmp_path, checkout, [f"git checkout -q {base}"])
+        return
+    actual = subprocess.check_output(
+        ["git", "-C", checkout["repo"], "rev-parse", "HEAD"], text=True
+    ).strip()
+    assert actual == head
+    command = f"git diff {base}...{head}"
+    assert _controller_accepts(checkout, [command], [0])
 
 
 def test_summary_only_session_is_still_continued(
