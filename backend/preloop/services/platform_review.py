@@ -471,15 +471,58 @@ def evidence_may_still_arrive(execution: Any) -> bool:
     Returns:
         True when ``end_time`` is within the settle window.
     """
+    due = evidence_settled_at(execution)
+    if due is None:
+        return False
+    return datetime.now(timezone.utc).replace(tzinfo=None) < due
+
+
+def evidence_settled_at(execution: Any) -> datetime | None:
+    """When the settle window after ``end_time`` closes, as naive UTC.
+
+    Args:
+        execution: An execution.
+
+    Returns:
+        ``end_time`` plus :data:`EVIDENCE_SETTLE_AFTER`, or None without an
+        end time.
+    """
     end = getattr(execution, "end_time", None)
     if not isinstance(end, datetime):
-        return False
+        return None
     # Timestamp columns are naive UTC. An aware value is converted; a naive
     # one is already that convention, including after a round trip.
     if end.tzinfo is not None:
         end = end.astimezone(timezone.utc).replace(tzinfo=None)
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    return now - end < EVIDENCE_SETTLE_AFTER
+    return end + EVIDENCE_SETTLE_AFTER
+
+
+#: A row-less pending publication whose run is still running.
+PENDING_EXECUTION_NOT_FINISHED = "execution_not_finished"
+#: A row-less pending publication waiting out :data:`EVIDENCE_SETTLE_AFTER`.
+PENDING_EVIDENCE_SETTLING = "evidence_settling"
+
+
+def _pending_cause(execution: Any, flow: Any) -> tuple[str | None, str | None]:
+    """Why a publication with no attempt yet is pending, and until when.
+
+    Args:
+        execution: The execution, with no publication row.
+        flow: Its flow.
+
+    Returns:
+        ``(reason, due_at)``. ``execution_not_finished`` while the run runs.
+        ``evidence_settling`` with the ISO time the attempt becomes due while
+        a flow with an evidence gate waits for late tool evidence. Otherwise
+        ``(None, None)``: the attempt is due and has not been made yet.
+    """
+    if getattr(execution, "status", None) not in TERMINAL_STATUSES:
+        return PENDING_EXECUTION_NOT_FINISHED, None
+    if evidence_level(getattr(flow, "git_clone_config", None)) == "any":
+        return None, None
+    if not evidence_may_still_arrive(execution):
+        return None, None
+    return PENDING_EVIDENCE_SETTLING, _iso(evidence_settled_at(execution))
 
 
 def check_stored_preconditions(
@@ -3361,11 +3404,15 @@ def platform_review_projection(
         # Outside the posting list nothing will be attempted: say so
         # instead of reporting a publication that is still to come.
         skipped = in_scope is False
+        reason, due_at = (
+            (OUT_OF_SCOPE_REASON, None) if skipped else _pending_cause(execution, flow)
+        )
         payload = {
             "mode": mode,
             "posted_by": NOT_POSTED,
             "status": STATE_SKIPPED if skipped else "pending",
-            "reason": OUT_OF_SCOPE_REASON if skipped else None,
+            "reason": reason,
+            "due_at": due_at,
             "head_sha": binding.get("head_sha")
             if isinstance(binding, Mapping)
             else None,
@@ -3387,6 +3434,9 @@ def platform_review_projection(
             "posted_by": how if row.review_state == STATE_POSTED else NOT_POSTED,
             "status": row.state,
             "reason": row.reason,
+            "due_at": _iso(row.next_attempt_at)
+            if row.retryable and row.next_attempt_at is not None
+            else None,
             "head_sha": row.head_sha,
             "review": row.review_state,
             "review_id": row.review_id,

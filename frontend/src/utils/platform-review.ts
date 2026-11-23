@@ -64,6 +64,11 @@ export interface PlatformReviewRecord {
   posted_at: string | null;
   attempts: number;
   retry_scheduled: boolean;
+  /**
+   * When the next attempt is due: the end of the evidence settle wait
+   * (reason `evidence_settling`) or a scheduled retry. Null otherwise.
+   */
+  due_at?: string | null;
   pull_request_url?: string | null;
   review_url?: string | null;
   commit_url?: string | null;
@@ -74,6 +79,8 @@ export interface PlatformReviewRecord {
     incomplete_records: number;
     masking_only_records: number;
     masking_by_rule: Record<string, number>;
+    incomplete_by_reason?: Record<string, number>;
+    removed_by_category?: Record<string, number>;
   };
   /**
    * The last read-back comparison that failed. It can stay set when a later
@@ -389,6 +396,8 @@ const REASONS: Record<string, string> = {
   execution_not_finished: 'The run has not finished yet.',
   evidence_incomplete:
     'The stored tool evidence is not complete enough for this flow to post a review.',
+  evidence_settling:
+    'Waiting for tool evidence from the last model request to finish recording before posting.',
   evidence_pending:
     'Tool evidence for the last model request may still be recording. Retry in a moment.',
   request_not_allowed: 'Preloop refused a request outside what posting may do.',
@@ -415,7 +424,9 @@ export function publicationSummary(
       return {
         label: 'Not posted yet',
         variant: 'neutral',
-        detail: 'Preloop posts when the run finishes.',
+        detail: record.reason
+          ? reasonText(record.reason)
+          : 'Preloop posts when the run finishes.',
       };
     case 'publishing':
       return {

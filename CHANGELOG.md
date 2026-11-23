@@ -73,6 +73,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source branch. GitLab sync now records each project's default branch, and
   a failed clone names the branch it tried and the repository's default
   branch.
+- Tool evidence keeps control characters exactly (#2434). A form feed from
+  text converted from a PDF, ESC colour sequences in command output, and a
+  U+0003 or U+0004 sent to a terminal through `write_stdin` used to be
+  deleted, which marked the record `unsafe_text` and made `platform_review`
+  refuse with `evidence_incomplete`. Such a record is now complete and its
+  digest covers the exact text. Call arguments are no longer decoded and
+  re-encoded unless a masking rule changes them. Lone surrogates, which
+  cannot be encoded, are still removed, now counted in `removed` with reason
+  `lone_surrogates`. The credential scrubber and account storage rules have
+  their own reasons (`credential_scrub`, `storage_rule`), and the evidence
+  summary adds `incomplete_by_reason` and `removed_by_category`.
+
+- A pending review publication says why it waits (#2436): `reason:
+  "evidence_settling"` with `due_at` while tool evidence settles after the
+  run finishes, and `execution_not_finished` while the run runs.
 
 - An approved `ask_user` or `request_approval` form now returns the human's
   answer to the agent. The approval replay re-ran the tool with the
