@@ -143,3 +143,14 @@ OpenRouter model configurations can enforce provider routing preferences. Gatewa
 usage records include a content-free summary of effective upstream controls and
 the OpenRouter serving host when reported; see the
 [provider guide](docs/guide/providers/openrouter.md).
+
+### Hosted flow conversations
+
+`FlowConversation` is the durable owner and admission lock for a hosted thread;
+`FlowConversationMessage` records each accepted input and streamed answer. Console,
+mobile and chat clients share the conversation API. OpenCode's pinned server stays
+alive inside the execution container; an execution-scoped driver submits turns and
+persists text from its SSE stream. Idle executions retain their hosted capacity
+slot. After shutdown, a new execution restores the explicit native session and
+workspace artifacts. Gateway usage and active runtime are charged across all
+executions bound to the conversation. See the [API and lifecycle guide](docs/guide/flows/interactive-conversations.md).

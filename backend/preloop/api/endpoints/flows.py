@@ -3629,6 +3629,9 @@ def _reject_oversized_workspace_seeds(
 # the agent clones and pushes to, so it is refused rather than carried.
 RESERVED_TRIGGER_KEYS = frozenset(
     {
+        "_conversation_id",
+        "_conversation_owner_user_id",
+        "_conversation_message",
         "_chat_origin",
         "_resume",
         "_answers",
@@ -4266,6 +4269,18 @@ def update_flow(
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
     require_flow_revision(condition, flow)
+
+    from preloop.services.flow_conversations import interactive_settings
+
+    try:
+        interactive_settings(
+            flow_in.agent_type or flow.agent_type,
+            flow_in.agent_config
+            if flow_in.agent_config is not None
+            else flow.agent_config,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
     # Omission preserves the harness, but an explicit null cannot be stored
     # in Flow.agent_type. Reject it before any harness-specific validation.

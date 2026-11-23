@@ -1,6 +1,8 @@
 """OpenCode CLI agent implementation."""
 
+import base64
 import json
+from pathlib import Path
 import logging
 import os
 import shlex
@@ -879,6 +881,26 @@ fi
 {completion_nudge_block}{session_blocks["pack"]}{post_exec_block}
 # Exit with opencode's exit code
 exit $OPENCODE_EXIT_CODE
+"""
+        if (execution_context.get("trigger_event_data") or {}).get("_conversation_id"):
+            driver = base64.b64encode(
+                Path(__file__).with_name("opencode_conversation.py").read_bytes()
+            ).decode()
+            script = script.split(
+                "# Signal to the orchestrator that the agent is about to start."
+            )[0]
+            script += f"""
+printf '%s' '{driver}' | base64 -d > /tmp/preloop-opencode-conversation.py
+chmod 700 /tmp/preloop-opencode-conversation.py
+echo PRELOOP_AGENT_EXEC_START
+set +e
+python3 /tmp/preloop-opencode-conversation.py {opencode_model_arg} {PROMPT_FILE_PATH} "${{PRELOOP_CLI_SESSION_ID:-}}" 2>&1 | tee -a "{AGENT_OUTPUT_LOG_PATH}"
+OPENCODE_EXIT_CODE=${{PIPESTATUS[0]}}
+set -e
+{session_blocks["marker"]}
+{session_blocks["pack"]}
+{post_exec_block}
+exit "$OPENCODE_EXIT_CODE"
 """
         return script
 

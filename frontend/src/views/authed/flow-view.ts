@@ -1,3 +1,9 @@
+import '../../components/flow-conversation-list';
+import {
+  conversationRequest,
+  type FlowConversation,
+} from '../../utils/flow-conversations';
+import { openTalkWindow } from '../../utils/talk-window';
 import { failureStreak } from '../../utils/failure-streak';
 import {
   failureCategoryLabel,
@@ -466,6 +472,10 @@ export class FlowView extends LitElement {
 
   @state()
   private showTestRunModal = false;
+
+  @state() private showConversationStart = false;
+  @state() private conversationFirstMessage = '';
+  @state() private startingConversation = false;
 
   @state()
   private _loadingReferenceData = false;
@@ -1208,6 +1218,31 @@ export class FlowView extends LitElement {
         </div>
       </sl-dialog>
 
+      <sl-dialog
+        label="Start conversation"
+        .open=${this.showConversationStart}
+        @sl-request-close=${() => {
+          this.showConversationStart = false;
+        }}
+      >
+        <sl-textarea
+          label="First message (optional)"
+          help-text="Added to the flow’s initial prompt. Leave blank to use the prompt as saved."
+          .value=${this.conversationFirstMessage}
+          @sl-input=${(event: Event) => {
+            this.conversationFirstMessage = (
+              event.target as HTMLTextAreaElement
+            ).value;
+          }}
+        ></sl-textarea>
+        <sl-button
+          slot="footer"
+          variant="primary"
+          ?loading=${this.startingConversation}
+          @click=${() => void this.startConversation()}
+          >Start conversation</sl-button
+        >
+      </sl-dialog>
       <view-header headerText="${this.flow.name}" width="wide">
         <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
           <sl-button
@@ -1228,6 +1263,20 @@ export class FlowView extends LitElement {
             style="display: contents;"
             .context=${{ kind: 'flow', resourceId: this.flowId ?? '' }}
           ></capability-extension>
+          ${
+            (
+              this.flow.agent_config?.interactive as
+                { enabled?: boolean } | undefined
+            )?.enabled
+              ? html`<sl-button
+                  variant="primary"
+                  @click=${() => {
+                    this.showConversationStart = true;
+                  }}
+                  >Start conversation</sl-button
+                >`
+              : nothing
+          }
           <resource-actions
             .actions=${this.getFlowActions()}
           ></resource-actions>
@@ -1237,6 +1286,7 @@ export class FlowView extends LitElement {
         <div class="main-column">
           ${this.renderReferenceDataWarning()} ${this.renderConfigWarnings()}
           ${this.renderSummaryStrip()}
+          ${(this.flow.agent_config?.interactive as { enabled?: boolean } | undefined)?.enabled ? html`<flow-conversation-list .flowId=${this.flowId || ''}></flow-conversation-list>` : nothing}
           ${
             this.flow?.agent_config?.native_result === true &&
             (!this.flow.result_schema || this.flow.validate_result === false)
@@ -1877,6 +1927,35 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
 
     // Return unique placeholders
     return [...new Set(matches)];
+  }
+
+  private async startConversation(): Promise<void> {
+    if (this.startingConversation) return;
+    this.startingConversation = true;
+    try {
+      const thread = await conversationRequest<FlowConversation>(
+        `flows/${this.flowId}/conversations`,
+        {
+          request_id: crypto.randomUUID(),
+          message: this.conversationFirstMessage,
+        }
+      );
+      this.showConversationStart = false;
+      openTalkWindow(
+        { id: thread.id, display_name: this.flow?.name || 'Flow conversation' },
+        null,
+        { conversationId: thread.id }
+      );
+    } catch (error) {
+      showToast(
+        error instanceof Error
+          ? error.message
+          : 'Could not start the conversation.',
+        'danger'
+      );
+    } finally {
+      this.startingConversation = false;
+    }
   }
 
   async testRun() {

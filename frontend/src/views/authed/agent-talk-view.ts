@@ -1,3 +1,9 @@
+import {
+  conversationRequest,
+  conversationEvents,
+  conversationLabel,
+  type FlowConversation,
+} from '../../utils/flow-conversations';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 /**
@@ -105,6 +111,113 @@ const TURN_HISTORY_WINDOW = 40;
 
 @customElement('agent-talk-view')
 export class AgentTalkView extends LitElement {
+  @state() private conversationId = '';
+  @state() private conversation: FlowConversation | null = null;
+  private conversationTimer: number | null = null;
+  private conversationRequestId: string | null = null;
+  private conversationRequestText = '';
+
+  private async loadConversation(): Promise<void> {
+    try {
+      const thread = await conversationRequest<FlowConversation>(
+        `flow-conversations/${this.conversationId}`
+      );
+      while (thread.messages.length && thread.messages.length % 100 === 0) {
+        const page = await conversationRequest<FlowConversation>(
+          `flow-conversations/${this.conversationId}?after_turn=${thread.messages[thread.messages.length - 1].turn}`
+        );
+        if (!page.messages.length) break;
+        thread.messages.push(...page.messages);
+      }
+      this.conversation = thread;
+      this.error = null;
+    } catch (error) {
+      this.error =
+        error instanceof Error
+          ? error.message
+          : 'Could not load the conversation.';
+    } finally {
+      this.loading = false;
+      if (this.isConnected)
+        this.conversationTimer = window.setTimeout(
+          () => void this.loadConversation(),
+          1000
+        );
+    }
+  }
+
+  private sendConversationMessage = async (message: string): Promise<void> => {
+    if (
+      message !== this.conversationRequestText ||
+      !this.conversationRequestId
+    ) {
+      this.conversationRequestId = crypto.randomUUID();
+      this.conversationRequestText = message;
+    }
+    this.conversation = await conversationRequest<FlowConversation>(
+      `flow-conversations/${this.conversationId}/messages`,
+      { message, request_id: this.conversationRequestId }
+    );
+    this.conversationRequestId = null;
+  };
+
+  private async endConversation(): Promise<void> {
+    try {
+      this.conversation = await conversationRequest<FlowConversation>(
+        `flow-conversations/${this.conversationId}/end`,
+        {}
+      );
+    } catch (error) {
+      this.error =
+        error instanceof Error
+          ? error.message
+          : 'Could not end the conversation.';
+    }
+  }
+
+  private renderConversation() {
+    const thread = this.conversation;
+    if (!thread)
+      return html`<div class="state" role="status">
+        ${this.error || 'Starting your conversation…'}
+      </div>`;
+    const canSend =
+      thread.can_write && ['waiting', 'stopped'].includes(thread.state);
+    return html`
+      <header class="talk-header">
+        <a href=${`/console/flows/${thread.flow_id}`}
+          >${thread.flow_name || 'Flow conversation'}</a
+        >
+        <span role="status" aria-live="polite"
+          >${conversationLabel(thread)}</span
+        >
+        <span>${thread.turns} / ${thread.max_turns} turns</span>
+        <a href="/console/approvals">Approvals</a>
+        ${thread.execution_id ? html`<a href=${`/console/flows/executions/${thread.execution_id}`}>Execution</a>` : nothing}
+        <sl-button
+          size="small"
+          ?disabled=${!thread.can_write || thread.state === 'ended'}
+          @click=${() => void this.endConversation()}
+          >End conversation</sl-button
+        >
+      </header>
+      ${this.error ? html`<div class="talk-error" role="alert">${this.error}</div>` : nothing}
+      <session-chat-view
+        scrollable
+        followLive
+        .events=${conversationEvents(thread)}
+        .ended=${['ended', 'failed'].includes(thread.state)}
+      ></session-chat-view>
+      <div class="talk-error" role="status">${thread.notice}</div>
+      ${['ended', 'failed'].includes(thread.state) ? html`<sl-button href=${`/console/flows/${thread.flow_id}`}>Start a new conversation from the flow</sl-button>` : nothing}
+      <talk-composer
+        .sendMessage=${this.sendConversationMessage}
+        .transportDisabled=${!canSend || Boolean(this.error)}
+        .transportNotice=${thread.can_write ? thread.notice : 'Only the person who started this conversation can send messages or end it.'}
+      ></talk-composer>
+    `;
+  }
+
   private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private agentId = '';
   @state() private agent: ManagedAgentSummary | null = null;
@@ -343,10 +456,11 @@ export class AgentTalkView extends LitElement {
   ];
 
   onBeforeEnter(location: {
-    params: { agentId?: string };
+    params: { agentId?: string; conversationId?: string };
     search?: string;
   }): void {
     this.agentId = location.params.agentId ?? '';
+    this.conversationId = location.params.conversationId ?? '';
     const search = new URLSearchParams(
       location.search ?? window.location.search
     );
@@ -375,6 +489,10 @@ export class AgentTalkView extends LitElement {
         composed: true,
       })
     );
+    if (this.conversationId) {
+      void this.loadConversation();
+      return;
+    }
     void this.load();
     this.connectRealtime();
     if (this.windowMode) {
@@ -409,6 +527,8 @@ export class AgentTalkView extends LitElement {
   };
 
   disconnectedCallback(): void {
+    if (this.conversationTimer !== null)
+      window.clearTimeout(this.conversationTimer);
     this.sessionGeneration += 1;
     this.eventsAbort?.abort();
     this.eventsRequest = null;
@@ -1148,6 +1268,7 @@ export class AgentTalkView extends LitElement {
   }
 
   render() {
+    if (this.conversationId) return this.renderConversation();
     if (this.loading && !this.agent) {
       return html`<div class="state" role="status">
         <sl-spinner></sl-spinner>

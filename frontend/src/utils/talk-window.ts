@@ -42,6 +42,7 @@ function sessionIdOf(session: SessionLike): string | null {
 }
 
 export interface TalkWindowOptions {
+  conversationId?: string;
   /**
    * Which entry point opened this conversation ('dashboard-active-agents',
    * 'agent-detail-view', ...). It rides the URL as `?source=` and the composer
@@ -57,6 +58,8 @@ export function talkRoutePath(
   session?: SessionLike | RuntimeSessionSummary,
   options: TalkWindowOptions = {}
 ): string {
+  if (options.conversationId)
+    return `/console/flow-conversations/${encodeURIComponent(options.conversationId)}/talk`;
   const sessionId = sessionIdOf(session as SessionLike);
   const parts: string[] = [];
   if (sessionId) parts.push(`session=${encodeURIComponent(sessionId)}`);

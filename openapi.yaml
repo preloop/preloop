@@ -18409,6 +18409,328 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/flows/{flow_id}/conversations:
+    post:
+      tags:
+      - Flow conversations
+      summary: Start Conversation
+      description: Start a hosted conversation; the first request ID is its stable
+        identity.
+      operationId: start_conversation_api_v1_flows__flow_id__conversations_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationStart'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/flow-conversations:
+    get:
+      tags:
+      - Flow conversations
+      summary: List Conversations
+      description: List visible conversation identities for console, mobile and chat
+        clients.
+      operationId: list_conversations_api_v1_flow_conversations_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Flow Id
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ConversationResponse'
+                title: Response List Conversations Api V1 Flow Conversations Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/flow-conversations/{conversation_id}:
+    get:
+      tags:
+      - Flow conversations
+      summary: Get Conversation
+      description: Poll durable state and streamed answers; reloads and tabs share
+        this thread.
+      operationId: get_conversation_api_v1_flow_conversations__conversation_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Conversation Id
+      - name: after_turn
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: After Turn
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/flow-conversations/{conversation_id}/messages:
+    post:
+      tags:
+      - Flow conversations
+      summary: Send Message
+      description: Admit one input or explicitly refuse it; stopped threads resume
+        natively.
+      operationId: send_message_api_v1_flow_conversations__conversation_id__messages_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Conversation Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConversationSend'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/flow-conversations/{conversation_id}/end:
+    post:
+      tags:
+      - Flow conversations
+      summary: End Conversation
+      description: End a conversation; the runtime saves its checkpoint before shutdown.
+      operationId: end_conversation_api_v1_flow_conversations__conversation_id__end_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Conversation Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/flow-conversations/{conversation_id}/runtime:
+    get:
+      tags:
+      - Flow conversations
+      summary: Runtime Poll
+      description: Deliver the admitted turn or request checkpointing and shutdown.
+      operationId: runtime_poll_api_v1_flow_conversations__conversation_id__runtime_get
+      parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Conversation Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Runtime Poll Api V1 Flow Conversations  Conversation
+                  Id  Runtime Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    post:
+      tags:
+      - Flow conversations
+      summary: Runtime Update
+      description: Persist an answer snapshot before the next input can be accepted.
+      operationId: runtime_update_api_v1_flow_conversations__conversation_id__runtime_post
+      parameters:
+      - name: conversation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Conversation Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuntimeTurnUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: boolean
+                title: Response Runtime Update Api V1 Flow Conversations  Conversation
+                  Id  Runtime Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/flows:
     post:
       tags:
@@ -36248,6 +36570,148 @@ components:
       - allowed_recovery_modes
       - warnings
       title: ContinuationPreview
+    ConversationMessage:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        turn:
+          type: integer
+          title: Turn
+        text:
+          type: string
+          title: Text
+        answer:
+          type: string
+          title: Answer
+        status:
+          type: string
+          title: Status
+        execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Execution Id
+      type: object
+      required:
+      - id
+      - turn
+      - text
+      - answer
+      - status
+      - execution_id
+      title: ConversationMessage
+      description: An admitted turn; answer is updated while the runtime streams.
+    ConversationResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        owner_user_id:
+          type: string
+          format: uuid
+          title: Owner User Id
+        execution_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Execution Id
+        state:
+          type: string
+          enum:
+          - starting
+          - working
+          - waiting
+          - stopped
+          - ended
+          - failed
+          title: State
+        notice:
+          type: string
+          title: Notice
+        can_write:
+          type: boolean
+          title: Can Write
+          default: false
+        flow_name:
+          type: string
+          title: Flow Name
+          default: Flow conversation
+        turns:
+          type: integer
+          title: Turns
+        max_turns:
+          type: integer
+          title: Max Turns
+        idle_timeout_seconds:
+          type: integer
+          title: Idle Timeout Seconds
+        idle_deadline:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Idle Deadline
+        messages:
+          items:
+            $ref: '#/components/schemas/ConversationMessage'
+          type: array
+          title: Messages
+      type: object
+      required:
+      - id
+      - flow_id
+      - owner_user_id
+      - execution_id
+      - state
+      - notice
+      - turns
+      - max_turns
+      - idle_timeout_seconds
+      - idle_deadline
+      title: ConversationResponse
+      description: Durable thread projection; polling is independent of browser presence.
+    ConversationSend:
+      properties:
+        message:
+          type: string
+          maxLength: 65536
+          minLength: 1
+          title: Message
+        request_id:
+          type: string
+          format: uuid
+          title: Request Id
+      type: object
+      required:
+      - message
+      - request_id
+      title: ConversationSend
+      description: A stable request ID makes retries safe across tabs and mobile clients.
+    ConversationStart:
+      properties:
+        message:
+          type: string
+          maxLength: 65536
+          title: Message
+          default: ''
+        request_id:
+          type: string
+          format: uuid
+          title: Request Id
+      type: object
+      required:
+      - request_id
+      title: ConversationStart
+      description: Optional text is substituted for {{conversation.message}} or appended.
     CopilotConnectionResponse:
       properties:
         id:
@@ -55211,6 +55675,34 @@ components:
       - action
       title: RuntimeSessionUpdateRequest
       description: Operator-driven updates for one runtime session.
+    RuntimeTurnUpdate:
+      properties:
+        turn:
+          type: integer
+          minimum: 1.0
+          title: Turn
+        answer:
+          type: string
+          maxLength: 1048576
+          title: Answer
+          default: ''
+        finished:
+          type: boolean
+          title: Finished
+          default: false
+        error:
+          type: boolean
+          title: Error
+          default: false
+        interrupted:
+          type: boolean
+          title: Interrupted
+          default: false
+      type: object
+      required:
+      - turn
+      title: RuntimeTurnUpdate
+      description: Execution-bound snapshot, safe to retry without duplicating text.
     ScanFinding:
       properties:
         advisory_id:

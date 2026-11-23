@@ -4738,6 +4738,16 @@ export class PreloopFlowForm extends LitElement {
     `;
   }
 
+  private setInteractiveSetting(key: string, value: boolean | number): void {
+    this.flow = {
+      ...this.flow,
+      agent_config: {
+        ...this.flow.agent_config,
+        interactive: { ...this.flow.agent_config?.interactive, [key]: value },
+      },
+    };
+  }
+
   render() {
     if (this._loadingReferenceData) {
       return html`
@@ -4903,6 +4913,41 @@ export class PreloopFlowForm extends LitElement {
           <div slot="header" class="card-header-title">
             <sl-icon name="calendar-event"></sl-icon> Trigger configuration
           </div>
+
+          <sl-details
+            summary="Interactive conversation (optional)"
+            data-interactive-settings
+          >
+            <sl-switch
+              data-field="interactive"
+              .checked=${this.flow.agent_config?.interactive?.enabled === true}
+              ?disabled=${this.flow.agent_type !== 'opencode'}
+              @sl-change=${(event: Event) => this.setInteractiveSetting('enabled', (event.target as HTMLInputElement).checked)}
+              >Interactive conversations</sl-switch
+            >
+            <p>
+              ${this.flow.agent_type === 'opencode' ? 'Start a conversation from this flow. Its hosted container waits for follow-up messages.' : 'Interactive conversations require hosted OpenCode. DeepSeek Harness, Pi and other harnesses are not supported.'}
+            </p>
+            <sl-input
+              type="number"
+              min="1"
+              label="Maximum turns per conversation"
+              data-field="interactive-max-turns"
+              .value=${String(this.flow.agent_config?.interactive?.max_turns ?? 30)}
+              ?disabled=${!this.flow.agent_config?.interactive?.enabled}
+              @sl-input=${(event: Event) => this.setInteractiveSetting('max_turns', Number((event.target as HTMLInputElement).value))}
+            ></sl-input>
+            <sl-input
+              type="number"
+              min="1"
+              label="Idle timeout (seconds)"
+              data-field="interactive-idle-timeout"
+              help-text="The container stays running while it waits. Messages after it stops resume the saved session."
+              .value=${String(this.flow.agent_config?.interactive?.idle_timeout_seconds ?? 600)}
+              ?disabled=${!this.flow.agent_config?.interactive?.enabled}
+              @sl-input=${(event: Event) => this.setInteractiveSetting('idle_timeout_seconds', Number((event.target as HTMLInputElement).value))}
+            ></sl-input>
+          </sl-details>
 
           <sl-details summary="Chat trigger (optional)" data-chat-trigger>
             <sl-input

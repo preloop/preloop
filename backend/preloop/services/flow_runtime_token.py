@@ -152,6 +152,7 @@ def create_flow_runtime_token(
     execution_id: Optional[UUID],
     runtime_session_id: Optional[UUID] = None,
     ai_model_id: Any = None,
+    owner_user_id: UUID | None = None,
 ) -> tuple[Optional[str], Optional[UUID]]:
     """Mint a two-hour MCP token scoped to one flow execution.
 
@@ -168,7 +169,15 @@ def create_flow_runtime_token(
             return None, None
 
         principal_user = None
-        if account.primary_user_id:
+        if owner_user_id is not None:
+            principal_user = crud_user.get(db, id=owner_user_id)
+            if (
+                not principal_user
+                or principal_user.account_id != account.id
+                or not principal_user.is_active
+            ):
+                return None, None
+        if principal_user is None and account.primary_user_id:
             principal_user = crud_user.get(db, id=account.primary_user_id)
             if principal_user and not principal_user.is_active:
                 principal_user = None
@@ -184,7 +193,13 @@ def create_flow_runtime_token(
             )
             return None, None
 
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=2)
+        expires_at = datetime.now(timezone.utc) + (
+            timedelta(
+                seconds=int(getattr(flow, "timeout_seconds", None) or 86400) + 300
+            )
+            if owner_user_id is not None
+            else timedelta(hours=2)
+        )
         flow_id = getattr(flow, "id", None)
         flow_name = getattr(flow, "name", None) or str(flow_id)
         execution_id_value = str(execution_id) if execution_id is not None else None
