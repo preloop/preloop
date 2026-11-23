@@ -259,9 +259,9 @@ def _context() -> dict[str, Any]:
 
 
 @pytest.fixture(scope="module")
-def checkout(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
+def _template(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
     """A repository whose bound change edits README.md only."""
-    repo = tmp_path_factory.mktemp("checkout") / "repo"
+    repo = tmp_path_factory.mktemp("template") / "repo"
     repo.mkdir()
     env = {**os.environ, "PRELOOP_DISABLE_TELEMETRY": "true"}
 
@@ -284,6 +284,34 @@ def checkout(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
     git("commit", "-qam", "Change")
     head = git("rev-parse", "HEAD")
     return {"repo": str(repo), "base": base, "head": head}
+
+
+def _clone(template: dict[str, str], dest: Path) -> dict[str, str]:
+    """Clone the template into ``dest`` and bind the copy to the same change.
+
+    Args:
+        template: The module-scoped template repository and its SHAs.
+        dest: Directory the private clone is created in.
+
+    Returns:
+        The template binding with ``repo`` pointing at the clone.
+    """
+    subprocess.check_call(
+        ["git", "clone", "-q", template["repo"], str(dest)],
+        env={**os.environ, "PRELOOP_DISABLE_TELEMETRY": "true"},
+    )
+    return {**template, "repo": str(dest)}
+
+
+@pytest.fixture
+def checkout(tmp_path: Path, _template: dict[str, str]) -> dict[str, str]:
+    """A private clone of the template, so no test sees another's writes.
+
+    The forms run for real: ``git checkout -q {B}`` detaches HEAD and the
+    controller's diff then reports ``head_mismatch`` for any later test that
+    shares the repository.
+    """
+    return _clone(_template, tmp_path / "checkout")
 
 
 def _container_accepts(
@@ -422,6 +450,32 @@ def test_budget_case_is_not_continued(tmp_path: Path, checkout: dict[str, str]) 
     calls, _ = _container_accepts(tmp_path, checkout, commands)
     assert calls == 1
     assert _controller_accepts(checkout, commands, [0] * len(commands))
+
+
+def test_moved_head_does_not_leak_into_another_checkout(
+    tmp_path: Path, _template: dict[str, str]
+) -> None:
+    """A form that detaches HEAD in one checkout leaves another one bound.
+
+    Runs the ``git checkout -q {B}`` form for real in the first clone, then
+    checks that a second clone still has HEAD at the bound head and that the
+    controller accepts a three-dot read there.
+    """
+    moved = _clone(_template, tmp_path / "moved")
+    other = _clone(_template, tmp_path / "other")
+    base, head = moved["base"], moved["head"]
+
+    def rev_parse(binding: dict[str, str]) -> str:
+        return subprocess.check_output(
+            ["git", "-C", binding["repo"], "rev-parse", "HEAD"], text=True
+        ).strip()
+
+    run = tmp_path / "run"
+    run.mkdir()
+    _container_accepts(run, moved, [f"git checkout -q {base}"])
+    assert rev_parse(moved) == base
+    assert rev_parse(other) == head
+    assert _controller_accepts(other, [f"git diff {base}...{head}"], [0])
 
 
 def test_summary_only_session_is_still_continued(

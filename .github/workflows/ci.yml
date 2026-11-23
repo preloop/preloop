@@ -829,7 +829,7 @@ jobs:
             -m "not integration" \
             --cov=preloop \
             --cov-report= \
-            --junitxml=test-results.xml
+            --junitxml="test-results.$SHARD_GROUP.xml"
 
       # The locked backend suite uses SQLAlchemy 2.0. Exercise newer bind
       # rendering too: 2.1 adds VARCHAR casts that exposed untyped JSON paths.
@@ -860,7 +860,7 @@ jobs:
         with:
           overwrite: true
           name: backend-test-results-${{ matrix.group }}
-          path: test-results.xml
+          path: test-results.${{ matrix.group }}.xml
 
       - name: Remove completed job environments
         if: always() && runner.environment == 'self-hosted'
@@ -949,6 +949,9 @@ jobs:
         with:
           pattern: backend-test-results-*
           path: test-results
+          # A pattern that matches one artifact extracts it without the
+          # per-artifact directory, so merge every shard into one layout.
+          merge-multiple: true
 
       - name: Summarise actual shard durations
         env:
@@ -978,6 +981,9 @@ jobs:
         with:
           pattern: backend-test-results-*
           path: test-results
+          # A pattern that matches one artifact extracts it without the
+          # per-artifact directory, so merge every shard into one layout.
+          merge-multiple: true
       - name: Convert JUnit times to node durations
         run: |
           mkdir -p .ci-durations
