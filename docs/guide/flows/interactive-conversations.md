@@ -60,7 +60,27 @@ its checkpoint. Only a successfully saved native session and workspace earn the
 **Stopped (resumable)** state.
 
 A message to a stopped conversation starts a new execution/container and restores
-the explicit native session and repository workspace. The states shown are:
+the explicit native session and repository workspace. Every resume, including
+later stop/resume cycles, uses the working branch recorded in that conversation's
+workspace checkpoint. It keeps the saved checkout, commits and uncommitted files
+even if the flow's source branch has moved on the remote. It does not update or
+rebase the checkout onto the latest source branch. A different restored branch
+still fails the checkpoint guard. Flows without a repository do not enter Git branch planning or this guard.
+A separate limitation remains in the pinned OpenCode transport: the local
+no-repository check reaches the model endpoint but the attached CLI omits
+completion events, leaving the first turn Failed before it can save a resumable
+checkpoint.
+
+Editing the flow prompt does not replay it into an existing conversation:
+follow-up turns contain only the new message. The conversation keeps the turn
+limit and idle timeout selected when it started. Other execution settings and
+current authorization policies are evaluated again for each new container;
+model/harness identity must remain compatible with the saved native session.
+Changing the flow name or target-branch setting does not rename the saved branch.
+Changing repository paths so they no longer match the checkpoint refuses resume;
+start a new conversation for a different repository configuration.
+
+The states shown are:
 
 | State | Meaning |
 | --- | --- |
@@ -130,6 +150,12 @@ messages go directly to the same native session without replaying the initial
 prompt. HTTP 409 states why input was refused; HTTP 410 reports an unavailable
 checkpoint. The returned `notice` is suitable for display to users.
 
+A failed resume currently leaves the conversation **Failed**, even when a
+startup guard refused it before the agent ran and the previous checkpoint is
+still intact. Retrying that checkpoint after a deployment fix needs a future
+recovery transition that retains the failed turn and its runtime accounting while
+binding the next attempt to the last successful checkpoint.
+
 The `/runtime` endpoints are internal, execution-scoped capability endpoints;
 account credentials cannot impersonate a runtime. They are not part of the
 mobile/chat client contract.
@@ -157,6 +183,15 @@ Preloop gateway. Synthetic transport tests do not establish provider latency or
 prove a real model retained context. Record cold-start-to-first-token, live
 follow-up and resumed-turn latency from that real run before using those numbers
 for performance claims.
+
+The opt-in `test_conversation_repository_integration.py` test uses local
+PostgreSQL, pinned OpenCode 1.18.29 and a synthetic model endpoint. With
+`OPENCODE_CONVERSATION_SMOKE=1` and that OpenCode version on `PATH`, it exercises
+idle stop and two resumes using a real bare Git upstream, checkpoint capture and
+restore, native history and persisted answers/turn counts. It also covers a
+conversation without a repository as an expected failure for the transport
+limitation above. The ordinary branch regression tests execute
+the generated clone and restore shell, including the branch guard.
 
 OpenCode references: [server API](https://opencode.ai/docs/server/),
 [CLI](https://opencode.ai/docs/cli/). The pinned executable's `serve --help`,

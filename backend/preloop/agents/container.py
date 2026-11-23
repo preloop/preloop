@@ -4823,6 +4823,22 @@ fi
         resume_branch = None
         if isinstance(resume, dict):
             resume_branch = resume.get("source_branch") or None
+        if "conversation_workspace_repositories" in execution_context:
+            # Only bound_resume supplies these records, after authorizing the
+            # conversation's paired workspace and native-session artifacts.
+            repo_path = self._primary_workspace_path(execution_context, git_config)
+            relative = str(Path(repo_path).relative_to("/workspace"))
+            records = execution_context["conversation_workspace_repositories"]
+            matches = [record for record in records if record.get("path") == relative]
+            resume_branch = (
+                _validated_git_ref(matches[0].get("branch"))
+                if len(matches) == 1
+                else None
+            )
+            if not resume_branch:
+                raise ValueError(
+                    "Conversation checkpoint repository branch is missing."
+                )
 
         if resume_branch:
             # Clone and push the same PR branch so a comment restart continues
@@ -5879,7 +5895,8 @@ true
         except Exception as e:
             self.logger.error(f"Error preparing git clone command: {type(e).__name__}")
             if (
-                execution_context.get("read_only_review") is True
+                "conversation_workspace_repositories" in execution_context
+                or execution_context.get("read_only_review") is True
                 or (execution_context.get("git_clone_config") or {}).get(
                     "publication_mode"
                 )
