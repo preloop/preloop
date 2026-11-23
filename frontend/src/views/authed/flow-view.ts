@@ -2235,6 +2235,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     // Build payload with required fields
     const payload: any = {
       name: this.flow.name,
+      chat_alias: this.flow.chat_alias || null,
       prompt_template: this.flow.prompt_template || '',
       agent_type: this.flow.agent_type || 'codex',
       agent_config:

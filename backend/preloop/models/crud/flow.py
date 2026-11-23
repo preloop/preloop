@@ -652,6 +652,21 @@ class CRUDFlow(CRUDBase[models.Flow]):
                     check_native_result_schema(flow.result_schema)
                     break
 
+    def check_chat_alias(
+        self, db: Session, account_id: Any, alias: str | None, flow_id: Any = None
+    ) -> None:
+        """Serialize alias assignments and give a useful duplicate error."""
+        if alias is None:
+            return
+        db.query(models.Account).filter_by(id=account_id).with_for_update().one()
+        query = db.query(models.Flow).filter_by(account_id=account_id, chat_alias=alias)
+        if flow_id is not None:
+            query = query.filter(models.Flow.id != flow_id)
+        if query.first() is not None:
+            from fastapi import HTTPException
+
+            raise HTTPException(409, "Chat alias is already used by another flow")
+
     def create(
         self,
         db: Session,
@@ -674,6 +689,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
         Returns:
             The created flow object.
         """
+        self.check_chat_alias(db, account_id, flow_in.chat_alias)
         db_flow = self.model(**flow_in.model_dump())
         if created_by_user_id is not None:
             db_flow.created_by_user_id = UUID(str(created_by_user_id))
@@ -713,6 +729,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
         Returns:
             The updated flow object.
         """
+        self.check_chat_alias(db, account_id, flow_in.chat_alias, db_obj.id)
         update_data = flow_in.model_dump(exclude_unset=True)
         previous_hook = db_obj.webhook_config or {}
         replacement_hook = update_data.get("webhook_config")

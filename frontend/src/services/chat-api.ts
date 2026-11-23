@@ -9,6 +9,7 @@ export interface ChatConnection {
   workspace_id: string;
   name: string;
   enabled: boolean;
+  default_flow_id?: string | null;
   linked: boolean;
   external_user_id: string | null;
   ingress_url: string;
@@ -98,4 +99,14 @@ export const unlinkChatIdentity = (id: string) =>
 export const listChatDeliveries = (id: string) =>
   chatRequest<{ deliveries: ChatDelivery[] }>(
     `/connections/${encodeURIComponent(id)}/deliveries`
+  );
+
+export const setChatDefaultFlow = (
+  id: string,
+  default_flow_id: string | null
+) =>
+  chatRequest<ChatConnection>(
+    `/connections/${encodeURIComponent(id)}`,
+    'PATCH',
+    { default_flow_id }
   );

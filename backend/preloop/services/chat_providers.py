@@ -285,6 +285,8 @@ async def send_private_reply(
     *,
     delivery_id: str,
     client: httpx.AsyncClient,
+    channel_id: str = "",
+    thread_id: str = "",
 ) -> str:
     """Open a verified recipient's DM and send a bounded, unmentioned reply.
 
@@ -322,10 +324,15 @@ async def send_private_reply(
         return data
 
     if config.provider == "slack":
-        dm = await post("https://slack.com/api/conversations.open", {"users": user_id})
-        channel = _string(
-            _mapping(dm.get("channel"), "DM channel").get("id"), "DM channel"
-        )
+        if channel_id:
+            channel = _string(channel_id, "conversation")
+        else:
+            dm = await post(
+                "https://slack.com/api/conversations.open", {"users": user_id}
+            )
+            channel = _string(
+                _mapping(dm.get("channel"), "DM channel").get("id"), "DM channel"
+            )
         result = await post(
             "https://slack.com/api/chat.postMessage",
             {
@@ -335,6 +342,7 @@ async def send_private_reply(
                 "unfurl_links": False,
                 "unfurl_media": False,
                 "client_msg_id": delivery_id,
+                **({"thread_ts": thread_id} if thread_id else {}),
             },
         )
         return _string(result.get("ts"), "message ID")

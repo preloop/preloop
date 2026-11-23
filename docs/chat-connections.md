@@ -190,6 +190,8 @@ After linking, use ordinary text for read-only questions. Explicit commands are:
 
 | Action | Slack / Mattermost direct message | Discord |
 | --- | --- | --- |
+| Run a flow | `ask ALIAS TEXT` (or `ask TEXT` with a default) | `/preloop message:/ask ALIAS TEXT` |
+| List available flows | `help` | `/preloop message:/help` |
 | Link account | `link CODE` | `/preloop message:/link CODE` |
 | Session note | `note SESSION_ID TEXT` | `/preloop message:/note SESSION_ID TEXT` |
 | Agent message | `message AGENT_ID SESSION_ID TEXT` | `/preloop message:/message AGENT_ID SESSION_ID TEXT` |
@@ -205,6 +207,79 @@ disable the connection; delivery history makes failures and uncertain sends visi
 Mattermost Agents is complementary: it provides its own model/MCP agent layer and
 is not required for this transport. No unverified gateway integration or
 actor-specific permissions through a shared Agents credential are promised.
+
+## Start a flow from chat
+
+Edit a flow's **Trigger configuration → Chat trigger → Chat flow alias** to opt it in. The
+alias is unique within the account, 1–40 lowercase letters, digits or hyphens.
+An empty alias disables chat starts; existing flows stay off until configured.
+The flow must also be enabled. In **Settings → Chat connections**, optionally
+choose a **Default chat flow**. Only enabled, opted-in flows appear there.
+
+Send `ask docs Where is the release checklist?` to the Slack or Mattermost bot.
+Slack channel mentions also work: `@Preloop ask docs Where is the checklist?`.
+On Discord use `/preloop message:/ask docs Where is the checklist?`.
+The sender must link their own account and have both `execute_flows` (the manual
+trigger permission) and `view_flows`, including resource-specific access. `help`
+lists only aliases that sender may run and read. Unknown, disabled, unconfigured,
+and inaccessible aliases are reported as unavailable without exposing hidden names.
+
+If a connection has a default, `ask Where is the checklist?` uses it. An exact
+first-word alias takes precedence; otherwise the whole question goes to the
+default. This means a misspelled alias is part of the default flow's question.
+Without a default, an unknown alias is refused. Plain text without `ask` continues
+to ask the existing read-only account assistant.
+
+Each question starts a new execution; thread replies do not resume prior runs.
+The normal limits, budgets, approvals and account kill switch apply. The worker
+allows five starts per user per minute and twenty per connection per minute,
+across workers, and one unfinished chat run per user per flow. Refused/uncertain
+start attempts count toward the minute limit. An uncertain start is never replayed.
+
+The immediate acknowledgement links to the execution. The console labels it as a
+chat run with the connection name; the audit entry records the linked user and
+chat connection. The worker sends one notice if the run waits for approval, then
+sends the final answer or a short failed/stopped/timeout message. Slack replies
+stay in the original DM/thread; channel mentions receive replies in that channel's
+original thread. Mattermost and Discord replies use the sender's same bot DM
+(Discord command acknowledgements remain ephemeral).
+
+For a flow with a result schema, the answer is the validated result's string
+`text` field. For Codex and Claude Code without a result schema, explicit completed
+assistant events supply the final answer. Arbitrary log tails and tool output are
+never treated as answers. If no final text is available, the reply links to the
+execution for inspection. Answers are truncated to 2,000 characters on Discord
+and 8,000 on Slack/Mattermost, always preserving the full-result link. Identity,
+account status, permissions and resource visibility are checked again before each
+delivery. Unlinking or disabling a connection prevents pending answers from
+being delivered. An interrupted external write remains uncertain, without replay.
+
+### Example: answer questions from a repository of documents
+
+1. Create a flow with your documents repository in its clone configuration and a
+   model/agent configured through the normal flow setup. Enable it and set its chat
+   alias to `docs`.
+2. Use a prompt such as:
+
+   ```text
+   Answer the question only from the cloned documents repository.
+   Cite the source filename and section for every factual claim.
+   If the repository does not contain an answer, say so.
+   Question: {{trigger_event.payload.chat.text}}
+   ```
+
+3. Optionally configure a result schema with a required string `text` field; have
+   the flow put its answer and citations in that field. Native structured results
+   use the same validated-result path. Otherwise use Codex or Claude Code's final
+   assistant message.
+4. Link your account and send `ask docs How do I request a review?`. Follow the
+   acknowledgement link to inspect the run; the cited answer arrives in chat.
+
+The payload also exposes `trigger_event.payload.chat.sender_display_name` and
+`trigger_event.payload.chat.connection_name`. It contains no bot tokens or
+provider user/channel IDs. The separate origin metadata is recorded by Preloop
+for attribution and durable correlation. The repository clone supplies the
+corpus; no retrieval or vector-search service is involved.
 
 ## Cloud documentation support
 

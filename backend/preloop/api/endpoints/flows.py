@@ -3638,6 +3638,7 @@ def _reject_oversized_workspace_seeds(
 # the agent clones and pushes to, so it is refused rather than carried.
 RESERVED_TRIGGER_KEYS = frozenset(
     {
+        "_chat_origin",
         "_resume",
         "_answers",
         "_answers_prompt",
@@ -3682,11 +3683,18 @@ def _reject_invalid_product_provenance(
 
 def _reject_reserved_trigger_keys(
     trigger_event_data: Optional[Dict[str, Any]],
+    *,
+    paired_chat: bool = False,
 ) -> None:
     """Reject a manual trigger body that forges platform-internal keys."""
     if not isinstance(trigger_event_data, dict):
         return
-    present = sorted(RESERVED_TRIGGER_KEYS.intersection(trigger_event_data))
+    reserved = (
+        RESERVED_TRIGGER_KEYS - {"_chat_origin"}
+        if paired_chat
+        else RESERVED_TRIGGER_KEYS
+    )
+    present = sorted(reserved.intersection(trigger_event_data))
     if not present:
         return
     raise HTTPException(
@@ -3784,6 +3792,7 @@ async def trigger_flow_execution(
     *,
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
+    request: Request = None,
     current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
     trigger_event_data: Optional[Dict[str, Any]] = None,
     if_match: Optional[str] = Header(
@@ -3811,7 +3820,9 @@ async def trigger_flow_execution(
     The response is the status projection of the new execution. The flow
     webhook does not accept CI credentials.
 
-    **Human credential**: starts a test execution (``test_mode`` true). The
+    **Human credential**: starts a test execution (``test_mode`` true), except
+    authenticated paired chat actions, which start production executions.
+    ``_chat_origin`` is reserved for verified paired chat provenance. The
     body is free-form trigger event data, except for the reserved key
     ``matrix``: when present it must be a list of up to 25
     ``{"agent_type"?, "ai_model_id"?}`` objects and the trigger fans out to
@@ -3887,7 +3898,12 @@ async def trigger_flow_execution(
     # share lock right before the insert, which is the authoritative check.
     require_flow_revision(expected_revision, flow)
 
-    _reject_reserved_trigger_keys(trigger_event_data)
+    _reject_reserved_trigger_keys(
+        trigger_event_data,
+        paired_chat=bool(
+            request and getattr(request.state, "paired_channel_action", False)
+        ),
+    )
     _reject_oversized_workspace_seeds(trigger_event_data)
     _reject_invalid_product_provenance(trigger_event_data)
 
@@ -3907,6 +3923,44 @@ async def trigger_flow_execution(
             )
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+
+    chat_origin = (trigger_event_data or {}).get("_chat_origin")
+    if chat_origin is not None:
+        from preloop.models.crud import crud_chat
+
+        if not request or not getattr(request.state, "paired_channel_action", False):
+            raise HTTPException(403, "Chat origin requires a paired channel action")
+        if not isinstance(chat_origin, dict):
+            raise HTTPException(422, "Invalid chat origin")
+        try:
+            connection_id = uuid.UUID(chat_origin["connection_id"])
+            request_id = uuid.UUID(chat_origin["request_id"])
+        except (KeyError, ValueError, TypeError):
+            raise HTTPException(422, "Invalid chat origin") from None
+        connection = crud_chat.connections.get(
+            db, connection_id, account_id=str(current_user.account_id)
+        )
+        receipt = crud_chat.work.get(
+            db, request_id, account_id=str(current_user.account_id)
+        )
+        if (
+            connection is None
+            or not connection.enabled
+            or receipt is None
+            or receipt.connection_id != connection.id
+            or receipt.user_id != current_user.id
+            or receipt.run_flow_id != flow.id
+            or receipt.status != "acting"
+            or not flow.chat_alias
+            or not flow.is_enabled
+        ):
+            raise HTTPException(403, "Flow is not available for chat")
+        trigger_event_data["_chat_origin"] = {
+            "connection_id": str(connection.id),
+            "request_id": str(receipt.id),
+            "user_id": str(current_user.id),
+            "connection_name": connection.name,
+        }
 
     # Pop the reserved matrix key so it never leaks into template variables.
     matrix = None
@@ -3950,7 +4004,7 @@ async def trigger_flow_execution(
     try:
         result = await trigger_service.trigger_flow(
             flow_id=flow_id,
-            test_mode=True,
+            test_mode=chat_origin is None,
             trigger_event_data=trigger_event_data,
             triggered_by=_display_name(current_user),
             authorization_context=AuthorizationContext(
@@ -3971,6 +4025,18 @@ async def trigger_flow_execution(
     except FlowHaltActiveError:
         raise _halted_response()
 
+    if chat_origin is not None:
+        log_config_change(
+            db,
+            user=current_user,
+            config_type="flow_execution",
+            action="chat_started",
+            new_value={
+                "id": result["id"],
+                "flow_id": str(flow.id),
+                "origin": trigger_event_data["_chat_origin"],
+            },
+        )
     return result
 
 

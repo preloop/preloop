@@ -1826,6 +1826,13 @@ def apply_flow_limit_fields(
 
 
 class FlowBase(BaseModel):
+    chat_alias: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=40,
+        pattern=r"^[a-z0-9-]+$",
+        description="Opt in to chat with an account-unique alias; null disables chat.",
+    )
     name: Optional[str] = None
     description: Optional[str] = None
     icon: Optional[str] = None

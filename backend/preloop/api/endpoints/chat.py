@@ -55,7 +55,8 @@ class ConnectionCreate(BaseModel):
 
 
 class ConnectionUpdate(BaseModel):
-    enabled: bool
+    enabled: bool | None = None
+    default_flow_id: UUID | None = None
 
 
 def provider_config(connection: models.ChatConnection) -> ChatProviderConfig:
@@ -112,6 +113,9 @@ def public_connection(
         "workspace_id": connection.workspace_id,
         "name": connection.name,
         "enabled": connection.enabled,
+        "default_flow_id": str(connection.default_flow_id)
+        if connection.default_flow_id
+        else None,
         "configured": True,
         "worker_ready": ready and connection.enabled,
         "worker_status": worker.status if fresh else "waiting",
@@ -205,9 +209,27 @@ def update_connection(
     if not has_permission(current_user, MANAGE_PERMISSION, db):
         raise HTTPException(403, "Connection management permission required")
     connection = get_connection(db, connection_id, current_user)
-    connection = crud_chat.connections.update(
-        db, db_obj=connection, obj_in=payload.model_dump()
-    )
+    if payload.default_flow_id is not None:
+        from preloop.models.crud import crud_flow
+
+        flow = crud_flow.get(
+            db, id=payload.default_flow_id, account_id=current_user.account_id
+        )
+        from preloop.services.read_only_review import read_only_review
+
+        if (
+            flow is None
+            or not flow.chat_alias
+            or not flow.is_enabled
+            or read_only_review(flow.git_clone_config)
+        ):
+            raise HTTPException(
+                422, "Default flow must be enabled and opted in to chat"
+            )
+    changes = payload.model_dump(exclude_unset=True)
+    if "enabled" in changes and changes["enabled"] is None:
+        raise HTTPException(422, "Enabled must be a boolean")
+    connection = crud_chat.connections.update(db, db_obj=connection, obj_in=changes)
     return public_connection(db, connection, current_user)
 
 
@@ -356,7 +378,7 @@ def ingest(
                 text = text[len(mention) :].strip()
         if connection.provider == "slack":
             verb = text.split(maxsplit=1)[0] if text else ""
-            if verb in {"link", "note", "message", "approve", "deny"}:
+            if verb in {"link", "note", "message", "approve", "deny", "ask", "help"}:
                 text = "/" + text
         payload = {
             "text": text,

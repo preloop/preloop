@@ -23,12 +23,15 @@ from preloop.models.crud import (
     crud_runtime_session,
     crud_managed_agent,
     crud_approval_request,
+    crud_flow,
+    crud_flow_execution,
 )
 from preloop.plugins.account_hooks import (
     AuthorizationContext,
     authorize,
     get_authorizer,
     ACTION_RESOURCE_VIEW,
+    ACTION_FLOW_RUN,
     VISIBLE_MANAGED_AGENT,
 )
 
@@ -117,6 +120,16 @@ class ChatBroker:
             resource = crud_approval_request.get(
                 self.db, id=UUID(resource_id), account_id=str(user.account_id)
             )
+        elif kind == "flow":
+            resource = crud_flow.get(
+                self.db, id=UUID(resource_id), account_id=user.account_id
+            )
+        elif kind == "flow_execution":
+            resource = crud_flow_execution.get_without_workspace(
+                self.db, id=UUID(resource_id), account_id=user.account_id
+            )
+            if resource is not None:
+                self.authorize_resource("flow", str(resource.flow_id), permission)
         else:
             raise HTTPException(403, "Unsupported resource")
         if resource is None:
@@ -132,6 +145,9 @@ class ChatBroker:
             or not authorize(ctx, permission, resource).allowed
         ):
             raise HTTPException(403, "Resource access denied")
+        if kind == "flow" and permission == "execute_flows":
+            if not authorize(ctx, ACTION_FLOW_RUN, resource).allowed:
+                raise HTTPException(403, "Flow execution denied")
         if kind == "runtime_session":
             agent = getattr(resource, "managed_agent", None)
             if agent is None:
@@ -154,6 +170,8 @@ class ChatBroker:
         path: str,
         permission: str,
         payload: dict[str, Any] | None = None,
+        *,
+        revision: int | None = None,
     ) -> Any:
         route = path.split("?", 1)[0]
         expected = (
@@ -186,6 +204,16 @@ class ChatBroker:
             and method == "GET"
         ):
             expected = "view_approvals"
+        if method == "POST" and re.fullmatch(
+            r"/api/v1/flows/[0-9a-f-]{36}/trigger", route
+        ):
+            expected = "execute_flows"
+            self.authorize_resource("flow", route.split("/")[4], expected)
+        if method == "GET" and re.fullmatch(
+            r"/api/v1/flows/executions/[0-9a-f-]{36}(?:/logs|/result)?", route
+        ):
+            expected = "view_flows"
+            self.authorize_resource("flow_execution", route.split("/")[5], expected)
         if expected is None or expected != permission:
             raise HTTPException(403, "Route is outside the chat tool registry")
         user = crud_chat.principal(self.db, self.connection, self.external_user_id)
@@ -252,7 +280,14 @@ class ChatBroker:
                     method,
                     path,
                     json=payload,
-                    headers={"Authorization": f"Bearer {token}"},
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        **(
+                            {"If-Match": f'"{revision}"'}
+                            if revision is not None
+                            else {}
+                        ),
+                    },
                 ),
                 timeout=45,
             )

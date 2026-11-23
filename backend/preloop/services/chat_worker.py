@@ -118,7 +118,25 @@ async def process_one(db: Session, app: Any) -> bool:
                         payload={**row.payload, "actor_id": str(user.id)},
                     )
                     broker = ChatBroker(db, connection, row.external_user_id, app)
-                    if row.payload.get("approval_request_id"):
+                    if row.payload.get("flow_watch"):
+                        from preloop.services.chat_flows import watch_run
+
+                        if not await watch_run(broker, row):
+                            return True
+                        reply = row.reply
+                    elif row.payload.get("flow_notice"):
+                        reply = text
+                    elif text.split(maxsplit=1)[0:1] in (["/ask"], ["/help"]):
+                        from preloop.services.chat_flows import start_or_help
+
+                        reply = await start_or_help(broker, row)
+                        crud_chat.transition(
+                            db,
+                            row,
+                            "processing",
+                            payload={**row.payload, "flow_conversation": True},
+                        )
+                    elif row.payload.get("approval_request_id"):
                         request_id = UUID(row.payload["approval_request_id"])
                         if not crud_chat.eligible_approver(db, user, request_id):
                             crud_chat.transition(
@@ -273,6 +291,13 @@ async def process_one(db: Session, app: Any) -> bool:
                     db, row, "cancelled", last_error="Approver no longer eligible"
                 )
                 return True
+            if row.payload.get("flow_notice") or row.run_execution_id:
+                execution_id = row.payload.get("flow_notice") or str(
+                    row.run_execution_id
+                )
+                await ChatBroker(db, connection, row.external_user_id, app).request(
+                    "GET", f"/api/v1/flows/executions/{execution_id}", "view_flows"
+                )
             permission = row.payload.get("required_permission")
             if permission and not has_permission(user, permission, db):
                 crud_chat.transition(
@@ -312,6 +337,18 @@ async def process_one(db: Session, app: Any) -> bool:
                 row.reply or "No answer available.",
                 delivery_id=str(row.id),
                 client=client,
+                **(
+                    {
+                        "channel_id": row.payload.get("channel_id") or "",
+                        "thread_id": row.payload.get("thread_id") or "",
+                    }
+                    if connection.provider == "slack"
+                    and (
+                        row.payload.get("flow_conversation")
+                        or row.payload.get("flow_notice")
+                    )
+                    else {}
+                ),
             )
         crud_chat.transition(
             db, row, "delivered", provider_message_id=message_id, last_error=None

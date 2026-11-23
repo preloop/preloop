@@ -29,6 +29,9 @@ class ChatConnection(Base):
     workspace_id: Mapped[str] = mapped_column(String(256))
     name: Mapped[str] = mapped_column(String(120))
     credentials_encrypted: Mapped[str] = mapped_column(Text)
+    default_flow_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("flow.id", ondelete="SET NULL"), nullable=True
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -79,6 +82,15 @@ class ChatWork(Base):
     external_user_id: Mapped[str] = mapped_column(String(256))
     user_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("user.id", ondelete="SET NULL"), nullable=True
+    )
+    run_flow_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("flow.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    run_execution_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("flow_execution.id", ondelete="SET NULL"), nullable=True
+    )
+    run_reserved_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, index=True
     )
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
     reply: Mapped[str | None] = mapped_column(Text, nullable=True)
