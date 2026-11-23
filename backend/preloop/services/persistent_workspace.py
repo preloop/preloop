@@ -226,8 +226,18 @@ def credential_free_clone_url(url: str) -> Optional[str]:
 def ephemeral_clone_identity(
     git_clone_config: Any,
     trigger_event_data: Any,
+    *,
+    resolve_remote_head: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Values the container clone uses, without credentials.
+
+    Args:
+        git_clone_config: The flow's Git workspace settings.
+        trigger_event_data: The triggering event.
+        resolve_remote_head: Read the remote HEAD with ``git ls-remote``
+            when no branch is known. This blocks, so async callers run it
+            in a thread; callers that only need to know whether a
+            repository resolves pass ``False``.
 
     Returns:
         The checkout identity, or ``None`` when clone is disabled or the
@@ -274,7 +284,7 @@ def ephemeral_clone_identity(
         or host._default_branch_from_trigger(trigger)
         # No branch known: follow the remote HEAD, as the container clone
         # does, so a repository whose default is not ``main`` still works.
-        or remote_default_branch(repository_url)
+        or (remote_default_branch(repository_url) if resolve_remote_head else None)
         or "main"
     )
     ref = host._resolve_repository_clone_branch(
@@ -344,7 +354,9 @@ def workspace_mode(
         config = agent_config if isinstance(agent_config, dict) else {}
     if config.get("execution_path") != "persistent":
         return MODE_EPHEMERAL
-    identity = ephemeral_clone_identity(git_clone_config, trigger_event_data)
+    identity = ephemeral_clone_identity(
+        git_clone_config, trigger_event_data, resolve_remote_head=False
+    )
     if identity is None:
         return MODE_CLONE_LESS
     return MODE_PERSISTENT_CHECKOUT
