@@ -900,6 +900,7 @@ export class TalkComposer extends LitElement {
   }
 
   private handleKeydown(event: KeyboardEvent): void {
+    if (event.isComposing) return;
     if (this.sendMessage) {
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
@@ -907,7 +908,6 @@ export class TalkComposer extends LitElement {
       }
       return;
     }
-    if (event.isComposing) return;
     const menu = this.menuCommands;
     if (menu.length) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {

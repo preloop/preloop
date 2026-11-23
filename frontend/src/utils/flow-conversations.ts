@@ -89,11 +89,19 @@ export function conversationEvents(
         messages: [
           {
             source: 'request',
+            position: message.turn * 2,
             role: 'user',
             text: message.text || 'Start the flow’s initial prompt.',
           },
           ...(message.answer
-            ? [{ source: 'response', role: 'assistant', text: message.answer }]
+            ? [
+                {
+                  source: 'response',
+                  position: message.turn * 2 + 1,
+                  role: 'assistant',
+                  text: message.answer,
+                },
+              ]
             : []),
         ],
       },

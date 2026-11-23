@@ -85,6 +85,8 @@ def resume_checkpoint(db: Session, row: models.FlowConversation) -> dict[str, An
 
 def reconcile(db: Session, row: models.FlowConversation) -> None:
     """Recover visible terminal state even after a worker or browser disconnect."""
+    if row.state == "failed" and row.stop_reason == "dispatch_failed":
+        return
     if row.state in {"ended", "stopped"} or not row.execution_id:
         return
     execution = crud_flow_execution.get(
@@ -231,6 +233,8 @@ def runtime_environment(db: Session, context: dict[str, Any]) -> dict[str, str]:
         settings.security.secret_key,
         algorithm="HS256",
     )
+    # Child filtering prevents inheritance, but same-UID tools can still read
+    # the container environment via /proc. See the interactive conversation guide.
     return {
         "PRELOOP_CONVERSATION_URL": settings.preloop_url.rstrip("/")
         + f"/api/v1/flow-conversations/{row.id}/runtime",

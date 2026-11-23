@@ -35,7 +35,8 @@ from preloop.services.flow_conversations import (
     reconcile,
     resume_checkpoint,
 )
-from preloop.services.flow_trigger_service import FlowTriggerService
+from preloop.services.flow_trigger_service import FlowDispatchError, FlowTriggerService
+from preloop.services.kill_switch import FLOW_DENIAL_MESSAGE, FlowHaltActiveError
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 from preloop.utils.audit import log_config_change
 
@@ -137,6 +138,20 @@ async def dispatch(
             ),
             conversation_id=row.id,
         )
+    except FlowHaltActiveError as exc:
+        notice = (
+            FLOW_DENIAL_MESSAGE + ". Start a new conversation after the halt is lifted."
+        )
+        await run_db_off_loop(lambda: crud.fail_dispatch(db, row, notice))
+        raise HTTPException(403, notice) from exc
+    except FlowDispatchError as exc:
+        notice = (
+            f"Execution {exc.execution_id} was created but dispatch failed. "
+            "This conversation cannot continue. Inspect the execution "
+            "before starting a new conversation."
+        )
+        await run_db_off_loop(lambda: crud.fail_dispatch(db, row, notice))
+        raise HTTPException(503, notice) from exc
     except PermissionError as exc:
         db.rollback()
         raise HTTPException(403, str(exc)) from exc

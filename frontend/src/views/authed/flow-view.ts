@@ -3,7 +3,11 @@ import {
   conversationRequest,
   type FlowConversation,
 } from '../../utils/flow-conversations';
-import { openTalkWindow } from '../../utils/talk-window';
+import {
+  openTalkWindow,
+  isPhoneViewport,
+  talkWindowUrl,
+} from '../../utils/talk-window';
 import { failureStreak } from '../../utils/failure-streak';
 import {
   failureCategoryLabel,
@@ -476,6 +480,10 @@ export class FlowView extends LitElement {
   @state() private showConversationStart = false;
   @state() private conversationFirstMessage = '';
   @state() private startingConversation = false;
+  private conversationStartRequest: {
+    request_id: string;
+    message: string;
+  } | null = null;
 
   @state()
   private _loadingReferenceData = false;
@@ -1932,21 +1940,42 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
   private async startConversation(): Promise<void> {
     if (this.startingConversation) return;
     this.startingConversation = true;
+    if (
+      !this.conversationStartRequest ||
+      this.conversationStartRequest.message !== this.conversationFirstMessage
+    ) {
+      this.conversationStartRequest = {
+        request_id: crypto.randomUUID(),
+        message: this.conversationFirstMessage,
+      };
+    }
+    const options = {
+      conversationId: this.conversationStartRequest.request_id,
+    };
+    const agent = {
+      id: options.conversationId,
+      display_name: this.flow?.name || 'Flow conversation',
+    };
+    const popup = isPhoneViewport()
+      ? null
+      : openTalkWindow(agent, null, {
+          ...options,
+          deferNavigation: true,
+        });
     try {
-      const thread = await conversationRequest<FlowConversation>(
+      await conversationRequest<FlowConversation>(
         `flows/${this.flowId}/conversations`,
-        {
-          request_id: crypto.randomUUID(),
-          message: this.conversationFirstMessage,
-        }
+        this.conversationStartRequest
       );
+      this.conversationStartRequest = null;
       this.showConversationStart = false;
-      openTalkWindow(
-        { id: thread.id, display_name: this.flow?.name || 'Flow conversation' },
-        null,
-        { conversationId: thread.id }
-      );
+      if (popup?.win) {
+        popup.win.location.replace(talkWindowUrl(agent.id, null, options));
+      } else if (!popup) {
+        openTalkWindow(agent, null, options);
+      }
     } catch (error) {
+      if (popup?.outcome === 'window') popup.win?.close();
       showToast(
         error instanceof Error
           ? error.message

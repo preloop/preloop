@@ -1,10 +1,15 @@
 """Pinned OpenCode event semantics and hosted launcher integration."""
 
+import json
 import queue
 import subprocess
-from io import BytesIO
+from io import BytesIO, StringIO
 from typing import Any
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from preloop.agents import opencode_conversation as driver
 from preloop.agents.opencode import OpenCodeAgent
 from preloop.agents.opencode_conversation import (
     TurnText,
@@ -104,7 +109,7 @@ def test_sse_disconnect_is_visible() -> None:
 
 
 def test_agent_cannot_inherit_runtime_write_capability(monkeypatch: Any) -> None:
-    """Agent tools cannot impersonate the trusted conversation driver."""
+    """Child environments omit the capability; same-UID /proc access is separate."""
     monkeypatch.setenv("PRELOOP_CONVERSATION_TOKEN", "synthetic-capability")
     monkeypatch.setenv("PRELOOP_DISABLE_TELEMETRY", "true")
     assert "PRELOOP_CONVERSATION_TOKEN" not in child_environment()
@@ -133,3 +138,44 @@ def test_interactive_launcher_uses_live_driver_and_native_checkpoint() -> None:
         ["bash", "-n"], input=script, text=True, capture_output=True, check=False
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("reason", ["stop", "end_turn"])
+@pytest.mark.parametrize(
+    "tail", [[], [{"type": "step_finish", "part": {"reason": "tool-calls"}}]]
+)
+def test_recovered_error_publishes_completed_answer(
+    reason: str, tail: list[dict[str, Any]]
+) -> None:
+    """The last successful terminal step supersedes a recovered error."""
+    events = [
+        {"type": "error"},
+        {"type": "text", "part": {"id": "part-example", "text": "Recovered answer."}},
+        {"type": "step_finish", "part": {"reason": reason}},
+        *tail,
+    ]
+    process = MagicMock()
+    process.__enter__.return_value = process
+    process.stdin = StringIO()
+    process.stdout = StringIO("".join(json.dumps(item) + "\n" for item in events))
+    process.wait.return_value = 0
+    with (
+        patch.object(driver.subprocess, "Popen", return_value=process),
+        patch.object(driver, "control", return_value={"stop": False}) as control,
+    ):
+        result = driver.run_turn(
+            "http://localhost:4096",
+            "synthetic",
+            "Continue",
+            2,
+            "ses_example",
+            queue.Queue(),
+        )
+    assert result == "ses_example"
+    assert control.call_args.args[0] == {
+        "turn": 2,
+        "answer": "Recovered answer.",
+        "finished": True,
+        "error": False,
+        "interrupted": False,
+    }

@@ -1157,3 +1157,34 @@ describe('talk-composer keyboard and slash commands', () => {
     expect(textarea(el).value).to.equal('');
   });
 });
+
+describe('Hosted composer IME', () => {
+  afterEach(() => sinon.restore());
+
+  it('commits composition without sending, then sends the completed text on Enter', async () => {
+    const send = sinon.stub().resolves();
+    const el = await fixture<TalkComposer>(
+      html`<talk-composer .sendMessage=${send}></talk-composer>`
+    );
+    const input = textarea(el);
+    input.value = '日本語';
+    input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+    await el.updateComplete;
+    const composing = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    input.dispatchEvent(composing);
+    await el.updateComplete;
+    expect(send.called).to.equal(false);
+    expect(composing.defaultPrevented).to.equal(false);
+    expect(input.value).to.equal('日本語');
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    await waitUntil(() => send.calledOnce);
+    expect(send.firstCall.args).to.deep.equal(['日本語']);
+  });
+});

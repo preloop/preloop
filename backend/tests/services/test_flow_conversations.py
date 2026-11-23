@@ -3,6 +3,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -559,3 +560,127 @@ def test_http_start_keeps_first_message_and_owner(
     assert first.json()["id"] == request_id
     assert first.json()["owner_user_id"] == str(test_user.id)
     assert first.json()["messages"][0]["text"] == "Inspect the README first."
+
+
+@pytest.mark.parametrize("failure", ["halt", "dispatch"])
+def test_http_start_failure_is_durable_and_retry_does_not_dispatch_twice(
+    conversation_client: TestClient,
+    db_session: Session,
+    thread: models.FlowConversation,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """Halt and failed handoff expose a terminal thread with stable identity."""
+    from unittest.mock import AsyncMock
+
+    from preloop.services.flow_trigger_service import FlowDispatchError
+    from preloop.services.kill_switch import FLOW_DENIAL_MESSAGE, FlowHaltActiveError
+
+    monkeypatch.setattr(api.settings, "flow_artifact_direct_upload", True)
+    request_id = uuid4()
+    execution_id: UUID | None = None
+
+    async def launch(**kwargs: Any) -> None:
+        nonlocal execution_id
+        if failure == "halt":
+            raise FlowHaltActiveError(FLOW_DENIAL_MESSAGE)
+        row = crud.get(db_session, request_id, thread.account_id)
+        execution = crud_flow_execution.create(
+            db_session, FlowExecutionCreate(flow_id=thread.flow_id, status="PENDING")
+        )
+        execution_id = execution.id
+        crud.bind_execution(db_session, row, execution_id)
+        db_session.commit()
+        raise FlowDispatchError(
+            str(execution_id), "PENDING", OSError("synthetic handoff failure")
+        )
+
+    body = {"request_id": str(request_id), "message": "Inspect the README."}
+    with patch.object(
+        api.FlowTriggerService, "trigger_flow", new=AsyncMock(side_effect=launch)
+    ) as trigger:
+        first = conversation_client.post(
+            f"/api/v1/flows/{thread.flow_id}/conversations", json=body
+        )
+        assert first.status_code == (403 if failure == "halt" else 503), first.text
+        retry = conversation_client.post(
+            f"/api/v1/flows/{thread.flow_id}/conversations", json=body
+        )
+        assert retry.status_code == 200, retry.text
+        assert trigger.await_count == 1
+    polled = conversation_client.get(f"/api/v1/flow-conversations/{request_id}")
+    assert polled.status_code == 200
+    result = polled.json()
+    assert result["id"] == str(request_id)
+    assert result["state"] == "failed"
+    assert result["messages"][0]["status"] == "failed"
+    assert result["messages"][0]["text"] == "Inspect the README."
+    assert result["execution_id"] == (str(execution_id) if execution_id else None)
+    if failure == "halt":
+        assert "kill switch" in result["notice"]
+    else:
+        assert "dispatch" in result["notice"]
+        assert str(execution_id) in first.json()["detail"]
+
+
+@pytest.mark.parametrize("failure", ["halt", "dispatch"])
+def test_resume_dispatch_failure_preserves_notice(
+    conversation_client: TestClient,
+    db_session: Session,
+    thread: models.FlowConversation,
+    failure: str,
+) -> None:
+    """A failed resume stays failed even when its prior execution succeeded."""
+    from unittest.mock import AsyncMock
+
+    from preloop.services.flow_trigger_service import FlowDispatchError
+    from preloop.services.kill_switch import FLOW_DENIAL_MESSAGE, FlowHaltActiveError
+
+    previous_id = thread.execution_id
+    previous = crud_flow_execution.get(db_session, id=previous_id)
+    crud_flow_execution.update(
+        db_session, db_obj=previous, obj_in={"status": "SUCCEEDED"}
+    )
+    crud.save(db_session, thread, state="stopped")
+    execution_id = previous_id
+
+    async def launch(**kwargs: Any) -> None:
+        nonlocal execution_id
+        if failure == "halt":
+            raise FlowHaltActiveError(FLOW_DENIAL_MESSAGE)
+        execution = crud_flow_execution.create(
+            db_session, FlowExecutionCreate(flow_id=thread.flow_id, status="PENDING")
+        )
+        execution_id = execution.id
+        crud.bind_execution(db_session, thread, execution_id)
+        db_session.commit()
+        raise FlowDispatchError(
+            str(execution_id), "PENDING", OSError("synthetic handoff failure")
+        )
+
+    path = f"/api/v1/flow-conversations/{thread.id}"
+    body = {"request_id": str(uuid4()), "message": "Continue with context."}
+    with (
+        patch.object(
+            api, "resume_checkpoint", return_value={"session_id": "ses_example"}
+        ),
+        patch.object(
+            api.FlowTriggerService, "trigger_flow", new=AsyncMock(side_effect=launch)
+        ) as trigger,
+    ):
+        result = conversation_client.post(path + "/messages", json=body)
+        assert result.status_code == (403 if failure == "halt" else 503)
+        if failure == "dispatch":
+            execution = crud_flow_execution.get(db_session, id=execution_id)
+            crud_flow_execution.update(
+                db_session, db_obj=execution, obj_in={"status": "FAILED"}
+            )
+        retry = conversation_client.post(path + "/messages", json=body)
+        assert retry.status_code == 200
+        assert trigger.await_count == 1
+    polled = conversation_client.get(path).json()
+    assert polled["state"] == "failed"
+    assert polled["notice"] == result.json()["detail"]
+    assert polled["execution_id"] == str(execution_id)
+    assert polled["messages"][-1]["text"] == "Continue with context."
+    assert polled["messages"][-1]["status"] == "failed"

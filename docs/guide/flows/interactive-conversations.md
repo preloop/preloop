@@ -134,6 +134,16 @@ The `/runtime` endpoints are internal, execution-scoped capability endpoints;
 account credentials cannot impersonate a runtime. They are not part of the
 mobile/chat client contract.
 
+The driver receives its capability in the container environment and removes it
+from OpenCode child environments. This prevents accidental inheritance, but is
+not a security boundary against tools running as the same UID: on Linux they can
+read the original container environment through `/proc/1/environ` (or another
+same-UID process) and obtain the capability. Such a tool could overwrite its own
+conversation's answer or request runtime shutdown. The capability remains scoped
+to that conversation and execution; it does not grant access to other threads.
+Stronger isolation requires a separate driver UID and protected capability
+transport. The current hosted runtime does not provide that isolation.
+
 Chat-started flow follow-ups are a separate integration: the broker must retain
 the conversation ID on its chat thread, map the paired user to the conversation
 owner, call these start/send/end routes, and poll the same answers. This change

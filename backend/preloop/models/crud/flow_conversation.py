@@ -152,6 +152,21 @@ def save(db: Session, row: models.FlowConversation, **changes: object) -> None:
     db.commit()
 
 
+def fail_dispatch(db: Session, row: models.FlowConversation, notice: str) -> None:
+    """Keep the admitted turn and any committed execution visible after refusal."""
+    db.query(models.FlowConversationMessage).filter_by(
+        conversation_id=row.id, turn=row.turns, status="pending"
+    ).update({"status": "failed"})
+    save(
+        db,
+        row,
+        state="failed",
+        notice=notice,
+        stop_reason="dispatch_failed",
+        idle_deadline=None,
+    )
+
+
 def runtime_turn(
     db: Session,
     row: models.FlowConversation,

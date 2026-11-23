@@ -9,10 +9,13 @@ import sinon from 'sinon';
 import './agent-talk-view';
 import type { AgentTalkView } from './agent-talk-view';
 import {
+  conversationEvents,
   conversationLabel,
   conversationRequest,
   type FlowConversation,
 } from '../../utils/flow-conversations';
+
+import { buildConversation } from '../../utils/transcript';
 
 const thread: FlowConversation = {
   id: 'conversation-example',
@@ -161,5 +164,29 @@ describe('Hosted conversation on Talk', () => {
       ).to.contain(label);
     }
     expect(conversationLabel(thread, Date.now() + 700000)).to.contain('0s');
+  });
+});
+
+describe('Durable conversation transcript', () => {
+  it('preserves repeated user prompts and identical assistant replies across turns', () => {
+    const repeated = {
+      ...thread,
+      messages: [1, 2].map((turn) => ({
+        ...thread.messages[0],
+        id: `message-${turn}`,
+        turn,
+        text: 'continue',
+        answer: 'Done.',
+      })),
+    };
+    const result = buildConversation(conversationEvents(repeated));
+    expect(
+      result.items.map((item: any) => [item.role, item.text])
+    ).to.deep.equal([
+      ['user', 'continue'],
+      ['assistant', 'Done.'],
+      ['user', 'continue'],
+      ['assistant', 'Done.'],
+    ]);
   });
 });

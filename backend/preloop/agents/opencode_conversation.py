@@ -38,7 +38,7 @@ def request(
 
 
 def child_environment() -> dict[str, str]:
-    """Keep the conversation capability in the driver, outside agent tools."""
+    """Remove driver credentials from child environments, not same-UID /proc access."""
     return {
         key: value
         for key, value in os.environ.items()
@@ -223,11 +223,12 @@ def run_turn(
                 print(text, flush=True)
             elif kind == "error":
                 failed = True
-            elif kind == "step_finish":
-                completed = (event.get("part") or {}).get("reason") in {
-                    "stop",
-                    "end_turn",
-                }
+            elif kind == "step_finish" and (event.get("part") or {}).get("reason") in {
+                "stop",
+                "end_turn",
+            }:
+                completed = True
+                failed = False
         code = process.wait(timeout=30)
     answer = "\n".join(final_parts.values()) or streamed.text
     failed = not interrupted and (
