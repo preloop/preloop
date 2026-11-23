@@ -213,3 +213,18 @@ def test_fallback_window_limit_and_context_limit_helper() -> None:
     assert tool_output_limit_for_context(custom) == 27_200
     assert tool_output_limit_for_context({"model_identifier": "gpt-5.4"}) == 10_000
     assert tool_output_limit_for_context({"model_identifier": "unknown"}) == 2_500
+
+
+def test_unvalidated_cli_version_reports_the_codex_fallback_limit() -> None:
+    """No catalog is written for another CLI version, so Codex's 10 KB applies."""
+    from preloop.agents.codex_model_catalog import tool_output_limit_for_context
+
+    context = {
+        "model_identifier": "example/custom",
+        "model_provider": "example",
+        "model_parameters": {"context_window": 128_000},
+        "agent_config": {"codex_cli_version": "0.99.0"},
+    }
+    assert tool_output_limit_for_context(context) == 2_500
+    context["agent_config"] = {}
+    assert tool_output_limit_for_context(context) == 12_800

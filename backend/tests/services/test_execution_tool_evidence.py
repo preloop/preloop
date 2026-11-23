@@ -772,6 +772,7 @@ _CLIPPED_EXEC = (
     "Original token count: 4650\n"
     "Output:\n"
     "Warning: truncated output (original token count: 4650)\n"
+    "Total output lines: 120\n"
     "\n"
     "diff --git a/app.py b/app.py\n"
     "…2150 tokens truncated…"
@@ -817,8 +818,10 @@ def test_clip_is_recorded_when_content_is_not_kept() -> None:
         "Chunk ID: 3fa2c1\nWall time: 0.0123 seconds\nProcess exited with code 0\n"
         "Original token count: 40\nOutput:\n"
         "Warning: truncated output (original token count: 40)\n\nplain text\n",
-        # A count that disagrees with the header Codex wrote.
-        _CLIPPED_EXEC.replace("Original token count: 4650", "Original token count: 9"),
+        # Omitted bytes: Codex reuses the header count, so a mismatch is not a cut.
+        _CLIPPED_EXEC.replace(
+            "Original token count: 4650", "Original token count: 9"
+        ).replace("Total output lines: 120\n", "... 77 bytes omitted ...\n"),
         "Warning: truncated output (original token count: 4650)\n",
     ],
 )
@@ -835,3 +838,21 @@ def test_formatted_truncation_shape_is_a_clip() -> None:
     )
     document = capture_tools({}, _tool_result(text), capture_content=True)
     assert document["observations"][0]["agent_original_tokens"] == 900
+
+
+def test_exec_clip_with_omitted_bytes_is_a_clip() -> None:
+    """Above the collection cap Codex writes the omission line instead."""
+    text = _CLIPPED_EXEC.replace(
+        "Total output lines: 120\n", "... 77 bytes omitted ...\n"
+    )
+    document = capture_tools({}, _tool_result(text), capture_content=True)
+    assert document["observations"][0]["agent_original_tokens"] == 4650
+
+
+def test_formatted_exec_clip_may_recount_tokens() -> None:
+    """The formatted path recounts the collected text; the header can differ."""
+    text = _CLIPPED_EXEC.replace(
+        "Original token count: 4650", "Original token count: 4700"
+    )
+    document = capture_tools({}, _tool_result(text), capture_content=True)
+    assert document["observations"][0]["agent_original_tokens"] == 4650

@@ -3644,7 +3644,8 @@ _EXEC_HEADER = (
 )
 _CLIPPED_DIFF = (
     _EXEC_HEADER + "Original token count: 4650\nOutput:\n"
-    "Warning: truncated output (original token count: 4650)\n\n"
+    "Warning: truncated output (original token count: 4650)\n"
+    "Total output lines: 120\n\n"
     "diff --git a/app.py b/app.py\n…2150 tokens truncated…+end\n"
 )
 _WHOLE_DIFF = _EXEC_HEADER + "Original token count: 9\nOutput:\ndiff --git a b\n"

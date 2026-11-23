@@ -7,8 +7,11 @@ middle and prefixes a warning. The two shapes, verified against tag
 * Unified exec (``codex-rs/core/src/tools/context.rs``,
   ``ExecCommandToolOutput::response_text``): a header of ``Chunk ID``,
   ``Wall time``, exit or session, ``Original token count`` lines, then
-  ``Output:``, then ``Warning: truncated output (original token count: N)``,
-  an optional ``... N bytes omitted ...`` line and a blank line.
+  ``Output:``, then ``Warning: truncated output (original token count: N)``
+  and a blank line. Below the collection cap ``truncated_output_with_policy``
+  delegates to ``formatted_truncate_text``, which adds ``Total output lines:
+  N`` before the blank line; above it an optional ``... N bytes omitted ...``
+  line takes that place.
 * Other text results (``codex-rs/utils/output-truncation/src/lib.rs``,
   ``formatted_truncate_text``): the warning is the first line, followed by
   ``Total output lines: N`` and a blank line.
@@ -33,7 +36,8 @@ _EXEC_CLIP = re.compile(
     r"(?:Process exited with code -?\d+\n)?"
     r"(?:Process running with session ID -?\d+\n)?"
     r"(?:Original token count: (?P<header>\d+)\n)?"
-    r"Output:\n" + _WARNING + r"(?:\.\.\. \d+ bytes omitted \.\.\.\n)?\n"
+    r"Output:\n" + _WARNING + r"(?:(?P<lines>Total output lines: \d+\n)"
+    r"|(?:\.\.\. \d+ bytes omitted \.\.\.\n)?)\n"
 )
 _FORMATTED_CLIP = re.compile(_WARNING + r"Total output lines: \d+\n\n")
 _MIDDLE_MARKER = re.compile("…\\d+ (?:tokens|chars) truncated…")
@@ -79,8 +83,14 @@ def codex_clip(value: Any) -> int | None:
         return None
     match = _EXEC_CLIP.match(text)
     if match is not None:
+        # With omitted bytes Codex reuses the header's count in the warning;
+        # the formatted path recounts the collected text, so they can differ.
         header = match.group("header")
-        if header is not None and header != match.group("count"):
+        if (
+            match.group("lines") is None
+            and header is not None
+            and header != match.group("count")
+        ):
             return None
     else:
         match = _FORMATTED_CLIP.match(text)

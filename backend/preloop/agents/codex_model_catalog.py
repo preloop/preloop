@@ -252,7 +252,15 @@ def tool_output_limit_for_context(context: dict[str, Any]) -> int:
     )
     model = str(model)
     if (provider or "openai").lower() != "openai":
-        catalog = custom_model_catalog(model, limits_for_execution(context))
+        agent_config = context.get("agent_config")
+        version = (
+            agent_config.get("codex_cli_version")
+            if isinstance(agent_config, dict)
+            else None
+        ) or CODEX_CATALOG_VERSION
+        catalog = custom_model_catalog(
+            model, limits_for_execution(context), cli_version=str(version)
+        )
         if catalog is not None:
             return int(catalog["models"][0]["truncation_policy"]["limit"])
     bundled = model.rpartition("/")[2]
