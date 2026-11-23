@@ -794,6 +794,13 @@ of the review.
 unusable flow configuration: in particular, `native_result: true` requires a
 result schema with validation enabled. Create/update reject that combination;
 existing flows display the problem and fail before launching an agent.
+A run's native-result decision is written to its `trigger_event_details` under
+`_native_result` when it starts. A worker that finishes a run it did not start
+(a deploy drain re-dispatches it as `resume_flow_execution`) takes the decision
+from that record, falling back to the flow, so it opens the native capture
+transport exactly as the starting worker would. The transport itself is never
+stored as a result: when no decision is available to open it, the run fails as
+`result_selection_failed`, a control-plane failure, not a model one.
 `runner_unavailable` means no runner picked up the execution; its message names
 the pool and wait duration. A user cancellation remains `cancelled`.
 

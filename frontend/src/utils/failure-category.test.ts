@@ -39,6 +39,7 @@ describe('failure-category', () => {
       'agent_no_progress',
       'publication_missing',
       'result_schema_invalid',
+      'result_selection_failed',
       'repository_access',
       'review_binding_mismatch',
       'review_not_inspected',

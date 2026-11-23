@@ -68,6 +68,7 @@ from preloop.services.flow_failure_category import (
     FAILURE_CATEGORY_AGENT_TOOL_LOOP,
     FAILURE_CATEGORY_PUBLICATION_MISSING,
     FAILURE_CATEGORY_RESULT_SCHEMA_INVALID,
+    FAILURE_CATEGORY_RESULT_SELECTION_FAILED,
     FAILURE_CATEGORY_MODEL_STREAM_IDLE,
     FAILURE_CATEGORY_TIMEOUT,
     FAILURE_CATEGORY_UNKNOWN,
@@ -1529,6 +1530,32 @@ class FlowExecutionOrchestrator:
                         getattr(execution, "id", None),
                     )
         return enabled
+
+    def _restore_native_result(self) -> bool:
+        """Take this run's native-result decision from its stored record.
+
+        A run can be finished by a process that did not start it (a deploy
+        drain hands it to a peer worker as ``resume_flow_execution``). That
+        process must use the decision the run started with, which
+        :meth:`_resolve_native_result` wrote to the execution under
+        ``_native_result``. A row without the record (written before the
+        record existed) resolves from the flow, as the start would have.
+
+        Returns:
+            Whether this run uses native structured results.
+        """
+        from preloop.services.native_result import NATIVE_RESULT_RECORD_KEY
+
+        execution = getattr(self, "execution_log", None)
+        details = getattr(execution, "trigger_event_details", None)
+        record = (
+            details.get(NATIVE_RESULT_RECORD_KEY) if isinstance(details, dict) else None
+        )
+        if isinstance(record, dict) and isinstance(record.get("value"), bool):
+            self._native_result_effective = record["value"]
+            self._native_result_source = record.get("source")
+            return record["value"]
+        return self._resolve_native_result()
 
     def _run_agent_config(self) -> Any:
         """The flow's ``agent_config`` with the effective native_result applied."""
@@ -5545,12 +5572,28 @@ class FlowExecutionOrchestrator:
         # Each capture states its own reason; none carries over from an earlier one.
         self._native_answer_error = None
         self._native_answer_unwrapped = None
-        if getattr(
-            self, "_native_result_effective", False
-        ) is not True or not isinstance(document, dict):
+        if not isinstance(document, dict):
             return document
         candidates = document.get(NATIVE_CANDIDATES_KEY)
+        if NATIVE_CANDIDATES_KEY in document and (
+            getattr(self, "_native_result_effective", None) is None
+        ):
+            # A process that did not start this run has not decided yet.
+            self._restore_native_result()
+        if getattr(self, "_native_result_effective", False) is not True:
+            if NATIVE_CANDIDATES_KEY in document:
+                # The capture transport is never a result: without the
+                # native decision there is nothing to select it with.
+                self._native_answer_error = "selection_unavailable"
+                logger_ = getattr(self, "execution_logger", None)
+                if logger_ is not None:
+                    logger_.log_milestone("native_result_selection_unavailable", {})
+                return None
+            return document
         if not isinstance(candidates, dict):
+            if NATIVE_CANDIDATES_KEY in document:
+                self._native_answer_error = "selection_unavailable"
+                return None
             return document
         native, file_result = candidates.get("native"), candidates.get("file")
         # Why there is no usable native answer, for the failure wording.
@@ -5821,7 +5864,13 @@ class FlowExecutionOrchestrator:
         if validation is not None and not getattr(validation, "skipped", True):
             return
         missing = NO_RESULT_CAPTURED
-        if getattr(self, "_native_result_effective", False) is True:
+        if getattr(self, "_native_answer_error", None) == "selection_unavailable":
+            from preloop.services.flow_result_schema import (
+                NATIVE_SELECTION_UNAVAILABLE,
+            )
+
+            missing = NATIVE_SELECTION_UNAVAILABLE
+        elif getattr(self, "_native_result_effective", False) is True:
             # A native-result run is asked for a final answer, not a file.
             missing = {
                 "not_json": NATIVE_ANSWER_NOT_JSON,
@@ -9642,6 +9691,20 @@ class FlowExecutionOrchestrator:
                         )
 
                     if (
+                        getattr(self, "_native_answer_error", None)
+                        == "selection_unavailable"
+                    ):
+                        # The agent's answer arrived in the native transport,
+                        # but this run has no native decision to open it with.
+                        # That is our failure, not the model's or the agent's.
+                        from preloop.services.flow_result_schema import (
+                            NATIVE_SELECTION_UNAVAILABLE,
+                        )
+
+                        final_status = "FAILED"
+                        error_message = NATIVE_SELECTION_UNAVAILABLE
+                        failure_category = FAILURE_CATEGORY_RESULT_SELECTION_FAILED
+                    elif (
                         result.status == AgentStatus.SUCCEEDED
                         and artifact_confirmation == "failure"
                     ):
@@ -10146,6 +10209,16 @@ class FlowExecutionOrchestrator:
         ):
             kwargs["result"] = captured
             kwargs["result_schema_validation"] = self._result_schema_validation
+
+        from preloop.services.native_result import NATIVE_CANDIDATES_KEY
+
+        stored_result = kwargs.get("result")
+        if isinstance(stored_result, dict) and NATIVE_CANDIDATES_KEY in stored_result:
+            # The native capture transport is never a run's result; selection
+            # opens it (see _select_native_result_candidate).
+            logger.error("Refusing to store the native result transport as a result")
+            kwargs["result"] = None
+            kwargs.pop("result_schema_validation", None)
 
         if status == "SUCCEEDED":
             from preloop.services.flow_execution_outcome import result_failure_signal
