@@ -308,6 +308,103 @@ describe('FlowView interactive conversation rows', () => {
   });
 });
 
+describe('FlowView conversation row refresh', () => {
+  afterEach(() => sinon.restore());
+
+  it('loads conversations for an interactive flow and lets a finished run fall back', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    const conversation = {
+      id: 'conversation-live',
+      flow_id: 'flow-1',
+      owner_user_id: 'owner-1',
+      execution_id: 'execution-live',
+      state: 'working',
+      notice: '',
+      can_write: true,
+      turns: 1,
+      max_turns: 30,
+      idle_deadline: null,
+      messages: [],
+    };
+    const fetch = sinon.stub(window, 'fetch').callsFake(
+      async () =>
+        new Response(JSON.stringify([conversation]), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flowId = 'flow-1';
+    element.flow = {
+      id: 'flow-1',
+      name: 'Example flow',
+      agent_type: 'opencode',
+      trigger_event_source: 'webhook',
+      agent_config: { interactive: { enabled: true } },
+    };
+    element.recentExecutions = [
+      { id: 'execution-live', status: 'RUNNING', start_time: '2026-03-09T10:00:00Z' },
+    ];
+    document.body.appendChild(element);
+    try {
+      await element.loadExecutionConversations(element.flowLoadGeneration);
+      await element.updateComplete;
+      const url = String(
+        fetch.getCalls().find((call) =>
+          String(call.args[0]).includes('flow-conversations')
+        )!.args[0]
+      );
+      expect(url).to.contain('flow_id=flow-1');
+      const row = () =>
+        element.shadowRoot!.querySelector('.executions-table tbody tr')!;
+      expect(row().textContent).to.contain('Conversation · Working');
+
+      // A stale generation is dropped.
+      fetch.callsFake(
+        async () =>
+          new Response(JSON.stringify([{ ...conversation, state: 'waiting' }]), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+      );
+      await element.loadExecutionConversations(element.flowLoadGeneration - 1);
+      await element.updateComplete;
+      expect(row().textContent).to.contain('Conversation · Working');
+
+      // The socket marks the run finished before the snapshot is refreshed.
+      element.recentExecutions = [
+        {
+          id: 'execution-live',
+          status: 'SUCCEEDED',
+          start_time: '2026-03-09T10:00:00Z',
+          end_time: '2026-03-09T10:05:00Z',
+        },
+      ];
+      await element.updateComplete;
+      expect(row().textContent).not.to.contain('Conversation ·');
+      expect(row().textContent).not.to.contain('Open Talk');
+    } finally {
+      element.remove();
+      localStorage.clear();
+    }
+  });
+
+  it('does not ask for conversations when the flow is not interactive', async () => {
+    const fetch = sinon.stub(window, 'fetch');
+    const element = document.createElement('flow-view') as any;
+    element.flowId = 'flow-1';
+    element.flow = { id: 'flow-1', agent_config: {} };
+    await element.loadExecutionConversations(element.flowLoadGeneration);
+    expect(
+      fetch.getCalls().some((call) =>
+        String(call.args[0]).includes('flow-conversations')
+      )
+    ).to.equal(false);
+  });
+});
+
 describe('FlowView compact counts (U-01)', () => {
   it('states the executions total compactly with the exact count in the title', async () => {
     const element = document.createElement('flow-view') as any;

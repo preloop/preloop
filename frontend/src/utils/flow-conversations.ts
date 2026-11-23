@@ -82,6 +82,29 @@ export function formatCountdown(seconds: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+/**
+ * The server's routine notice for each live state. Anything else in a live
+ * state is a transition the state does not show yet: after End conversation
+ * (or the last allowed turn) the state stays live until the runtime saves
+ * its checkpoint, and only the notice says so.
+ */
+const ROUTINE_NOTICES = [
+  'Starting your conversation',
+  'The agent is working',
+  'Waiting for you',
+];
+
+/** The conversation is closing although its state is still live. */
+export function conversationClosing(conversation: FlowConversation): boolean {
+  const live = ['starting', 'working', 'waiting'].includes(conversation.state);
+  const notice = conversation.notice.trim();
+  return (
+    live &&
+    notice !== '' &&
+    !ROUTINE_NOTICES.some((routine) => notice.startsWith(routine))
+  );
+}
+
 export interface ConversationNotice {
   text: string;
   /** Only a failure is an error; every other state is calm. */
@@ -96,12 +119,19 @@ export function conversationNotice(
   conversation: FlowConversation,
   now = Date.now()
 ): ConversationNotice | null {
+  if (conversationClosing(conversation))
+    return { text: conversation.notice, tone: 'neutral' };
   switch (conversation.state) {
     case 'starting':
     case 'working':
       return null;
     case 'waiting': {
       const left = secondsUntilIdleStop(conversation, now);
+      if (!conversation.can_write)
+        return {
+          text: 'Waiting for the person who started this conversation to reply.',
+          tone: 'neutral',
+        };
       if (left === null) return { text: 'Waiting for you.', tone: 'neutral' };
       if (left === 0)
         return {
@@ -143,6 +173,8 @@ export function conversationPlaceholder(
 ): string {
   if (!conversation.can_write)
     return 'Only the person who started this conversation can send messages';
+  if (conversationClosing(conversation))
+    return 'This conversation is ending. Start a new one from the flow';
   switch (conversation.state) {
     case 'starting':
       return 'Wait for the first answer. Messages are not queued while the container starts';
@@ -163,6 +195,7 @@ export function conversationPlaceholder(
 export function conversationCanSend(conversation: FlowConversation): boolean {
   return (
     conversation.can_write &&
+    !conversationClosing(conversation) &&
     (conversation.state === 'waiting' || conversation.state === 'stopped')
   );
 }

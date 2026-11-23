@@ -292,6 +292,26 @@ describe('Hosted conversation on Talk', () => {
     });
   }
 
+  it('says the conversation is ending while End is still saving it', async () => {
+    const el = await mount();
+    const root = await show(el, { notice: 'You ended this conversation.' });
+    const shown = notices(root);
+    expect(shown).to.have.length(1);
+    expect(shown[0].textContent).to.contain('You ended this conversation.');
+    expect(shown[0].textContent).not.to.contain('Waiting for you');
+    expect(shown[0].classList.contains('failed')).to.equal(false);
+    expect(composer(root).transportDisabled).to.equal(true);
+    expect(await placeholder(root)).to.contain('is ending');
+  });
+
+  it('does not address a viewer as the one who must reply', async () => {
+    const el = await mount();
+    const root = await show(el, { can_write: false });
+    const text = notices(root)[0].textContent || '';
+    expect(text).to.contain('Waiting for the person who started');
+    expect(text).not.to.contain('Waiting for you');
+  });
+
   it('tells a viewer who is not the owner why they cannot send', async () => {
     const el = await mount();
     const root = await show(el, { can_write: false });

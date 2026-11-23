@@ -166,6 +166,19 @@ interface FlowConfigWarning {
   docs_url?: string | null;
 }
 
+/** Execution statuses after which a hosted conversation cannot be live. */
+const TERMINAL_EXECUTION_STATUSES = new Set([
+  'SUCCEEDED',
+  'COMPLETED',
+  'FAILED',
+  'ERROR',
+  'STOPPED',
+  'CANCELLED',
+  'ABORTED',
+  'TIMEOUT',
+  'TIMED_OUT',
+]);
+
 @customElement('flow-view')
 export class FlowView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
@@ -732,6 +745,9 @@ export class FlowView extends LitElement {
           );
           if (executionIndex !== -1) {
             // Update the execution status
+            // The hosted conversation moved too; refresh its chip.
+            if (this.conversationsByExecution.has(message.execution_id))
+              void this.loadExecutionConversations(this.flowLoadGeneration);
             const updatedExecution = {
               ...this.recentExecutions[executionIndex],
               status: message.payload.status,
@@ -1364,14 +1380,14 @@ export class FlowView extends LitElement {
                                   ${renderExecutionSubject(exec)}
                                 </td>
                                 ${
-                                  this.liveConversation(exec.id)
+                                  this.liveConversation(exec)
                                     ? html`<td>
                                         <sl-badge
                                           class="chip"
                                           pill
                                           variant="neutral"
                                           data-testid="conversation-chip"
-                                          >${`Conversation · ${conversationLabel(this.liveConversation(exec.id)!)}`}</sl-badge
+                                          >${`Conversation · ${conversationLabel(this.liveConversation(exec)!)}`}</sl-badge
                                         >
                                       </td>`
                                     : html`<td>
@@ -1403,9 +1419,9 @@ export class FlowView extends LitElement {
                                 </td>
                                 <td>
                                   ${
-                                    this.liveConversation(exec.id)
+                                    this.liveConversation(exec)
                                       ? html`<a
-                                          href=${`/console/flow-conversations/${this.liveConversation(exec.id)!.id}/talk`}
+                                          href=${`/console/flow-conversations/${this.liveConversation(exec)!.id}/talk`}
                                           >Open Talk</a
                                         >`
                                       : executionDurationText(exec) || 'n/a'
@@ -1974,10 +1990,21 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     }
   }
 
-  /** Status chip for a row hosting a conversation that has not finished. */
-  private liveConversation(executionId: string): FlowConversation | null {
-    const thread = this.conversationsByExecution.get(executionId);
+  /**
+   * The conversation a row hosts while both are live. A terminal execution
+   * status from the socket wins over a conversation snapshot taken earlier,
+   * so a finished run never keeps a stale "Conversation · Working" chip.
+   */
+  private liveConversation(exec: {
+    id: string;
+    status?: string;
+  }): FlowConversation | null {
+    const thread = this.conversationsByExecution.get(exec.id);
     if (!thread || thread.state === 'ended' || thread.state === 'failed')
+      return null;
+    if (
+      TERMINAL_EXECUTION_STATUSES.has(String(exec.status || '').toUpperCase())
+    )
       return null;
     return thread;
   }
