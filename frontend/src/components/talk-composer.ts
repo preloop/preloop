@@ -141,6 +141,14 @@ export class TalkComposer extends LitElement {
     ((text: string) => Promise<void>) | null = null;
   @property({ type: Boolean }) transportDisabled = false;
   @property({ type: String }) transportNotice = '';
+  /**
+   * Placeholder for a hosted conversation, written by the host per state.
+   * With `sendMessage` set the Agent Control hint never applies: there is no
+   * enrolled agent behind it, which is how "Unknown" used to reach the copy.
+   */
+  @property({ type: String }) transportPlaceholder = '';
+  /** Who a hosted conversation talks to, for the input's label. */
+  @property({ type: String }) transportLabel = '';
 
   @property({ attribute: false })
   agent: ManagedAgentSummary | null = null;
@@ -1435,11 +1443,15 @@ export class TalkComposer extends LitElement {
           data-testid="composer-input"
           resize="auto"
           rows="2"
-          label=${`Message ${this.agent?.display_name || 'agent'}`}
+          label=${`Message ${this.transportLabel || this.agent?.display_name || 'agent'}`}
           placeholder=${
-            enabled
-              ? `Message ${this.agent?.display_name || 'this agent'}`
-              : hint.placeholder
+            this.sendMessage && this.transportPlaceholder
+              ? this.transportPlaceholder
+              : enabled
+                ? `Message ${this.transportLabel || this.agent?.display_name || 'this agent'}`
+                : this.sendMessage
+                  ? 'Sending is not available right now'
+                  : hint.placeholder
           }
           .value=${this.message}
           ?disabled=${!enabled}
@@ -1491,7 +1503,9 @@ export class TalkComposer extends LitElement {
               }
             </div>`
           : this.sendMessage
-            ? html`<div class="helptext">${this.transportNotice}</div>`
+            ? this.transportNotice
+              ? html`<div class="helptext">${this.transportNotice}</div>`
+              : nothing
             : this.renderDisabledHelp()
       }
       ${this.renderEndedGuard()}

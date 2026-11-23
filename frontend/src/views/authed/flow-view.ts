@@ -1,5 +1,6 @@
 import '../../components/flow-conversation-list';
 import {
+  conversationLabel,
   conversationRequest,
   type FlowConversation,
 } from '../../utils/flow-conversations';
@@ -164,6 +165,19 @@ interface FlowConfigWarning {
   ai_model_id?: string | null;
   docs_url?: string | null;
 }
+
+/** Execution statuses after which a hosted conversation cannot be live. */
+const TERMINAL_EXECUTION_STATUSES = new Set([
+  'SUCCEEDED',
+  'COMPLETED',
+  'FAILED',
+  'ERROR',
+  'STOPPED',
+  'CANCELLED',
+  'ABORTED',
+  'TIMEOUT',
+  'TIMED_OUT',
+]);
 
 @customElement('flow-view')
 export class FlowView extends LitElement {
@@ -462,6 +476,13 @@ export class FlowView extends LitElement {
   @state()
   private recentExecutions: any[] = [];
 
+  /**
+   * Interactive conversations by the execution that hosts them, so a live
+   * conversation's row says what it is instead of a bare "Running".
+   */
+  @state()
+  private conversationsByExecution = new Map<string, FlowConversation>();
+
   @state()
   private isAdmin = false;
 
@@ -602,6 +623,7 @@ export class FlowView extends LitElement {
         .catch((error) =>
           console.error('Failed to load recent flow executions:', error)
         );
+      void this.loadExecutionConversations(generation);
 
       this._loadingReferenceData = true;
       try {
@@ -712,6 +734,8 @@ export class FlowView extends LitElement {
             newExecution,
             ...this.recentExecutions,
           ].slice(0, 10);
+          // A conversation's execution is created after its start returns.
+          void this.loadExecutionConversations(this.flowLoadGeneration);
         }
 
         // If this is a status update for an execution we're showing, update it
@@ -721,6 +745,9 @@ export class FlowView extends LitElement {
           );
           if (executionIndex !== -1) {
             // Update the execution status
+            // The hosted conversation moved too; refresh its chip.
+            if (this.conversationsByExecution.has(message.execution_id))
+              void this.loadExecutionConversations(this.flowLoadGeneration);
             const updatedExecution = {
               ...this.recentExecutions[executionIndex],
               status: message.payload.status,
@@ -1352,20 +1379,33 @@ export class FlowView extends LitElement {
                                 <td class="subject-cell">
                                   ${renderExecutionSubject(exec)}
                                 </td>
-                                <td>
-                                  <sl-badge
-                                    class="chip ${
-                                      this.getStatusVariant(exec.status) ===
-                                      'danger'
-                                        ? 'solid'
-                                        : ''
-                                    }"
-                                    pill
-                                    variant=${this.getStatusVariant(exec.status)}
-                                  >
-                                    ${executionStatusLabel(exec.status)}
-                                  </sl-badge>
-                                </td>
+                                ${
+                                  this.liveConversation(exec)
+                                    ? html`<td>
+                                        <sl-badge
+                                          class="chip"
+                                          pill
+                                          variant="neutral"
+                                          data-testid="conversation-chip"
+                                          >${`Conversation · ${conversationLabel(this.liveConversation(exec)!)}`}</sl-badge
+                                        >
+                                      </td>`
+                                    : html`<td>
+                                        <sl-badge
+                                          class="chip ${
+                                            this.getStatusVariant(
+                                              exec.status
+                                            ) === 'danger'
+                                              ? 'solid'
+                                              : ''
+                                          }"
+                                          pill
+                                          variant=${this.getStatusVariant(exec.status)}
+                                        >
+                                          ${executionStatusLabel(exec.status)}
+                                        </sl-badge>
+                                      </td>`
+                                }
                                 <!-- Relative, absolute in the title, as every
                                    other list in the console states a time. -->
                                 <td
@@ -1377,7 +1417,16 @@ export class FlowView extends LitElement {
                                     >${formatRelativeTime(exec.start_time)}</a
                                   >
                                 </td>
-                                <td>${executionDurationText(exec) || 'n/a'}</td>
+                                <td>
+                                  ${
+                                    this.liveConversation(exec)
+                                      ? html`<a
+                                          href=${`/console/flow-conversations/${this.liveConversation(exec)!.id}/talk`}
+                                          >Open Talk</a
+                                        >`
+                                      : executionDurationText(exec) || 'n/a'
+                                  }
+                                </td>
                               </tr>
                             `
                           )}
@@ -1921,6 +1970,45 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     `;
   }
 
+  private async loadExecutionConversations(generation: number): Promise<void> {
+    const interactive = this.flow?.agent_config?.interactive as
+      { enabled?: boolean } | undefined;
+    if (!interactive?.enabled || !this.flowId) return;
+    try {
+      const page = await conversationRequest<FlowConversation[]>(
+        `flow-conversations?${new URLSearchParams({ flow_id: this.flowId })}`
+      );
+      if (generation !== this.flowLoadGeneration) return;
+      this.conversationsByExecution = new Map(
+        page
+          .filter((thread) => thread.execution_id)
+          .map((thread) => [thread.execution_id as string, thread])
+      );
+    } catch (error) {
+      // The row falls back to the execution's own status.
+      console.error('Failed to load flow conversations:', error);
+    }
+  }
+
+  /**
+   * The conversation a row hosts while both are live. A terminal execution
+   * status from the socket wins over a conversation snapshot taken earlier,
+   * so a finished run never keeps a stale "Conversation · Working" chip.
+   */
+  private liveConversation(exec: {
+    id: string;
+    status?: string;
+  }): FlowConversation | null {
+    const thread = this.conversationsByExecution.get(exec.id);
+    if (!thread || thread.state === 'ended' || thread.state === 'failed')
+      return null;
+    if (
+      TERMINAL_EXECUTION_STATUSES.has(String(exec.status || '').toUpperCase())
+    )
+      return null;
+    return thread;
+  }
+
   /** The executions pages' taxonomy, so a run reads the same everywhere. */
   getStatusVariant(status: string) {
     return executionStatusVariant(status);
@@ -1975,6 +2063,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
       );
       this.conversationStartRequest = null;
       this.showConversationStart = false;
+      void this.loadExecutionConversations(this.flowLoadGeneration);
       if (popup?.win) {
         popup.win.location.replace(talkWindowUrl(agent.id, null, options));
       } else if (!popup) {
