@@ -440,8 +440,33 @@ async def test_distinct_managers_replacement_fences_stale_ack_and_disconnect(
 async def test_live_socket_revalidates_credential_and_lifecycle(
     control_server: Server, principal: list[Principal], db_engine: Engine, change: str
 ) -> None:
+    await assert_change_closes_live_socket(control_server, principal, db_engine, change)
+
+
+async def assert_change_closes_live_socket(
+    control_server: Server,
+    principal: list[Principal],
+    db_engine: Engine,
+    change: str,
+    before_change: float = 0.0,
+) -> None:
+    """Apply ``change`` under a live socket and assert the next frame closes it.
+
+    Args:
+        control_server: Running control server.
+        principal: Synthetic principals; the first one connects.
+        db_engine: Engine for test-side writes.
+        change: Credential or lifecycle change to apply.
+        before_change: Seconds to wait between persisting the command and
+            applying the change, widening the window a slow runner opens.
+    """
     ws = await connect(control_server, principal[0])
+    # The server redelivers pending commands right after ``connected``. A
+    # heartbeat ack proves that pass finished, so it cannot deliver the command
+    # persisted below and hand ``recv`` a command frame instead of the close.
+    await heartbeat(ws)
     command_id = persist_command(db_engine, principal[0])
+    await asyncio.sleep(before_change)
     identity = principal[0].connection
     with Session(db_engine) as db:
         if change == "revoke":
@@ -477,6 +502,31 @@ async def test_live_socket_revalidates_credential_and_lifecycle(
             == "pending"
         )
     await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_live_socket_revalidation_survives_late_redelivery(
+    control_server: Server,
+    principal: list[Principal],
+    db_engine: Engine,
+    monkeypatch: Any,
+) -> None:
+    """Pending-command redelivery after ``connected`` must not race the test.
+
+    On a slow runner the post-handshake redelivery can run after the command is
+    persisted but before the lifecycle change commits, delivering the command
+    frame that ``recv`` then returns instead of the close (issue #2459).
+    """
+    original = control._redeliver_pending_commands
+
+    async def late(*args: Any) -> None:
+        await asyncio.sleep(0.1)
+        await original(*args)
+
+    monkeypatch.setattr(control, "_redeliver_pending_commands", late)
+    await assert_change_closes_live_socket(
+        control_server, principal, db_engine, "inactive_account", before_change=0.4
+    )
 
 
 @pytest.mark.asyncio

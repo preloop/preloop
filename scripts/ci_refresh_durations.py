@@ -66,7 +66,7 @@ def summarise(reports: list[Path]) -> str:
     seconds = shard_seconds(reports)
     lines = ["Actual pytest seconds per shard:"]
     for report, value in zip(reports, seconds, strict=False):
-        lines.append(f"- {report.parent.name}: {value:.1f}s")
+        lines.append(f"- shard {_shard(report)}: {value:.1f}s")
     mean = statistics.fmean(seconds)
     lines.append(
         f"- max {max(seconds):.1f}s / mean {mean:.1f}s = {max(seconds) / mean:.3f}"
@@ -74,8 +74,9 @@ def summarise(reports: list[Path]) -> str:
     return "\n".join(lines)
 
 
-def _sort_key(report: Path) -> int:
-    return int(report.parent.name.rsplit("-", 1)[1])
+def _shard(report: Path) -> int:
+    """Return the shard number in a ``test-results.<shard>.xml`` file name."""
+    return int(report.name.split(".")[1])
 
 
 def main() -> None:
@@ -92,11 +93,10 @@ def main() -> None:
     )
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    reports = sorted(
-        args.reports.glob("backend-test-results-*/test-results.xml"), key=_sort_key
-    )
-    expected = {f"backend-test-results-{i}" for i in range(1, args.shards + 1)}
-    if {p.parent.name for p in reports} != expected:
+    # Shards upload test-results.<shard>.xml and CI downloads them with
+    # merge-multiple, so one shard and many land in the same flat layout.
+    reports = sorted(args.reports.glob("test-results.*.xml"), key=_shard)
+    if [_shard(p) for p in reports] != list(range(1, args.shards + 1)):
         raise ValueError(f"Require exactly one report from each of {args.shards}")
     if args.summary:
         text = summarise(reports)

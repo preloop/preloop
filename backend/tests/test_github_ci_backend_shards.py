@@ -7,9 +7,13 @@ must stay in lockstep, and the floor must not run on a single shard.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 import tomllib
+from types import ModuleType
 
+import pytest
 import yaml
 from pathlib import Path
 
@@ -312,3 +316,87 @@ def test_coverage_job_summarises_actual_shard_durations() -> None:
         if s.get("name") == "Summarise actual shard durations"
     )
     assert step["env"]["SHARDS"] == "${{ needs.changes.outputs.backend_shards }}"
+
+
+def _load_refresh_durations() -> ModuleType:
+    """Import ``scripts/ci_refresh_durations.py`` without a package."""
+    path = REPO_ROOT / "scripts" / "ci_refresh_durations.py"
+    spec = importlib.util.spec_from_file_location("ci_refresh_durations", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_shard_report(directory: Path, shard: int, seconds: float) -> None:
+    """Write a passing JUnit report the way a backend shard uploads it."""
+    (directory / f"test-results.{shard}.xml").write_text(
+        f'<testsuites><testsuite name="pytest" time="{seconds}">'
+        '<testcase classname="backend.tests.test_github_ci_backend_shards" '
+        'name="test_pytest_plugins_are_dev_dependencies" time="0.5"/>'
+        "</testsuite></testsuites>"
+    )
+
+
+@pytest.mark.parametrize("shards", [1, BACKEND_TEST_SPLITS])
+def test_refresh_durations_reads_one_shard_and_many(
+    shards: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A selective one-shard run must summarise like a whole-suite run.
+
+    download-artifact extracts a lone pattern match without its artifact
+    directory, so CI merges every shard into one flat directory.
+    """
+    module = _load_refresh_durations()
+    for shard in range(1, shards + 1):
+        _write_shard_report(tmp_path, shard, 10.0 * shard)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ci_refresh_durations.py", str(tmp_path), "--shards", str(shards)]
+        + ["--summary"],
+    )
+    module.main()
+    out = capsys.readouterr().out
+    assert f"- shard {shards}: {10.0 * shards:.1f}s" in out
+    assert out.count("- shard ") == shards
+
+
+def test_refresh_durations_rejects_a_missing_shard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shard that uploaded nothing must still fail the summary."""
+    module = _load_refresh_durations()
+    _write_shard_report(tmp_path, 1, 10.0)
+    _write_shard_report(tmp_path, 3, 30.0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ci_refresh_durations.py", str(tmp_path), "--shards", "3", "--summary"],
+    )
+    with pytest.raises(ValueError, match="exactly one report from each of 3"):
+        module.main()
+
+
+def test_shard_artifact_downloads_merge_into_one_layout() -> None:
+    """Every pattern download must not depend on how many artifacts match."""
+    jobs = load_ci_jobs()
+    backend = jobs["test-backend"]
+    run = step_script(backend, "Run tests")
+    assert '--junitxml="test-results.$SHARD_GROUP.xml"' in run
+    upload = next(s for s in backend["steps"] if s.get("name") == "Upload test results")
+    assert upload["with"]["path"] == "test-results.${{ matrix.group }}.xml"
+    downloads = [
+        step
+        for job in jobs.values()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("actions/download-artifact@")
+        and str(step.get("with", {}).get("pattern", "")).startswith("backend-")
+    ]
+    assert len(downloads) == 3
+    for step in downloads:
+        assert step["with"].get("merge-multiple") is True, step["name"]
