@@ -107,9 +107,7 @@ def _reencode(value: Any) -> str:
     except UnicodeEncodeError:
         # A ``\udXXX`` escape in the wire text decoded to a lone surrogate.
         # The escaped form round-trips exactly and is plain ASCII.
-        return json.dumps(
-            value, sort_keys=True, separators=(",", ":"), allow_nan=False
-        )
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _sensitive_field(key: Any) -> bool:

@@ -721,9 +721,7 @@ def _incomplete_labels(document: Any, *, valid: bool) -> list[str]:
     )
     if document.get("content_capture_enabled") is False:
         return sorted({*reasons, "content_capture_off"})
-    return reasons or (
-        [REASON_MASKING] if _masking_counts(document) else ["unstated"]
-    )
+    return reasons or ([REASON_MASKING] if _masking_counts(document) else ["unstated"])
 
 
 def _removed_counts(document: dict[str, Any]) -> dict[str, int]:
@@ -732,9 +730,7 @@ def _removed_counts(document: dict[str, Any]) -> dict[str, int]:
     observations = document.get("observations")
     holders = [document, *(observations if isinstance(observations, list) else [])]
     for observation in holders:
-        removed = (
-            observation.get("removed") if isinstance(observation, dict) else None
-        )
+        removed = observation.get("removed") if isinstance(observation, dict) else None
         if not isinstance(removed, list):
             continue
         for item in removed:

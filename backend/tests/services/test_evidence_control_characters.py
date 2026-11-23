@@ -37,9 +37,7 @@ HARMLESS_TEXT = (
 
 def _result(text: str, call_id: str = "call-read") -> dict[str, Any]:
     return {
-        "output": [
-            {"type": "function_call_output", "call_id": call_id, "output": text}
-        ]
+        "output": [{"type": "function_call_output", "call_id": call_id, "output": text}]
     }
 
 
@@ -254,4 +252,3 @@ def test_masked_nested_arguments_with_control_chars_keep_them() -> None:
     assert value["chars"] == "\x03\x0c\x1b"
     assert "sk-1234567890abcdefghij" not in value["command"]
     assert document["incomplete_reasons"] == ["masking"]
-

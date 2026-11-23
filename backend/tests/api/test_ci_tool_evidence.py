@@ -254,9 +254,7 @@ def test_unsafe_gateway_and_native_bytes_preserve_batch_and_hashes(
         # U+0000 is kept exactly; only the lone surrogate is removed.
         assert observation["value"] == "before\x00after"
         assert observation["redacted"]
-        assert observation["removed"] == [
-            {"category": "lone_surrogates", "count": 1}
-        ]
+        assert observation["removed"] == [{"category": "lone_surrogates", "count": 1}]
     logs = crud_flow_execution_log.get_by_execution_id(
         db_session, execution_id=execution.id
     )
