@@ -1,5 +1,6 @@
 """Persistent workspace metadata matches the container clone identity."""
 
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import uuid4
@@ -447,3 +448,27 @@ class TestFlowWorkspace:
                 **base,
                 agent_config={"workspace": {"kind": "path", "path": "relative"}},
             )
+
+
+def test_master_only_raw_url_checks_out_the_remote_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No branch known: the identity follows the remote HEAD, not ``main``."""
+    import preloop.services.persistent_workspace as module
+
+    calls: list[list[str]] = []
+
+    def ls_remote(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args, 0, stdout=f"ref: refs/heads/master\tHEAD\n{SHA}\tHEAD\n"
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", ls_remote)
+    url = "https://example.com/example/repo.git"
+    config = {"enabled": True, "repositories": [{"repository_url": url}]}
+    identity = ephemeral_clone_identity(config, {})
+
+    assert identity is not None
+    assert identity["ref"] == "master"
+    assert calls == [["git", "ls-remote", "--symref", "--", url, "HEAD"]]

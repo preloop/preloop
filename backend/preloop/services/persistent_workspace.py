@@ -13,7 +13,9 @@ tokens stay on the control plane.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import subprocess
 from typing import Any, Dict, Mapping, Optional
 from urllib.parse import urlparse
 
@@ -131,6 +133,39 @@ def _default_branch(
     return "main"
 
 
+def remote_default_branch(repository_url: str) -> Optional[str]:
+    """Branch the remote ``HEAD`` points at, like a ``git clone`` without ``-b``.
+
+    Args:
+        repository_url: Credential-free clone URL.
+
+    Returns:
+        The default branch name, or ``None`` when the remote cannot be read.
+    """
+
+    if not repository_url:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--symref", "--", repository_url, "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.info("Could not read the remote HEAD of a repository: %s", exc)
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        match = re.match(r"^ref: refs/heads/(\S+)\s+HEAD$", line)
+        if match:
+            return match.group(1)
+    return None
+
+
 def _pr_number(payload: Mapping[str, Any]) -> Optional[int]:
     pull = payload.get("pull_request")
     if isinstance(pull, dict) and pull.get("number") is not None:
@@ -237,6 +272,9 @@ def ephemeral_clone_identity(
         or git_config.get("source_branch")
         or str(repo.get("default_branch") or "").strip()
         or host._default_branch_from_trigger(trigger)
+        # No branch known: follow the remote HEAD, as the container clone
+        # does, so a repository whose default is not ``main`` still works.
+        or remote_default_branch(repository_url)
         or "main"
     )
     ref = host._resolve_repository_clone_branch(
