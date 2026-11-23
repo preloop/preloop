@@ -124,28 +124,61 @@ _ITEM_KEYS = {"id", "title", "label", "description", "severity", "badges", "href
 ITEM_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info", "unknown"})
 
 
-# Keys the ask_user / request_approval tools write into the stored tool_args
-# for the console and the notifications. They are not tool parameters, so
-# the approval replay (get_approval_status re-running the approved call) must
-# remove them or the tool's validated signature rejects the call.
-SERVER_ONLY_ARGUMENT_KEYS = frozenset({"is_question", "dropped_item_keys"})
-_FORM_TOOLS = frozenset({"ask_user", "request_approval"})
+# The parameters of the ask_user / request_approval tools. Their stored
+# tool_args also carry server-written keys for the console, notifications
+# and publication scope (is_question, dropped_item_keys, action,
+# candidates, ...). The approval replay (get_approval_status re-running the
+# approved call) keeps only real parameters, or the tool's validated
+# signature rejects the call. Kept in sync with the registered signatures by
+# tests/services/test_ask_user_structured.py.
+REPLAY_PARAMETERS: Dict[str, frozenset[str]] = {
+    "ask_user": frozenset(
+        {
+            "question",
+            "options",
+            "allow_free_text",
+            "context",
+            "items",
+            "input_schema",
+            "approval_workflow",
+            "timeout_seconds",
+        }
+    ),
+    "request_approval": frozenset(
+        {
+            "operation",
+            "context",
+            "reasoning",
+            "caller",
+            "approval_workflow",
+            "timeout_seconds",
+            "items",
+            "input_schema",
+            "publication_candidates",
+        }
+    ),
+}
 
 
 def replay_arguments(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Return stored tool_args fit to re-invoke a built-in form tool.
+
+    The publication scope (``action``/``candidates``) is already frozen on
+    the approval row, and the replay bypasses the approval, so it is not
+    passed back.
 
     Args:
         tool_name: Name of the approved tool.
         arguments: The tool_args persisted on the approval request.
 
     Returns:
-        The arguments without server-only keys for ask_user and
-        request_approval; any other tool's arguments unchanged.
+        Only the tool's parameters for ask_user and request_approval; any
+        other tool's arguments unchanged.
     """
-    if tool_name not in _FORM_TOOLS or not isinstance(arguments, dict):
+    allowed = REPLAY_PARAMETERS.get(tool_name)
+    if allowed is None or not isinstance(arguments, dict):
         return arguments
-    return {k: v for k, v in arguments.items() if k not in SERVER_ONLY_ARGUMENT_KEYS}
+    return {k: v for k, v in arguments.items() if k in allowed}
 
 
 class QuestionSchemaError(ValueError):

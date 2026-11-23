@@ -594,3 +594,27 @@ class TestApprovedReplay:
         dropped: set[str] = set()
         assert normalize_items(once, dropped_keys=dropped) == once
         assert dropped == set()
+
+    @pytest.mark.parametrize("name", ["ask_user", "request_approval"])
+    async def test_replay_parameters_match_registered_signature(self, name):
+        from preloop.services.question_schema import REPLAY_PARAMETERS
+
+        params = set(inspect.signature(await _tool_fn(name)).parameters) - {"ctx"}
+        assert REPLAY_PARAMETERS[name] == params
+
+    async def test_publication_scope_keys_are_not_replayed(self):
+        from preloop.services.question_schema import replay_arguments
+
+        stored = {
+            "operation": "Publish firmware",
+            "caller": "agent",
+            "context": "c",
+            "reasoning": "r",
+            "action": "isolated_publication",
+            "candidates": [{"artifact": "fw", "sha": "a" * 40}],
+            "dropped_item_keys": ["x"],
+        }
+        args = replay_arguments("request_approval", stored)
+        assert set(args) == {"operation", "caller", "context", "reasoning"}
+        result = await _replay("request_approval", args, None)
+        assert "Approval granted" in _result_text(result)
