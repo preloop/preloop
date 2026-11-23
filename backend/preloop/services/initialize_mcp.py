@@ -2408,6 +2408,14 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         )
 
                         tool_args = tool_args_for_replay(tool_args)
+                        # ask_user / request_approval store server-only keys
+                        # (is_question, dropped_item_keys) beside their
+                        # arguments; the tool signature rejects them.
+                        from preloop.services.question_schema import (
+                            replay_arguments,
+                        )
+
+                        tool_args = replay_arguments(tool_name, tool_args)
                         req_id = approval_request.id
                         # ask_user replay: the approver's comment IS the
                         # human's answer — capture it before releasing the

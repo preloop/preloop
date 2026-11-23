@@ -82,6 +82,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "evidence_settling"` with `due_at` while tool evidence settles after the
   run finishes, and `execution_not_finished` while the run runs.
 
+- An approved `ask_user` or `request_approval` form now returns the human's
+  answer to the agent. The approval replay re-ran the tool with the
+  server-only `is_question` and `dropped_item_keys` keys from the stored
+  arguments, and the tool rejected them with a validation error. Stored rows
+  also keep their display fields when they are normalized again.
+
 - `get_pull_request` and `update_pull_request` find the right merge request
   for GitLab's own `group/project!12` reference and for a bare `12`, `!12`
   or `#12`. A bare number uses the project that triggered the flow run, or a

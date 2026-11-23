@@ -124,6 +124,63 @@ _ITEM_KEYS = {"id", "title", "label", "description", "severity", "badges", "href
 ITEM_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info", "unknown"})
 
 
+# The parameters of the ask_user / request_approval tools. Their stored
+# tool_args also carry server-written keys for the console, notifications
+# and publication scope (is_question, dropped_item_keys, action,
+# candidates, ...). The approval replay (get_approval_status re-running the
+# approved call) keeps only real parameters, or the tool's validated
+# signature rejects the call. Kept in sync with the registered signatures by
+# tests/services/test_ask_user_structured.py.
+REPLAY_PARAMETERS: Dict[str, frozenset[str]] = {
+    "ask_user": frozenset(
+        {
+            "question",
+            "options",
+            "allow_free_text",
+            "context",
+            "items",
+            "input_schema",
+            "approval_workflow",
+            "timeout_seconds",
+        }
+    ),
+    "request_approval": frozenset(
+        {
+            "operation",
+            "context",
+            "reasoning",
+            "caller",
+            "approval_workflow",
+            "timeout_seconds",
+            "items",
+            "input_schema",
+            "publication_candidates",
+        }
+    ),
+}
+
+
+def replay_arguments(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Return stored tool_args fit to re-invoke a built-in form tool.
+
+    The publication scope (``action``/``candidates``) is already frozen on
+    the approval row, and the replay bypasses the approval, so it is not
+    passed back.
+
+    Args:
+        tool_name: Name of the approved tool.
+        arguments: The tool_args persisted on the approval request.
+
+    Returns:
+        Only the tool's parameters for ask_user and request_approval; any
+        other tool's arguments unchanged.
+    """
+    allowed = REPLAY_PARAMETERS.get(tool_name)
+    if allowed is None or not isinstance(arguments, dict):
+        return arguments
+    return {k: v for k, v in arguments.items() if k in allowed}
+
+
 class QuestionSchemaError(ValueError):
     """The agent handed us a schema the console could not draw."""
 
@@ -495,6 +552,24 @@ def normalize_items(
         unknown: Set[str] = set()
         for key, value in entry.items():
             if key in _ITEM_KEYS:
+                continue
+            if key == "fields" and isinstance(value, dict):
+                # Already-normalized rows (an approval replay re-runs the
+                # tool on the stored items) keep their display fields.
+                for sub_key, sub_value in value.items():
+                    sub_text = (
+                        _clean_text(sub_value, MAX_ITEM_FIELD_LENGTH)
+                        if isinstance(sub_value, str)
+                        else None
+                    )
+                    if (
+                        sub_text
+                        and len(str(sub_key)) <= MAX_ITEM_FIELD_KEY_LENGTH
+                        and len(fields) < MAX_ITEM_FIELDS
+                    ):
+                        fields[str(sub_key)] = sub_text
+                    elif sub_text is not None or not isinstance(sub_value, str):
+                        unknown.add(str(sub_key))
                 continue
             key_text = str(key)
             text = (
