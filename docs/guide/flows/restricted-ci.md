@@ -1095,9 +1095,45 @@ Gateway call IDs and native item IDs are distinct namespaces; match only actual
 correlation data, never infer that a model-requested call executed. Native exit
 codes are runtime observations, not a successful execution or accepted review.
 The capture excludes general conversation text. Capture-disabled content is absent;
-credential and account storage-redaction rules still apply. JSONB-unsafe controls
-and lone surrogates are removed before encoding; altered content sets `redacted`,
-`storage_redacted`, and `capture_complete: false`.
+credential and account storage-redaction rules still apply.
+
+Text is stored exactly, control characters included: form feeds in text
+converted from a PDF, ESC colour sequences in command output, and a U+0003 or
+U+0004 that an agent sends to a terminal. The record is stored as canonical
+JSON text, which escapes every C0 control (U+0000 too); DEL and C1 controls are
+valid JSON as they are. A record whose only unusual content is such characters
+has `capture_complete: true`, `storage_redacted: false`, and its digest covers
+the exact text. Call arguments are kept as the agent sent them. They are
+decoded and re-encoded only when a masking rule changes a nested value.
+
+Lone surrogates (U+D800 to U+DFFF without a partner) have no UTF-8 encoding,
+so they cannot be stored, hashed or returned. They are removed. The
+observation then carries `removed: [{"category": "lone_surrogates", "count":
+<n>}]` (category and count, never content), sets `redacted` and
+`storage_redacted`, and the record is incomplete with reason
+`lone_surrogates`. A lone surrogate outside an observation value, in an id
+for example, is counted in a document-level `removed`. A surrogate written as
+a `\udXXX` escape inside JSON argument text is six ASCII characters and is
+kept as is.
+
+`incomplete_reasons` names every reason a record is incomplete:
+
+| Reason | Meaning |
+| --- | --- |
+| `masking` | A named masking rule fired (`redactions` lists the rules). |
+| `lone_surrogates` | Lone surrogates were removed (`removed` counts them). |
+| `credential_scrub` | The known-token credential scrubber masked text no named rule matched. |
+| `storage_rule` | An account sensitive-data storage rule changed the record. |
+| `truncated` | An observation did not fit the 2 MiB record and was left out. |
+| `capped` | More than 512 observations; the rest were left out. |
+| `scan_depth` | The message nesting was deeper than the capture walks. |
+| `value_depth` | An observation value (call arguments included) nested deeper than 64 levels. Its `value` is null, because masking cannot walk it. |
+| `missing_id` | A call or result had no usable id. |
+| `invalid_name` | A tool name was not a string or longer than 256 characters. |
+| `unsafe_text` | The stored value differs from the wire value and nothing above explains it. No known path sets it; it is kept so that an unexplained change is still refused. |
+
+Records stored before these reasons existed are not rewritten. One that says
+`unsafe_text` from that time usually lost control characters.
 
 Text redaction uses ruleset `2026-11-19`. Every new document stores that
 version in `redaction_ruleset`. An observation that matched a rule also stores
@@ -1147,8 +1183,8 @@ On a gateway tool observation, a real match still sets `redacted`,
 `storage_redacted`, and `capture_complete: false`. Ordinary source that
 matches none of these stays byte for byte, with `capture_complete: true`
 and `storage_redacted: false`. A native command observation records the
-same rule facts when its text matches. Its completeness stays the existing
-size and JSONB check.
+same rule facts when its text matches. Its completeness stays the size
+check, plus the reasons above.
 
 Each record's `sha256` hashes its `document` encoded as compact JSON with sorted
 keys, UTF-8, `ensure_ascii=false`, and no nonfinite numbers. Execution and gateway
@@ -1743,12 +1779,14 @@ moment.
 
 A masked credential still marks that gateway record incomplete. `captured`
 accepts that record; `complete` does not. `captured` and `complete` both
-refuse a record changed by an unexplained scrub or by an account
-storage-redaction rule; a record masked only by named rules is still
+refuse a record changed by the credential scrubber (`credential_scrub`), by
+an account storage-redaction rule (`storage_rule`), by removed lone
+surrogates (`lone_surrogates`) or by an unexplained change (`unsafe_text`);
+control characters alone do not make a record incomplete; a record masked only by named rules is still
 accepted by `captured` and refused by `complete`, and level `any` or a flow
-without the setting is unchanged. A native command with an unexplained
-scrub is stored with `capture_complete: false` and reason `unsafe_text`,
-the same as a gateway record. Saving `captured` or `complete`
+without the setting is unchanged. A native command the credential scrubber
+changed is stored with `capture_complete: false` and reason
+`credential_scrub`, the same as a gateway record. Saving `captured` or `complete`
 requires model-gateway content capture to be on for the instance
 (`MODEL_GATEWAY_CAPTURE_CONTENT`). Without it the setting is rejected,
 because the gate could never pass. That check is only at save. Turning
@@ -1766,7 +1804,11 @@ run is marked finished. For about 30 seconds after the run finishes, a flow
 with `captured` or `complete` (or a publish call that asks for one of those)
 neither posts nor records `evidence_incomplete`. An automatic post is left
 for the sweep. An explicit publish call answers **409** with
-`detail.code` `evidence_pending`.
+`detail.code` `evidence_pending`. While the run has no publication attempt,
+its record reads `status: "pending"` with `reason: "evidence_settling"` and
+`due_at`, the time the attempt becomes due. The sweep makes the attempt on
+its next pass after `due_at`, so the record can read `pending` with no reason
+for up to a sweep interval after that.
 
 `GET /api/v1/flows/executions/{id}/result` carries the counts once, both at
 the top level (`tool_evidence`) and on the publication record
@@ -1784,6 +1826,8 @@ the counts. They contain no observation values, paths or text:
 | `incomplete_records` | Records that are incomplete, unreadable, a capture failure, or stored with content capture off. |
 | `masking_only_records` | Incomplete records whose only stored reason is a named masking rule. |
 | `masking_by_rule` | How many times each masking rule fired. Rule ids only. |
+| `incomplete_by_reason` | Incomplete records by reason: one of the reasons in [Own-execution tool evidence](#own-execution-tool-evidence), or `integrity_invalid` (unreadable or the digest does not verify), `capture_failed`, `content_capture_off`, or `unstated` (an older record marked incomplete without a reason). A record with two reasons counts under both. |
+| `removed_by_category` | Characters removed because they cannot be stored, by category (`lone_surrogates`). Counts only. |
 | `agent_clipped_results` | Tool results the agent CLI cut to its per-result limit before the model saw them. |
 | `bound_reads` | Successful commands that print the bound patch or a changed file, by the inspection floor's own matcher, joined to their result by call id. |
 | `clipped_bound_reads` | Of `bound_reads`, those whose result was clipped. |
@@ -1917,6 +1961,7 @@ omit it:
   "posted_at": "2030-01-01T00:00:05+00:00",
   "attempts": 1,
   "retry_scheduled": false,
+  "due_at": null,
   "tool_evidence": {
     "gateway_requests": 2,
     "missing_records": 0,
@@ -1924,6 +1969,8 @@ omit it:
     "incomplete_records": 0,
     "masking_only_records": 0,
     "masking_by_rule": {},
+    "incomplete_by_reason": {},
+    "removed_by_category": {},
     "agent_clipped_results": 0,
     "bound_reads": 1,
     "clipped_bound_reads": 0,
@@ -1977,7 +2024,13 @@ preloop flow review-posting status <execution-id>          # add --json for the 
 - `skipped`: nothing was posted, for the same reasons, when no status applies.
 - `failed`: an attempt did not complete; `reason` says why, and `review` and
   `commit_status` say what is already there.
-- `pending`, `publishing`: not attempted yet, or in progress.
+- `pending`, `publishing`: not attempted yet, or in progress. A `pending`
+  record with no attempt names its cause in `reason`:
+  `execution_not_finished` while the run runs, or `evidence_settling` while
+  a flow with an evidence level waits for the last model request's tool
+  evidence, with `due_at` set to when the attempt becomes due. A null
+  `reason` means the attempt is due and has not been made yet. On a record
+  with a scheduled retry, `due_at` is when that retry is due.
 
 A posting failure never
 changes the execution's status or result. `reason` values include

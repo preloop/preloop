@@ -437,6 +437,24 @@ class ToolEvidenceSummary(BaseModel):
     masking_by_rule: dict[str, int] = Field(
         description="How many times each named masking rule fired. Rule ids only."
     )
+    incomplete_by_reason: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Incomplete records by reason: a stored reason (masking, "
+            "lone_surrogates, credential_scrub, storage_rule, truncated, "
+            "capped, scan_depth, value_depth, missing_id, invalid_name, "
+            "unsafe_text) or "
+            "integrity_invalid, capture_failed, content_capture_off, unstated. "
+            "A record with two reasons counts under both."
+        ),
+    )
+    removed_by_category: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Characters removed because they cannot be stored, by category "
+            "(lone_surrogates). Counts only, never the removed text."
+        ),
+    )
     agent_clipped_results: int = Field(
         default=0,
         description=(

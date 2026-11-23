@@ -4915,7 +4915,12 @@ def test_real_litellm_bedrock_api_key_never_resolves_iam_credentials(
         assert request.headers["Authorization"] == f"Bearer {key}"
         assert request.url.host == f"bedrock-runtime.{region}.amazonaws.com"
         assert request.url.path.endswith("/converse-stream" if stream else "/converse")
-    assert dict(os.environ) == before
+    # LiteLLM writes this cache path on the first tokenizer load. It is not
+    # an AWS credential; the first call in a process must not fail the check.
+    after = dict(os.environ)
+    after.pop("TIKTOKEN_CACHE_DIR", None)
+    before.pop("TIKTOKEN_CACHE_DIR", None)
+    assert after == before
 
 
 @pytest.mark.parametrize("metadata_region", ["us-west-2", None])
