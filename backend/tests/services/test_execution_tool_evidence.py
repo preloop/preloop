@@ -773,3 +773,99 @@ def test_deeply_nested_native_command_fails_soft_with_value_depth() -> None:
     assert document["observations"][0]["value"] is None
     assert document["capture_complete"] is False
     assert document["incomplete_reasons"] == ["value_depth"]
+
+
+# --- agent CLI clipping (Codex rust-v0.153.4 output shapes) ----------------
+
+#: A unified exec result Codex cut, in the shape ``response_text`` writes.
+_CLIPPED_EXEC = (
+    "Chunk ID: 3fa2c1\n"
+    "Wall time: 0.0123 seconds\n"
+    "Process exited with code 0\n"
+    "Original token count: 4650\n"
+    "Output:\n"
+    "Warning: truncated output (original token count: 4650)\n"
+    "Total output lines: 120\n"
+    "\n"
+    "diff --git a/app.py b/app.py\n"
+    "…2150 tokens truncated…"
+    "+    return value\n"
+)
+#: A whole result whose file text merely contains Codex's sentence.
+_QUOTED_SENTENCE = (
+    "Chunk ID: 3fa2c1\n"
+    "Wall time: 0.0123 seconds\n"
+    "Process exited with code 0\n"
+    "Original token count: 40\n"
+    "Output:\n"
+    "A clipped result starts with\n"
+    "Warning: truncated output (original token count: 4650)\n"
+    "and then …2150 tokens truncated… in the middle.\n"
+)
+
+
+def test_clipped_exec_result_is_recorded_and_stays_complete() -> None:
+    document = capture_tools({}, _tool_result(_CLIPPED_EXEC), capture_content=True)
+    observation = document["observations"][0]
+    assert observation["agent_clipped"] is True
+    assert observation["agent_original_tokens"] == 4650
+    assert observation["truncated"] is False
+    assert document["capture_complete"] is True
+    assert "incomplete_reasons" not in document
+    stored = _stored_document(document)
+    assert stored["observations"][0]["agent_clipped"] is True
+    assert stored["capture_complete"] is True
+
+
+def test_clip_is_recorded_when_content_is_not_kept() -> None:
+    document = capture_tools({}, _tool_result(_CLIPPED_EXEC), capture_content=False)
+    assert document["observations"][0]["value"] is None
+    assert document["observations"][0]["agent_clipped"] is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _QUOTED_SENTENCE,
+        # The sentence first in a file, with no middle marker: not a cut.
+        "Chunk ID: 3fa2c1\nWall time: 0.0123 seconds\nProcess exited with code 0\n"
+        "Original token count: 40\nOutput:\n"
+        "Warning: truncated output (original token count: 40)\n\nplain text\n",
+        # Omitted bytes: Codex reuses the header count, so a mismatch is not a cut.
+        _CLIPPED_EXEC.replace(
+            "Original token count: 4650", "Original token count: 9"
+        ).replace("Total output lines: 120\n", "... 77 bytes omitted ...\n"),
+        "Warning: truncated output (original token count: 4650)\n",
+    ],
+)
+def test_sentence_elsewhere_in_a_result_is_not_a_clip(text: str) -> None:
+    document = capture_tools({}, _tool_result(text), capture_content=True)
+    assert document["observations"][0]["agent_clipped"] is False
+    assert "agent_original_tokens" not in document["observations"][0]
+
+
+def test_formatted_truncation_shape_is_a_clip() -> None:
+    text = (
+        "Warning: truncated output (original token count: 900)\n"
+        "Total output lines: 120\n\nstart…400 tokens truncated…end"
+    )
+    document = capture_tools({}, _tool_result(text), capture_content=True)
+    assert document["observations"][0]["agent_original_tokens"] == 900
+
+
+def test_exec_clip_with_omitted_bytes_is_a_clip() -> None:
+    """Above the collection cap Codex writes the omission line instead."""
+    text = _CLIPPED_EXEC.replace(
+        "Total output lines: 120\n", "... 77 bytes omitted ...\n"
+    )
+    document = capture_tools({}, _tool_result(text), capture_content=True)
+    assert document["observations"][0]["agent_original_tokens"] == 4650
+
+
+def test_formatted_exec_clip_may_recount_tokens() -> None:
+    """The formatted path recounts the collected text; the header can differ."""
+    text = _CLIPPED_EXEC.replace(
+        "Original token count: 4650", "Original token count: 4700"
+    )
+    document = capture_tools({}, _tool_result(text), capture_content=True)
+    assert document["observations"][0]["agent_original_tokens"] == 4650

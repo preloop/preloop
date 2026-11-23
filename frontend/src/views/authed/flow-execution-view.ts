@@ -4751,6 +4751,7 @@ ${execution.resolved_input_prompt}</pre>
               </div>`
             : this.renderResumeLine(execution, { asDescriptionSlot: true })
         }
+        ${execution.trigger_event_details?._conversation_id ? html`<sl-button slot="main-column" href=${`/console/flow-conversations/${execution.trigger_event_details._conversation_id}/talk`}>Open conversation</sl-button>` : nothing}
         ${this.renderHeaderActions(execution)}
       </view-header>
       <div class="column-layout wide">

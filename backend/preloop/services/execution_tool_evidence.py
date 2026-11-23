@@ -325,6 +325,11 @@ def capture_tools(
             record["redactions"] = facts
         if removed:
             record["removed"] = removed_facts(removed)
+        if kind == "result":
+            # Clip metadata is separate from the stored text. Do not run the
+            # record through sanitize_for_jsonb: that deletes control
+            # characters JSONB can store and would mark the record unsafe.
+            record.update(_agent_clip(raw))
         encoded = canonical_bytes(record)
         if len(observations) >= MAX_OBSERVATIONS:
             mark(REASON_CAPPED)
@@ -382,6 +387,26 @@ def capture_tools(
     if reasons:
         document["incomplete_reasons"] = sorted(reasons)
     return document
+
+
+def _agent_clip(raw: Any) -> dict[str, Any]:
+    """Whether the agent CLI cut this result before the model saw it.
+
+    Separate from ``truncated``, which means only that Preloop's own storage
+    limit dropped data. A clip does not make the record incomplete.
+
+    Args:
+        raw: The tool result as sent to the model.
+
+    Returns:
+        ``agent_clipped`` and, when clipped, ``agent_original_tokens``.
+    """
+    from preloop.services.codex_tool_output import codex_clip
+
+    count = codex_clip(raw)
+    if count is None:
+        return {"agent_clipped": False}
+    return {"agent_clipped": True, "agent_original_tokens": count}
 
 
 def _latest_tool_exchange(items: Any) -> list[dict[str, Any]]:

@@ -153,6 +153,8 @@ async def test_update_flow(mock_account: Account, mocker: MockerFixture):
         new_callable=MagicMock,
     )
     mock_flow = MagicMock()
+    mock_flow.agent_type = "opencode"
+    mock_flow.agent_config = {}
     mock_flow.ai_model_id = None
     mock_flow.name = "Original Name"  # Different from update name
     mock_flow.is_preset = False
@@ -3064,6 +3066,8 @@ async def test_update_schedule_flow_cannot_clear_config(
     """Explicitly clearing schedule_config on a schedule flow is a 400."""
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
     mock_flow = MagicMock()
+    mock_flow.agent_type = "opencode"
+    mock_flow.agent_config = {}
     mock_flow.name = "Nightly Scan"
     mock_flow.trigger_event_source = "schedule"
     mock_flow.schedule_config = {"cron": "0 2 * * *", "timezone": "UTC"}
@@ -3094,6 +3098,8 @@ async def test_update_flow_to_schedule_source_requires_config(
     """Switching a flow to schedule without a stored/sent config is a 400."""
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
     mock_flow = MagicMock()
+    mock_flow.agent_type = "opencode"
+    mock_flow.agent_config = {}
     mock_flow.name = "Webhook Flow"
     mock_flow.trigger_event_source = "webhook"
     mock_flow.schedule_config = None
@@ -3124,6 +3130,8 @@ async def test_update_flow_schedule_config_on_webhook_flow_rejected(
     """Sending schedule_config to a webhook flow (source unchanged) is a 400."""
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
     mock_flow = MagicMock()
+    mock_flow.agent_type = "opencode"
+    mock_flow.agent_config = {}
     mock_flow.name = "Webhook Flow"
     mock_flow.trigger_event_source = "webhook"
     mock_flow.schedule_config = None
@@ -3159,6 +3167,8 @@ async def test_update_flow_switch_to_webhook_generates_secret(
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
     flow_id = uuid.uuid4()
     mock_flow = MagicMock()
+    mock_flow.agent_type = "opencode"
+    mock_flow.agent_config = {}
     mock_flow.ai_model_id = None
     mock_flow.name = "Cloned Preset Flow"
     mock_flow.trigger_event_source = None
@@ -3205,6 +3215,8 @@ async def test_update_flow_webhook_keeps_existing_secret(
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
     flow_id = uuid.uuid4()
     mock_flow = MagicMock()
+    mock_flow.agent_type = "opencode"
+    mock_flow.agent_config = {}
     mock_flow.ai_model_id = None
     mock_flow.name = "Webhook Flow"
     mock_flow.trigger_event_source = "webhook"
@@ -3240,6 +3252,8 @@ async def test_update_flow_webhook_keeps_existing_secret(
 def _webhook_update_flow(mocker, *, source, webhook_config):
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
     mock_flow = MagicMock()
+    mock_flow.agent_type = "opencode"
+    mock_flow.agent_config = {}
     mock_flow.ai_model_id = None
     mock_flow.name = "Reviewer"
     mock_flow.trigger_event_source = source
@@ -3419,6 +3433,8 @@ async def test_update_flow_switch_to_schedule_forces_event_types(
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
     flow_id = uuid.uuid4()
     mock_flow = MagicMock()
+    mock_flow.agent_type = "opencode"
+    mock_flow.agent_config = {}
     mock_flow.ai_model_id = None
     mock_flow.name = "Webhook Flow"
     mock_flow.trigger_event_source = "webhook"

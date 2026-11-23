@@ -2,6 +2,7 @@
 
 import logging
 import re
+import shlex
 from collections.abc import Callable
 from typing import Any
 from uuid import UUID, NAMESPACE_URL, uuid5
@@ -776,7 +777,9 @@ def tool_evidence_summary(db: Session, *, execution_id: Any) -> dict[str, Any]:
         Gateway requests, missing records, records, incomplete records,
         records incomplete only because a named masking rule fired, masking
         counts by rule, incomplete records by reason (a record with two
-        reasons counts under both), and removed text by category.
+        reasons counts under both), removed text by category, results the
+        agent CLI clipped, and successful reads of the bound change with how
+        many were clipped or unknown.
     """
     import json
 
@@ -796,6 +799,8 @@ def tool_evidence_summary(db: Session, *, execution_id: Any) -> dict[str, Any]:
     masking: dict[str, int] = {}
     by_reason: dict[str, int] = {}
     removed: dict[str, int] = {}
+    calls: dict[str, dict[str, Any]] = {}
+    results: dict[str, dict[str, Any]] = {}
     cursor = None
     while True:
         page = query
@@ -832,8 +837,10 @@ def tool_evidence_summary(db: Session, *, execution_id: Any) -> dict[str, Any]:
                     masking[rule] = masking.get(rule, 0) + count
                 for category, count in _removed_counts(document).items():
                     removed[category] = removed.get(category, 0) + count
+                _collect_exchange(document, calls, results)
         if len(rows) < 32:
             break
+    reads = _bound_reads(db, execution, calls, results)
     return {
         "gateway_requests": gateway_requests,
         "missing_records": missing_records,
@@ -843,7 +850,124 @@ def tool_evidence_summary(db: Session, *, execution_id: Any) -> dict[str, Any]:
         "masking_by_rule": dict(sorted(masking.items())),
         "incomplete_by_reason": dict(sorted(by_reason.items())),
         "removed_by_category": dict(sorted(removed.items())),
+        "agent_clipped_results": sum(
+            1 for item in results.values() if item.get("agent_clipped") is True
+        ),
+        **reads,
     }
+
+
+#: Unified exec, the shell tool of custom models in the pinned Codex CLI.
+_EXEC_TOOL = "exec_command"
+#: Shell tools whose result shape the bound-read join does not verify.
+_UNJOINED_SHELL_TOOLS = frozenset({"shell", "shell_command", "local_shell"})
+
+
+def _collect_exchange(
+    document: dict[str, Any],
+    calls: dict[str, dict[str, Any]],
+    results: dict[str, dict[str, Any]],
+) -> None:
+    """Index gateway tool calls and request-side results by call id.
+
+    The first stored observation of a call id wins; replays are dropped at
+    write time already.
+
+    Args:
+        document: One integrity-valid evidence document.
+        calls: Call observations by call id. Mutated.
+        results: Request-side result observations by call id. Mutated.
+    """
+    observations = document.get("observations")
+    for item in observations if isinstance(observations, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("call_id"), str):
+            continue
+        if item.get("kind") == "call":
+            calls.setdefault(item["call_id"], item)
+        elif item.get("kind") == "result" and item.get("source") == "request":
+            results.setdefault(item["call_id"], item)
+
+
+def _bound_reads(
+    db: Session,
+    execution: UUID,
+    calls: dict[str, dict[str, Any]],
+    results: dict[str, dict[str, Any]],
+) -> dict[str, int]:
+    """Count successful reads of the bound change, and the clipped ones.
+
+    A call counts when the inspection floor's own matcher accepts its command
+    and its joined result reports exit code 0. A read-shaped call whose
+    command, working directory, result or exit code cannot be established is
+    ``unknown``, never "not clipped". Calls whose arguments were not stored
+    (content capture off) are unknown too, since nothing shows they are not
+    reads.
+
+    Args:
+        db: Database session.
+        execution: Execution being summarised.
+        calls: Call observations by call id.
+        results: Request-side result observations by call id.
+
+    Returns:
+        ``bound_reads``, ``clipped_bound_reads`` and
+        ``unknown_bound_reads``.
+    """
+    import json
+
+    from preloop.services.codex_tool_output import exec_exit_code
+    from preloop.services.review_inspection import command_reads_change
+
+    counts = {
+        "bound_reads": 0,
+        "clipped_bound_reads": 0,
+        "unknown_bound_reads": 0,
+    }
+    context = _inspection_context(db, str(execution)) if calls else None
+    if context is None:
+        return counts
+    binding, diff, root = context
+    for call_id, call in calls.items():
+        name = call.get("name")
+        if name != _EXEC_TOOL and name not in _UNJOINED_SHELL_TOOLS:
+            continue
+        value = call.get("value")
+        try:
+            arguments = json.loads(value) if isinstance(value, str) else None
+        except ValueError:
+            arguments = None
+        if not isinstance(arguments, dict):
+            counts["unknown_bound_reads"] += 1
+            continue
+        command = arguments.get("cmd", arguments.get("command"))
+        if isinstance(command, list) and all(isinstance(w, str) for w in command):
+            command = shlex.join(command)
+        if not command_reads_change(
+            command,
+            base=binding.get("base_sha", ""),
+            head=binding.get("head_sha", ""),
+            files=diff.get("files", []),
+            root=root,
+            merge_base=diff.get("merge_base_sha") or "",
+        ):
+            continue
+        result = results.get(call_id)
+        workdir = arguments.get("workdir")
+        exit_code = exec_exit_code(result.get("value")) if result else None
+        if (
+            name != _EXEC_TOOL
+            or workdir not in (None, "", root)
+            or result is None
+            or exit_code is None
+        ):
+            counts["unknown_bound_reads"] += 1
+            continue
+        if exit_code != 0:
+            continue
+        counts["bound_reads"] += 1
+        if result.get("agent_clipped") is True:
+            counts["clipped_bound_reads"] += 1
+    return counts
 
 
 def evidence_page(

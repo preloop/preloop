@@ -96,7 +96,9 @@ def test_cold_start_uses_the_effective_value() -> None:
 
 
 def _orchestrator_stub(flow: SimpleNamespace, **extra: Any) -> SimpleNamespace:
-    stub = SimpleNamespace(flow=flow, db=MagicMock(), execution_log=None, **extra)
+    stub = SimpleNamespace(
+        flow=flow, db=MagicMock(), execution_log=None, trigger_event_data={}, **extra
+    )
     stub._flow_preset_slug = lambda: extra.get("preset_slug")
     return stub
 

@@ -29,6 +29,12 @@ CODEX_CLI_REASONING_EFFORTS = (
 
 CODEX_CATALOG_VERSION = "0.153.4"
 CODEX_FALLBACK_CONTEXT_WINDOW = 272_000
+#: Share of the context window one tool result may take, and its ceiling.
+#: Codex 0.153.4 cuts each result to the smaller of this catalog policy and
+#: the call's own ``max_output_tokens`` (default 10,000), keeping the start
+#: and end (codex-rs/core/src/tools/context.rs, ``model_output_policy``).
+TOOL_OUTPUT_WINDOW_DIVISOR = 10
+TOOL_OUTPUT_TOKEN_CEILING = 64_000
 # Exact slugs in rust-v0.153.4/codex-rs/models-manager/models.json. Codex
 # longest-prefix and namespaced-suffix resolution must keep these profiles.
 BUNDLED_MODEL_PREFIXES = (
@@ -44,6 +50,23 @@ BUNDLED_MODEL_PREFIXES = (
     "gpt-5.2",
     "codex-auto-review",
 )
+
+
+def tool_output_token_limit(context_window: int) -> int:
+    """Per-result token limit for a custom model's catalog entry.
+
+    One tenth of the window, at most :data:`TOOL_OUTPUT_TOKEN_CEILING`:
+    3,200 tokens for a 32,000 window, 12,800 for 128,000, 20,000 for 200,000
+    and 64,000 for 1,000,000.
+
+    Args:
+        context_window: The window written into the catalog entry.
+
+    Returns:
+        The ``truncation_policy`` limit, in tokens.
+    """
+    share = max(context_window, 0) // TOOL_OUTPUT_WINDOW_DIVISOR
+    return max(1, min(share, TOOL_OUTPUT_TOKEN_CEILING))
 
 
 def custom_model_catalog(
@@ -125,7 +148,10 @@ def custom_model_catalog(
         "default_verbosity": None,
         "apply_patch_tool_type": None,
         "web_search_tool_type": "text",
-        "truncation_policy": {"mode": "bytes", "limit": 10_000},
+        "truncation_policy": {
+            "mode": "tokens",
+            "limit": tool_output_token_limit(context_window),
+        },
         "supports_image_detail_original": False,
         "context_window": context_window,
         "max_context_window": context_window,
@@ -191,3 +217,53 @@ def hosted_fallback_instructions() -> str:
     end = instructions.index("## Task execution\n", start)
     instructions = instructions[:start] + instructions[end:]
     return instructions[: instructions.index("## `update_plan`\n")]
+
+
+#: Codex's per-call default when the model sends no ``max_output_tokens``
+#: (``DEFAULT_MAX_OUTPUT_TOKENS``, codex-rs/core/src/unified_exec/mod.rs).
+CODEX_DEFAULT_CALL_OUTPUT_TOKENS = 10_000
+#: Codex's own fallback for a model it does not know, ``bytes`` 10,000
+#: (about 2,500 tokens), and the bundled ``gpt-5.2`` profile.
+CODEX_FALLBACK_TOOL_OUTPUT_TOKENS = 2_500
+
+
+def tool_output_limit_for_context(context: dict[str, Any]) -> int:
+    """The per-result token limit hosted Codex applies to this execution.
+
+    Mirrors how :class:`preloop.agents.codex.CodexAgent` picks the model and
+    provider. Bundled models keep their own 10,000-token profile.
+
+    Args:
+        context: The execution context at launch.
+
+    Returns:
+        The catalog limit in tokens, before the per-call ``max_output_tokens``.
+    """
+    from preloop.services.model_context_limits import limits_for_execution
+
+    gateway = bool(context.get("model_gateway_enabled"))
+    model = (context.get("model_gateway_model_alias") if gateway else None) or (
+        context.get("codex_model") or context.get("model_identifier") or "gpt-5.4"
+    )
+    provider = (
+        context.get("model_gateway_provider")
+        if gateway
+        else context.get("model_provider", "openai")
+    )
+    model = str(model)
+    if (provider or "openai").lower() != "openai":
+        agent_config = context.get("agent_config")
+        version = (
+            agent_config.get("codex_cli_version")
+            if isinstance(agent_config, dict)
+            else None
+        ) or CODEX_CATALOG_VERSION
+        catalog = custom_model_catalog(
+            model, limits_for_execution(context), cli_version=str(version)
+        )
+        if catalog is not None:
+            return int(catalog["models"][0]["truncation_policy"]["limit"])
+    bundled = model.rpartition("/")[2]
+    if bundled == "gpt-5.2" or not bundled.startswith(BUNDLED_MODEL_PREFIXES):
+        return CODEX_FALLBACK_TOOL_OUTPUT_TOKENS
+    return CODEX_DEFAULT_CALL_OUTPUT_TOKENS

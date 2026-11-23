@@ -481,6 +481,10 @@ export class LitApp extends LitElement {
           // the full path), but keeping the more specific route first is how
           // the file reads elsewhere.
           { path: '/agents/:agentId/talk', component: 'agent-talk-view' },
+          {
+            path: '/flow-conversations/:conversationId/talk',
+            component: 'agent-talk-view',
+          },
           { path: '/agents/:agentId', component: 'agent-detail-view' },
           {
             path: '/onboarding',

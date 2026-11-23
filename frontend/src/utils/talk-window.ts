@@ -42,6 +42,9 @@ function sessionIdOf(session: SessionLike): string | null {
 }
 
 export interface TalkWindowOptions {
+  conversationId?: string;
+  /** Reserve the desktop popup during a click; the caller navigates after starting. */
+  deferNavigation?: boolean;
   /**
    * Which entry point opened this conversation ('dashboard-active-agents',
    * 'agent-detail-view', ...). It rides the URL as `?source=` and the composer
@@ -57,6 +60,8 @@ export function talkRoutePath(
   session?: SessionLike | RuntimeSessionSummary,
   options: TalkWindowOptions = {}
 ): string {
+  if (options.conversationId)
+    return `/console/flow-conversations/${encodeURIComponent(options.conversationId)}/talk`;
   const sessionId = sessionIdOf(session as SessionLike);
   const parts: string[] = [];
   if (sessionId) parts.push(`session=${encodeURIComponent(sessionId)}`);
@@ -207,7 +212,7 @@ export function openTalkWindow(
 
   const geometry = readTalkWindowGeometry(agentId);
   const win = window.open(
-    url,
+    options.deferNavigation ? 'about:blank' : url,
     talkWindowName(agentId),
     talkWindowFeatures(geometry)
   );

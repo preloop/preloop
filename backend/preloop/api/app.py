@@ -1404,6 +1404,11 @@ def _register_control_plane_routes(
     from preloop.api.endpoints import flow_artifacts, publication_credentials
 
     app.include_router(flow_artifacts.router, prefix="/api/v1", tags=["Flow artifacts"])
+    from preloop.api.endpoints import flow_conversations
+
+    app.include_router(
+        flow_conversations.router, prefix="/api/v1", tags=["Flow conversations"]
+    )
     app.include_router(publication_credentials.router, prefix="/api/v1")
     app.include_router(
         flows.router,

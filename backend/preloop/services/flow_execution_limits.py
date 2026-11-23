@@ -379,6 +379,29 @@ def get_execution_usage(db: Session, execution_id: Any) -> ExecutionUsage:
     """
     from preloop.models.crud import crud_api_usage
 
+    from preloop.models.crud import crud_flow_execution
+    from preloop.models.crud import flow_conversation as conversations
+
+    execution = crud_flow_execution.get(db, id=execution_id)
+    details = execution.trigger_event_details if execution else {}
+    conversation_id = (details or {}).get("_conversation_id")
+    if conversation_id:
+        from uuid import UUID
+
+        usages = [
+            crud_api_usage.get_gateway_usage_for_execution(db, str(item))
+            for item in conversations.executions(db, UUID(conversation_id))
+        ]
+        return ExecutionUsage(
+            total_tokens=sum(
+                int((item.get("token_usage") or {}).get("total_tokens") or 0)
+                for item in usages
+            ),
+            cost_usd=sum(float(item.get("estimated_cost") or 0) for item in usages)
+            if any(item.get("estimated_cost") is not None for item in usages)
+            else None,
+            turns=sum(int(item.get("api_requests") or 0) for item in usages),
+        )
     usage = crud_api_usage.get_gateway_usage_for_execution(db, str(execution_id))
     token_usage = usage.get("token_usage") or {}
     raw_cost = usage.get("estimated_cost")

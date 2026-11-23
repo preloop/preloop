@@ -181,3 +181,50 @@ def test_custom_catalog_allows_existing_effort_overrides_without_new_default() -
         "ultra",
         "persistent",
     ]
+
+
+@pytest.mark.parametrize(
+    ("window", "limit"),
+    [(32_000, 3_200), (128_000, 12_800), (200_000, 20_000), (1_000_000, 64_000)],
+)
+def test_custom_entry_scales_the_tool_output_limit_with_the_window(
+    window: int, limit: int
+) -> None:
+    """One tenth of the window in tokens, capped at 64,000, not 10 KB."""
+    catalog = custom_model_catalog(
+        "example/custom", ModelContextLimits(context_window=window)
+    )
+    assert catalog is not None
+    policy = catalog["models"][0]["truncation_policy"]
+    assert policy == {"mode": "tokens", "limit": limit}
+    assert policy["limit"] <= window // 10
+    if window >= 128_000:
+        # The measured p95 of the results the old 10 KB limit cut.
+        assert policy["limit"] >= 12_000
+
+
+def test_fallback_window_limit_and_context_limit_helper() -> None:
+    from preloop.agents.codex_model_catalog import tool_output_limit_for_context
+
+    catalog = custom_model_catalog("example/custom", None)
+    assert catalog is not None
+    assert catalog["models"][0]["truncation_policy"]["limit"] == 27_200
+    custom = {"model_identifier": "example/custom", "model_provider": "example"}
+    assert tool_output_limit_for_context(custom) == 27_200
+    assert tool_output_limit_for_context({"model_identifier": "gpt-5.4"}) == 10_000
+    assert tool_output_limit_for_context({"model_identifier": "unknown"}) == 2_500
+
+
+def test_unvalidated_cli_version_reports_the_codex_fallback_limit() -> None:
+    """No catalog is written for another CLI version, so Codex's 10 KB applies."""
+    from preloop.agents.codex_model_catalog import tool_output_limit_for_context
+
+    context = {
+        "model_identifier": "example/custom",
+        "model_provider": "example",
+        "model_parameters": {"context_window": 128_000},
+        "agent_config": {"codex_cli_version": "0.99.0"},
+    }
+    assert tool_output_limit_for_context(context) == 2_500
+    context["agent_config"] = {}
+    assert tool_output_limit_for_context(context) == 12_800
