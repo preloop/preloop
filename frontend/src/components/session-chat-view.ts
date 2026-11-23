@@ -65,6 +65,8 @@ function noteRoleLabel(note: TranscriptNoteDelivery): string {
 }
 import type { LiveSessionState } from '../utils/live-session';
 import { deriveLiveSessionState } from '../utils/live-session';
+import type { AgentStatus } from '../utils/agent-status';
+import './agent-status-line';
 import { getApprovalRepository } from '../utils/approval-identity';
 import './repository-chip';
 import './browser-step-row';
@@ -310,6 +312,17 @@ export class SessionChatView extends LitElement {
   /** The open turn's reply while it streams; empty when there is none. */
   @property({ type: String })
   liveReply = '';
+
+  /**
+   * The open turn's activity line (verb and elapsed time), drawn in the
+   * thread where the answer will appear. Null when nobody is working.
+   */
+  @property({ attribute: false })
+  workingStatus: AgentStatus | null = null;
+
+  /** A system line above the first turn, e.g. how the conversation began. */
+  @property({ type: String })
+  threadIntro = '';
 
   /** Pin the scroll position to the newest message as events stream in. */
   @property({ type: Boolean })
@@ -724,6 +737,13 @@ export class SessionChatView extends LitElement {
       outline: 2px solid var(--sl-color-primary-400, #60a5fa);
       outline-offset: 2px;
     }
+    .thread-intro {
+      align-self: center;
+      color: var(--console-meta-color);
+      font-size: var(--console-text-meta, 13px);
+      text-align: center;
+    }
+
     .divider {
       align-items: center;
       color: var(--console-meta-color);
@@ -882,7 +902,9 @@ export class SessionChatView extends LitElement {
     const last = items[items.length - 1];
     return `${items.length}|${last ? last.key : ''}|${this.events.length}|${
       this.activity.length
-    }|${this.liveReply.length}|${this.liveReply.slice(-64)}`;
+    }|${this.liveReply.length}|${this.liveReply.slice(-64)}|${
+      this.workingStatus ? 'working' : ''
+    }|${this.threadIntro}`;
   }
 
   /**
@@ -1471,17 +1493,28 @@ ${
   }
 
   private renderLiveReply() {
-    if (!this.liveReply) return nothing;
+    if (!this.liveReply && !this.workingStatus) return nothing;
     return html`<div
-      class="bubble agent"
+      class="bubble agent ${this.liveReply ? '' : 'working'}"
       data-kind="live-reply"
-      data-testid="live-reply"
+      data-testid=${this.liveReply ? 'live-reply' : 'working-indicator'}
     >
       <div class="bubble-meta">
         <span class="bubble-role">Agent</span>
-        <span>Writing...</span>
+        ${
+          this.workingStatus
+            ? html`<agent-status-line
+                role="status"
+                .status=${this.workingStatus}
+              ></agent-status-line>`
+            : html`<span>Writing...</span>`
+        }
       </div>
-      <pre class="bubble-text">${this.liveReply}</pre>
+      ${
+        this.liveReply
+          ? html`<pre class="bubble-text">${this.liveReply}</pre>`
+          : nothing
+      }
     </div>`;
   }
 
@@ -1613,7 +1646,13 @@ ${
     const { stats } = this.conversation;
     const items = this.displayItems;
     const turns = this.sessionTurns;
-    if (!items.length && !this.pending.length && !this.liveReply) {
+    if (
+      !items.length &&
+      !this.pending.length &&
+      !this.liveReply &&
+      !this.workingStatus &&
+      !this.threadIntro
+    ) {
       return html`${this.renderLiveRegion()} ${this.renderLiveActivity()}
         <div class="empty">${this.emptyText}</div>`;
     }
@@ -1623,6 +1662,13 @@ ${
       ${this.renderLiveActivity()}
       <div class="thread">
         <div class="thread-content">
+          ${
+            this.threadIntro
+              ? html`<div class="thread-intro" data-testid="thread-intro">
+                  ${this.threadIntro}
+                </div>`
+              : nothing
+          }
           ${
             this.hasMoreEvents
               ? html`
