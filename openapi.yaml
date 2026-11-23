@@ -6350,8 +6350,7 @@ paths:
       tags:
       - Trackers
       summary: Register Azure Devops Webhook
-      description: 'Create or update the two subscriptions with the tracker''s own
-        token.
+      description: 'Create or update the subscriptions with the tracker''s own token.
 
 
         Idempotent: re-running updates Preloop''s subscriptions in place and

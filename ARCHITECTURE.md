@@ -26,7 +26,7 @@ graph LR
     subgraph "External Systems"
         direction TB
         MCP_Clients["MCP Clients (e.g., Claude Code)"]
-        Issue_Trackers["Issue Trackers (Jira, GitHub, GitLab, Bitbucket Cloud)"]
+        Issue_Trackers["Issue Trackers (Jira, GitHub, GitLab, Bitbucket Cloud, Azure DevOps)"]
         Browser["Browser"]
     end
     subgraph "Preloop Platform"

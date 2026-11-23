@@ -45,7 +45,11 @@ import {
   validateCallableFlows,
   type CallableFlowEntry,
 } from '../utils/callable-flows';
-import { getTrackerEventOptions } from '../constants/tracker-event-types';
+import {
+  getTrackerEventOptions,
+  trackerHasIssuePriority,
+  trackerHasMilestones,
+} from '../constants/tracker-event-types';
 import { triggerIsAboutIssue } from '../utils/flow-trigger-subject';
 import {
   resolveAccountPoolLabel,
@@ -4313,7 +4317,7 @@ export class PreloopFlowForm extends LitElement {
 
                   <!-- Milestone filter (GitHub/GitLab only) -->
                   ${
-                    tracker.tracker_type !== 'jira'
+                    trackerHasMilestones(tracker.tracker_type)
                       ? html`
                           <sl-input
                             label="Milestone"
@@ -4336,9 +4340,9 @@ export class PreloopFlowForm extends LitElement {
                       : nothing
                   }
 
-                  <!-- Priority filter (Jira only) -->
+                  <!-- Priority filter (Jira, Azure Boards) -->
                   ${
-                    tracker.tracker_type === 'jira'
+                    trackerHasIssuePriority(tracker.tracker_type)
                       ? html`
                           <sl-select
                             label="Priority"

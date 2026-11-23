@@ -40,6 +40,18 @@ from preloop.utils.azure_devops import (
 from preloop.utils.azure_devops import delivery_identity as azure_delivery_identity
 from preloop.utils.azure_devops import normalize_delivery as normalize_azure_delivery
 from preloop.utils.azure_devops import verify_webhook_secret as verify_azure_secret
+from preloop.utils.azure_devops_work_items import (
+    REASON_NO_REPOSITORY as REASON_NO_WORK_ITEM_PROJECT,
+)
+from preloop.utils.azure_devops_work_items import (
+    WorkItemRejectedError,
+    apply_state_category,
+    normalize_work_item_delivery,
+    state_category_from_snapshot,
+    work_item_delivery_identity,
+)
+from preloop.services.azure_work_item_scope import resolve_work_item_project
+from preloop.sync.trackers.azure_devops import AzureDevOpsTracker
 from preloop.utils.bitbucket import (
     BITBUCKET_DELIVERY_HEADER,
     BITBUCKET_EVENT_HEADER,
@@ -603,6 +615,11 @@ def _prepare_azure_devops_webhook(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
+    if isinstance(payload, dict) and str(payload.get("eventType") or "").startswith(
+        "workitem."
+    ):
+        return _prepare_azure_devops_work_item(tracker, payload, db, plan)
+
     details = tracker.connection_details or {}
     projects: dict[str, Optional[models.Project]] = {}
 
@@ -663,6 +680,152 @@ def _prepare_azure_devops_webhook(
         tracker_id=str(tracker.id),
         organization_id=str(plan.organization_id) if plan.organization_id else None,
         embedding_requests=[],
+    )
+    return {"status": "success", "tracker_id": tracker.id}
+
+
+def _prepare_azure_devops_work_item(
+    tracker: models.Tracker,
+    payload: dict[str, Any],
+    db: Session,
+    plan: _WebhookPlan,
+) -> dict[str, Any]:
+    """Store and dispatch one authenticated Azure Boards delivery.
+
+    The work item is upserted as an issue of the Preloop project chosen by
+    ``resolve_work_item_project`` (a comment delivery also stores the
+    comment), then the normalized ``issue_opened`` / ``issue_updated`` /
+    ``comment_created`` event is queued. Changes made by the tracker's own
+    token are marked ``self_generated``; the flow loop guard drops them, so
+    a flow writing to its work item does not trigger itself.
+
+    Args:
+        tracker: The authenticated ``azure_devops`` tracker.
+        payload: Parsed service hook body.
+        db: Database session.
+        plan: Collects the task to publish.
+
+    Returns:
+        The response body.
+
+    Raises:
+        HTTPException: 400 for malformed payloads, 403 for another
+            organization's or project's work item.
+    """
+    details = tracker.connection_details or {}
+    organization = str(details.get("organization") or "")
+    try:
+        delivery = normalize_work_item_delivery(
+            payload,
+            organization=organization,
+            own_identity_ids=[
+                details.get("token_identity_id") or "",
+                details.get("token_identity_unique_name") or "",
+            ],
+        )
+    except WorkItemRejectedError as exc:
+        logger.warning(
+            "Azure DevOps work item webhook rejected for tracker %s: %s",
+            tracker.id,
+            exc.reason,
+        )
+        raise HTTPException(status_code=exc.status_code, detail=exc.reason)
+    bound_project = details.get("project")
+    if (
+        bound_project
+        and delivery.project_name
+        and delivery.project_name.casefold() != str(bound_project).casefold()
+    ):
+        logger.warning(
+            "Azure DevOps work item webhook rejected for tracker %s: %s",
+            tracker.id,
+            "project_mismatch",
+        )
+        raise HTTPException(status_code=403, detail="project_mismatch")
+    if not delivery.accepted:
+        logger.info(
+            "Azure DevOps webhook %s acknowledged without dispatch for tracker %s: %s",
+            delivery.event_key,
+            tracker.id,
+            delivery.reason,
+        )
+        return {
+            "status": "ignored",
+            "reason": delivery.reason,
+            "tracker_id": tracker.id,
+        }
+    subscribed = tracker.subscribed_events or []
+    if subscribed and not (
+        delivery.event_key in subscribed or delivery.event_type in subscribed
+    ):
+        return {
+            "status": "ignored",
+            "reason": "not_subscribed",
+            "tracker_id": tracker.id,
+        }
+
+    project = resolve_work_item_project(db, tracker, delivery.project_name or "")
+    if project is None:
+        logger.info(
+            "Azure DevOps work item for tracker %s has no Preloop project: %s",
+            tracker.id,
+            REASON_NO_WORK_ITEM_PROJECT,
+        )
+        return {
+            "status": "ignored",
+            "reason": REASON_NO_WORK_ITEM_PROJECT,
+            "tracker_id": tracker.id,
+        }
+
+    issue_payload = delivery.payload["issue"]
+    category = state_category_from_snapshot(
+        details.get("work_item_states"),
+        delivery.project_name,
+        issue_payload.get("work_item_type"),
+        issue_payload.get("state_name"),
+    )
+    if category:
+        apply_state_category(delivery.payload, category)
+    client = AzureDevOpsTracker(str(tracker.id), "", dict(details))
+    db_issue, _created = crud_issue.upsert(
+        db, obj_in=client.transform_issue(issue_payload, project)
+    )
+    plan.embeddings.append({"issue_id": db_issue.id, "force_update": True})
+    comment = delivery.payload.get("comment")
+    if isinstance(comment, dict) and comment.get("body"):
+        values = client.transform_comment(comment, db_issue.id)
+        values["tracker_id"] = tracker.id
+        existing = crud_comment.get_by_external_id(
+            db, issue_id=db_issue.id, external_id=values["external_id"]
+        )
+        if existing:
+            db_comment = crud_comment.update(db, db_obj=existing, obj_in=values)
+        else:
+            db_comment = crud_comment.create(db, obj_in=values)
+        plan.embeddings.append(
+            {"issue_id": db_issue.id, "comment_id": db_comment.id, "force_update": True}
+        )
+    db.commit()
+
+    plan.organization_id = project.organization_id
+    plan.db_processed = True
+    delivery.payload["project_id"] = str(project.id)
+    delivery.payload["repository"] = {
+        "id": str(project.identifier),
+        "name": (project.meta_data or {}).get("repository") or project.name,
+        "full_name": project.slug,
+        "clone_url": (project.meta_data or {}).get("clone_url"),
+        "html_url": (project.meta_data or {}).get("clone_url"),
+    }
+    plan.queue_task(
+        "process_webhook_event",
+        tracker_type=AZURE_DEVOPS_TRACKER_TYPE,
+        event_type=delivery.event_key,
+        delivery_id=work_item_delivery_identity(tracker.id, delivery),
+        payload=delivery.payload,
+        tracker_id=str(tracker.id),
+        organization_id=str(project.organization_id),
+        embedding_requests=plan.embeddings,
     )
     return {"status": "success", "tracker_id": tracker.id}
 

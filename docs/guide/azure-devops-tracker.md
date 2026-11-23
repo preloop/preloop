@@ -1,8 +1,9 @@
-# Azure DevOps tracker (Azure Repos pull request review)
+# Azure DevOps tracker (Azure Repos and Azure Boards)
 
 The `azure_devops` tracker connects Preloop to **Azure DevOps Services**
-(`https://dev.azure.com`) so the Pull Request Reviewer flow can review Azure
-Repos pull requests:
+(`https://dev.azure.com`). It reviews Azure Repos pull requests and treats
+Azure Boards work items as issues (see [Azure Boards work
+items](#azure-boards-work-items)). Pull request review works like this:
 
 1. A pull request is created, or its source branch gets a new commit.
 2. Azure DevOps sends a service hook to Preloop.
@@ -11,8 +12,8 @@ Repos pull requests:
    Reviewer.
 4. The review is posted on the pull request as a comment thread.
 
-The tracker hosts repositories, like GitHub, GitLab and Bitbucket trackers. It
-syncs no issues: Azure Boards is out of scope.
+The tracker hosts repositories, like GitHub, GitLab and Bitbucket trackers,
+and syncs the work items of each Azure DevOps project as issues.
 
 ## Before you start
 
@@ -33,6 +34,7 @@ organizations" unless you need it) and these custom scopes:
 | --- | --- | --- |
 | Code | Read | List repositories, read pull requests and changed files, clone the repository. |
 | Pull Request Threads | Read & write | Post the review as a comment thread. |
+| Work Items | Read & write | Sync, search, create and update work items, comment on them and link pull requests. Read alone is enough for triggers and sync. |
 | Service Hooks | Read, write & manage | Only if Preloop registers the service hook subscriptions for you. |
 | Code | Read & write | Optional. Lets an `approve` or `request_changes` review also cast the token owner's vote. Without it the review thread is still posted and the vote is skipped with a note. |
 
@@ -60,17 +62,21 @@ tracker before it expires.
 | Organization | Organization |
 | Project | Group shown in the repository list |
 | Git repository (Azure Repos) | Project |
+| Work item (Azure Boards) | Issue of one repository's project (see below) |
 
 Each Azure Repos git repository becomes one Preloop project. Flows, review
 policies and scope rules attach to repositories.
 
 ## Service hooks
 
-Preloop receives pull request events through two **Web Hooks** service hook
+Preloop receives events through five **Web Hooks** service hook
 subscriptions on the Azure DevOps project:
 
 - `git.pullrequest.created` (Pull request created)
 - `git.pullrequest.updated` (Pull request updated)
+- `workitem.created` (Work item created)
+- `workitem.updated` (Work item updated)
+- `workitem.commented` (Work item commented on)
 
 The callback URL is:
 
@@ -92,10 +98,12 @@ subscriptions afterwards (register again, or edit the header by hand).
 
 With a PAT that has the Service Hooks (Read, write & manage)
 scope, select **Register** (a secret is generated first if the tracker has
-none). Preloop creates both subscriptions, filtered to the tracker's
-repository (or its project when no repository is selected), with the secret
-header. The `Pull request updated` subscription is filtered to source branch
-pushes. Registering again updates Preloop's subscriptions in place and never
+none). Preloop creates the subscriptions with the secret header. The pull
+request ones are filtered to the tracker's repository (or its project when
+no repository is selected), and `Pull request updated` to source branch
+pushes. The work item ones cover the whole project. Registering also stores
+the token owner's identity and the project's state categories on the
+tracker (see [Work item events](#work-item-events)). Registering again updates Preloop's subscriptions in place and never
 touches others. The panel then shows
 `registered` and the subscription ids. **Check** reads the current state from
 Azure DevOps.
@@ -119,6 +127,11 @@ A project administrator can create the subscriptions instead:
 5. Select **Test**, then **Finish**.
 6. Repeat for the trigger **Pull request updated** with the same settings,
    and set its **Change** filter to **Source branch updated**.
+7. Repeat for **Work item created**, **Work item updated** and **Work item
+   commented on**, without filters.
+
+After a manual setup, select **Register** once if the token allows it, or
+the loop guard below has no token identity to compare with.
 
 Repeat per repository if you filter by repository and several are in scope.
 
@@ -143,9 +156,108 @@ credential file, never in the clone URL) and posts its review as a pull
 request thread. Azure DevOps has no unified diff API, so the reviewer reads
 the changed file list from Azure DevOps and the line changes from its clone.
 
+## Azure Boards work items
+
+Work items are the tracker's issues, at the level of Jira and GitHub issues:
+issue-triggered flows (triage, implementation) start on them, and the MCP
+issue tools (`get_issue`, `create_issue`, `update_issue`, `add_comment`,
+`update_comment`) accept a work item URL such as
+`https://dev.azure.com/{organization}/{project}/_workitems/edit/{id}` or its
+key.
+
+### Which Preloop project holds the work items
+
+A work item belongs to an Azure DevOps **project**, while a Preloop project is
+one **repository**. Each Azure DevOps project's work items attach to one of
+its repositories, chosen in this order:
+
+1. `connection_details.work_item_repositories`, a map of Azure DevOps project
+   name to repository name, when it names the project;
+2. the tracker's repository, when the tracker is bound to one;
+3. the project's only repository;
+4. the repository named like the project (the repository Azure DevOps
+   creates with a new project).
+
+A project with one repository, or with its default repository, needs no
+configuration. When none of the rules picks a repository (several
+repositories, none named like the project, no override), its work items are
+not synced and their events are acknowledged without starting a flow. Set
+the override through the trackers API (`PUT /api/v1/trackers/{id}` with
+`connection_details.work_item_repositories`); there is no form field for it
+yet. Every work item is stored once, under that repository, and an
+implementation flow clones that repository.
+
+### Field mapping
+
+| Azure Boards | Preloop issue |
+| --- | --- |
+| Work item id | External id; key `{organization}/{project}#{id}` |
+| `System.Title` | Title |
+| `System.Description` (HTML) | Description (markdown, see below) |
+| `System.State` | Status name; open or closed through its state category |
+| `System.WorkItemType` | Issue type (`bug`, `feature`, `task`) and the type name |
+| `System.AssignedTo` | Assignee |
+| `System.CreatedBy` | Reporter |
+| `System.Tags` | Labels |
+| `Microsoft.VSTS.Common.Priority` | Priority 1 Highest, 2 High, 3 Medium, 4 Low, when the type has it |
+| Parent / child, related, predecessor / successor, duplicate links | Relations (`parent`, `child`, `relates_to`, `blocks`, `blocked_by`, `duplicates`, `duplicated_by`) |
+| Comments | Comments (markdown) |
+
+**Open or closed** comes from the state's category, never from its name, so
+any process (Basic, Agile, Scrum, CMMI, inherited) and any language works:
+states in the `Completed` or `Removed` category are closed, all others
+(`Proposed`, `InProgress`, `Resolved`) are open. Setting the status `closed`
+moves the item to the first `Completed` state of its type, `open` to the
+first `Proposed` state; any state name of the type is accepted too.
+
+**New work items** get the requirement type of the project's process (Issue,
+User Story, Product Backlog Item or Requirement) unless
+`custom_fields.work_item_type` names another. Other `custom_fields` named
+like `Namespace.Field` are written as fields.
+
+**Rich text.** Descriptions and comments are HTML in Azure Boards and
+markdown in Preloop. Headings, paragraphs, line breaks, bold, italic,
+strikethrough, inline code, code blocks, links, nested lists, quotes and
+rules convert both ways without loss. Lossy: styling (colours, fonts,
+alignment) is dropped; tables become `a | b` text lines; images become
+`![alt](src)`; `@mentions` become their display text; markdown tables, task
+lists and raw HTML in markdown are shown literally, not rendered. A field
+already stored in Azure's Markdown format is read as is.
+
+### Work item events
+
+| Service hook | Preloop event |
+| --- | --- |
+| `workitem.created` | `issue_opened` |
+| `workitem.updated` | `issue_labeled` when a tag was added, else `issue_status_changed` when the state changed, else `issue_unlabeled` when a tag was removed, else `issue_updated`. A mixed edit also starts flows on the other types it carries, as for Jira. |
+| `workitem.commented` | `comment_created` |
+
+Label filters (`labels`, `labels_all`), the priority, assignee and author
+filters, and `status_from` / `status_to` work as for Jira. Each work item
+revision is processed once per event type, so a retried delivery starts no
+second run.
+
+**No self-trigger loops.** Changes made with the tracker's own token (a flow
+updating or commenting on its work item) are stored but start no flow,
+except a tag change, which is the hand-off from triage to implementation as
+on every other tracker. Preloop recognises its own changes by the token
+owner's identity, recorded when you select **Register**; after replacing the
+PAT, select **Register** again. Use a token of a dedicated user: changes a
+person makes with the same token are treated as Preloop's own.
+
+### Linking pull requests
+
+When a flow triggered by a work item records an opened Azure Repos pull
+request, Preloop adds it to the work item's **Development** section (an
+artifact link). Flows that review a pull request were triggered by the pull
+request, not a work item, and add no link.
+
 ## Not supported
 
-- **Azure Boards** work items: no issues are synced or created.
+- **Azure Boards** administration: boards, sprints, iterations and area
+  paths, custom field configuration, attachments, test plans and saved
+  queries. Comments edited or deleted in Azure DevOps are not delivered as
+  events (the service hooks do not report them).
 - **Azure DevOps Server** (on-premises); only Azure DevOps Services at
   `dev.azure.com`.
 - **Microsoft Entra ID OAuth and service principals**; only personal access
@@ -154,7 +266,8 @@ the changed file list from Azure DevOps and the line changes from its clone.
   comment thread on the pull request.
 - **Pull request status / branch policy gate**: Preloop does not post a PR
   status or act as a required check.
-- **Write flows** that push branches or open pull requests.
+- **Write flows** that push branches or open pull requests. Until they are
+  supported, the pull request link above has no pull request to add.
 - **Restricted CI identities** (for example a pipeline's build service
   account) as the tracker identity.
 - **Old `{organization}.visualstudio.com` URLs**: these are refused with a

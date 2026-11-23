@@ -476,9 +476,9 @@ class TrackerClient:
         force_update: bool = False,
     ) -> Tuple[List[Issue], int]:
         """Scan and update issues for a project."""
-        if self.tracker_type in ("bitbucket_dc", "azure_devops"):
-            # Repository hosts without issue sync (Jira / Azure Boards are
-            # not synced through these trackers).
+        if self.tracker_type == "bitbucket_dc":
+            # Repository host without issue sync (Jira issues are synced
+            # through the Jira tracker).
             return [], 0
         logger.info(
             f"Scanning issues for project {project.id} ({project.name}) since {since}"

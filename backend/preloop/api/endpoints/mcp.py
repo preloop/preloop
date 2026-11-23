@@ -51,6 +51,7 @@ from preloop.api.endpoints.issue_compliance import (
     get_compliance_improvement_suggestion as api_get_compliance_suggestion,
 )
 from preloop.schemas.issue_triage import IssueTriageContext, IssueTriageResult
+from preloop.utils.azure_devops_work_items import parse_work_item_url
 from preloop.utils.issue_urls import parse_issue_url
 from preloop.utils.permissions import require_permission
 from preloop.schemas.issue import IssueCreate
@@ -895,6 +896,30 @@ async def _run_bitbucket(
             status_code=502,
             detail=f"Failed to {action} on {provider}: {str(e)}",
         ) from e
+
+
+def _azure_work_item_target(db: Any, target: str, account_id: Any) -> bool:
+    """True when ``target`` names an Azure Boards work item.
+
+    Work item keys (``org/project#id``) look like pull request slugs
+    (``owner/repo#n``); a key is treated as a work item only when a stored
+    Azure DevOps issue has exactly that key. Work item URLs always qualify.
+
+    Args:
+        db: Database session.
+        target: Tool target as given.
+        account_id: Caller's account.
+
+    Returns:
+        Whether to take the issue path.
+    """
+    if parse_work_item_url(target):
+        return True
+    if "#" not in target or target.count("/") != 1:
+        return False
+    issue = crud_issue.get_by_key(db, key=target, account_id=account_id)
+    tracker = getattr(issue, "tracker", None) if issue is not None else None
+    return str(getattr(tracker, "tracker_type", "") or "").lower() == "azure_devops"
 
 
 def _find_issue_by_identifier(db, identifier: str, account_id: str) -> Issue:
@@ -2420,8 +2445,11 @@ async def add_comment(
         is_merge_request = True
         project_path, pr_mr_number = target.rsplit("!", 1)
         logger.info(f"Detected GitLab MR reference: {project_path}!{pr_mr_number}")
-    # Parse slug format for PRs/MRs: owner/repo#123 or repo#123
-    elif "#" in target:
+    # Parse slug format for PRs/MRs: owner/repo#123 or repo#123. An Azure
+    # Boards key has the same shape and takes the issue path below.
+    elif "#" in target and not _azure_work_item_target(
+        db, target, current_user.account_id
+    ):
         slug_parts = target.split("#")
         pr_mr_number = slug_parts[1]
         project_path = slug_parts[0]
@@ -3886,7 +3914,8 @@ async def update_comment(
     For GitLab, this updates MR discussion notes (both inline and general).
 
     Args:
-        target: PR/MR identifier (URL, slug, or number). Issue URLs are not supported.
+        target: PR/MR identifier (URL, slug, or number). Issue URLs are not
+            supported, except Azure Boards work item URLs and keys.
         comment_id: The comment ID to update.
         body: New body text for the comment (optional).
         resolved: Whether to resolve/unresolve the comment thread (optional).
@@ -3907,6 +3936,33 @@ async def update_comment(
     from preloop.schemas.mcp import UpdateCommentResponse
 
     db, current_user = await _get_authenticated_user(get_http_request().headers)
+    if _azure_work_item_target(db, target.strip(), current_user.account_id):
+        # Azure Boards work item comment (URL or org/project#id key).
+        try:
+            issue_obj = _find_issue_by_identifier(
+                db, target.strip(), current_user.account_id
+            )
+        except IssueAmbiguousError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+        except IssueNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        if body is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Work item comments cannot be resolved; pass 'body'.",
+            )
+        tracker_client = await get_tracker_client(
+            issue_obj.project.organization_id, issue_obj.project_id, db, current_user
+        )
+        key = issue_obj.key or issue_obj.external_id
+        db.close()
+        return await _run_bitbucket(
+            f"update work item comment {comment_id}",
+            mcp_azure_devops.update_work_item_comment(
+                tracker_client, key, comment_id.strip(), body
+            ),
+            "Azure DevOps",
+        )
 
     # Validate that at least one update is requested
     if body is None and resolved is None:

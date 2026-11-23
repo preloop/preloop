@@ -71,7 +71,11 @@ import type { ResourceAction } from '../../components/resource-actions.ts';
 import { actionsFor } from '../../actions';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import consoleStyles from '../../styles/console-styles.css?inline';
-import { getTrackerEventOptions } from '../../constants/tracker-event-types';
+import {
+  getTrackerEventOptions,
+  trackerHasIssuePriority,
+  trackerHasMilestones,
+} from '../../constants/tracker-event-types';
 import type { Flow } from '../../types';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import '../../components/capability-extension';
@@ -2993,7 +2997,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
 
                   <!-- Milestone filter (GitHub/GitLab only) -->
                   ${
-                    tracker.tracker_type !== 'jira'
+                    trackerHasMilestones(tracker.tracker_type)
                       ? html`
                           <sl-input
                             label="Milestone"
@@ -3016,9 +3020,9 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                       : ''
                   }
 
-                  <!-- Priority filter (Jira only) -->
+                  <!-- Priority filter (Jira, Azure Boards) -->
                   ${
-                    tracker.tracker_type === 'jira'
+                    trackerHasIssuePriority(tracker.tracker_type)
                       ? html`
                           <sl-select
                             label="Priority"

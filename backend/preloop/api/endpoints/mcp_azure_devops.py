@@ -548,3 +548,32 @@ async def update_comment(
         message=f"Successfully {' and '.join(actions)} comment {comment_id}",
         url=f"{client.pull_request_url(number, repo_full_name)}?discussionId={thread}",
     )
+
+
+async def update_work_item_comment(
+    client: AzureDevOpsTracker, issue_key: str, comment_id: str, body: str
+) -> UpdateCommentResponse:
+    """Replace the text of an Azure Boards work item comment.
+
+    Args:
+        client: The tracker's ``AzureDevOpsTracker`` (as returned by
+            ``get_tracker_client``).
+        issue_key: Work item key (``org/project#id``) or id.
+        comment_id: Numeric comment id.
+        body: New markdown body (stored as HTML).
+
+    Returns:
+        The update result.
+
+    Raises:
+        ValueError: When ``comment_id`` is not numeric.
+    """
+    if not str(comment_id).isdigit():
+        raise ValueError("Azure Boards comment ids are numeric.")
+    comment = await client.update_comment(issue_key, comment_id, body)
+    return UpdateCommentResponse(
+        comment_id=str(comment.id),
+        status="updated",
+        message=f"Updated comment {comment.id} on work item {issue_key}",
+        url=comment.url,
+    )

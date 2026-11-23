@@ -12,6 +12,8 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from preloop.models.models.flow_execution import TRIGGER_SUBJECT_KEY
 from preloop.utils.azure_devops import AZURE_DEVOPS_EVENT_MAP
+from preloop.utils.azure_devops_work_items import state_change as azure_state_change
+from preloop.utils.azure_devops_work_items import tag_delta as azure_tag_delta
 from preloop.utils.bitbucket_dc_webhooks import BITBUCKET_DC_EVENT_MAP
 from preloop.utils.schedule_text import describe_schedule_config
 
@@ -129,7 +131,10 @@ def secondary_event_types(
     Returns:
         Additional normalized event types, possibly empty.
     """
-    if (source or "").lower() != "jira" or not isinstance(payload, dict):
+    # Azure Boards folds edits into one workitem.updated the same way.
+    if (source or "").lower() not in ("jira", "azure_devops") or not isinstance(
+        payload, dict
+    ):
         return ()
     if event_type not in _JIRA_UPDATE_TYPES:
         return ()
@@ -525,7 +530,20 @@ def normalize_event_type(
         return BITBUCKET_DC_EVENT_MAP.get(raw_event_type, raw_event_type)
 
     elif tracker_type_lower == "azure_devops":
-        return AZURE_DEVOPS_EVENT_MAP.get(raw_event_type, raw_event_type)
+        normalized = AZURE_DEVOPS_EVENT_MAP.get(raw_event_type, raw_event_type)
+        if normalized == "issue_updated" and payload:
+            # Same precedence as Jira: added tag, then state change, then
+            # removed tag. The intake stored the changed fields as
+            # payload["changes"].
+            changes = payload.get("changes") or {}
+            added, removed = azure_tag_delta(changes)
+            if added:
+                normalized = "issue_labeled"
+            elif azure_state_change(changes):
+                normalized = "issue_status_changed"
+            elif removed:
+                normalized = "issue_unlabeled"
+        return normalized
 
     # Unknown tracker type - return as-is
     return raw_event_type
@@ -716,6 +734,16 @@ def _azure_devops_subject(payload: Dict[str, Any]) -> Dict[str, Any]:
     repo = payload.get("repository") or {}
     if isinstance(repo, dict) and repo.get("full_name"):
         parts["repo"] = repo["full_name"]
+    issue = payload.get("issue")
+    if isinstance(issue, dict) and issue.get("key"):
+        parts["reference"] = issue["key"]
+        if issue.get("title"):
+            parts["title"] = issue["title"]
+        if issue.get("html_url"):
+            parts["url"] = issue["html_url"]
+        if issue.get("project"):
+            parts["repo"] = issue["project"]
+        return parts
     pr = payload.get("pull_request")
     if isinstance(pr, dict) and pr:
         if pr.get("number"):
@@ -1318,6 +1346,35 @@ def extract_filter_fields(
             last = changes[-1] if isinstance(changes, list) and changes else {}
             if isinstance(last, dict) and last.get("branch"):
                 filter_fields["ref"] = last["branch"]
+
+    elif tracker_type_lower == "azure_devops" and raw_event_type.startswith(
+        "workitem."
+    ):
+        # Normalized by preloop.utils.azure_devops_work_items at intake.
+        issue = payload.get("issue") or {}
+        filter_fields["action"] = raw_event_type.rsplit(".", 1)[-1]
+        filter_fields["author"] = (issue.get("author") or {}).get("name")
+        assignee = issue.get("assignee") or {}
+        if assignee.get("name"):
+            filter_fields["assignee"] = assignee["name"]
+        if issue.get("labels"):
+            filter_fields["labels"] = list(issue["labels"])
+        priority = issue.get("priority") or {}
+        if priority.get("name"):
+            filter_fields["priority"] = priority["name"]
+        filter_fields["state"] = issue.get("state_name")
+        filter_fields["issue_type"] = issue.get("work_item_type")
+        changes = payload.get("changes") or {}
+        added_tags, removed_tags = azure_tag_delta(changes)
+        if added_tags:
+            filter_fields["added_labels"] = added_tags
+        if removed_tags:
+            filter_fields["removed_labels"] = removed_tags
+        moved = azure_state_change(changes)
+        if moved:
+            filter_fields["status_from"], filter_fields["status_to"] = moved
+        filter_fields["event_user"] = (payload.get("sender") or {}).get("login")
+        filter_fields["sender"] = filter_fields["event_user"]
 
     elif tracker_type_lower == "azure_devops":
         # The intake already normalized the payload (see

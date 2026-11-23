@@ -21,6 +21,10 @@ _GITLAB_RE = re.compile(
 # without ``/-/`` (still shown in GitLab's REST API examples).
 _PLAIN_RE = re.compile(r"^/(?P<project>[^/]+/[^/]+)/issues/(?P<iid>[1-9][0-9]*)$")
 _JIRA_RE = re.compile(r"^/browse/(?P<key>[A-Z][A-Z0-9]+-[0-9]+)$")
+# Azure Boards: https://dev.azure.com/{org}/{project}/_workitems/edit/{id}.
+_AZURE_WORK_ITEM_RE = re.compile(
+    r"^/(?P<org>[^/]+)/(?P<project>[^/]+)/_workitems/edit/(?P<iid>[1-9][0-9]*)$"
+)
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,11 @@ def parse_issue_path(path: str, host: str = "") -> Optional[ParsedIssueUrl]:
     match = _JIRA_RE.match(path)
     if match:
         return ParsedIssueUrl(match.group("key"), None, None, None, host)
+    match = _AZURE_WORK_ITEM_RE.match(path)
+    if match and host == "dev.azure.com":
+        project = f"{match.group('org')}/{match.group('project')}"
+        iid = match.group("iid")
+        return ParsedIssueUrl(f"{project}#{iid}", project, iid, "_workitems", host)
     return None
 
 
@@ -75,7 +84,8 @@ def parse_issue_url(url: str) -> Optional[ParsedIssueUrl]:
 
     Accepts GitLab ``/-/issues/<iid>`` and ``/-/work_items/<iid>`` on any host
     and nested group path, two-segment ``/owner/repo/issues/<n>`` (GitHub and
-    GitLab's legacy form), and Jira ``/browse/KEY-1``.
+    GitLab's legacy form), Jira ``/browse/KEY-1`` and Azure Boards
+    ``dev.azure.com/{org}/{project}/_workitems/edit/{id}``.
 
     Args:
         url: Absolute ``http(s)`` URL.
