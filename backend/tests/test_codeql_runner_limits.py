@@ -60,7 +60,7 @@ def test_go_codeql_sets_up_go_before_autobuild() -> None:
     setup = steps[setup_index]
     assert setup["if"] == "matrix.language == 'go'"
     assert setup["uses"] == (
-        "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+        "actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5"
     )
     assert setup["with"]["go-version-file"] == "cli/go.mod"
     assert setup["with"]["cache"] is False

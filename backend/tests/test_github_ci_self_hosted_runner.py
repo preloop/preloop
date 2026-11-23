@@ -124,7 +124,7 @@ def test_helm_checks_install_pinned_helm_before_rendering() -> None:
     )
     setup = steps[setup_index]
     assert setup["uses"] == (
-        "azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310"
+        "azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e"
     )
     assert setup["with"]["version"] == "v3.19.0"
     assert setup_index < next(
