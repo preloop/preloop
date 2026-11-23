@@ -134,14 +134,19 @@ def test_latest_chat_parallel_results_survive_history_selection() -> None:
     assert doc["capture_complete"]
 
 
-def test_sanitization_precedes_canonicalization_of_nested_argument_json() -> None:
+def test_masked_nested_argument_json_keeps_escaped_nul_and_surrogate() -> None:
+    """Re-encoding after a mask escapes what UTF-8 cannot hold, losing nothing."""
     doc = capture_tools(
         {},
         response('{"password":"secret","text":"\\ud800\\u0000x"}'),
         capture_content=True,
     )
-    assert json.loads(doc["observations"][0]["value"])["text"] == "x"
+    value = json.loads(doc["observations"][0]["value"])
+    assert value["password"] != "secret"
+    assert value["text"] == "\ud800\x00x"
     assert doc["observations"][0]["redacted"]
+    assert doc["incomplete_reasons"] == ["masking"]
+    assert "removed" not in doc["observations"][0]
 
 
 _ORDINARY_SOURCE = """\
@@ -608,12 +613,13 @@ def test_unexplained_native_scrub_is_stored_incomplete() -> None:
     """A native command scrubbed with no named rule is incomplete.
 
     ``captured`` and ``complete`` both refuse it. The stored record matches
-    a gateway record: ``capture_complete`` false and reason ``unsafe_text``.
+    a gateway record: ``capture_complete`` false and reason
+    ``credential_scrub``.
     """
     command = "curl https://user:pass@example.com/x"
     document = _persist_native_for_test(command, email_rule=False)
     assert document["capture_complete"] is False
-    assert document["incomplete_reasons"] == ["unsafe_text"]
+    assert document["incomplete_reasons"] == ["credential_scrub"]
     assert "pass@" not in document["observations"][0]["value"]
     assert _record_class(document, valid=True) == "incomplete"
     summary = _gate_summary(document)
@@ -631,7 +637,7 @@ def test_storage_redaction_makes_native_and_gateway_records_incomplete() -> None
     assert "alice@example.com" not in json.dumps(native)
     assert "[REDACTED:email]" in json.dumps(native)
     assert native["capture_complete"] is False
-    assert "unsafe_text" in native["incomplete_reasons"]
+    assert native["incomplete_reasons"] == ["storage_rule"]
     assert native["storage_redacted"] is True
     assert _record_class(native, valid=True) == "incomplete"
     native_summary = _gate_summary(native)
@@ -654,7 +660,7 @@ def test_storage_redaction_makes_native_and_gateway_records_incomplete() -> None
     assert "[REDACTED:email]" in json.dumps(gateway)
     assert gateway["capture_complete"] is False
     assert gateway["storage_redacted"] is True
-    assert "unsafe_text" in gateway["incomplete_reasons"]
+    assert gateway["incomplete_reasons"] == ["storage_rule"]
     assert _record_class(gateway, valid=True) == "incomplete"
     gateway_summary = _gate_summary(gateway)
     assert evidence_satisfied(gateway_summary, "captured") is False

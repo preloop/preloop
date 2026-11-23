@@ -125,3 +125,24 @@ class TestSanitizeForJsonb:
     @pytest.mark.parametrize("value", ["", " ", "\n", "\t"])
     def test_edge_case_strings_survive(self, value):
         assert sanitize_for_jsonb(value) == value
+
+
+def test_remove_unencodable_keeps_every_control_character() -> None:
+    """Tool evidence keeps C0 (U+0000 included), DEL and C1 exactly."""
+    from preloop.utils.jsonb_sanitize import remove_unencodable
+
+    text = "".join(chr(code) for code in range(0x00, 0x20)) + "\x7f\x80\x85\x9f"
+    value = {"k\x0c": [text, 1, None, True]}
+    cleaned, counts = remove_unencodable(value)
+    assert cleaned is value
+    assert counts == {}
+
+
+def test_remove_unencodable_counts_lone_surrogates_in_keys_and_values() -> None:
+    from preloop.utils.jsonb_sanitize import remove_unencodable
+
+    cleaned, counts = remove_unencodable({"a\ud800": ["x\udfffy\ud83d", "ok"]})
+    assert cleaned == {"a": ["xy", "ok"]}
+    assert counts == {"lone_surrogates": 3}
+    # A real surrogate pair is one code point in Python and is kept.
+    assert remove_unencodable("\U0001f600") == ("\U0001f600", {})

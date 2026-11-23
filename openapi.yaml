@@ -59344,6 +59344,22 @@ components:
           type: object
           title: Masking By Rule
           description: How many times each named masking rule fired. Rule ids only.
+        incomplete_by_reason:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Incomplete By Reason
+          description: 'Incomplete records by reason: a stored reason (masking, lone_surrogates,
+            credential_scrub, storage_rule, truncated, capped, scan_depth, missing_id,
+            invalid_name, unsafe_text) or integrity_invalid, capture_failed, content_capture_off,
+            unstated. A record with two reasons counts under both.'
+        removed_by_category:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Removed By Category
+          description: Characters removed because they cannot be stored, by category
+            (lone_surrogates). Counts only, never the removed text.
       additionalProperties: false
       type: object
       required:

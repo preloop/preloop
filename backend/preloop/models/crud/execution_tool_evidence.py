@@ -11,13 +11,15 @@ from sqlalchemy.dialects.postgresql import insert
 
 from sqlalchemy.orm import Session
 
-from preloop.utils.jsonb_sanitize import sanitize_for_jsonb
+from preloop.utils.jsonb_sanitize import remove_unencodable, sanitize_for_jsonb
 
 from preloop.models import models
 from preloop.services.execution_tool_evidence import (
     EVIDENCE_TYPE,
+    REASON_CREDENTIAL_SCRUB,
+    REASON_LONE_SURROGATES,
     REASON_MASKING,
-    REASON_UNSAFE_TEXT,
+    REASON_STORAGE_RULE,
     canonical_bytes,
     digest,
     note_incomplete,
@@ -95,7 +97,7 @@ def _observation_key(observation: dict[str, Any]) -> str | None:
     call_id = observation.get("call_id")
     if observation.get("source") != "request" or not isinstance(call_id, str):
         return None
-    return digest(scrub_structure(sanitize_for_jsonb(observation)))
+    return digest(scrub_structure(remove_unencodable(observation)[0]))
 
 
 def _seen_request_keys(db: Session, execution_id: UUID) -> set[str]:
@@ -164,7 +166,7 @@ def _persist_tool_evidence(
         document.get("storage_redacted", False) or storage_rule_changed
     )
     if storage_rule_changed:
-        note_incomplete(sanitized, REASON_UNSAFE_TEXT)
+        note_incomplete(sanitized, REASON_STORAGE_RULE)
     document = sanitized
     observations = document.get("observations")
     if isinstance(observations, list) and any(
@@ -195,18 +197,31 @@ def _persist_document(
     source_id: str,
     document: dict[str, Any],
 ) -> None:
-    """Idempotent observations keep duplicate log fetches out of the audit."""
+    """Idempotent observations keep duplicate log fetches out of the audit.
+
+    The document is stored as canonical JSON text in ``chunks``, so every
+    control character, U+0000 included, is stored exactly. Capture has
+    already removed and counted lone surrogates; one left here (a document
+    not built by capture) is removed and named the same way.
+    """
     from preloop.utils.secret_scrubbing import scrub_structure
 
+    # The id is a JSONB value of its own, outside the canonical text.
     source_id = sanitize_for_jsonb(source_id)
-    safe = sanitize_for_jsonb(document)
-    if safe != document:
+    safe, removed = remove_unencodable(document)
+    if removed:
+        from preloop.services.execution_tool_evidence import removed_facts
+
+        safe = dict(safe)
         safe["storage_redacted"] = True
-        note_incomplete(safe, REASON_UNSAFE_TEXT)
+        # Outside an observation value (an id, for example): counted on the
+        # document, since no observation's ``removed`` covers it.
+        safe["removed"] = removed_facts(removed)
+        note_incomplete(safe, REASON_LONE_SURROGATES)
     cleaned = scrub_structure(safe)
     if cleaned != safe:
         cleaned["storage_redacted"] = True
-        note_incomplete(cleaned, REASON_UNSAFE_TEXT)
+        note_incomplete(cleaned, REASON_CREDENTIAL_SCRUB)
     document = cleaned
     import json
 
@@ -346,6 +361,7 @@ def _persist_native_command_evidence(
         REASON_TRUNCATED,
         REASON_UNSAFE_TEXT,
         _redact_value,
+        removed_facts,
     )
     from preloop.services.sensitive_data.storage import apply_storage_redaction
 
@@ -372,13 +388,15 @@ def _persist_native_command_evidence(
     from preloop.services.model_gateway_events import REDACTION_RULESET
 
     raw = item.get("command")
-    unexplained = False
+    scrubbed = False
+    removed: dict[str, int] = {}
     if settings.model_gateway_capture_content:
-        value, redaction_facts, unexplained = _redact_value(raw)
+        value, redaction_facts, scrubbed = _redact_value(raw)
+        value, removed = remove_unencodable(value)
     else:
         value, redaction_facts = None, []
     bounded = len(canonical_bytes(value)) <= MAX_EVIDENCE_BYTES
-    storage_redacted = sanitize_for_jsonb(raw) != raw
+    storage_redacted = bool(removed)
     complete = bounded and not storage_redacted
     observation: dict[str, Any] = {
         "source": "native",
@@ -394,19 +412,25 @@ def _persist_native_command_evidence(
     }
     if redaction_facts:
         observation["redactions"] = redaction_facts
+    if removed:
+        observation["removed"] = removed_facts(removed)
     reasons: list[str] = []
     if not bounded:
         reasons.append(REASON_TRUNCATED)
-    if storage_redacted:
-        reasons.append(REASON_UNSAFE_TEXT)
-    # A named rule keeps capture_complete. An unexplained scrub, or a change
-    # no named rule accounts for, is incomplete, as on the gateway path.
-    if settings.model_gateway_capture_content and (
-        unexplained or (value != raw and not redaction_facts)
+    if removed:
+        reasons.append(REASON_LONE_SURROGATES)
+    # A named rule keeps capture_complete. The credential scrubber, or a
+    # change nothing accounts for, is incomplete, as on the gateway path.
+    if scrubbed:
+        complete = False
+        reasons.append(REASON_CREDENTIAL_SCRUB)
+    if (
+        settings.model_gateway_capture_content
+        and value != raw
+        and not (redaction_facts or removed or scrubbed)
     ):
         complete = False
-        if REASON_UNSAFE_TEXT not in reasons:
-            reasons.append(REASON_UNSAFE_TEXT)
+        reasons.append(REASON_UNSAFE_TEXT)
     document = {
         "version": 1,
         "execution_id": str(execution_id),
@@ -424,7 +448,7 @@ def _persist_native_command_evidence(
         document.get("storage_redacted", False) or storage_rule_changed
     )
     if storage_rule_changed:
-        note_incomplete(sanitized, REASON_UNSAFE_TEXT)
+        note_incomplete(sanitized, REASON_STORAGE_RULE)
     observation = sanitized["observations"][0]
     if (
         event["type"] == "item.completed"
@@ -669,6 +693,64 @@ def _record_class(document: Any, *, valid: bool) -> str:
     return "incomplete"
 
 
+def _incomplete_labels(document: Any, *, valid: bool) -> list[str]:
+    """Why one record the gate counts as incomplete is incomplete.
+
+    The stored ``incomplete_reasons`` when there are any. A record without
+    them is named by what made it incomplete: ``integrity_invalid``
+    (unreadable, or the digest does not verify), ``capture_failed``,
+    ``content_capture_off``, or ``unstated`` for an older record that was
+    marked incomplete or redacted without saying why.
+
+    Args:
+        document: Decoded stored document, or None.
+        valid: Whether the record decoded and its digest verified.
+
+    Returns:
+        Reason names, sorted.
+    """
+    if not valid or not isinstance(document, dict):
+        return ["integrity_invalid"]
+    if document.get("capture_failed") is True:
+        return ["capture_failed"]
+    raw_reasons = document.get("incomplete_reasons")
+    reasons = sorted(
+        {item for item in raw_reasons if isinstance(item, str)}
+        if isinstance(raw_reasons, list)
+        else set()
+    )
+    if document.get("content_capture_enabled") is False:
+        return sorted({*reasons, "content_capture_off"})
+    return reasons or (
+        [REASON_MASKING] if _masking_counts(document) else ["unstated"]
+    )
+
+
+def _removed_counts(document: dict[str, Any]) -> dict[str, int]:
+    """Removed-text categories on one document. Categories only, never text."""
+    totals: dict[str, int] = {}
+    observations = document.get("observations")
+    holders = [document, *(observations if isinstance(observations, list) else [])]
+    for observation in holders:
+        removed = (
+            observation.get("removed") if isinstance(observation, dict) else None
+        )
+        if not isinstance(removed, list):
+            continue
+        for item in removed:
+            if not isinstance(item, dict):
+                continue
+            category, count = item.get("category"), item.get("count")
+            if (
+                isinstance(category, str)
+                and _RULE_NAME.fullmatch(category)
+                and type(count) is int
+                and count >= 1
+            ):
+                totals[category] = totals.get(category, 0) + count
+    return totals
+
+
 def tool_evidence_summary(db: Session, *, execution_id: Any) -> dict[str, Any]:
     """Count stored tool evidence without returning its contents.
 
@@ -682,8 +764,9 @@ def tool_evidence_summary(db: Session, *, execution_id: Any) -> dict[str, Any]:
 
     Returns:
         Gateway requests, missing records, records, incomplete records,
-        records incomplete only because a named masking rule fired, and
-        masking counts by rule.
+        records incomplete only because a named masking rule fired, masking
+        counts by rule, incomplete records by reason (a record with two
+        reasons counts under both), and removed text by category.
     """
     import json
 
@@ -701,6 +784,8 @@ def tool_evidence_summary(db: Session, *, execution_id: Any) -> dict[str, Any]:
     incomplete_records = 0
     masking_only_records = 0
     masking: dict[str, int] = {}
+    by_reason: dict[str, int] = {}
+    removed: dict[str, int] = {}
     cursor = None
     while True:
         page = query
@@ -728,11 +813,15 @@ def tool_evidence_summary(db: Session, *, execution_id: Any) -> dict[str, Any]:
             kind = _record_class(document, valid=valid)
             if kind != "ok":
                 incomplete_records += 1
+                for reason in _incomplete_labels(document, valid=valid):
+                    by_reason[reason] = by_reason.get(reason, 0) + 1
             if kind == "masking_only":
                 masking_only_records += 1
             if valid and isinstance(document, dict):
                 for rule, count in _masking_counts(document).items():
                     masking[rule] = masking.get(rule, 0) + count
+                for category, count in _removed_counts(document).items():
+                    removed[category] = removed.get(category, 0) + count
         if len(rows) < 32:
             break
     return {
@@ -742,6 +831,8 @@ def tool_evidence_summary(db: Session, *, execution_id: Any) -> dict[str, Any]:
         "incomplete_records": incomplete_records,
         "masking_only_records": masking_only_records,
         "masking_by_rule": dict(sorted(masking.items())),
+        "incomplete_by_reason": dict(sorted(by_reason.items())),
+        "removed_by_category": dict(sorted(removed.items())),
     }
 
 
@@ -796,7 +887,10 @@ def evidence_page(
         "missing_gateway_requests": missing,
         "coverage": "missing" if missing else ("captured" if total else "unavailable"),
         "native_command_coverage": "observed_events_only",
-        "representation": "preloop.tool-evidence/v1; sorted compact JSON; UTF-8; sanitized",
+        "representation": (
+            "preloop.tool-evidence/v1; sorted compact JSON; UTF-8; "
+            "text exact except removed lone surrogates; credentials masked"
+        ),
         "page_sha256": digest(records),
     }
 

@@ -11,6 +11,10 @@ into a 502 for the customer.
 This module is the single place that decides what is storable. It is
 deliberately conservative: telemetry is lossy by nature, so we would rather
 drop odd bytes than fail a customer request.
+
+Tool evidence is not telemetry: it must keep text exactly. It uses
+:func:`remove_unencodable`, which removes only lone surrogates and counts
+them, instead of :func:`sanitize_for_jsonb`.
 """
 
 from __future__ import annotations
@@ -45,6 +49,59 @@ def _is_disallowed_char(char: str) -> bool:
     if 0xD800 <= code_point <= 0xDFFF:
         return True
     return False
+
+
+#: Removal category for :func:`remove_unencodable`.
+LONE_SURROGATES = "lone_surrogates"
+
+
+def _is_lone_surrogate(char: str) -> bool:
+    return 0xD800 <= ord(char) <= 0xDFFF
+
+
+def remove_unencodable(value: Any) -> tuple[Any, dict[str, int]]:
+    """Remove only what tool evidence cannot store, and count it.
+
+    Tool evidence is stored as canonical JSON text, not as JSONB values.
+    Canonical JSON escapes every C0 control including U+0000, and C1
+    controls and DEL are valid JSON and JSONB, so all of those are kept
+    exactly. Lone surrogates are the one exception: they have no UTF-8
+    encoding, so the canonical bytes, the digest and the API response
+    cannot hold them. They are removed and counted.
+
+    Unlike :func:`sanitize_for_jsonb` this is not lossy for ordinary text,
+    and it leaves every non-string value untouched.
+
+    Args:
+        value: A JSON-shaped value (dict, list, str or scalar).
+
+    Returns:
+        The value with lone surrogates removed from strings and keys, and
+        ``{category: count}`` for what was removed (empty when nothing was).
+    """
+    counts: dict[str, int] = {}
+
+    def text(item: str) -> str:
+        found = sum(1 for char in item if _is_lone_surrogate(char))
+        if not found:
+            return item
+        counts[LONE_SURROGATES] = counts.get(LONE_SURROGATES, 0) + found
+        return "".join(char for char in item if not _is_lone_surrogate(char))
+
+    def walk(item: Any) -> Any:
+        if isinstance(item, str):
+            return text(item)
+        if isinstance(item, dict):
+            return {
+                (text(key) if isinstance(key, str) else key): walk(child)
+                for key, child in item.items()
+            }
+        if isinstance(item, list):
+            return [walk(child) for child in item]
+        return item
+
+    cleaned = walk(value)
+    return (cleaned if counts else value), counts
 
 
 def sanitize_string(value: str, *, max_chars: int | None = None) -> str:

@@ -249,8 +249,14 @@ def test_unsafe_gateway_and_native_bytes_preserve_batch_and_hashes(
         assert digest(record["document"]) == record["sha256"]
         assert record["document"]["storage_redacted"]
         assert not record["document"]["capture_complete"]
-        assert record["document"]["observations"][0]["value"] == "beforeafter"
-        assert record["document"]["observations"][0]["redacted"]
+        assert record["document"]["incomplete_reasons"] == ["lone_surrogates"]
+        observation = record["document"]["observations"][0]
+        # U+0000 is kept exactly; only the lone surrogate is removed.
+        assert observation["value"] == "before\x00after"
+        assert observation["redacted"]
+        assert observation["removed"] == [
+            {"category": "lone_surrogates", "count": 1}
+        ]
     logs = crud_flow_execution_log.get_by_execution_id(
         db_session, execution_id=execution.id
     )

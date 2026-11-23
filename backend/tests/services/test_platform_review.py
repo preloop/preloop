@@ -3406,6 +3406,8 @@ async def test_captured_refuses_incomplete_evidence(
         "incomplete_records",
         "masking_only_records",
         "masking_by_rule",
+        "incomplete_by_reason",
+        "removed_by_category",
     }
     if mutate == "missing":
         assert counts["missing_records"] == 1
@@ -3516,6 +3518,115 @@ async def test_late_gateway_evidence_is_not_refused_or_posted_early(
     posted = await publish(world, execution)
     assert posted is not None and posted["status"] == "posted"
     assert len(world.github.reviews[(project.slug, 7)]) == 1
+
+
+def _control_character_document() -> dict[str, Any]:
+    """Form feed, ESC colours, a C1 control and a write_stdin U+0003 / U+0004."""
+    from preloop.services.execution_tool_evidence import capture_tools
+
+    return capture_tools(
+        {},
+        {
+            "output": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-read",
+                    "output": "page\x0cnext \x1b[32mok\x1b[0m \x85end",
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call-stdin",
+                    "name": "write_stdin",
+                    "arguments": '{"session_id": 7, "chars": "\\u0003"}',
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call-eof",
+                    "name": "write_stdin",
+                    "arguments": '{"session_id": 7, "chars": "\\u0004"}',
+                },
+            ]
+        },
+        capture_content=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_captured_posts_evidence_with_harmless_control_characters(
+    world: SimpleNamespace,
+) -> None:
+    project, execution = _ready(world, document=_control_character_document())
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["status"] == "posted", outcome
+    assert outcome["tool_evidence"]["incomplete_records"] == 0
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+
+
+@pytest.mark.asyncio
+async def test_captured_still_refuses_an_unexplained_difference(
+    world: SimpleNamespace,
+) -> None:
+    document = {
+        **_complete_tool_document(),
+        "capture_complete": False,
+        "storage_redacted": True,
+        "incomplete_reasons": ["unsafe_text"],
+    }
+    _project, execution = _ready(world, document=document)
+    outcome = await publish(world, execution)
+    assert outcome is not None and outcome["reason"] == "evidence_incomplete"
+    assert outcome["tool_evidence"]["incomplete_by_reason"] == {"unsafe_text": 1}
+    assert world.github.reviews == {}
+
+
+def test_projection_names_the_settle_wait_and_when_the_attempt_is_due(
+    world: SimpleNamespace,
+) -> None:
+    """Inside the settle window a pending publication says why and until when."""
+    _set_evidence(world, "captured")
+    execution = finished(world, identity(world, world.projects[0]))
+    record = platform_review.platform_review_projection(
+        world.db, execution, flow=world.flow
+    )
+    assert record is not None
+    due = execution.end_time.replace(tzinfo=None) + (
+        platform_review.EVIDENCE_SETTLE_AFTER
+    )
+    assert {
+        key: record[key]
+        for key in ("status", "reason", "due_at", "attempts", "retry_scheduled")
+    } == {
+        "status": "pending",
+        "reason": "evidence_settling",
+        "due_at": due.replace(tzinfo=timezone.utc).isoformat(),
+        "attempts": 0,
+        "retry_scheduled": False,
+    }
+    _age(world, execution)
+    after = platform_review.platform_review_projection(
+        world.db, execution, flow=world.flow
+    )
+    assert after is not None
+    assert (after["status"], after["reason"], after["due_at"]) == (
+        "pending",
+        None,
+        None,
+    )
+
+
+def test_projection_names_a_run_that_has_not_finished(
+    world: SimpleNamespace,
+) -> None:
+    execution = finished(world, identity(world, world.projects[0]), status="RUNNING")
+    record = platform_review.platform_review_projection(
+        world.db, execution, flow=world.flow
+    )
+    assert record is not None
+    assert (record["status"], record["reason"], record["due_at"]) == (
+        "pending",
+        "execution_not_finished",
+        None,
+    )
 
 
 def test_status_projection_does_not_read_tool_evidence(

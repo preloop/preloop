@@ -156,3 +156,21 @@ describe('platform review helpers', () => {
     expect(canPublishAgain(record({ status: 'pending' }))).to.equal(true);
   });
 });
+
+describe('pending publication reasons', () => {
+  it('says the attempt waits for tool evidence to settle', () => {
+    const summary = publicationSummary(
+      record({ status: 'pending', reason: 'evidence_settling' })
+    );
+    expect(summary.label).to.equal('Not posted yet');
+    expect(summary.detail).to.equal(reasonText('evidence_settling'));
+    expect(summary.detail).to.contain('tool evidence');
+  });
+
+  it('keeps the plain pending sentence without a reason', () => {
+    const summary = publicationSummary(
+      record({ status: 'pending', reason: null })
+    );
+    expect(summary.detail).to.equal('Preloop posts when the run finishes.');
+  });
+});
