@@ -4984,8 +4984,9 @@ fi
         """Return the flow base branch a resume rebase should land on.
 
         Prefers ``repositories[].branch``, then top-level ``git_clone_config.branch``,
-        then ``source_branch``, then the repository's default branch, then (for
-        the first repository) the trigger's PR/MR target or default branch.
+        then ``source_branch``, then (for the first repository) the trigger's
+        PR/MR target branch, then the repository's default branch, then the
+        trigger's default branch.
         ``main`` is the last resort only when no default branch is known at all.
 
         Args:
@@ -5005,15 +5006,18 @@ fi
         configured = git_config.get("branch") or git_config.get("source_branch")
         if configured:
             return str(configured)
-        if repo_config and _validated_git_ref(repo_config.get("default_branch")):
-            return str(repo_config["default_branch"])
-        if repo_index == 0 and isinstance(trigger_data, dict):
-            # The event's PR/MR target, then the repository default it names.
+        event_repo = repo_index == 0 and isinstance(trigger_data, dict)
+        if event_repo:
+            # The PR/MR the event is about targets this base, which may not
+            # be the repository default.
             target = _validated_git_ref(
                 self._extract_target_branch_from_trigger(trigger_data)
             )
             if target:
                 return target
+        if repo_config and _validated_git_ref(repo_config.get("default_branch")):
+            return str(repo_config["default_branch"])
+        if event_repo:
             default = self._default_branch_from_trigger(trigger_data)
             if default:
                 return default
@@ -6790,7 +6794,8 @@ true
                     )
                     or safe_source
                 )
-                if publication_base == safe_target:
+                resumed_on_target = publication_base == safe_target
+                if resumed_on_target:
                     publication_base = _validated_git_ref(
                         self._resolve_resume_base_branch(
                             git_config, repo_config, publication_trigger, idx
@@ -6922,10 +6927,11 @@ export GIT_TERMINAL_PROMPT=0"""
                             else {}
                         ),
                         working_dir=full_path,
+                        # This repository's own base, never the first one's.
                         base_branch=(
-                            safe_source
-                            if safe_source != safe_target
-                            else f"origin/{publication_base}"
+                            f"origin/{publication_base}"
+                            if resumed_on_target
+                            else publication_base
                         ),
                     ),
                     f"cd {full_path}",
@@ -6933,7 +6939,7 @@ export GIT_TERMINAL_PROMPT=0"""
                     # still counts local commits the branch-vs-branch range
                     # would miss. Branch names are validated above; do not
                     # shlex.quote mid-token (that yields origin/'feat/x').
-                    f'COMMIT_COUNT=$(git rev-list --count origin/{safe_target}..HEAD 2>/dev/null || git rev-list --count {safe_source}..{safe_target} 2>/dev/null || echo "0")',
+                    f'COMMIT_COUNT=$(git rev-list --count origin/{safe_target}..HEAD 2>/dev/null || git rev-list --count {publication_base}..{safe_target} 2>/dev/null || echo "0")',
                     "PUSH_COMMIT_COUNT=$COMMIT_COUNT",
                     # Already-pushed commits still need a review surface.
                     f'BRANCH_COMMIT_COUNT=$(git rev-list --count {publication_base}..HEAD 2>/dev/null || git rev-list --count origin/{publication_base}..HEAD 2>/dev/null || echo "0")',
@@ -6975,9 +6981,9 @@ export GIT_TERMINAL_PROMPT=0"""
                             # unknown_default. Verify against the PR base the
                             # resume rebase just fetched.
                             base_branch=(
-                                safe_source
-                                if safe_source != safe_target
-                                else f"origin/{publication_base}"
+                                f"origin/{publication_base}"
+                                if resumed_on_target
+                                else publication_base
                             ),
                             evidence_dir=EVIDENCE_DIR_PATH,
                             gate_budget_seconds=(
@@ -7454,6 +7460,15 @@ trap _preloop_publication_cleanup EXIT
             if isinstance(obj_attrs, dict) and obj_attrs.get("target_branch"):
                 branch = obj_attrs["target_branch"]
                 self.logger.info(f"Extracted target branch from GitLab MR: {branch}")
+                return branch
+
+            # GitLab MR note: the MR rides alongside the note attributes.
+            mr = payload.get("merge_request")
+            if isinstance(mr, dict) and mr.get("target_branch"):
+                branch = mr["target_branch"]
+                self.logger.info(
+                    f"Extracted target branch from GitLab MR note: {branch}"
+                )
                 return branch
 
             # Bitbucket Cloud PR - pullrequest.destination.branch.name

@@ -415,3 +415,74 @@ def test_resume_rebase_lands_on_the_trigger_default_branch() -> None:
 
     assert "origin/master" in command
     assert "origin/main" not in command
+
+
+GATE_PROFILE = {
+    "version": "v1",
+    "profile_id": "example",
+    "description": "Example gate profile",
+    "always": [
+        {"id": "lint", "command": "echo ok", "reason": "cheap", "scope": "backend"}
+    ],
+    "rules": [],
+}
+
+
+def test_each_repository_is_verified_against_its_own_base(
+    main_repo: Path, master_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whitespace repair and the gate use each repository's base, not the first's."""
+    import preloop.agents.container as container_module
+
+    seen: list[tuple[str, str, str]] = []
+
+    def record(kind: str) -> Callable[..., str]:
+        def build(**kwargs: Any) -> str:
+            seen.append((kind, kwargs["working_dir"], kwargs["base_branch"]))
+            return "true\n"
+
+        return build
+
+    monkeypatch.setattr(
+        container_module, "build_whitespace_repair_shell", record("repair")
+    )
+    monkeypatch.setattr(
+        container_module, "build_verification_gate_shell", record("gate")
+    )
+    executor = _executor(ContainerAgentExecutor)
+    context = _two_repo_context(main_repo, master_repo)
+    config = context["git_clone_config"]
+    config["verification"] = {"mode": "gate", "profile": GATE_PROFILE}
+    for repo in config["repositories"]:
+        repo["tracker_id"] = "tracker-1"
+    context["git_credentials_map"] = {
+        "tracker-1": {"token": "fake-token", "tracker_type": "github"}
+    }
+    executor._prepare_git_clone_command(context)
+    executor._prepare_git_post_execution_commands(context)
+
+    assert ("repair", "/workspace/first", "main") in seen
+    assert ("repair", "/workspace/second", "master") in seen
+    assert ("gate", "/workspace/first", "main") in seen
+    assert ("gate", "/workspace/second", "master") in seen
+
+
+def test_resume_rebase_prefers_the_pr_target_over_the_project_default() -> None:
+    """Project default ``main``, the MR targets ``develop``: rebase on develop."""
+    executor = _executor(ContainerAgentExecutor)
+    context = _context(
+        {"repository_url": "https://example.com/o/r.git", "default_branch": "main"},
+        trigger={
+            "payload": {
+                "object_kind": "note",
+                "object_attributes": {"note": "please fix"},
+                "merge_request": {"iid": 3, "target_branch": "develop"},
+                "project": {"default_branch": "main"},
+            },
+            "_resume": {"execution_id": "prior", "source_branch": "preloop/x-1"},
+        },
+    )
+    command = executor._prepare_git_clone_command(context)
+
+    assert "origin/develop" in command
+    assert "origin/main" not in command
