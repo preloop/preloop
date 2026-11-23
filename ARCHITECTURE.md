@@ -86,7 +86,7 @@ graph LR
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, account-scoped pub/sub, execution snapshots and durable sequence cursors, and bounded flow lifecycle startup. |
 | [Security](docs/architecture/security.md) | Auth and tenancy, optional account sign-in strength hooks and enrollment-only sessions, generation-based session revocation and live WebSocket teardown across replicas, account-scoped member sign-out, separate machine credentials, restricted CI identities, owned review execution admission, principal-bound callbacks, redaction, secret custody, audit integrity and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
-| [Flows](docs/architecture/flows.md) | Event-driven agentic flows, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, bound review context and command inspection, authoritative terminal events, durable review completion evidence, named failure outcomes, evidence packs, prompt `truncate(N)`, the chunked agent launch-payload environment, and mounted Delivery Report setup files. |
+| [Flows](docs/architecture/flows.md) | Event-driven agentic flows, interactive hosted conversations, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, bound review context and command inspection, authoritative terminal events, durable review completion evidence, named failure outcomes, evidence packs, prompt `truncate(N)`, the chunked agent launch-payload environment, and mounted Delivery Report setup files. |
 | [Callback receipts](docs/architecture/callback-receipts.md) | `complete_once` receipts for signed provider callbacks, without storing request content. |
 | [Review and status posted by Preloop](docs/architecture/platform-posted-review.md) | The control plane posts a validated read-only review and a commit status with a one-repository lease; threat model and tests. |
 | [Shared review flows for restricted CI](docs/architecture/shared-ci-review-flows.md) | One read-only review flow serving several projects with one project per CI identity: the allowlist, how an execution's project is resolved, the threat model with its tests, and what is not included. |
@@ -143,14 +143,3 @@ OpenRouter model configurations can enforce provider routing preferences. Gatewa
 usage records include a content-free summary of effective upstream controls and
 the OpenRouter serving host when reported; see the
 [provider guide](docs/guide/providers/openrouter.md).
-
-### Hosted flow conversations
-
-`FlowConversation` is the durable owner and admission lock for a hosted thread;
-`FlowConversationMessage` records each accepted input and streamed answer. Console,
-mobile and chat clients share the conversation API. OpenCode's pinned server stays
-alive inside the execution container; an execution-scoped driver submits turns and
-persists text from its SSE stream. Idle executions retain their hosted capacity
-slot. After shutdown, a new execution restores the explicit native session and
-workspace artifacts. Gateway usage and active runtime are charged across all
-executions bound to the conversation. See the [API and lifecycle guide](docs/guide/flows/interactive-conversations.md).
