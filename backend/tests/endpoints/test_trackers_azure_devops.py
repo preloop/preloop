@@ -32,6 +32,7 @@ def test_test_request_is_validated_and_pinned() -> None:
     assert data.connection_details == {
         "organization": "fabrikam",
         "project": "Fabrikam",
+        "cast_token_owner_vote": False,
     }
     assert TrackerTypeSchema("azure_devops") is TrackerTypeSchema.AZURE_DEVOPS
 
