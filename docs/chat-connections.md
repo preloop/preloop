@@ -437,7 +437,11 @@ restrict Workflows; that has not been verified on a real tenant.
 The Adaptive Card has the approval headline, tool, status and one **Review**
 link to the existing approval page. It does not accept chat commands or decisions
 inside Teams, and posts to the workflow's configured channel/chat rather than to
-each approver. It uses the existing durable webhook outbox and retry policy.
+each approver. Policy notify rules routed to the same workflow send an
+informational card with the rule, redacted excerpt, an explicit statement that
+this notify rule did not block the call, and one **See all notices** link. Those
+cards have no approval decision actions. Both use the existing durable webhook
+outbox and retry policy.
 Display text is shortened to fit the 28 KB message limit; an oversized review
 URL is rejected without queueing a broken link. Microsoft documents throttling
 above four requests per second. The workflow belongs to its creator: assign a

@@ -6,7 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 from preloop.services.event_webhooks.approval_shim import resolve_webhook_target
-from preloop.services.teams_webhook import approval_card, MAX_TEAMS_WEBHOOK_BYTES
+from preloop.services.teams_webhook import (
+    approval_card,
+    policy_notice_card,
+    MAX_TEAMS_WEBHOOK_BYTES,
+)
 
 
 # Documented envelope: https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook
@@ -51,4 +55,35 @@ def test_card_content_and_bound() -> None:
     with pytest.raises(ValueError, match="^Teams approval notice exceeds 28 KB$"):
         approval_card(
             "Approval", "tool", "pending", url + "x" * MAX_TEAMS_WEBHOOK_BYTES
+        )
+
+
+# Documented envelope: https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook
+def test_policy_card_content_and_bound() -> None:
+    """Keep notify semantics visible and reject oversized URLs; no tenant claim."""
+    url = "https://example.com/console/attention"
+    payload = policy_notice_card("Policy notice: sample-rule", "Redacted excerpt", url)
+    card = payload["attachments"][0]["content"]
+    assert payload["type"] == "message"
+    assert card["body"] == [
+        {"type": "TextBlock", "text": "Policy notice: sample-rule", "wrap": True},
+        {
+            "type": "TextBlock",
+            "text": "This notify rule did not block the call.",
+            "wrap": True,
+        },
+        {"type": "TextBlock", "text": "Redacted excerpt", "wrap": True},
+    ]
+    assert card["actions"] == [
+        {"type": "Action.OpenUrl", "title": "See all notices", "url": url}
+    ]
+    bounded = policy_notice_card("😀" * 100000, "😀" * 100000, url)
+    assert len(json.dumps(bounded).encode()) <= MAX_TEAMS_WEBHOOK_BYTES
+    blocks = bounded["attachments"][0]["content"]["body"]
+    assert blocks[0]["text"].endswith("…")
+    assert blocks[2]["text"].endswith("…")
+    assert blocks[1]["text"] == "This notify rule did not block the call."
+    with pytest.raises(ValueError, match="^Teams policy notice exceeds 28 KB$"):
+        policy_notice_card(
+            "Policy notice", "excerpt", url + "x" * MAX_TEAMS_WEBHOOK_BYTES
         )

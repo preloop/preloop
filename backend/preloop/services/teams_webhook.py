@@ -1,4 +1,4 @@
-"""Bounded Teams Workflows approval notices, independent of bot connections."""
+"""Bounded Teams Workflows notices, independent of bot connections."""
 
 from __future__ import annotations
 
@@ -17,9 +17,50 @@ def approval_card(
     URL that alone makes the card too large instead of queueing a broken link.
     """
 
-    def shorten(value: str, limit: int) -> str:
-        return value if len(value) <= limit else value[: limit - 1] + "…"
+    return _notice_card(
+        [
+            {"type": "TextBlock", "text": _shorten(headline, 1000), "wrap": True},
+            {
+                "type": "FactSet",
+                "facts": [
+                    {"title": "Tool", "value": _shorten(tool, 256)},
+                    {"title": "Status", "value": _shorten(status.upper(), 64)},
+                ],
+            },
+        ],
+        review_url,
+        "Review",
+        "Teams approval notice exceeds 28 KB",
+    )
 
+
+def policy_notice_card(headline: str, text: str, notices_url: str) -> dict[str, Any]:
+    """Build a bounded informational card with no approval decision actions."""
+    return _notice_card(
+        [
+            {"type": "TextBlock", "text": _shorten(headline, 400), "wrap": True},
+            {
+                "type": "TextBlock",
+                "text": "This notify rule did not block the call.",
+                "wrap": True,
+            },
+            {"type": "TextBlock", "text": _shorten(text, 1400), "wrap": True},
+        ],
+        notices_url,
+        "See all notices",
+        "Teams policy notice exceeds 28 KB",
+    )
+
+
+def _shorten(value: str, limit: int) -> str:
+    """Shorten display text without truncating action URLs."""
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def _notice_card(
+    body: list[dict[str, Any]], url: str, action_title: str, size_error: str
+) -> dict[str, Any]:
+    """Wrap card content in the Workflows envelope and enforce its wire limit."""
     message = {
         "type": "message",
         "attachments": [
@@ -30,25 +71,9 @@ def approval_card(
                     "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
                     "type": "AdaptiveCard",
                     "version": "1.2",
-                    "body": [
-                        {
-                            "type": "TextBlock",
-                            "text": shorten(headline, 1000),
-                            "wrap": True,
-                        },
-                        {
-                            "type": "FactSet",
-                            "facts": [
-                                {"title": "Tool", "value": shorten(tool, 256)},
-                                {
-                                    "title": "Status",
-                                    "value": shorten(status.upper(), 64),
-                                },
-                            ],
-                        },
-                    ],
+                    "body": body,
                     "actions": [
-                        {"type": "Action.OpenUrl", "title": "Review", "url": review_url}
+                        {"type": "Action.OpenUrl", "title": action_title, "url": url}
                     ],
                 },
             }
@@ -57,5 +82,5 @@ def approval_card(
     # Default ASCII escaping is a conservative bound, including supplementary
     # Unicode characters. The outbox may serialize a smaller UTF-8 body.
     if len(json.dumps(message).encode("utf-8")) > MAX_TEAMS_WEBHOOK_BYTES:
-        raise ValueError("Teams approval notice exceeds 28 KB")
+        raise ValueError(size_error)
     return message
