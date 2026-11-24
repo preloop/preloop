@@ -56,6 +56,61 @@ def test_launcher_keeps_uid_plugin_pin_and_checkpoint_order() -> None:
         PiAgent({})._build_harness_script(context())
 
 
+def test_resume_launcher_restores_explicit_session_before_driver() -> None:
+    """The production wrapper carries the saved native identity into the driver."""
+    ctx = context()
+    ctx["trigger_event_data"]["_resume"] = {
+        "thread_id": "example-thread",
+        "cli_session": {"agent_type": "deepseek", "session_id": SID},
+    }
+    script = DeepSeekAgent({})._build_harness_script(ctx)
+    restore = (
+        'python3 /tmp/preloop-native-session.py restore "$DSH_HOME/sessions" deepseek'
+    )
+    launch = "python3 /tmp/deepseek_conversation.py"
+    pack = 'python3 /tmp/preloop-native-session.py pack "$DSH_HOME/sessions" deepseek'
+    assert script.count(restore) == 1
+    assert script.index("npm install") < script.index(restore)
+    assert script.index(restore) < script.index(launch) < script.index(pack)
+    assert f"PRELOOP_CLI_SESSION_ID={SID}" in script
+    assert '"${PRELOOP_CLI_SESSION_ID:-}"' in script
+    # Exercise the generated restore/admission fragment: status 10 must retain
+    # the explicit session, while restore failure must prevent driver startup.
+    fragment = script.split("PRELOOP_CLI_SESSION_RESTORED=0", 1)[1].split("\ncd ", 1)[0]
+    for status in (10, 1):
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"python3() {{ return {status}; }}\n"
+                + fragment
+                + '\nprintf "%s" "$PRELOOP_CLI_SESSION_ID"',
+            ],
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == (0 if status == 10 else 1)
+        assert result.stdout == (SID if status == 10 else "")
+
+
+@pytest.mark.parametrize("failure", ["arguments", "missing_executable"])
+def test_startup_failure_emits_structured_marker(
+    failure: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Bad argv and process startup errors fail without exposing a traceback."""
+    monkeypatch.setattr(
+        driver.sys,
+        "argv",
+        ["driver"] if failure == "arguments" else ["driver", "prompt", ""],
+    )
+    with patch.object(driver.subprocess, "Popen", side_effect=FileNotFoundError):
+        assert driver.main() == 1
+    captured = capsys.readouterr()
+    expected = "ValueError" if failure == "arguments" else "FileNotFoundError"
+    assert captured.out == f"PRELOOP_CONVERSATION_FAILED {expected}\n"
+    assert not captured.err
+
+
 def test_runtime_filters_capability_and_requires_matching_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

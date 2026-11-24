@@ -145,9 +145,10 @@ class DeepSeekRuntime(ConversationRuntime):
 
 def main() -> int:
     """Run until idle expiry or a limit, flushing before native checkpointing."""
-    prompt_path, session_id = sys.argv[1:]
-    runtime = DeepSeekRuntime(session_id)
+    runtime: DeepSeekRuntime | None = None
     try:
+        prompt_path, session_id = sys.argv[1:]
+        runtime = DeepSeekRuntime(session_id)
         runtime.ready()
         runtime.run(Path(prompt_path).read_text(), runtime.submit)
         runtime.close()
@@ -157,7 +158,7 @@ def main() -> int:
         print("PRELOOP_CONVERSATION_FAILED " + type(exc).__name__, flush=True)
         return 1
     finally:
-        if runtime.process.poll() is None:
+        if runtime is not None and runtime.process.poll() is None:
             runtime.process.kill()
             runtime.process.wait()
 
