@@ -52,7 +52,18 @@ describe('Interactive flow settings', () => {
     (el as any).setInteractiveSetting('max_turns', 45);
     expect((el as any).flow.agent_config.interactive.max_turns).to.equal(45);
   });
-  for (const harness of ['deepseek', 'pi']) {
+  it('enables interactive DeepSeek Harness conversations', async () => {
+    const el = await mount('deepseek');
+    const toggle = el.shadowRoot!.querySelector(
+      '[data-field="interactive"]'
+    ) as any;
+    expect(toggle.disabled).to.equal(false);
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('sl-change'));
+    await el.updateComplete;
+    expect((el as any).flow.agent_config.interactive.enabled).to.equal(true);
+  });
+  for (const harness of ['pi', 'codex']) {
     it(`disables and explains interactive mode for ${harness}`, async () => {
       const el = await mount(harness);
       expect(

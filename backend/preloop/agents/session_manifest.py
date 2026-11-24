@@ -94,6 +94,8 @@ def select_session_files(root: Path, harness: str, session_id: str) -> dict[str,
     """
     if root.is_symlink():
         raise SessionRestoreError("session root is a symlink")
+    if harness == "deepseek":
+        return select_deepseek_sessions(root, session_id)
     if harness == "opencode" and (root / "opencode.db").exists():
         return {
             "opencode.db": select_opencode_database(root / "opencode.db", session_id)
@@ -157,6 +159,73 @@ def select_session_files(root: Path, harness: str, session_id: str) -> dict[str,
         or (harness == "opencode" and obj.get("sessionID") in ids)
     }
     return selected
+
+
+def select_deepseek_sessions(root: Path, session_id: str) -> dict[str, bytes]:
+    """Select pinned v3 plaintext logs by identity and verified parentage.
+
+    The driver explicitly selects uncompressed JSONL. Only native logs are
+    portable: config, credentials, locks, caches and plugin state are excluded.
+    Native resume performs the full event-schema validation before model work.
+    """
+    records: dict[str, tuple[bytes, dict[str, Any]]] = {}
+    identities: set[str] = set()
+    total = 0
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise SessionRestoreError("session storage contains a symlink")
+        if not path.is_file() or path.name != "session.v3.jsonl":
+            continue
+        name = _safe_path(path.relative_to(root).as_posix())
+        if len(PurePosixPath(name).parts) != 3 or path.stat().st_size > MAX_BYTES:
+            raise SessionRestoreError("unsupported DeepSeek session layout or size")
+        data = path.read_bytes()
+        total += len(data)
+        if total > MAX_BYTES or len(records) >= MAX_FILES:
+            raise SessionRestoreError("session storage exceeds selection limit")
+        try:
+            lines = data.splitlines()
+            header = json.loads(lines[0])
+            if not isinstance(header, dict):
+                raise ValueError("invalid session header")
+            sid = header["id"]
+            if (
+                header.get("type") != "session"
+                or header.get("version") != 3
+                or sid != path.parent.name
+                or sid in identities
+                or not isinstance(header.get("cwd"), str)
+                or not data.endswith(b"\n")
+            ):
+                raise ValueError("invalid session header")
+            for seq, line in enumerate(lines[1:]):
+                event = json.loads(line)
+                if (
+                    not isinstance(event, dict)
+                    or event.get("seq") != seq
+                    or not isinstance(event.get("type"), str)
+                ):
+                    raise ValueError("invalid session event sequence")
+        except (IndexError, KeyError, TypeError, ValueError) as exc:
+            raise SessionRestoreError("invalid DeepSeek session log") from exc
+        identities.add(sid)
+        records[name] = (data, header)
+    roots = [obj for _, obj in records.values() if obj["id"] == session_id]
+    if (
+        len(roots) != 1
+        or roots[0].get("parentSession")
+        or roots[0].get("origin") == "subagent"
+    ):
+        raise SessionRestoreError("explicit DeepSeek root session not found")
+    ids = {session_id}
+    while True:
+        children = {
+            obj["id"] for _, obj in records.values() if obj.get("parentSession") in ids
+        }
+        if children <= ids:
+            break
+        ids.update(children)
+    return {name: data for name, (data, obj) in records.items() if obj["id"] in ids}
 
 
 def select_opencode_database(path: Path, session_id: str) -> bytes:

@@ -244,4 +244,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Maintainers: follow the [protected-branc
 
 Release assets carry signed Sigstore build provenance and checksums ([verification](./docs/release-verification.md)). The [release SBOM audit gate](./docs/release-sbom-audit.md) checks both architectures of every release image and the tag's security workflows. Windows CLI notes: [windows-cli.md](./docs/windows-cli.md), [code signing policy](./docs/code-signing-policy.md). Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
-Flows can also open [interactive hosted conversations](docs/guide/flows/interactive-conversations.md) in the console using OpenCode, with live follow-ups and checkpoint-based resume.
+Flows can also open [interactive hosted conversations](docs/guide/flows/interactive-conversations.md) in the console using OpenCode or DeepSeek Harness, with live follow-ups and checkpoint-based resume.

@@ -72,19 +72,18 @@ def thread(db_session: Session, test_user: models.User) -> models.FlowConversati
     return row
 
 
-@pytest.mark.parametrize("harness", ["deepseek", "pi", "codex", "claude"])
+@pytest.mark.parametrize("harness", ["pi", "codex", "claude"])
 def test_unsupported_harness_explains_rejection(harness: str) -> None:
-    """Only the tested OpenCode transport can be enabled."""
+    """Unsupported transports still explain why they cannot be enabled."""
     with pytest.raises(ValueError, match="require hosted OpenCode"):
         service.interactive_settings(harness, {"interactive": {"enabled": True}})
 
 
-def test_defaults_and_no_extra_turn_ceiling() -> None:
+@pytest.mark.parametrize("harness", ["opencode", "deepseek"])
+def test_defaults_and_no_extra_turn_ceiling(harness: str) -> None:
     """Defaults are explicit choices, with no smaller hidden conversation cap."""
     assert not service.interactive_settings("pi", {}).enabled
-    policy = service.interactive_settings(
-        "opencode", {"interactive": {"enabled": True}}
-    )
+    policy = service.interactive_settings(harness, {"interactive": {"enabled": True}})
     assert (policy.max_turns, policy.idle_timeout_seconds) == (30, 600)
     assert (
         InteractiveSettings(max_turns=100000, idle_timeout_seconds=100000).max_turns
@@ -339,15 +338,22 @@ def test_capability_cannot_cross_threads(
     assert error.value.status_code == 401
 
 
+@pytest.mark.parametrize(
+    "harness,session_id",
+    [
+        ("opencode", "ses_example"),
+        ("deepseek", "session-11111111-1111-4111-8111-111111111111"),
+    ],
+)
 def test_expired_native_artifact_refuses_resume(
-    db_session: Session, thread: models.FlowConversation
+    db_session: Session, thread: models.FlowConversation, harness: str, session_id: str
 ) -> None:
     """An explicit session ID cannot make an expired artifact resumable."""
     execution = crud_flow_execution.get(db_session, id=thread.execution_id)
     crud_flow_execution.update(
         db_session,
         db_obj=execution,
-        obj_in={"cli_session": {"agent_type": "opencode", "session_id": "ses_example"}},
+        obj_in={"cli_session": {"agent_type": harness, "session_id": session_id}},
     )
     expired = SimpleNamespace(
         ciphertext=b"synthetic", expires_at=datetime.now(UTC) - timedelta(seconds=1)
