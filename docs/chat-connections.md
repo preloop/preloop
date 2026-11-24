@@ -305,3 +305,24 @@ retry. A command-installation failure restores the prior callback when it still
 points to this attempt. An interrupted rollback retains a durable callback target.
 Slack OAuth must complete in the browser that initiated setup; its short-lived
 secure HttpOnly SameSite=Lax proof is never returned in the authorization URL.
+
+## Teams Workflows approval notices
+
+For notices without a bot, a team member can create a Workflows webhook with
+**Send webhook alerts to a channel**, then select **Teams Workflows** as the
+approval workflow type and paste its URL. Policy YAML can use
+`channel_configs.teams.url`. This path needs no Entra app, Azure Bot resource or
+Teams administrator to register a bot. Tenant Power Platform policies may still
+restrict Workflows; that has not been verified on a real tenant.
+
+The Adaptive Card has the approval headline, tool, status and one **Review**
+link to the existing approval page. It does not accept chat commands or decisions
+inside Teams, and posts to the workflow's configured channel/chat rather than to
+each approver. It uses the existing durable webhook outbox and retry policy.
+Display text is shortened to fit the 28 KB message limit; an oversized review
+URL is rejected without queueing a broken link. Microsoft documents throttling
+above four requests per second. The workflow belongs to its creator: assign a
+co-owner and plan handover so it is not orphaned when that person leaves.
+
+Source: [Microsoft incoming webhook and Workflows documentation](https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook).
+Rendering, tenant policy availability and throttling remain unverified here.

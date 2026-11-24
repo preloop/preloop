@@ -34,6 +34,7 @@ describe('ApprovalWorkflowDialog', () => {
     expect(options).to.include('standard');
     expect(options).to.include('slack');
     expect(options).to.include('mattermost');
+    expect(options).to.include('teams');
     expect(options).to.include('webhook');
     expect(options).to.not.include('ai_driven');
   });
