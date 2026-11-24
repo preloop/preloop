@@ -101,7 +101,7 @@ One loop, end to end: an issue event arrives from GitHub, GitLab, Bitbucket Clou
 - Component due diligence, architecture and strategy review, repo code health review
 - Standards compliance walk, release backport, weekly model price review
 
-Or write your own. Trigger from CI with the [`run-flow` GitHub Action](docs/guide/flows/github-actions.md); run agents on [private runners](docs/guide/runners/quickstart-linux.md); let a flow start child flows with [flow delegation](docs/guide/flows/flow-delegation.md). Tracker setup: [Bitbucket and Jira quickstart](docs/guide/bitbucket-jira-quickstart.md); [Bitbucket Data Center](docs/guide/bitbucket-data-center.md) is available as an opt-in provider. [Azure DevOps](docs/guide/azure-devops-tracker.md) supports Azure Repos pull request review and Azure Boards work items as issues.
+Or write your own. Trigger from CI with the [`run-flow` GitHub Action](docs/guide/flows/github-actions.md); run agents on [private runners](docs/guide/runners/quickstart-linux.md); let a flow start child flows with [flow delegation](docs/guide/flows/flow-delegation.md). Tracker setup: [Bitbucket and Jira quickstart](docs/guide/bitbucket-jira-quickstart.md); [Bitbucket Data Center](docs/guide/bitbucket-data-center.md) is available as an opt-in provider. [Azure DevOps](docs/guide/azure-devops-tracker.md) supports Azure Repos reviews with diff-anchored findings, one updated summary, optional token-owner voting, and Azure Boards work items as issues.
 
 ## Policy-as-code
 

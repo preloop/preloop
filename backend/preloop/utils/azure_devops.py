@@ -262,6 +262,10 @@ def validate_azure_devops_config(
         for key, value in details.items()
         if key not in {"organization", "project", "repository"}
     }
+    vote = details.get("cast_token_owner_vote", False)
+    if not isinstance(vote, bool):
+        raise AzureDevOpsConfigError("cast_token_owner_vote must be a boolean.")
+    result["cast_token_owner_vote"] = vote
     result["organization"] = organization
     if project:
         result["project"] = project

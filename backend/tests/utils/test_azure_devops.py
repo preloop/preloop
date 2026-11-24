@@ -50,7 +50,11 @@ def test_config_validation() -> None:
         connection_details={"organization": " fabrikam ", "project": "Fabrikam"},
         url="https://dev.azure.com",
     )
-    assert details == {"organization": "fabrikam", "project": "Fabrikam"}
+    assert details == {
+        "organization": "fabrikam",
+        "project": "Fabrikam",
+        "cast_token_owner_vote": False,
+    }
     with pytest.raises(ado.AzureDevOpsConfigError, match="organization"):
         ado.validate_azure_devops_config(
             api_key="pat", auth_type=None, connection_details={}
@@ -231,3 +235,17 @@ def test_event_normalizer() -> None:
         }
     )
     assert subject and subject.get("reference") == "!1"
+
+
+@pytest.mark.parametrize("value", ["true", "false", 1, None])
+def test_vote_setting_requires_a_boolean(value: object) -> None:
+    """String and numeric values must not accidentally enable voting."""
+    with pytest.raises(ado.AzureDevOpsConfigError, match="must be a boolean"):
+        ado.validate_azure_devops_config(
+            api_key="token",
+            auth_type="api_token",
+            connection_details={
+                "organization": "example-org",
+                "cast_token_owner_vote": value,
+            },
+        )

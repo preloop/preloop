@@ -677,6 +677,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert chat_flows.down_revision == pins.revision
     conversations = script.get_revision("20261228_flow_conversations")
     assert conversations.down_revision == chat_flows.revision
+    azure_vote = script.get_revision("20261229_azure_review_vote")
+    assert azure_vote.down_revision == conversations.revision
     teams_delivery = script.get_revision("20261229_teams_delivery")
-    assert teams_delivery.down_revision == conversations.revision
+    assert teams_delivery.down_revision == azure_vote.revision
     assert script.get_heads() == [teams_delivery.revision]

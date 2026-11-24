@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "20261229_teams_delivery"
-down_revision = "20261228_flow_conversations"
+down_revision = "20261229_azure_review_vote"
 branch_labels = None
 depends_on = None
 
