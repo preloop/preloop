@@ -89,3 +89,51 @@ class TestInitSentry:
                     init_sentry()
                     call_kw = mock_sdk.init.call_args[1]
                     assert call_kw["environment"] == "development"
+
+
+def test_init_failure_is_logged_and_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An SDK that rejects our options must not take startup down."""
+    dsn = "https://secret-key@sentry.example.com/1"
+    mock_sdk = MagicMock()
+    mock_sdk.init.side_effect = TypeError("Unknown option 'profiles_sample_rate'")
+    monkeypatch.delenv("SENTRY_PROFILES_SAMPLE_RATE", raising=False)
+    monkeypatch.setenv("SENTRY_DSN", dsn)
+    with patch.dict(sys.modules, {"sentry_sdk": mock_sdk}):
+        with patch("preloop.config.settings") as mock_settings:
+            mock_settings.preloop_url = "https://preloop.ai"
+            with caplog.at_level("WARNING", logger="preloop.models.sentry"):
+                init_sentry()
+    warnings = [
+        r
+        for r in caplog.records
+        if r.name == "preloop.models.sentry" and r.levelname == "WARNING"
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "TypeError" in message
+    assert "profiles_sample_rate" in message
+    assert dsn not in message and "secret-key" not in message
+
+
+def test_init_failure_redacts_dsn_from_exception_text(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The DSN stays out of the log even if the SDK puts it in the error."""
+    dsn = "https://secret-key@sentry.example.com/1"
+    mock_sdk = MagicMock()
+    mock_sdk.init.side_effect = ValueError(f"Unsupported DSN {dsn!r}")
+    monkeypatch.delenv("SENTRY_PROFILES_SAMPLE_RATE", raising=False)
+    monkeypatch.setenv("SENTRY_DSN", dsn)
+    with patch.dict(sys.modules, {"sentry_sdk": mock_sdk}):
+        with patch("preloop.config.settings") as mock_settings:
+            mock_settings.preloop_url = "https://preloop.ai"
+            with caplog.at_level("WARNING", logger="preloop.models.sentry"):
+                init_sentry()
+    messages = [
+        r.getMessage() for r in caplog.records if r.name == "preloop.models.sentry"
+    ]
+    assert len(messages) == 1
+    assert "ValueError" in messages[0] and "[redacted]" in messages[0]
+    assert "secret-key" not in messages[0]
