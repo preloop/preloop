@@ -117,6 +117,7 @@ describe('AddTrackerModal Azure DevOps', () => {
     const toggle = element.shadowRoot!.querySelector<any>(
       'sl-switch[name="azure_devops_cast_token_owner_vote"]'
     )!;
+    expect(customElements.get('sl-switch')).to.exist;
     expect(toggle.checked).to.equal(false);
     expect(
       element.azureDevOpsConnectionDetails().cast_token_owner_vote
