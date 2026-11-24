@@ -387,7 +387,7 @@ def world(db_session: Session, github: FakeGitHub) -> SimpleNamespace:
                 "enabled": True,
                 "publication_mode": "read_only",
                 "ci_project_selection": True,
-                "platform_review": OPT_IN,
+                "platform_review": {**OPT_IN, "enabled_at": "2020-01-01T00:00:00"},
                 "repositories": [
                     {"project_id": str(p.id), "tracker_id": str(tracker.id)}
                     for p in projects
@@ -4131,3 +4131,43 @@ def test_finished_manual_projection_names_explicit_publish_wait(
     )
     assert record is not None
     assert (record["reason"], record["due_at"]) == ("manual_publish_required", None)
+
+
+@pytest.mark.asyncio
+async def test_settle_timer_respects_reenabled_posting_cutoff(
+    world: SimpleNamespace, settle_clock: Any
+) -> None:
+    """Re-enabling posting cannot make a waiting timer publish an older run."""
+    project, execution = await _start_settle_timer(world, settle_clock)
+    block = world.flow.git_clone_config["platform_review"]
+    world.flow.git_clone_config = {
+        **world.flow.git_clone_config,
+        "platform_review": {**block, "enabled": False},
+    }
+    world.db.commit()
+    world.flow.git_clone_config = {
+        **world.flow.git_clone_config,
+        "platform_review": {
+            **block,
+            "enabled": True,
+            "enabled_at": (settle_clock.now + timedelta(seconds=1)).isoformat(),
+        },
+    }
+    world.db.commit()
+    settle_clock.advance(30)
+    await asyncio.wait_for(settle_clock.tasks[0], timeout=1)
+    assert world.github.writes == []
+    assert (
+        crud.crud_platform_review_publication.get_for_execution(
+            world.db, execution_id=execution.id
+        )
+        is None
+    )
+    record = platform_review.platform_review_projection(
+        world.db, execution, flow=world.flow
+    )
+    assert record is not None
+    assert (record["reason"], record["due_at"]) == ("explicit_publish_required", None)
+    outcome = await publish(world, execution, explicit=True)
+    assert outcome is not None and outcome["status"] == "posted"
+    assert len(world.github.reviews[(project.slug, 7)]) == 1

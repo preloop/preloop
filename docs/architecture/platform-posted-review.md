@@ -298,7 +298,10 @@ the deadline, then `awaiting_sweep` until claimed, with a fallback deadline
 of the settle time plus one configured monitor interval. Overdue deadlines
 stay visible rather than moving forward on each read. Runs outside the
 sweep's opt-in cutoff or 24-hour lookback instead name the explicit publish
-call with `explicit_publish_required` and no automatic deadline.
+call with `explicit_publish_required` and no automatic deadline. Automatic
+calls with no claim apply that same cutoff, including when a waiting timer
+survives posting being disabled and re-enabled. Existing claims and explicit
+publish calls can still complete.
 
 ## Posting modes and caller preconditions
 

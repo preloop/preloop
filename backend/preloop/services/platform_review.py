@@ -3070,6 +3070,17 @@ async def publish_platform_review(
         if explicit:
             raise PlatformReviewRefusedError("execution_not_finished")
         return None
+    # Re-enabling posting creates a new cutoff. An old timer must agree
+    # with the sweep and projection, while held claims can still finish.
+    if (
+        not explicit
+        and not _automatic_recovery_available(execution, flow)
+        and crud.crud_platform_review_publication.get_for_execution(
+            db, execution_id=execution.id
+        )
+        is None
+    ):
+        return None
     # The last streaming gateway request can still be committing its evidence.
     # Do not post, and do not record evidence_incomplete, until that window
     # has passed. Wake at the deadline; the sweep covers a lost timer.
