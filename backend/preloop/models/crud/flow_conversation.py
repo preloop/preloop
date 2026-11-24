@@ -77,6 +77,7 @@ def create(
     flow: models.Flow,
     owner: models.User,
     policy: InteractiveSettings,
+    origin: str = "console",
 ) -> models.FlowConversation:
     """Create a conversation in the caller's transaction."""
     values = dict(
@@ -90,6 +91,7 @@ def create(
         state="starting",
         notice="Starting your conversation.",
         end_requested=False,
+        origin=origin,
     )
     db.execute(
         insert(models.FlowConversation)

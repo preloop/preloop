@@ -34,6 +34,7 @@ class FlowConversation(Base):
     idle_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     end_requested: Mapped[bool] = mapped_column(default=False)
     stop_reason: Mapped[str | None] = mapped_column(String(40))
+    origin: Mapped[str] = mapped_column(String(20), default="console")
 
 
 class FlowConversationMessage(Base):

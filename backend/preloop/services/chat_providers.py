@@ -378,6 +378,15 @@ async def send_private_reply(
     raise ChatProviderError("Unsupported provider")
 
 
+def conversation_scope(
+    provider: str, external_user_id: str, payload: Mapping[str, Any]
+) -> str:
+    """Slack channel conversations belong to threads; private replies to users."""
+    if provider == "slack" and not payload.get("private"):
+        return f"thread:{payload.get('channel_id', '')}:{payload.get('thread_id', '')}"
+    return f"dm:{external_user_id}"
+
+
 def external_command(provider: str, command: str, *, direct: bool = False) -> str:
     """Render an internal slash command in the provider's supported input UI."""
     if provider == "slack" or (provider == "mattermost" and direct):

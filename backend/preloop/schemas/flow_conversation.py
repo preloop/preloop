@@ -21,6 +21,7 @@ class ConversationStart(BaseModel):
 
     message: str = Field(default="", max_length=65536)
     request_id: UUID
+    origin: Literal["console", "slack", "mattermost", "discord"] = "console"
 
 
 class ConversationSend(BaseModel):
@@ -54,6 +55,7 @@ class ConversationResponse(BaseModel):
     notice: str
     can_write: bool = False
     flow_name: str = "Flow conversation"
+    origin: str = "console"
     turns: int
     max_turns: int
     idle_timeout_seconds: int

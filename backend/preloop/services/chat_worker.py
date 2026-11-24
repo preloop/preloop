@@ -38,6 +38,7 @@ async def process_one(db: Session, app: Any) -> bool:
         db, row.connection_id, account_id=str(row.account_id)
     )
     if connection is None or not connection.enabled:
+        crud_chat.close_bindings(db, row.connection_id)
         crud_chat.transition(db, row, "cancelled", last_error="Connection disabled")
         return True
     config = provider_config(connection)
@@ -91,6 +92,9 @@ async def process_one(db: Session, app: Any) -> bool:
                 user = crud_chat.principal(db, connection, row.external_user_id)
                 if user is None:
                     if row.payload.get("actor_id"):
+                        crud_chat.close_bindings(
+                            db, connection.id, external_user_id=row.external_user_id
+                        )
                         crud_chat.transition(
                             db, row, "cancelled", last_error="Original actor revoked"
                         )
@@ -118,7 +122,12 @@ async def process_one(db: Session, app: Any) -> bool:
                         payload={**row.payload, "actor_id": str(user.id)},
                     )
                     broker = ChatBroker(db, connection, row.external_user_id, app)
-                    if row.payload.get("flow_watch"):
+                    if row.payload.get("conversation_watch"):
+                        await broker.poll_conversation(row)
+                        return True
+                    elif row.payload.get("conversation_notice"):
+                        reply = text
+                    elif row.payload.get("flow_watch"):
                         from preloop.services.chat_flows import watch_run
 
                         if not await watch_run(broker, row):
@@ -126,6 +135,20 @@ async def process_one(db: Session, app: Any) -> bool:
                         reply = row.reply
                     elif row.payload.get("flow_notice"):
                         reply = text
+                    elif (
+                        not row.payload.get("approval_request_id")
+                        and (
+                            conversation_reply := await broker.conversation_command(row)
+                        )
+                        is not None
+                    ):
+                        reply = conversation_reply
+                        crud_chat.transition(
+                            db,
+                            row,
+                            "processing",
+                            payload={**row.payload, "flow_conversation": True},
+                        )
                     elif text.split(maxsplit=1)[0:1] in (["/ask"], ["/help"]):
                         from preloop.services.chat_flows import start_or_help
 
@@ -254,7 +277,10 @@ async def process_one(db: Session, app: Any) -> bool:
                             broker.command(text, str(row.id)), timeout=90
                         )
                     else:
-                        reply = await asyncio.wait_for(broker.answer(text), timeout=90)
+                        reply = (
+                            "Read-only account assistant: "
+                            + await asyncio.wait_for(broker.answer(text), timeout=90)
+                        )
                         crud_chat.transition(
                             db,
                             row,
@@ -278,6 +304,9 @@ async def process_one(db: Session, app: Any) -> bool:
         if row.user_id is not None:
             user = crud_chat.principal(db, connection, row.external_user_id)
             if user is None or user.id != row.user_id:
+                crud_chat.close_bindings(
+                    db, connection.id, external_user_id=row.external_user_id
+                )
                 crud_chat.transition(
                     db, row, "cancelled", last_error="Identity revoked"
                 )
@@ -297,6 +326,12 @@ async def process_one(db: Session, app: Any) -> bool:
                 )
                 await ChatBroker(db, connection, row.external_user_id, app).request(
                     "GET", f"/api/v1/flows/executions/{execution_id}", "view_flows"
+                )
+            if row.payload.get("conversation_id"):
+                await ChatBroker(db, connection, row.external_user_id, app).request(
+                    "GET",
+                    f"/api/v1/flow-conversations/{row.payload['conversation_id']}",
+                    "view_flows",
                 )
             permission = row.payload.get("required_permission")
             if permission and not has_permission(user, permission, db):

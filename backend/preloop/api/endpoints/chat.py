@@ -230,6 +230,8 @@ def update_connection(
     if "enabled" in changes and changes["enabled"] is None:
         raise HTTPException(422, "Enabled must be a boolean")
     connection = crud_chat.connections.update(db, db_obj=connection, obj_in=changes)
+    if not connection.enabled:
+        crud_chat.close_bindings(db, connection.id)
     return public_connection(db, connection, current_user)
 
 
@@ -278,6 +280,9 @@ def unlink_identity(
     crud_chat.invalidate_codes(db, connection.id, current_user.id)
     identity = crud_chat.identity(db, connection.id, user_id=current_user.id)
     if identity:
+        crud_chat.close_bindings(
+            db, connection.id, external_user_id=identity.external_user_id
+        )
         crud_chat.identities.delete(db, id=identity.id)
 
 
@@ -378,7 +383,17 @@ def ingest(
                 text = text[len(mention) :].strip()
         if connection.provider == "slack":
             verb = text.split(maxsplit=1)[0] if text else ""
-            if verb in {"link", "note", "message", "approve", "deny", "ask", "help"}:
+            if verb in {
+                "link",
+                "note",
+                "message",
+                "approve",
+                "deny",
+                "ask",
+                "help",
+                "end",
+                "status",
+            }:
                 text = "/" + text
         payload = {
             "text": text,

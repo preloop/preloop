@@ -103,6 +103,29 @@ class ChatWork(Base):
     provider_message_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
 
+class ChatConversationBinding(Base):
+    """Reserve a chat address before starting its conversation through the API."""
+
+    __tablename__ = "chat_conversation_binding"
+    __table_args__ = (UniqueConstraint("connection_id", "scope"),)
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("account.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chat_connection.id", ondelete="CASCADE")
+    )
+    scope: Mapped[str] = mapped_column(String(600))
+    external_user_id: Mapped[str] = mapped_column(String(256))
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user.id", ondelete="CASCADE")
+    )
+    channel_id: Mapped[str] = mapped_column(String(256), default="")
+    thread_id: Mapped[str] = mapped_column(String(256), default="")
+    # The API's stable start request ID is reserved before that object exists.
+    conversation_id: Mapped[uuid.UUID] = mapped_column()
+    closed: Mapped[bool] = mapped_column(default=False)
+
+
 class ChatSetupDraft(Base):
     """Encrypted actor-bound setup; the ID reserves the final callback URL."""
 

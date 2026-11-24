@@ -40,6 +40,64 @@ class CRUDChat:
     work = CRUDBase(models.ChatWork)
     drafts = CRUDBase(models.ChatSetupDraft)
     listeners = CRUDBase(models.ChatListener)
+    bindings = CRUDBase(models.ChatConversationBinding)
+
+    def close_bindings(
+        self,
+        db: Session,
+        connection_id: uuid.UUID,
+        *,
+        external_user_id: str | None = None,
+    ) -> None:
+        """Detach revoked chat addresses without ending their console conversations."""
+        query = db.query(models.ChatConversationBinding).filter_by(
+            connection_id=connection_id, closed=False
+        )
+        if external_user_id is not None:
+            query = query.filter_by(external_user_id=external_user_id)
+        query.update({"closed": True}, synchronize_session=False)
+        db.commit()
+
+    def conversation_binding(
+        self, db: Session, connection_id: uuid.UUID, scope: str
+    ) -> models.ChatConversationBinding | None:
+        """Find the active address, including another thread owner's binding."""
+        return (
+            db.query(models.ChatConversationBinding)
+            .filter_by(connection_id=connection_id, scope=scope, closed=False)
+            .first()
+        )
+
+    def reserve_conversation(
+        self, db: Session, row: models.ChatWork, flow_id: uuid.UUID, scope: str
+    ) -> str | None:
+        """Serialize address ownership and abuse limits before the start POST."""
+        db.query(models.Account).filter_by(id=row.account_id).with_for_update().one()
+        binding = (
+            db.query(models.ChatConversationBinding)
+            .filter_by(connection_id=row.connection_id, scope=scope)
+            .first()
+        )
+        if binding is not None and not binding.closed:
+            db.rollback()
+            return "A conversation is already active here. Use end before ask to start a new one."
+        values = dict(
+            account_id=row.account_id,
+            connection_id=row.connection_id,
+            scope=scope,
+            external_user_id=row.external_user_id,
+            owner_user_id=row.user_id,
+            channel_id=row.payload.get("channel_id") or "",
+            thread_id=row.payload.get("thread_id") or "",
+            conversation_id=row.id,
+            closed=False,
+        )
+        if binding is None:
+            db.add(models.ChatConversationBinding(**values))
+        else:
+            for key, value in values.items():
+                setattr(binding, key, value)
+        return self.reserve_run(db, row, flow_id, conversation_id=row.id)
 
     def chat_flows(self, db: Session, account_id: uuid.UUID) -> list[models.Flow]:
         """List opted-in flows within one account."""
@@ -75,7 +133,13 @@ class CRUDChat:
         ).first()
 
     def reserve_run(
-        self, db: Session, row: models.ChatWork, flow_id: uuid.UUID
+        self,
+        db: Session,
+        row: models.ChatWork,
+        flow_id: uuid.UUID,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        followup: bool = False,
     ) -> str | None:
         """Serialize account reservations before enforcing shared abuse bounds."""
         db.query(models.Account).filter_by(id=row.account_id).with_for_update().one()
@@ -127,7 +191,7 @@ class CRUDChat:
             )
             .first()
         )
-        if active is not None:
+        if active is not None and not followup:
             db.rollback()
             return "You already have a chat run in progress for this flow."
         row.run_flow_id = flow_id
@@ -135,17 +199,25 @@ class CRUDChat:
         row.status = "acting"
         # Persist the observer before calling the API. It can discover an execution
         # even when the worker dies after the API commits and before it replies.
-        db.add(
-            models.ChatWork(
-                account_id=row.account_id,
-                connection_id=row.connection_id,
-                external_user_id=row.external_user_id,
-                user_id=row.user_id,
-                event_id=f"flow-watch:{row.id}",
-                payload={**row.payload, "flow_watch": str(row.id)},
-                next_attempt_at=now + timedelta(seconds=5),
+        if not followup:
+            db.add(
+                models.ChatWork(
+                    account_id=row.account_id,
+                    connection_id=row.connection_id,
+                    external_user_id=row.external_user_id,
+                    user_id=row.user_id,
+                    event_id=f"flow-watch:{row.id}",
+                    payload={
+                        **row.payload,
+                        **(
+                            {"conversation_watch": str(conversation_id)}
+                            if conversation_id
+                            else {"flow_watch": str(row.id)}
+                        ),
+                    },
+                    next_attempt_at=now + timedelta(seconds=5),
+                )
             )
-        )
         db.commit()
         return None
 

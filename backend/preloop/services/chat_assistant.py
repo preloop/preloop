@@ -5,7 +5,7 @@ import asyncio
 import hashlib
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from preloop.api.auth.jwt import create_access_token
 from preloop.api.auth.permissions import has_permission
 from preloop.models import models
-from preloop.services.chat_providers import external_command
+from preloop.services.chat_providers import external_command, conversation_scope
 from preloop.utils.encryption import decrypt_value
 from preloop.models.crud import (
     crud_chat,
@@ -25,6 +25,7 @@ from preloop.models.crud import (
     crud_approval_request,
     crud_flow,
     crud_flow_execution,
+    flow_conversation,
 )
 from preloop.plugins.account_hooks import (
     AuthorizationContext,
@@ -130,6 +131,14 @@ class ChatBroker:
             )
             if resource is not None:
                 self.authorize_resource("flow", str(resource.flow_id), permission)
+        elif kind == "flow_conversation":
+            resource = flow_conversation.get(
+                self.db, UUID(resource_id), user.account_id
+            )
+            if resource is None or resource.owner_user_id != user.id:
+                raise HTTPException(403, "Conversation owner is unavailable")
+            self.authorize_resource("flow", str(resource.flow_id), permission)
+            return
         else:
             raise HTTPException(403, "Unsupported resource")
         if resource is None:
@@ -209,6 +218,21 @@ class ChatBroker:
         ):
             expected = "execute_flows"
             self.authorize_resource("flow", route.split("/")[4], expected)
+        if method == "POST" and re.fullmatch(
+            r"/api/v1/flows/[0-9a-f-]{36}/conversations", route
+        ):
+            expected = "execute_flows"
+            self.authorize_resource("flow", route.split("/")[4], expected)
+        if re.fullmatch(
+            r"/api/v1/flow-conversations/[0-9a-f-]{36}(?:/messages|/end)?", route
+        ) and (
+            method == "GET"
+            and not route.endswith(("/messages", "/end"))
+            or method == "POST"
+            and route.endswith(("/messages", "/end"))
+        ):
+            expected = "view_flows" if method == "GET" else "execute_flows"
+            self.authorize_resource("flow_conversation", route.split("/")[4], expected)
         if method == "GET" and re.fullmatch(
             r"/api/v1/flows/executions/[0-9a-f-]{36}(?:/logs|/result)?", route
         ):
@@ -298,8 +322,304 @@ class ChatBroker:
                 response=response,
             )
         if response.is_error:
-            raise HTTPException(response.status_code, "Action denied or unavailable")
+            detail = "Action denied or unavailable"
+            if "/flow-conversations/" in route or route.endswith("/conversations"):
+                body = response.json()
+                if isinstance(body, dict) and isinstance(body.get("detail"), str):
+                    detail = body["detail"]
+            raise HTTPException(response.status_code, detail)
         return response.json()
+
+    def conversation_url(self, conversation_id: str) -> str:
+        """Link every acknowledgement and bounded answer to the shared Talk thread."""
+        from preloop.config import settings
+
+        return f"{settings.preloop_url.rstrip('/')}/console/flow-conversations/{conversation_id}/talk"
+
+    def binding(self, row: models.ChatWork) -> models.ChatConversationBinding | None:
+        """Resolve a durable address; Slack thread ownership includes other users."""
+        return crud_chat.conversation_binding(
+            self.db,
+            self.connection.id,
+            conversation_scope(
+                self.connection.provider, row.external_user_id, row.payload
+            ),
+        )
+
+    def conversation_payload(
+        self, row: models.ChatWork, conversation_id: str
+    ) -> dict[str, Any]:
+        """Store delivery authorization independently from the active address."""
+        return {
+            **row.payload,
+            "conversation_id": conversation_id,
+            "flow_conversation": True,
+            "required_permissions": ["view_flows", "execute_flows"],
+        }
+
+    async def start_conversation(
+        self, row: models.ChatWork, flow: models.Flow, question: str
+    ) -> str:
+        """Reserve one address and start with the human's ordinary API identity."""
+        scope = conversation_scope(
+            self.connection.provider, row.external_user_id, row.payload
+        )
+        denied = crud_chat.reserve_conversation(self.db, row, flow.id, scope)
+        if denied:
+            return denied
+        try:
+            data = await self.request(
+                "POST",
+                f"/api/v1/flows/{flow.id}/conversations",
+                "execute_flows",
+                {
+                    "request_id": str(row.id),
+                    "message": question,
+                    "origin": self.connection.provider,
+                },
+            )
+        except HTTPException as exc:
+            binding = self.binding(row)
+            if binding:
+                crud_chat.bindings.update(
+                    self.db, db_obj=binding, obj_in={"closed": True}
+                )
+            crud_chat.transition(self.db, row, "processing", run_flow_id=None)
+            return str(exc.detail)
+        crud_chat.transition(
+            self.db,
+            row,
+            "processing",
+            run_execution_id=UUID(data["execution_id"])
+            if data.get("execution_id")
+            else None,
+            payload=self.conversation_payload(row, str(row.id)),
+        )
+        return (
+            f"Conversation with {data['flow_name']} starting. The first answer can take a minute or more. "
+            "Messages are not queued while the agent is working. "
+            "Use end before ask to start a different conversation. "
+            + self.conversation_url(str(row.id))
+        )
+
+    async def conversation_command(self, row: models.ChatWork) -> str | None:
+        """Route plain follow-ups only while this address has an active owner."""
+        binding = self.binding(row)
+        text = str(row.payload.get("text", ""))
+        verb = text.split(maxsplit=1)[0] if text else ""
+        # Commands are normalized on ingress; accept plain lifecycle verbs for
+        # slash-command providers whose message option contains human text.
+        verb = {"end": "/end", "status": "/status"}.get(verb, verb)
+        if binding is None:
+            return (
+                "No active flow conversation. Use ask ALIAS TEXT to start one."
+                if verb in {"/end", "/status"}
+                else None
+            )
+        user = crud_chat.principal(self.db, self.connection, row.external_user_id)
+        if (
+            binding.external_user_id != row.external_user_id
+            or user is None
+            or binding.owner_user_id != user.id
+        ):
+            return "Only the person who started this conversation can continue or end it. Start your own conversation in a direct message or a new thread."
+        conversation_id = str(binding.conversation_id)
+        if verb == "/ask":
+            return "A conversation is already active here. Use end before ask to start a new one."
+        if text.startswith("/") and verb not in {"/end", "/status"}:
+            return None
+        data = await self.request(
+            "GET", f"/api/v1/flow-conversations/{conversation_id}", "view_flows"
+        )
+        crud_chat.transition(
+            self.db,
+            row,
+            "processing",
+            payload=self.conversation_payload(row, conversation_id),
+        )
+        if verb == "/status":
+            deadline = data.get("idle_deadline")
+            if data["state"] == "waiting" and deadline:
+                seconds = max(
+                    0,
+                    int(
+                        (
+                            datetime.fromisoformat(
+                                deadline.replace("Z", "+00:00")
+                            ).replace(tzinfo=UTC)
+                            - datetime.now(UTC)
+                        ).total_seconds()
+                    ),
+                )
+                time_left = f"Container stops in {seconds} seconds."
+            elif data["state"] == "stopped":
+                time_left = "Container stopped; the next message resumes it."
+            else:
+                time_left = (
+                    "Idle countdown starts after the answer."
+                    if data["state"] in {"starting", "working"}
+                    else "Container is stopping or stopped."
+                )
+            return f"{data['flow_name']}: {data['state']}. Turns {data['turns']}/{data['max_turns']}. {time_left} {self.conversation_url(conversation_id)}"
+        if verb == "/end":
+            crud_chat.transition(self.db, row, "acting")
+            await self.request(
+                "POST",
+                f"/api/v1/flow-conversations/{conversation_id}/end",
+                "execute_flows",
+            )
+            crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
+            return "Conversation ended. Your next plain message goes to the read-only account assistant. Use ask ALIAS TEXT to start another flow conversation."
+        if data["state"] in {"ended", "failed"}:
+            crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
+            return f"{data['notice']} Your message was not sent. Your next plain message goes to the read-only account assistant."
+        denied = crud_chat.reserve_run(
+            self.db,
+            row,
+            UUID(data["flow_id"]),
+            conversation_id=binding.conversation_id,
+            followup=True,
+        )
+        if denied:
+            return denied
+        try:
+            result = await self.request(
+                "POST",
+                f"/api/v1/flow-conversations/{conversation_id}/messages",
+                "execute_flows",
+                {"request_id": str(row.id), "message": text},
+            )
+        except HTTPException as exc:
+            crud_chat.transition(self.db, row, "processing", run_flow_id=None)
+            return str(exc.detail)
+        crud_chat.transition(
+            self.db,
+            row,
+            "processing",
+            run_execution_id=UUID(result["execution_id"])
+            if result.get("execution_id")
+            else None,
+        )
+        if data["state"] == "stopped":
+            return "The container stopped after the idle timeout. Resuming this conversation. The first answer can take a minute or more."
+        return f"Message sent to {data['flow_name']}. Wait for the answer; messages are not queued."
+
+    async def poll_conversation(self, row: models.ChatWork) -> None:
+        """Observe complete turns and state transitions through durable outbox items."""
+        from preloop.services.chat_flows import bounded_reply, defer_watch
+
+        conversation_id = row.payload["conversation_watch"]
+        binding = self.binding(row)
+        if not binding or str(binding.conversation_id) != conversation_id:
+            crud_chat.transition(
+                self.db, row, "cancelled", last_error="Conversation binding closed"
+            )
+            return
+        try:
+            data = await self.request(
+                "GET",
+                f"/api/v1/flow-conversations/{conversation_id}?after_turn={row.payload.get('after_turn', 0)}",
+                "view_flows",
+            )
+        except HTTPException as exc:
+            # The observer exists before start dispatch; a crashed POST is never
+            # replayed. Allow its committed conversation to become visible.
+            if exc.status_code == 429 or exc.status_code >= 500:
+                defer_watch(self, row)
+                return
+            if exc.status_code in {401, 403, 404}:
+                missing = (
+                    flow_conversation.get(
+                        self.db, UUID(conversation_id), row.account_id
+                    )
+                    is None
+                )
+                if missing and row.created_at > datetime.utcnow() - timedelta(
+                    minutes=10
+                ):
+                    defer_watch(self, row)
+                    return
+                if missing:
+                    parent = crud_chat.work.get(
+                        self.db, UUID(conversation_id), account_id=str(row.account_id)
+                    )
+                    if parent is not None:
+                        crud_chat.work.update(
+                            self.db, db_obj=parent, obj_in={"run_flow_id": None}
+                        )
+                crud_chat.bindings.update(
+                    self.db, db_obj=binding, obj_in={"closed": True}
+                )
+                crud_chat.transition(
+                    self.db,
+                    row,
+                    "cancelled",
+                    last_error="Conversation unavailable; inspect Talk before retrying",
+                )
+                return
+            raise
+        except (httpx.HTTPError, asyncio.TimeoutError):
+            defer_watch(self, row)
+            return
+        url = self.conversation_url(conversation_id)
+        after = row.payload.get("after_turn", 0)
+        for message in data.get("messages", []):
+            if message["status"] != "completed":
+                break
+            self.conversation_notice(
+                row,
+                f"answer:{message['turn']}",
+                bounded_reply(
+                    message["answer"]
+                    or "The agent completed this turn without a text answer.",
+                    url,
+                    self.connection.provider,
+                ),
+            )
+            after = message["turn"]
+        if len(data.get("messages", [])) == 100 and after < data["turns"]:
+            crud_chat.transition(
+                self.db, row, "processing", payload={**row.payload, "after_turn": after}
+            )
+            defer_watch(self, row)
+            return
+        state = data["state"]
+        # The runtime can reach its turn limit before its final checkpoint ends.
+        limit = data["turns"] >= data["max_turns"] and after >= data["turns"]
+        if state in {"stopped", "ended", "failed"} or limit:
+            notice = (
+                "The turn limit was reached. Start a new conversation."
+                if limit
+                else data["notice"]
+            )
+            self.conversation_notice(
+                row,
+                f"state:{'turn_limit' if limit else state}:{data['turns']}",
+                bounded_reply(notice, url, self.connection.provider),
+            )
+        if state in {"ended", "failed"} or limit:
+            crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
+            crud_chat.transition(self.db, row, "delivered", last_error=None)
+        else:
+            crud_chat.transition(
+                self.db, row, "processing", payload={**row.payload, "after_turn": after}
+            )
+            defer_watch(self, row)
+
+    def conversation_notice(self, row: models.ChatWork, key: str, text: str) -> None:
+        """Deduplicate each answer/notice even when polling crashes after enqueue."""
+        crud_chat.receive(
+            self.db,
+            connection=self.connection,
+            event_id=f"conversation:{row.payload['conversation_watch']}:{key}",
+            external_user_id=row.external_user_id,
+            payload={
+                **self.conversation_payload(row, row.payload["conversation_watch"]),
+                "conversation_watch": None,
+                "conversation_notice": True,
+                "text": text,
+            },
+        )
 
     async def read(self, name: str) -> Any:
         result = await self._read(name)

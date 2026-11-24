@@ -10,6 +10,7 @@ import './agent-talk-view';
 import type { AgentTalkView } from './agent-talk-view';
 import {
   conversationEvents,
+  conversationIntro,
   conversationLabel,
   conversationNotice,
   conversationRequest,
@@ -45,6 +46,17 @@ const thread: FlowConversation = {
 };
 
 describe('Hosted conversation on Talk', () => {
+  for (const [origin, label] of Object.entries({
+    slack: 'Slack',
+    mattermost: 'Mattermost',
+    discord: 'Discord',
+  })) {
+    it(`shows the ${origin} origin in the existing thread introduction`, () => {
+      expect(conversationIntro({ ...thread, origin })).to.equal(
+        `Started in ${label}.`
+      );
+    });
+  }
   let fetch: sinon.SinonStub;
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-token');

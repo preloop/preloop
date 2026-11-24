@@ -308,3 +308,44 @@ async def test_discord_command_failure_restores_replaced_callback() -> None:
             )
     assert patches == [target, previous]
     assert current == previous
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active", [True, False])
+async def test_mattermost_redacted_membership_checks_active_team_search(
+    active: bool,
+) -> None:
+    """Ordinary bots see -1 for redacted membership; removed users still fail closed."""
+    from preloop.services.mattermost_listener import verify_team_actor
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/members/bot"):
+            return httpx.Response(
+                200, json={"team_id": "team", "user_id": "bot", "delete_at": 0}
+            )
+        if path.endswith("/members/actor"):
+            return httpx.Response(
+                200, json={"team_id": "team", "user_id": "actor", "delete_at": -1}
+            )
+        if path.endswith("/users/actor"):
+            return httpx.Response(
+                200, json={"id": "actor", "username": "jane-doe", "delete_at": 0}
+            )
+        assert request.method == "POST" and path.endswith("/users/search")
+        assert json.loads(request.content) == {
+            "team_id": "team",
+            "term": "jane-doe",
+            "allow_inactive": False,
+            "limit": 100,
+        }
+        return httpx.Response(
+            200, json=[{"id": "actor", "delete_at": 0}] if active else []
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        if active:
+            await verify_team_actor(config(), "actor", client=client)
+        else:
+            with pytest.raises(ChatProviderError, match="not an active member"):
+                await verify_team_actor(config(), "actor", client=client)

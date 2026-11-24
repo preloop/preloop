@@ -16,6 +16,16 @@ separate Deployment with `chatWorker.enabled`; it shares API credentials and
 operator network/CA settings, while provider health remains connection-specific. See
 [Chat connections](../chat-connections.md) for setup and operational limits.
 
+Interactive chat flows use `ChatConversationBinding` to reserve one connection
+and chat address before calling the shared conversation start API. The stable
+start request UUID is reserved before the conversation exists. Slack channel
+threads bind an owner; all private delivery transports bind the external user.
+The broker calls start/send/end/poll as that linked user, while durable ChatWork
+observers enqueue deduplicated complete answers and state notices. Every outbox
+item rechecks identity and conversation visibility before disclosure. Uncertain
+provider writes are never replayed. Console and chat therefore share ownership,
+turns, limits and native checkpoint resume rather than separate runtime state.
+
 The public `/api/v1/features` payload reports an explicit `oss`, `cloud`, or
 `enterprise` edition and the running backend `server_version`. Hosted instances
 are Cloud; self-hosted proprietary installations are Enterprise; other installs

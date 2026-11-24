@@ -41,11 +41,47 @@ async def verify_team_actor(
             f"/teams/{identifier(config.workspace_id)}/members/{identifier(member)}",
             client=client,
         )
-        if (
-            data.get("team_id") != config.workspace_id
-            or data.get("user_id") != member
-            or data.get("delete_at", 0)
-        ):
+        if data.get("team_id") != config.workspace_id or data.get("user_id") != member:
+            raise ChatProviderError(
+                "Actor or bot is not an active member of the selected team"
+            )
+        deleted = data.get("delete_at", 0)
+        if deleted == -1:
+            # Mattermost redacts another member's role and deletion fields for
+            # ordinary bots. A team-filtered search excludes removed members.
+            user = await provider_request(
+                config, "GET", f"/users/{identifier(member)}", client=client
+            )
+            username = user.get("username")
+            if (
+                user.get("id") != member
+                or user.get("delete_at")
+                or not isinstance(username, str)
+                or not username
+            ):
+                raise ChatProviderError("Actor is unavailable")
+            matches = await provider_request(
+                config,
+                "POST",
+                "/users/search",
+                client=client,
+                payload={
+                    "team_id": config.workspace_id,
+                    "term": username,
+                    "allow_inactive": False,
+                    "limit": 100,
+                },
+            )
+            if not isinstance(matches, list) or not any(
+                isinstance(match, dict)
+                and match.get("id") == member
+                and not match.get("delete_at")
+                for match in matches
+            ):
+                raise ChatProviderError(
+                    "Actor is not an active member of the selected team"
+                )
+        elif deleted:
             raise ChatProviderError(
                 "Actor or bot is not an active member of the selected team"
             )
@@ -98,7 +134,17 @@ async def canonical_dm(
     if not isinstance(text, str) or not text.strip() or len(text) > MAX_MESSAGE_CHARS:
         return None
     verb = text.split(maxsplit=1)[0]
-    if verb in {"link", "note", "message", "approve", "deny", "ask", "help"}:
+    if verb in {
+        "link",
+        "note",
+        "message",
+        "approve",
+        "deny",
+        "ask",
+        "help",
+        "end",
+        "status",
+    }:
         text = "/" + text
     payload: dict[str, Any] = {
         "text": text,

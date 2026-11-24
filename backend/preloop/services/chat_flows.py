@@ -153,6 +153,8 @@ async def start_or_help(broker: ChatBroker, row: models.ChatWork) -> str:
         return "Unknown or unavailable chat flow. Use help to list flows you may run."
     if not question.strip():
         return "Use ask ALIAS TEXT, or ask TEXT when a default flow is configured."
+    if ((flow.agent_config or {}).get("interactive") or {}).get("enabled"):
+        return await broker.start_conversation(row, flow, question.strip())
     user = crud_chat.principal(broker.db, broker.connection, row.external_user_id)
     if user is None:
         raise HTTPException(403, "Identity revoked")

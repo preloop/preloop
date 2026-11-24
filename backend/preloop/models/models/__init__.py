@@ -261,6 +261,7 @@ __all__ = [
     "CallbackKeyBinding",
     "CallbackReceipt",
     "ChatConnection",
+    "ChatConversationBinding",
     "ChatIdentity",
     "ChatLinkCode",
     "ChatWork",
@@ -485,7 +486,7 @@ from .person_auth_identity import PersonAuthIdentity, PersonPasswordCredential
 
 from .mcp_inventory import MCPInventoryFinding, MCPInventoryReview
 
-from .chat import ChatSetupDraft, ChatListener
+from .chat import ChatSetupDraft, ChatListener, ChatConversationBinding
 
 from .support import (
     SupportConversation,

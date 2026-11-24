@@ -186,11 +186,16 @@ ID is required in the wizard. Discovery is bounded to 200 installed servers.
 
 ## Commands and authorization
 
-After linking, use ordinary text for read-only questions. Explicit commands are:
+After linking, ordinary text goes to your active flow conversation, or to the
+read-only account assistant when none is active. The assistant labels its replies
+so the switch is visible. Explicit commands are:
 
 | Action | Slack / Mattermost direct message | Discord |
 | --- | --- | --- |
 | Run a flow | `ask ALIAS TEXT` (or `ask TEXT` with a default) | `/preloop message:/ask ALIAS TEXT` |
+| Follow up on an interactive flow | Plain text in the bot DM | `/preloop message:What about the next step?` |
+| End the active conversation | `end` | `/preloop message:/end` |
+| Conversation status | `status` | `/preloop message:/status` |
 | List available flows | `help` | `/preloop message:/help` |
 | Link account | `link CODE` | `/preloop message:/link CODE` |
 | Session note | `note SESSION_ID TEXT` | `/preloop message:/note SESSION_ID TEXT` |
@@ -227,10 +232,53 @@ and inaccessible aliases are reported as unavailable without exposing hidden nam
 If a connection has a default, `ask Where is the checklist?` uses it. An exact
 first-word alias takes precedence; otherwise the whole question goes to the
 default. This means a misspelled alias is part of the default flow's question.
-Without a default, an unknown alias is refused. Plain text without `ask` continues
-to ask the existing read-only account assistant.
+Without a default, an unknown alias is refused.
 
-Each question starts a new execution; thread replies do not resume prior runs.
+### Interactive flow conversations
+
+If the flow has **Interactive conversation** enabled as well as a chat alias,
+`ask ALIAS TEXT` starts the same durable conversation shown in the console's
+**Talk** window. Talk identifies whether it started in Slack, Mattermost or Discord.
+The acknowledgement links to that thread and warns that the first answer can take
+a minute or more. Flows without interactive enabled keep the one-shot behavior
+below.
+
+| Provider | Follow-up rule |
+| --- | --- |
+| Slack DM | Send plain text to the same bot. One active conversation per user per connection, across DM threads. |
+| Slack channel | Start with `@Preloop ask ALIAS TEXT`, then reply in that thread with `@Preloop TEXT`. Only its owner can continue or end it; another user gets an explicit refusal. A new thread can have its own conversation. |
+| Mattermost bot DM | Send plain text to the same bot. One active conversation per user per connection. With the optional slash-command transport, use `/preloop TEXT`, `/preloop /end` and `/preloop /status`. |
+| Discord | In the server where the bot is installed, type `/preloop message:TEXT` for each follow-up, e.g. `/preloop message:What was the code word?`. Use `/preloop message:/end` and `/preloop message:/status`. Replies go to your bot DM; typing directly in that DM is not supported by the slash-command transport. One active conversation per user per connection, across server channels. |
+
+Slack's generated manifest subscribes only to `app_mention` and `message.im`.
+It does not deliver unmentioned channel-thread replies, so **mention the bot on
+every channel follow-up**. No new Slack event, scope or reinstall is required
+for this feature.
+
+`ask` while a conversation is active refuses to replace it: use `end` first,
+then `ask` again. `status` reports the flow, state, turns used/allowed and seconds
+until the idle container stops (or that its idle countdown has not started).
+The worker sends complete answers and state notices once each, without streaming
+edits. Messages sent while starting or working are refused with “Wait for its
+answer”; they are **not queued**. After idle shutdown the worker posts a stopped
+notice; the next message resumes the same native conversation. Resuming can take
+a minute or more. Ended conversations and turn limits require a new `ask`;
+failures include the conversation's notice text. After ending, the next plain
+message goes to the visibly labelled read-only account assistant.
+
+Conversation bindings and polling are persisted in the database and survive
+worker restarts. Starts and follow-up attempts share the five-per-user and
+twenty-per-connection minute limits below. The conversation owner's permissions,
+normal flow budgets, approvals, kill switch, audit identity and metering apply
+through the shared conversation API. Unlinking, disabling the connection or
+losing visibility prevents stored answers from being delivered. Interrupted
+writes are marked uncertain and never replayed. Long answers are truncated at
+the limits below with a link to the full conversation in Talk.
+
+### One-shot flows
+
+For flows without interactive enabled, each question starts a new execution;
+thread replies do not resume prior runs.
 The normal limits, budgets, approvals and account kill switch apply. The worker
 allows five starts per user per minute and twenty per connection per minute,
 across workers, and one unfinished chat run per user per flow. Refused/uncertain
