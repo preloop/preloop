@@ -24,6 +24,7 @@ scanner does not register them automatically.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -98,6 +99,15 @@ from ..exceptions import (
 )
 from .base import BaseTracker
 from .utils import parse_retry_after
+
+from preloop.utils.azure_devops_review import (
+    SUMMARY_MARKER,
+    ReviewPositionCache,
+    changed_line_ranges,
+    generated_body,
+    is_review_summary,
+    reviewed_sha,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1156,6 +1166,174 @@ class AzureDevOpsTracker(BaseTracker):
         )
         return list(data.get("changeEntries") or [])
 
+    async def _comment_position(
+        self,
+        pr_id: int | str,
+        path: str,
+        line: int,
+        repo_full_name: Optional[str],
+        reviewed_commit: Optional[str] = None,
+        position_cache: Optional[ReviewPositionCache] = None,
+    ) -> Tuple[Dict[str, Any], Optional[str]]:
+        """Validate a right-side line against the reviewed iteration's full diff.
+
+        Comparing an iteration to itself means comparing its common commit
+        with its source commit, per the Threads REST 7.1 contract.
+        """
+        base = self._pr(pr_id, repo_full_name)
+        cache = position_cache if position_cache is not None else ReviewPositionCache()
+        if base not in cache.iterations:
+            cache.iterations[base] = await self._list(f"{base}/iterations")
+        iterations = cache.iterations[base]
+        if not iterations:
+            return {}, "no reviewed iteration"
+        if reviewed_commit:
+            iterations = [
+                item
+                for item in iterations
+                if (item.get("sourceRefCommit") or {}).get("commitId", "").lower()
+                == reviewed_commit.lower()
+            ]
+            if not iterations:
+                return {}, "reviewed commit has no matching iteration"
+        iteration = max(iterations, key=lambda item: int(item["id"]))
+        iteration_id = int(iteration["id"])
+        file_path = "/" + path.lstrip("/")
+        changes_key = (base, iteration_id)
+        if changes_key not in cache.changes:
+            entries: List[Dict[str, Any]] = []
+            skip = 0
+            for _ in range(MAX_PAGES):
+                data = await self._get_json(
+                    f"{base}/iterations/{iteration_id}/changes",
+                    params={"$compareTo": 0, "$top": 2000, "$skip": skip},
+                )
+                entries.extend(data.get("changeEntries", []))
+                if not data.get("nextSkip"):
+                    break
+                skip = int(data["nextSkip"])
+            cache.changes[changes_key] = entries
+        entry = next(
+            (
+                change
+                for change in cache.changes[changes_key]
+                if (change.get("item") or {}).get("path") == file_path
+                or change.get("originalPath") == file_path
+            ),
+            None,
+        )
+        if entry is None:
+            return {}, "file is not part of the diff"
+        change_type = str(entry.get("changeType") or "").lower()
+        if "delete" in change_type:
+            return {}, "file was deleted"
+        if "rename" in change_type or entry.get("sourceServerItem"):
+            return {}, "file was renamed"
+        source = (iteration.get("sourceRefCommit") or {}).get("commitId")
+        common = (iteration.get("commonRefCommit") or {}).get("commitId")
+        if not source or not common:
+            return {}, "iteration has no source or common commit"
+        repo = base.rsplit("/pullRequests/", 1)[0]
+
+        async def content(commit: str) -> List[str]:
+            """Read text at an immutable commit, never at a moving branch."""
+            item = await self._get_json(
+                f"{repo}/items",
+                params={
+                    "path": file_path,
+                    "includeContent": "true",
+                    "versionDescriptor.versionType": "commit",
+                    "versionDescriptor.version": commit,
+                },
+            )
+            if (item.get("contentMetadata") or {}).get("isBinary"):
+                raise ValueError("binary file")
+            text = item.get("content")
+            if not isinstance(text, str):
+                raise ValueError("file content unavailable")
+            return text.splitlines()
+
+        ranges_key = (base, iteration_id, file_path)
+        if ranges_key not in cache.ranges:
+            after = await content(source)
+            before = [] if "add" in change_type else await content(common)
+            cache.ranges[ranges_key] = await asyncio.to_thread(
+                changed_line_ranges, before, after
+            )
+        if not any(start < line <= end for start, end in cache.ranges[ranges_key]):
+            return {}, "line is not part of the diff"
+        tracking_id = entry.get("changeTrackingId")
+        if not isinstance(tracking_id, int):
+            return {}, "change tracking id unavailable"
+        return {
+            "threadContext": {
+                "filePath": file_path,
+                "rightFileStart": {"line": line, "offset": 1},
+                "rightFileEnd": {"line": line, "offset": 1},
+            },
+            "pullRequestThreadContext": {
+                "changeTrackingId": tracking_id,
+                "iterationContext": {
+                    "firstComparingIteration": iteration_id,
+                    "secondComparingIteration": iteration_id,
+                },
+            },
+        }, None
+
+    async def upsert_pull_request_summary(
+        self,
+        pr_id: int | str,
+        body: str,
+        *,
+        repo_full_name: Optional[str] = None,
+        notice: bool = False,
+    ) -> Dict[str, Any]:
+        """Update the summary, or append a brief decision without losing its history.
+
+        Args:
+            pr_id: Pull request ID.
+            body: Full summary or brief review decision.
+            repo_full_name: Repository binding, when not set on the client.
+            notice: Reply in an existing summary instead of replacing its details.
+
+        Returns:
+            The canonical summary IDs and URL.
+        """
+        body = generated_body(body)
+        notice_body = body
+        if SUMMARY_MARKER not in body:
+            body += f"\n\n{SUMMARY_MARKER}"
+        threads = await self.get_pull_request_threads(pr_id, repo_full_name)
+        for thread in sorted(threads, key=lambda thread: int(thread["id"])):
+            if thread.get("isDeleted") or thread.get("threadContext"):
+                continue
+            for comment in thread.get("comments") or []:
+                if comment.get("isDeleted") or not is_review_summary(
+                    comment.get("content") or ""
+                ):
+                    continue
+                tid, cid = int(thread["id"]), int(comment["id"])
+                if notice:
+                    await self.add_pull_request_comment(
+                        pr_id,
+                        notice_body,
+                        repo_full_name=repo_full_name,
+                        thread_id=tid,
+                        parent_comment_id=cid,
+                    )
+                else:
+                    await self.update_pull_request_comment(
+                        pr_id, tid, cid, body, repo_full_name=repo_full_name
+                    )
+                return {
+                    "thread_id": tid,
+                    "comment_id": cid,
+                    "url": f"{self.pull_request_url(pr_id, repo_full_name)}?discussionId={tid}",
+                }
+        return await self.add_pull_request_comment(
+            pr_id, body, repo_full_name=repo_full_name
+        )
+
     async def add_pull_request_comment(
         self,
         pr_id: int | str,
@@ -1164,6 +1342,11 @@ class AzureDevOpsTracker(BaseTracker):
         repo_full_name: Optional[str] = None,
         thread_id: Optional[int] = None,
         parent_comment_id: Optional[int] = None,
+        path: Optional[str] = None,
+        line: Optional[int] = None,
+        side: Optional[str] = None,
+        reviewed_commit: Optional[str] = None,
+        position_cache: Optional[ReviewPositionCache] = None,
     ) -> Dict[str, Any]:
         """Start a thread, or reply in one.
 
@@ -1173,26 +1356,62 @@ class AzureDevOpsTracker(BaseTracker):
             repo_full_name: ``org/project/repo``.
             thread_id: Reply in this thread instead of starting one.
             parent_comment_id: Comment replied to; defaults to the first.
+            path: Repository-relative file path for an inline finding.
+            line: One-based line number in the reviewed source.
+            side: RIGHT (default); other sides fall back to a general thread.
+            reviewed_commit: Source SHA; defaults to the body marker or latest iteration.
+            position_cache: Shared immutable verification data for this review only.
 
         Returns:
-            ``{"thread_id", "comment_id", "url"}``.
+            Thread/comment IDs and URL, plus ``anchored`` and ``fallback_reason``.
         """
         from preloop.utils.azure_devops import PRELOOP_COMMENT_MARKER
 
         if PRELOOP_COMMENT_MARKER not in body:
             body = f"{body}\n\n{PRELOOP_COMMENT_MARKER}"
         base = self._pr(pr_id, repo_full_name)
+        body = generated_body(body)
+        fallback = None
+        position: Dict[str, Any] = {}
         if thread_id is None:
+            if path and line is not None:
+                if side and side.upper() != "RIGHT":
+                    fallback = "only right-side positions are supported"
+                else:
+                    try:
+                        position, fallback = await self._comment_position(
+                            pr_id,
+                            path,
+                            line,
+                            repo_full_name,
+                            reviewed_commit or reviewed_sha(body),
+                            position_cache,
+                        )
+                    except (
+                        TrackerResponseError,
+                        TrackerConnectionError,
+                        ValueError,
+                    ):
+                        fallback = "diff position could not be verified"
+                # Keep the location even if Azure later rejects the anchor.
+                body += f"\n\n`{path}:{line}`"
+            payload = {
+                "comments": [{"parentCommentId": 0, "content": body, "commentType": 1}],
+                "status": THREAD_ACTIVE,
+                **position,
+            }
             response = await self._request(
                 "POST",
                 f"{base}/threads",
-                json={
-                    "comments": [
-                        {"parentCommentId": 0, "content": body, "commentType": 1}
-                    ],
-                    "status": THREAD_ACTIVE,
-                },
+                json=payload,
+                allow_status=(400, 422) if position else (),
             )
+            if position and response.status_code in (400, 422):
+                fallback = f"Azure rejected the position (HTTP {response.status_code})"
+                position = {}
+                payload.pop("threadContext")
+                payload.pop("pullRequestThreadContext")
+                response = await self._request("POST", f"{base}/threads", json=payload)
             thread = response.json()
             comments = thread.get("comments") or [{}]
             new_thread = int(thread.get("id"))
@@ -1213,7 +1432,13 @@ class AzureDevOpsTracker(BaseTracker):
         url = (
             f"{self.pull_request_url(pr_id, repo_full_name)}?discussionId={new_thread}"
         )
-        return {"thread_id": new_thread, "comment_id": comment_id, "url": url}
+        return {
+            "thread_id": new_thread,
+            "comment_id": comment_id,
+            "url": url,
+            "anchored": bool(position),
+            "fallback_reason": fallback,
+        }
 
     async def update_pull_request_comment(
         self,
@@ -1233,7 +1458,7 @@ class AzureDevOpsTracker(BaseTracker):
             "PATCH",
             f"{self._pr(pr_id, repo_full_name)}/threads/{int(thread_id)}"
             f"/comments/{int(comment_id)}",
-            json={"content": body},
+            json={"content": generated_body(body)},
         )
         return response.json()
 

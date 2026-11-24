@@ -110,6 +110,27 @@ describe('AddTrackerModal Azure DevOps', () => {
     expect(guide?.href).to.contain('azure-devops-tracker');
   });
 
+  it('defaults voting off and sends the selected vote preference', async () => {
+    const { api: stubbedApi } = buildApi(sandbox);
+    await open(stubbedApi);
+    await selectType(element, 'azure_devops');
+    (element as any).azureDevOpsOrganization = 'example-org';
+    const toggle = element.shadowRoot!.querySelector<any>(
+      'sl-switch[name="azure_devops_cast_token_owner_vote"]'
+    )!;
+    expect(customElements.get('sl-switch')).to.exist;
+    expect(toggle.checked).to.equal(false);
+    expect(
+      element.azureDevOpsConnectionDetails().cast_token_owner_vote
+    ).to.equal(false);
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('sl-change'));
+    await element.updateComplete;
+    expect(
+      element.azureDevOpsConnectionDetails().cast_token_owner_vote
+    ).to.equal(true);
+  });
+
   it('requires an organization and a project for a repository', async () => {
     const { stubs, api: stubbedApi } = buildApi(sandbox);
     await open(stubbedApi);
@@ -145,7 +166,11 @@ describe('AddTrackerModal Azure DevOps', () => {
     expect(token).to.equal('pat-secret');
     expect(url).to.equal('https://dev.azure.com');
     expect(options).to.deep.equal({
-      connectionDetails: { organization: 'example-org', project: 'Platform' },
+      connectionDetails: {
+        organization: 'example-org',
+        project: 'Platform',
+        cast_token_owner_vote: false,
+      },
       authType: 'api_token',
     });
     expect(state.step).to.equal(2);
@@ -156,6 +181,7 @@ describe('AddTrackerModal Azure DevOps', () => {
     expect(projectArgs[6].connectionDetails).to.deep.equal({
       organization: 'example-org',
       project: 'Platform',
+      cast_token_owner_vote: false,
     });
     await element.updateComplete;
     const groups = [
@@ -180,6 +206,7 @@ describe('AddTrackerModal Azure DevOps', () => {
     expect(payload.connection_details).to.deep.equal({
       organization: 'example-org',
       project: 'Platform',
+      cast_token_owner_vote: false,
     });
   });
 
@@ -264,6 +291,7 @@ describe('AddTrackerModal Azure DevOps', () => {
       organization: 'example-org',
       project: 'Platform',
       repository: 'web',
+      cast_token_owner_vote: true,
     });
   });
 });

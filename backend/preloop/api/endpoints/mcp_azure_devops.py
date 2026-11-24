@@ -11,11 +11,9 @@ Mapping notes:
   id; a reply's ``comment_id`` is ``"<thread>:<comment>"``. ``update_comment``
   accepts both forms (or a bare comment id plus ``thread_id``).
 * ``in_reply_to`` names the thread (or ``"<thread>:<comment>"``) to reply in.
-* Inline file-position comments are not supported in this version; their
-  text is posted in the thread with the file and line prefixed.
-* ``review_action`` ``approve`` and ``request_changes`` also cast the token
-  owner's vote (approve, or wait for author) when the token may vote; a
-  refused vote is reported as a note, never as a failed review.
+* File findings use right-side diff anchors, falling back to general threads.
+* Reviews share one marked summary. Votes require the per-tracker
+  ``cast_token_owner_vote`` setting; a refused vote remains nonfatal.
 * Completing (merging) or abandoning a pull request is refused. Labels,
   assignees, reviewers, draft and reactions are reported as ignored.
 * Azure DevOps has no unified diff endpoint: ``changes`` lists the files of
@@ -42,6 +40,11 @@ from preloop.sync.trackers.azure_devops import (
     AzureDevOpsTracker,
 )
 from preloop.utils.azure_devops import branch_from_ref, user_name
+from preloop.utils.azure_devops_review import (
+    ReviewPositionCache,
+    is_review_summary,
+    reviewed_sha,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +169,7 @@ def _changes(entries: List[Dict[str, Any]]) -> Dict[str, Any]:
         item = entry.get("item") or {}
         if item.get("isFolder") or item.get("gitObjectType") == "tree":
             continue
-        path = str(item.get("path") or "").lstrip("/")
+        path = str(item.get("path") or entry.get("originalPath") or "").lstrip("/")
         if not path:
             continue
         kind = str(entry.get("changeType") or "").split(",")[0].strip().lower()
@@ -255,14 +258,6 @@ async def get_pull_request(
     )
 
 
-def _inline_text(body: str, path: Optional[str], line: Optional[int]) -> str:
-    """Prefix a file position, since positioned threads are not supported."""
-    if not path:
-        return body
-    where = f"`{path}`" + (f" line {line}" if line is not None else "")
-    return f"**{where}**\n\n{body}"
-
-
 async def add_comment(
     client: AzureDevOpsTracker,
     pr_number: str | int,
@@ -281,9 +276,9 @@ async def add_comment(
         pr_number: Pull request id.
         comment: Markdown body.
         repo_full_name: ``org/project/repo``; defaults to the client's.
-        path: File the comment is about (prefixed to the text).
-        line: Line the comment is about (prefixed to the text).
-        side: Ignored; positioned threads are not supported.
+        path: Repository-relative file path for a diff anchor.
+        line: One-based source line for a diff anchor.
+        side: RIGHT (default); other sides fall back to a general thread.
         in_reply_to: Thread (``"T"``) or comment (``"T:C"``) to reply to.
 
     Returns:
@@ -300,19 +295,27 @@ async def add_comment(
     parent: Optional[int] = None
     if in_reply_to:
         thread_id, parent = _comment_ref(in_reply_to)
-    created = await client.add_pull_request_comment(
-        number,
-        _inline_text(comment, path, line),
-        repo_full_name=repo_full_name,
-        thread_id=thread_id,
-        parent_comment_id=parent,
-    )
+    if thread_id is None and not path and is_review_summary(comment):
+        created = await client.upsert_pull_request_summary(
+            number, comment, repo_full_name=repo_full_name
+        )
+    else:
+        created = await client.add_pull_request_comment(
+            number,
+            comment,
+            repo_full_name=repo_full_name,
+            thread_id=thread_id,
+            parent_comment_id=parent,
+            path=path,
+            line=line,
+            side=side,
+        )
     message = f"Successfully added comment to PR {number}"
     if path:
-        message += (
-            f" (about {path}:{line}; Azure DevOps file-position threads are not "
-            "supported, so it is a general thread)"
-        )
+        if created.get("anchored"):
+            message += f" (anchored to {path}:{line})"
+        elif created.get("fallback_reason"):
+            message += f" (general thread: {created['fallback_reason']})"
     return AddCommentResponse(
         comment_id=_comment_id(created["thread_id"], created["comment_id"]),
         status="created",
@@ -385,7 +388,7 @@ async def update_pull_request(
             ``unapprove``.
         review_body: Summary thread posted with the review.
         review_comments: File comments ``{path, line, body}``, posted as
-            threads with the position in the text.
+            anchored threads, with general-thread fallback.
         add_reaction: Not supported; reported as ignored.
         remove_reaction: Not supported; reported as ignored.
 
@@ -431,32 +434,52 @@ async def update_pull_request(
     result_id: Optional[str] = None
     result_url: Optional[str] = None
 
+    position_cache = ReviewPositionCache()
     # Content first, vote last: a failure part way never leaves a vote
     # without the comments that explain it.
     for rc in review_comments or []:
         line = int(str(rc["line"]).strip())
-        await client.add_pull_request_comment(
+        created = await client.add_pull_request_comment(
             number,
-            _inline_text(str(rc["body"]), str(rc["path"]), line),
+            str(rc["body"]),
             repo_full_name=repo_full_name,
+            path=str(rc["path"]),
+            line=line,
+            side=rc.get("side"),
+            reviewed_commit=reviewed_sha(review_body or ""),
+            position_cache=position_cache,
         )
+        if created.get("fallback_reason"):
+            notes.append(f"{rc['path']}:{line}: {created['fallback_reason']}")
     if review_comments:
         actions.append(f"{len(review_comments)} file comment(s)")
-        notes.append("file comments are posted as general threads")
 
-    if action and review_body:
-        created = await client.add_pull_request_comment(
-            number, review_body, repo_full_name=repo_full_name
+    if action:
+        decision = {
+            "approve": "Approved",
+            "request_changes": "Changes requested",
+            "comment": "Comments",
+            "unapprove": "Approval withdrawn",
+        }.get(action, action)
+        created = await client.upsert_pull_request_summary(
+            number,
+            f"Review decision: **{decision}**\n\n{review_body or ''}",
+            repo_full_name=repo_full_name,
+            notice=not is_review_summary(review_body or ""),
         )
         result_id = _comment_id(created["thread_id"], created["comment_id"])
         result_url = created.get("url")
 
-    if action in _VOTES:
+    if action in _VOTES and client.connection_details.get(
+        "cast_token_owner_vote", False
+    ):
         voted = await client.set_vote(
             number, _VOTES[action], repo_full_name=repo_full_name
         )
         if not voted:
             notes.append("vote skipped: the token may not vote on this pull request")
+    elif action in _VOTES:
+        notes.append("token owner's vote disabled; decision recorded in summary")
     if action:
         actions.append(f"review ({action})")
 
