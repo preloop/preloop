@@ -834,3 +834,12 @@ persists text from its SSE stream. Idle executions retain their hosted capacity
 slot. After shutdown, a new execution restores the explicit native session and
 workspace artifacts. Gateway usage and active runtime are charged across all
 executions bound to the conversation. See the [API and lifecycle guide](../guide/flows/interactive-conversations.md).
+
+## Explicit Azure review requests
+
+Azure PR review dispatch reads the current provider state and head; terminal
+notifications stop runs through the shared lifecycle handler. Explicit Azure
+review requests use a durable `azure_review_request` row per flow and PR,
+serialized with incoming PR events, and coalesce while a review is active.
+The scheduler discovers request labels in bounded repository pages because
+Azure does not emit label hooks. See the [Azure tracker guide](../guide/azure-devops-tracker.md#ask-for-a-review-again).

@@ -86,7 +86,7 @@ graph LR
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, account-scoped pub/sub, execution snapshots and durable sequence cursors, and bounded flow lifecycle startup. |
 | [Security](docs/architecture/security.md) | Auth and tenancy, optional account sign-in strength hooks and enrollment-only sessions, generation-based session revocation and live WebSocket teardown across replicas, account-scoped member sign-out, separate machine credentials, restricted CI identities, owned review execution admission, principal-bound callbacks, redaction, secret custody, audit integrity and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
-| [Flows](docs/architecture/flows.md) | Event-driven agentic flows, interactive hosted conversations, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, bound review context and command inspection, authoritative terminal events, durable review completion evidence, named failure outcomes, evidence packs, prompt `truncate(N)`, the chunked agent launch-payload environment, and mounted Delivery Report setup files. |
+| [Flows](docs/architecture/flows.md) | Event-driven agentic flows, explicit Azure review requests, interactive hosted conversations, remote runners, matrix/batch fan-out, delegation and execution trees, label-based model routing, eval artifacts, bound review context and command inspection, authoritative terminal events, durable review completion evidence, named failure outcomes, evidence packs, prompt `truncate(N)`, the chunked agent launch-payload environment, and mounted Delivery Report setup files. |
 | [Callback receipts](docs/architecture/callback-receipts.md) | `complete_once` receipts for signed provider callbacks, without storing request content. |
 | [Review and status posted by Preloop](docs/architecture/platform-posted-review.md) | The control plane posts a validated read-only review and a commit status with a one-repository lease, attempts deferred reviews at the evidence settle deadline, and recovers lost timers through the monitor sweep; threat model and tests. |
 | [Shared review flows for restricted CI](docs/architecture/shared-ci-review-flows.md) | One read-only review flow serving several projects with one project per CI identity: the allowlist, how an execution's project is resolved, the threat model with its tests, and what is not included. |
@@ -143,10 +143,3 @@ OpenRouter model configurations can enforce provider routing preferences. Gatewa
 usage records include a content-free summary of effective upstream controls and
 the OpenRouter serving host when reported; see the
 [provider guide](docs/guide/providers/openrouter.md).
-
-Azure PR review dispatch reads the current provider state and head; terminal
-notifications stop runs through the shared lifecycle handler. Explicit Azure
-review requests use a durable `azure_review_request` row per flow and PR,
-serialized with incoming PR events, and coalesce while a review is active.
-The scheduler discovers request labels in bounded repository pages because
-Azure does not emit label hooks. See the [Azure tracker guide](docs/guide/azure-devops-tracker.md#ask-for-a-review-again).
