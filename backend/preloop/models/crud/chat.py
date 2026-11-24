@@ -390,6 +390,20 @@ class CRUDChat:
             query = query.filter_by(user_id=user_id)
         return query.first()
 
+    def remember_delivery_state(
+        self,
+        db: Session,
+        connection_id: uuid.UUID,
+        external_user_id: str,
+        state: dict[str, str],
+    ) -> None:
+        """Remember authenticated transport facts only for a linked identity."""
+        identity = self.identity(db, connection_id, external_user_id=external_user_id)
+        if identity is not None:
+            self.identities.update(
+                db, db_obj=identity, obj_in={"provider_state": state}
+            )
+
     def principal(
         self, db: Session, connection: models.ChatConnection, external_user_id: str
     ) -> models.User | None:

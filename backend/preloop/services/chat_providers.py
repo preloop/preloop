@@ -10,7 +10,7 @@ import time
 import ssl
 from dataclasses import dataclass
 from typing import Any, Mapping
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, quote
 
 import httpx
 from cryptography.exceptions import InvalidSignature
@@ -24,6 +24,23 @@ class ChatProviderError(ValueError):
     """The request is invalid or the provider refused delivery."""
 
 
+class ChatProviderRetryError(ChatProviderError):
+    """A definite non-delivery that can be retried by the durable worker."""
+
+    def __init__(self, retry_after: float) -> None:
+        super().__init__("Teams delivery rate limited")
+        self.retry_after = retry_after
+
+
+class TeamsInstallRequiredError(ChatProviderError):
+    """Personal installation is required before delivery."""
+
+
+TEAMS_INSTALL_ERROR = (
+    "Teams refused delivery; the user must open the Preloop app in Teams"
+)
+
+
 @dataclass(frozen=True)
 class ChatProviderConfig:
     """Server-owned provider credentials, never returned to the model."""
@@ -34,6 +51,7 @@ class ChatProviderConfig:
     bot_token: str
     bot_user_id: str = ""
     base_url: str = ""
+    teams_app_tenant_id: str = ""
     slack_refresh_token: str = ""
     slack_token_expires_at: float = 0.0
 
@@ -48,6 +66,8 @@ class ChatInbound:
     text: str
     is_private: bool
     thread_id: str = ""
+    service_url: str = ""
+    provider_conversation_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -95,12 +115,87 @@ def verify_ingress(
     headers: Mapping[str, str],
     *,
     now: float | None = None,
+    signing_keys: list[dict[str, Any]] | None = None,
 ) -> ChatIngress:
     """Verify a provider signature before trusting any identity or message."""
-    if not config.verification_secret or len(raw) > MAX_EVENT_BYTES:
+    if (config.provider != "teams" and not config.verification_secret) or len(
+        raw
+    ) > MAX_EVENT_BYTES:
         raise ChatProviderError("Invalid request")
     headers = {k.lower(): v for k, v in headers.items()}
     now = time.time() if now is None else now
+    if config.provider == "teams":
+        from preloop.services.teams_auth import (
+            service_url_allowed,
+            verify_activity_token,
+        )
+
+        body = _object(raw)
+        service_url = _string(body.get("serviceUrl"), "Teams service URL", 2048)
+        authorization = headers.get("authorization", "")
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer":
+            raise ChatProviderError("Invalid Teams token")
+        verify_activity_token(
+            token, signing_keys or [], config.bot_user_id, service_url, now=now
+        )
+        conversation = _mapping(body.get("conversation"), "Teams conversation")
+        tenant = _mapping(
+            _mapping(body.get("channelData"), "Teams channel").get("tenant"),
+            "Teams tenant",
+        )
+        recipient = _mapping(body.get("recipient"), "Teams recipient")
+        sender = _mapping(body.get("from"), "Teams sender")
+        bot_id = "28:" + config.bot_user_id
+        if (
+            body.get("channelId") != "msteams"
+            or not service_url_allowed(service_url)
+            or not config.workspace_id
+            or config.workspace_id != config.teams_app_tenant_id
+            or conversation.get("tenantId") != config.workspace_id
+            or tenant.get("id") != config.workspace_id
+            or recipient.get("id") != bot_id
+        ):
+            raise ChatProviderError("Invalid Teams activity")
+        if (
+            body.get("type") != "message"
+            or conversation.get("conversationType") != "personal"
+            or sender.get("id") == bot_id
+            or sender.get("role") == "bot"
+            or str(sender.get("id", "")).startswith("28:")
+        ):
+            return ChatIngress({})
+        conversation_id = _string(conversation.get("id"), "Teams conversation ID", 2048)
+        activity_id = _string(body.get("id"), "Teams activity ID")
+        text = _string(body.get("text"), "message", MAX_MESSAGE_CHARS)
+        entities = body.get("entities", [])
+        if not isinstance(entities, list):
+            raise ChatProviderError("Invalid Teams entities")
+        for entity in entities:
+            if (
+                isinstance(entity, dict)
+                and entity.get("type") == "mention"
+                and isinstance(entity.get("mentioned"), dict)
+                and entity["mentioned"].get("id") == bot_id
+                and isinstance(entity.get("text"), str)
+            ):
+                text = text.replace(entity["text"], "").strip()
+        if not text:
+            return ChatIngress({})
+        return ChatIngress(
+            {},
+            ChatInbound(
+                event_id=hashlib.sha256(
+                    (conversation_id + ":" + activity_id).encode()
+                ).hexdigest(),
+                user_id=_string(sender.get("aadObjectId"), "Teams user ID"),
+                channel_id=hashlib.sha256(conversation_id.encode()).hexdigest(),
+                text=text,
+                is_private=True,
+                service_url=service_url,
+                provider_conversation_id=conversation_id,
+            ),
+        )
     if config.provider == "slack":
         timestamp = headers.get("x-slack-request-timestamp", "")
         _timestamp(timestamp, now)
@@ -287,6 +382,8 @@ async def send_private_reply(
     client: httpx.AsyncClient,
     channel_id: str = "",
     thread_id: str = "",
+    service_url: str = "",
+    conversation_id: str = "",
 ) -> str:
     """Open a verified recipient's DM and send a bounded, unmentioned reply.
 
@@ -295,6 +392,68 @@ async def send_private_reply(
     """
     _string(user_id, "user ID")
     text = _string(text, "reply", MAX_MESSAGE_CHARS)
+    if config.provider == "teams":
+        from preloop.services.teams_auth import (
+            bot_token,
+            service_url_allowed,
+            request_json,
+        )
+        from email.utils import parsedate_to_datetime
+
+        service_url = service_url or "https://smba.trafficmanager.net/teams/"
+        if not service_url_allowed(service_url):
+            raise ChatProviderError("Invalid Teams service URL")
+        token = await bot_token(config, client)
+
+        async def teams_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+            status, response_headers, data = await request_json(
+                client,
+                "POST",
+                service_url.rstrip("/") + path,
+                headers={"Authorization": f"Bearer {token}"},
+                json=payload,
+            )
+            if status in {412, 429}:
+                delay = 30.0
+                value = response_headers.get("Retry-After", "")
+                try:
+                    delay = float(value)
+                except ValueError:
+                    try:
+                        delay = parsedate_to_datetime(value).timestamp() - time.time()
+                    except (ValueError, TypeError, OverflowError):
+                        pass
+                import math
+
+                if not math.isfinite(delay):
+                    delay = 30.0
+                raise ChatProviderRetryError(max(1, min(delay, 3600)))
+            if status == 403:
+                raise TeamsInstallRequiredError(TEAMS_INSTALL_ERROR)
+            if status >= 500:
+                raise httpx.HTTPError("Teams delivery outcome is uncertain")
+            if not 200 <= status < 300:
+                raise ChatProviderError("Teams refused delivery")
+            return data
+
+        if not conversation_id:
+            conversation = await teams_post(
+                "/v3/conversations",
+                {
+                    "bot": {"id": "28:" + config.bot_user_id},
+                    "members": [{"id": user_id}],
+                    "isGroup": False,
+                    "channelData": {"tenant": {"id": config.workspace_id}},
+                },
+            )
+            conversation_id = _string(
+                conversation.get("id"), "Teams conversation ID", 2048
+            )
+        result = await teams_post(
+            "/v3/conversations/" + quote(conversation_id, safe="") + "/activities",
+            {"type": "message", "textFormat": "plain", "text": text},
+        )
+        return _string(result.get("id"), "Teams message ID")
     headers = {"Authorization": f"Bearer {config.bot_token}"}
     extensions: dict[str, Any] = {}
 
@@ -378,9 +537,18 @@ async def send_private_reply(
     raise ChatProviderError("Unsupported provider")
 
 
+def conversation_scope(
+    provider: str, external_user_id: str, payload: Mapping[str, Any]
+) -> str:
+    """Slack channel conversations belong to threads; private replies to users."""
+    if provider == "slack" and not payload.get("private"):
+        return f"thread:{payload.get('channel_id', '')}:{payload.get('thread_id', '')}"
+    return f"dm:{external_user_id}"
+
+
 def external_command(provider: str, command: str, *, direct: bool = False) -> str:
     """Render an internal slash command in the provider's supported input UI."""
-    if provider == "slack" or (provider == "mattermost" and direct):
+    if provider in {"slack", "teams"} or (provider == "mattermost" and direct):
         return command.lstrip("/")
     if provider == "mattermost":
         return "/preloop " + command

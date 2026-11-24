@@ -51,6 +51,7 @@ class ChatIdentity(Base):
         ForeignKey("user.id", ondelete="CASCADE")
     )
     external_user_id: Mapped[str] = mapped_column(String(256))
+    provider_state: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
 
 class ChatLinkCode(Base):

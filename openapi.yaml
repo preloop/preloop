@@ -24655,6 +24655,45 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/chat/setup/{draft_id}/teams-package:
+    get:
+      tags:
+      - Chat
+      summary: Download Teams Package
+      description: Download an actor-bound draft package; credentials never enter
+        the zip.
+      operationId: download_teams_package_api_v1_chat_setup__draft_id__teams_package_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Draft Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/chat/setup/{draft_id}/refresh:
     post:
       tags:
@@ -57734,6 +57773,7 @@ components:
           - slack
           - mattermost
           - discord
+          - teams
           title: Provider
         bot_token:
           type: string
@@ -57754,6 +57794,33 @@ components:
           type: string
           maxLength: 2048
           title: Team Hint
+          default: ''
+        teams_app_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Teams App Id
+        teams_app_tenant_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Teams App Tenant Id
+        teams_developer_url:
+          type: string
+          maxLength: 2048
+          title: Teams Developer Url
+          default: ''
+        teams_privacy_url:
+          type: string
+          maxLength: 2048
+          title: Teams Privacy Url
+          default: ''
+        teams_terms_url:
+          type: string
+          maxLength: 2048
+          title: Teams Terms Url
           default: ''
       type: object
       required:

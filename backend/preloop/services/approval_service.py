@@ -2236,7 +2236,25 @@ class ApprovalService:
         channel = target[0]
         from preloop.services.external_approval import uses_external_link
 
-        if channel in ["slack", "mattermost"] and not uses_external_link(
+        if channel == "teams":
+            from preloop.services.teams_webhook import approval_card
+
+            try:
+                message = approval_card(
+                    headline,
+                    approval_request.tool_name,
+                    approval_request.status,
+                    review_url,
+                )
+            except ValueError:
+                await self.update_approval_request(
+                    approval_request.id,
+                    ApprovalRequestUpdate(
+                        webhook_error="Teams approval notice exceeds 28 KB"
+                    ),
+                )
+                return False
+        elif channel in ["slack", "mattermost"] and not uses_external_link(
             approval_workflow
         ):
             # Build message text with all details: summary first when present
@@ -3144,7 +3162,7 @@ class ApprovalService:
             [target[0]] if target and not external_handoff_complete else []
         )
         for channel in workflow_channels:
-            if channel in ["slack", "mattermost", "webhook"]:
+            if channel in ["slack", "mattermost", "teams", "webhook"]:
                 try:
                     result = await self.post_webhook_notification(
                         approval_request, approval_workflow

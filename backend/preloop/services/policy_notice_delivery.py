@@ -6,7 +6,7 @@ primary user, a superuser, or hold ``manage_policies``. Channels:
 * email, for each owner whose ``enable_email`` preference is on (the default
   when no preferences row exists);
 * mobile push, for each owner with ``enable_mobile_push`` on;
-* Slack, Mattermost or a generic webhook, when the rule's approval workflow
+* Slack, Mattermost, Teams Workflows or a generic webhook, when the rule's approval workflow
   (or the account default workflow) is of that type and has a URL. The body
   goes through the webhook outbox like approval messages do.
 
@@ -368,6 +368,10 @@ def build_webhook_payload(
 ) -> Dict[str, Any]:
     """Body for the workflow webhook: chat text or a generic JSON object."""
     message = build_message(db, hit)
+    if approval_type == "teams":
+        from preloop.services.teams_webhook import policy_notice_card
+
+        return policy_notice_card(message["headline"], message["text"], attention_url())
     if approval_type in ("slack", "mattermost"):
         excerpt = hit.excerpt or "(excerpt not available)"
         text = (
@@ -402,7 +406,7 @@ def send_webhook_notice(
     *,
     approval_workflow: Optional[str] = None,
 ) -> bool:
-    """Queue the notice on the workflow's Slack, Mattermost or webhook URL.
+    """Queue the notice on the workflow's configured webhook URL.
 
     Args:
         db: Database session.

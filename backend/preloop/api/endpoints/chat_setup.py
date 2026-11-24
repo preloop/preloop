@@ -39,11 +39,16 @@ router = APIRouter(prefix="/chat/setup", tags=["Chat"], route_class=BoundedChatR
 
 
 class SetupStart(BaseModel):
-    provider: Literal["slack", "mattermost", "discord"]
+    provider: Literal["slack", "mattermost", "discord", "teams"]
     bot_token: str = Field(default="", max_length=4096)
     verification_secret: str = Field(default="", max_length=1024)
     base_url: str = Field(default="", max_length=2048)
     team_hint: str = Field(default="", max_length=2048)
+    teams_app_id: UUID | None = None
+    teams_app_tenant_id: UUID | None = None
+    teams_developer_url: str = Field(default="", max_length=2048)
+    teams_privacy_url: str = Field(default="", max_length=2048)
+    teams_terms_url: str = Field(default="", max_length=2048)
 
 
 class SetupFinish(BaseModel):
@@ -82,7 +87,13 @@ def draft_config(
         workspace_id=workspace_id,
         **{
             key: state.get(key, "")
-            for key in ("bot_token", "verification_secret", "base_url", "bot_user_id")
+            for key in (
+                "bot_token",
+                "verification_secret",
+                "base_url",
+                "bot_user_id",
+                "teams_app_tenant_id",
+            )
         },
     )
 
@@ -152,7 +163,23 @@ def start_setup(
 ) -> dict[str, Any]:
     if not payload.bot_token:
         raise HTTPException(422, "A bot token is required")
-    state = payload.model_dump(exclude={"provider"})
+    state = payload.model_dump(mode="json", exclude={"provider"}, exclude_none=True)
+    if payload.provider == "teams":
+        from preloop.services.teams_package import teams_manifest
+        from preloop.config import settings
+
+        if not payload.teams_app_id or not payload.teams_app_tenant_id:
+            raise HTTPException(422, "Teams requires application ID and tenant ID")
+        state["bot_user_id"] = str(payload.teams_app_id)
+        try:
+            teams_manifest(
+                state["bot_user_id"],
+                state["bot_user_id"],
+                str(settings.preloop_url),
+                **_teams_urls(state),
+            )
+        except ChatProviderError as exc:
+            raise HTTPException(422, str(exc)) from exc
     try:
         info = (
             from_thread.run(discover, draft_config(payload.provider, state))
@@ -191,6 +218,57 @@ def read_setup(
     user: models.User = Depends(manager),
 ) -> dict[str, Any]:
     return public_draft(get_draft(db, draft_id, user))
+
+
+def _teams_urls(state: dict[str, Any]) -> dict[str, str]:
+    """Extract only non-secret manifest URLs from encrypted setup state."""
+    return {
+        key: state.get("teams_" + key, "")
+        for key in ("developer_url", "privacy_url", "terms_url")
+    }
+
+
+@router.get(
+    "/{draft_id}/teams-package",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "application/zip": {"schema": {"type": "string", "format": "binary"}}
+            }
+        }
+    },
+)
+def download_teams_package(
+    draft_id: UUID,
+    db: Session = Depends(get_db_session),
+    user: models.User = Depends(manager),
+) -> Response:
+    """Download an actor-bound draft package; credentials never enter the zip."""
+    from preloop.config import settings
+    from preloop.services.teams_package import teams_package
+
+    draft = get_draft(db, draft_id, user)
+    if draft.provider != "teams":
+        raise HTTPException(404, "Teams package unavailable")
+    state = json.loads(decrypt_value(draft.state_encrypted))
+    try:
+        content = teams_package(
+            state["bot_user_id"],
+            str(draft.id),
+            str(settings.preloop_url),
+            **_teams_urls(state),
+        )
+    except ChatProviderError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return Response(
+        content,
+        media_type="application/zip",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": 'attachment; filename="preloop-teams.zip"',
+        },
+    )
 
 
 @router.post("/{draft_id}/refresh")
@@ -285,6 +363,7 @@ def finish_setup(
             "bot_token",
             "bot_user_id",
             "base_url",
+            "teams_app_tenant_id",
             "slack_refresh_token",
             "slack_token_expires_at",
         )

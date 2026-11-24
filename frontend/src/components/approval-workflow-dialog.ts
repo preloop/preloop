@@ -349,6 +349,7 @@ export class ApprovalWorkflowDialog extends LitElement {
         return !!this._aiModel;
       case 'slack':
       case 'mattermost':
+      case 'teams':
       case 'webhook':
         // Incoming webhook URL is required
         return !!this._webhookUrl.trim();
@@ -402,6 +403,7 @@ export class ApprovalWorkflowDialog extends LitElement {
 
         case 'slack':
         case 'mattermost':
+        case 'teams':
           policyData.approval_config = {
             webhook_url: this._webhookUrl.trim(),
           };
@@ -459,6 +461,7 @@ export class ApprovalWorkflowDialog extends LitElement {
         return this._renderAIDrivenFields();
       case 'slack':
       case 'mattermost':
+      case 'teams':
         return this._renderChannelFields();
       case 'webhook':
         return this._renderWebhookFields();
@@ -657,7 +660,12 @@ DENY if:
   }
 
   private _renderChannelFields() {
-    const typeName = this._approvalType === 'slack' ? 'Slack' : 'Mattermost';
+    const typeName =
+      this._approvalType === 'teams'
+        ? 'Teams Workflows'
+        : this._approvalType === 'slack'
+          ? 'Slack'
+          : 'Mattermost';
 
     return html`
       <div class="type-section">
@@ -676,7 +684,9 @@ DENY if:
             placeholder=${
               this._approvalType === 'slack'
                 ? 'https://hooks.slack.com/services/...'
-                : 'https://your-mattermost.com/hooks/...'
+                : this._approvalType === 'teams'
+                  ? 'https://example.com/workflows/...'
+                  : 'https://your-mattermost.com/hooks/...'
             }
           ></sl-input>
           <small style="color: var(--console-meta-color);">
@@ -779,6 +789,7 @@ DENY if:
               <sl-option value="standard">Standard Human Approval</sl-option>
               <sl-option value="slack">Slack</sl-option>
               <sl-option value="mattermost">Mattermost</sl-option>
+              <sl-option value="teams">Teams Workflows</sl-option>
               <sl-option value="webhook">Webhook</sl-option>
               ${
                 this._hasAdvancedApprovals()

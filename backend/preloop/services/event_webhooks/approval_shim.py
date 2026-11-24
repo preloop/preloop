@@ -34,7 +34,7 @@ CONFIG_SECRET_KEY = "webhook_secret"
 #: Channels that deliver through the workflow's webhook endpoint, in the
 #: order they are looked up in ``channel_configs``. A workflow has one
 #: webhook destination; the first configured channel wins.
-WEBHOOK_CHANNELS: Tuple[str, ...] = ("webhook", "slack", "mattermost")
+WEBHOOK_CHANNELS: Tuple[str, ...] = ("webhook", "slack", "mattermost", "teams")
 
 SHIM_DESCRIPTION = "Approval workflow webhook (compatibility)"
 
@@ -48,7 +48,7 @@ def resolve_webhook_target(approval_workflow: Any) -> Optional[Tuple[str, str]]:
 
     Two places configure it:
 
-    * ``channel_configs.<webhook|slack|mattermost>.url`` (``webhook_url`` is
+    * ``channel_configs.<webhook|slack|mattermost|teams>.url`` (``webhook_url`` is
       accepted as a synonym). This is the documented form and the only one
       policy YAML can express.
     * ``approval_config.webhook_url``, the original API form. Its payload
