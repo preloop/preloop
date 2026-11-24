@@ -125,7 +125,7 @@ include = ["preloop", "preloop.*"]
 # a non-editable wheel would drop preloop/static/** and the docs pages would
 # 404 their assets.
 [tool.setuptools.package-data]
-preloop = ["static/**/*"]
+preloop = ["static/**/*", "agents/*.mjs"]
 
 [project.scripts]
 preloop-sync = "preloop.sync.cli.commands:run"

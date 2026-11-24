@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import base64
 import os
 import shlex
+from pathlib import Path
 from typing import Any
 
 from preloop.services.mcp_config_service import MCPConfigService
@@ -150,6 +152,54 @@ class ExtensionHarnessAgent(ContainerAgentExecutor):
         )
         post = self._prepare_git_post_execution_commands(context)
         command = command.replace("/opt/preloop-harness/", '"$PRELOOP_PLUGIN_DIR"/')
+        conversation_setup = native_restore = native_pack = ""
+        if (context.get("trigger_event_data") or {}).get("_conversation_id"):
+            if self.harness != "deepseek":
+                raise ValueError(
+                    "Interactive conversations require hosted OpenCode or DeepSeek Harness."
+                )
+            from .session_runtime import native_session_blocks
+
+            blocks = native_session_blocks(
+                context,
+                "deepseek",
+                '"$DSH_HOME/sessions"',
+                '"$(cat /tmp/preloop-cli-session-id)"',
+            )
+            if blocks is None:
+                raise ValueError("Interactive conversation checkpoint binding missing")
+            native_restore, native_pack = blocks["restore"], blocks["pack"]
+            for filename in (
+                "conversation_runtime.py",
+                "deepseek_conversation.py",
+                "deepseek_conversation.mjs",
+            ):
+                encoded = base64.b64encode(
+                    Path(__file__).with_name(filename).read_bytes()
+                ).decode()
+                conversation_setup += f"printf '%s' '{encoded}' | base64 -d > /tmp/{filename}\nchmod 700 /tmp/{filename}\n"
+            # Overlay the installed plugin bootstrap, including older baked plugins.
+            conversation_setup += """
+node --input-type=module <<'PRELOOP_CONVERSATION_PATCH'
+import { readFileSync, writeFileSync } from 'node:fs';
+const file = process.env.DSH_HOME + '/cordis.patch.yml';
+const patch = JSON.parse(readFileSync(file, 'utf8'));
+patch.push(
+  { id: 'headless-runner', disabled: true },
+  { id: 'preloop-headless-startup', disabled: true },
+  { id: 'session-persistence-jsonl', config: {
+    root: process.env.DSH_HOME + '/sessions', compression: 'none',
+  } },
+  { insert: [{ id: 'preloop-conversation', name: '/tmp/deepseek_conversation.mjs' }] },
+);
+writeFileSync(file, JSON.stringify(patch), { mode: 0o600 });
+PRELOOP_CONVERSATION_PATCH
+"""
+            command = (
+                "python3 /tmp/deepseek_conversation.py "
+                + PROMPT_FILE_PATH
+                + ' "${PRELOOP_CLI_SESSION_ID:-}"'
+            )
         root_bootstrap = ""
         if context.get("_container_user") != "10000:10000":
             root_bootstrap = """
@@ -181,6 +231,8 @@ if ! command -v {executable} >/dev/null || [ "$({executable} --version)" != {shl
 fi
 {build_prompt_materialization_shell(context["prompt"])}
 node "$PRELOOP_PLUGIN_DIR/bootstrap.mjs"
+{conversation_setup}
+{native_restore}
 {init}
 cd {shlex.quote(workspace)}
 echo PRELOOP_AGENT_EXEC_START
@@ -188,6 +240,7 @@ set +e
 {command} < {PROMPT_FILE_PATH}
 PRELOOP_HARNESS_EXIT=$?
 set -e
+{native_pack}
 if [ "$PRELOOP_HARNESS_EXIT" -eq 0 ]; then
     {post or ":"}
 fi

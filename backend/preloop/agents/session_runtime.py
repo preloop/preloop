@@ -23,7 +23,7 @@ if __name__ == "__main__":
     if action == "capture":
         print(capture_codex_session_id(Path(root), sid or None))
         sys.exit(0)
-    version = subprocess.check_output([harness, "--version"], text=True).strip()
+    version = subprocess.check_output(["dsh" if harness == "deepseek" else harness, "--version"], text=True).strip()
     url = os.environ.get("PRELOOP_CHECKPOINT_URL")
     token = os.environ.get("PRELOOP_NATIVE_SESSION_GET_TOKEN" if action == "restore" else "PRELOOP_NATIVE_SESSION_PUT_TOKEN")
     try:

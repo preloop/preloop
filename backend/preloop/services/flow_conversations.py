@@ -24,19 +24,22 @@ def interactive_settings(agent_type: str, config: Any) -> InteractiveSettings:
     raw = (config or {}).get("interactive") or {}
     policy = InteractiveSettings.model_validate(raw)
     if policy.enabled:
-        if (config or {}).get("opencode_cli_version", "1.18.29") != "1.18.29":
+        if (
+            agent_type == "opencode"
+            and (config or {}).get("opencode_cli_version", "1.18.29") != "1.18.29"
+        ):
             raise ValueError(
                 "Interactive conversations require the tested OpenCode version 1.18.29."
             )
-        if agent_type != "opencode":
+        if agent_type not in {"opencode", "deepseek"}:
             raise ValueError(
-                "Interactive conversations require hosted OpenCode. DeepSeek Harness, Pi and other harnesses are not supported."
+                "Interactive conversations require hosted OpenCode or DeepSeek Harness. Pi and other harnesses are not supported."
             )
         if (config or {}).get("runner_id") or (config or {}).get(
             "execution_path"
         ) == "persistent":
             raise ValueError(
-                "Interactive conversations require a hosted OpenCode container."
+                "Interactive conversations require a hosted OpenCode or DeepSeek Harness container."
             )
         if (config or {}).get("workspace_snapshots") == "never":
             raise ValueError(
@@ -55,7 +58,10 @@ def resume_checkpoint(db: Session, row: models.FlowConversation) -> dict[str, An
     if (
         not prior
         or prior.flow_id != row.flow_id
-        or not valid_session_id("opencode", session.get("session_id", ""))
+        or session.get("agent_type") not in {"opencode", "deepseek"}
+        or not valid_session_id(
+            session.get("agent_type", ""), session.get("session_id", "")
+        )
     ):
         raise ValueError(EXPIRED_NOTICE)
     for kind in ("native_session", "workspace"):
