@@ -275,6 +275,14 @@ class TrackerResponse(TrackerBase):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
+    def hosts_repositories(self) -> bool:
+        """Whether this tracker's client can supply repository checkouts."""
+        from preloop.sync.trackers.factory import tracker_hosts_repositories
+
+        return tracker_hosts_repositories(self.tracker_type.value)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
     def degraded_projects(self) -> List[str]:
         """Project identifiers seen on webhooks that never resolved.
 

@@ -1176,6 +1176,10 @@ class AzureDevOpsTracker(BaseTracker):
         Returns:
             ``{"thread_id", "comment_id", "url"}``.
         """
+        from preloop.utils.azure_devops import PRELOOP_COMMENT_MARKER
+
+        if PRELOOP_COMMENT_MARKER not in body:
+            body = f"{body}\n\n{PRELOOP_COMMENT_MARKER}"
         base = self._pr(pr_id, repo_full_name)
         if thread_id is None:
             response = await self._request(
@@ -1220,6 +1224,10 @@ class AzureDevOpsTracker(BaseTracker):
         repo_full_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Edit a comment body."""
+        from preloop.utils.azure_devops import PRELOOP_COMMENT_MARKER
+
+        if PRELOOP_COMMENT_MARKER not in body:
+            body = f"{body}\n\n{PRELOOP_COMMENT_MARKER}"
         response = await self._request(
             "PATCH",
             f"{self._pr(pr_id, repo_full_name)}/threads/{int(thread_id)}"
@@ -1295,6 +1303,21 @@ class AzureDevOpsTracker(BaseTracker):
             )
             return False
         return True
+
+    async def list_pull_request_labels(
+        self, pr_id: int, repo_full_name: str
+    ) -> List[Dict[str, Any]]:
+        """Read free-form PR labels; Azure does not emit hooks when they change."""
+        return await self._list(f"{self._pr(pr_id, repo_full_name)}/labels")
+
+    async def remove_pull_request_label(
+        self, pr_id: int, repo_full_name: str, label_id: str
+    ) -> None:
+        """Remove an accepted request label when the token has Code write access."""
+        await self._request(
+            "DELETE",
+            f"{self._pr(pr_id, repo_full_name)}/labels/{quote(label_id, safe='')}",
+        )
 
     async def update_pull_request(
         self,
@@ -1446,7 +1469,7 @@ class AzureDevOpsTracker(BaseTracker):
 
         Raises:
             TrackerResponseError: When neither project nor repository is set.
-            TrackerPermissionError: When the token lacks service hook scope.
+            TrackerPermissionError: When token scopes or project permissions deny hooks.
         """
         target = repo_full_name or self.repo_full_name
         repository_id: Optional[str] = None
@@ -1471,10 +1494,8 @@ class AzureDevOpsTracker(BaseTracker):
                 # Work item events are project scoped; only pull request
                 # events take a repository filter.
                 publisher_inputs["repository"] = repository_id
-            if event == "git.pullrequest.updated":
-                # Only source branch pushes; votes, reviewer and status
-                # changes are not delivered at all.
-                publisher_inputs["notificationType"] = "PushNotification"
+            # Leave Change unfiltered: abandon/complete events stop live runs.
+            # The intake deduplicates votes and edits by the source commit.
             body = {
                 "publisherId": "tfs",
                 "eventType": event,

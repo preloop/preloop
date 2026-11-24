@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.plugins.account_hooks import AuthorizationContext
 
-from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue
+from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue, crud_tracker
 from preloop.models.schemas.flow_revision import (
     FlowRevisionMismatchError,
     RevisionCondition,
@@ -2414,7 +2414,78 @@ class FlowTriggerService:
                     matched_types[flow.id] = extra_type
         return flows, matched_types
 
-    async def process_event(self, event_data: Dict[str, Any]):
+    async def _azure_pull_request_skip_reason(
+        self, event_data: Dict[str, Any]
+    ) -> Optional[str]:
+        """Read current Azure PR state before dispatching a delayed delivery.
+
+        Transport/auth failures propagate so the worker retries instead of
+        trusting stale payload state. A terminal read also stops existing runs.
+        """
+        from preloop.sync.trackers.azure_devops import AzureDevOpsTracker
+
+        tracker = crud_tracker.get(self.db, id=event_data.get("tracker_id"))
+        if tracker is None:
+            return "tracker_missing"
+        payload = event_data.get("payload") or {}
+        pr = payload.get("pull_request") or {}
+        repo = payload.get("repository") or {}
+        number = pr.get("number")
+        head = (pr.get("head") or {}).get("sha")
+        request = payload.get("azure_review_request")
+        if not number or (not head and not request) or not repo.get("full_name"):
+            return "missing_pull_request_identity"
+        client = AzureDevOpsTracker(
+            str(tracker.id),
+            tracker.resolved_api_key or "",
+            dict(tracker.connection_details or {}),
+        )
+        current = await client.get_pull_request(number, repo["full_name"])
+        status = current.get("status")
+        if status != "active":
+            terminal = {
+                "abandoned": "pull_request_closed",
+                "completed": "pull_request_merged",
+            }.get(status)
+            if terminal:
+                await self.stop_executions_for_ended_pull_request(
+                    {**event_data, "type": terminal}
+                )
+            return "pull_request_not_active"
+        current_head = (current.get("lastMergeSourceCommit") or {}).get("commitId")
+        if not current_head:
+            return "missing_current_pull_request_head"
+        if head and current_head != head:
+            return "pull_request_head_changed"
+        if request:
+            from preloop.utils.azure_devops import normalize_pull_request
+
+            event_data["payload"] = {
+                **payload,
+                **normalize_pull_request(current, client.organization),
+            }
+        return None
+
+    async def process_event(self, event_data: Dict[str, Any]) -> Any:
+        """Serialize Azure PR pushes and explicit requests before checking overlap."""
+        payload = event_data.get("payload") or {}
+        repo = payload.get("repository") or {}
+        pr = payload.get("pull_request") or {}
+        if (
+            event_data.get("source") == "azure_devops"
+            and event_data.get("tracker_id")
+            and repo.get("id")
+            and pr.get("number")
+        ):
+            from preloop.models.crud import crud_azure_review_request
+
+            async with crud_azure_review_request.serialized(
+                self.db, event_data["tracker_id"], repo["id"], pr["number"]
+            ):
+                return await self._process_event(event_data)
+        return await self._process_event(event_data)
+
+    async def _process_event(self, event_data: Dict[str, Any]) -> Any:
         """
         Process an incoming event and trigger any matching flows.
 
@@ -2437,6 +2508,17 @@ class FlowTriggerService:
                 f"Event data is missing required fields: source={event_source}, type={event_type}"
             )
             return
+
+        if event_source == "azure_devops" and event_type in {
+            "pull_request_opened",
+            "pull_request_updated",
+        }:
+            reason = await self._azure_pull_request_skip_reason(event_data)
+            if reason:
+                logger.info(
+                    "Azure DevOps review skipped for tracker %s: %s", tracker_id, reason
+                )
+                return
 
         # Durable feedback is routed by an existing account/repository binding,
         # independently from issue-intake labels and bot comment markers.
@@ -2576,11 +2658,44 @@ class FlowTriggerService:
                     logger.info("Trigger config did not match: flow_id=%s", flow.id)
                     continue
 
+                request = (flow_event.get("payload") or {}).get("azure_review_request")
+                if request:
+                    from preloop.services.azure_review_requests import request_enabled
+
+                    if not request_enabled(flow, request):
+                        continue
+                    if (
+                        event_data.get("_azure_review_flow_id")
+                        and str(flow.id) != event_data["_azure_review_flow_id"]
+                    ):
+                        continue
+
                 flows_to_trigger.append(flow)
 
             if not flows_to_trigger:
                 logger.info("No enabled flows with matching trigger_config found")
                 return
+
+            if (event_data.get("payload") or {}).get(
+                "azure_review_request"
+            ) and not event_data.get("_azure_review_flow_id"):
+                from preloop.models.crud import crud_azure_review_request
+
+                accepted = False
+                for flow in flows_to_trigger:
+                    accepted = (
+                        crud_azure_review_request.enqueue(
+                            self.db, flow=flow, event=event_data
+                        )
+                        or accepted
+                    )
+                # An already recorded label is still accepted. Let polling retry
+                # removal after a transient provider failure without queuing again.
+                return (
+                    accepted
+                    or event_data["payload"]["azure_review_request"].get("kind")
+                    == "label"
+                )
 
             # Get NATS client for publishing updates
             nats_client = await get_nats_client()

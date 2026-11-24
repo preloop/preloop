@@ -71,3 +71,15 @@ cases close gaps in the original #2045 tests.
 The original issue's `expected_artifact` field was removed from the revised
 Delivery Report design, as recorded in #2045. It is not needed by the
 reconciliation acceptance criteria and is not introduced here.
+
+
+## Azure DevOps review delivery checks
+
+Azure PR webhook processing reads the current PR before dispatching an open
+or updated event. It skips inactive PRs and events whose source commit is no
+longer the current head. A failed API read retries through the worker rather
+than dispatching from stale payload data. Abandon and complete deliveries
+have separate dedupe identities from source-head updates and reach the shared
+`pr_closed` / `pr_merged` execution stop path, even when no flow subscribes to
+them. The updated subscription must include all changes. This ingress check
+does not add Azure to the periodic three-forge refresh described above.

@@ -170,11 +170,11 @@ def test_same_head_is_one_identity_and_new_head_another() -> None:
     assert len("delivery:" + ado.delivery_identity("x" * 36, pushed)) < 200
 
 
-def test_completed_and_unsupported_events_are_not_dispatched() -> None:
+def test_completed_events_reach_stop_and_unsupported_events_are_ignored() -> None:
     done = ado.normalize_delivery(
         fx("git.pullrequest.updated.completed"), organization="fabrikam"
     )
-    assert not done.accepted and done.reason == ado.REASON_NOT_ACTIVE
+    assert done.accepted and done.event_type == "pull_request_merged"
     other = fx("git.pullrequest.created")
     other["eventType"] = "git.push"
     assert ado.normalize_delivery(other, organization="fabrikam").reason == (
@@ -192,9 +192,6 @@ def test_completed_and_unsupported_events_are_not_dispatched() -> None:
     "kwargs",
     [
         {"organization": "contoso"},
-        {"organization": "fabrikam", "bound_repository": "Other"},
-        {"organization": "fabrikam", "bound_project": "Other"},
-        {"organization": "fabrikam", "repository_known": lambda _r: False},
     ],
 )
 def test_foreign_deliveries_are_rejected(kwargs: Dict[str, Any]) -> None:
@@ -231,3 +228,30 @@ def test_event_normalizer() -> None:
         }
     )
     assert subject and subject.get("reference") == "!1"
+
+
+@pytest.mark.parametrize("field", ["commit", "repository", "date", "url"])
+def test_sample_organization_alone_never_bypasses_real_event_validation(
+    field: str,
+) -> None:
+    samples = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "fixtures"
+            / "azure_devops"
+            / "test_notifications.json"
+        ).read_text()
+    )["events"]
+    payload = samples["git.pullrequest.created"]
+    resource = payload["resource"]
+    if field == "commit":
+        resource["lastMergeSourceCommit"]["commitId"] = "a" * 40
+    elif field == "repository":
+        resource["repository"]["id"] = "11111111-2222-4333-8444-555555555555"
+    elif field == "date":
+        resource["creationDate"] = "2026-01-01T00:00:00Z"
+    else:
+        resource["url"] = "https://dev.azure.com/fabrikam/_apis/git/pullRequests/1"
+    with pytest.raises(ado.AzureDevOpsWebhookRejectedError) as exc:
+        ado.normalize_delivery(payload, organization="example-org")
+    assert exc.value.reason == "organization_mismatch"

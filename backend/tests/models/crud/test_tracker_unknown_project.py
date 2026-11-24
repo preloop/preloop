@@ -185,3 +185,25 @@ def test_missing_tracker_is_a_no_op(db_session: Session):
     )
     assert state.should_sync is False
     assert state.degraded is False
+
+
+def test_ignored_webhook_reason_is_durable_and_preserves_metadata(
+    db_session: Session, test_tracker: object
+) -> None:
+    """Ignored intake survives session closure without replacing other metadata."""
+    from preloop.models import models
+
+    assert isinstance(test_tracker, models.Tracker)
+    crud_tracker.update(
+        db_session, db_obj=test_tracker, obj_in={"meta_data": {"other": "preserved"}}
+    )
+    crud_tracker.record_ignored_webhook(
+        db_session, id=str(test_tracker.id), reason="repository_not_imported"
+    )
+    db_session.expire_all()
+    tracker = crud_tracker.get(db_session, id=test_tracker.id)
+    assert tracker.meta_data["other"] == "preserved"
+    assert (
+        tracker.meta_data["last_ignored_webhook"]["reason"] == "repository_not_imported"
+    )
+    assert tracker.meta_data["last_ignored_webhook"]["at"]

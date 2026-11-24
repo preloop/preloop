@@ -151,6 +151,23 @@ describe('PreloopFlowForm presets', () => {
     });
   });
 
+  it('preserves Azure review request settings when saving a flow', async () => {
+    const element = await mount({
+      id: 'reviewer-flow',
+      name: 'Configured reviewer',
+      prompt_template: 'Review',
+      trigger_event_source: GITHUB_TRACKER.id,
+      webhook_config: {
+        azure_review_label: 'review-now',
+        azure_review_comment_enabled: false,
+      },
+    });
+    expect((await submit(element)).webhook_config).to.deep.equal({
+      azure_review_label: 'review-now',
+      azure_review_comment_enabled: false,
+    });
+  });
+
   it('keeps an explicitly disabled supersession setting while editing', async () => {
     const element = await mount({
       id: 'reviewer-flow',

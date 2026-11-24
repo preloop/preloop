@@ -143,3 +143,10 @@ OpenRouter model configurations can enforce provider routing preferences. Gatewa
 usage records include a content-free summary of effective upstream controls and
 the OpenRouter serving host when reported; see the
 [provider guide](docs/guide/providers/openrouter.md).
+
+Azure PR review dispatch reads the current provider state and head; terminal
+notifications stop runs through the shared lifecycle handler. Explicit Azure
+review requests use a durable `azure_review_request` row per flow and PR,
+serialized with incoming PR events, and coalesce while a review is active.
+The scheduler discovers request labels in bounded repository pages because
+Azure does not emit label hooks. See the [Azure tracker guide](docs/guide/azure-devops-tracker.md#ask-for-a-review-again).

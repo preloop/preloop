@@ -531,6 +531,15 @@ def normalize_event_type(
 
     elif tracker_type_lower == "azure_devops":
         normalized = AZURE_DEVOPS_EVENT_MAP.get(raw_event_type, raw_event_type)
+        if (
+            raw_event_type in {"git.pullrequest.created", "git.pullrequest.updated"}
+            and payload
+        ):
+            status = (payload.get("azure_devops") or {}).get("status")
+            if status == "completed":
+                return "pull_request_merged"
+            if status == "abandoned":
+                return "pull_request_closed"
         if normalized == "issue_updated" and payload:
             # Same precedence as Jira: added tag, then state change, then
             # removed tag. The intake stored the changed fields as

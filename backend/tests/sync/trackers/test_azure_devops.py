@@ -295,7 +295,10 @@ async def test_review_posts_summary_thread_then_vote() -> None:
     assert result.status == "updated"
     assert result.pull_request_id == "202"
     assert "src/app.py" in posted[0]["comments"][0]["content"]
-    assert posted[1]["comments"][0]["content"] == "## Review\nNeeds work"
+    assert (
+        posted[1]["comments"][0]["content"]
+        == "## Review\nNeeds work\n\n<!-- preloop:comment -->"
+    )
     assert posted[1]["status"] == "active"
     methods = [(c.method, c.url.path.rsplit("/", 1)[-1]) for c in stub.calls]
     assert methods[-1][0] == "PUT"
@@ -356,7 +359,9 @@ async def test_add_reply_and_update_comment() -> None:
         client, "22", "148:3", body="edited", resolved=True
     )
     assert updated.comment_id == "148:3"
-    assert json.loads(stub.calls[1].content) == {"content": "edited"}
+    assert json.loads(stub.calls[1].content) == {
+        "content": "edited\n\n<!-- preloop:comment -->"
+    }
     assert json.loads(stub.calls[2].content) == {"status": "fixed"}
 
 
@@ -398,12 +403,12 @@ async def test_ensure_service_hooks_creates_then_updates() -> None:
             ("POST", "/fabrikam/_apis/hooks/subscriptions"): create,
             **{
                 ("PUT", f"/fabrikam/_apis/hooks/subscriptions/sub-{i}"): replace
-                for i in range(5)
+                for i in range(6)
             },
         }
     )
     first = await client.ensure_service_hooks(callback, "s1")
-    assert first["created"] == 5
+    assert first["created"] == 6
     created = {body["eventType"]: body for _m, body in bodies}
     updated_hook = created["git.pullrequest.updated"]
     assert updated_hook["publisherId"] == "tfs"
@@ -412,7 +417,6 @@ async def test_ensure_service_hooks_creates_then_updates() -> None:
     assert updated_hook["publisherInputs"] == {
         "projectId": PROJECT_ID,
         "repository": REPO_ID,
-        "notificationType": "PushNotification",
     }
     assert updated_hook["consumerInputs"]["url"] == callback
     assert updated_hook["consumerInputs"]["httpHeaders"] == (

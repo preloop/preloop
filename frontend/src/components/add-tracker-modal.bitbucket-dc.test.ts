@@ -516,6 +516,10 @@ describe('AddTrackerModal Bitbucket Data Center', () => {
         bitbucket_dc: true,
       });
       stubs.updateTracker.resolves({ id: 'dc-1' });
+      stubs.validateTrackerToken.resolves({
+        success: true,
+        orgs: [{ id: 'PROJ', name: 'Project' }],
+      });
       element = await fixture(
         html`<add-tracker-modal
           ._api=${stubbedApi}
@@ -525,6 +529,7 @@ describe('AddTrackerModal Bitbucket Data Center', () => {
       await featureLoaded(element);
       (element as any).trackerToken = 'rotated-pat';
 
+      await element.testConnection();
       await element.handleSave();
 
       expect(stubs.updateTracker.firstCall.args[1].api_key).to.equal(

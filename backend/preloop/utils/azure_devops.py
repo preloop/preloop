@@ -55,6 +55,9 @@ WEBHOOK_SECRET_HEADER = "X-Preloop-Webhook-Secret"
 WEBHOOK_MAX_BYTES = 1024 * 1024
 
 # Service hook event id -> normalized Preloop event type.
+PULL_REQUEST_COMMENT_EVENT = "ms.vss-code.git-pullrequest-comment-event"
+PRELOOP_COMMENT_MARKER = "<!-- preloop:comment -->"
+
 PULL_REQUEST_EVENT_MAP: Dict[str, str] = {
     "git.pullrequest.created": "pull_request_opened",
     "git.pullrequest.updated": "pull_request_updated",
@@ -69,10 +72,14 @@ WORK_ITEM_EVENT_MAP: Dict[str, str] = {
 }
 AZURE_DEVOPS_EVENT_MAP: Dict[str, str] = {
     **PULL_REQUEST_EVENT_MAP,
+    PULL_REQUEST_COMMENT_EVENT: "pull_request_updated",
     **WORK_ITEM_EVENT_MAP,
 }
 AZURE_DEVOPS_WEBHOOK_EVENTS: Tuple[str, ...] = tuple(AZURE_DEVOPS_EVENT_MAP)
-PULL_REQUEST_WEBHOOK_EVENTS: Tuple[str, ...] = tuple(PULL_REQUEST_EVENT_MAP)
+PULL_REQUEST_WEBHOOK_EVENTS: Tuple[str, ...] = (
+    *PULL_REQUEST_EVENT_MAP,
+    PULL_REQUEST_COMMENT_EVENT,
+)
 
 LEGACY_HOST_MESSAGE = (
     "Azure DevOps URLs on {organization}.visualstudio.com are not supported. "
@@ -543,6 +550,88 @@ def normalize_pull_request(
     }
 
 
+def is_test_notification(payload: Mapping[str, Any]) -> bool:
+    """Recognize Azure's canned PR Test resource, never a live organization.
+
+    Azure supplies no test flag. Both subscription Test events captured from
+    notification history use this sample identity and 2014 commit pair.
+    Require the complete fingerprint, not just the sample organization name.
+    This only permits an authenticated no-op; it never authorizes dispatch.
+    """
+    resource = payload.get("resource")
+    if not isinstance(resource, Mapping):
+        return False
+    sample_repo = "4bc14d40-c903-45e2-872e-0462c7748079"
+    sample_url = (
+        "https://fabrikam.visualstudio.com/DefaultCollection/_apis/git/repositories/"
+        + sample_repo
+    )
+    return (
+        payload.get("publisherId") == "tfs"
+        and payload.get("eventType") in PULL_REQUEST_EVENT_MAP
+        and payload.get("resourceVersion") == "1.0"
+        and _dig(resource, "repository", "id") == sample_repo
+        and _dig(resource, "repository", "url") == sample_url
+        and resource.get("url") == sample_url + "/pullRequests/1"
+        and resource.get("pullRequestId") == 1
+        and resource.get("creationDate") == "2014-06-17T16:55:46.589889Z"
+        and _dig(resource, "lastMergeSourceCommit", "commitId")
+        == "53d54ac915144006c2c9e90d2c7d3880920db49c"
+        and _dig(resource, "lastMergeTargetCommit", "commitId")
+        == "a511f535b1ea495ee0c903badb68fbc83772c882"
+    )
+
+
+def normalize_review_comment(
+    payload: Mapping[str, Any], organization: str
+) -> AzureDevOpsDelivery:
+    """Accept only the exact command from the captured Azure comment contract.
+
+    Azure sends a comment and REST links, not a PR resource. Validate the
+    organization before interpreting those links; never follow a payload URL.
+    Preloop appends its marker before posting any comment, so its own writes
+    cannot become commands, even when a person uses the same token identity.
+    """
+    key = PULL_REQUEST_COMMENT_EVENT
+    resource = payload.get("resource") or {}
+    self_url = _dig(resource, "_links", "self", "href")
+    repo_url = _dig(resource, "_links", "repository", "href")
+    for url in (self_url, repo_url):
+        if (_organization_of(url) or "").casefold() != organization.casefold():
+            raise AzureDevOpsWebhookRejectedError(403, "organization_mismatch")
+    match = re.search(
+        r"/_apis/git/repositories/([0-9a-fA-F-]{36})/pullRequests/(\d+)/threads/(\d+)/comments/(\d+)$",
+        str(self_url),
+    )
+    if not match or not is_guid(match[1]):
+        raise AzureDevOpsWebhookRejectedError(400, "invalid_comment_identity")
+    content = resource.get("content")
+    if not isinstance(content, str) or content.strip().casefold() != "/preloop review":
+        return AzureDevOpsDelivery(False, key, reason="not_review_command")
+    repo_id, number, thread, comment = match.groups()
+    repo_id = repo_id.lower()
+    return AzureDevOpsDelivery(
+        True,
+        key,
+        event_type="pull_request_updated",
+        repository_id=repo_id,
+        pull_request_id=int(number),
+        payload={
+            "repository": {"id": repo_id},
+            "pull_request": {"number": int(number)},
+            "azure_devops": {
+                "organization": organization,
+                "repository_id": repo_id,
+                "pull_request_id": int(number),
+            },
+            "azure_review_request": {
+                "kind": "comment",
+                "signal": f"{thread}:{comment}",
+            },
+        },
+    )
+
+
 def normalize_delivery(
     payload: Any,
     *,
@@ -559,14 +648,14 @@ def normalize_delivery(
         bound_project: Project name the tracker is limited to.
         bound_repository: Repository name the tracker is limited to.
         repository_known: Answers whether a repository GUID was imported for
-            this tracker; a delivery for an unknown repository is rejected.
+            this tracker; an unknown repository is acknowledged without dispatch.
 
     Returns:
         The delivery outcome.
 
     Raises:
         AzureDevOpsWebhookRejectedError: For malformed payloads and
-            deliveries about another organization or repository.
+            deliveries about another organization.
     """
     if not isinstance(payload, Mapping):
         raise AzureDevOpsWebhookRejectedError(400, "invalid_payload")
@@ -575,11 +664,15 @@ def normalize_delivery(
         raise AzureDevOpsWebhookRejectedError(400, "missing_event_type")
     if payload.get("publisherId") not in (None, "tfs"):
         raise AzureDevOpsWebhookRejectedError(400, "unsupported_publisher")
+    if key == PULL_REQUEST_COMMENT_EVENT:
+        return normalize_review_comment(payload, organization)
     event_type = PULL_REQUEST_EVENT_MAP.get(key)
     if event_type is None:
         return AzureDevOpsDelivery(
             accepted=False, event_key=key, reason=REASON_UNSUPPORTED_EVENT
         )
+    if is_test_notification(payload):
+        return AzureDevOpsDelivery(False, key, reason="test_notification")
     resource = payload.get("resource")
     if not isinstance(resource, Mapping):
         raise AzureDevOpsWebhookRejectedError(400, "missing_resource")
@@ -594,13 +687,13 @@ def normalize_delivery(
     info = normalized["azure_devops"]
     repo_id = info["repository_id"]
     if bound_project and (info["project"] or "").casefold() != bound_project.casefold():
-        raise AzureDevOpsWebhookRejectedError(403, "repository_mismatch")
+        return AzureDevOpsDelivery(False, key, reason="repository_outside_scope")
     if bound_repository and (
         (info["repository"] or "").casefold() != bound_repository.casefold()
     ):
-        raise AzureDevOpsWebhookRejectedError(403, "repository_mismatch")
+        return AzureDevOpsDelivery(False, key, reason="repository_outside_scope")
     if repository_known is not None and not repository_known(repo_id):
-        raise AzureDevOpsWebhookRejectedError(403, "repository_mismatch")
+        return AzureDevOpsDelivery(False, key, reason="repository_not_imported")
 
     normalized["event_key"] = key
     normalized["delivery"] = {
@@ -619,8 +712,14 @@ def normalize_delivery(
         pull_request_id=info["pull_request_id"],
         head_sha=head_sha,
     )
-    if info["status"] not in (None, "active"):
-        # Completed or abandoned: nothing to review.
+    if info["status"] in ("completed", "abandoned"):
+        # Lifecycle events must reach the shared stop path, even on a seen head.
+        outcome.event_type = (
+            "pull_request_merged"
+            if info["status"] == "completed"
+            else "pull_request_closed"
+        )
+    elif info["status"] not in (None, "active"):
         outcome.accepted = False
         outcome.reason = REASON_NOT_ACTIVE
     elif not head_sha:
@@ -648,10 +747,16 @@ def delivery_identity(tracker_id: Any, delivery: AzureDevOpsDelivery) -> str:
         ``azure_devops:<tracker>:<repository>:pr:<id>:<sha>`` (under 200
         characters).
     """
-    return (
+    request = delivery.payload.get("azure_review_request")
+    if request:
+        return f"azure_devops:{tracker_id}:{delivery.repository_id}:pr:{delivery.pull_request_id}:comment:{request['signal']}"
+    identity = (
         f"{AZURE_DEVOPS_TRACKER_TYPE}:{tracker_id}:{delivery.repository_id}"
         f":pr:{delivery.pull_request_id}:{delivery.head_sha}"
     )
+    if delivery.event_type in {"pull_request_merged", "pull_request_closed"}:
+        return f"{identity}:{delivery.event_type}"
+    return identity
 
 
 def basic_auth_header(token: str) -> str:

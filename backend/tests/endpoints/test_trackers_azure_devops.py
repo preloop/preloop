@@ -120,3 +120,49 @@ def test_tracker_client_enforces_the_binding(full_name: str, allowed: bool) -> N
         with pytest.raises(HTTPException) as exc:
             azure_devops_repo_full_name(config, project)
         assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "kind,expected",
+    [
+        ("azure_devops", True),
+        ("bitbucket_dc", True),
+        ("github", True),
+        ("gitlab", True),
+        ("bitbucket", True),
+        ("jira", False),
+    ],
+)
+def test_tracker_response_exposes_repository_capability(
+    kind: str, expected: bool
+) -> None:
+    from datetime import datetime, timezone
+    from uuid import uuid4
+    from preloop.schemas.tracker import TrackerResponse
+
+    response = TrackerResponse(
+        id=uuid4(),
+        account_id=uuid4(),
+        name="Example",
+        tracker_type=kind,
+        created=datetime.now(timezone.utc),
+        last_updated=datetime.now(timezone.utc),
+    )
+    assert response.model_dump()["hosts_repositories"] is expected
+
+
+def test_setup_instructions_name_project_permissions_not_a_missing_pat_scope() -> None:
+    assert "Edit subscriptions" in hooks.SETUP_INSTRUCTIONS
+    assert "Service Hooks: Read, write & manage" not in hooks.SETUP_INSTRUCTIONS
+    assert "Code (Read)" in hooks.SETUP_INSTRUCTIONS
+
+
+def test_status_exposes_only_the_ignored_delivery_reason() -> None:
+    tracker = _tracker()
+    tracker.meta_data = {
+        "last_ignored_webhook": {
+            "reason": "repository_not_imported",
+            "at": "2026-01-01T00:00:00Z",
+        }
+    }
+    assert hooks._status(tracker)["last_ignored_reason"] == "repository_not_imported"

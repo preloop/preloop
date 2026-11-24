@@ -2250,6 +2250,23 @@ export class TrackerDetailView extends LitElement {
                 ></azure-devops-webhook-panel>`
               : nothing
           }
+          ${
+            this._isAzureDevOps() && !hasProjects
+              ? html`<p class="empty-repository-scope" role="status">
+                  <strong>0 repositories imported.</strong>
+                  ${
+                    !tracker.scope_rules?.some(
+                      (rule) =>
+                        rule.rule_type === 'INCLUDE' &&
+                        rule.scope_type === 'ORGANIZATION'
+                    )
+                      ? 'No organization is included in the tracker scope. Edit the tracker and select repositories, then sync again.'
+                      : tracker.validation_message ||
+                        'Sync has not imported any repositories. Check the selected scope and token access, then select Sync Now.'
+                  }
+                </p>`
+              : nothing
+          }
 
           <p class="scope-summary">
             <strong>Scope:</strong> ${this._describeScope()}

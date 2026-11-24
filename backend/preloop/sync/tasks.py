@@ -45,6 +45,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "cleanup_flow_workspaces",
     "maintain_gateway_activity",
     "reconcile_flow_feedback",
+    "reconcile_azure_review_requests",
     "refresh_pull_request_records",
     "reconcile_security_maintenance",
     "expire_stale_approvals",
@@ -1074,5 +1075,16 @@ async def reconcile_security_maintenance() -> dict[str, object]:
     db = next(get_db_session())
     try:
         return await sweep_security_maintenance(db)
+    finally:
+        db.close()
+
+
+async def reconcile_azure_review_requests() -> int:
+    """Discover explicit Azure requests and dispatch coalesced follow-ups."""
+    from preloop.services.azure_review_requests import run_review_request_tick
+
+    db = next(get_db_session())
+    try:
+        return await run_review_request_tick(db)
     finally:
         db.close()

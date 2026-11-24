@@ -9993,6 +9993,7 @@ export interface AzureDevOpsWebhookRegistration {
 }
 
 export interface AzureDevOpsWebhookStatus {
+  last_ignored_reason?: string | null;
   callback_url: string | null;
   callback_configured: boolean;
   required_events: string[];
