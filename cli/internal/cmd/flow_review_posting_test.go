@@ -720,3 +720,32 @@ func TestReviewPostingEnableWithoutProjectKeepsTheStoredList(t *testing.T) {
 		t.Fatalf("help = %q", help)
 	}
 }
+
+func TestReviewPostingRecoveryDeadline(t *testing.T) {
+	state := &reviewPostingServer{
+		flow: newReviewFlow(),
+		record: map[string]any{
+			"status": "pending",
+			"reason": "awaiting_sweep",
+			"due_at": "2026-01-01T12:00:00Z",
+		},
+	}
+	startReviewPostingServer(t, state)
+	out, err := runReviewPosting(t, "status", reviewExecutionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"automatic recovery", "Due at:      2026-01-01T12:00:00Z"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+	for code, want := range map[string]string{
+		"manual_publish_required":   "manual posting",
+		"explicit_publish_required": "outside automatic recovery",
+	} {
+		if text := reviewReasonText(code); !strings.Contains(text, want) {
+			t.Fatalf("%s text = %q, want %q", code, text, want)
+		}
+	}
+}

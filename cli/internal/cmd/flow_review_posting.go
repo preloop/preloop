@@ -809,6 +809,9 @@ func printPublicationRecord(out io.Writer, record map[string]any) {
 	if reason := str("reason"); reason != "" {
 		fmt.Fprintf(out, "Reason:      %s (%s)\n", reviewReasonText(reason), reason)
 	}
+	if due := str("due_at"); due != "" {
+		fmt.Fprintf(out, "Due at:      %s\n", due)
+	}
 	switch str("review") {
 	case "posted":
 		action := str("review_action")
@@ -917,6 +920,10 @@ var reviewReasons = map[string]string{
 	"execution_not_finished":       "the run has not finished",
 	"attempt_interrupted":          "the attempt was interrupted; Preloop retries",
 	"evidence_incomplete":          "the stored tool evidence is not complete enough for this flow to post a review",
+	"awaiting_sweep":               "waiting for automatic recovery to pick up the finished review",
+	"manual_publish_required":      "this flow uses manual posting; publish the review when ready",
+	"explicit_publish_required":    "this run is outside automatic recovery; publish the review explicitly",
+	"evidence_settling":            "waiting for tool evidence from the last model request to finish recording",
 	"evidence_pending":             "tool evidence for the last model request may still be recording; retry in a moment",
 }
 

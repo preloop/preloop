@@ -1818,7 +1818,9 @@ and timer share the exclusive publication claim and receipts. A delayed or
 backlogged monitor can miss that deadline; the timestamp stays in the past
 so the overdue wait is visible. Manual mode instead reads
 `reason: "manual_publish_required"` once evidence has settled, with no
-automatic deadline.
+automatic deadline. Runs finished before posting was enabled, or outside
+its 24-hour recovery lookback, read `explicit_publish_required` with no
+automatic deadline; they can still be published through the explicit call.
 
 `GET /api/v1/flows/executions/{id}/result` carries the counts once, both at
 the top level (`tool_evidence`) and on the publication record
@@ -2042,7 +2044,9 @@ preloop flow review-posting status <execution-id>          # add --json for the 
   `awaiting_sweep` keeps the fallback pickup deadline visible, including
   when overdue. A finished manual-mode run reads `manual_publish_required`
   with no automatic deadline. A run without a review binding reads
-  `no_review_binding` with no deadline. On a record with a scheduled retry, `due_at`
+  `no_review_binding` with no deadline. Runs outside the sweep's opt-in cutoff
+  or 24-hour lookback read `explicit_publish_required` with no deadline.
+  On a record with a scheduled retry, `due_at`
   is when that retry is due.
 
 A posting failure never

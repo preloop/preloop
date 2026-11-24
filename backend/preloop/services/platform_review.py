@@ -128,6 +128,8 @@ POSTING_SCOPE_DOCS_URL = (
 MAX_PAGES = 10
 #: Automatic attempts before a failed publication waits for an explicit call.
 MAX_AUTOMATIC_ATTEMPTS = 6
+#: Recovery only reaches back this far for runs with no publication row.
+UNCLAIMED_LOOKBACK = timedelta(hours=24)
 _API = "https://api.github.com"
 _ZWSP = "\u200b"
 #: Characters that can start or delimit Markdown or HTML anywhere in a line.
@@ -554,6 +556,40 @@ def _schedule_settled_publication(
     task.add_done_callback(finished)
 
 
+def _automatic_recovery_available(execution: Any, flow: Any) -> bool:
+    """Whether the unclaimed-run sweep can still pick up this execution.
+
+    Mirror the sweep's opt-in cutoff and lookback without reading evidence.
+    An excluded run can still be published through the explicit publish call.
+
+    Args:
+        execution: Finished execution with no publication row.
+        flow: Its opted-in flow.
+
+    Returns:
+        Whether the execution is within the sweep's opt-in cutoff and lookback.
+    """
+    settled = evidence_settled_at(execution)
+    if settled is None:
+        return False
+    end = settled - EVIDENCE_SETTLE_AFTER
+    block = platform_review_block(getattr(flow, "git_clone_config", None)) or {}
+    stamp = block.get("enabled_at")
+    if stamp is not None:
+        try:
+            since = datetime.fromisoformat(stamp)
+        except (TypeError, ValueError):
+            return False
+    else:
+        since = getattr(flow, "updated_at", None)
+    if not isinstance(since, datetime):
+        return False
+    if since.tzinfo is not None:
+        since = since.astimezone(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return end >= since and end >= now - UNCLAIMED_LOOKBACK
+
+
 def _pending_cause(execution: Any, flow: Any) -> tuple[str, str | None]:
     """Why a publication with no attempt yet is pending, and until when.
 
@@ -578,6 +614,8 @@ def _pending_cause(execution: Any, flow: Any) -> tuple[str, str | None]:
         return "no_review_binding", None
     if platform_review_mode(config) == MODE_MANUAL:
         return PENDING_MANUAL_PUBLISH, None
+    if not _automatic_recovery_available(execution, flow):
+        return "explicit_publish_required", None
     from preloop.services.execution_monitor import publication_sweep_interval
 
     settled = evidence_settled_at(execution)
@@ -3563,7 +3601,7 @@ async def sweep_platform_reviews(limit: int = 20) -> int:
         )
         targets += store.unclaimed_execution_ids(
             db=session,
-            finished_within=timedelta(hours=24),
+            finished_within=UNCLAIMED_LOOKBACK,
             minimum_age=EVIDENCE_SETTLE_AFTER,
             limit=limit,
         )

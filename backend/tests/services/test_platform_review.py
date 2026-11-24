@@ -3196,7 +3196,7 @@ async def test_mismatch_without_a_stored_digest_stays_failed_when_rerender_diffe
 
 def _set_evidence(world: SimpleNamespace, level: str | None) -> None:
     """Store platform_review.evidence. None leaves the key absent."""
-    block = {**OPT_IN}
+    block = {**OPT_IN, "enabled_at": "2020-01-01T00:00:00"}
     if level is not None:
         block["evidence"] = level
     config = {**world.flow.git_clone_config, "platform_review": block}
@@ -4085,3 +4085,49 @@ async def test_settle_timer_rechecks_posting_mode(
     settle_clock.advance(30)
     await asyncio.wait_for(settle_clock.tasks[0], timeout=1)
     assert world.github.writes == []
+
+
+@pytest.mark.parametrize(
+    "excluded", ["before_opt_in", "before_unstamped_save", "too_old"]
+)
+def test_projection_does_not_promise_a_sweep_for_excluded_runs(
+    world: SimpleNamespace, excluded: str
+) -> None:
+    """Runs outside automatic recovery name the explicit publish action."""
+    _set_evidence(world, "captured")
+    execution = finished(world, identity(world, world.projects[0]))
+    _age(world, execution, seconds=25 * 3600 if excluded == "too_old" else 31)
+    block = {**OPT_IN, "evidence": "captured"}
+    if excluded != "before_unstamped_save":
+        enabled = execution.end_time + timedelta(
+            seconds=1 if excluded == "before_opt_in" else -1
+        )
+        block["enabled_at"] = enabled.replace(tzinfo=timezone.utc).isoformat()
+    world.flow.git_clone_config = {
+        **world.flow.git_clone_config,
+        "platform_review": block,
+    }
+    world.db.commit()
+    record = platform_review.platform_review_projection(
+        world.db, execution, flow=world.flow
+    )
+    assert record is not None
+    assert (record["reason"], record["due_at"]) == ("explicit_publish_required", None)
+    assert world.github.writes == []
+
+
+def test_finished_manual_projection_names_explicit_publish_wait(
+    world: SimpleNamespace,
+) -> None:
+    """A finished manual run never promises automatic pickup."""
+    execution = finished(world, identity(world, world.projects[0]))
+    world.flow.git_clone_config = {
+        **world.flow.git_clone_config,
+        "platform_review": {**OPT_IN, "mode": "manual"},
+    }
+    world.db.commit()
+    record = platform_review.platform_review_projection(
+        world.db, execution, flow=world.flow
+    )
+    assert record is not None
+    assert (record["reason"], record["due_at"]) == ("manual_publish_required", None)

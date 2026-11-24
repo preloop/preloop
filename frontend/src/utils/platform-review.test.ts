@@ -174,3 +174,21 @@ describe('pending publication reasons', () => {
     expect(summary.detail).to.equal('Preloop posts when the run finishes.');
   });
 });
+
+describe('automatic recovery publication reasons', () => {
+  it('explains sweep pickup and displays its fallback deadline', () => {
+    const due = '2026-01-01T12:00:00Z';
+    const summary = publicationSummary(
+      record({ status: 'pending', reason: 'awaiting_sweep', due_at: due })
+    );
+    expect(summary.detail).to.contain('automatic recovery');
+    expect(summary.detail).to.contain(new Date(due).toLocaleString());
+  });
+
+  it('distinguishes manual posting from runs excluded from recovery', () => {
+    expect(reasonText('manual_publish_required')).to.contain('manual posting');
+    expect(reasonText('explicit_publish_required')).to.contain(
+      'outside automatic recovery'
+    );
+  });
+});
