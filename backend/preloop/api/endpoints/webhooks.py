@@ -499,8 +499,6 @@ def _prepare_bitbucket_dc_webhook(
             bound_repository_id=bound_repository_id,
             bound_project_key=details.get("project_key") or None,
             repository_known=lambda repo_id: project_for(repo_id) is not None,
-            lifecycle_only=headers.get("x-preloop-azure-lifecycle", "").lower()
-            == "true",
             self_user_slug=details.get("username") or None,
         )
     except BitbucketDCWebhookRejectedError as exc:
