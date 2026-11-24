@@ -54,6 +54,7 @@ from preloop.utils.azure_devops import (
     AZURE_DEVOPS_BASE_URL,
     AZURE_DEVOPS_WEBHOOK_EVENTS,
     PULL_REQUEST_WEBHOOK_EVENTS,
+    LIFECYCLE_HEADER,
     WEBHOOK_SECRET_HEADER,
     branch_from_ref,
     clone_url,
@@ -1438,8 +1439,23 @@ class AzureDevOpsTracker(BaseTracker):
             sub.get("eventType")
             for sub in subs
             if str(sub.get("status") or "enabled").lower().startswith("enabled")
+            and (
+                sub.get("eventType") != "git.pullrequest.updated"
+                or (sub.get("publisherInputs") or {}).get("notificationType")
+                == "PushNotification"
+            )
         }
         missing = [e for e in AZURE_DEVOPS_WEBHOOK_EVENTS if e not in enabled]
+        if not any(
+            sub.get("eventType") == "git.pullrequest.updated"
+            and (sub.get("publisherInputs") or {}).get("notificationType")
+            == "StatusUpdateNotification"
+            and f"{LIFECYCLE_HEADER}:true"
+            in (sub.get("consumerInputs") or {}).get("httpHeaders", "")
+            and str(sub.get("status") or "enabled").lower().startswith("enabled")
+            for sub in subs
+        ):
+            missing.append("git.pullrequest.updated (lifecycle)")
         return {
             "status": "registered" if not missing else "events_missing",
             "missing_events": missing,
@@ -1483,19 +1499,30 @@ class AzureDevOpsTracker(BaseTracker):
                 "service hooks."
             )
         existing = {
-            sub.get("eventType"): sub
+            (
+                sub.get("eventType"),
+                (sub.get("publisherInputs") or {}).get("notificationType")
+                == "StatusUpdateNotification",
+            ): sub
             for sub in await self.list_service_hooks(callback_url)
         }
         ids: List[str] = []
         created = 0
-        for event in AZURE_DEVOPS_WEBHOOK_EVENTS:
+        subscriptions = [(event, False) for event in AZURE_DEVOPS_WEBHOOK_EVENTS]
+        subscriptions.append(("git.pullrequest.updated", True))
+        for event, lifecycle in subscriptions:
             publisher_inputs = {"projectId": project_id}
             if repository_id and event in PULL_REQUEST_WEBHOOK_EVENTS:
                 # Work item events are project scoped; only pull request
                 # events take a repository filter.
                 publisher_inputs["repository"] = repository_id
-            # Leave Change unfiltered: abandon/complete events stop live runs.
-            # The intake deduplicates votes and edits by the source commit.
+            if event == "git.pullrequest.updated":
+                publisher_inputs["notificationType"] = (
+                    "StatusUpdateNotification" if lifecycle else "PushNotification"
+                )
+            headers = f"{WEBHOOK_SECRET_HEADER}:{secret}"
+            if lifecycle:
+                headers += f"\n{LIFECYCLE_HEADER}:true"
             body = {
                 "publisherId": "tfs",
                 "eventType": event,
@@ -1505,13 +1532,13 @@ class AzureDevOpsTracker(BaseTracker):
                 "publisherInputs": publisher_inputs,
                 "consumerInputs": {
                     "url": callback_url,
-                    "httpHeaders": f"{WEBHOOK_SECRET_HEADER}:{secret}",
+                    "httpHeaders": headers,
                     "resourceDetailsToSend": "all",
                     "messagesToSend": "none",
                     "detailedMessagesToSend": "none",
                 },
             }
-            current = existing.get(event)
+            current = existing.get((event, lifecycle))
             if current and current.get("id"):
                 response = await self._request(
                     "PUT",

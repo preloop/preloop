@@ -52,6 +52,7 @@ GIT_CREDENTIAL_USER = "azure-devops"
 
 # Header the service hook subscription sends with the per-tracker secret.
 WEBHOOK_SECRET_HEADER = "X-Preloop-Webhook-Secret"
+LIFECYCLE_HEADER = "X-Preloop-Azure-Lifecycle"
 WEBHOOK_MAX_BYTES = 1024 * 1024
 
 # Service hook event id -> normalized Preloop event type.
@@ -639,6 +640,7 @@ def normalize_delivery(
     bound_project: Optional[str] = None,
     bound_repository: Optional[str] = None,
     repository_known: Optional[Callable[[str], bool]] = None,
+    lifecycle_only: bool = False,
 ) -> AzureDevOpsDelivery:
     """Validate an authenticated delivery and map it to the trigger contract.
 
@@ -722,6 +724,9 @@ def normalize_delivery(
     elif info["status"] not in (None, "active"):
         outcome.accepted = False
         outcome.reason = REASON_NOT_ACTIVE
+    elif lifecycle_only:
+        outcome.accepted = False
+        outcome.reason = "not_terminal_lifecycle_event"
     elif not head_sha:
         # Without the source commit there is no way to tell a push from a
         # vote, so the update is not dispatched.

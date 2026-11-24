@@ -403,13 +403,25 @@ async def test_ensure_service_hooks_creates_then_updates() -> None:
             ("POST", "/fabrikam/_apis/hooks/subscriptions"): create,
             **{
                 ("PUT", f"/fabrikam/_apis/hooks/subscriptions/sub-{i}"): replace
-                for i in range(6)
+                for i in range(7)
             },
         }
     )
     first = await client.ensure_service_hooks(callback, "s1")
-    assert first["created"] == 6
-    created = {body["eventType"]: body for _m, body in bodies}
+    assert first["created"] == 7
+    created = {
+        body["eventType"]: body
+        for _m, body in bodies
+        if body["publisherInputs"].get("notificationType") != "StatusUpdateNotification"
+    }
+    lifecycle = next(
+        body
+        for _m, body in bodies
+        if body["publisherInputs"].get("notificationType") == "StatusUpdateNotification"
+    )
+    assert lifecycle["consumerInputs"]["httpHeaders"].endswith(
+        "\nX-Preloop-Azure-Lifecycle:true"
+    )
     updated_hook = created["git.pullrequest.updated"]
     assert updated_hook["publisherId"] == "tfs"
     assert updated_hook["consumerId"] == "webHooks"
@@ -417,6 +429,7 @@ async def test_ensure_service_hooks_creates_then_updates() -> None:
     assert updated_hook["publisherInputs"] == {
         "projectId": PROJECT_ID,
         "repository": REPO_ID,
+        "notificationType": "PushNotification",
     }
     assert updated_hook["consumerInputs"]["url"] == callback
     assert updated_hook["consumerInputs"]["httpHeaders"] == (
@@ -438,7 +451,19 @@ async def test_ensure_service_hooks_creates_then_updates() -> None:
     second = await client.ensure_service_hooks(callback, "s2")
     assert second["created"] == 0
     assert {m for m, _b in bodies} == {"PUT"}
-    assert all(b["consumerInputs"]["httpHeaders"].endswith(":s2") for _m, b in bodies)
+    assert all(
+        b["consumerInputs"]["httpHeaders"].splitlines()[0].endswith(":s2")
+        for _m, b in bodies
+    )
+
+    # A lifecycle hook cannot stand in for the source-push hook.
+    existing[:] = [
+        sub
+        for sub in existing
+        if sub["publisherInputs"].get("notificationType") != "PushNotification"
+    ]
+    status = await client.inspect_service_hooks(callback)
+    assert "git.pullrequest.updated" in status["missing_events"]
 
 
 @pytest.mark.parametrize("status", [400, 429, 500, "network"])

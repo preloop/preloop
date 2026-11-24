@@ -427,3 +427,19 @@ def test_exact_comment_command_and_own_comment_marker(
             dispatched(harness)[0].kwargs["payload"]["azure_review_request"]["kind"]
             == "comment"
         )
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_lifecycle_subscription_cannot_start_review_on_unseen_head(
+    harness: Dict[str, Any], terminal: bool
+) -> None:
+    """Lifecycle updates only stop runs, including on a previously unseen head."""
+    payload = fx(
+        "git.pullrequest.updated.completed" if terminal else "git.pullrequest.updated"
+    )
+    payload["resource"]["title"] = "An edited title"
+    response = post(harness, payload, headers={"X-Preloop-Azure-Lifecycle": "true"})
+    assert response.status_code == 200
+    assert bool(dispatched(harness)) is terminal
+    if not terminal:
+        assert response.json()["reason"] == "not_terminal_lifecycle_event"

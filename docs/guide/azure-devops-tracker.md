@@ -89,11 +89,11 @@ policies and scope rules attach to repositories.
 
 ## Service hooks
 
-Preloop receives events through six **Web Hooks** service hook
+Preloop receives events through seven **Web Hooks** service hook
 subscriptions on the Azure DevOps project:
 
 - `git.pullrequest.created` (Pull request created)
-- `git.pullrequest.updated` (Pull request updated)
+- `git.pullrequest.updated` (Pull request updated): separate source-push and lifecycle subscriptions
 - `ms.vss-code.git-pullrequest-comment-event` (Pull request commented on)
 - `workitem.created` (Work item created)
 - `workitem.updated` (Work item updated)
@@ -120,8 +120,10 @@ subscriptions afterwards (register again, or edit the header by hand).
 With the resource scopes and project permissions above, select **Register** (a secret is generated first if the tracker has
 none). Preloop creates the subscriptions with the secret header. The pull
 request ones are filtered to the tracker's repository (or its project when
-no repository is selected). `Pull request updated` includes all changes so
-abandoning or completing a PR can stop its running review. The work item ones cover the whole project. Registering also stores
+no repository is selected). Separate `Pull request updated` subscriptions cover
+source pushes and lifecycle changes. Lifecycle deliveries carry
+`X-Preloop-Azure-Lifecycle:true` and can stop reviews, never start them. The
+work item ones cover the whole project. Registering also stores
 the token owner's identity and the project's state categories on the
 tracker (see [Work item events](#work-item-events)). Registering again updates Preloop's subscriptions in place and never
 touches others. The panel then shows
@@ -152,13 +154,16 @@ is unavailable:
    It does not prove repository scope or flow configuration. A missing or
    wrong secret still fails. For work item subscriptions, finish the setup
    and verify with an actual work item event.
-6. Repeat for the trigger **Pull request updated** with the same settings,
-   and leave its **Change** filter at **Any** (all changes). Existing
-   subscriptions filtered to **Source branch updated** must be edited or
-   re-registered to receive abandon/complete events.
-7. For comment commands, repeat for **Pull request commented on** with the same
+6. Repeat for **Pull request updated**, with **Change** set to **Source branch
+   updated**. Keep this filter: metadata edits must not start reviews.
+7. Add a second **Pull request updated** subscription with **Change** set to
+   **Pull request lifecycle status changed**. Send both the secret header and
+   the additional header `X-Preloop-Azure-Lifecycle:true` (one header per line).
+   This subscription stops reviews on abandon/complete and never starts one.
+   Existing setups need this additional subscription; **Register** adds it.
+8. For comment commands, repeat for **Pull request commented on** with the same
    repository and action settings. Finish and verify using a real command.
-8. Repeat for **Work item created**, **Work item updated** and **Work item
+9. Repeat for **Work item created**, **Work item updated** and **Work item
    commented on**, without filters.
 
 After a manual setup, select **Register** once if the token allows it, or
@@ -206,8 +211,8 @@ The flow must subscribe to **Pull Request Updated** for this repository.
 Azure accepts free-form PR labels, but label changes do not emit a service hook.
 Preloop polls imported, included repositories in bounded pages; discovery can
 take several polling cycles on larger accounts. Comments use the **Pull request
-commented on** hook (`ms.vss-code.git-pullrequest-comment-event`). Add that third
-PR subscription using the same repository, callback and secret settings. Verify
+commented on** hook (`ms.vss-code.git-pullrequest-comment-event`). Add that comment
+subscription using the same repository, callback and secret settings. Verify
 it with a real command; the canned Test support covers created/updated only.
 
 Accepted labels are removed when the token has Code write access and permission

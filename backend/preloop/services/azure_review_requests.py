@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.api.common import azure_devops_repo_full_name, project_scope_denial
@@ -52,7 +53,10 @@ def _project(db: Session, tracker: models.Tracker, repo_id: str) -> Any:
         or project_scope_denial(db, tracker, project.organization, project)
     ):
         return None
-    azure_devops_repo_full_name(tracker.connection_details or {}, project)
+    try:
+        azure_devops_repo_full_name(tracker.connection_details or {}, project)
+    except HTTPException:
+        return None
     return project
 
 

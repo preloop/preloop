@@ -336,3 +336,30 @@ async def test_duplicate_label_can_retry_removal_without_another_request(
         assert await service.process_event(copy.deepcopy(event))
     row = db_session.query(models.AzureReviewRequest).filter_by(flow_id=flow.id).one()
     assert row.revision == 1
+
+
+def test_changed_repository_binding_discards_pending_scope(
+    db_session: Session, setup_request: Any
+) -> None:
+    """A new tracker binding cancels queued work instead of retrying forever."""
+    from preloop.services.azure_review_requests import _project
+
+    flow, _ = setup_request
+    tracker = db_session.get(models.Tracker, flow.trigger_event_source)
+    tracker.connection_details = {"organization": "another-org"}
+    project = SimpleNamespace(
+        is_active=True,
+        organization=SimpleNamespace(is_active=True),
+        meta_data={"full_name": "fabrikam/Project/repo"},
+    )
+    with (
+        patch(
+            "preloop.services.azure_review_requests.crud_project.get_for_tracker_by_identifier",
+            return_value=project,
+        ),
+        patch(
+            "preloop.services.azure_review_requests.project_scope_denial",
+            return_value=None,
+        ),
+    ):
+        assert _project(db_session, tracker, REPO_ID) is None
