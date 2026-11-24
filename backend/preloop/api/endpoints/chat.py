@@ -383,7 +383,9 @@ def ingest(
                 text = text[len(mention) :].strip()
         if connection.provider == "slack":
             verb = text.split(maxsplit=1)[0] if text else ""
-            if verb in {
+            if text.strip() in {"end", "status"}:
+                text = "/" + text.strip()
+            elif verb in {
                 "link",
                 "note",
                 "message",
@@ -391,8 +393,6 @@ def ingest(
                 "deny",
                 "ask",
                 "help",
-                "end",
-                "status",
             }:
                 text = "/" + text
         payload = {

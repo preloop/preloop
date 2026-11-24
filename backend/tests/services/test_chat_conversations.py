@@ -664,3 +664,90 @@ async def test_start_refusal_rechecks_flow_before_disclosure(
     f.db.refresh(receipt)
     assert receipt.status == "failed"
     assert delivery.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_command_prefixes_remain_plain_messages(
+    fixture_db: Any,
+    real_app: Any,
+    provider: str,
+    flow: models.Flow,
+    delivery: AsyncMock,
+) -> None:
+    """Words at the start of a natural follow-up cannot end or inspect a thread."""
+    f = fixture_db
+    row = await start(f, real_app, delivery)
+    for turn, text in enumerate(("end with an example", "status of the migration"), 1):
+        conversations.runtime_turn(
+            f.db, row, turn=turn, answer="Ready", finished=True, error=False
+        )
+        receive(f, text=text)
+        await drain(f, real_app)
+        assert "Message sent to Repository questions" in delivery.call_args.args[2]
+        assert conversations.messages(f.db, row.id)[-1].text == text
+        assert not row.end_requested
+    receive(f, text="/end with extra text")
+    await drain(f, real_app)
+    assert "Use end or status without additional text" in delivery.call_args.args[2]
+    assert not row.end_requested
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("end", "/end"),
+        ("status", "/status"),
+        (" end ", "/end"),
+        ("end with an example", "end with an example"),
+        ("status of the migration", "status of the migration"),
+    ],
+)
+async def test_slack_lifecycle_normalization_is_exact(
+    fixture_db: Any,
+    real_app: Any,
+    text: str,
+    expected: str,
+) -> None:
+    """Signed Slack ingress reserves whole commands, preserving natural text."""
+    import hashlib
+    import hmac
+    import json
+    import time
+    import httpx
+
+    f = fixture_db
+    event_id = str(uuid4())
+    raw = json.dumps(
+        {
+            "team_id": "team-test",
+            "event_id": event_id,
+            "event": {
+                "type": "message",
+                "channel_type": "im",
+                "user": "external-test",
+                "channel": "dm-test",
+                "text": text,
+            },
+        }
+    ).encode()
+    timestamp = str(int(time.time()))
+    signature = hmac.new(
+        b"fixture-secret", b"v0:" + timestamp.encode() + b":" + raw, hashlib.sha256
+    ).hexdigest()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=real_app), base_url="http://test"
+    ) as client:
+        result = await client.post(
+            f"/api/v1/chat/ingress/{f.connection.id}",
+            content=raw,
+            headers={
+                "x-slack-request-timestamp": timestamp,
+                "x-slack-signature": "v0=" + signature,
+            },
+        )
+    assert result.status_code == 200
+    receipt = crud_chat.work.get_multi(
+        f.db, connection_id=f.connection.id, event_id=event_id
+    )[0]
+    assert receipt.payload["text"] == expected

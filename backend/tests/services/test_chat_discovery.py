@@ -349,3 +349,44 @@ async def test_mattermost_redacted_membership_checks_active_team_search(
         else:
             with pytest.raises(ChatProviderError, match="not an active member"):
                 await verify_team_actor(config(), "actor", client=client)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("end", "/end"),
+        ("status", "/status"),
+        ("end with an example", "end with an example"),
+        ("status of the migration", "status of the migration"),
+    ],
+)
+async def test_mattermost_lifecycle_commands_require_exact_text(
+    text: str, expected: str
+) -> None:
+    """DM normalization preserves natural follow-ups that begin with reserved words."""
+    now = int(time.time() * 1000)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if "/posts/" in path:
+            data = {
+                "id": "post",
+                "create_at": now,
+                "user_id": "actor",
+                "channel_id": "dm",
+                "message": text,
+            }
+        elif path.endswith("/users/actor"):
+            data = {"id": "actor", "is_bot": False}
+        elif path.endswith("/channels/dm"):
+            data = {"id": "dm", "type": "D"}
+        elif "/channels/" in path:
+            data = {"channel_id": "dm", "user_id": path.rsplit("/", 1)[-1]}
+        else:
+            data = {"team_id": "team", "user_id": path.rsplit("/", 1)[-1]}
+        return httpx.Response(200, json=data)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await canonical_dm(config(), "post", now - 1000, client=client)
+    assert result["payload"]["text"] == expected

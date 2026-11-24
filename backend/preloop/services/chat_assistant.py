@@ -421,7 +421,16 @@ class ChatBroker:
         verb = text.split(maxsplit=1)[0] if text else ""
         # Commands are normalized on ingress; accept plain lifecycle verbs for
         # slash-command providers whose message option contains human text.
-        verb = {"end": "/end", "status": "/status"}.get(verb, verb)
+        if text.strip() in {"end", "status"}:
+            verb = "/" + text.strip()
+        if (
+            verb in {"/end", "/status"}
+            and text.strip() != verb
+            and text.strip() not in {"end", "status"}
+        ):
+            return (
+                "Use end or status without additional text. Your message was not sent."
+            )
         if binding is None:
             return (
                 "No active flow conversation. Use ask ALIAS TEXT to start one."

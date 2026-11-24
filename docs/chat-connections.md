@@ -255,6 +255,8 @@ It does not deliver unmentioned channel-thread replies, so **mention the bot on
 every channel follow-up**. No new Slack event, scope or reinstall is required
 for this feature.
 
+Only bare `end` and `status` are lifecycle commands; sentences such as
+“end with an example” remain ordinary follow-ups.
 `ask` while a conversation is active refuses to replace it: use `end` first,
 then `ask` again. `status` reports the flow, state, turns used/allowed and seconds
 until the idle container stops (or that its idle countdown has not started).

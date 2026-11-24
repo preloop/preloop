@@ -134,7 +134,9 @@ async def canonical_dm(
     if not isinstance(text, str) or not text.strip() or len(text) > MAX_MESSAGE_CHARS:
         return None
     verb = text.split(maxsplit=1)[0]
-    if verb in {
+    if text.strip() in {"end", "status"}:
+        text = "/" + text.strip()
+    elif verb in {
         "link",
         "note",
         "message",
@@ -142,8 +144,6 @@ async def canonical_dm(
         "deny",
         "ask",
         "help",
-        "end",
-        "status",
     }:
         text = "/" + text
     payload: dict[str, Any] = {
