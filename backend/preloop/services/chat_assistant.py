@@ -361,6 +361,18 @@ class ChatBroker:
         self, row: models.ChatWork, flow: models.Flow, question: str
     ) -> str:
         """Reserve one address and start with the human's ordinary API identity."""
+        crud_chat.transition(
+            self.db,
+            row,
+            "processing",
+            payload={
+                **row.payload,
+                "resource_proofs": [
+                    {"kind": "flow", "id": str(flow.id), "permission": permission}
+                    for permission in ("view_flows", "execute_flows")
+                ],
+            },
+        )
         scope = conversation_scope(
             self.connection.provider, row.external_user_id, row.payload
         )

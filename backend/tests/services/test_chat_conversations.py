@@ -631,3 +631,36 @@ async def test_poll_outage_retains_durable_observer(
     watch(f)
     await drain(f, real_app)
     assert delivery.call_args.args[2].startswith("Recovered answer\n")
+
+
+@pytest.mark.asyncio
+async def test_start_refusal_rechecks_flow_before_disclosure(
+    fixture_db: Any,
+    real_app: Any,
+    provider: str,
+    flow: models.Flow,
+    delivery: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An API refusal notice must not outlive visibility of the selected flow."""
+    from fastapi import HTTPException
+    from preloop.plugins.account_hooks import ALLOW, Decision
+
+    revoked = False
+
+    def authorize(*args: Any) -> Any:
+        return Decision("deny") if revoked else ALLOW
+
+    async def refuse(*args: Any, **kwargs: Any) -> Any:
+        nonlocal revoked
+        revoked = True
+        raise HTTPException(409, "Synthetic protected conversation notice")
+
+    monkeypatch.setattr("preloop.services.chat_assistant.authorize", authorize)
+    monkeypatch.setattr(ChatBroker, "request", refuse)
+    f = fixture_db
+    receipt = receive(f, text="/ask docs Start this conversation")
+    assert await process_one(f.db, real_app)
+    f.db.refresh(receipt)
+    assert receipt.status == "failed"
+    assert delivery.call_count == 0
