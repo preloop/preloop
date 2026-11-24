@@ -370,11 +370,18 @@ class ExecutionMonitor:
 _monitor_instance: ExecutionMonitor | None = None
 
 
+def publication_sweep_interval() -> int:
+    """Configured interval used by the publication fallback deadline."""
+    if _monitor_instance is not None:
+        return _monitor_instance.check_interval
+    return int(os.getenv("EXECUTION_MONITOR_INTERVAL", "60"))
+
+
 def get_execution_monitor() -> ExecutionMonitor:
     """Get or create the global execution monitor instance."""
     global _monitor_instance
     if _monitor_instance is None:
-        check_interval = int(os.getenv("EXECUTION_MONITOR_INTERVAL", "60"))
+        check_interval = publication_sweep_interval()
         stale_threshold = int(os.getenv("EXECUTION_STALE_THRESHOLD_MINUTES", "60"))
         _monitor_instance = ExecutionMonitor(
             check_interval_seconds=check_interval,

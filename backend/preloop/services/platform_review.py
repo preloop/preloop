@@ -128,6 +128,8 @@ POSTING_SCOPE_DOCS_URL = (
 MAX_PAGES = 10
 #: Automatic attempts before a failed publication waits for an explicit call.
 MAX_AUTOMATIC_ATTEMPTS = 6
+#: Recovery only reaches back this far for runs with no publication row.
+UNCLAIMED_LOOKBACK = timedelta(hours=24)
 _API = "https://api.github.com"
 _ZWSP = "\u200b"
 #: Characters that can start or delimit Markdown or HTML anywhere in a line.
@@ -501,9 +503,94 @@ def evidence_settled_at(execution: Any) -> datetime | None:
 PENDING_EXECUTION_NOT_FINISHED = "execution_not_finished"
 #: A row-less pending publication waiting out :data:`EVIDENCE_SETTLE_AFTER`.
 PENDING_EVIDENCE_SETTLING = "evidence_settling"
+#: The settle deadline passed; the monitor remains the restart safety net.
+PENDING_AWAITING_SWEEP = "awaiting_sweep"
+#: A finished manual-mode run needs an explicit publish call.
+PENDING_MANUAL_PUBLISH = "manual_publish_required"
+
+# Keep sleeping tasks alive, and coalesce repeated completion notifications.
+_settle_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
 
 
-def _pending_cause(execution: Any, flow: Any) -> tuple[str | None, str | None]:
+def _schedule_settled_publication(
+    *, account_id: Any, execution_id: Any, due: datetime
+) -> None:
+    """Wake a deferred automatic publication without holding a DB session.
+
+    A lost timer is harmless: the committed terminal execution is selected
+    by the sweep. Every caller still uses the same exclusive publication claim.
+
+    Args:
+        account_id: Account that owns the execution.
+        execution_id: Finished execution to attempt at the deadline.
+        due: End of the evidence settle window, as naive UTC.
+    """
+    key = (str(account_id), str(execution_id))
+    if key in _settle_tasks:
+        return
+
+    async def publish_when_settled() -> None:
+        """Wait out the full window and enter the normal completion publisher."""
+        try:
+            # Recheck UTC after waking, including if the wall clock moved back.
+            while (
+                delay := (
+                    due - datetime.now(timezone.utc).replace(tzinfo=None)
+                ).total_seconds()
+            ) > 0:
+                await asyncio.sleep(delay)
+            await publish_finished_execution(
+                account_id=account_id, execution_id=execution_id
+            )
+        except Exception:
+            # The sweep retries the durable execution after a worker/I/O failure.
+            logger.error("Deferred platform review failed for %s", execution_id)
+
+    def finished(task: asyncio.Task[None]) -> None:
+        """Release the timer reference after completion or cancellation."""
+        if _settle_tasks.get(key) is task:
+            del _settle_tasks[key]
+
+    task = asyncio.create_task(publish_when_settled())
+    _settle_tasks[key] = task
+    task.add_done_callback(finished)
+
+
+def _automatic_recovery_available(execution: Any, flow: Any) -> bool:
+    """Whether the unclaimed-run sweep can still pick up this execution.
+
+    Mirror the sweep's opt-in cutoff and lookback without reading evidence.
+    An excluded run can still be published through the explicit publish call.
+
+    Args:
+        execution: Finished execution with no publication row.
+        flow: Its opted-in flow.
+
+    Returns:
+        Whether the execution is within the sweep's opt-in cutoff and lookback.
+    """
+    settled = evidence_settled_at(execution)
+    if settled is None:
+        return False
+    end = settled - EVIDENCE_SETTLE_AFTER
+    block = platform_review_block(getattr(flow, "git_clone_config", None)) or {}
+    stamp = block.get("enabled_at")
+    if stamp is not None:
+        try:
+            since = datetime.fromisoformat(stamp)
+        except (TypeError, ValueError):
+            return False
+    else:
+        since = getattr(flow, "updated_at", None)
+    if not isinstance(since, datetime):
+        return False
+    if since.tzinfo is not None:
+        since = since.astimezone(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    return end >= since and end >= now - UNCLAIMED_LOOKBACK
+
+
+def _pending_cause(execution: Any, flow: Any) -> tuple[str, str | None]:
     """Why a publication with no attempt yet is pending, and until when.
 
     Args:
@@ -511,18 +598,32 @@ def _pending_cause(execution: Any, flow: Any) -> tuple[str | None, str | None]:
         flow: Its flow.
 
     Returns:
-        ``(reason, due_at)``. ``execution_not_finished`` while the run runs.
-        ``evidence_settling`` with the ISO time the attempt becomes due while
-        a flow with an evidence gate waits for late tool evidence. Otherwise
-        ``(None, None)``: the attempt is due and has not been made yet.
+        ``(reason, due_at)``. The settle deadline while evidence can arrive;
+        afterwards the fallback sweep deadline. A past deadline stays past
+        so an overdue sweep is visible. Manual mode has no automatic deadline.
     """
     if getattr(execution, "status", None) not in TERMINAL_STATUSES:
         return PENDING_EXECUTION_NOT_FINISHED, None
-    if evidence_level(getattr(flow, "git_clone_config", None)) == "any":
-        return None, None
-    if not evidence_may_still_arrive(execution):
-        return None, None
-    return PENDING_EVIDENCE_SETTLING, _iso(evidence_settled_at(execution))
+    config = getattr(flow, "git_clone_config", None)
+    if evidence_level(config) != "any" and evidence_may_still_arrive(execution):
+        return PENDING_EVIDENCE_SETTLING, _iso(evidence_settled_at(execution))
+    if (
+        parse_stored_review_binding(getattr(execution, "ci_review_binding", None))
+        is None
+    ):
+        return "no_review_binding", None
+    if platform_review_mode(config) == MODE_MANUAL:
+        return PENDING_MANUAL_PUBLISH, None
+    if not _automatic_recovery_available(execution, flow):
+        return "explicit_publish_required", None
+    from preloop.services.execution_monitor import publication_sweep_interval
+
+    settled = evidence_settled_at(execution)
+    return PENDING_AWAITING_SWEEP, _iso(
+        settled + timedelta(seconds=publication_sweep_interval())
+        if settled is not None
+        else None
+    )
 
 
 def check_stored_preconditions(
@@ -2969,9 +3070,20 @@ async def publish_platform_review(
         if explicit:
             raise PlatformReviewRefusedError("execution_not_finished")
         return None
+    # Re-enabling posting creates a new cutoff. An old timer must agree
+    # with the sweep and projection, while held claims can still finish.
+    if (
+        not explicit
+        and not _automatic_recovery_available(execution, flow)
+        and crud.crud_platform_review_publication.get_for_execution(
+            db, execution_id=execution.id
+        )
+        is None
+    ):
+        return None
     # The last streaming gateway request can still be committing its evidence.
     # Do not post, and do not record evidence_incomplete, until that window
-    # has passed. The sweep publishes an unclaimed automatic run afterwards.
+    # has passed. Wake at the deadline; the sweep covers a lost timer.
     if (
         evidence_may_still_arrive(execution)
         and stricter_evidence(evidence_level(flow.git_clone_config), pre.evidence)
@@ -2979,6 +3091,11 @@ async def publish_platform_review(
     ):
         if explicit:
             raise PlatformReviewRefusedError("evidence_pending")
+        due = evidence_settled_at(execution)
+        if due is not None:
+            _schedule_settled_publication(
+                account_id=account_id, execution_id=execution_id, due=due
+            )
         return None
     # One read of the stored records serves the precondition, the plan and
     # the record returned to the caller. A flow with the gate off, and a
@@ -3494,7 +3611,10 @@ async def sweep_platform_reviews(limit: int = 20) -> int:
             db=session, limit=limit, max_attempts=MAX_AUTOMATIC_ATTEMPTS
         )
         targets += store.unclaimed_execution_ids(
-            db=session, finished_within=timedelta(hours=24), limit=limit
+            db=session,
+            finished_within=UNCLAIMED_LOOKBACK,
+            minimum_age=EVIDENCE_SETTLE_AFTER,
+            limit=limit,
         )
         session.commit()
         for account_id, execution_id in targets:

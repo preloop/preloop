@@ -66,7 +66,8 @@ export interface PlatformReviewRecord {
   retry_scheduled: boolean;
   /**
    * When the next attempt is due: the end of the evidence settle wait
-   * (reason `evidence_settling`) or a scheduled retry. Null otherwise.
+   * (reason `evidence_settling`), fallback recovery pickup (`awaiting_sweep`),
+   * or a scheduled retry. A past value remains visible when overdue.
    */
   due_at?: string | null;
   pull_request_url?: string | null;
@@ -398,6 +399,12 @@ const REASONS: Record<string, string> = {
     'The stored tool evidence is not complete enough for this flow to post a review.',
   evidence_settling:
     'Waiting for tool evidence from the last model request to finish recording before posting.',
+  awaiting_sweep:
+    'Waiting for automatic recovery to pick up the finished review.',
+  manual_publish_required:
+    'This flow uses manual posting. Publish the review when ready.',
+  explicit_publish_required:
+    'This run is outside automatic recovery. Publish the review explicitly.',
   evidence_pending:
     'Tool evidence for the last model request may still be recording. Retry in a moment.',
   request_not_allowed: 'Preloop refused a request outside what posting may do.',
@@ -425,7 +432,10 @@ export function publicationSummary(
         label: 'Not posted yet',
         variant: 'neutral',
         detail: record.reason
-          ? reasonText(record.reason)
+          ? reasonText(record.reason) +
+            (record.reason === 'awaiting_sweep' && record.due_at
+              ? ` Fallback pickup due: ${new Date(record.due_at).toLocaleString()}.`
+              : '')
           : 'Preloop posts when the run finishes.',
       };
     case 'publishing':

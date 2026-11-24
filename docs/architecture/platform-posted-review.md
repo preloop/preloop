@@ -285,6 +285,24 @@ the check. A mismatch recorded before `readback_check` existed has a null
 check. The claim keeps that reason, and the explicit call still reads the
 ids rather than marking the row posted.
 
+Automatic publications deferred for late evidence keep an in-process timer
+until `end_time + EVIDENCE_SETTLE_AFTER` (30 seconds). It holds only execution
+and account ids, opens a fresh session at the deadline, and rechecks all
+publication gates. Normal finish-to-post time is 30 seconds plus provider
+write/read-back latency. The committed terminal execution is the durable
+fallback: after a restart the monitor sweep selects it as soon as the same
+settle window expires, without the former two-minute exclusion. Both callers
+must win the existing exclusive claim before writing, and both reuse stored
+provider ids and receipts. The projection reports `evidence_settling` until
+the deadline, then `awaiting_sweep` until claimed, with a fallback deadline
+of the settle time plus one configured monitor interval. Overdue deadlines
+stay visible rather than moving forward on each read. Runs outside the
+sweep's opt-in cutoff or 24-hour lookback instead name the explicit publish
+call with `explicit_publish_required` and no automatic deadline. Automatic
+calls with no claim apply that same cutoff, including when a waiting timer
+survives posting being disabled and re-enabled. Existing claims and explicit
+publish calls can still complete.
+
 ## Posting modes and caller preconditions
 
 `platform_review.mode` is `automatic` (the default, and what a block without

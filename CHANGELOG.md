@@ -66,6 +66,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Automatic review publication starts when the unchanged 30-second evidence
+  settle window ends, without waiting for the recovery sweep (#2436). A
+  restart can delay posting until the sweep, which now selects settled runs
+  without the former two-minute exclusion. Pending records keep the
+  `awaiting_sweep` fallback deadline visible, including when overdue;
+  `manual_publish_required` and `explicit_publish_required` name runs that
+  need an explicit publish call. The console and CLI explain those reasons
+  and display the fallback deadline.
+
 - A flow with **Enable git workspace cloning** off no longer clones the
   trigger repository. A run that names no branch now checks out the
   repository's default branch instead of assuming `main`, so repositories
