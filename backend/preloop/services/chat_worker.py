@@ -93,7 +93,10 @@ async def process_one(db: Session, app: Any) -> bool:
                 if user is None:
                     if row.payload.get("actor_id"):
                         crud_chat.close_bindings(
-                            db, connection.id, external_user_id=row.external_user_id
+                            db,
+                            connection.id,
+                            external_user_id=row.external_user_id,
+                            owner_user_id=UUID(row.payload["actor_id"]),
                         )
                         crud_chat.transition(
                             db, row, "cancelled", last_error="Original actor revoked"
@@ -111,7 +114,10 @@ async def process_one(db: Session, app: Any) -> bool:
                     original_actor = row.payload.get("actor_id")
                     if original_actor and original_actor != str(user.id):
                         crud_chat.close_bindings(
-                            db, connection.id, external_user_id=row.external_user_id
+                            db,
+                            connection.id,
+                            external_user_id=row.external_user_id,
+                            owner_user_id=UUID(original_actor),
                         )
                         crud_chat.transition(
                             db, row, "cancelled", last_error="Identity was relinked"
@@ -308,7 +314,10 @@ async def process_one(db: Session, app: Any) -> bool:
             user = crud_chat.principal(db, connection, row.external_user_id)
             if user is None or user.id != row.user_id:
                 crud_chat.close_bindings(
-                    db, connection.id, external_user_id=row.external_user_id
+                    db,
+                    connection.id,
+                    external_user_id=row.external_user_id,
+                    owner_user_id=row.user_id,
                 )
                 crud_chat.transition(
                     db, row, "cancelled", last_error="Identity revoked"

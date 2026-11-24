@@ -400,8 +400,8 @@ class ChatBroker:
         except HTTPException as exc:
             binding = self.binding(row)
             if binding:
-                crud_chat.bindings.update(
-                    self.db, db_obj=binding, obj_in={"closed": True}
+                crud_chat.close_conversation_binding(
+                    self.db, self.connection.id, row.id
                 )
             crud_chat.transition(self.db, row, "processing", run_flow_id=None)
             return str(exc.detail)
@@ -491,13 +491,14 @@ class ChatBroker:
                 if verb in {"/end", "/status"}
                 else None
             )
+        bound_id = binding.conversation_id
         user = crud_chat.principal(self.db, self.connection, row.external_user_id)
         if (
             binding.external_user_id == row.external_user_id
             and user is not None
             and binding.owner_user_id != user.id
         ):
-            crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
+            crud_chat.close_conversation_binding(self.db, self.connection.id, bound_id)
             return "The previous linked user's conversation is detached. Use ask ALIAS TEXT to start your own conversation."
         if (
             binding.external_user_id != row.external_user_id
@@ -523,15 +524,17 @@ class ChatBroker:
             if exc.status_code == 429 or exc.status_code >= 500:
                 return self.defer_conversation_read(row)
             if exc.status_code in {401, 403, 404}:
-                crud_chat.bindings.update(
-                    self.db, db_obj=binding, obj_in={"closed": True}
+                crud_chat.close_conversation_binding(
+                    self.db, self.connection.id, UUID(conversation_id)
                 )
                 return "This conversation is no longer available. Your message was not sent. Use ask ALIAS TEXT to start a new conversation."
             return "The conversation could not be read. Your message was not sent. Try again shortly."
         except (httpx.HTTPError, asyncio.TimeoutError):
             return self.defer_conversation_read(row)
         if data["state"] in {"ended", "failed"}:
-            crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
+            crud_chat.close_conversation_binding(
+                self.db, self.connection.id, UUID(conversation_id)
+            )
             if verb == "/ask":
                 return None
             crud_chat.transition(
@@ -583,8 +586,8 @@ class ChatBroker:
                 )
             except HTTPException as exc:
                 if exc.status_code in {401, 403, 404}:
-                    crud_chat.bindings.update(
-                        self.db, db_obj=binding, obj_in={"closed": True}
+                    crud_chat.close_conversation_binding(
+                        self.db, self.connection.id, UUID(conversation_id)
                     )
                     crud_chat.transition(
                         self.db,
@@ -604,7 +607,9 @@ class ChatBroker:
                     return "This conversation is no longer available. The chat address is released."
                 crud_chat.transition(self.db, row, "processing")
                 return "The end command was not accepted. Try again shortly."
-            crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
+            crud_chat.close_conversation_binding(
+                self.db, self.connection.id, UUID(conversation_id)
+            )
             return "Conversation ended. Your next plain message goes to the read-only account assistant. Use ask ALIAS TEXT to start another flow conversation."
         denied = crud_chat.reserve_run(
             self.db,
@@ -689,8 +694,8 @@ class ChatBroker:
                         crud_chat.work.update(
                             self.db, db_obj=parent, obj_in={"run_flow_id": None}
                         )
-                crud_chat.bindings.update(
-                    self.db, db_obj=binding, obj_in={"closed": True}
+                crud_chat.close_conversation_binding(
+                    self.db, self.connection.id, UUID(conversation_id)
                 )
                 crud_chat.transition(
                     self.db,
@@ -743,7 +748,9 @@ class ChatBroker:
                 bounded_reply(notice, url, self.connection.provider),
             )
         if state in {"ended", "failed"} or limit:
-            crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
+            crud_chat.close_conversation_binding(
+                self.db, self.connection.id, UUID(conversation_id)
+            )
             crud_chat.transition(self.db, row, "delivered", last_error=None)
         else:
             idle_polls = (

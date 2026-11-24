@@ -82,6 +82,7 @@ class CRUDChat:
         connection_id: uuid.UUID,
         *,
         external_user_id: str | None = None,
+        owner_user_id: uuid.UUID | None = None,
     ) -> None:
         """Detach revoked chat addresses without ending their console conversations."""
         query = db.query(models.ChatConversationBinding).filter_by(
@@ -89,7 +90,18 @@ class CRUDChat:
         )
         if external_user_id is not None:
             query = query.filter_by(external_user_id=external_user_id)
+        if owner_user_id is not None:
+            query = query.filter_by(owner_user_id=owner_user_id)
         query.update({"closed": True}, synchronize_session=False)
+        db.commit()
+
+    def close_conversation_binding(
+        self, db: Session, connection_id: uuid.UUID, conversation_id: uuid.UUID
+    ) -> None:
+        """Close only this conversation, never a newer reservation at its address."""
+        db.query(models.ChatConversationBinding).filter_by(
+            connection_id=connection_id, conversation_id=conversation_id, closed=False
+        ).update({"closed": True}, synchronize_session=False)
         db.commit()
 
     def conversation_binding(

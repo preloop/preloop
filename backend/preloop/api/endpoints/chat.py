@@ -281,7 +281,10 @@ def unlink_identity(
     identity = crud_chat.identity(db, connection.id, user_id=current_user.id)
     if identity:
         crud_chat.close_bindings(
-            db, connection.id, external_user_id=identity.external_user_id
+            db,
+            connection.id,
+            external_user_id=identity.external_user_id,
+            owner_user_id=current_user.id,
         )
         crud_chat.identities.delete(db, id=identity.id)
 

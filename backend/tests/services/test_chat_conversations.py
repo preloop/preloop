@@ -1172,3 +1172,75 @@ def test_concurrent_wake_survives_observer_deferral(fixture_db: Any) -> None:
     crud_chat.defer_conversation_observer(f.db, claimed, 300)
     assert claimed.status == "pending" and claimed.lease_until is None
     assert 0 < (claimed.next_attempt_at - datetime.utcnow()).total_seconds() <= 5
+
+
+def test_stale_cleanup_preserves_new_binding_owner(fixture_db: Any) -> None:
+    """An old actor or conversation cannot detach a newly reused address."""
+    f = fixture_db
+    old_owner, old_conversation, new_conversation = uuid4(), uuid4(), uuid4()
+    binding = crud_chat.bindings.create(
+        f.db,
+        obj_in={
+            "account_id": f.account.id,
+            "connection_id": f.connection.id,
+            "scope": "dm:external-test",
+            "external_user_id": "external-test",
+            "owner_user_id": f.user.id,
+            "channel_id": "dm-test",
+            "thread_id": "",
+            "conversation_id": new_conversation,
+            "closed": False,
+        },
+    )
+    crud_chat.close_bindings(
+        f.db, f.connection.id, external_user_id="external-test", owner_user_id=old_owner
+    )
+    crud_chat.close_conversation_binding(f.db, f.connection.id, old_conversation)
+    f.db.refresh(binding)
+    assert not binding.closed and binding.conversation_id == new_conversation
+    crud_chat.close_conversation_binding(f.db, f.connection.id, new_conversation)
+    f.db.refresh(binding)
+    assert binding.closed
+
+
+@pytest.mark.asyncio
+async def test_terminal_observer_does_not_close_reused_address(
+    fixture_db: Any,
+    real_app: Any,
+    flow: models.Flow,
+    delivery: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new reservation made during an old poll survives the old terminal cleanup."""
+    f = fixture_db
+    row = await start(f, real_app, delivery)
+    conversations.save(f.db, row, state="ended", notice="Old conversation ended.")
+    new_id = uuid4()
+    original = ChatBroker.request
+
+    async def request(
+        broker: ChatBroker,
+        method: str,
+        path: str,
+        permission: str,
+        payload: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        result = await original(broker, method, path, permission, payload, **kwargs)
+        if f"/{row.id}?after_turn=" in path:
+            with Session(f.engine) as other:
+                binding = crud_chat.conversation_binding(
+                    other, f.connection.id, "dm:external-test"
+                )
+                crud_chat.bindings.update(
+                    other,
+                    db_obj=binding,
+                    obj_in={"conversation_id": new_id, "closed": False},
+                )
+        return result
+
+    monkeypatch.setattr(ChatBroker, "request", request)
+    watch(f)
+    assert await process_one(f.db, real_app)
+    binding = crud_chat.conversation_binding(f.db, f.connection.id, "dm:external-test")
+    assert binding is not None and binding.conversation_id == new_id
