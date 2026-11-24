@@ -11,6 +11,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import '@shoelace-style/shoelace/dist/components/tree/tree.js';
 import '@shoelace-style/shoelace/dist/components/tree-item/tree-item.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -29,6 +30,7 @@ const AZURE_DEVOPS_GUIDE_URL =
 
 /** Connection details sent for an Azure DevOps tracker. */
 export interface AzureDevOpsConnectionDetails {
+  cast_token_owner_vote: boolean;
   organization: string;
   project?: string;
   repository?: string;
@@ -343,6 +345,9 @@ export class AddTrackerModal extends LitElement {
   private azureDevOpsRepository = '';
 
   @state()
+  private azureDevOpsCastVote = false;
+
+  @state()
   private orgs: any[] = [];
 
   @state()
@@ -478,6 +483,7 @@ export class AddTrackerModal extends LitElement {
         this.azureDevOpsOrganization = details.organization ?? '';
         this.azureDevOpsProject = details.project ?? '';
         this.azureDevOpsRepository = details.repository ?? '';
+        this.azureDevOpsCastVote = details.cast_token_owner_vote ?? true;
       }
       this.authMethod = this.isOAuthAuthType(this.tracker.auth_type)
         ? 'github_app'
@@ -1691,6 +1697,15 @@ export class AddTrackerModal extends LitElement {
         }
         required
       ></sl-input>
+      <sl-switch
+        name="azure_devops_cast_token_owner_vote"
+        .checked=${this.azureDevOpsCastVote}
+        @sl-change=${(e: Event) => {
+          this.azureDevOpsCastVote = (e.target as HTMLInputElement).checked;
+        }}
+        help-text="When enabled, approve and request changes also set the PAT owner's vote. When disabled, the decision appears only in the summary. Use a dedicated Azure DevOps user for Preloop."
+        >Cast the token owner's vote</sl-switch
+      >
       <p
         class="azure-devops-guide"
         style="font-size: var(--sl-font-size-small);"
@@ -1718,7 +1733,10 @@ export class AddTrackerModal extends LitElement {
         'Enter only the organization name from https://dev.azure.com/{organization}, not a URL.'
       );
     }
-    const details: AzureDevOpsConnectionDetails = { organization };
+    const details: AzureDevOpsConnectionDetails = {
+      organization,
+      cast_token_owner_vote: this.azureDevOpsCastVote,
+    };
     const project = this.azureDevOpsProject.trim();
     const repository = this.azureDevOpsRepository.trim();
     if (repository && !project) {
