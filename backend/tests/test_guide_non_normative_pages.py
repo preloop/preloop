@@ -100,6 +100,7 @@ def test_non_normative_pages_are_detected() -> None:
         if _is_non_normative(path.read_text(encoding="utf-8"))
     ]
     assert detected == [
+        "azure-devops-application-identity.md",
         "flow-delegation-child-approvals.md",
         "flows/scanner-binaries-decision.md",
         "subagent-session-identity.md",

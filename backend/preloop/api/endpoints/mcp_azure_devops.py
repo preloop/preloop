@@ -40,7 +40,11 @@ from preloop.sync.trackers.azure_devops import (
     AzureDevOpsTracker,
 )
 from preloop.utils.azure_devops import branch_from_ref, user_name
-from preloop.utils.azure_devops_review import is_review_summary, reviewed_sha
+from preloop.utils.azure_devops_review import (
+    ReviewPositionCache,
+    is_review_summary,
+    reviewed_sha,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -430,6 +434,7 @@ async def update_pull_request(
     result_id: Optional[str] = None
     result_url: Optional[str] = None
 
+    position_cache = ReviewPositionCache()
     # Content first, vote last: a failure part way never leaves a vote
     # without the comments that explain it.
     for rc in review_comments or []:
@@ -442,6 +447,7 @@ async def update_pull_request(
             line=line,
             side=rc.get("side"),
             reviewed_commit=reviewed_sha(review_body or ""),
+            position_cache=position_cache,
         )
         if created.get("fallback_reason"):
             notes.append(f"{rc['path']}:{line}: {created['fallback_reason']}")

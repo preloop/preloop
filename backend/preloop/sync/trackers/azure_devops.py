@@ -24,8 +24,8 @@ scanner does not register them automatically.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote
@@ -101,6 +101,8 @@ from .utils import parse_retry_after
 
 from preloop.utils.azure_devops_review import (
     SUMMARY_MARKER,
+    ReviewPositionCache,
+    changed_line_ranges,
     generated_body,
     is_review_summary,
     reviewed_sha,
@@ -1170,6 +1172,7 @@ class AzureDevOpsTracker(BaseTracker):
         line: int,
         repo_full_name: Optional[str],
         reviewed_commit: Optional[str] = None,
+        position_cache: Optional[ReviewPositionCache] = None,
     ) -> Tuple[Dict[str, Any], Optional[str]]:
         """Validate a right-side line against the reviewed iteration's full diff.
 
@@ -1177,7 +1180,10 @@ class AzureDevOpsTracker(BaseTracker):
         with its source commit, per the Threads REST 7.1 contract.
         """
         base = self._pr(pr_id, repo_full_name)
-        iterations = await self._list(f"{base}/iterations")
+        cache = position_cache if position_cache is not None else ReviewPositionCache()
+        if base not in cache.iterations:
+            cache.iterations[base] = await self._list(f"{base}/iterations")
+        iterations = cache.iterations[base]
         if not iterations:
             return {}, "no reviewed iteration"
         if reviewed_commit:
@@ -1192,27 +1198,29 @@ class AzureDevOpsTracker(BaseTracker):
         iteration = max(iterations, key=lambda item: int(item["id"]))
         iteration_id = int(iteration["id"])
         file_path = "/" + path.lstrip("/")
-        skip = 0
-        entry = None
-        for _ in range(MAX_PAGES):
-            data = await self._get_json(
-                f"{base}/iterations/{iteration_id}/changes",
-                params={"$compareTo": 0, "$top": 2000, "$skip": skip},
-            )
-            entry = next(
-                (
-                    change
-                    for change in data.get("changeEntries", [])
-                    if (
-                        (change.get("item") or {}).get("path") == file_path
-                        or change.get("originalPath") == file_path
-                    )
-                ),
-                None,
-            )
-            if entry is not None or not data.get("nextSkip"):
-                break
-            skip = int(data["nextSkip"])
+        changes_key = (base, iteration_id)
+        if changes_key not in cache.changes:
+            entries: List[Dict[str, Any]] = []
+            skip = 0
+            for _ in range(MAX_PAGES):
+                data = await self._get_json(
+                    f"{base}/iterations/{iteration_id}/changes",
+                    params={"$compareTo": 0, "$top": 2000, "$skip": skip},
+                )
+                entries.extend(data.get("changeEntries", []))
+                if not data.get("nextSkip"):
+                    break
+                skip = int(data["nextSkip"])
+            cache.changes[changes_key] = entries
+        entry = next(
+            (
+                change
+                for change in cache.changes[changes_key]
+                if (change.get("item") or {}).get("path") == file_path
+                or change.get("originalPath") == file_path
+            ),
+            None,
+        )
         if entry is None:
             return {}, "file is not part of the diff"
         change_type = str(entry.get("changeType") or "").lower()
@@ -1244,15 +1252,14 @@ class AzureDevOpsTracker(BaseTracker):
                 raise ValueError("file content unavailable")
             return text.splitlines()
 
-        after = await content(source)
-        before = [] if "add" in change_type else await content(common)
-        changed = any(
-            tag in ("insert", "replace") and start < line <= end
-            for tag, _, _, start, end in SequenceMatcher(
-                None, before, after, autojunk=False
-            ).get_opcodes()
-        )
-        if not changed:
+        ranges_key = (base, iteration_id, file_path)
+        if ranges_key not in cache.ranges:
+            after = await content(source)
+            before = [] if "add" in change_type else await content(common)
+            cache.ranges[ranges_key] = await asyncio.to_thread(
+                changed_line_ranges, before, after
+            )
+        if not any(start < line <= end for start, end in cache.ranges[ranges_key]):
             return {}, "line is not part of the diff"
         tracking_id = entry.get("changeTrackingId")
         if not isinstance(tracking_id, int):
@@ -1338,6 +1345,7 @@ class AzureDevOpsTracker(BaseTracker):
         line: Optional[int] = None,
         side: Optional[str] = None,
         reviewed_commit: Optional[str] = None,
+        position_cache: Optional[ReviewPositionCache] = None,
     ) -> Dict[str, Any]:
         """Start a thread, or reply in one.
 
@@ -1351,6 +1359,7 @@ class AzureDevOpsTracker(BaseTracker):
             line: One-based line number in the reviewed source.
             side: RIGHT (default); other sides fall back to a general thread.
             reviewed_commit: Source SHA; defaults to the body marker or latest iteration.
+            position_cache: Shared immutable verification data for this review only.
 
         Returns:
             Thread/comment IDs and URL, plus ``anchored`` and ``fallback_reason``.
@@ -1371,6 +1380,7 @@ class AzureDevOpsTracker(BaseTracker):
                             line,
                             repo_full_name,
                             reviewed_commit or reviewed_sha(body),
+                            position_cache,
                         )
                     except (
                         TrackerResponseError,

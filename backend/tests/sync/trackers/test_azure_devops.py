@@ -781,3 +781,82 @@ def test_deleted_file_list_uses_original_path() -> None:
     )
     assert result["changed_files"][0]["filename"] == "src/removed.py"
     assert result["changed_files"][0]["status"] == "removed"
+
+
+@pytest.mark.parametrize(
+    "change_type,before,after,line",
+    [
+        ("edit", "same\ntail\n", "same\nnew\ntail\n", 2),
+        ("add", "", "first\nsecond\n", 2),
+    ],
+)
+async def test_insertion_and_new_file_anchor_payload(
+    change_type: str, before: str, after: str, line: int
+) -> None:
+    routes = position_routes(change_type)
+    routes[("GET", f"{API}/items")] = lambda request: httpx.Response(
+        200,
+        json={
+            "content": after
+            if request.url.params["versionDescriptor.version"] == "source"
+            else before,
+        },
+    )
+    client, stub = make(routes)
+    result = await client.add_pull_request_comment(
+        22, "finding", path="src/app.py", line=line
+    )
+    assert result["anchored"]
+    payload = json.loads(stub.calls[-1].content)
+    assert payload["threadContext"]["rightFileStart"] == {"line": line, "offset": 1}
+    assert payload["pullRequestThreadContext"]["changeTrackingId"] == 7
+    if change_type == "add":
+        assert sum(call.url.path.endswith("/items") for call in stub.calls) == 1
+
+
+async def test_review_batch_reuses_verified_file_but_next_run_fetches_again() -> None:
+    client, stub = make(position_routes())
+    for _ in range(2):
+        await mcp_azure_devops.update_pull_request(
+            client,
+            22,
+            review_action="comment",
+            review_body="Review",
+            review_comments=[
+                {"path": "src/app.py", "line": 2, "body": "first finding"},
+                {"path": "src/app.py", "line": 2, "body": "second finding"},
+            ],
+        )
+    assert sum(call.url.path.endswith("/iterations") for call in stub.calls) == 2
+    assert sum(call.url.path.endswith("/changes") for call in stub.calls) == 2
+    assert sum(call.url.path.endswith("/items") for call in stub.calls) == 4
+
+
+async def test_diff_verification_runs_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whole-file opcode generation must not execute on the MCP event loop."""
+    import threading
+    from preloop.sync.trackers import azure_devops as tracker_module
+
+    original = tracker_module.changed_line_ranges
+    main_thread = threading.get_ident()
+    diff_threads: List[int] = []
+
+    def diff(before: List[str], after: List[str]) -> Tuple[Tuple[int, int], ...]:
+        diff_threads.append(threading.get_ident())
+        return original(before, after)
+
+    monkeypatch.setattr(tracker_module, "changed_line_ranges", diff)
+    client, _ = make(position_routes())
+    await mcp_azure_devops.update_pull_request(
+        client,
+        22,
+        review_action="comment",
+        review_comments=[
+            {"path": "src/app.py", "line": 2, "body": "first"},
+            {"path": "src/app.py", "line": 2, "body": "second"},
+        ],
+    )
+    assert len(diff_threads) == 1
+    assert diff_threads[0] != main_thread

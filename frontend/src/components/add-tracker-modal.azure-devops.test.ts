@@ -229,7 +229,6 @@ describe('AddTrackerModal Azure DevOps', () => {
     expect(payload.connection_details).to.deep.equal({
       organization: 'example-org',
       project: 'Platform',
-      cast_token_owner_vote: false,
       repository: 'web',
       cast_token_owner_vote: true,
     });
