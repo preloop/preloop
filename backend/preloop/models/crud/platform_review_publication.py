@@ -233,7 +233,12 @@ class CRUDPlatformReviewPublication:
         return [(row[0], row[1]) for row in rows]
 
     def unclaimed_execution_ids(
-        self, db: Session, *, finished_within: timedelta, limit: int = 20
+        self,
+        db: Session,
+        *,
+        finished_within: timedelta,
+        minimum_age: timedelta = timedelta(0),
+        limit: int = 20,
     ) -> list[tuple[UUID, UUID]]:
         """Finished executions of automatic-mode flows no attempt has claimed.
 
@@ -252,6 +257,13 @@ class CRUDPlatformReviewPublication:
         outside ``platform_review.project_ids`` is returned too: publishing
         it records a terminal skip and posts nothing, so the run is not
         published later should the list grow to include its project.
+
+        Args:
+            db: Database session.
+            finished_within: Only consider runs finished within this lookback.
+            minimum_age: Leave this long after finish before selecting a run.
+                The publisher passes its evidence settle window.
+            limit: Maximum number of executions returned.
 
         Returns:
             ``(account_id, execution_id)`` pairs, oldest first.
@@ -290,8 +302,9 @@ class CRUDPlatformReviewPublication:
                 execution.status.in_(_TERMINAL_STATUSES),
                 execution.end_time.isnot(None),
                 execution.end_time >= _now() - finished_within,
-                # Leave the finishing worker time to publish first.
-                execution.end_time <= _now() - timedelta(minutes=2),
+                # The publisher supplies its evidence settle window. Its
+                # exclusive claim also protects a race with the finishing worker.
+                execution.end_time <= _now() - minimum_age,
                 enabled.is_(True),
                 or_(mode.is_(None), mode != "manual"),
                 execution.end_time >= since,

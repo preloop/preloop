@@ -7,6 +7,7 @@ assert exactly which requests the publish lease was used for.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import asdict
@@ -17,6 +18,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+import pytest_asyncio
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -3613,8 +3615,10 @@ def test_projection_names_the_settle_wait_and_when_the_attempt_is_due(
     assert after is not None
     assert (after["status"], after["reason"], after["due_at"]) == (
         "pending",
-        None,
-        None,
+        "awaiting_sweep",
+        (platform_review.evidence_settled_at(execution) + timedelta(seconds=60))
+        .replace(tzinfo=timezone.utc)
+        .isoformat(),
     )
 
 
@@ -3843,3 +3847,241 @@ async def test_clipped_diff_read_still_posts_under_captured(
     assert outcome["review"] == "posted"
     assert outcome["tool_evidence"]["clipped_bound_reads"] == 1
     assert len(world.github.reviews[(project.slug, 7)]) == 1
+
+
+@pytest_asyncio.fixture
+async def settle_clock(world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Control the deadline and timer, with isolated publisher sessions."""
+    from preloop.models.db import session as session_module
+
+    now = datetime.now(timezone.utc)
+    tasks: list[asyncio.Task[Any]] = []
+    wake = asyncio.Event()
+    sleeping = asyncio.Event()
+    delays: list[float] = []
+    real_sleep = asyncio.sleep
+    real_create_task = asyncio.create_task
+
+    class ClockMeta(type):
+        def __instancecheck__(cls, instance: Any) -> bool:
+            return isinstance(instance, datetime)
+
+    class Clock(datetime, metaclass=ClockMeta):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    async def sleep(seconds: float) -> None:
+        if seconds == 0:
+            await real_sleep(0)
+            return
+        delays.append(seconds)
+        sleeping.set()
+        await wake.wait()
+        wake.clear()
+
+    def create_task(coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
+        task = real_create_task(coro, **kwargs)
+        tasks.append(task)
+        return task
+
+    def sessions() -> Any:
+        yield Session(
+            bind=world.db.get_bind(), join_transaction_mode="create_savepoint"
+        )
+
+    def advance(seconds: float, *, wake_timer: bool = True) -> None:
+        nonlocal now
+        now += timedelta(seconds=seconds)
+        if wake_timer:
+            wake.set()
+
+    from preloop.models.crud import platform_review_publication as store_module
+
+    monkeypatch.setattr(platform_review, "datetime", Clock)
+    monkeypatch.setattr(store_module, "_now", lambda: now.replace(tzinfo=None))
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    monkeypatch.setattr(asyncio, "create_task", create_task)
+    monkeypatch.setattr(session_module, "get_db_session", sessions)
+    yield SimpleNamespace(
+        tasks=tasks,
+        advance=advance,
+        delays=delays,
+        sleeping=sleeping,
+        now=now,
+        create_task=real_create_task,
+        wake=wake,
+        tick=real_sleep,
+    )
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _start_settle_timer(world: SimpleNamespace, clock: Any) -> Any:
+    """Finish a review with captured evidence, keeping its real settle delay."""
+    project, execution = _ready(world, document=_complete_tool_document())
+    execution.end_time = clock.now.replace(tzinfo=None)
+    world.flow.git_clone_config = {
+        **world.flow.git_clone_config,
+        "platform_review": {
+            **world.flow.git_clone_config["platform_review"],
+            "enabled_at": (clock.now - timedelta(hours=1)).isoformat(),
+        },
+    }
+    world.db.commit()
+    await platform_review.publish_finished_execution(
+        account_id=world.account.id, execution_id=execution.id
+    )
+    assert world.github.writes == []
+    assert len(clock.tasks) == 1, "completion must schedule the settle deadline"
+    await asyncio.wait_for(clock.sleeping.wait(), timeout=1)
+    assert clock.delays == [30.0]
+    return project, execution
+
+
+@pytest.mark.asyncio
+async def test_finish_attempts_at_settle_deadline_without_sweep(
+    world: SimpleNamespace, settle_clock: Any
+) -> None:
+    """A finished run posts at 30 seconds without a monitor tick."""
+    project, execution = await _start_settle_timer(world, settle_clock)
+    # Repeated completion notifications must not create another timer.
+    await platform_review.publish_finished_execution(
+        account_id=world.account.id, execution_id=execution.id
+    )
+    assert len(settle_clock.tasks) == 1
+    settle_clock.advance(29)
+    await settle_clock.tick(0)
+    assert world.github.writes == []
+    assert not settle_clock.tasks[0].done()
+    assert settle_clock.delays == [30.0, 1.0]
+    settle_clock.advance(1)
+    await asyncio.wait_for(settle_clock.tasks[0], timeout=1)
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+    row = crud.crud_platform_review_publication.get_for_execution(
+        world.db, execution_id=execution.id
+    )
+    assert row.state == "posted" and row.attempts == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("winner", ["timer", "sweep"])
+async def test_settle_timer_and_sweep_race_posts_once(
+    world: SimpleNamespace,
+    settle_clock: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    winner: str,
+) -> None:
+    """Both callers reach the real claim, on separate sessions, during I/O."""
+    project, execution = await _start_settle_timer(world, settle_clock)
+    claimed = asyncio.Event()
+    release = asyncio.Event()
+    entered = {name: asyncio.Event() for name in ("timer", "sweep")}
+    proceed = {name: asyncio.Event() for name in ("timer", "sweep")}
+    mint = platform_review.mint_repository_lease
+    publish_review = platform_review.publish_platform_review
+
+    async def held_mint(*args: Any, **kwargs: Any) -> Any:
+        claimed.set()
+        await release.wait()
+        return await mint(*args, **kwargs)
+
+    async def gated_publish(*args: Any, **kwargs: Any) -> Any:
+        caller = "timer" if asyncio.current_task() is settle_clock.tasks[0] else "sweep"
+        entered[caller].set()
+        await proceed[caller].wait()
+        return await publish_review(*args, **kwargs)
+
+    monkeypatch.setattr(platform_review, "mint_repository_lease", held_mint)
+    monkeypatch.setattr(platform_review, "publish_platform_review", gated_publish)
+    settle_clock.advance(30, wake_timer=False)
+    sweep = settle_clock.create_task(platform_review.sweep_platform_reviews())
+    try:
+        # The sweep selects its real candidate before either caller claims it.
+        await asyncio.wait_for(entered["sweep"].wait(), timeout=1)
+        settle_clock.wake.set()
+        await asyncio.wait_for(entered["timer"].wait(), timeout=1)
+        proceed[winner].set()
+        await asyncio.wait_for(claimed.wait(), timeout=1)
+        loser = "sweep" if winner == "timer" else "timer"
+        proceed[loser].set()
+        loser_task = sweep if loser == "sweep" else settle_clock.tasks[0]
+        await asyncio.wait_for(loser_task, timeout=1)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(sweep, settle_clock.tasks[0]), timeout=1)
+    finally:
+        release.set()
+        sweep.cancel()
+        await asyncio.gather(sweep, return_exceptions=True)
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+    assert len(world.github.statuses[(project.slug, HEAD)]) == 1
+    receipts = crud.crud_review_publication_receipt.list_for_execution(
+        world.db, account_id=world.account.id, execution_id=execution.id
+    )
+    assert len(receipts) == 1
+    row = crud.crud_platform_review_publication.get_for_execution(
+        world.db, execution_id=execution.id
+    )
+    assert row.state == "posted" and row.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_loses_timer_but_sweep_posts_once(
+    world: SimpleNamespace, settle_clock: Any
+) -> None:
+    """Losing all in-process work leaves a durable unclaimed execution."""
+    project, execution = await _start_settle_timer(world, settle_clock)
+    settle_clock.tasks[0].cancel()
+    await asyncio.gather(*settle_clock.tasks, return_exceptions=True)
+    settle_clock.advance(29)
+    assert await platform_review.sweep_platform_reviews() == 0
+    assert world.github.writes == []
+    settle_clock.advance(2)
+    assert await platform_review.sweep_platform_reviews() == 1
+    assert await platform_review.sweep_platform_reviews() == 0
+    assert len(world.github.reviews[(project.slug, 7)]) == 1
+    assert len(world.github.statuses[(project.slug, HEAD)]) == 1
+
+
+@pytest.mark.parametrize("level", ["any", "captured", "complete"])
+def test_finished_projection_never_has_unexplained_pending(
+    world: SimpleNamespace, level: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback deadline stays visible even when it is overdue."""
+    from preloop.services import execution_monitor
+
+    monkeypatch.setattr(execution_monitor, "_monitor_instance", None)
+    monkeypatch.setenv("EXECUTION_MONITOR_INTERVAL", "75")
+    _set_evidence(world, level)
+    execution = finished(world, identity(world, world.projects[0]))
+    _age(world, execution, seconds=300)
+    record = platform_review.platform_review_projection(
+        world.db, execution, flow=world.flow
+    )
+    assert record is not None
+    assert record["status"] == "pending"
+    assert record["reason"] == "awaiting_sweep"
+    expected = execution.end_time + timedelta(seconds=105)
+    assert record["due_at"] == expected.replace(tzinfo=timezone.utc).isoformat()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "manual"])
+async def test_settle_timer_rechecks_posting_mode(
+    world: SimpleNamespace, settle_clock: Any, mode: str
+) -> None:
+    """A waiting timer cannot post after an administrator changes the mode."""
+    await _start_settle_timer(world, settle_clock)
+    world.flow.git_clone_config = {
+        **world.flow.git_clone_config,
+        "platform_review": {
+            **world.flow.git_clone_config["platform_review"],
+            "enabled": mode != "off",
+            "mode": "manual" if mode == "manual" else "automatic",
+        },
+    }
+    world.db.commit()
+    settle_clock.advance(30)
+    await asyncio.wait_for(settle_clock.tasks[0], timeout=1)
+    assert world.github.writes == []

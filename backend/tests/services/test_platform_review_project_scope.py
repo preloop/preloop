@@ -850,5 +850,6 @@ def test_run_without_a_binding_is_not_reported_out_of_scope(
     projection = platform_review.platform_review_projection(world.db, execution)
     assert projection is not None
     assert projection["status"] == "pending"
-    assert projection["reason"] is None
+    assert projection["reason"] == "no_review_binding"
+    assert projection["due_at"] is None
     assert "project_in_posting_scope" not in projection

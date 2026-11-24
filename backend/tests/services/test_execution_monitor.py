@@ -509,3 +509,18 @@ class TestGetExecutionMonitor:
 
             assert monitor.check_interval == 120
             assert monitor.stale_threshold == timedelta(minutes=90)
+
+
+async def test_publication_deadline_uses_configured_monitor_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback projection and the monitor use the same interval."""
+    from preloop.services import execution_monitor as service
+
+    monkeypatch.setattr(service, "_monitor_instance", None)
+    monkeypatch.setenv("EXECUTION_MONITOR_INTERVAL", "75")
+    assert service.publication_sweep_interval() == 75
+    monitor = service.get_execution_monitor()
+    assert monitor.check_interval == 75
+    monkeypatch.setenv("EXECUTION_MONITOR_INTERVAL", "90")
+    assert service.publication_sweep_interval() == 75

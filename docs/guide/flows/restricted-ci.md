@@ -1802,13 +1802,23 @@ sets a status and no incomplete state: never the verdict's state.
 The last streaming model request can still be writing its evidence after the
 run is marked finished. For about 30 seconds after the run finishes, a flow
 with `captured` or `complete` (or a publish call that asks for one of those)
-neither posts nor records `evidence_incomplete`. An automatic post is left
-for the sweep. An explicit publish call answers **409** with
-`detail.code` `evidence_pending`. While the run has no publication attempt,
-its record reads `status: "pending"` with `reason: "evidence_settling"` and
-`due_at`, the time the attempt becomes due. The sweep makes the attempt on
-its next pass after `due_at`, so the record can read `pending` with no reason
-for up to a sweep interval after that.
+neither posts nor records `evidence_incomplete`. An automatic post wakes at
+that deadline on a fresh database session, so finish-to-post time is normally
+30 seconds plus the code host's write and verification time. The settle
+window is unchanged. An explicit publish call answers **409** with
+`detail.code` `evidence_pending` during the window.
+
+While the run has no publication attempt, its record reads `status: "pending"`
+with `reason: "evidence_settling"` and `due_at`, the settle deadline. After
+that deadline it reads `reason: "awaiting_sweep"` with `due_at` set to the
+settle deadline plus the configured execution-monitor interval (60 seconds
+by default). This is the fallback pickup deadline if a restart loses the
+timer: normally within 90 seconds of finish, plus publication time. The sweep
+and timer share the exclusive publication claim and receipts. A delayed or
+backlogged monitor can miss that deadline; the timestamp stays in the past
+so the overdue wait is visible. Manual mode instead reads
+`reason: "manual_publish_required"` once evidence has settled, with no
+automatic deadline.
 
 `GET /api/v1/flows/executions/{id}/result` carries the counts once, both at
 the top level (`tool_evidence`) and on the publication record
@@ -2028,9 +2038,12 @@ preloop flow review-posting status <execution-id>          # add --json for the 
   record with no attempt names its cause in `reason`:
   `execution_not_finished` while the run runs, or `evidence_settling` while
   a flow with an evidence level waits for the last model request's tool
-  evidence, with `due_at` set to when the attempt becomes due. A null
-  `reason` means the attempt is due and has not been made yet. On a record
-  with a scheduled retry, `due_at` is when that retry is due.
+  evidence, with `due_at` set to when the attempt becomes due. After that,
+  `awaiting_sweep` keeps the fallback pickup deadline visible, including
+  when overdue. A finished manual-mode run reads `manual_publish_required`
+  with no automatic deadline. A run without a review binding reads
+  `no_review_binding` with no deadline. On a record with a scheduled retry, `due_at`
+  is when that retry is due.
 
 A posting failure never
 changes the execution's status or result. `reason` values include
