@@ -228,7 +228,17 @@ def _teams_urls(state: dict[str, Any]) -> dict[str, str]:
     }
 
 
-@router.get("/{draft_id}/teams-package")
+@router.get(
+    "/{draft_id}/teams-package",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "application/zip": {"schema": {"type": "string", "format": "binary"}}
+            }
+        }
+    },
+)
 def download_teams_package(
     draft_id: UUID,
     db: Session = Depends(get_db_session),

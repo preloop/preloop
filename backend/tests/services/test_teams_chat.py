@@ -384,6 +384,12 @@ async def test_setup_package_and_encryption(
             package.status_code == 200
             and package.headers["cache-control"] == "no-store"
         )
+        response_schema = real_app.openapi()["paths"][
+            "/api/v1/chat/setup/{draft_id}/teams-package"
+        ]["get"]["responses"]["200"]
+        assert response_schema["content"] == {
+            "application/zip": {"schema": {"type": "string", "format": "binary"}}
+        }
         with ZipFile(io.BytesIO(package.content)) as archive:
             manifest = json.loads(archive.read("manifest.json"))
             assert manifest["developer"]["privacyUrl"] == "https://example.com/privacy"

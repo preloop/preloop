@@ -24677,8 +24677,10 @@ paths:
         '200':
           description: Successful Response
           content:
-            application/json:
-              schema: {}
+            application/zip:
+              schema:
+                type: string
+                format: binary
         '422':
           description: Validation Error
           content:
