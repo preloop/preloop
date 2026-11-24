@@ -5,7 +5,7 @@ import hashlib
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, case, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from preloop.models import models
@@ -41,6 +41,40 @@ class CRUDChat:
     drafts = CRUDBase(models.ChatSetupDraft)
     listeners = CRUDBase(models.ChatListener)
     bindings = CRUDBase(models.ChatConversationBinding)
+
+    def wake_conversation_observer(
+        self, db: Session, connection_id: uuid.UUID, conversation_id: uuid.UUID
+    ) -> None:
+        """Shorten an idle observer's delay without stealing another worker's lease."""
+        db.query(models.ChatWork).filter_by(
+            connection_id=connection_id,
+            event_id=f"flow-watch:{conversation_id}",
+        ).filter(models.ChatWork.status.in_(["pending", "processing"])).update(
+            {"next_attempt_at": datetime.utcnow() + timedelta(seconds=5)},
+            synchronize_session=False,
+        )
+        db.commit()
+
+    def defer_conversation_observer(
+        self, db: Session, row: models.ChatWork, seconds: int
+    ) -> None:
+        """Atomically honor a concurrent wake without transferring its live lease."""
+        now = datetime.utcnow()
+        deadline = now + timedelta(seconds=seconds)
+        self.transition(
+            db,
+            row,
+            "pending",
+            attempts=0,
+            lease_until=None,
+            next_attempt_at=case(
+                (
+                    models.ChatWork.next_attempt_at > now,
+                    func.least(models.ChatWork.next_attempt_at, deadline),
+                ),
+                else_=deadline,
+            ),
+        )
 
     def close_bindings(
         self,

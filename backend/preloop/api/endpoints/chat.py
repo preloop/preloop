@@ -381,12 +381,12 @@ def ingest(
             mention = f"<@{bot_id}>"
             if bot_id and text.startswith(mention):
                 text = text[len(mention) :].strip()
+        plain_text = text if not text.startswith("/") else None
         if connection.provider == "slack":
             verb = text.split(maxsplit=1)[0] if text else ""
             if text.strip() in {"end", "status"}:
                 text = "/" + text.strip()
-            elif verb in {
-                "link",
+            elif (verb == "link" and len(text.split()) == 2) or verb in {
                 "note",
                 "message",
                 "approve",
@@ -394,13 +394,19 @@ def ingest(
                 "ask",
                 "help",
             }:
-                text = "/" + text
+                text = "/" + text.strip()
         payload = {
             "text": text,
             "private": event.is_private,
             "channel_id": event.channel_id,
             "thread_id": event.thread_id,
         }
+        if (
+            connection.provider == "slack"
+            and plain_text is not None
+            and not text.startswith("/link")
+        ):
+            payload["plain_text"] = plain_text
         actor = crud_chat.principal(db, connection, event.user_id)
         if actor is not None:
             payload["actor_id"] = str(actor.id)

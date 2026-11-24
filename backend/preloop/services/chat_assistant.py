@@ -82,6 +82,10 @@ READ_TOOLS = {
 }
 
 
+class ChatReadDeferredError(Exception):
+    """A read-only admission check was durably deferred without a POST."""
+
+
 class ChatBroker:
     """Revalidate the actor per API call; the model never receives credentials."""
 
@@ -324,7 +328,10 @@ class ChatBroker:
         if response.is_error:
             detail = "Action denied or unavailable"
             if "/flow-conversations/" in route or route.endswith("/conversations"):
-                body = response.json()
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = None
                 if isinstance(body, dict) and isinstance(body.get("detail"), str):
                     detail = body["detail"]
             raise HTTPException(response.status_code, detail)
@@ -414,6 +421,53 @@ class ChatBroker:
             + self.conversation_url(str(row.id))
         )
 
+    def plain_command(self, text: str) -> bool:
+        """Recognize explicit command grammar within an active conversation."""
+        parts = text.split(maxsplit=3)
+        if not parts:
+            return False
+        if parts[0] in {"help", "end", "status"}:
+            return len(parts) == 1
+        if parts[0] == "ask" and len(parts) >= 3:
+            flow = crud_chat.resolve_flow(
+                self.db, self.connection.account_id, alias=parts[1]
+            )
+            if flow is None:
+                return False
+            try:
+                for permission in ("view_flows", "execute_flows"):
+                    self.authorize_resource("flow", str(flow.id), permission)
+            except HTTPException:
+                return False
+            return True
+        try:
+            if parts[0] in {"approve", "deny"} and len(parts) == 2:
+                UUID(parts[1])
+                return True
+            if parts[0] == "note" and len(parts) >= 3:
+                UUID(parts[1])
+                return True
+            if parts[0] == "message" and len(parts) == 4:
+                UUID(parts[1])
+                UUID(parts[2])
+                return True
+        except ValueError:
+            return False
+        return False
+
+    def defer_conversation_read(self, row: models.ChatWork) -> str:
+        """Retry only the read gate; after bounded attempts explicitly refuse input."""
+        if row.attempts >= 3:
+            return "The conversation service is unavailable. Your message was not sent. Try again shortly."
+        crud_chat.transition(
+            self.db,
+            row,
+            "pending",
+            lease_until=None,
+            next_attempt_at=datetime.utcnow() + timedelta(seconds=10 * row.attempts),
+        )
+        raise ChatReadDeferredError()
+
     async def conversation_command(self, row: models.ChatWork) -> str | None:
         """Route plain follow-ups only while this address has an active owner."""
         binding = self.binding(row)
@@ -439,19 +493,56 @@ class ChatBroker:
             )
         user = crud_chat.principal(self.db, self.connection, row.external_user_id)
         if (
+            binding.external_user_id == row.external_user_id
+            and user is not None
+            and binding.owner_user_id != user.id
+        ):
+            crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
+            return "The previous linked user's conversation is detached. Use ask ALIAS TEXT to start your own conversation."
+        if (
             binding.external_user_id != row.external_user_id
             or user is None
             or binding.owner_user_id != user.id
         ):
             return "Only the person who started this conversation can continue or end it. Start your own conversation in a direct message or a new thread."
+        plain_text = row.payload.get("plain_text")
+        if isinstance(plain_text, str) and not self.plain_command(plain_text):
+            text = plain_text
+            verb = text.split(maxsplit=1)[0] if text else ""
+            crud_chat.transition(
+                self.db, row, "processing", payload={**row.payload, "text": text}
+            )
         conversation_id = str(binding.conversation_id)
+        if text.startswith("/") and verb not in {"/ask", "/end", "/status"}:
+            return None
+        try:
+            data = await self.request(
+                "GET", f"/api/v1/flow-conversations/{conversation_id}", "view_flows"
+            )
+        except HTTPException as exc:
+            if exc.status_code == 429 or exc.status_code >= 500:
+                return self.defer_conversation_read(row)
+            if exc.status_code in {401, 403, 404}:
+                crud_chat.bindings.update(
+                    self.db, db_obj=binding, obj_in={"closed": True}
+                )
+                return "This conversation is no longer available. Your message was not sent. Use ask ALIAS TEXT to start a new conversation."
+            return "The conversation could not be read. Your message was not sent. Try again shortly."
+        except (httpx.HTTPError, asyncio.TimeoutError):
+            return self.defer_conversation_read(row)
+        if data["state"] in {"ended", "failed"}:
+            crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
+            if verb == "/ask":
+                return None
+            crud_chat.transition(
+                self.db,
+                row,
+                "processing",
+                payload=self.conversation_payload(row, conversation_id),
+            )
+            return f"{data['notice']} This chat address is released. Your message was not sent; use ask ALIAS TEXT to start a new conversation."
         if verb == "/ask":
             return "A conversation is already active here. Use end before ask to start a new one."
-        if text.startswith("/") and verb not in {"/end", "/status"}:
-            return None
-        data = await self.request(
-            "GET", f"/api/v1/flow-conversations/{conversation_id}", "view_flows"
-        )
         crud_chat.transition(
             self.db,
             row,
@@ -484,16 +575,37 @@ class ChatBroker:
             return f"{data['flow_name']}: {data['state']}. Turns {data['turns']}/{data['max_turns']}. {time_left} {self.conversation_url(conversation_id)}"
         if verb == "/end":
             crud_chat.transition(self.db, row, "acting")
-            await self.request(
-                "POST",
-                f"/api/v1/flow-conversations/{conversation_id}/end",
-                "execute_flows",
-            )
+            try:
+                await self.request(
+                    "POST",
+                    f"/api/v1/flow-conversations/{conversation_id}/end",
+                    "execute_flows",
+                )
+            except HTTPException as exc:
+                if exc.status_code in {401, 403, 404}:
+                    crud_chat.bindings.update(
+                        self.db, db_obj=binding, obj_in={"closed": True}
+                    )
+                    crud_chat.transition(
+                        self.db,
+                        row,
+                        "processing",
+                        payload={
+                            key: value
+                            for key, value in row.payload.items()
+                            if key
+                            not in {
+                                "conversation_id",
+                                "required_permissions",
+                                "resource_proofs",
+                            }
+                        },
+                    )
+                    return "This conversation is no longer available. The chat address is released."
+                crud_chat.transition(self.db, row, "processing")
+                return "The end command was not accepted. Try again shortly."
             crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
             return "Conversation ended. Your next plain message goes to the read-only account assistant. Use ask ALIAS TEXT to start another flow conversation."
-        if data["state"] in {"ended", "failed"}:
-            crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
-            return f"{data['notice']} Your message was not sent. Your next plain message goes to the read-only account assistant."
         denied = crud_chat.reserve_run(
             self.db,
             row,
@@ -503,6 +615,9 @@ class ChatBroker:
         )
         if denied:
             return denied
+        crud_chat.wake_conversation_observer(
+            self.db, self.connection.id, binding.conversation_id
+        )
         try:
             result = await self.request(
                 "POST",
@@ -521,13 +636,19 @@ class ChatBroker:
             if result.get("execution_id")
             else None,
         )
+        crud_chat.wake_conversation_observer(
+            self.db, self.connection.id, binding.conversation_id
+        )
         if data["state"] == "stopped":
             return "The container stopped after the idle timeout. Resuming this conversation. The first answer can take a minute or more."
         return f"Message sent to {data['flow_name']}. Wait for the answer; messages are not queued."
 
     async def poll_conversation(self, row: models.ChatWork) -> None:
         """Observe complete turns and state transitions through durable outbox items."""
-        from preloop.services.chat_flows import bounded_reply, defer_watch
+        from preloop.services.chat_flows import bounded_reply
+
+        def defer(seconds: int = 10) -> None:
+            crud_chat.defer_conversation_observer(self.db, row, seconds)
 
         conversation_id = row.payload["conversation_watch"]
         binding = self.binding(row)
@@ -546,7 +667,7 @@ class ChatBroker:
             # The observer exists before start dispatch; a crashed POST is never
             # replayed. Allow its committed conversation to become visible.
             if exc.status_code == 429 or exc.status_code >= 500:
-                defer_watch(self, row)
+                defer()
                 return
             if exc.status_code in {401, 403, 404}:
                 missing = (
@@ -558,7 +679,7 @@ class ChatBroker:
                 if missing and row.created_at > datetime.utcnow() - timedelta(
                     minutes=10
                 ):
-                    defer_watch(self, row)
+                    defer()
                     return
                 if missing:
                     parent = crud_chat.work.get(
@@ -580,7 +701,7 @@ class ChatBroker:
                 return
             raise
         except (httpx.HTTPError, asyncio.TimeoutError):
-            defer_watch(self, row)
+            defer()
             return
         url = self.conversation_url(conversation_id)
         after = row.payload.get("after_turn", 0)
@@ -602,12 +723,15 @@ class ChatBroker:
             crud_chat.transition(
                 self.db, row, "processing", payload={**row.payload, "after_turn": after}
             )
-            defer_watch(self, row)
+            defer()
             return
         state = data["state"]
         # The runtime can reach its turn limit before its final checkpoint ends.
         limit = data["turns"] >= data["max_turns"] and after >= data["turns"]
-        if state in {"stopped", "ended", "failed"} or limit:
+        notice_key = f"state:{'turn_limit' if limit else state}:{data['turns']}"
+        if (state in {"stopped", "ended", "failed"} or limit) and row.payload.get(
+            "last_notice_key"
+        ) != notice_key:
             notice = (
                 "The turn limit was reached. Start a new conversation."
                 if limit
@@ -615,17 +739,32 @@ class ChatBroker:
             )
             self.conversation_notice(
                 row,
-                f"state:{'turn_limit' if limit else state}:{data['turns']}",
+                notice_key,
                 bounded_reply(notice, url, self.connection.provider),
             )
         if state in {"ended", "failed"} or limit:
             crud_chat.bindings.update(self.db, db_obj=binding, obj_in={"closed": True})
             crud_chat.transition(self.db, row, "delivered", last_error=None)
         else:
-            crud_chat.transition(
-                self.db, row, "processing", payload={**row.payload, "after_turn": after}
+            idle_polls = (
+                min(5, int(row.payload.get("idle_polls", 0)) + 1)
+                if state in {"waiting", "stopped"}
+                else 0
             )
-            defer_watch(self, row)
+            crud_chat.transition(
+                self.db,
+                row,
+                "processing",
+                payload={
+                    **row.payload,
+                    "after_turn": after,
+                    "idle_polls": idle_polls,
+                    "last_notice_key": notice_key
+                    if state == "stopped"
+                    else row.payload.get("last_notice_key"),
+                },
+            )
+            defer(seconds=min(300, 10 * 2**idle_polls))
 
     def conversation_notice(self, row: models.ChatWork, key: str, text: str) -> None:
         """Deduplicate each answer/notice even when polling crashes after enqueue."""

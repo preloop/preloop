@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_chat
 from preloop.models.db.session import get_session_factory
-from preloop.services.chat_assistant import ChatBroker
+from preloop.services.chat_assistant import ChatBroker, ChatReadDeferredError
 from preloop.services.chat_providers import (
     ChatProviderError,
     send_private_reply,
@@ -110,6 +110,9 @@ async def process_one(db: Session, app: Any) -> bool:
                 else:
                     original_actor = row.payload.get("actor_id")
                     if original_actor and original_actor != str(user.id):
+                        crud_chat.close_bindings(
+                            db, connection.id, external_user_id=row.external_user_id
+                        )
                         crud_chat.transition(
                             db, row, "cancelled", last_error="Identity was relinked"
                         )
@@ -388,7 +391,24 @@ async def process_one(db: Session, app: Any) -> bool:
         crud_chat.transition(
             db, row, "delivered", provider_message_id=message_id, last_error=None
         )
+    except ChatReadDeferredError:
+        return True
     except HTTPException as exc:
+        if (
+            row.reply is not None
+            and row.status == "reply_ready"
+            and (exc.status_code == 429 or exc.status_code >= 500)
+        ):
+            crud_chat.transition(
+                db,
+                row,
+                "reply_ready",
+                attempts=0,
+                lease_until=None,
+                next_attempt_at=datetime.utcnow() + timedelta(seconds=30),
+                last_error="Waiting to revalidate stored response",
+            )
+            return True
         crud_chat.transition(
             db,
             row,
@@ -410,6 +430,16 @@ async def process_one(db: Session, app: Any) -> bool:
                 row,
                 "uncertain",
                 last_error="Operation outcome is uncertain; inspect before retrying",
+            )
+        elif row.reply is not None and row.status == "reply_ready":
+            crud_chat.transition(
+                db,
+                row,
+                "reply_ready",
+                attempts=0,
+                lease_until=None,
+                next_attempt_at=datetime.utcnow() + timedelta(seconds=30),
+                last_error="Waiting to revalidate stored response",
             )
         else:
             crud_chat.transition(

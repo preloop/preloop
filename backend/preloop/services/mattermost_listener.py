@@ -133,11 +133,11 @@ async def canonical_dm(
     text = post.get("message")
     if not isinstance(text, str) or not text.strip() or len(text) > MAX_MESSAGE_CHARS:
         return None
+    plain_text = text if not text.startswith("/") else None
     verb = text.split(maxsplit=1)[0]
     if text.strip() in {"end", "status"}:
         text = "/" + text.strip()
-    elif verb in {
-        "link",
+    elif (verb == "link" and len(text.split()) == 2) or verb in {
         "note",
         "message",
         "approve",
@@ -145,7 +145,7 @@ async def canonical_dm(
         "ask",
         "help",
     }:
-        text = "/" + text
+        text = "/" + text.strip()
     payload: dict[str, Any] = {
         "text": text,
         "private": True,
@@ -153,6 +153,8 @@ async def canonical_dm(
         "thread_id": str(post.get("root_id") or post_id),
         "transport": "websocket",
     }
+    if plain_text is not None and not text.startswith("/link"):
+        payload["plain_text"] = plain_text
     if text.startswith("/link "):
         payload.update(
             link_digest=hashlib.sha256(

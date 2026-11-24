@@ -356,6 +356,7 @@ async def test_mattermost_redacted_membership_checks_active_team_search(
     "text,expected",
     [
         ("end", "/end"),
+        (" link SYNTHETIC_CODE ", "/link"),
         ("status", "/status"),
         ("end with an example", "end with an example"),
         ("status of the migration", "status of the migration"),
@@ -390,3 +391,6 @@ async def test_mattermost_lifecycle_commands_require_exact_text(
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         result = await canonical_dm(config(), "post", now - 1000, client=client)
     assert result["payload"]["text"] == expected
+    if expected == "/link":
+        assert "plain_text" not in result["payload"]
+        assert "link_digest" in result["payload"]

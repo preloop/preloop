@@ -699,6 +699,7 @@ async def test_lifecycle_command_prefixes_remain_plain_messages(
         ("end", "/end"),
         ("status", "/status"),
         (" end ", "/end"),
+        (" link SYNTHETIC_CODE ", "/link"),
         ("end with an example", "end with an example"),
         ("status of the migration", "status of the migration"),
     ],
@@ -751,3 +752,423 @@ async def test_slack_lifecycle_normalization_is_exact(
         f.db, connection_id=f.connection.id, event_id=event_id
     )[0]
     assert receipt.payload["text"] == expected
+    if expected == "/link":
+        assert "plain_text" not in receipt.payload
+        assert (
+            receipt.payload["link_digest"]
+            == hashlib.sha256(b"SYNTHETIC_CODE").hexdigest()
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("observer_active", [True, False])
+async def test_relinked_identity_releases_old_address(
+    fixture_db: Any,
+    real_app: Any,
+    provider: str,
+    flow: models.Flow,
+    delivery: AsyncMock,
+    observer_active: bool,
+) -> None:
+    """Both an observer and a later input can release a former owner's binding."""
+    f = fixture_db
+    row = await start(f, real_app, delivery)
+    user = models.User(
+        account_id=f.account.id,
+        username=f"other-{uuid4()}",
+        email="other@example.com",
+        hashed_password="unused",
+        is_active=True,
+    )
+    f.db.add(user)
+    f.db.commit()
+    crud_chat.identities.update(f.db, db_obj=f.identity, obj_in={"user_id": user.id})
+    if observer_active:
+        observer = watch(f)
+        assert await process_one(f.db, real_app)
+        f.db.refresh(observer)
+        assert observer.status == "cancelled"
+    else:
+        receive(f, text="Continue")
+        await drain(f, real_app)
+        assert (
+            "previous linked user's conversation is detached"
+            in delivery.call_args.args[2]
+        )
+    assert (
+        crud_chat.conversation_binding(f.db, f.connection.id, "dm:external-test")
+        is None
+    )
+    receipt = receive(f, text="/ask docs A new conversation")
+    await drain(f, real_app)
+    assert "starting. The first answer" in delivery.call_args.args[2]
+    binding = crud_chat.conversation_binding(f.db, f.connection.id, "dm:external-test")
+    assert binding.owner_user_id == user.id and binding.conversation_id == receipt.id
+    assert binding.conversation_id != row.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [429, 503, 404, 403, 401, "network"])
+async def test_conversation_read_failures_are_retried_or_explained(
+    fixture_db: Any,
+    real_app: Any,
+    provider: str,
+    flow: models.Flow,
+    delivery: AsyncMock,
+    failure: int | str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read outages never silently discard an input or trap an unavailable address."""
+    import httpx
+    from fastapi import HTTPException
+
+    f = fixture_db
+    row = await start(f, real_app, delivery)
+    conversations.runtime_turn(
+        f.db, row, turn=1, answer="Ready", finished=True, error=False
+    )
+    receipt = receive(f, text="Continue after the read")
+    count = delivery.call_count
+    error = (
+        httpx.ConnectError("Synthetic read failure")
+        if failure == "network"
+        else HTTPException(failure)
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(ChatBroker, "request", AsyncMock(side_effect=error))
+        assert await process_one(f.db, real_app)
+    f.db.refresh(receipt)
+    if failure in {401, 403, 404}:
+        assert receipt.status == "delivered"
+        assert (
+            "conversation is no longer available. Your message was not sent"
+            in delivery.call_args.args[2]
+        )
+        assert (
+            crud_chat.conversation_binding(f.db, f.connection.id, "dm:external-test")
+            is None
+        )
+    else:
+        assert receipt.status == "pending" and delivery.call_count == count
+        crud_chat.work.update(
+            f.db,
+            db_obj=receipt,
+            obj_in={"next_attempt_at": datetime.utcnow() - timedelta(seconds=1)},
+        )
+        await drain(f, real_app)
+        assert "Message sent to Repository questions" in delivery.call_args.args[2]
+        assert (
+            conversations.messages(f.db, row.id)[-1].text == "Continue after the read"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/status", "/end"])
+async def test_bounded_read_outage_sends_explicit_refusal(
+    fixture_db: Any,
+    real_app: Any,
+    provider: str,
+    flow: models.Flow,
+    delivery: AsyncMock,
+    command: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The final safe-read retry tells the user their command was not sent."""
+    from fastapi import HTTPException
+
+    f = fixture_db
+    await start(f, real_app, delivery)
+    receipt = receive(f, text=command)
+    crud_chat.work.update(f.db, db_obj=receipt, obj_in={"attempts": 2})
+    monkeypatch.setattr(
+        ChatBroker, "request", AsyncMock(side_effect=HTTPException(503))
+    )
+    assert await process_one(f.db, real_app)
+    assert (
+        "service is unavailable. Your message was not sent"
+        in delivery.call_args.args[2]
+    )
+    f.db.refresh(receipt)
+    assert receipt.status == "delivered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["ended", "failed"])
+@pytest.mark.parametrize("command", ["/status", "/ask docs New conversation"])
+async def test_terminal_binding_cleanup_precedes_commands(
+    fixture_db: Any,
+    real_app: Any,
+    provider: str,
+    flow: models.Flow,
+    delivery: AsyncMock,
+    state: str,
+    command: str,
+) -> None:
+    """A console terminal transition releases the address before ask/status routing."""
+    f = fixture_db
+    row = await start(f, real_app, delivery)
+    execution = crud_flow_execution.get(f.db, id=row.execution_id)
+    crud_flow_execution.update(
+        f.db,
+        db_obj=execution,
+        obj_in={"status": "FAILED" if state == "failed" else "SUCCEEDED"},
+    )
+    conversations.save(
+        f.db,
+        row,
+        state=state,
+        notice="Synthetic terminal notice.",
+        stop_reason="dispatch_failed" if state == "failed" else "ended",
+    )
+    receive(f, text=command)
+    await drain(f, real_app)
+    if command == "/status":
+        assert (
+            "Synthetic terminal notice. This chat address is released"
+            in delivery.call_args.args[2]
+        )
+        assert (
+            crud_chat.conversation_binding(f.db, f.connection.id, "dm:external-test")
+            is None
+        )
+    else:
+        assert "starting. The first answer" in delivery.call_args.args[2]
+        assert (
+            crud_chat.conversation_binding(
+                f.db, f.connection.id, "dm:external-test"
+            ).conversation_id
+            != row.id
+        )
+
+
+@pytest.mark.asyncio
+async def test_active_conversation_preserves_natural_command_prefixes(
+    fixture_db: Any,
+    real_app: Any,
+    provider: str,
+    flow: models.Flow,
+    delivery: AsyncMock,
+) -> None:
+    """Verified ingress can preserve raw text while reserving strict explicit commands."""
+    f = fixture_db
+    row = await start(f, real_app, delivery)
+    for turn, text in enumerate(
+        ("help me understand this", "ask me later", "note to self: explain this"), 1
+    ):
+        conversations.runtime_turn(
+            f.db, row, turn=turn, answer="Ready", finished=True, error=False
+        )
+        receive(
+            f,
+            text=text if provider == "discord" else "/" + text,
+            **({} if provider == "discord" else {"plain_text": text}),
+        )
+        await drain(f, real_app)
+        assert "Message sent to Repository questions" in delivery.call_args.args[2]
+        assert conversations.messages(f.db, row.id)[-1].text == text
+
+
+@pytest.mark.asyncio
+async def test_idle_poll_backoff_deduplicates_without_reinserting_notices(
+    fixture_db: Any,
+    real_app: Any,
+    provider: str,
+    flow: models.Flow,
+    delivery: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Idle observation backs off and new turns wake it without losing the answer."""
+    from unittest.mock import Mock
+
+    f = fixture_db
+    row = await start(f, real_app, delivery)
+    conversations.runtime_turn(
+        f.db, row, turn=1, answer="Ready", finished=True, error=False
+    )
+    watch(f)
+    await drain(f, real_app)
+    conversations.save(
+        f.db,
+        row,
+        state="stopped",
+        notice="The container stopped. Send a message to resume.",
+    )
+    spy = Mock(wraps=crud_chat.receive)
+    monkeypatch.setattr(crud_chat, "receive", spy)
+    for _ in range(4):
+        observer = watch(f)
+        await drain(f, real_app)
+    assert spy.call_count == 1
+    f.db.refresh(observer)
+    assert (observer.next_attempt_at - datetime.utcnow()).total_seconds() >= 150
+    monkeypatch.setattr(
+        "preloop.api.endpoints.flow_conversations.resume_checkpoint",
+        lambda *_: {"session_id": "synthetic-session"},
+    )
+    receive(f, text="Resume quickly")
+    await drain(f, real_app)
+    f.db.refresh(observer)
+    assert (observer.next_attempt_at - datetime.utcnow()).total_seconds() <= 6
+    conversations.runtime_turn(
+        f.db, row, turn=2, answer="Resumed answer", finished=True, error=False
+    )
+    watch(f)
+    await drain(f, real_app)
+    assert delivery.call_args.args[2].startswith("Resumed answer")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 429, 503])
+async def test_non_json_conversation_errors_keep_the_http_status(
+    fixture_db: Any,
+    flow: models.Flow,
+    status: int,
+) -> None:
+    """HTML/plain-text error responses cannot turn a retryable GET into ValueError."""
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import Response
+    from preloop.schemas.flow_conversation import InteractiveSettings
+
+    f = fixture_db
+    row = conversations.create(
+        f.db,
+        conversation_id=uuid4(),
+        flow=flow,
+        owner=f.user,
+        policy=InteractiveSettings(),
+    )
+    f.db.commit()
+    app = FastAPI()
+
+    @app.get("/api/v1/flow-conversations/{conversation_id}")
+    def error(conversation_id: str) -> Response:
+        return Response("Unavailable", status_code=status, media_type="text/plain")
+
+    broker = ChatBroker(f.db, f.connection, "external-test", app)
+    with pytest.raises(HTTPException) as caught:
+        await broker.request(
+            "GET", f"/api/v1/flow-conversations/{row.id}", "view_flows"
+        )
+    assert caught.value.status_code == status
+    assert caught.value.detail == "Action denied or unavailable"
+
+
+@pytest.mark.asyncio
+async def test_stored_answer_survives_revalidation_outage(
+    fixture_db: Any,
+    real_app: Any,
+    provider: str,
+    flow: models.Flow,
+    delivery: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read outage before sending cannot lose or replay a stored answer."""
+    from fastapi import HTTPException
+
+    f = fixture_db
+    row = await start(f, real_app, delivery)
+    conversations.runtime_turn(
+        f.db, row, turn=1, answer="Durable answer", finished=True, error=False
+    )
+    watch(f)
+    assert await process_one(f.db, real_app)
+    count = delivery.call_count
+    with monkeypatch.context() as patch:
+        patch.setattr(ChatBroker, "request", AsyncMock(side_effect=HTTPException(503)))
+        assert await process_one(f.db, real_app)
+    assert delivery.call_count == count
+    answer = next(
+        item
+        for item in crud_chat.work.get_multi(
+            f.db, account_id=str(f.account.id), limit=1000
+        )
+        if item.payload.get("conversation_notice")
+    )
+    assert answer.status == "reply_ready" and answer.attempts == 0
+    crud_chat.work.update(
+        f.db,
+        db_obj=answer,
+        obj_in={"next_attempt_at": datetime.utcnow() - timedelta(seconds=1)},
+    )
+    await drain(f, real_app)
+    assert delivery.call_args.args[2].startswith("Durable answer")
+    assert delivery.call_count == count + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_end_refusal_releases_address_but_uncertain_post_is_not_replayed(
+    fixture_db: Any,
+    real_app: Any,
+    provider: str,
+    flow: models.Flow,
+    delivery: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    uncertain: bool,
+) -> None:
+    """Only a definitive end refusal permits safe chat-address cleanup."""
+    import httpx
+    from fastapi import HTTPException
+
+    f = fixture_db
+    await start(f, real_app, delivery)
+    original = ChatBroker.request
+
+    async def request(
+        broker: ChatBroker,
+        method: str,
+        path: str,
+        permission: str,
+        payload: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        if method == "POST" and path.endswith("/end"):
+            if uncertain:
+                raise httpx.ReadError("Synthetic uncertain end")
+            raise HTTPException(404)
+        return await original(broker, method, path, permission, payload, **kwargs)
+
+    monkeypatch.setattr(ChatBroker, "request", request)
+    count = delivery.call_count
+    receipt = receive(f, text="/end")
+    assert await process_one(f.db, real_app)
+    f.db.refresh(receipt)
+    if uncertain:
+        assert receipt.status == "uncertain" and delivery.call_count == count
+        assert (
+            crud_chat.conversation_binding(f.db, f.connection.id, "dm:external-test")
+            is not None
+        )
+    else:
+        assert receipt.status == "delivered"
+        assert (
+            "conversation is no longer available. The chat address is released"
+            in delivery.call_args.args[2]
+        )
+        assert (
+            crud_chat.conversation_binding(f.db, f.connection.id, "dm:external-test")
+            is None
+        )
+
+
+def test_concurrent_wake_survives_observer_deferral(fixture_db: Any) -> None:
+    """A follow-up wake cannot be overwritten by an observer's longer idle delay."""
+    f = fixture_db
+    conversation_id = uuid4()
+    observer = crud_chat.receive(
+        f.db,
+        connection=f.connection,
+        event_id=f"flow-watch:{conversation_id}",
+        external_user_id="external-test",
+        payload={"conversation_watch": str(conversation_id)},
+    )
+    claimed = crud_chat.claim(f.db)
+    assert claimed.id == observer.id
+    token = claimed.lease_token
+    with Session(f.engine) as other:
+        crud_chat.wake_conversation_observer(other, f.connection.id, conversation_id)
+    f.db.refresh(claimed)
+    assert claimed.status == "processing" and claimed.lease_token == token
+    crud_chat.defer_conversation_observer(f.db, claimed, 300)
+    assert claimed.status == "pending" and claimed.lease_until is None
+    assert 0 < (claimed.next_attempt_at - datetime.utcnow()).total_seconds() <= 5

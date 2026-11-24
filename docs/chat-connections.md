@@ -256,7 +256,13 @@ every channel follow-up**. No new Slack event, scope or reinstall is required
 for this feature.
 
 Only bare `end` and `status` are lifecycle commands; sentences such as
-“end with an example” remain ordinary follow-ups.
+“end with an example” remain ordinary follow-ups. In an active conversation,
+`help` is reserved only when bare; `note`, `message`, `approve` and `deny` require
+the complete command grammar and valid UUIDs. `ask ALIAS TEXT` is reserved when
+ALIAS names a visible chat flow. Sentences such as “help me understand” and
+“ask me later” are ordinary follow-ups. To switch to a default flow, end the
+active conversation before using `ask TEXT`. A single-argument `link CODE`
+remains a private identity-linking command.
 `ask` while a conversation is active refuses to replace it: use `end` first,
 then `ask` again. `status` reports the flow, state, turns used/allowed and seconds
 until the idle container stops (or that its idle countdown has not started).
@@ -269,7 +275,11 @@ failures include the conversation's notice text. After ending, the next plain
 message goes to the visibly labelled read-only account assistant.
 
 Conversation bindings and polling are persisted in the database and survive
-worker restarts. Starts and follow-up attempts share the five-per-user and
+worker restarts. Waiting/stopped polls back off from 20 seconds to at most five
+minutes; a follow-up wakes the observer promptly. The stopped notice is recorded
+once, without repeated outbox insert attempts. Transient admission reads retry a
+bounded number of times before explicitly saying the message was not sent;
+stored answers wait for successful revalidation before provider delivery. Starts and follow-up attempts share the five-per-user and
 twenty-per-connection minute limits below. The conversation owner's permissions,
 normal flow budgets, approvals, kill switch, audit identity and metering apply
 through the shared conversation API. Unlinking, disabling the connection or
