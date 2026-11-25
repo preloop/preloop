@@ -102,6 +102,24 @@ describe('PreloopSessionObserver', () => {
     ).to.equal('true');
   });
 
+  it('clears a previous turn focus before selecting a different session', async () => {
+    const element = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        .sessions=${[session, { ...session, id: 'second-session' }]}
+        .focusTurnId=${'old-turn'}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() => !(element as any).loadingSessionId);
+    await (element as any).openFromList('second-session', null);
+    const reads = fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('/second-session/'));
+    expect(reads.length).to.be.greaterThan(0);
+    expect(
+      reads.every((call) => !String(call.args[0]).includes('around='))
+    ).to.equal(true);
+  });
+
   beforeEach(() => {
     PENDING_APPROVALS.length = 0;
     localStorage.setItem('accessToken', 'test-access-token');

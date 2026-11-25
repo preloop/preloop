@@ -878,12 +878,15 @@ class RuntimeSessionExplorerService:
         risk_level = "high" if summary.failed_requests else "low"
         if summary.estimated_cost > 1 and risk_level == "low":
             risk_level = "medium"
-        highlights = [
-            f"{summary.total_requests} model request"
-            f"{'' if summary.total_requests == 1 else 's'}",
-            f"{summary.token_usage.total_tokens} total tokens",
-            f"${summary.estimated_cost:.4f} estimated spend",
-        ]
+        highlights = [f"{summary.token_usage.total_tokens} total tokens"]
+        if summary.total_requests is not None:
+            highlights.insert(
+                0,
+                f"{summary.total_requests} model request"
+                f"{'' if summary.total_requests == 1 else 's'}",
+            )
+        if summary.cost_is_known:
+            highlights.append(f"${summary.estimated_cost:.4f} estimated spend")
         if summary.latest_model_alias:
             highlights.append(f"Latest model: {summary.latest_model_alias}")
         return RuntimeSessionSummaryInsight(

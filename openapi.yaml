@@ -4751,6 +4751,188 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+    post:
+      tags:
+      - Account
+      summary: Search Account Runtime Session Identity
+      description: Search session identity without placing the query in access-log
+        URLs.
+      operationId: search_account_runtime_session_identity_api_v1_runtime_sessions_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: session_source_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Source Type
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^(all|active|ended)$
+          default: all
+          title: Status
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: agent
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 255
+          - type: 'null'
+          description: Managed agent id or display name; only that agent's sessions
+          title: Agent
+        description: Managed agent id or display name; only that agent's sessions
+      - name: agent_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 64
+          - type: 'null'
+          description: Agent kind (claude_code, codex, cursor, hermes, ...); sessions
+            of managed agents of that kind or recorded from that source
+          title: Agent Kind
+        description: Agent kind (claude_code, codex, cursor, hermes, ...); sessions
+          of managed agents of that kind or recorded from that source
+      - name: alias
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 64
+          - type: 'null'
+          title: Alias
+      - name: parent_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions this session spawned
+          title: Parent Session Id
+        description: Only sessions this session spawned
+      - name: flow_execution_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions linked to this flow execution
+          title: Flow Execution Id
+        description: Only sessions linked to this flow execution
+      - name: active_within_minutes
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 1440
+            minimum: 1
+          - type: 'null'
+          description: Only open sessions with activity in the last N minutes
+          title: Active Within Minutes
+        description: Only open sessions with activity in the last N minutes
+      - name: has_artifacts
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Only sessions holding an available artifact: ''any'', or an
+            artifact kind such as transcript, screenshot, document or audio'
+          title: Has Artifacts
+        description: 'Only sessions holding an available artifact: ''any'', or an
+          artifact kind such as transcript, screenshot, document or audio'
+      - name: owner_user_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions of managed agents this user owns; a user who
+            owns no agent matches no session
+          title: Owner User Id
+        description: Only sessions of managed agents this user owns; a user who owns
+          no agent matches no session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Body_search_account_runtime_session_identity_api_v1_runtime_sessions_post'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountRuntimeSessionListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}:
     get:
       tags:
@@ -34648,6 +34830,17 @@ components:
       - username
       - password
       title: Body_login_form_api_v1_auth_token_post
+    Body_search_account_runtime_session_identity_api_v1_runtime_sessions_post:
+      properties:
+        query:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Query
+      type: object
+      required:
+      - query
+      title: Body_search_account_runtime_session_identity_api_v1_runtime_sessions_post
     Body_transcribe_audio_api_v1_audio_transcriptions_post:
       properties:
         audio:

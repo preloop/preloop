@@ -17,6 +17,7 @@ from preloop.services.built_in_models import (
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Body,
     Depends,
     HTTPException,
     Path,
@@ -3548,6 +3549,98 @@ async def list_account_runtime_sessions(
     ),
 ):
     """List runtime sessions for the current account."""
+    if has_artifacts is not None and has_artifacts != "any":
+        if has_artifacts not in ARTIFACT_KINDS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "has_artifacts must be 'any' or one of: "
+                    + ", ".join(sorted(ARTIFACT_KINDS))
+                ),
+            )
+    # Off the loop on purpose: the console polls this path, and a saturated
+    # pool must not stall the liveness probe. See preloop.api.loop_safety.
+    return await run_db_off_loop(
+        lambda: RuntimeSessionExplorerService(db).list_account_sessions(
+            account=account,
+            query=query,
+            session_source_type=session_source_type,
+            status=status,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+            background_tasks=background_tasks,
+            agent=agent,
+            agent_kind=agent_kind,
+            alias=alias,
+            parent_session_id=str(parent_session_id) if parent_session_id else None,
+            flow_execution_id=str(flow_execution_id) if flow_execution_id else None,
+            active_within_minutes=active_within_minutes,
+            has_artifacts=has_artifacts,
+            owner_user_id=str(owner_user_id) if owner_user_id else None,
+        )
+    )
+
+
+@router.post("/runtime-sessions", response_model=AccountRuntimeSessionListResponse)
+@require_permission("view_runtime_sessions")
+async def search_account_runtime_session_identity(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    background_tasks: BackgroundTasks,
+    query: Annotated[str, Body(embed=True, min_length=1, max_length=500)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+    session_source_type: Optional[str] = Query(None),
+    status: str = Query("all", pattern="^(all|active|ended)$"),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    agent: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Managed agent id or display name; only that agent's sessions",
+    ),
+    agent_kind: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "Agent kind (claude_code, codex, cursor, hermes, ...); sessions of "
+            "managed agents of that kind or recorded from that source"
+        ),
+    ),
+    alias: Optional[str] = Query(None, min_length=1, max_length=64),
+    parent_session_id: Optional[UUID] = Query(
+        None, description="Only sessions this session spawned"
+    ),
+    flow_execution_id: Optional[UUID] = Query(
+        None, description="Only sessions linked to this flow execution"
+    ),
+    active_within_minutes: Optional[int] = Query(
+        None,
+        ge=1,
+        le=1440,
+        description="Only open sessions with activity in the last N minutes",
+    ),
+    has_artifacts: Optional[str] = Query(
+        None,
+        description=(
+            "Only sessions holding an available artifact: 'any', or an "
+            "artifact kind such as transcript, screenshot, document or audio"
+        ),
+    ),
+    owner_user_id: Optional[UUID] = Query(
+        None,
+        description=(
+            "Only sessions of managed agents this user owns; a user who owns "
+            "no agent matches no session"
+        ),
+    ),
+) -> AccountRuntimeSessionListResponse:
+    """Search session identity without placing the query in access-log URLs."""
     if has_artifacts is not None and has_artifacts != "any":
         if has_artifacts not in ARTIFACT_KINDS:
             raise HTTPException(

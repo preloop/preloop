@@ -57,6 +57,24 @@ function previewEvent(
 }
 
 describe('SessionReplayPanel', () => {
+  it('labels pushed tool roles without calling them user messages', async () => {
+    const element = await fixture<SessionReplayPanel>(
+      html`<session-replay-panel></session-replay-panel>`
+    );
+    expect(
+      (element as any).getActivityTurnLabel({
+        source: 'transcript',
+        role: 'tool',
+      })
+    ).to.equal('Tool result');
+    expect(
+      (element as any).getActivityTurnLabel({
+        source: 'transcript',
+        role: 'tool_use',
+      })
+    ).to.equal('Tool call');
+  });
+
   it('renders pushed transcript messages in the selected newest-first order', async () => {
     const activity = [2, 0, 1].map((index) => ({
       activity_id: `pushed-${index}`,

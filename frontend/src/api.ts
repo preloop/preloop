@@ -2608,8 +2608,16 @@ export async function getAccountGatewayUsageSearch(
 export async function getAccountRuntimeSessions(
   params: RuntimeSessionListParams = {}
 ): Promise<AccountRuntimeSessionListResponse> {
+  const { query, ...filters } = params;
   const response = await fetchWithAuth(
-    `${REST_API_PREFIX}/runtime-sessions${buildRuntimeSessionListQuery(params)}`
+    `${REST_API_PREFIX}/runtime-sessions${buildRuntimeSessionListQuery(filters)}`,
+    query
+      ? {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+        }
+      : undefined
   );
   if (!response.ok) {
     throw new Error('Failed to fetch sessions');

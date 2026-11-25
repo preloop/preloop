@@ -1517,6 +1517,8 @@ export class PreloopSessionObserver extends LitElement {
     }
     this.pinnedSessionError = null;
     if (options.userInitiated) {
+      this.focusTurnId = null;
+      this.focusArtifactId = null;
       ++this.pinnedSessionRequest;
       this.pinnedSessionPending = null;
       this.selectedSessionId = sessionId;

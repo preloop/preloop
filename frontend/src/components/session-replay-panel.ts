@@ -3650,7 +3650,11 @@ export class SessionReplayPanel extends LitElement {
     }
     if (role.includes('system')) return 'System message';
     if (role.includes('developer')) return 'Developer message';
-    if (message.source === 'transcript') return 'User message';
+    if (message.source === 'transcript') {
+      if (role === 'tool') return 'Tool result';
+      if (role === 'tool_use') return 'Tool call';
+      return 'User message';
+    }
     return 'Operator message';
   }
 

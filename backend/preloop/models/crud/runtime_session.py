@@ -956,8 +956,16 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 normalized_query = f"%{' '.join(query.strip().split())}%"
                 stmt = stmt.filter(
                     or_(
-                        RuntimeSession.title.ilike(normalized_query),
-                        RuntimeSession.alias.ilike(normalized_query),
+                        *(
+                            [RuntimeSession.title.ilike(normalized_query)]
+                            if "title" in self._runtime_session_columns(db)
+                            else []
+                        ),
+                        *(
+                            [RuntimeSession.alias.ilike(normalized_query)]
+                            if "alias" in self._runtime_session_columns(db)
+                            else []
+                        ),
                         RuntimeSession.session_source_type.ilike(normalized_query),
                         RuntimeSession.session_source_id.ilike(normalized_query),
                         RuntimeSession.session_reference.ilike(normalized_query),
@@ -1070,8 +1078,16 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             normalized_query = f"%{' '.join(query.strip().split())}%"
             session_query = session_query.filter(
                 or_(
-                    self.model.title.ilike(normalized_query),
-                    self.model.alias.ilike(normalized_query),
+                    *(
+                        [self.model.title.ilike(normalized_query)]
+                        if "title" in self._runtime_session_columns(db)
+                        else []
+                    ),
+                    *(
+                        [self.model.alias.ilike(normalized_query)]
+                        if "alias" in self._runtime_session_columns(db)
+                        else []
+                    ),
                     self.model.session_source_type.ilike(normalized_query),
                     self.model.session_source_id.ilike(normalized_query),
                     self.model.session_reference.ilike(normalized_query),
@@ -2321,12 +2337,16 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             return
         usage_crud = CRUDApiUsage(ApiUsage)
         columns = ("prompt_tokens", "completion_tokens", "total_tokens")
+        measured_usage = or_(
+            ApiUsage.meta_data["event_type"].astext.is_(None),
+            ApiUsage.meta_data["event_type"].astext == "usage",
+        )
         query = db.query(
             ApiUsage.runtime_session_id,
-            func.count(ApiUsage.id).label("records"),
+            func.count(ApiUsage.id).filter(measured_usage).label("records"),
             *(func.sum(getattr(ApiUsage, key)).label(key) for key in columns),
             *cache_split_columns(),
-            func.count(ApiUsage.estimated_cost).label("priced"),
+            func.count(ApiUsage.estimated_cost).filter(measured_usage).label("priced"),
             usage_crud._imported_cost_sum(
                 account_id=account_id,
                 start_date=start_date or datetime.min,
@@ -2355,14 +2375,15 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             if row is None:
                 continue
             item["usage_source"] = "mixed" if gateway else "imported"
-            item["cost_is_known"] = gateway or bool(row.priced)
+            item["cost_is_known"] = (
+                gateway or row.records > 0
+            ) and row.priced == row.records
             for key in columns:
                 item[key] = (item.get(key) or 0) + (getattr(row, key) or 0)
             for key, value in cache_split_from_row(row).items():
                 item[key] = (item.get(key) or 0) + value
             item["estimated_cost"] += float(row.estimated_cost or 0)
-            if not gateway:
-                item["total_requests"] = None
+            item["total_requests"] = None
 
     @staticmethod
     def _runtime_session_columns(db: Session) -> frozenset[str]:

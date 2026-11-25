@@ -29,6 +29,8 @@ const SESSION_OPTIONS = {
   limits: { max_concurrent: 2, active: 0, idle_timeout_seconds: 1800 },
 };
 
+type FetchInput = RequestInfo | URL;
+
 describe('RuntimeSessionsView', () => {
   let fetchStub: sinon.SinonStub;
   let wsStub: sinon.SinonStub;
@@ -169,10 +171,12 @@ describe('RuntimeSessionsView', () => {
       const url = new URL(String(call.args[0]), location.origin);
       return (
         url.pathname === '/api/v1/runtime-sessions' &&
-        url.searchParams.get('query') === 'rollout plan'
+        call.args[1]?.method === 'POST' &&
+        JSON.parse(String(call.args[1]?.body)).query === 'rollout plan'
       );
     });
     expect(queryCall).not.to.equal(undefined);
+    expect(String(queryCall!.args[0])).not.to.contain('query=');
     const headings = [
       ...element.shadowRoot!.querySelectorAll('[data-search-kind]'),
     ];
@@ -204,7 +208,7 @@ describe('RuntimeSessionsView', () => {
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
     fetchStub = sinon.stub(window, 'fetch');
-    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+    fetchStub.callsFake(async (input: FetchInput, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
 
       if (url === SEARCH_URL) {
@@ -300,10 +304,7 @@ describe('RuntimeSessionsView', () => {
             },
           ],
         };
-        if (
-          new URL(url, location.origin).searchParams.has('query') &&
-          !includeTitleMatches
-        ) {
+        if (Boolean(init?.method === 'POST') && !includeTitleMatches) {
           page.items = [];
           page.total = 0;
         }
@@ -1363,7 +1364,7 @@ describe('RuntimeSessionsView', () => {
       expect(listCalls().length).to.equal(listsBefore + 1);
       expect(
         listCalls().filter((url) => url.includes('query='))
-      ).to.have.length(1);
+      ).to.have.length(0);
     });
 
     it('ignores a stale list when a later load already finished', async () => {

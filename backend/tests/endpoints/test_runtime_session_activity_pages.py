@@ -100,3 +100,23 @@ def test_foreign_activity_and_usage_targets_are_not_disclosed(
                     params={"page_by_turn": True, "around": target},
                 )
                 assert response.status_code == 404, response.text
+
+
+def test_identity_search_accepts_query_in_post_body(
+    client: TestClient, db_session: Session, test_user: Any
+) -> None:
+    """Identity search keeps transcript-hunting text out of request URLs."""
+    session = models.RuntimeSession(
+        account_id=test_user.account_id,
+        session_source_type="test",
+        session_source_id=str(uuid4()),
+        title="Example identity needle",
+        started_at=datetime.now(UTC),
+    )
+    db_session.add(session)
+    db_session.flush()
+    response = client.post(
+        "/api/v1/runtime-sessions", json={"query": "identity needle"}
+    )
+    assert response.status_code == 200, response.text
+    assert str(session.id) in {item["id"] for item in response.json()["items"]}

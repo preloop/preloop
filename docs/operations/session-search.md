@@ -8,7 +8,7 @@ half every deployment gets. Semantic search reads vectors over the same
 chunks, and an account has to opt in before any exist. The endpoint is
 `POST /api/v1/runtime-sessions/search`; the console box at the top of the
 sessions view calls it in `keyword` mode. The console also queries the sessions
-list with `query` to find titles, agent names and aliases even when no content
+list using `POST /api/v1/runtime-sessions` with `query` in the body to find titles, agent names and aliases even when no content
 has been indexed. It merges those matches first, deduplicates by session ID,
 and labels identity and content hits separately. If either source fails, the
 other source's results remain available alongside the error.

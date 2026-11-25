@@ -751,3 +751,47 @@ def test_candidate_growth_falls_back_without_truncating_sessions(
     ]
     assert rankings
     assert all("api_usage.runtime_session_id IN (" not in sql for sql in rankings)
+
+
+def test_mixed_imported_usage_omits_partial_measurements(
+    db_session: Session, session_listing_data: dict[str, Any]
+) -> None:
+    """A partial imported ledger cannot look like a complete gateway total."""
+    data = session_listing_data
+    for cost in (0.02, None):
+        row = data["usage"]("direct")
+        row.action_type = "imported_usage"
+        row.estimated_cost = cost
+    db_session.flush()
+    summary = crud_runtime_session.get_account_session_summary(
+        db_session,
+        account_id=str(data["account"].id),
+        runtime_session_id=str(data["sessions"]["direct"].id),
+    )
+    assert summary["usage_source"] == "mixed"
+    assert summary["total_requests"] is None
+    assert summary["cost_is_known"] is False
+
+
+def test_identity_search_without_summary_columns(
+    db_session: Session,
+    session_listing_data: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Identity predicates honor the rolling-upgrade column guard."""
+    data = session_listing_data
+    data["sessions"]["empty"].runtime_principal_name = "Example legacy needle"
+    db_session.flush()
+    columns = crud_runtime_session._runtime_session_columns(db_session) - {
+        "title",
+        "alias",
+    }
+    monkeypatch.setattr(
+        crud_runtime_session, "_runtime_session_columns", lambda db: columns
+    )
+    result = crud_runtime_session.list_account_sessions(
+        db_session, account_id=str(data["account"].id), query="legacy needle"
+    )
+    assert [item["id"] for item in result["items"]] == [
+        str(data["sessions"]["empty"].id)
+    ]
