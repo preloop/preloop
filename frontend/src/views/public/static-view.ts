@@ -2,6 +2,7 @@ import { LitElement, html, css, PropertyValues, unsafeCSS } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { marked } from 'marked';
+import { getBrandConfig, hasBrandConfig } from '../../brand-config';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -303,14 +304,16 @@ export class StaticView extends LitElement {
       }
       const text = await response.text();
 
-      // Check if the file is HTML or markdown based on extension
-      if (this.src.endsWith('.html')) {
-        // HTML file - use as-is
-        this.content = text;
-      } else {
-        // Markdown file - parse with marked
-        this.content = marked(text) as string;
+      // Static hosts can return index.html with a 200 for missing content.
+      // Mounting that document inside this page would start the app again.
+      if (/^\s*(?:<!doctype\s+html\b|<html[\s>])/i.test(text)) {
+        throw new Error(
+          'Received a full HTML document instead of page content'
+        );
       }
+      this.content = this.src.endsWith('.html')
+        ? text
+        : (marked(text) as string);
     } catch (error: any) {
       console.error('Error fetching static content:', error);
       this.error = 'There was an issue fetching the content.';
@@ -332,6 +335,18 @@ export class StaticView extends LitElement {
 
   private _renderDynamicContent() {
     if (this.error) {
+      const docsUrl =
+        this.src === '/content/docs.md' && hasBrandConfig()
+          ? getBrandConfig().docs_url
+          : undefined;
+      if (docsUrl) {
+        return html`<h1>Documentation</h1>
+          <p>
+            Find installation instructions, configuration guides, and the API
+            reference.
+          </p>
+          <a href=${docsUrl}>Open documentation</a>`;
+      }
       return html`
         <sl-alert variant="danger" open>
           <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>

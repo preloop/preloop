@@ -497,17 +497,17 @@ func (r *extensionRoot) plugin(id, marketplace string, record map[string]json.Ra
 	return ext
 }
 
-func collectInventoryExtensions(home, agent, salt string, profileOnly bool) ([]inventoryExtension, []string) {
-	return collectExtensions(home, agent, salt, profileOnly, false)
+func collectInventoryExtensions(home, agent, salt string, profileOnly bool, projects ...string) ([]inventoryExtension, []string) {
+	return collectExtensions(home, agent, salt, profileOnly, false, projects...)
 }
 
 // collectDisplayExtensions is the inventory collector with identifiers left in
 // clear for a local listing. Report hashing is unchanged.
-func collectDisplayExtensions(home, agent, salt string, profileOnly bool) ([]inventoryExtension, []string) {
-	return collectExtensions(home, agent, salt, profileOnly, true)
+func collectDisplayExtensions(home, agent, salt string, profileOnly bool, projects ...string) ([]inventoryExtension, []string) {
+	return collectExtensions(home, agent, salt, profileOnly, true, projects...)
 }
 
-func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool) ([]inventoryExtension, []string) {
+func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool, explicitProjects ...string) ([]inventoryExtension, []string) {
 	scan := &extensionScan{home: home, salt: salt, localDisplay: localDisplay, extensions: []inventoryExtension{}, errors: map[string]bool{}}
 	if agent != "claude-code" && agent != "codex-cli" {
 		return scan.extensions, nil
@@ -537,6 +537,34 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool)
 			if raw := doc["projects"]; raw != nil && json.Unmarshal(raw, &projects) != nil {
 				scan.fail("extension_malformed")
 			}
+			// Explicit roots opt into the same bounded walk without modifying
+			// Claude's configuration or broadening other users' profile scans.
+			if projects == nil {
+				projects = map[string]json.RawMessage{}
+			}
+			for _, path := range explicitProjects {
+				projects[path] = nil
+			}
+			projectHashes := map[string]bool{}
+			for path := range projects {
+				projectHashes[scan.projectHash(path)] = true
+			}
+			for _, plugin := range plugins {
+				if plugin.Scope == "project" && !projectHashes[plugin.ProjectRefHash] {
+					scan.fail("extension_project_unscanned")
+				}
+			}
+			// Detect a local project omitted from the registry without walking
+			// its contents. The caller can explicitly include it with --project.
+			if cwd, err := os.Getwd(); err != nil {
+				scan.fail("extension_unreadable")
+			} else if !projectHashes[scan.projectHash(cwd)] {
+				if _, err := os.Lstat(filepath.Join(cwd, ".claude")); err == nil {
+					scan.fail("extension_project_unscanned")
+				} else if !os.IsNotExist(err) {
+					scan.fail("extension_unreadable")
+				}
+			}
 			paths := make([]string, 0, len(projects))
 			for path := range projects {
 				paths = append(paths, path)
@@ -553,6 +581,7 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool)
 				}
 				project := scan.open(path)
 				if project == nil {
+					scan.fail("extension_unreadable")
 					continue
 				}
 				hash := scan.projectHash(path)

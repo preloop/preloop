@@ -780,7 +780,7 @@ export class FlowView extends LitElement {
         id: this.flowId || '',
         name: this.flow?.name,
         is_enabled: !!this.flow?.is_enabled,
-        ci_only: this.flow?.git_clone_config?.publication_mode === 'read_only',
+        ci_only: this.isCiOnlyReview,
       },
       {
         onRun: () => void this.testRun(),
@@ -919,9 +919,13 @@ export class FlowView extends LitElement {
     `;
   }
 
+  private get isCiOnlyReview(): boolean {
+    return this.flow?.git_clone_config?.publication_mode === 'read_only';
+  }
+
   /** "Post review on the pull request", for read-only review flows only. */
   private renderPlatformReviewCard() {
-    if (this.flow?.git_clone_config?.publication_mode !== 'read_only') {
+    if (!this.isCiOnlyReview) {
       return '';
     }
     return html`<flow-platform-review-card
@@ -1347,7 +1351,16 @@ export class FlowView extends LitElement {
             </div>
             ${
               this.recentExecutions.length === 0
-                ? html`<p>No executions yet. Run now starts one.</p>`
+                ? html`<p>
+                    No executions yet.
+                    ${
+                      !this.flow.is_enabled
+                        ? 'Choose Resume before starting a run.'
+                        : this.isCiOnlyReview
+                          ? 'Runs start from this flow’s CI identity.'
+                          : 'Run now starts one.'
+                    }
+                  </p>`
                 : html`
                     <div class="table-scroll">
                       <table class="styled-table executions-table">

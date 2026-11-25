@@ -30,7 +30,7 @@ from typing import Any, Callable
 import urllib.request
 
 import ci_import_graph
-from run_backend_shard import discover_files
+from run_backend_shard import SERIAL_FILES, discover_files
 
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE = (
@@ -441,7 +441,10 @@ def select(
         fast, fast_reason = fast_selection(
             paths, inventory, tests, impact_reason, durations, read
         )
-    shards = shard_count(backend, inventory, durations)
+    regular = [path for path in backend if path not in SERIAL_FILES]
+    regular_inventory = [path for path in inventory if path not in SERIAL_FILES]
+    shards = shard_count(regular, regular_inventory, durations) if regular else 0
+    jobs = shards + bool(SERIAL_FILES.intersection(backend))
     return {
         "version": policy["version"],
         "mode": "impact",
@@ -457,6 +460,7 @@ def select(
         "backend_count": len(backend),
         "backend_estimated_seconds": round(estimated_seconds(backend, durations), 1),
         "backend_shards": shards,
+        "backend_jobs": jobs,
         "fast_tests": fast,
         "fast_reason": fast_reason,
         "fast_estimated_seconds": round(estimated_seconds(fast, durations), 1),
@@ -607,12 +611,14 @@ def main() -> int:
     )
     receipt_path.write_text(json.dumps(receipt, indent=2) + "\n")
     shards = receipt["backend_shards"]
+    jobs = receipt["backend_jobs"]
     outputs = {
         **{k: str(v).lower() for k, v in receipt["live"].items()},
         "full": str(receipt["full"]).lower(),
         "backend_full": str(receipt["backend_full"]).lower(),
         "backend_shards": str(shards),
-        "backend_groups": json.dumps(list(range(1, shards + 1))),
+        "backend_jobs": str(jobs),
+        "backend_groups": json.dumps(list(range(1, jobs + 1))),
     }
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         for key, value in outputs.items():
@@ -620,7 +626,7 @@ def main() -> int:
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
         summary.write(
             f"### Backend test selection\n\n{receipt['backend_count']} of "
-            f"{len(discover_files(ROOT))} test files in {shards} shard(s): "
+            f"{len(discover_files(ROOT))} test files in {jobs} job(s): "
             f"{receipt['impact_reason']}\n\n"
         )
         summary.write("### Selection receipt\n\n```json\n")

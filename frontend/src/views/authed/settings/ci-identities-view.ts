@@ -1,3 +1,4 @@
+import '../../../components/view-header';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { confirmDialog } from '../../../components/confirm-dialog';
@@ -478,25 +479,20 @@ export class CiIdentitiesView extends LitElement {
         ci-identities-view code {
           overflow-wrap: anywhere;
         }
-        ci-identities-view h1 {
-          font-size: var(--console-text-h1, 1.625rem);
-          font-weight: 600;
-          margin: 0 0 var(--sl-spacing-x-small);
-        }
         ci-identities-view .ci-secret {
           user-select: all;
           display: block;
           padding: 1rem;
         }
       </style>
-      <h1>CI identities</h1>
-      <p>
-        Each identity is bound to one project and one flow: the project's
-        dedicated hosted flow, or a shared read-only review flow that admits the
-        project. It owns only its own executions and completion callbacks, never
-        those of another project on the same flow. Rotating a key preserves that
-        ownership.
-      </p>
+      <view-header headerText="CI identities">
+        <p slot="description">
+          Connect one project to a dedicated hosted flow or a shared read-only
+          review flow that allows that project. Each identity owns its
+          executions and completion callbacks, never those of another project on
+          the same flow. Rotating a key preserves that ownership.
+        </p>
+      </view-header>
       ${this.loading ? html`<p data-loading role="status">Loading restricted CI setup…</p>` : nothing}
       ${this.error ? html`<p role="alert">${this.error}</p>` : nothing}
       ${!this.loading && !this.ready ? html`<p role="status">Restricted CI setup is unavailable or you do not have permission to view it.</p>` : nothing}

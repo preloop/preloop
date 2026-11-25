@@ -173,7 +173,7 @@ func fetchDiscoverySalt(client *api.Client) (string, error) {
 
 // sendDiscoveryReport fetches the salt and posts the report. Called only
 // after the user opted in.
-func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, deviceRefs ...string) error {
+func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, deviceRef string, projects ...string) error {
 	if client == nil {
 		return errors.New("discovery reporting needs a Preloop login or token (PRELOOP_TOKEN); run 'preloop login' or pass --token")
 	}
@@ -181,10 +181,7 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	if err != nil {
 		return err
 	}
-	machineID := ""
-	if len(deviceRefs) > 0 {
-		machineID = strings.TrimSpace(deviceRefs[0])
-	}
+	machineID := strings.TrimSpace(deviceRef)
 	if machineID == "" {
 		machineID, err = readMachineID()
 		if err != nil {
@@ -193,7 +190,9 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	}
 	home, _ := os.UserHomeDir()
 	report := buildDiscoveryReport(salt, machineID, home, agents)
-	if err := addDiscoveryExtensions(&report, salt, home, inventoryProbes); err != nil {
+	deps := inventoryProbes
+	deps.ExtensionProjects = projects
+	if err := addDiscoveryExtensions(&report, salt, home, deps); err != nil {
 		return err
 	}
 	var resp discoveryReportResponse
