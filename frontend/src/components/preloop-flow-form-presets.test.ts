@@ -126,7 +126,7 @@ describe('PreloopFlowForm presets', () => {
     expect(
       element.shadowRoot!.querySelector('[data-testid=preset-disabled-notice]')
         ?.textContent
-    ).to.include('saved disabled');
+    ).to.include('saved paused');
     expect(payload).to.not.have.property('id');
     expect(payload.webhook_config).to.deep.equal({ supersede_on_update: true });
   });

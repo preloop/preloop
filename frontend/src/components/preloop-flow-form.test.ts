@@ -138,6 +138,39 @@ describe('PreloopFlowForm copy', () => {
     expect(labels).to.include('Add new tracker');
   });
 
+  it('explains project scope and disables the picker when there are no choices', async () => {
+    const el = await mount({
+      name: 'Reviewer',
+      trigger_event_source: 'tracker-1',
+      trigger_organization_id: 'org-1',
+    });
+    const picker = () =>
+      el.shadowRoot!.querySelector('sl-select[label="Projects (optional)"]')!;
+    expect(picker().hasAttribute('disabled')).to.equal(true);
+    expect(picker().getAttribute('placeholder')).to.equal(
+      'No projects available'
+    );
+    expect(picker().getAttribute('help-text')).to.include(
+      'scope and sync status'
+    );
+
+    (el as any).projects = [
+      { id: 'project-1', organization_id: 'org-1', name: 'Widgets' },
+      { id: 'project-2', organization_id: 'org-2', name: 'Gadgets' },
+    ];
+    el.requestUpdate();
+    await el.updateComplete;
+
+    expect(picker().hasAttribute('disabled')).to.equal(false);
+    expect(picker().getAttribute('help-text')).to.include(
+      'clear the selection to include all projects in this organization'
+    );
+    expect(picker().querySelector('sl-option')?.textContent?.trim()).to.equal(
+      'Widgets'
+    );
+    expect(picker().querySelectorAll('sl-option').length).to.equal(1);
+  });
+
   it('names the execution modes by what they do', async () => {
     const el = await mount();
     (el as any).longRunningAgents = [{ id: 'agent-1', display_name: 'Agent' }];

@@ -1347,7 +1347,14 @@ export class FlowView extends LitElement {
             </div>
             ${
               this.recentExecutions.length === 0
-                ? html`<p>No executions yet. Run now starts one.</p>`
+                ? html`<p>
+                    No executions yet.
+                    ${
+                      this.flow.is_enabled
+                        ? 'Run now starts one.'
+                        : 'Choose Resume before starting a run.'
+                    }
+                  </p>`
                 : html`
                     <div class="table-scroll">
                       <table class="styled-table executions-table">
