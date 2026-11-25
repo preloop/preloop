@@ -545,7 +545,14 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool,
 			for _, path := range explicitProjects {
 				projects[path] = nil
 			}
-			projectHashes := map[string]bool{}
+			// The user root has already been scanned. Recognize filesystem
+			// aliases too, without following them for a second content walk.
+			homeInfo, _ := root.root.Stat(".")
+			isHome := func(path string) bool {
+				info, err := os.Stat(path)
+				return err == nil && homeInfo != nil && os.SameFile(homeInfo, info)
+			}
+			projectHashes := map[string]bool{scan.projectHash(home): true}
 			for path := range projects {
 				projectHashes[scan.projectHash(path)] = true
 			}
@@ -558,7 +565,7 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool,
 			// its contents. The caller can explicitly include it with --project.
 			if cwd, err := os.Getwd(); err != nil {
 				scan.fail("extension_unreadable")
-			} else if !projectHashes[scan.projectHash(cwd)] {
+			} else if !isHome(cwd) && !projectHashes[scan.projectHash(cwd)] {
 				if _, err := os.Lstat(filepath.Join(cwd, ".claude")); err == nil {
 					scan.fail("extension_project_unscanned")
 				} else if !os.IsNotExist(err) {
@@ -567,6 +574,9 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool,
 			}
 			paths := make([]string, 0, len(projects))
 			for path := range projects {
+				if filepath.IsAbs(path) && isHome(path) {
+					continue
+				}
 				paths = append(paths, path)
 			}
 			sort.Strings(paths)

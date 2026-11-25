@@ -255,3 +255,46 @@ func TestExtensionCoverageUnreportedSupportedApp(t *testing.T) {
 		t.Fatal("unreported extension rows claimed complete coverage")
 	}
 }
+
+// protects=the already-scanned user root is not misclassified as an omitted
+// project when invoked from home; fails_when=home listing exits 2 or reporting
+// becomes partial; no_claim=synthetic profile, not arbitrary ancestor projects.
+func TestHomeDirectoryIsNotUnscannedProject(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		name := "implicit"
+		if explicit {
+			name = "explicit"
+		}
+		t.Run(name, func(t *testing.T) {
+			home := extensionHome(t)
+			writeInventoryFixture(t, home, ".claude/skills/user-policy/SKILL.md", "Synthetic user skill")
+			t.Chdir(home)
+			args := []string{"--agent", "claude-code", "--json"}
+			if explicit {
+				args = append(args, "--project", ".")
+			}
+			stdout, _, err := runExtensions(t, args...)
+			if err != nil {
+				t.Fatalf("home listing failed: %v; %s", err, stdout)
+			}
+			var listing extensionsDocument
+			if err := json.Unmarshal([]byte(stdout), &listing); err != nil {
+				t.Fatal(err)
+			}
+			if listing.Completeness != "complete" || len(listing.Apps) != 1 || len(listing.Apps[0].Extensions) != 1 || listing.Apps[0].Extensions[0].Scope != "user" {
+				t.Fatalf("listing=%s", stdout)
+			}
+			report := buildDiscoveryReport("salt", "device", home, []AgentConfig{{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}})
+			deps := inventoryTestDependencies(t, home)
+			if explicit {
+				deps.ExtensionProjects = []string{home}
+			}
+			if err := addDiscoveryExtensions(&report, "salt", home, deps); err != nil {
+				t.Fatal(err)
+			}
+			if report.Evidence.ExtensionCompleteness != listing.Completeness || len(*report.Candidates[0].Extensions) != 1 || (*report.Candidates[0].Extensions)[0].Scope != "user" {
+				t.Fatalf("home report=%+v", report.Evidence)
+			}
+		})
+	}
+}
