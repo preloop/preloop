@@ -2789,17 +2789,18 @@ func managedAgentKeepsLiveOAuthSecret(
 	return !oauthCredentialStatusIsError(target)
 }
 
-// repairCodexOAuthSecretInPlace uploads the local bundle onto an existing
-// Codex OAuth secret whose status is error. The PUT hits the row that already
-// owns the secret, so the backend updates that secret in place instead of
+// repairManagedOAuthSecretInPlace uploads the local bundle onto an existing
+// Claude Code or Codex OAuth secret whose status is error. The PUT hits the row
+// that already owns the secret, so the backend updates it in place instead of
 // minting a second lineage.
-func repairCodexOAuthSecretInPlace(
+func repairManagedOAuthSecretInPlace(
 	client *api.Client,
 	agent AgentConfig,
 	owner *aiModelResponse,
 	upstream *managedGatewayUpstream,
 ) error {
-	if client == nil || !isCodexCLIAgent(agent) || owner == nil || upstream == nil {
+	if client == nil || owner == nil || upstream == nil ||
+		(!isCodexCLIAgent(agent) && !isClaudeCodeAgent(agent)) {
 		return nil
 	}
 	if !oauthCredentialStatusIsError(owner) {
@@ -6459,7 +6460,7 @@ func parseOAuthSiblingTime(value interface{}) time.Time {
 // inside its window after the gateway has consumed the single-use refresh
 // token, and writing the cached laptop bundle back onto a live secret
 // bricks every sibling (invalid_grant). A secret whose status is error is
-// repaired by repairCodexOAuthSecretInPlace before this id is attached.
+// repaired by repairManagedOAuthSecretInPlace before this id is attached.
 func applySharedOAuthSecret(sibling *aiModelResponse) string {
 	if sibling == nil {
 		return ""
@@ -6570,7 +6571,7 @@ func syncManagedGatewayAIModel(
 			// Keep this row's own live secret. Do not attach a staler
 			// sibling and do not re-seed from a local bundle.
 		} else if sharedSecret != "" && !sameSecret {
-			if err := repairCodexOAuthSecretInPlace(
+			if err := repairManagedOAuthSecretInPlace(
 				client,
 				agent,
 				sharedSibling,
@@ -6663,7 +6664,7 @@ func syncManagedGatewayAIModel(
 	); sharedSibling != nil {
 		sharedSecret := applySharedOAuthSecret(sharedSibling)
 		if sharedSecret != "" {
-			if err := repairCodexOAuthSecretInPlace(
+			if err := repairManagedOAuthSecretInPlace(
 				client,
 				agent,
 				sharedSibling,
