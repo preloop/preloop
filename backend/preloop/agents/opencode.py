@@ -883,6 +883,9 @@ fi
 exit $OPENCODE_EXIT_CODE
 """
         if (execution_context.get("trigger_event_data") or {}).get("_conversation_id"):
+            shared_driver = base64.b64encode(
+                Path(__file__).with_name("conversation_runtime.py").read_bytes()
+            ).decode()
             driver = base64.b64encode(
                 Path(__file__).with_name("opencode_conversation.py").read_bytes()
             ).decode()
@@ -891,6 +894,7 @@ exit $OPENCODE_EXIT_CODE
             )[0]
             script += f"""
 printf '%s' '{driver}' | base64 -d > /tmp/preloop-opencode-conversation.py
+printf '%s' '{shared_driver}' | base64 -d > /tmp/conversation_runtime.py
 chmod 700 /tmp/preloop-opencode-conversation.py
 echo PRELOOP_AGENT_EXEC_START
 set +e

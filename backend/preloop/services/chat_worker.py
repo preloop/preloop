@@ -15,11 +15,15 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from preloop.models import models
 from preloop.models.crud import crud_chat
 from preloop.models.db.session import get_session_factory
 from preloop.services.chat_assistant import ChatBroker, ChatReadDeferredError
 from preloop.services.chat_providers import (
     ChatProviderError,
+    ChatProviderRetryError,
+    TeamsInstallRequiredError,
+    TEAMS_INSTALL_ERROR,
     send_private_reply,
     external_command,
 )
@@ -61,7 +65,9 @@ async def process_one(db: Session, app: Any) -> bool:
             if row.payload.get("link_digest") or text.startswith("/link "):
                 # Linking proof itself must stay private. Slack supports DM;
                 # Discord/Mattermost slash acknowledgments are ephemeral.
-                if connection.provider == "slack" and not row.payload.get("private"):
+                if connection.provider in {"slack", "teams"} and not row.payload.get(
+                    "private"
+                ):
                     reply = "Send the linking code in a direct message to the bot."
                     crud_chat.transition(
                         db,
@@ -87,6 +93,18 @@ async def process_one(db: Session, app: Any) -> bool:
                         user_id=identity.user_id,
                         payload={**row.payload, "actor_id": str(identity.user_id)},
                     )
+                    if connection.provider == "teams":
+                        crud_chat.remember_delivery_state(
+                            db,
+                            connection.id,
+                            row.external_user_id,
+                            {
+                                "service_url": row.payload.get("service_url", ""),
+                                "conversation_id": row.payload.get(
+                                    "provider_conversation_id", ""
+                                ),
+                            },
+                        )
                     reply = "Your Preloop identity is linked."
             else:
                 user = crud_chat.principal(db, connection, row.external_user_id)
@@ -374,6 +392,18 @@ async def process_one(db: Session, app: Any) -> bool:
             from preloop.services.mattermost_listener import verify_team_actor
 
             await verify_team_actor(provider_config(connection), row.external_user_id)
+        delivery_state = {}
+        if connection.provider == "teams":
+            identity = crud_chat.identity(
+                db, connection.id, external_user_id=row.external_user_id
+            )
+            stored = (identity.provider_state or {}) if identity else {}
+            delivery_state = {
+                "service_url": row.payload.get("service_url")
+                or stored.get("service_url", ""),
+                "conversation_id": row.payload.get("provider_conversation_id")
+                or stored.get("conversation_id", ""),
+            }
         crud_chat.transition(db, row, "sending")
         async with httpx.AsyncClient(
             trust_env=False, verify=ssl.create_default_context()
@@ -384,6 +414,7 @@ async def process_one(db: Session, app: Any) -> bool:
                 row.reply or "No answer available.",
                 delivery_id=str(row.id),
                 client=client,
+                **delivery_state,
                 **(
                     {
                         "channel_id": row.payload.get("channel_id") or "",
@@ -402,6 +433,16 @@ async def process_one(db: Session, app: Any) -> bool:
         )
     except ChatReadDeferredError:
         return True
+    except ChatProviderRetryError as exc:
+        crud_chat.transition(
+            db,
+            row,
+            "failed" if row.attempts >= 3 else "pending",
+            next_attempt_at=datetime.utcnow() + timedelta(seconds=exc.retry_after),
+            last_error="Teams delivery rate limited",
+        )
+    except TeamsInstallRequiredError:
+        crud_chat.transition(db, row, "failed", last_error=TEAMS_INSTALL_ERROR)
     except HTTPException as exc:
         if (
             row.reply is not None
@@ -501,6 +542,29 @@ def enqueue_approval_notifications(
     return count
 
 
+async def probe_teams_credentials(
+    db: Session,
+    connection: models.ChatConnection,
+    lease_token: str,
+) -> bool:
+    """Probe token acquisition and record only a fixed, secret-free health error."""
+    from preloop.services.teams_auth import bot_token
+
+    try:
+        async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:
+            await bot_token(provider_config(connection), client)
+    except ChatProviderError:
+        crud_chat.listener_health(
+            db,
+            connection.id,
+            lease_token,
+            "failed",
+            last_error="Teams authentication failed; check credentials",
+        )
+        return False
+    return True
+
+
 async def run() -> None:
     """Initialize governance and NATS without API schedulers, then consume jobs."""
     from preloop.api.app import create_app
@@ -544,12 +608,20 @@ async def run() -> None:
                                     db, connection, token
                                 ):
                                     continue
+                            if (
+                                connection.provider == "teams"
+                                and not await probe_teams_credentials(
+                                    db, connection, token
+                                )
+                            ):
+                                continue
                             crud_chat.listener_health(
                                 db,
                                 connection.id,
                                 token,
                                 "worker_ready",
                                 connected_at=datetime.utcnow(),
+                                last_error=None,
                             )
                     worked = await process_one(db, app)
                 if not worked:

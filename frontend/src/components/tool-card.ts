@@ -2024,6 +2024,9 @@ export class ToolCard extends LitElement {
                         <sl-radio value="mattermost">
                           Mattermost - Send approval requests to Mattermost
                         </sl-radio>
+                        <sl-radio value="teams">
+                          Teams Workflows - Send approval notices to Teams
+                        </sl-radio>
                         <sl-radio value="webhook">
                           Webhook - Send approval requests to a webhook
                         </sl-radio>
@@ -2238,7 +2241,6 @@ DENY if:
                         : ''
                     }
                     ${
-                      this.hasAdvancedApprovals() &&
                       this.newPolicyType !== 'standard' &&
                       this.newPolicyType !== 'ai_driven'
                         ? html`
@@ -2252,7 +2254,9 @@ DENY if:
                                     ? 'https://hooks.slack.com/services/...'
                                     : this.newPolicyType === 'mattermost'
                                       ? 'https://your-mattermost.com/hooks/...'
-                                      : 'https://your-webhook-endpoint.com/approval-request'
+                                      : this.newPolicyType === 'teams'
+                                        ? 'https://your-workflow-url'
+                                        : 'https://your-webhook-endpoint.com/approval-request'
                                 }"
                                 value=${this.newPolicyWebhookUrl}
                                 @sl-input=${(e: any) => {

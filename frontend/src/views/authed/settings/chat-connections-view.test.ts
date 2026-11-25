@@ -98,6 +98,29 @@ describe('Chat connections', () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     await el.updateComplete;
   }
+  it('shows the four health states for Teams', async () => {
+    stub.callsFake(async () =>
+      json({
+        connections: [
+          {
+            ...row,
+            provider: 'teams',
+            linked: true,
+            configured: true,
+            worker_ready: true,
+            callback_seen: true,
+          },
+        ],
+        can_manage: false,
+      })
+    );
+    const el = await view();
+    const text = el.shadowRoot!.textContent!;
+    expect(text).to.include('Configured');
+    expect(text).to.include('Worker ready');
+    expect(text).to.include('Provider event received');
+    expect(text).to.include('Your account is linked');
+  });
   it('saves the selected default flow and can clear it', async () => {
     manage = true;
     stub.callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {

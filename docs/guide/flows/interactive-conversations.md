@@ -1,16 +1,15 @@
 # Interactive hosted conversations
 
 Start a conversation from a flow's **Start conversation** action. It opens the
-existing Talk page on that flow's hosted OpenCode runtime. No chat connection is
+existing Talk page on that flow's hosted OpenCode or DeepSeek Harness runtime. No chat connection is
 needed. The execution and Sessions pages link back to the same durable thread;
 reloading or opening another tab does not create another conversation.
 
 ## Configuration and defaults
 
-Choose OpenCode and the model already configured on your account, such as a
-DeepSeek flash model. Model calls use the Preloop gateway. DeepSeek **Harness**,
-Pi and other harnesses cannot enable this setting. Codex is not included in this
-initial transport.
+Choose OpenCode or DeepSeek Harness and a configured model, such as a DeepSeek
+flash model. Model calls use the Preloop gateway. Pi, Codex and other harnesses
+cannot enable this setting.
 
 The flow stores the setting in `agent_config`:
 
@@ -50,6 +49,15 @@ inside the container; `run --attach` submits each turn to that server with an
 explicit session ID. The server's `/event` stream supplies assistant text deltas.
 The control plane persists answer snapshots and clients poll the shared API.
 There is no browser-owned agent connection.
+
+DeepSeek Harness stays pinned to **`@deepseek-ai/dsh@0.1.5-rc.2`**. A Cordis
+driver replaces the one-shot headless runner, keeping one native Agent alive
+through `agent.followup()`. A fresh process adopts the exact persisted session
+through `agents.resume()`. The Python supervisor shares lifecycle polling,
+capability filtering and snapshot transport with OpenCode. Its child keeps the
+existing Preloop model-routing, MCP and approval plugins. Newer headless releases
+support one-shot resume but still do not provide live follow-ups; this integration
+does not bump the package or repeatedly restart a one-shot CLI.
 
 After an answer, Talk shows **Waiting for you** and the time remaining before the
 container stops. A message during that time uses the same server and workspace.
@@ -91,8 +99,13 @@ The states shown are:
 | Ended | You ended it or it reached its user-turn limit. Start a new conversation. |
 | Failed | A runtime, limit or checkpoint failure prevents continuation; the notice explains the next step. |
 
-Native resume restores OpenCode's durable conversation records, recorded tool
-calls/results and related session metadata. Workspace recovery separately
+Native resume restores OpenCode's durable conversation records or DeepSeek's
+native v3 session event logs, including conversation history and recorded tool
+calls/results. DeepSeek archives select the explicit root session and its verified
+descendants from uncompressed JSONL storage. They exclude configuration, model
+credentials, locks, caches and arbitrary plugin files; the native engine validates
+the restored log before accepting a follow-up. Current hosted policy is reapplied
+on adoption. Workspace recovery separately
 restores repository files, commits and uncommitted changes. Neither restores
 running subprocesses, sockets, in-memory tool/plugin state or prior permission
 grants. Tools and approvals remain governed by the current Preloop configuration.
@@ -161,7 +174,7 @@ account credentials cannot impersonate a runtime. They are not part of the
 mobile/chat client contract.
 
 The driver receives its capability in the container environment and removes it
-from OpenCode child environments. This prevents accidental inheritance, but is
+from harness child environments. This prevents accidental inheritance, but is
 not a security boundary against tools running as the same UID: on Linux they can
 read the original container environment through `/proc/1/environ` (or another
 same-UID process) and obtain the capability. Such a tool could overwrite its own
@@ -176,7 +189,7 @@ use these same routes. On a flow with both a chat alias and interactive enabled,
 keeps its ID on the bot DM or Slack channel thread, and the durable chat worker
 polls complete answers and state notices. The console lists it alongside
 console-started conversations and Talk shows its chat origin. Slack and
-Mattermost bot DMs accept plain follow-ups; Slack channel replies must mention
+Mattermost bot DMs and Teams personal chats accept plain follow-ups; Slack channel replies must mention
 the bot in the original thread. Discord follow-ups use `/preloop message:TEXT`.
 Use `end` and `status` (Discord: `/preloop message:/end` and
 `/preloop message:/status`). End the active conversation before another `ask`.
@@ -203,3 +216,22 @@ the generated clone and restore shell, including the branch guard.
 OpenCode references: [server API](https://opencode.ai/docs/server/),
 [CLI](https://opencode.ai/docs/cli/). The pinned executable's `serve --help`,
 `run --help` and `/doc` schema are the authority for this transport's protocol.
+
+The opt-in `test_deepseek_conversation_integration.py` test uses local PostgreSQL,
+pinned DeepSeek Harness, a real Git clone and a synthetic upstream behind the
+Preloop gateway. With `DEEPSEEK_CONVERSATION_SMOKE=1` and that `dsh` version on
+`PATH`, it checks three live turns, idle stop, separate native/workspace artifact
+restoration, a resumed answer containing first-turn context, and owner-attributed
+gateway metering across both executions. Install the local harness plugin's
+locked dependencies before running it. Fresh processes and session homes represent
+container lifetimes in this test.
+Set `DEEPSEEK_CONVERSATION_IMAGE` to the fixture image to use fresh non-root
+containers instead; the fixture README has build and run commands. Use a UTC
+database session (`PGOPTIONS='-c timezone=UTC'`) for the local stack.
+
+The independent package probe is
+`node backend/tests/fixtures/deepseek_interactive/probe.mjs /path/to/dsh`.
+It asserts one process for three live turns and a different process for native
+resume, and checks the actual upstream history. Set `PROBE_PRODUCTION=1` to run
+the same probe against the production Cordis driver. Both modes use a synthetic
+upstream and disable telemetry; neither consumes provider credentials.

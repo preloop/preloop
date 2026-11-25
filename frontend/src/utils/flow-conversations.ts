@@ -284,6 +284,7 @@ export function conversationIntro(conversation: FlowConversation): string {
     slack: 'Slack',
     mattermost: 'Mattermost',
     discord: 'Discord',
+    teams: 'Microsoft Teams',
   };
   const origin = origins[conversation.origin || ''];
   return [

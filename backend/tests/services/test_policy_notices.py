@@ -956,7 +956,7 @@ def test_push_skipped_when_disabled(db_session: Session, test_user: User) -> Non
 
 @pytest.mark.parametrize(
     ("approval_type", "expect_text"),
-    [("slack", True), ("mattermost", True), ("webhook", False)],
+    [("slack", True), ("mattermost", True), ("teams", False), ("webhook", False)],
 )
 def test_workflow_webhook_receives_notice(
     db_session: Session, test_user: User, approval_type: str, expect_text: bool
@@ -989,7 +989,20 @@ def test_workflow_webhook_receives_notice(
     assert row.event_type == "policy.notice"
     assert row.subject_id is None
     body = row.payload
-    if expect_text:
+    if approval_type == "teams":
+        assert body["type"] == "message"
+        card = body["attachments"][0]["content"]
+        assert card["body"][0]["text"] == "Policy notice: notify-codename"
+        assert card["body"][1]["text"] == "This notify rule did not block the call."
+        assert "the project-x plan" in card["body"][2]["text"]
+        assert card["actions"] == [
+            {
+                "type": "Action.OpenUrl",
+                "title": "See all notices",
+                "url": delivery.attention_url(),
+            }
+        ]
+    elif expect_text:
         assert "notify-codename" in body["text"]
         assert "the project-x plan" in body["text"]
         assert "approv" not in body["text"].lower()

@@ -85,6 +85,9 @@ CODEX_SESSION_ID_RE = re.compile(
 SESSION_ID_PATTERNS = {
     "opencode": OPENCODE_SESSION_ID_RE,
     "codex": CODEX_SESSION_ID_RE,
+    "deepseek": re.compile(
+        r"^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    ),
 }
 
 

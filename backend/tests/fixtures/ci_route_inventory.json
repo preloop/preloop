@@ -141,6 +141,7 @@
   "GET /api/v1/chat/setup/options": "deny",
   "GET /api/v1/chat/setup/slack/callback": "deny",
   "GET /api/v1/chat/setup/{draft_id}": "deny",
+  "GET /api/v1/chat/setup/{draft_id}/teams-package": "deny",
   "GET /api/v1/ci-identities": "deny",
   "GET /api/v1/ci-identities/capabilities": "deny",
   "GET /api/v1/ci-identities/shared-flows/{flow_id}": "deny",

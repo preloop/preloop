@@ -21,7 +21,7 @@ class ConversationStart(BaseModel):
 
     message: str = Field(default="", max_length=65536)
     request_id: UUID
-    origin: Literal["console", "slack", "mattermost", "discord"] = "console"
+    origin: Literal["console", "slack", "mattermost", "discord", "teams"] = "console"
 
 
 class ConversationSend(BaseModel):

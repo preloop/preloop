@@ -23,6 +23,10 @@ chatWorker:
 ```
 
 This creates a separate `-chat-worker` Deployment running the command above.
+Chat connections deliver nothing unless this separate worker process is running
+(`chatWorker.enabled: true` in Helm). The connection health states show the
+boundary: **Configured** alone is insufficient; check **Worker ready**,
+**Provider event received**, and **Your account linked** before testing a reply.
 The sync worker pools do not process chat jobs. The chat worker shares the API's
 image, database, signing/encryption secrets, NATS connection, and operator
 `extraEnv`, `extraEnvFrom`, `extraVolumes`, and `extraVolumeMounts`. If you supply
@@ -31,15 +35,16 @@ both processes. Run migrations before starting the worker. See the
 [Helm chart guide](https://github.com/preloop/preloop/blob/main/helm/preloop/README.md#chat-worker).
 
 Set `PRELOOP_URL` to your externally reachable HTTPS origin before setting up
-Slack or Discord. Provider callbacks cannot use a localhost or placeholder URL.
+Slack, Discord or Teams. Provider callbacks cannot use a localhost or placeholder URL.
 Configure encryption for stored credentials. Setup secrets live in encrypted,
 actor/account-bound drafts for 30 minutes and are never stored in the browser.
 The connection ID reserves its final callback before installation. Expired drafts
 must be restarted. Management permissions are checked again when finishing.
 
 Open **Settings → Chat connections → Add connection**, choose the service, and
-enter its bot credentials. Preloop discovers identity and named workspaces; there
-are no bot user IDs in the normal form. One workspace selects automatically;
+enter its bot credentials. Preloop discovers identity and named workspaces for
+Slack, Mattermost and Discord. Teams requires an application ID and directory ID;
+it shows the directory ID without requesting Graph access. One workspace selects automatically;
 choose a name when there are several. A custom connection name is optional under
 **Advanced settings**. After saving, distinguish **Configured**, **Worker ready**,
 **Provider event received**, and **Your account linked**. Configuration alone does
@@ -190,7 +195,7 @@ After linking, ordinary text goes to your active flow conversation, or to the
 read-only account assistant when none is active. The assistant labels its replies
 so the switch is visible. Explicit commands are:
 
-| Action | Slack / Mattermost direct message | Discord |
+| Action | Slack / Mattermost / Teams personal message | Discord |
 | --- | --- | --- |
 | Run a flow | `ask ALIAS TEXT` (or `ask TEXT` with a default) | `/preloop message:/ask ALIAS TEXT` |
 | Follow up on an interactive flow | Plain text in the bot DM | `/preloop message:What about the next step?` |
@@ -221,7 +226,7 @@ An empty alias disables chat starts; existing flows stay off until configured.
 The flow must also be enabled. In **Settings → Chat connections**, optionally
 choose a **Default chat flow**. Only enabled, opted-in flows appear there.
 
-Send `ask docs Where is the release checklist?` to the Slack or Mattermost bot.
+Send `ask docs Where is the release checklist?` to the Slack, Mattermost or Teams bot.
 Slack channel mentions also work: `@Preloop ask docs Where is the checklist?`.
 On Discord use `/preloop message:/ask docs Where is the checklist?`.
 The sender must link their own account and have both `execute_flows` (the manual
@@ -238,7 +243,9 @@ Without a default, an unknown alias is refused.
 
 If the flow has **Interactive conversation** enabled as well as a chat alias,
 `ask ALIAS TEXT` starts the same durable conversation shown in the console's
-**Talk** window. Talk identifies whether it started in Slack, Mattermost or Discord.
+**Talk** window. Talk identifies whether it started in Slack, Mattermost, Discord
+or Microsoft Teams. Interactive flows can use OpenCode or DeepSeek Harness;
+the chat transport shares the same lifecycle with either runtime.
 The acknowledgement links to that thread and warns that the first answer can take
 a minute or more. Flows without interactive enabled keep the one-shot behavior
 below.
@@ -248,6 +255,7 @@ below.
 | Slack DM | Send plain text to the same bot. One active conversation per user per connection, across DM threads. |
 | Slack channel | Start with `@Preloop ask ALIAS TEXT`, then reply in that thread with `@Preloop TEXT`. Only its owner can continue or end it; another user gets an explicit refusal. A new thread can have its own conversation. |
 | Mattermost bot DM | Send plain text to the same bot. One active conversation per user per connection. With the optional slash-command transport, use `/preloop TEXT`, `/preloop /end` and `/preloop /status`. |
+| Teams personal chat | Send plain text to the same bot. Use `end` and `status` in that chat. One active conversation per user per connection. |
 | Discord | In the server where the bot is installed, type `/preloop message:TEXT` for each follow-up, e.g. `/preloop message:What was the code word?`. Use `/preloop message:/end` and `/preloop message:/status`. Replies go to your bot DM; typing directly in that DM is not supported by the slash-command transport. One active conversation per user per connection, across server channels. |
 
 Slack's generated manifest subscribes only to `app_mention` and `message.im`.
@@ -365,3 +373,146 @@ retry. A command-installation failure restores the prior callback when it still
 points to this attempt. An interrupted rollback retains a durable callback target.
 Slack OAuth must complete in the browser that initiated setup; its short-lived
 secure HttpOnly SameSite=Lax proof is never returned in the authorization URL.
+
+## Teams setup
+
+This is the **own-bot, single-tenant** path. Each installation supplies its own
+Entra app registration and Azure Bot resource. **A Teams administrator must allow
+the app** before people can use it. There is no shared Cloud bot or Store listing.
+The setup verifies token acquisition; it does not prove the app is installed or
+that Microsoft will deliver activities. Real-tenant behaviour remains unverified.
+
+### Installation checklist and roles
+
+| Step | Who does it | What blocks without that role |
+| --- | --- | --- |
+| Set a public HTTPS `PRELOOP_URL`, apply migrations, and run the chat worker. | Preloop operator | Microsoft cannot reach an intranet-only endpoint. There is no Teams socket transport here. |
+| Register an Entra app with **Accounts in this organizational directory only (Single tenant)**. Copy its Application (client) ID, Directory (tenant) ID, and a client secret **value**, not its ID. | App registrant; Entra administrator if app registration is restricted | Without permission to register an app, setup cannot start. The tenant's default registration policy is unverified. |
+| Create an Azure Bot resource, **Single Tenant**, using that app ID and tenant ID. Select the appropriate region and Free tier for Teams. | Azure subscription Contributor | An active Azure subscription and resource-creation permission are required. |
+| Choose **Microsoft Teams** in Preloop Chat connections and enter the three values. Under **Advanced manifest URLs**, set developer, privacy and terms pages; blanks use the installation's own origin. | Preloop user with `manage_policies` | Users without connection-management permission cannot save setup or download its package. |
+| Paste Preloop's callback URL into the Azure Bot messaging endpoint and enable its Microsoft Teams channel. Download the generated app package; select **Finish** in Preloop to activate the endpoint. | Azure Bot resource operator and Preloop connection manager | Draft callbacks accept no Teams activities. Without channel configuration, Teams cannot deliver messages. |
+| Upload the zip through Teams admin center → Teams apps → Manage apps → Upload new app. | Teams Administrator or Global Administrator | Users may submit apps for approval, but an administrator must approve them. Sideloading also depends on administrator-controlled custom-app and setup policies. |
+| Allow the app for intended users through app permissions or app-centric management. Optionally pre-install it with an app setup policy. | Teams Administrator | Users cannot find or open a blocked app. Catalog availability and policy changes can each take **a few hours** to propagate. |
+| Open the app in Teams, select **Link my account** in Preloop, and send `link CODE` in its personal chat. | Each user | A token or Entra object ID alone does not link a Preloop identity. Proactive messages require the personal app installation. |
+| Rotate expiring secrets and re-upload changed manifests. | App registrant, connection manager and Teams Administrator | An expired secret stops token acquisition and delivery. |
+
+Microsoft documents a Teams-managed registration as an alternative that needs no
+Azure subscription, but it is tied to its creator and is **not verified by this
+implementation**. Use the Azure Bot path above for this release. Regional Bot
+Service resources do not prove that the whole Teams message path remains in that
+region; Microsoft warns that other services and channels can cross boundaries.
+
+### Behaviour and network access
+
+Personal chats support `link`, plain questions, `note`, `message`, `approve`,
+`deny`, `ask ALIAS TEXT` and `help`, with the same permissions and durable broker
+as Slack. For example, `ask docs Where is the policy?` returns its acknowledgement,
+approval-wait notice and result in personal chat. Proactive approval notices use
+the latest authenticated conversation address saved for the linked identity.
+Only personal conversations can consume link codes. Unlinking or disabling the
+connection is rechecked before any queued answer is sent.
+
+Both tenant fields on every activity must match the connection's directory ID;
+the recipient must be its bot. Connector authentication requires RS256, issuer,
+audience, expiration, not-before, an `msteams`-endorsed key, and an exact
+`serviceUrl` claim match. The bearer-token destination is checked both when an
+activity arrives and immediately before delivery. There is no validation bypass.
+The client secret is stored only in encrypted setup/connection credentials;
+access tokens and signing keys have bounded in-memory caches.
+
+Allow outbound HTTPS to `login.microsoftonline.com`, `login.botframework.com`,
+and `smba.trafficmanager.net`. Inbound traffic reaches the displayed public
+`/api/v1/chat/ingress/{connection_id}` endpoint. Requests do not follow redirects
+or use environment HTTP proxies (`trust_env=False`). `CHAT_TEAMS_SERVICE_HOSTS`
+is an operator-controlled comma-separated exact host allow-list, defaulting to
+`smba.trafficmanager.net`; it must be the same on API and worker. Observed hosts
+remain unverified: confirm any additional Microsoft-owned host before adding it.
+Never add an arbitrary host to get past an authentication error.
+
+Replies use `textFormat: plain` and the existing 8,000-character output bound.
+Channel mentions, group chats, bot Adaptive Cards, files, SSO, Graph permissions,
+message updates, streaming, government/sovereign clouds and proactive Graph
+installation are outside scope. Workflows notices below use a separate card path.
+HTTP 412/429 returns a delivery to pending, respects `Retry-After` (bounded to
+one hour), and stops after three attempts. A 403 records the fixed message
+“Teams refused delivery; the user must open the Preloop app in Teams”. Timeouts
+and 5xx during sending remain **uncertain**, requiring inspection before retry;
+no Connector idempotency facility was verified. Microsoft documents conversation
+limits of 7 sends/second, 60/30 seconds and 1,800/hour, plus 50 requests/second per
+app per tenant; actual throttling is unverified.
+
+### Secret rotation
+
+Before expiry, create a replacement Entra client secret and start a new Teams
+connection using the same app and tenant IDs. Download its new package, update
+the Azure Bot callback to the new connection, finish setup, and have the Teams
+administrator replace/allow the package. Users must link to the new connection.
+Verify worker health and a personal reply, then disable the old connection and
+revoke the old secret. This release uses replacement setup for rotation; it does
+not offer an in-place secret editor. Token caching includes the secret digest,
+so a changed secret cannot reuse an old cached token. Keep the previous secret
+only for the overlap needed to verify the replacement.
+
+### First real tenant checklist
+
+Local tests use synthetic documented activities, a local RSA key and fake HTTP;
+**they do not prove any of the following**. The first installation must:
+
+1. Record the observed **issuer and claim names/types** for the single-tenant bot;
+   confirm `aud`, `exp`, `nbf` and `serviceUrl` pass validation. Do not report JWTs,
+   secrets or full personal activity bodies.
+2. Record the **service URL hostnames** and region path shape, and confirm ingress
+   and replies work with the configured host allow-list.
+3. Run the zip through the Developer Portal validator and Teams admin center;
+   record acceptance/errors, manifest version and policy propagation time.
+4. Test **proactive 403 before personal installation** and successful delivery
+   after opening the app. Verify linking, questions, each command, `ask`, its
+   approval-wait notice and final result, plus unlink/disable cancellation.
+5. Exercise controlled **throttling**, record status and `Retry-After` shape,
+   confirm pending retries and the three-attempt bound without duplicate actions.
+6. Inspect **plain-text rendering on desktop and mobile**, especially links,
+   mentions and markup. Inspect the Workflows card's single Review button and
+   large-text truncation. Report client versions and anonymized results.
+
+All six checks remain **unverified**, including the actual single-tenant issuer,
+observed service hosts, package acceptance, before/after-install 403 behaviour,
+429 behaviour and rendering. Manifest 1.30 is validated locally against
+[Microsoft's published JSON schema](https://developer.microsoft.com/json-schemas/teams/v1.30/MicrosoftTeams.schema.json),
+vendored under `backend/tests/fixtures/teams/` for deterministic tests. Schema
+validation does not substitute for Developer Portal or admin-center acceptance.
+
+Sources: [Bot registration](https://learn.microsoft.com/en-us/azure/bot-service/bot-service-quickstart-registration?view=azure-bot-service-4.0),
+[registration choices](https://learn.microsoft.com/en-us/microsoftteams/platform/agents-in-teams/choose-agent-registration-type),
+[Connector authentication](https://learn.microsoft.com/en-us/azure/bot-service/rest-api/bot-framework-rest-connector-authentication?view=azure-bot-service-4.0),
+[tenant validation](https://learn.microsoft.com/en-us/microsoftteams/platform/agents-in-teams/agent-tenancy),
+[custom app administration](https://learn.microsoft.com/en-us/microsoftteams/teams-custom-app-policies-and-settings),
+[permission propagation](https://learn.microsoft.com/en-us/microsoftteams/teams-app-permission-policies),
+[proactive messages](https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/conversations/send-proactive-messages),
+[rate limits](https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/rate-limit),
+[formatting](https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/format-your-bot-messages),
+[regionalization](https://learn.microsoft.com/en-us/azure/bot-service/bot-builder-concept-regionalization?view=azure-bot-service-4.0).
+
+## Teams Workflows approval notices
+
+For notices without a bot, a team member can create a Workflows webhook with
+**Send webhook alerts to a channel**, then select **Teams Workflows** as the
+approval workflow type and paste its URL. Policy YAML can use
+`channel_configs.teams.url`. This path needs no Entra app, Azure Bot resource or
+Teams administrator to register a bot. Tenant Power Platform policies may still
+restrict Workflows; that has not been verified on a real tenant.
+
+The Adaptive Card has the approval headline, tool, status and one **Review**
+link to the existing approval page. It does not accept chat commands or decisions
+inside Teams, and posts to the workflow's configured channel/chat rather than to
+each approver. Policy notify rules routed to the same workflow send an
+informational card with the rule, redacted excerpt, an explicit statement that
+this notify rule did not block the call, and one **See all notices** link. Those
+cards have no approval decision actions. Both use the existing durable webhook
+outbox and retry policy.
+Display text is shortened to fit the 28 KB message limit; an oversized review
+URL is rejected without queueing a broken link. Microsoft documents throttling
+above four requests per second. The workflow belongs to its creator: assign a
+co-owner and plan handover so it is not orphaned when that person leaves.
+
+Source: [Microsoft incoming webhook and Workflows documentation](https://learn.microsoft.com/en-us/microsoftteams/platform/webhooks-and-connectors/how-to/add-incoming-webhook).
+Rendering, tenant policy availability and throttling remain unverified here.

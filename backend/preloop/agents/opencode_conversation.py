@@ -8,7 +8,6 @@ server. Control-plane messages and answers use an execution-scoped capability.
 from __future__ import annotations
 
 import json
-import os
 import queue
 import subprocess
 import sys
@@ -17,59 +16,25 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 
-def request(
-    url: str, body: dict[str, Any] | None = None, token: str | None = None
-) -> Any:
-    """Exchange one bounded JSON request without exposing credentials in logs."""
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers=headers,
+if TYPE_CHECKING or __package__:
+    from .conversation_runtime import (
+        ConversationRuntime,
+        child_environment,
+        control,
+        drain,
+        request,
     )
-    with urllib.request.urlopen(req, timeout=30) as response:
-        data = response.read()
-        return json.loads(data) if data else None
-
-
-def child_environment() -> dict[str, str]:
-    """Remove driver credentials from child environments, not same-UID /proc access."""
-    return {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith("PRELOOP_CONVERSATION_")
-    }
-
-
-def control(body: dict[str, Any] | None = None) -> Any:
-    """Retry snapshots safely; failure closes the runtime instead of losing input."""
-    for attempt in range(3):
-        try:
-            return request(
-                os.environ["PRELOOP_CONVERSATION_URL"],
-                body,
-                os.environ["PRELOOP_CONVERSATION_TOKEN"],
-            )
-        except (OSError, ValueError):
-            if attempt == 2:
-                raise
-            time.sleep(1)
-    raise RuntimeError("Conversation transport unavailable")
-
-
-def drain(process: subprocess.Popen[str], lines: queue.Queue[str | None]) -> None:
-    """Read CLI events without blocking lifecycle polling during a slow model call."""
-    assert process.stdout is not None
-    try:
-        for line in process.stdout:
-            lines.put(line)
-    finally:
-        lines.put(None)
+else:  # Standalone copy inside the hosted container.
+    from conversation_runtime import (
+        ConversationRuntime,
+        child_environment,
+        control,
+        drain,
+        request,
+    )
 
 
 def read_events(stream: Any, events: queue.Queue[dict[str, Any] | None]) -> None:
@@ -289,24 +254,13 @@ def main() -> int:
         events: queue.Queue[dict[str, Any] | None] = queue.Queue()
         stream = urllib.request.urlopen(server_url + "/event", timeout=30)
         threading.Thread(target=read_events, args=(stream, events), daemon=True).start()
-        if control()["stop"]:
-            print("FLOW_EXECUTION_SUCCESS", flush=True)
-            return 0
-        turn = int(os.environ["PRELOOP_CONVERSATION_TURN"])
-        session_id = run_turn(
-            server_url, model, Path(prompt_path).read_text(), turn, session_id, events
-        )
-        while True:
-            state = control()
-            if state["stop"]:
-                break
-            if state.get("message") is not None and state["turn"] > turn:
-                turn = state["turn"]
-                session_id = run_turn(
-                    server_url, model, state["message"], turn, session_id, events
-                )
-            else:
-                time.sleep(0.5)
+
+        def submit(prompt: str, turn: int) -> None:
+            """Submit through the existing OpenCode transport."""
+            nonlocal session_id
+            session_id = run_turn(server_url, model, prompt, turn, session_id, events)
+
+        ConversationRuntime(control).run(Path(prompt_path).read_text(), submit)
         print("FLOW_EXECUTION_SUCCESS", flush=True)
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:

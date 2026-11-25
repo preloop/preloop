@@ -71,15 +71,17 @@ def run_shell(
 
 @pytest.mark.parametrize("remote_moved", [False, True])
 @pytest.mark.parametrize("settings_edited", [False, True])
+@pytest.mark.parametrize("harness", ["opencode", "deepseek"])
 def test_conversation_resume_reuses_checkpoint_branch_through_guard(
     tmp_path: Path,
     repository: tuple[Path, Path],
     remote_moved: bool,
     settings_edited: bool,
+    harness: str,
 ) -> None:
     """Two resumes keep saved commits/files, even after source and settings edits."""
     upstream, source = repository
-    executor = ContainerAgentExecutor("opencode", {}, image="test:latest")
+    executor = ContainerAgentExecutor(harness, {}, image="test:latest")
     original = context(upstream, "11111111-first")
     workspace = tmp_path / "workspace"
     clone = executor._prepare_git_clone_command(original)

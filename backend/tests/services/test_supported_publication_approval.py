@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -226,11 +227,13 @@ async def _human_approve(request_id, user_id) -> None:
 
 
 @pytest.fixture(scope="class", autouse=True)
-def _drop_process_async_engine_after_class():
-    """Forget the process-wide async engine after this class's shared loop."""
-    yield
+def _isolate_process_async_engine_for_class() -> Iterator[None]:
+    """Keep this class's pool separate from earlier and later test loops."""
     from preloop.models.db import session as db_session
 
+    db_session._async_engine = None
+    db_session._async_session_factory = None
+    yield
     db_session._async_engine = None
     db_session._async_session_factory = None
 

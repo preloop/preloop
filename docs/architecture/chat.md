@@ -25,6 +25,8 @@ observers enqueue deduplicated complete answers and state notices. Every outbox
 item rechecks identity and conversation visibility before disclosure. Uncertain
 provider writes are never replayed. Console and chat therefore share ownership,
 turns, limits and native checkpoint resume rather than separate runtime state.
+Teams personal chats use the same binding and lifecycle on OpenCode or DeepSeek
+Harness; transport state holds only the validated Microsoft delivery address.
 
 The public `/api/v1/features` payload reports an explicit `oss`, `cloud`, or
 `enterprise` edition and the running backend `server_version`. Hosted instances
@@ -55,6 +57,19 @@ permission and provider identity/workspace. Mattermost DM listeners use database
 leases and canonical post/channel/member lookups. HTTP and sockets pin approved
 DNS addresses and share the instance outbound CIDR policy. Disconnected commands
 are not replayed. Accepted events use the existing durable ChatWork queue.
+
+Teams uses the same broker with an own-bot, single-tenant REST transport. Fixed
+Microsoft OpenID metadata supplies cached RS256 keys; issuer, audience, validity,
+channel endorsement, recipient, both tenant fields and the service URL are checked
+before work is queued. A linked identity's nullable `provider_state` remembers
+validated personal delivery addresses. Queued activity addresses use
+`provider_conversation_id`, separate from broker conversation identifiers. Sends
+recheck the host allow-list before attaching bearer credentials. Definite 412/429
+rejections return to pending with bounded retries; ambiguous writes stay uncertain.
+Setup packages contain only a personal-scope manifest and brand icons, never
+credentials. Teams Workflows approval cards use the existing webhook outbox and
+need no bot. Microsoft tenant compatibility remains subject to the first-install
+checklist in the setup guide.
 
 Core SupportConversation/Message/Outbox/Quota models and CRUD provide generic
 ordered support persistence. Ownership generations fence both staged browser

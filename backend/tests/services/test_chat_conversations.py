@@ -21,7 +21,7 @@ real_app = fixtures.real_app
 receive = fixtures.receive
 
 
-@pytest.fixture(params=["slack", "mattermost", "discord"])
+@pytest.fixture(params=["slack", "mattermost", "discord", "teams"])
 def provider(request: pytest.FixtureRequest, fixture_db: Any) -> str:
     """Run every lifecycle against each provider's broker address semantics."""
     name = str(request.param)
@@ -32,7 +32,9 @@ def provider(request: pytest.FixtureRequest, fixture_db: Any) -> str:
 
 
 @pytest.fixture
-def flow(fixture_db: Any, monkeypatch: pytest.MonkeyPatch) -> models.Flow:
+def flow(
+    fixture_db: Any, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> models.Flow:
     """A hosted interactive flow; only container dispatch and checkpoints are fakes."""
     from preloop.config import settings
 
@@ -42,7 +44,7 @@ def flow(fixture_db: Any, monkeypatch: pytest.MonkeyPatch) -> models.Flow:
         name="Repository questions",
         chat_alias="docs",
         prompt_template="Answer {{conversation.message}}",
-        agent_type="opencode",
+        agent_type=getattr(request, "param", "opencode"),
         agent_config={"interactive": {"enabled": True, "max_turns": 30}},
         is_enabled=True,
     )
@@ -132,6 +134,7 @@ async def start(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("flow", ["opencode", "deepseek"], indirect=True)
 async def test_lifecycle_content(
     fixture_db: Any,
     real_app: Any,
@@ -1130,8 +1133,14 @@ async def test_end_refusal_releases_address_but_uncertain_post_is_not_replayed(
 
     monkeypatch.setattr(ChatBroker, "request", request)
     count = delivery.call_count
+    # An observer can become due while the command is being prepared. It is
+    # older than the command, so a single worker step need not claim /end.
+    watch(f)
     receipt = receive(f, text="/end")
     assert await process_one(f.db, real_app)
+    f.db.refresh(receipt)
+    assert receipt.status == "pending"
+    await drain(f, real_app)
     f.db.refresh(receipt)
     if uncertain:
         assert receipt.status == "uncertain" and delivery.call_count == count
