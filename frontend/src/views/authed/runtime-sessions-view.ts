@@ -316,7 +316,7 @@ export class RuntimeSessionsView extends LitElement {
   private refreshTimer: number | null = null;
   /** When the list was last requested, for the live refresh interval. */
   private lastListLoadAt = 0;
-  private listLoadInFlight = false;
+  @state() private listLoadInFlight = false;
   /** Quiet time after a live event before the list is asked again. */
   static LIVE_REFRESH_DEBOUNCE_MS = 250;
   /** Live events refresh the list at most this often. */
@@ -1375,7 +1375,7 @@ export class RuntimeSessionsView extends LitElement {
    */
   private async loadMoreSessions(): Promise<void> {
     const current = this.sessions;
-    if (!current || this.loadingMore) return;
+    if (!current || this.loadingMore || this.listLoadInFlight) return;
     const seq = this.loadSequence;
     this.loadingMore = true;
     this.moreError = null;
@@ -2626,7 +2626,14 @@ export class RuntimeSessionsView extends LitElement {
           liveDesktop: true,
         }}
         @session-selected=${(event: CustomEvent) => {
-          this.selectSession(event.detail.sessionId);
+          if (
+            event.detail.sessionId === this.selectedSessionId &&
+            event.detail.userInitiated
+          ) {
+            void this.focusSelectedDetail();
+          } else {
+            this.selectSession(event.detail.sessionId);
+          }
         }}
         >${!this.isSearching ? html`<div slot="list-footer">${this.renderLoadMoreSessions()}</div>` : nothing}</preloop-session-observer
       >
@@ -2649,6 +2656,7 @@ export class RuntimeSessionsView extends LitElement {
         <sl-button
           size="small"
           ?loading=${this.loadingMore}
+          ?disabled=${this.listLoadInFlight}
           @click=${() => this.loadMoreSessions()}
           data-testid="load-more-sessions"
           >Load more sessions</sl-button
@@ -3297,7 +3305,7 @@ export class RuntimeSessionsView extends LitElement {
                     if (value === this.sort) return;
                     this.sort = value;
                     this.syncUrl();
-                    void this.loadSessions(true);
+                    void this.loadSessions();
                   }}
                 >
                   <sl-option value="last_activity">Last activity</sl-option>

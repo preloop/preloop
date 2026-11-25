@@ -2966,6 +2966,49 @@ describe('RuntimeSessionsView', () => {
       expect(input.value).to.equal('/');
     });
 
+    it('focuses the detail when Enter activates the already selected row', async () => {
+      const element = await layoutView();
+      const observer = observerOf(element);
+      await waitUntil(() => observer.activeSessionId === 'runtime-session-1');
+      rowsOf(element)[0].focus();
+      await sendKeys({ press: 'Enter' });
+      await waitUntil(
+        () => observer.shadowRoot.activeElement?.id === 'session-title'
+      );
+      expect((element as any).selectedSessionId).to.equal('runtime-session-1');
+    });
+
+    it('does not page stale rows while a replacement list is pending', async () => {
+      const element = await layoutView();
+      const original = (element as any).sessions;
+      (element as any).sessions = { ...original, total: 50 };
+      let finish!: (response: Response) => void;
+      fetchStub.callsFake(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+          })
+      );
+      const before = fetchStub.callCount;
+      const replacement = (element as any).loadSessions(true);
+      await element.updateComplete;
+      const button = element.shadowRoot!.querySelector(
+        '[data-testid="load-more-sessions"]'
+      ) as any;
+      expect(button.disabled).to.be.true;
+      const page = (element as any).loadMoreSessions();
+      expect(fetchStub.callCount - before).to.equal(1);
+      finish(
+        new Response(JSON.stringify(original), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+      await replacement;
+      await page;
+      expect((element as any).sessions.items).to.deep.equal(original.items);
+    });
+
     it('sorts via the API, persists the choice and starts at the first page', async () => {
       const element = await layoutView();
       const select = element.shadowRoot!.querySelector(
