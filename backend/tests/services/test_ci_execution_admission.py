@@ -1089,3 +1089,16 @@ def test_rejected_model_refuses_before_execution_and_clone(
             service._prepare_execution(db_session, context, review_binding(context))
         create.assert_not_called()
         assert crud.crud_flow_execution.get_by_flow(db_session, flow_id=flow.id) == []
+
+
+def test_maintainer_label_does_not_admit_a_restricted_ci_fork(
+    context: CiAuthorizationContext,
+) -> None:
+    """Event opt-in cannot widen the restricted CI trust boundary."""
+    context = replace(context, tracker_type="github")
+    payload = provider_payload(context)
+    payload["head"]["repo"] = {"id": "515151", "full_name": "other/fork"}
+    payload["labels"] = [{"name": "preloop-review"}]
+    payload["author_association"] = "OWNER"
+    with pytest.raises(service.CiReviewDeniedError):
+        service._accepted_binding(source_for(context), payload)
