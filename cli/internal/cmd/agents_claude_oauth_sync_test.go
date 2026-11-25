@@ -561,6 +561,9 @@ func TestClaudeOAuthSyncRefusesSplitSecrets(t *testing.T) {
 
 func TestClaudeOAuthLocalReadFailureHonoursBackoff(t *testing.T) {
 	f := newClaudeSyncFixture(t)
+	if err := os.Remove(f.credPath); err != nil {
+		t.Fatal(err)
+	}
 	reads := 0
 	prev := readClaudeKeychainBlobForSync
 	readClaudeKeychainBlobForSync = func() (string, error) {
@@ -634,5 +637,104 @@ func TestClaudeOAuthSyncRecoversAfterSplitIsMerged(t *testing.T) {
 	after := f.state()
 	if len(after.ClaudeOAuthSyncModelIDs) != 1 || after.ClaudeOAuthServerCheckedAt == "" {
 		t.Fatalf("cached ids not refreshed: %+v", after.ClaudeOAuthSyncModelIDs)
+	}
+}
+
+func TestClaudeOAuthSyncCredentialSource(t *testing.T) {
+	for _, tc := range []struct {
+		name, enrolled                     string
+		locked, pull, failWrite, wantError bool
+	}{
+		{name: "enrolled_file_push", enrolled: claudeOAuthSourceFile, locked: true},
+		{name: "enrolled_file_pull", enrolled: claudeOAuthSourceFile, locked: true, pull: true},
+		{name: "legacy_file_fallback_push", locked: true},
+		{name: "legacy_file_fallback_pull", locked: true, pull: true},
+		{name: "file_wins_over_other_keychain", enrolled: claudeOAuthSourceFile, pull: true},
+		{name: "enrolled_keychain_stays_locked", enrolled: claudeOAuthSourceKeychain, locked: true, wantError: true},
+		{name: "file_write_failure", enrolled: claudeOAuthSourceFile, locked: true, pull: true, failWrite: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newClaudeSyncFixture(t)
+			state := f.state()
+			state.ClaudeOAuthCredentialSource = tc.enrolled
+			state.ClaudeOAuthSyncedLocalExpiresMS = claudeSyncLocalExpires
+			state.ClaudeOAuthSyncedServerExpiresMS = claudeSyncLocalExpires
+			if err := saveLocalEnrollmentState(state); err != nil {
+				t.Fatal(err)
+			}
+			if tc.pull {
+				f.marker["expires"] = claudeSyncServerExpires
+			}
+			before, err := os.ReadFile(f.credPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keychainReads := 0
+			read := func() (string, error) {
+				keychainReads++
+				if tc.locked {
+					return "", errors.New("synthetic locked keychain")
+				}
+				return claudeKeychainBlob("sk-ant-oat01-unrelated", "unrelated", claudeSyncServerExpires), nil
+			}
+			readClaudeKeychainBlobForSync, readClaudeOffboardKeychain = read, read
+			oldWrite, oldFile := writeClaudeOffboardKeychain, writeOffboardCredentialStoreFile
+			t.Cleanup(func() { writeClaudeOffboardKeychain, writeOffboardCredentialStoreFile = oldWrite, oldFile })
+			writeClaudeOffboardKeychain = func(string) error { t.Fatal("file recovery must not write Keychain"); return nil }
+			if tc.failWrite {
+				writeOffboardCredentialStoreFile = func(string, []byte) error { return errors.New("synthetic write failure") }
+			}
+			outcome, syncErr := syncClaudeOAuthCredentials(f.agent, state, true)
+			if tc.wantError {
+				if syncErr == nil {
+					t.Fatal("expected recovery failure")
+				}
+				after, readErr := os.ReadFile(f.credPath)
+				if readErr != nil || !bytes.Equal(before, after) {
+					t.Fatal("failed sync changed local login")
+				}
+				if len(f.puts) != 0 {
+					t.Fatal("failed recovery pushed a different login")
+				}
+				return
+			}
+			if syncErr != nil {
+				t.Fatalf("sync failed: %v", syncErr)
+			}
+			if tc.enrolled == claudeOAuthSourceFile && keychainReads != 0 {
+				t.Fatal("file enrollment accessed Keychain")
+			}
+			if f.state().ClaudeOAuthCredentialSource != claudeOAuthSourceFile {
+				t.Fatal("sync did not retain the selected source")
+			}
+			if tc.pull {
+				after, readErr := os.ReadFile(f.credPath)
+				if readErr != nil || outcome.Direction != claudeOAuthSyncDirectionPull || !bytes.Contains(after, []byte(claudeSyncServerRefresh)) || !bytes.Contains(after, []byte("subscriptionType")) {
+					t.Fatal("file pull did not preserve the live login and metadata")
+				}
+			} else {
+				if len(f.puts) != 1 {
+					t.Fatal("expected one shared credential update")
+				}
+				payload, _ := f.puts[0]["credential_payload"].(map[string]interface{})
+				if payload["refresh"] != claudeSyncLocalRefresh {
+					t.Fatal("pushed the wrong local login")
+				}
+			}
+		})
+	}
+}
+
+func TestClaudeOAuthLegacyLockedKeychainRejectsInvalidFile(t *testing.T) {
+	f := newClaudeSyncFixture(t)
+	if err := os.WriteFile(f.credPath, []byte("invalid"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	readClaudeKeychainBlobForSync = func() (string, error) { return "", errors.New("locked") }
+	if _, err := syncClaudeOAuthCredentials(f.agent, f.state(), true); err == nil {
+		t.Fatal("invalid fallback file accepted")
+	}
+	if len(f.requestLog()) != 0 {
+		t.Fatal("invalid fallback reached server")
 	}
 }

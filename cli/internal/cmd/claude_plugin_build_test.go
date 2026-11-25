@@ -103,6 +103,9 @@ func TestInstallAgentControlRuntimePluginRecordsSourceBuildFailure(t *testing.T)
 	// source-folder install: when it fails, onboarding must record
 	// plugin_source_build_failed instead of attempting npm install -g.
 	testenv.SetTempHome(t)
+	previous := lookupAgentControlNode
+	lookupAgentControlNode = func(string) (string, error) { return "/synthetic/node", nil }
+	t.Cleanup(func() { lookupAgentControlNode = previous })
 	npmDir := t.TempDir()
 	writeFakeNpm(t, npmDir, "tsc exploded", 1)
 	t.Setenv("PATH", npmDir)

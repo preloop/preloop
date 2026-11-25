@@ -429,6 +429,7 @@ type managedGatewayUpstream struct {
 	APIEndpoint       string
 	APIKey            string
 	CredentialType    string
+	CredentialSource  string
 	CredentialPayload map[string]interface{}
 	UsesAmbientAuth   bool
 	ManagedModelAlias string
@@ -779,6 +780,10 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 
+	if err := preflightClaudeAgentControlNode(agent); err != nil {
+		return err
+	}
+
 	serverSync, err := ensureDiscoveredRemoteServersWithCustody(client, syncAgent, baseURL, opts.NoCredentialImport)
 	if err != nil {
 		return err
@@ -989,6 +994,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		return err
 	}
 	backupState.PinModelFamilies = pinModelFamilies
+	if plannedUpstream != nil && plannedUpstream.CredentialType == anthropicClaudeCodeOAuthCredentialType && plannedUpstream.CredentialSource != "" && backupState.ClaudeOAuthCredentialSource == "" {
+		backupState.ClaudeOAuthCredentialSource = plannedUpstream.CredentialSource
+	}
 	if err := writeAgentConfigDocument(agent, plan.ManagedDocument); err != nil {
 		return err
 	}
@@ -2543,6 +2551,7 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 	apiKey, apiKeyNote := resolveClaudeAuthToken(document)
 	claudeSubscriptionOAuthDetected := false
 	credentialType := ""
+	credentialSource := ""
 	credentialPayload := map[string]interface{}{}
 	if isClaudeCodeOAuthAccessToken(apiKey) {
 		claudeSubscriptionOAuthDetected = true
@@ -2550,6 +2559,7 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 		credentialPayload = map[string]interface{}{"access": apiKey}
 		if oauthCredential, oauthNote := resolveClaudeOAuthCredential(); oauthCredential != nil {
 			credentialPayload = oauthCredential.Payload()
+			credentialSource = oauthCredential.Source
 			if oauthNote != "" {
 				apiKeyNote = oauthNote
 			}
@@ -2558,7 +2568,7 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 		notes = append(notes, claudeCodeOAuthGatewayWarningNote())
 		notes = append(
 			notes,
-			"Claude Code will display \"API billing\" after onboarding — that is the label for its gateway token, not how you are billed: model calls still ride your Anthropic subscription through Preloop, and the Preloop Console records them at $0 spend.",
+			"Claude Code will display \"API billing\" for the gateway token after onboarding; model calls still use your Anthropic subscription and appear at $0 spend in the Preloop Console.",
 		)
 	}
 	if apiKeyNote != "" {
@@ -2610,6 +2620,7 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 		APIEndpoint:       normalizeAIModelEndpoint(lookupString(document, "env", "ANTHROPIC_BASE_URL")),
 		APIKey:            apiKey,
 		CredentialType:    credentialType,
+		CredentialSource:  credentialSource,
 		CredentialPayload: credentialPayload,
 		ManagedModelAlias: managedAlias,
 		Notes:             notes,
@@ -2621,7 +2632,11 @@ func claudeCodeSubscriptionBillingNote() string {
 }
 
 func claudeCodeOAuthGatewayWarningNote() string {
-	return "Claude Code appears to use Anthropic subscription/OAuth billing. Preloop can attempt to route model traffic with the recovered OAuth token, but this is best-effort and may stop working due to token expiry, account policy, Anthropic ToS enforcement, or aggressive blocking of external tools. If gateway routing fails, switch Claude Code to API billing by setting ANTHROPIC_API_KEY to an Anthropic API key and rerun `preloop agents onboard \"Claude Code\" -y`."
+	return "Claude Code uses Anthropic subscription/OAuth billing. Gateway routing is best-effort and can fail if the login expires or account policy blocks it. " + claudeSubscriptionRecoveryAdvice()
+}
+
+func claudeSubscriptionRecoveryAdvice() string {
+	return "To recover subscription routing, run `preloop agents sync-credentials \"Claude Code\"`; if the login is no longer valid, run `preloop agents reconnect \"Claude Code\"`, then rerun `preloop agents onboard \"Claude Code\"`. To choose separate API billing instead, set ANTHROPIC_API_KEY to an Anthropic API key and rerun onboarding."
 }
 
 func claudeCodeAPIBillingRequiredNote() string {
@@ -3401,6 +3416,7 @@ type claudeOAuthCredential struct {
 	AccessToken  string
 	RefreshToken string
 	ExpiresAtMS  int64
+	Source       string
 }
 
 func (c *claudeOAuthCredential) Payload() map[string]interface{} {
@@ -3485,6 +3501,7 @@ func resolveClaudeCredentialFileOAuthCredential() (*claudeOAuthCredential, strin
 	if credential == nil {
 		return nil, ""
 	}
+	credential.Source = claudeOAuthSourceFile
 	return credential, fmt.Sprintf("Resolved Claude Code OAuth credentials from %s.", path)
 }
 
@@ -3494,6 +3511,7 @@ func resolveClaudeKeychainOAuthCredential() (*claudeOAuthCredential, string) {
 			raw,
 			time.Now().UTC().Add(time.Hour).UnixMilli(),
 		); credential != nil {
+			credential.Source = claudeOAuthSourceKeychain
 			return credential, "Resolved Claude Code OAuth credentials from OS Keychain (service: \"Claude Code-credentials\")."
 		}
 	}
@@ -4915,6 +4933,17 @@ func agentControlPluginSourceDirName(agent AgentConfig) string {
 }
 
 func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[string]interface{} {
+	if err := preflightClaudeAgentControlNode(agent); err != nil {
+		if writer != nil {
+			fmt.Fprintf(writer, "  Agent Control setup incomplete: %s\n", err) //nolint:errcheck
+		}
+		return map[string]interface{}{
+			"control_plugin_installed":           false,
+			"control_plugin_verified":            false,
+			"control_plugin_install_status":      "runtime_node_unavailable",
+			"control_plugin_install_remediation": err.Error(),
+		}
+	}
 	if isExtensionHarness(agent) {
 		return installHarnessPlugin(agent, writer)
 	}
@@ -5560,7 +5589,7 @@ func managedAgentControlSidecarDir() (string, error) {
 }
 
 func managedRuntimeControlReadinessError(agent AgentConfig, validation map[string]interface{}) error {
-	if !isHermesAgent(agent) && !isOpenClawAgent(agent) {
+	if !isHermesAgent(agent) && !isOpenClawAgent(agent) && !isClaudeCodeAgent(agent) {
 		return nil
 	}
 	if validation["control_plugin_verified"] == true && validation["control_channel_configured"] == true {

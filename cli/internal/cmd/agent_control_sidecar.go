@@ -104,6 +104,24 @@ type agentControlSidecarServiceEnv struct {
 	Home string
 }
 
+// npm and the plugin use env node, so Node must be on this process's PATH.
+// Finding an installation in a fallback directory alone is not sufficient.
+var lookupAgentControlNode = exec.LookPath
+
+func preflightClaudeAgentControlNode(agent AgentConfig) error {
+	if !isClaudeCodeAgent(agent) {
+		return nil
+	}
+	if _, err := lookupAgentControlNode("node"); err == nil {
+		return nil
+	}
+	repair := "Install Node.js 22 or newer from https://nodejs.org and add its bin directory to PATH"
+	if runtime.GOOS == "darwin" {
+		repair = "Run `brew install node@22` and `export PATH=\"$(brew --prefix node@22)/bin:$PATH\"` in this shell"
+	}
+	return fmt.Errorf("Claude Code Agent Control requires Node.js on PATH. %s, verify `node --version`, then rerun `preloop agents onboard \"Claude Code\"`", repair)
+}
+
 // systemdLogPathUsable reports whether path can be written as a systemd
 // "append:" target, which takes no quoting.
 func systemdLogPathUsable(path string) bool {
