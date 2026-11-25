@@ -37,7 +37,12 @@ class FixtureError(RuntimeError):
 
 def identifier(name: str) -> UUID:
     """Give every synthetic row a stable, independent identity."""
-    return uuid5(NAMESPACE_URL, f"https://example.com/upgrade-acceptance/{name}")
+    return UUID(
+        bytes=uuid5(
+            NAMESPACE_URL, f"https://example.com/upgrade-acceptance/{name}"
+        ).bytes,
+        version=4,
+    )
 
 
 def require(condition: Any, message: str) -> None:
@@ -53,8 +58,7 @@ def seed() -> None:
     from preloop.models.crud.base import CRUDBase
     from preloop.models.db.session import get_db_session
 
-    require(hasattr(models.AIModel, "api_key"), "Baseline lacks legacy AI field")
-    require(hasattr(models.ApiKey, "key"), "Baseline lacks legacy API key field")
+    legacy = "key" in models.ApiKey.__table__.columns
     with contextmanager(get_db_session)() as db:
         for tenant in ("alpha", "beta"):
             account = crud.crud_account.create(
@@ -63,7 +67,11 @@ def seed() -> None:
                     "id": identifier(f"{tenant}/account"),
                     "organization_name": f"Example {tenant.title()}",
                     "is_active": True,
-                    "meta_data": {"upgrade_fixture": 1, "region": "example"},
+                    "meta_data": {
+                        "upgrade_fixture": 1,
+                        "region": "example",
+                        "policy_defaults": {"unknown_tools": "allow"},
+                    },
                 },
             )
             user = crud.crud_user.create(
@@ -102,7 +110,8 @@ def seed() -> None:
             )
             # The normal writer encrypts new webhooks. Old installations can
             # still have this legacy column: exercise that separate backfill.
-            CRUDBase(models.Tracker).update(
+            webhook_writer = CRUDBase(models.Tracker) if legacy else crud.crud_tracker
+            webhook_writer.update(
                 db, db_obj=tracker, obj_in={"jira_webhook_secret": WEBHOOK_KEY}
             )
             organization = crud.crud_organization.create(
@@ -141,23 +150,24 @@ def seed() -> None:
                     },
                 )
             for mode in ("legacy", "encrypted"):
-                writer = (
-                    CRUDBase(models.AIModel) if mode == "legacy" else crud.crud_ai_model
-                )
-                writer.create(
-                    db,
-                    obj_in={
-                        "id": identifier(f"{tenant}/model/{mode}"),
-                        "account_id": account.id,
-                        "name": f"Synthetic {mode} model",
-                        "provider_name": "openai",
-                        "model_identifier": "synthetic-model",
-                        "api_endpoint": "http://127.0.0.1:9/v1",
-                        "api_key": MODEL_KEY,
-                        "is_default": False,
-                        "meta_data": {"gateway": {"enabled": False}},
-                    },
-                )
+                model_data = {
+                    "id": identifier(f"{tenant}/model/{mode}"),
+                    "account_id": account.id,
+                    "name": f"Synthetic {mode} model",
+                    "provider_name": "openai",
+                    "model_identifier": "synthetic-model",
+                    "api_endpoint": "http://127.0.0.1:9/v1",
+                    "api_key": MODEL_KEY,
+                    "is_default": False,
+                    "meta_data": {"gateway": {"enabled": False}},
+                }
+                if mode == "legacy" and legacy:
+                    CRUDBase(models.AIModel).create(db, obj_in=model_data)
+                else:
+                    model_data.pop("account_id")
+                    crud.crud_ai_model.create_with_account(
+                        db, obj_in=model_data, account_id=account.id
+                    )
             for state in ("active", "suspended"):
                 crud.crud_managed_agent.create(
                     db,
@@ -181,18 +191,22 @@ def seed() -> None:
                     ("revoked", REVOKED_KEY, False),
                     ("agent", AGENT_KEY, True),
                 ):
-                    key = CRUDBase(models.ApiKey).create(
-                        db,
-                        obj_in={
-                            "id": identifier(f"alpha/key/{name}"),
-                            "account_id": account.id,
-                            "user_id": user.id,
-                            "name": f"Synthetic {name} key",
-                            "key": value,
-                            "scopes": [],
-                            "is_active": active,
-                        },
-                    )
+                    key_data = {
+                        "id": identifier(f"alpha/key/{name}"),
+                        "account_id": account.id,
+                        "user_id": user.id,
+                        "name": f"Synthetic {name} key",
+                        "scopes": [],
+                        "is_active": active,
+                    }
+                    if legacy:
+                        key = CRUDBase(models.ApiKey).create(
+                            db, obj_in={**key_data, "key": value}
+                        )
+                    else:
+                        key, _ = crud.crud_api_key.issue(
+                            db, obj_in=key_data, key_value=value
+                        )
                     if name == "agent":
                         crud.crud_managed_agent_credential.create_for_agent(
                             db,
@@ -203,6 +217,159 @@ def seed() -> None:
                             name="Synthetic durable credential",
                             issued_at=STAMP,
                         )
+
+            seed_history(db, tenant)
+
+
+HISTORY_FIELDS = (
+    (
+        "Flow",
+        "flow",
+        (
+            "id",
+            "account_id",
+            "name",
+            "prompt_template",
+            "ai_model_id",
+            "agent_config",
+            "is_enabled",
+        ),
+    ),
+    (
+        "FlowExecution",
+        "execution",
+        (
+            "id",
+            "flow_id",
+            "status",
+            "trigger_event_details",
+            "result",
+            "model_output_summary",
+        ),
+    ),
+    (
+        "PolicySnapshot",
+        "policy",
+        ("id", "account_id", "version_number", "snapshot_data", "is_active"),
+    ),
+    (
+        "DiscoveredAgentCandidate",
+        "discovery",
+        (
+            "id",
+            "account_id",
+            "agent_kind",
+            "workstation_fingerprint",
+            "config_path_hash",
+            "status",
+        ),
+    ),
+    (
+        "DiscoveryObservation",
+        "observation",
+        ("id", "account_id", "evidence", "content_hash"),
+    ),
+    ("AuditLog", "audit", ("id", "account_id", "action", "status", "details")),
+)
+
+
+def seed_history(db: Any, tenant: str) -> None:
+    """Seed durable history and operator settings using baseline CRUD."""
+    from preloop.models import models
+    from preloop.models.crud.base import CRUDBase
+
+    account_id = identifier(f"{tenant}/account")
+    user_id = identifier(f"{tenant}/user")
+    data = (
+        (
+            models.Flow,
+            "flow",
+            {
+                "account_id": account_id,
+                "name": "Synthetic acceptance flow",
+                "prompt_template": "Return the synthetic acceptance marker.",
+                "ai_model_id": identifier(f"{tenant}/model/encrypted"),
+                "agent_type": "codex",
+                "agent_config": {"max_iterations": 2},
+                "is_enabled": False,
+            },
+        ),
+        (
+            models.FlowExecution,
+            "execution",
+            {
+                "flow_id": identifier(f"{tenant}/flow"),
+                "status": "SUCCEEDED",
+                "trigger_event_details": {"source": "manual", "message": "café"},
+                "result": {"verdict": "success", "summary": "Synthetic history"},
+                "model_output_summary": "Synthetic history",
+                "end_time": STAMP.replace(tzinfo=None),
+            },
+        ),
+        (
+            models.PolicySnapshot,
+            "policy",
+            {
+                "account_id": account_id,
+                "created_by_user_id": user_id,
+                "version_number": 1,
+                "tag": "acceptance",
+                "is_active": True,
+                "snapshot_data": {
+                    "version": "1.0",
+                    "defaults": {"unknown_tools": "allow"},
+                },
+            },
+        ),
+        (
+            models.DiscoveredAgentCandidate,
+            "discovery",
+            {
+                "account_id": account_id,
+                "agent_kind": "claude-code",
+                "workstation_fingerprint": "a" * 64,
+                "config_path_hash": "b" * 64,
+                "status": "onboarded",
+                "managed_agent_id": identifier(f"{tenant}/agent/active"),
+                "first_seen_at": STAMP,
+                "last_seen_at": STAMP,
+            },
+        ),
+        (
+            models.DiscoveryObservation,
+            "observation",
+            {
+                "account_id": account_id,
+                "workstation_fingerprint": "a" * 64,
+                "source_ref": identifier(f"{tenant}/source"),
+                "observation_id": identifier(f"{tenant}/observation-id"),
+                "ended_at": STAMP,
+                "received_at": STAMP,
+                "content_hash": "c" * 64,
+                "evidence": {
+                    "schema_version": 2,
+                    "agents": [{"agent_kind": "claude-code"}],
+                },
+            },
+        ),
+        (
+            models.AuditLog,
+            "audit",
+            {
+                "account_id": account_id,
+                "user_id": user_id,
+                "action": "agent_onboarded",
+                "status": "success",
+                "resource_type": "agent",
+                "resource_id": str(identifier(f"{tenant}/agent/active")),
+                "details": {"reason": "Synthetic acceptance", "labels": ["café"]},
+            },
+        ),
+    )
+    for model, suffix, values in data:
+        CRUDBase(model).create(
+            db, obj_in={"id": identifier(f"{tenant}/{suffix}"), **values}
+        )
 
 
 def snapshot() -> dict[str, Any]:
@@ -297,6 +464,8 @@ def snapshot() -> dict[str, Any]:
                         "tags",
                     ),
                 )
+            for model_name, suffix, fields in HISTORY_FIELDS:
+                record(getattr(models, model_name), f"{tenant}/{suffix}", fields)
         for name in ("user", "revoked", "agent"):
             record(
                 models.ApiKey,
@@ -381,6 +550,25 @@ def check(previous: dict[str, Any]) -> dict[str, Any]:
             headers={"Authorization": f"Bearer {REVOKED_KEY}"},
         )
         require(denied.status_code in (401, 403), "Revoked credential accepted")
+        for resource, suffix, field, expected in (
+            (
+                "flows",
+                "flow",
+                "prompt_template",
+                "Return the synthetic acceptance marker.",
+            ),
+            ("ai-models", "model/encrypted", "model_identifier", "synthetic-model"),
+            ("trackers", "tracker", "name", "Example tracker"),
+        ):
+            response = client.get(
+                f"/api/v1/{resource}/{identifier('alpha/' + suffix)}",
+                headers={"Authorization": f"Bearer {state['access_token']}"},
+            )
+            require(response.status_code == 200, f"{resource} API readback failed")
+            require(
+                response.json().get(field) == expected,
+                f"{resource} API content changed",
+            )
     models_dir = "/app/backend/preloop/models"
     config = Config(f"{models_dir}/alembic.ini")
     config.set_main_option("script_location", f"{models_dir}/alembic")
@@ -407,6 +595,7 @@ def check(previous: dict[str, Any]) -> dict[str, Any]:
         "local_tracker_secret",
         "local_webhook_secret",
         "single_migration_head",
+        "api_content_readback",
     ]
     return state
 
@@ -422,7 +611,7 @@ def main() -> None:
         # receives the exception class and our explicitly safe assertion only.
         detail = str(exc) if isinstance(exc, FixtureError) else type(exc).__name__
         frames = traceback.extract_tb(exc.__traceback__)
-        location = [f"{frame.name}:{frame.lineno}" for frame in frames[-5:]]
+        location = [f"{frame.name}:{frame.lineno}" for frame in frames]
         print(json.dumps({"error": detail, "location": location}), flush=True)
         raise SystemExit(1) from None
     print("UPGRADE_RESULT=" + json.dumps(result), flush=True)

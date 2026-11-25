@@ -59,11 +59,11 @@ func addDiscoveryExtensions(report *discoveryReportRequest, salt, home string, d
 func postInventoryReport(client *api.Client, report discoveryReportRequest, response *discoveryReportResponse) error {
 	err := client.Post(discoveryReportPath, report, response)
 	if err == nil || report.Evidence == nil || report.Evidence.SchemaVersion != 3 {
-		return err
+		return inventoryReportError(err)
 	}
 	var apiErr *api.APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != 422 {
-		return err
+		return inventoryReportError(err)
 	}
 	var validation struct {
 		Detail []struct {
@@ -86,8 +86,29 @@ func postInventoryReport(client *api.Client, report discoveryReportRequest, resp
 	// Rollback compatibility is one retry, only for a version rejection. Remove
 	// every v3 field without changing the caller's evidence or offline output.
 	report = downgradeInventoryReport(report)
-	return client.Post(discoveryReportPath, report, response)
+	err = inventoryReportError(client.Post(discoveryReportPath, report, response))
+	if err == nil {
+		response.LegacyEvidence = true
+	}
+	return err
 }
+
+// inventoryReportError distinguishes a missing evidence service from a
+// transient HTTP error. Keep the report intact instead of silently dropping it.
+func inventoryReportError(err error) error {
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == 503 {
+		var response struct {
+			Detail string `json:"detail"`
+		}
+		if json.Unmarshal([]byte(apiErr.Body), &response) == nil && response.Detail == "Discovery evidence service unavailable" {
+			return fmt.Errorf("this server cannot store discovery evidence; the report was not saved. Ask the administrator to enable discovery evidence support, or run without --report to keep discovery local")
+		}
+	}
+	return err
+}
+
+const legacyInventoryNotice = "Server accepted legacy inventory only; extension identifiers, hashes and managed configuration were not reported."
 
 func downgradeInventoryReport(report discoveryReportRequest) discoveryReportRequest {
 	evidence := *report.Evidence

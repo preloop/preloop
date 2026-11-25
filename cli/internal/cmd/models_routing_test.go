@@ -14,6 +14,10 @@ func TestModelsRoutingPreservesOtherSettings(t *testing.T) {
 	var received map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == api.RESTPrefix+"/openapi.json" {
+			_, _ = w.Write([]byte(`{"components":{"schemas":{"AIModelCreate":{"properties":{"model_parameters":{"description":"OpenRouter provider routing"}}}}}}`))
+			return
+		}
 		if r.Method == http.MethodGet {
 			_, _ = w.Write([]byte(`{"provider_name":"openrouter","model_parameters":{"temperature":0.2,"provider":{"sort":"latency","ignore":["host-b"]}}}`))
 			return
@@ -48,6 +52,10 @@ func TestModelsRoutingClearsEmptyLists(t *testing.T) {
 			var received map[string]interface{}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == api.RESTPrefix+"/openapi.json" {
+					_, _ = w.Write([]byte(`{"components":{"schemas":{"AIModelCreate":{"properties":{"model_parameters":{"description":"OpenRouter provider routing"}}}}}}`))
+					return
+				}
 				if r.Method == http.MethodGet {
 					_, _ = w.Write([]byte(`{"provider_name":"openrouter","model_parameters":{"temperature":0.2,"provider":{"sort":"latency","only":["host-a"],"ignore":["host-b"]}}}`))
 					return

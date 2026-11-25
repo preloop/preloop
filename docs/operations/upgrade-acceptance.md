@@ -4,8 +4,9 @@ Editions: OSS. This gate exercises the published Docker Compose service definiti
 and Helm charts with disposable synthetic data. It never targets an existing
 installation or Kubernetes context. It supports [the 1.0 upgrade gate](https://github.com/preloop/preloop/issues/1869).
 
-The runner discovers the highest stable **published** 0.17.x release using the
-GitHub releases API. Drafts, prereleases, and unpaired tags are ineligible. It
+Use `--baseline v1.0.2` to select the published 1.0.2 release. Without that
+option, the runner retains discovery of the highest stable **published** 0.17.x
+release using the GitHub releases API. Drafts, prereleases, and unpaired tags are ineligible. It
 exports that tag's source, pulls the published backend image, and checks its OCI
 source revision against the tag commit. The candidate is either a local image
 built from an exact committed tree or the image for an actually published RC.
@@ -17,7 +18,9 @@ heads, validation results, and cleanup results.
 Use a disposable Linux Docker host or Docker Desktop with Linux containers,
 Python 3.12+, Docker Engine 28+ with Compose v2, Git, authenticated `gh` with public repository
 read access, Helm 3, `kubectl`, and kind. The CI recipe pins kind v0.30.0 and
-Helm v3.19.0. The runner creates a single local kind node; it never accesses
+Helm v3.19.0. Compose-only runs do not need the Kubernetes tools. `--cli-matrix`
+also needs Go (see `cli/go.mod`) and make; its Linux binary is built with CGO
+disabled for the Docker host architecture. The runner creates a single local kind node; it never accesses
 Minikube, a pre-existing cluster, or a remote database. Runtime resource limits
 live in `scripts/upgrade_acceptance/runner.py` and `helm.py`.
 
@@ -32,7 +35,8 @@ python -m pytest scripts/upgrade_acceptance/tests -q
 git fetch origin main --tags
 candidate_commit=$(git rev-parse origin/main)
 python scripts/upgrade_acceptance/runner.py \
-  --runtime both --candidate-ref "$candidate_commit"
+  --baseline v1.0.2 --runtime compose --installer --derive-encryption-key \
+  --cli-matrix --candidate-ref "$candidate_commit"
 ```
 
 `--runtime compose` and `--runtime helm` isolate a runtime while diagnosing a
@@ -40,6 +44,16 @@ failure. `--output /absolute/new-directory` selects the private evidence directo
 it must not exist. The runner prints its `report.json` path. Uncommitted changes
 are deliberately excluded from the candidate image. Commit the candidate first,
 or supply an existing exact commit available in this checkout.
+
+`--installer` downloads the published installer and Compose release assets and
+checks their SHA256SUMS entries. It runs the real installer in a unique project,
+then stops its full stack and adopts the same database volume and keys for the
+bounded rehearsal. This option requires unused ports 3000, 8000 and 8001; the
+published installer binds its normal host ports. Use a disposable local host.
+The generated instance environment disables telemetry. Installer output and its
+setup link stay private. `--derive-encryption-key` exercises the installer's
+default key derivation from SECRET_KEY; omit it to exercise a separate Fernet
+key. Neither key changes during the upgrade.
 
 A successful candidate rehearsal leaves `final_rc_gate: pending`. It cannot
 claim acceptance of a release that has not been published. The optional GitHub
@@ -54,8 +68,11 @@ tests. The workflow uploads only `report.json`.
    users with passwords and owner roles, inactive tracker configurations,
    organizations and projects, issues in three states with Unicode/JSON content,
    active and suspended agents, a durable agent credential, active and revoked
-   API keys, and both legacy and encrypted model credentials. All values are
-   synthetic; model endpoints point at a closed loopback port.
+   API keys, model credentials, completed flow history, policy snapshots and
+   defaults, discovery candidates/evidence and audit rows. The 0.17.x corpus
+   includes legacy plaintext credentials for the cutover; 1.0.2 uses its normal
+   encrypted credential writers. All values are synthetic. Dormant corpus
+   endpoints point at a closed loopback port.
 2. Validate baseline password logins, identity resolution, existing API keys,
    agent credential linkage, revoked-key denial, and local resolution of model,
    tracker and webhook secrets. Save a fingerprint of stable IDs, content and
@@ -69,13 +86,14 @@ tests. The workflow uploads only `report.json`.
    Verify one expected Alembic head. When the legacy API-key column has been
    retired, also require legacy key hashes, encrypted model references and
    encrypted webhook references. Compose repeats initialization and validation
-   to exercise an operator retry.
+   twice to exercise initializer retries and verify that operator settings persist.
 5. Remove only this run's Compose project/volumes and kind cluster, including on
    failure. No global Docker prune, shared cluster deletion, release publication,
-   or provider/model invocation is part of the gate.
+   or real provider/model invocation is part of the gate.
 
-Compose derives four services from each version's release file: PostgreSQL,
-NATS, initializer and API. It preserves their commands and health checks, pins
+Compose derives five services from each version's release file: PostgreSQL,
+NATS, initializer, API and gateway. A deterministic mock provider is reachable
+only on the internal network. It preserves their commands and health checks, pins
 images, supplies synthetic configuration and resource limits, uses an internal
 network, and binds the API only to an ephemeral loopback port. Helm renders each
 version's real chart with a disposable PostgreSQL PVC and NATS service. A local
@@ -84,9 +102,30 @@ resources. A namespace LimitRange bounds hook containers, since Helm does not
 send hooks through post-renderers. Hook commands, environment and image selection
 remain those of the released chart.
 
-This is a maintenance-window data/authentication upgrade test. It does not
-exercise browser rendering, live agent execution, hosted models, external secret
-backends, rolling upgrades with concurrent old writers, or backup restoration.
+With `--cli-matrix`, both the published 1.0.2 CLI and the candidate CLI run
+inside the API image with disposable homes. All four CLI/server combinations
+exercise token login, local discovery, onboarding to a credentialed model,
+policy apply/export, gateway response content and usage, and runner WebSocket
+connection/reconnection. Password login is independently checked by the corpus.
+The candidate/candidate cell also triggers a real flow through the API,
+orchestrator and CLI runner. A deterministic local executable substitutes for
+the vendor agent CLI and sends its model request through the real gateway to
+the mock upstream; its output marker must survive into the persisted result.
+This proves dispatch/result plumbing, not a vendor agent's behavior. The simple
+HTTP test proxy routes API and gateway traffic; runner WebSockets connect
+directly to the API service. Restrictive defaults and discovery-report behavior
+are recorded separately because the released server has fewer capabilities.
+
+A missing or failed core matrix operation fails the gate after migration and
+restart evidence is collected. Every command records an exit code and elapsed
+wall time. The candidate migration/initializer step includes process startup
+and default reconciliation; this small synthetic corpus is not production-scale
+migration timing.
+
+This is a maintenance-window upgrade test. It does not exercise passkey browser
+ceremonies, browser rendering, actual vendor agent binaries, real models,
+external secret backends, rolling upgrades with concurrent old writers, or
+backup restoration.
 Successful credential resolution proves continuity of local synthetic secrets;
 it makes no claim that a real provider would accept them. Default kind networking
 does not enforce NetworkPolicy; safety comes from explicit local fixtures,
@@ -94,19 +133,20 @@ disabled background workers, disabled telemetry and no external credentials.
 
 ## Final RC rerun
 
-After a 1.0.0 RC is actually published, resolve its tag from release metadata:
+After a 1.1.0 RC is actually published, resolve its tag from release metadata:
 
 ```bash
 export PRELOOP_DISABLE_TELEMETRY=true
 gh api --paginate 'repos/preloop/preloop/releases?per_page=100' \
-  --jq '.[] | select(.draft == false and .prerelease == true and .published_at != null and (.tag_name | test("^v?1[.]0[.]0-rc([.-][0-9]+)?$"))) | .tag_name'
+  --jq '.[] | select(.draft == false and .prerelease == true and .published_at != null and (.tag_name | test("^v?1[.]1[.]0-rc([.-][0-9]+)?$"))) | .tag_name'
 ```
 
-Use the exact published `v1.0.0-rc…` tag shown by that command:
+Use the exact published `v1.1.0-rc…` tag shown by that command:
 
 ```bash
 rc_tag='<exact published RC tag>'
-python scripts/upgrade_acceptance/runner.py --runtime both --rc "$rc_tag"
+python scripts/upgrade_acceptance/runner.py --baseline v1.0.2 \
+  --runtime both --installer --derive-encryption-key --cli-matrix --rc "$rc_tag"
 ```
 
 The runner rejects invented, draft, stable or non-RC release names before starting

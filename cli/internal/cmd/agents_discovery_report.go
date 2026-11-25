@@ -74,9 +74,10 @@ type discoveryReportRequest struct {
 }
 
 type discoveryReportResponse struct {
-	Received int `json:"received"`
-	Created  int `json:"created"`
-	Updated  int `json:"updated"`
+	Received       int  `json:"received"`
+	Created        int  `json:"created"`
+	Updated        int  `json:"updated"`
+	LegacyEvidence bool `json:"-"`
 }
 
 // discoveryReportingRequested reports whether the user opted in, by flag or
@@ -200,7 +201,10 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	if err := postInventoryReport(client, report, &resp); err != nil {
 		return fmt.Errorf("failed to send discovery report: %w", err)
 	}
-	fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent inventory metadata, extension identifiers and hashes; no file contents or credentials.\n", resp.Received, resp.Created) //nolint:errcheck
+	if resp.LegacyEvidence {
+		fmt.Fprintln(w, legacyInventoryNotice)
+	}
+	fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent inventory metadata; no file contents or credentials.\n", resp.Received, resp.Created) //nolint:errcheck
 	return nil
 }
 

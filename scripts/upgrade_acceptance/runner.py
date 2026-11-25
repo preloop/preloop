@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Rehearse a published 0.17.x upgrade in disposable Compose and kind stacks."""
+"""Rehearse a published release upgrade in disposable Compose and kind stacks."""
 
 from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import io
 import json
 import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -25,7 +27,7 @@ import yaml
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 RELEASE_RE = re.compile(r"^v?(0\.17\.(\d+))$")
-RC_RE = re.compile(r"^v?1\.0\.0-rc(?:[.-]\d+)?$")
+RC_RE = re.compile(r"^v?1\.(?:0|1)\.0-rc(?:[.-]\d+)?$")
 TELEMETRY = {"PRELOOP_DISABLE_TELEMETRY": "true"}
 
 
@@ -33,18 +35,24 @@ class AcceptanceError(RuntimeError):
     """A safe diagnostic that never includes subprocess argv or credentials."""
 
 
-def latest_baseline(releases: list[dict[str, Any]]) -> dict[str, Any]:
+def latest_baseline(
+    releases: list[dict[str, Any]], tag: str | None = None
+) -> dict[str, Any]:
     """Select an actual stable release, never a guessed tag or a draft."""
     eligible = [
         r
         for r in releases
-        if RELEASE_RE.fullmatch(r["tag_name"])
+        if (r["tag_name"] == tag if tag else RELEASE_RE.fullmatch(r["tag_name"]))
         and not r["draft"]
         and not r["prerelease"]
         and r.get("published_at")
     ]
     if not eligible:
-        raise AcceptanceError("No published stable 0.17.x release was found")
+        raise AcceptanceError("No published stable baseline release was found")
+    if tag:
+        if not re.fullmatch(r"v?(?:0\.17\.\d+|1\.0\.2)", tag):
+            raise AcceptanceError("Supported baselines are 0.17.x and 1.0.2")
+        return eligible[0]
     return max(eligible, key=lambda r: int(RELEASE_RE.fullmatch(r["tag_name"])[2]))
 
 
@@ -59,7 +67,7 @@ def published_rc(releases: list[dict[str, Any]], tag: str) -> dict[str, Any]:
             and release["prerelease"]
         ):
             return release
-    raise AcceptanceError("Final gate requires an actually published 1.0.0 RC")
+    raise AcceptanceError("Final gate requires an actually published 1.0.0 or 1.1.0 RC")
 
 
 def scrub(value: str, sensitive: list[str]) -> str:
@@ -92,6 +100,31 @@ def public_probe(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def matrix_passed(cells: list[dict[str, Any]]) -> bool:
+    """Require every requested core operation, including content assertions."""
+    if {cell.get("cli") for cell in cells} != {"baseline", "candidate"}:
+        return False
+    for cell in cells:
+        operations = cell.get("operations", {})
+        required = [
+            "login",
+            "discover",
+            "onboard",
+            "gateway",
+            "policy_apply",
+            "runner_connect_1",
+            "runner_connect_2",
+            "runner_reconnect",
+        ]
+        if cell.get("server") == "candidate" and cell.get("cli") == "candidate":
+            required.append("flow")
+        if any(
+            not operations.get(name, {}).get("content_verified") for name in required
+        ):
+            return False
+    return True
+
+
 class Run:
     """Own one unique resource namespace and its bounded command history."""
 
@@ -118,11 +151,16 @@ class Run:
                 "SSH_AUTH_SOCK",
                 "GH_TOKEN",
                 "GITHUB_TOKEN",
+                "DEVELOPER_DIR",
             }
         }
         self.env.update(TELEMETRY)
         self.secret = secrets.token_hex(32)
-        self.encryption = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
+        self.encryption = (
+            ""
+            if getattr(args, "derive_encryption_key", False)
+            else base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
+        )
         self.db_password = secrets.token_hex(24)
         from fixture import (
             PASSWORD,
@@ -176,6 +214,7 @@ class Run:
         private: bool = False,
         cwd: Path | None = None,
         allow_failure: bool = False,
+        extra_env: dict[str, str] | None = None,
     ) -> str:
         """Run bounded commands; logs contain neither argv nor known secrets."""
         started = time.monotonic()
@@ -186,7 +225,7 @@ class Run:
                 capture_output=True,
                 text=True,
                 cwd=cwd or REPO,
-                env=self.env,
+                env={**self.env, **(extra_env or {})},
                 timeout=timeout,
                 check=False,
             )
@@ -279,7 +318,7 @@ class Run:
     def prepare(self) -> None:
         """Resolve release identities, export charts and build the candidate."""
         releases = self.releases()
-        baseline = latest_baseline(releases)
+        baseline = latest_baseline(releases, self.args.baseline)
         tag = baseline["tag_name"]
         self.report["baseline"] = {"tag": tag, "published_at": baseline["published_at"]}
         self.report["available_rcs"] = [
@@ -328,7 +367,84 @@ class Run:
         )
         self.pg_image = self.image("postgres", "pgvector/pgvector:pg16", pull=True)
         self.nats_image = self.image("nats", "nats:2.11-alpine", pull=True)
+        if self.args.cli_matrix:
+            self.prepare_clis()
         self.save()
+
+    def prepare_clis(self) -> None:
+        """Pair the published native Linux CLI with one built from the candidate."""
+        architecture = self.report["candidate"]["platform"].split("/")[1]
+        if self.report["baseline"]["tag"] not in ("v1.0.2", "1.0.2"):
+            raise AcceptanceError("CLI matrix currently requires the 1.0.2 baseline")
+        baseline = self.root / "tools/baseline"
+        baseline.mkdir(parents=True)
+        asset = f"preloop-linux-{architecture}"
+        self.command(
+            "download-baseline-cli",
+            [
+                "gh",
+                "release",
+                "download",
+                self.report["baseline"]["tag"],
+                "--repo",
+                "preloop/preloop",
+                "--pattern",
+                asset,
+                "--pattern",
+                "SHA256SUMS",
+                "--dir",
+                str(baseline),
+            ],
+        )
+        hashes = dict(
+            line.split()[::-1]
+            for line in (baseline / "SHA256SUMS").read_text().splitlines()
+            if line.strip()
+        )
+        digest = hashlib.sha256((baseline / asset).read_bytes()).hexdigest()
+        if hashes.get(asset) != digest:
+            raise AcceptanceError("Published CLI checksum mismatch")
+        (baseline / asset).rename(baseline / "preloop")
+        (baseline / "preloop").chmod(0o555)
+        target = self.root / "tools/candidate"
+        self.command(
+            "build-candidate-cli",
+            [
+                "make",
+                "-C",
+                str(self.candidate_source / "cli"),
+                "install-local",
+                f"BINDIR={target}",
+                "INSTALL_MODE=555",
+                f"VERSION={self.report['candidate']['commit'][:12]}",
+            ],
+            extra_env={"CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": architecture},
+            timeout=600,
+        )
+        self.report["cli_binaries"] = {
+            "baseline": {"sha256": digest, "release": self.report["baseline"]["tag"]},
+            "candidate": {
+                "sha256": hashlib.sha256((target / "preloop").read_bytes()).hexdigest(),
+                "commit": self.report["candidate"]["commit"],
+            },
+        }
+
+    def matrix(self, prefix: list[str], phase: str) -> None:
+        """Collect command outcomes independently of migration content checks."""
+        output = self.command(
+            f"cli-matrix-{phase}",
+            [*prefix, "python", "/acceptance/compatibility.py", phase],
+            private=True,
+            timeout=600,
+        )
+        for line in output.splitlines():
+            if line.startswith("MATRIX_RESULT="):
+                self.report.setdefault("compatibility", {})[phase] = json.loads(
+                    line.removeprefix("MATRIX_RESULT=")
+                )
+                self.save()
+                return
+        raise AcceptanceError("CLI matrix did not return evidence")
 
     def app_env(self) -> dict[str, str]:
         """Explicit synthetic configuration; never forward host provider keys."""
@@ -343,6 +459,7 @@ class Run:
             "FLOW_EXECUTION_WORKER_ENABLED": "false",
             "LITELLM_LOCAL_MODEL_COST_MAP": "true",
             "MODEL_PRICE_LIVE_LOOKUP_ENABLED": "false",
+            "MODEL_ENDPOINT_ALLOWED_CIDRS": "127.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
             "DATABASE_POOL_SIZE": "2",
             "DATABASE_MAX_OVERFLOW": "1",
             "REQUIRE_EMAIL_VERIFICATION": "false",
@@ -356,21 +473,27 @@ class Run:
         }
 
     def compose(self, source: Path, image: str) -> list[str]:
-        """Bound the real release service definitions to four local services."""
+        """Bound release services and the synthetic provider to an internal network."""
         release = yaml.safe_load((source / "docker-compose.release.yaml").read_text())
         services = {
             name: release["services"][name]
-            for name in ("postgres", "nats", "migrate", "api")
+            for name in ("postgres", "nats", "migrate", "api", "gateway")
         }
         for name, service in services.items():
             service["restart"] = "no"
-            service["cpus"] = 2 if name in ("api", "migrate") else 1
-            service["mem_limit"] = "2g" if name in ("api", "migrate") else "512m"
+            service["cpus"] = 2 if name in ("api", "migrate", "gateway") else 1
+            service["mem_limit"] = (
+                "2g" if name in ("api", "migrate", "gateway") else "512m"
+            )
             service.pop("ports", None)
-            if name in ("api", "migrate"):
+            if name in ("api", "migrate", "gateway"):
                 service["image"] = image
                 service["environment"] = self.app_env()
                 service["volumes"] = [f"{HERE}:/acceptance:ro"]
+                if name == "gateway":
+                    service["environment"]["PRELOOP_SERVICE_ROLE"] = "gateway"
+                if getattr(self.args, "cli_matrix", False):
+                    service["volumes"].append(f"{self.root / 'tools'}:/tools:ro")
             elif name == "postgres":
                 service["image"] = self.pg_image
                 service["environment"] = {
@@ -386,6 +509,15 @@ class Run:
                     "Release added a service dependency; review rig bounds"
                 )
         services["api"]["ports"] = ["127.0.0.1::8000"]
+        services["mock"] = {
+            "image": image,
+            "command": ["python", "/acceptance/mock_provider.py"],
+            "environment": TELEMETRY,
+            "volumes": [f"{HERE}:/acceptance:ro"],
+            "cpus": 1,
+            "mem_limit": "256m",
+            "restart": "no",
+        }
         config = {
             "services": services,
             "volumes": {"postgres-data": {}},
@@ -480,6 +612,8 @@ class Run:
     def run_compose(self) -> None:
         """Stop all old writers before running the candidate release initializer."""
         self.report["runtimes"]["compose"] = {"status": "running"}
+        if self.args.installer:
+            self.install_baseline()
         cmd = self.compose(self.baseline_source, self.baseline_image)
         self.command(
             "compose-infrastructure", [*cmd, "up", "-d", "--wait", "postgres", "nats"]
@@ -487,14 +621,22 @@ class Run:
         self.command(
             "compose-baseline-migrate", [*cmd, "run", "--rm", "--no-deps", "migrate"]
         )
-        self.command("compose-baseline-api", [*cmd, "up", "-d", "--no-deps", "api"])
+        self.command(
+            "compose-baseline-api",
+            [*cmd, "up", "-d", "--no-deps", "api", "gateway", "mock"],
+        )
         prefix = [*cmd, "exec", "-T", "api"]
         self.ready(prefix)
         self.require_compose_image(cmd, "baseline")
         before = self.probe(prefix, True, {})
+        if getattr(self.args, "cli_matrix", False):
+            self.matrix(prefix, "baseline")
         self.report["runtimes"]["compose"]["before"] = public_probe(before)
         self.save()
-        self.command("compose-drain-writers", [*cmd, "stop", "-t", "30", "api"])
+        self.command(
+            "compose-drain-writers",
+            [*cmd, "stop", "-t", "30", "api", "gateway", "mock"],
+        )
         # Back up only this disposable database; never print its contents.
         backup = self.command(
             "compose-backup",
@@ -509,25 +651,159 @@ class Run:
         )
         self.command(
             "compose-candidate-api",
-            [*cmd, "up", "-d", "--no-deps", "--force-recreate", "api"],
+            [
+                *cmd,
+                "up",
+                "-d",
+                "--no-deps",
+                "--force-recreate",
+                "api",
+                "gateway",
+                "mock",
+            ],
         )
         self.ready(prefix)
         self.require_compose_image(cmd, "candidate")
         after = self.probe(prefix, False, before)
-        # A second initializer is the operator's retry path. Check idempotence
-        # with writers stopped as required by destructive credential migrations.
-        self.command("compose-drain-retry", [*cmd, "stop", "-t", "30", "api"])
-        self.command(
-            "compose-migrate-retry", [*cmd, "run", "--rm", "--no-deps", "migrate"]
-        )
-        self.command("compose-restart", [*cmd, "up", "-d", "--no-deps", "api"])
-        self.ready(prefix)
-        self.require_compose_image(cmd, "candidate")
-        retry = self.probe(prefix, False, before)
+        if getattr(self.args, "cli_matrix", False):
+            self.matrix(prefix, "candidate")
+        retries = []
+        for attempt in (1, 2):
+            # Stop writers before repeating the initializer, just as on upgrade.
+            self.command(
+                f"compose-drain-retry-{attempt}",
+                [*cmd, "stop", "-t", "30", "api", "gateway", "mock"],
+            )
+            self.command(
+                f"compose-migrate-retry-{attempt}",
+                [*cmd, "run", "--rm", "--no-deps", "migrate"],
+            )
+            self.command(
+                f"compose-restart-{attempt}",
+                [*cmd, "up", "-d", "--no-deps", "api", "gateway", "mock"],
+            )
+            self.ready(prefix)
+            self.require_compose_image(cmd, "candidate")
+            retries.append(public_probe(self.probe(prefix, False, before)))
         self.report["runtimes"]["compose"].update(
-            status="passed", after=public_probe(after), retry=public_probe(retry)
+            status="passed", after=public_probe(after), retries=retries
         )
         self.cleanup_compose()
+        self.save()
+        if getattr(self.args, "cli_matrix", False) and (
+            set(self.report.get("compatibility", {})) != {"baseline", "candidate"}
+            or not all(
+                matrix_passed(cells) for cells in self.report["compatibility"].values()
+            )
+        ):
+            raise AcceptanceError(
+                "CLI compatibility matrix has unverified core operations"
+            )
+
+    def install_baseline(self) -> None:
+        """Run the published installer in an owned project, then drain it.
+
+        The installer uses fixed local ports. Refuse occupied ports instead of
+        disturbing an existing installation. Its full stack is stopped before
+        the bounded corpus rig adopts the same database volume and keys.
+        """
+        for port in (8000, 8001, 3000):
+            with socket.socket() as listener:
+                try:
+                    listener.bind(("127.0.0.1", port))
+                except OSError:
+                    raise AcceptanceError(
+                        "Installer requires unused local ports 8000, 8001, 3000"
+                    ) from None
+        assets = self.root / "release-assets"
+        assets.mkdir()
+        tag = self.report["baseline"]["tag"]
+        self.command(
+            "download-installer",
+            [
+                "gh",
+                "release",
+                "download",
+                tag,
+                "--repo",
+                "preloop/preloop",
+                "--pattern",
+                "install-oss.sh",
+                "--pattern",
+                "docker-compose.release.yaml",
+                "--pattern",
+                "SHA256SUMS",
+                "--dir",
+                str(assets),
+            ],
+        )
+        hashes = dict(
+            line.split()[::-1]
+            for line in (assets / "SHA256SUMS").read_text().splitlines()
+            if line.strip()
+        )
+        checked = {}
+        for name in ("install-oss.sh", "docker-compose.release.yaml"):
+            digest = hashlib.sha256((assets / name).read_bytes()).hexdigest()
+            if hashes.get(name) != digest:
+                raise AcceptanceError("Published installer asset checksum mismatch")
+            checked[name] = digest
+        installation = self.root / "installation"
+        installation.mkdir(mode=0o700)
+        env_file = installation / ".env"
+        env_file.write_text(
+            "\n".join(
+                f"{key}={value}"
+                for key, value in {
+                    "SECRET_KEY": self.secret,
+                    "SECURITY__ENCRYPTION_KEY": self.encryption,
+                    "POSTGRES_PASSWORD": self.db_password,
+                    **TELEMETRY,
+                    "DISABLE_VERSION_CHECK": "true",
+                }.items()
+            )
+            + "\n"
+        )
+        env_file.chmod(0o600)
+        self.compose_files = [
+            "docker",
+            "compose",
+            "--project-name",
+            self.name,
+            "--env-file",
+            str(env_file),
+            "-f",
+            str(installation / "docker-compose.yaml"),
+            "-f",
+            str(installation / "docker-compose.auth.yaml"),
+        ]
+        self.command(
+            "published-installer",
+            ["sh", str(assets / "install-oss.sh")],
+            input_text="",
+            private=True,
+            timeout=1200,
+            extra_env={
+                "INSTALL_DIR": str(installation),
+                "COMPOSE_PROJECT_NAME": self.name,
+                "PRELOOP_VERSION": tag.removeprefix("v"),
+                "PRELOOP_URL": "http://localhost:3000",
+                "PRELOOP_SKIP_ADMIN": "1",
+                "PRELOOP_SKIP_TLS": "1",
+                "PRELOOP_SKIP_SMTP": "1",
+                "DISABLE_VERSION_CHECK": "true",
+            },
+        )
+        if (installation / "docker-compose.yaml").read_bytes() != (
+            assets / "docker-compose.release.yaml"
+        ).read_bytes():
+            raise AcceptanceError(
+                "Installer did not select the published Compose asset"
+            )
+        self.command(
+            "installer-drain", [*self.compose_files, "down", "--remove-orphans"]
+        )
+        self.report["installer"] = {"status": "passed", "asset_sha256": checked}
         self.save()
 
     def kube(self) -> list[str]:
@@ -840,8 +1116,27 @@ def main() -> int:
         help="Committed source to build; never a working tree",
     )
     parser.add_argument(
+        "--derive-encryption-key",
+        action="store_true",
+        help="Use the installer default: derive credential encryption from SECRET_KEY",
+    )
+    parser.add_argument(
+        "--cli-matrix",
+        action="store_true",
+        help="Build candidate CLI and exercise both CLIs against both Compose servers",
+    )
+    parser.add_argument(
+        "--installer",
+        action="store_true",
+        help="First run the published OSS installer (requires unused ports 8000/8001/3000)",
+    )
+    parser.add_argument(
+        "--baseline",
+        help="Published baseline tag (0.17.x or v1.0.2); default: latest stable 0.17.x",
+    )
+    parser.add_argument(
         "--rc",
-        help="Published 1.0.0-rc tag; test its registry image instead of a local build",
+        help="Published 1.0.0/1.1.0 RC tag; test its image instead of a local build",
     )
     parser.add_argument(
         "--output", help="New private artifact directory; must not already exist"
