@@ -355,7 +355,7 @@ def test_refresh_durations_reads_one_shard_and_many(
     """
     module = _load_refresh_durations()
     for shard in range(1, shards + 1):
-        _write_shard_report(tmp_path, shard, 10.0 * shard)
+        _write_shard_report(tmp_path, shard, 60.0 if shard == shards else 10.0)
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     monkeypatch.setattr(
         sys,
@@ -365,10 +365,19 @@ def test_refresh_durations_reads_one_shard_and_many(
     )
     module.main()
     out = capsys.readouterr().out
-    assert f"- shard {shards}: {10.0 * shards:.1f}s" in out
+    assert f"- shard {shards}: 60.0s" in out
     assert out.count("- shard ") == shards
-    median = 5.0 * (shards + 1)
-    assert f"max / median {median:.1f}s = {10 * shards / median:.3f}" in out
+    median = 60.0 if shards == 1 else 10.0
+    assert f"max / median {median:.1f}s = {60 / median:.3f}" in out
+
+
+def test_zero_median_has_no_duration_ratio(tmp_path: Path) -> None:
+    """Two zero-duration reports make the median zero even with a slow shard."""
+    for shard, seconds in enumerate((0.0, 0.0, 3.0), start=1):
+        _write_shard_report(tmp_path, shard, seconds)
+    summary = _load_refresh_durations().summarise(sorted(tmp_path.glob("*.xml")))
+    assert "max 3.0s / mean 1.0s = 3.000" in summary
+    assert "max / median" not in summary
 
 
 def test_refresh_durations_rejects_a_missing_shard(
