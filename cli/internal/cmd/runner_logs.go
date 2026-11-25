@@ -40,7 +40,10 @@ type runnerLogBuffer struct {
 	nativeResults int
 	// harness selects the native stream parser. Empty means Cursor
 	// stream-json, which keeps older call sites unchanged.
-	harness          string
+	harness string
+	// requestedModel is the flow's model id, recorded as an observed model
+	// for harnesses whose stream does not name the model (Codex, OpenCode).
+	requestedModel   string
 	copilotCapture   copilotCapture
 	claudeCapture    claudeCapture
 	codexCapture     codexCapture
@@ -346,10 +349,12 @@ func nativeRunnerResult(b *runnerLogBuffer, waitErr error) (map[string]any, erro
 		return claudeRunnerResult(b.claudeCapture)
 	}
 	if b.harness == hostExecHarnessCodex {
-		return codexRunnerResult(b.codexCapture)
+		result, err := codexRunnerResult(b.codexCapture)
+		return noteRequestedModel(b, result, err)
 	}
 	if b.harness == hostExecHarnessOpenCode {
-		return openCodeRunnerResult(b.openCodeCapture)
+		result, err := openCodeRunnerResult(b.openCodeCapture)
+		return noteRequestedModel(b, result, err)
 	}
 	if b.harness == hostExecHarnessDeepSeek {
 		return deepSeekRunnerResult(b.deepSeekCapture)
@@ -404,4 +409,13 @@ func maskRunnerCredentials(text string, secrets []string) string {
 		text = strings.ReplaceAll(text, form, "[REDACTED]")
 	}
 	return text
+}
+
+// noteRequestedModel records the flow's model as observed after a successful
+// run, so the inventory lists the ids this harness has actually run.
+func noteRequestedModel(b *runnerLogBuffer, result map[string]any, err error) (map[string]any, error) {
+	if err == nil && result["status"] == "success" {
+		noteHarnessRunSucceeded(b.harness, b.requestedModel)
+	}
+	return result, err
 }

@@ -59,6 +59,30 @@ describe('PreloopFlowForm harness + model picker', () => {
                   },
                 ],
               },
+              {
+                harness: 'codex_cli',
+                display_name: 'Codex CLI',
+                agent_type: 'codex',
+                billing: 'seat',
+                runners_online: 1,
+                runners_total: 1,
+                models: [
+                  {
+                    id: 'gpt-6.2-astra',
+                    source: 'observed',
+                    runners_online: 1,
+                  },
+                ],
+                runners: [
+                  {
+                    id: LAPTOP,
+                    name: 'jonas-laptop',
+                    online: true,
+                    eligible: true,
+                    reason: null,
+                  },
+                ],
+              },
             ],
           })
         );
@@ -118,6 +142,56 @@ describe('PreloopFlowForm harness + model picker', () => {
       'jonas-laptop (ready)',
       'jonas-desktop · Shared with me · Jane Doe (runner_offline)',
     ]);
+  });
+
+  it('offers Codex harness routing when a runner reports Codex', async () => {
+    const element = await mount({
+      name: 'Codex on my runner',
+      prompt_template: 'review',
+      agent_type: 'codex',
+      agent_config: {},
+    });
+    const root = element.shadowRoot!;
+    const toggle = root.querySelector('[data-harness-route]') as any;
+    expect(toggle).to.exist;
+    expect(toggle.textContent).to.include('Codex CLI');
+    toggle.checked = true;
+    toggle.dispatchEvent(new CustomEvent('sl-change'));
+    await element.updateComplete;
+    const models = [
+      ...root.querySelectorAll('[data-harness-model] sl-option'),
+    ].map((node) => node.textContent?.replace(/\s+/g, ' ').trim());
+    expect(models).to.deep.equal(['gpt-6.2-astra (1 online)']);
+  });
+
+  it('saves Codex harness routing with its model key', async () => {
+    const element = await mount({
+      name: 'Codex on my runner',
+      prompt_template: 'review',
+      agent_type: 'codex',
+      agent_config: { harness: 'codex_cli', codex_model: 'gpt-6.2-astra' },
+    });
+    const submitted = oneEvent(element, 'flow-submit');
+    void (element as any).handleFormSubmit(new Event('submit'));
+    const event = await submitted;
+    const config = event.detail.flow.agent_config;
+    expect(config).to.deep.include({
+      harness: 'codex_cli',
+      codex_model: 'gpt-6.2-astra',
+    });
+    expect(config.host_exec_profile).to.equal(undefined);
+  });
+
+  it('hides the picker for OpenCode when no runner reports it', async () => {
+    const element = await mount({
+      name: 'Hosted OpenCode',
+      prompt_template: 'review',
+      agent_type: 'opencode',
+      agent_config: {},
+    });
+    expect(element.shadowRoot!.querySelector('[data-harness-route]')).to.equal(
+      null
+    );
   });
 
   it('saves harness, model, runner pin and fallback in agent_config', async () => {
@@ -211,9 +285,11 @@ describe('PreloopFlowForm harness + model picker', () => {
       agent_type: 'codex',
       agent_config: { harness: 'copilot_cli', runner_id: LAPTOP },
     });
-    expect(element.shadowRoot!.querySelector('[data-harness-picker]')).to.equal(
-      null
-    );
+    // A runner reports Codex, so the picker is offered, but unrouted.
+    const toggle = element.shadowRoot!.querySelector(
+      '[data-harness-route]'
+    ) as any;
+    expect(toggle?.checked).to.equal(false);
     const config = (element as any).composedAgentConfig();
     expect(config.harness).to.equal(undefined);
     expect(config.runner_id).to.equal(undefined);

@@ -489,9 +489,14 @@ def validate_default_selection(
 
     harness = (agent_type or "").strip().lower()
     config = flow.agent_config if isinstance(flow.agent_config, dict) else {}
-    from preloop.services.host_exec import host_exec_harness, host_exec_profile_name
+    from preloop.services.host_exec import (
+        host_exec_effective_profile,
+        host_exec_harness,
+    )
 
-    native_profile = host_exec_harness(harness) and host_exec_profile_name(config)
+    native_profile = host_exec_harness(harness) and host_exec_effective_profile(
+        harness, config
+    )
     if not is_host_exec_agent_type(harness) and not native_profile:
         if ai_model_id is not None:
             load_usable_model(
@@ -810,7 +815,10 @@ def resolve_routing_record(
 
     default_type = (flow.agent_type or "").strip().lower() or None
     default_model_id = flow.ai_model_id
-    from preloop.services.host_exec import is_host_exec_agent_type
+    from preloop.services.host_exec import (
+        host_exec_harness_selector,
+        is_host_exec_agent_type,
+    )
 
     if (
         is_host_exec_agent_type(default_type)
@@ -818,6 +826,7 @@ def resolve_routing_record(
             isinstance(flow.agent_config, dict)
             and flow.agent_config.get("host_exec_profile")
         )
+        or host_exec_harness_selector(default_type, flow.agent_config)
         or (ordered_rules and default_model_id is not None)
     ):
         validate_default_selection(
@@ -882,8 +891,8 @@ def validate_execution_model_principal(
             owner opt-in does not cover this flow.
     """
     from preloop.services.host_exec import (
+        host_exec_effective_profile,
         host_exec_harness,
-        host_exec_profile_name,
         is_host_exec_agent_type,
     )
 
@@ -896,7 +905,7 @@ def validate_execution_model_principal(
         model_id is None
         or config.get("execution_path") == "persistent"
         or is_host_exec_agent_type(harness)
-        or (host_exec_harness(harness) and host_exec_profile_name(config))
+        or (host_exec_harness(harness) and host_exec_effective_profile(harness, config))
     ):
         return
     model = crud_ai_model.get(db, id=str(model_id))

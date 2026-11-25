@@ -45499,6 +45499,12 @@ components:
           type: array
           maxItems: 16
           title: Capabilities
+        setup_step:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+          title: Setup Step
       type: object
       required:
       - harness
@@ -61002,7 +61008,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

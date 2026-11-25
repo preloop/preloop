@@ -90,6 +90,9 @@ class HarnessInventoryEntry(BaseModel):
         None, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
     )
     capabilities: List[str] = Field(default_factory=list, max_length=16)
+    #: Onboarding step that keeps a presence-only harness from running
+    #: flows (for example installing the approval hook).
+    setup_step: Optional[str] = Field(None, max_length=256)
 
 
 class HarnessInventory(BaseModel):
