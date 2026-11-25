@@ -558,6 +558,13 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool)
 				hash := scan.projectHash(path)
 				settings := project.document(filepath.Join(".claude", "settings.json"))
 				overrides := project.extensionEnabled(settings)
+				localSettings := project.document(filepath.Join(".claude", "settings.local.json"))
+				for id, value := range project.extensionEnabled(localSettings) {
+					if overrides == nil {
+						overrides = map[string]bool{}
+					}
+					overrides[id] = value
+				}
 				for _, plugin := range plugins {
 					if value, ok := overrides[plugin.ID]; ok && plugin.Scope == "user" && !installedProjects[hash+"\x00"+plugin.ID] {
 						plugin.Scope = "project"

@@ -333,3 +333,41 @@ func TestInstalledPluginBoundedReads(t *testing.T) {
 		})
 	}
 }
+
+// protects=local project enablement overrides for user-installed plugins;
+// fails_when=a local-only override is omitted or project settings beat local settings;
+// no_claim=synthetic known projects, no registry project install in this fixture.
+func TestInstalledPluginUserProjectEnabled(t *testing.T) {
+	for _, projectSetting := range []bool{false, true} {
+		name := "local-only"
+		if projectSetting {
+			name = "local-overrides-project"
+		}
+		t.Run(name, func(t *testing.T) {
+			home, project := t.TempDir(), t.TempDir()
+			writeClaudePlugin(t, home, "reviewer", "community", "1.0.0")
+			writeInventoryFixture(t, home, ".claude/settings.json", `{"enabledPlugins":{"reviewer@community":true}}`)
+			data, err := json.Marshal(map[string]any{"projects": map[string]any{project: map[string]any{}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeInventoryFixture(t, home, ".claude.json", string(data))
+			if projectSetting {
+				writeInventoryFixture(t, project, ".claude/settings.json", `{"enabledPlugins":{"reviewer@community":true}}`)
+			}
+			writeInventoryFixture(t, project, ".claude/settings.local.json", `{"enabledPlugins":{"reviewer@community":false}}`)
+			exts, codes := collectInventoryExtensions(home, "claude-code", "salt", false)
+			if len(codes) != 0 || len(exts) != 2 {
+				t.Fatalf("extensions=%+v codes=%v", exts, codes)
+			}
+			for _, ext := range exts {
+				if ext.Scope == "project" && (ext.Enabled != "false" || ext.ProjectRefHash != "sha256:"+configPathHash("salt", home, project)) {
+					t.Fatalf("project=%+v", ext)
+				}
+				if ext.Scope == "user" && ext.Enabled != "true" {
+					t.Fatalf("user=%+v", ext)
+				}
+			}
+		})
+	}
+}
