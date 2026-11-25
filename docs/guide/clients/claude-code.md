@@ -20,7 +20,7 @@ Optionally, Preloop can also install a **native tool-approval hook** so Claude C
 ## Prerequisites
 
 - Claude Code installed, see [Anthropic's installation docs](https://docs.anthropic.com/en/docs/claude-code) (e.g. `npm install -g @anthropic-ai/claude-code`).
-- Node.js 22 or newer on `PATH` for the Agent Control plugin, including when
+- Node.js 20 or newer on `PATH` for the Agent Control plugin, including when
   Claude Code itself uses a native installer. Verify `node --version` in the
   shell where you run onboarding. On macOS with Homebrew, run
   `brew install node@22`, then
@@ -71,9 +71,12 @@ holder refreshes second with the already-consumed token gets `invalid_grant`.
 
 Onboarding records which local credential store it selected. Sync and offboard
 write back to that store. File-based enrollment works while Keychain is locked.
-For older enrollments without a recorded source, sync can fall back to a valid
-credentials file when Keychain is unavailable. An explicitly enrolled Keychain
-login still requires Keychain access; unlock it or reconnect the subscription.
+For older enrollments without a recorded source, the manual `sync-credentials`
+command can select a valid credentials file when Keychain is unavailable.
+Automatic hooks stop and ask you to unlock Keychain or select the file explicitly;
+a temporary lock must not switch the enrollment to a stale or unrelated file.
+An explicitly enrolled Keychain login still requires Keychain access; unlock it
+or reconnect the subscription.
 
 Claude Code displays "API billing" for the gateway token after onboarding;
 model calls still use your Anthropic subscription and appear at $0 spend in

@@ -140,9 +140,10 @@ func TestClaudeInstallWithoutNpmStillAttemptsManagedSidecar(t *testing.T) {
 	testenv.SetTempHome(t)
 	t.Setenv("PRELOOP_RUNTIME_PLUGINS_DIR", t.TempDir())
 	t.Setenv("PATH", t.TempDir())
-	previous := lookupAgentControlNode
+	previous, previousVersion := lookupAgentControlNode, readAgentControlNodeVersion
 	lookupAgentControlNode = func(string) (string, error) { return "/synthetic/node", nil }
-	t.Cleanup(func() { lookupAgentControlNode = previous })
+	readAgentControlNodeVersion = func(string) (string, error) { return "v22.0.0", nil }
+	t.Cleanup(func() { lookupAgentControlNode, readAgentControlNodeVersion = previous, previousVersion })
 
 	result := installAgentControlRuntimePlugin(AgentConfig{Name: "Claude Code"}, io.Discard)
 	if result["control_plugin_install_status"] != "runtime_plugin_installer_not_found" {

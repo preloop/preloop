@@ -77,6 +77,9 @@ type claudeOAuthLocalBundle struct {
 	MtimeNS    int64
 	Newer      bool
 	Source     string
+	// KeychainUnavailable requires manual source selection for legacy
+	// enrollments. A locked Keychain does not prove a file shares its lineage.
+	KeychainUnavailable bool
 }
 
 type claudeOAuthSyncOutcome = codexOAuthSyncOutcome
@@ -198,10 +201,11 @@ func evaluateClaudeOAuthLocalBundle(state *localEnrollmentState, fullRead bool) 
 	}
 	cred.ExpiresAtMS = oauthPayloadEpochMillis(cred.ExpiresAtMS)
 	return claudeOAuthLocalBundle{
-		Credential: cred,
-		MtimeNS:    mtimeNS,
-		Newer:      claudeLocalBundleNewer(cred.ExpiresAtMS, syncedExpires),
-		Source:     source,
+		Credential:          cred,
+		MtimeNS:             mtimeNS,
+		Newer:               claudeLocalBundleNewer(cred.ExpiresAtMS, syncedExpires),
+		Source:              source,
+		KeychainUnavailable: keychainErr != nil,
 	}, nil
 }
 
@@ -277,6 +281,9 @@ func syncClaudeOAuthCredentials(
 			return claudeOAuthSyncOutcome{}, fmt.Errorf("claude code oauth sync: no local Claude subscription login found")
 		}
 		return claudeOAuthSyncOutcome{Unchanged: true}, nil
+	}
+	if bundle.KeychainUnavailable && !force {
+		return recordClaudeOAuthSyncFailure(state, errors.New(`claude code oauth sync: Keychain is unavailable; unlock it to keep using that login, or run preloop agents sync-credentials "Claude Code" to select the credentials file explicitly, or reconnect the subscription`))
 	}
 	if !force && !bundle.Newer && !checkDue {
 		return claudeOAuthSyncOutcome{Unchanged: true}, nil

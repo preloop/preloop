@@ -738,3 +738,45 @@ func TestClaudeOAuthLegacyLockedKeychainRejectsInvalidFile(t *testing.T) {
 		t.Fatal("invalid fallback reached server")
 	}
 }
+
+func TestClaudeOAuthHookDoesNotSelectFileWhenLegacyKeychainIsLocked(t *testing.T) {
+	f := newClaudeSyncFixture(t)
+	state := f.state()
+	state.ClaudeOAuthSyncedLocalExpiresMS = claudeSyncLocalExpires
+	state.ClaudeOAuthSyncedServerExpiresMS = claudeSyncLocalExpires
+	if err := saveLocalEnrollmentState(state); err != nil {
+		t.Fatal(err)
+	}
+	// A newer but unrelated file must not replace the enrollment's login.
+	f.writeLocal("sk-ant-oat01-unrelated", "unrelated-refresh", claudeSyncServerExpires)
+	before, err := os.ReadFile(f.credPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readClaudeKeychainBlobForSync = func() (string, error) { return "", errors.New("locked") }
+	if _, err := syncClaudeOAuthCredentials(f.agent, state, false); err == nil || !strings.Contains(err.Error(), "sync-credentials") {
+		t.Fatal("hook must request explicit source selection")
+	}
+	if len(f.requestLog()) != 0 || f.state().ClaudeOAuthCredentialSource != "" {
+		t.Fatal("hook selected or uploaded an unverified fallback")
+	}
+	after, err := os.ReadFile(f.credPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("hook changed the fallback file")
+	}
+	// Unlocking resumes the original source instead of staying on that file.
+	readClaudeKeychainBlobForSync = func() (string, error) {
+		return claudeKeychainBlob(claudeSyncLocalAccess, claudeSyncLocalRefresh, claudeSyncLocalExpires), nil
+	}
+	state = f.state()
+	state.ClaudeOAuthSyncLastAttempt = ""
+	if err := saveLocalEnrollmentState(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syncClaudeOAuthCredentials(f.agent, state, false); err != nil {
+		t.Fatalf("unlocked sync: %v", err)
+	}
+	if len(f.puts) != 0 || f.exportsTaken != 0 || f.state().ClaudeOAuthCredentialSource != claudeOAuthSourceKeychain {
+		t.Fatal("unlock did not resume the original Keychain login")
+	}
+}

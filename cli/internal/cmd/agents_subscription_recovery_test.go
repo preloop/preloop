@@ -34,8 +34,21 @@ func TestClaudeSubscriptionRecoveryAdvice(t *testing.T) {
 }
 
 func TestClaudeOnboardPreflightsNodeBeforeMutation(t *testing.T) {
+	for _, name := range []string{"missing", "old"} {
+		t.Run(name, func(t *testing.T) { assertClaudeNodePreflightBeforeMutation(t, name == "old") })
+	}
+}
+
+func assertClaudeNodePreflightBeforeMutation(t *testing.T, oldNode bool) {
+	t.Helper()
 	home := testenv.SetTempHome(t)
 	t.Setenv("PATH", "")
+	if oldNode {
+		skipNoShebangOnWindows(t, "old Node version stub")
+		bin := t.TempDir()
+		writeExecutableForTest(t, filepath.Join(bin, "node"), "#!/bin/sh\nprintf 'v18.20.8\\n'\n")
+		t.Setenv("PATH", bin)
+	}
 	t.Setenv("PRELOOP_CONFIRM", "")
 	agent := AgentConfig{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}
 	original := `{"model":"claude-haiku-4-5"}`
@@ -160,5 +173,31 @@ func TestClaudeEnrollmentRetainsCredentialSource(t *testing.T) {
 	backup, err := createLocalEnrollmentBackup(f.agent, true, []byte(`{}`), managedMCPEnrollmentPlan{})
 	if err != nil || backup.ClaudeOAuthCredentialSource != claudeOAuthSourceFile {
 		t.Fatal("re-onboarding lost the selected store")
+	}
+}
+
+func TestClaudeNodePreflightChecksVersion(t *testing.T) {
+	previousLookup, previousVersion := lookupAgentControlNode, readAgentControlNodeVersion
+	t.Cleanup(func() { lookupAgentControlNode, readAgentControlNodeVersion = previousLookup, previousVersion })
+	lookupAgentControlNode = func(string) (string, error) { return "/synthetic/node", nil }
+	for _, tc := range []struct {
+		version           string
+		broken, supported bool
+	}{
+		{version: "v16.20.2"}, {version: "v18.20.8"}, {version: "v20.19.0", supported: true}, {version: "v22.16.0", supported: true},
+		{version: "invalid"}, {version: "v22.16.0", broken: true},
+	} {
+		t.Run(tc.version+fmt.Sprint(tc.broken), func(t *testing.T) {
+			readAgentControlNodeVersion = func(string) (string, error) {
+				if tc.broken {
+					return tc.version, errors.New("synthetic execution failure")
+				}
+				return tc.version, nil
+			}
+			err := preflightClaudeAgentControlNode(AgentConfig{Name: "Claude Code"})
+			if (err == nil) != tc.supported {
+				t.Fatal("Node prerequisite does not match the supported runtime minimum")
+			}
+		})
 	}
 }
