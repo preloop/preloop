@@ -1243,7 +1243,9 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         elif sort in {"cost", "requests"}:
             # Rank the full filtered set before paging; reuse the attribution
             # query so legacy flow usage and internal traffic match the figures.
-            ranking_links = self._account_usage_links(db, **link_filters)
+            ranking_links = self._account_usage_links(
+                db, metrics_only=True, **link_filters
+            )
             ranking_usage = aliased(ApiUsage, ranking_links)
             ranking_metric = (
                 func.coalesce(func.sum(ranking_usage.estimated_cost), 0)
@@ -1680,6 +1682,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         ai_model_id: Optional[str],
         session_ids: Optional[Sequence[Any]] = None,
         narrow: bool = False,
+        metrics_only: bool = False,
     ) -> Any:
         """Map account usage to sessions using disjoint, equality-join branches.
 
@@ -1697,15 +1700,16 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             ai_model_id: Restrict usage to one model, if set.
             session_ids: Restrict both the direct and legacy attribution
                 branches to these sessions.
-            narrow: Select only the timestamp column, which is all the page
-                ranking reads.
+            narrow: Select only the timestamp column for activity ranking.
+            metrics_only: Select only request id and cost for metric ranking.
         """
         # Keep the UNION narrow even if the planner materializes a branch.
         # Request/response metadata is only inspected by the exclusion filter.
-        # ``narrow`` keeps only the timestamp, which is all the page ranking
-        # reads.
+        # Timestamp and metric rankings select only their required columns.
         usage_columns = (
-            [ApiUsage.timestamp.label("timestamp")]
+            [ApiUsage.id, ApiUsage.estimated_cost]
+            if metrics_only
+            else [ApiUsage.timestamp.label("timestamp")]
             if narrow
             else [
                 ApiUsage.id,

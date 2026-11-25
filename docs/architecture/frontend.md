@@ -182,6 +182,10 @@ started time, estimated cost or requests; ranked content search keeps relevance
 order. Counts distinguish loaded rows from the matched total, and a pinned deep
 link does not inflate that total.
 
+The Sessions page opts into the observer's `serverOrdered` and
+`mobileListDetail` properties. Other hosts retain activity ordering and stacked
+phone panes. Toolbar actions use a separate slot from the live result count.
+
 ### Console surfaces (`src/styles/console-surfaces.css`, `console-styles.css`)
 
 Every console background comes from one surface ladder declared per theme at document level: `--console-page`, `--console-surface`, `--console-surface-raised`, and `--console-hairline`. Declaring them on the document matters because Shoelace's dark theme is a class on `<html>` that shadow-scoped CSS cannot select, while custom properties inherit into every shadow root. In dark mode the ladder gets lighter with elevation (cards carry no border or shadow; the lightness step is the elevation); in light mode cards keep a hairline and the smallest shadow. Two rules follow from it and are enforced across the views: a depth limit of two (page, then surface: nothing inside a card gets a filled box of its own; rows separate by hairline), and states are tints, not paint (status chips are a 16% tint of their tone with dark ink; solid fills survive only on section count badges and the danger pill of a failed run). The design rationale lives in the private `DESIGN.md` (D27). Link text and meta text are tested for WCAG AA contrast on all three rungs in both themes (`console-surfaces.test.ts`).

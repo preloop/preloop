@@ -214,7 +214,6 @@ class RuntimeSessionExplorerService:
             has_more=bool(results.get("has_more", False)),
             limit=limit,
             offset=offset,
-            sort=sort,
             items=items,
         )
 

@@ -750,3 +750,49 @@ def test_sort_applies_before_paging_with_filtered_totals(
         assert result["has_more"] is (offset < 2)
         actual.extend(item["id"] for item in result["items"])
     assert actual == [str(data["sessions"][name].id) for name in expected]
+
+
+@pytest.mark.parametrize("sort", ["cost", "requests"])
+def test_metric_ranking_uses_only_metric_columns(
+    db_session: Session,
+    session_listing_data: dict[str, Any],
+    sort: str,
+) -> None:
+    """Keep full-account ranking unions independent of the display projection."""
+    statements: list[str] = []
+
+    def capture(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(db_session.connection(), "before_cursor_execute", capture)
+    try:
+        crud_runtime_session.list_account_sessions(
+            db_session,
+            account_id=str(session_listing_data["account"].id),
+            sort=sort,
+            limit=1,
+        )
+    finally:
+        event.remove(db_session.connection(), "before_cursor_execute", capture)
+    rankings = [
+        sql
+        for sql in statements
+        if "GROUP BY runtime_session.id ORDER BY" in sql
+        and "session_usage_links" in sql
+    ]
+    assert len(rankings) == 1
+    assert "estimated_cost" in rankings[0]
+    for display_column in (
+        "model_alias",
+        "provider_name",
+        "prompt_tokens",
+        "cache_read_tokens",
+    ):
+        assert display_column not in rankings[0]

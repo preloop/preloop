@@ -3018,6 +3018,93 @@ describe('RuntimeSessionsView', () => {
       expect((element as any).sessions.items).to.deep.equal(original.items);
     });
 
+    it('renders cost order from the API across replacement and appended pages', async () => {
+      const element = await layoutView();
+      const response = (element as any).sessions;
+      const [recent, older] = response.items;
+      const third = {
+        ...recent,
+        id: 'third-session',
+        last_activity_at: '2027-01-01T00:00:00Z',
+      };
+      fetchStub
+        .withArgs(
+          sinon.match(
+            (input: unknown) =>
+              String(input).startsWith('/api/v1/runtime-sessions?') &&
+              String(input).includes('sort=cost')
+          )
+        )
+        .callsFake(async (input: RequestInfo | URL) => {
+          const offset = Number(
+            new URL(String(input), location.origin).searchParams.get('offset')
+          );
+          return new Response(
+            JSON.stringify({
+              ...response,
+              total: 3,
+              has_more: offset === 0,
+              items: offset ? [third] : [older, recent],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        });
+      const select = element.shadowRoot!.querySelector(
+        'sl-select[label="Sort"]'
+      ) as any;
+      select.value = 'cost';
+      select.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+      const ids = () =>
+        rowsOf(element).map((row) =>
+          new URL(row.href).searchParams.get('sessionId')
+        );
+      await waitUntil(() => ids()[0] === older.id);
+      expect(ids()).to.deep.equal([older.id, recent.id]);
+      await (element as any).loadMoreSessions();
+      await element.updateComplete;
+      await waitUntil(() => rowsOf(element).length === 3);
+      expect(ids()).to.deep.equal([older.id, recent.id, 'third-session']);
+    });
+
+    it('hides free-account list notices on phone detail and restores them on Back', async () => {
+      await setViewport({ width: 390, height: 844 });
+      const element = await layoutView();
+      (element as any).isPremium = false;
+      (element as any).newSessionError = 'Session could not start';
+      (element as any).error = 'List refresh failed';
+      await element.updateComplete;
+      rowsOf(element)[0].click();
+      await element.updateComplete;
+      const notices = Array.from(
+        element.shadowRoot!.querySelectorAll<HTMLElement>(
+          '.titles-upsell-hint, .new-session-error, sl-alert[variant="danger"]'
+        )
+      );
+      expect(notices).to.have.length(3);
+      for (const notice of notices)
+        expect(getComputedStyle(notice).display).to.equal('none');
+      const observer = observerOf(element);
+      await observer.updateComplete;
+      observer.shadowRoot.querySelector('.back-to-list').click();
+      await element.updateComplete;
+      for (const notice of notices)
+        expect(getComputedStyle(notice).display).to.not.equal('none');
+    });
+
+    it('keeps Clear filters outside the live count region', async () => {
+      const element = await layoutView();
+      (element as any).status = 'active';
+      await element.updateComplete;
+      const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
+      const actions = toolbar.querySelector<HTMLElement>('.filter-actions')!;
+      expect(actions.assignedSlot).to.exist;
+      expect(actions.assignedSlot!.closest('[aria-live]')).to.equal(null);
+      const count = toolbar.querySelector<HTMLElement>('.session-count')!;
+      expect(
+        count.assignedSlot!.closest('[aria-live]')?.getAttribute('aria-live')
+      ).to.equal('polite');
+    });
+
     it('sorts via the API, persists the choice and starts at the first page', async () => {
       const element = await layoutView();
       const select = element.shadowRoot!.querySelector(

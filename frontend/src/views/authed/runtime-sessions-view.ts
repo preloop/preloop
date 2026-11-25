@@ -355,11 +355,6 @@ export class RuntimeSessionsView extends LitElement {
       list-toolbar sl-select::part(form-control-label) {
         font-size: var(--console-text-meta);
       }
-      .count-actions {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-small);
-      }
       .filter-actions {
         min-width: 116px;
         display: flex;
@@ -2596,6 +2591,8 @@ export class RuntimeSessionsView extends LitElement {
         hideListSearch
         .autoSelect=${false}
         .hideSidebar=${this.isSearching}
+        .mobileListDetail=${true}
+        .serverOrdered=${true}
         .mobileDetail=${!!this.selectedSessionId}
         @session-list-back=${this.backToList}
         @session-detail-requested=${() => {
@@ -3197,7 +3194,7 @@ export class RuntimeSessionsView extends LitElement {
         ${
           this.newSessionError
             ? html`<sl-alert
-                class="new-session-error"
+                class="new-session-error list-chrome"
                 variant="warning"
                 open
                 closable
@@ -3313,21 +3310,20 @@ export class RuntimeSessionsView extends LitElement {
                   <sl-option value="cost">Cost</sl-option>
                   <sl-option value="requests">Requests</sl-option>
                 </sl-select>
-                <span slot="count" class="count-actions">
-                  <span
-                    class="filter-actions"
-                    ?hidden=${!this.hasActiveFilters()}
+                <span
+                  slot="actions"
+                  class="filter-actions"
+                  ?hidden=${!this.hasActiveFilters()}
+                >
+                  <sl-button
+                    size="small"
+                    variant="default"
+                    @click=${this.clearFilters}
+                    >Clear filters</sl-button
                   >
-                    <sl-button
-                      size="small"
-                      variant="default"
-                      @click=${this.clearFilters}
-                      >Clear filters</sl-button
-                    >
-                  </span>
-                  <span class="session-count"
-                    >${this.sessionCountLabel}</span
-                  ></span
+                </span>
+                <span slot="count" class="session-count"
+                  >${this.sessionCountLabel}</span
                 >
               </list-toolbar>
               <div class="list-chrome">${this.renderEmbeddingSettings()}</div>
@@ -3337,7 +3333,7 @@ export class RuntimeSessionsView extends LitElement {
                   : html`
                       <button
                         type="button"
-                        class="titles-upsell-hint"
+                        class="titles-upsell-hint list-chrome"
                         @click=${this.openTitlesUpgrade}
                       >
                         Unlock AI titles for these sessions
@@ -3347,7 +3343,7 @@ export class RuntimeSessionsView extends LitElement {
               ${
                 this.error && this.sessions
                   ? html`
-                      <sl-alert variant="danger" open>
+                      <sl-alert class="list-chrome" variant="danger" open>
                         <sl-icon
                           slot="icon"
                           name="exclamation-triangle"

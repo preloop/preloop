@@ -258,6 +258,14 @@ export class PreloopSessionObserver extends LitElement {
   @property({ type: String })
   layout: 'full' | 'embedded' = 'embedded';
 
+  /** Preserve API ranking when the host owns sorting and pagination. */
+  @property({ type: Boolean })
+  serverOrdered = false;
+
+  /** Let a host with list/detail routes choose a single pane on phones. */
+  @property({ type: Boolean })
+  mobileListDetail = false;
+
   /** The page's URL selects the detail pane on a narrow viewport. */
   @property({ type: Boolean })
   mobileDetail = false;
@@ -1005,16 +1013,16 @@ export class PreloopSessionObserver extends LitElement {
         .observer.with-sidebar {
           grid-template-columns: minmax(0, 1fr);
         }
-        .observer.full-layout:not(.mobile-detail) > .content,
-        .observer.full-layout:not(.mobile-detail) > .desktop-split,
-        .observer.full-layout.mobile-detail > .sidebar {
+        .observer.mobile-list-detail:not(.mobile-detail) > .content,
+        .observer.mobile-list-detail:not(.mobile-detail) > .desktop-split,
+        .observer.mobile-list-detail.mobile-detail > .sidebar {
           display: none;
         }
         .observer.full-layout {
           height: auto !important;
           min-height: 0;
         }
-        .full-layout .back-to-list {
+        .mobile-list-detail .back-to-list {
           display: inline-flex;
           align-self: flex-start;
           min-height: 44px;
@@ -1099,7 +1107,11 @@ export class PreloopSessionObserver extends LitElement {
       this.observedSessions = [];
       this.activeSessionId = null;
     }
-    if (changed.has('sessions') || changed.has('scopeId')) {
+    if (
+      changed.has('sessions') ||
+      changed.has('scopeId') ||
+      changed.has('serverOrdered')
+    ) {
       this.applySessions(this.sessions || []);
     } else if (
       changed.has('selectedSessionId') &&
@@ -1427,7 +1439,11 @@ export class PreloopSessionObserver extends LitElement {
     const pinned = this.observedSessions.find(
       (session) => session.id === this.selectedSessionId
     );
-    if (rows !== null) this.observedSessions = normalizeObservedSessions(rows);
+    if (rows !== null) {
+      this.observedSessions = normalizeObservedSessions(rows, {
+        preserveOrder: this.serverOrdered,
+      });
+    }
     if (
       pinned &&
       !this.observedSessions.some((session) => session.id === pinned.id)
@@ -3440,7 +3456,7 @@ export class PreloopSessionObserver extends LitElement {
           void this.scrollToArtifact(event.detail.artifactId)}
       >
         ${
-          this.layout === 'full'
+          this.mobileListDetail
             ? html`<a
                 class="back-to-list"
                 href=${this.listHref()}
@@ -3729,7 +3745,7 @@ export class PreloopSessionObserver extends LitElement {
         : `observer with-sidebar${animClosed ? ' sidebar-anim-closed' : ''}`;
     return html`
       ${
-        this.activeSession && (this.layout !== 'full' || this.mobileDetail)
+        this.activeSession && (!this.mobileListDetail || this.mobileDetail)
           ? html`<a
               class="skip-detail"
               href="#session-detail"
@@ -3748,7 +3764,7 @@ export class PreloopSessionObserver extends LitElement {
           : nothing
       }
       <div
-        class=${`${observerClass}${this.layout === 'full' ? ' full-layout' : ''}${this.mobileDetail ? ' mobile-detail' : ''}`}
+        class=${`${observerClass}${this.layout === 'full' ? ' full-layout' : ''}${this.mobileListDetail ? ' mobile-list-detail' : ''}${this.mobileDetail ? ' mobile-detail' : ''}`}
         style=${
           this.layout === 'full'
             ? // A window-high master/detail panel: the list and the session

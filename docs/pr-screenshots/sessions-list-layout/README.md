@@ -19,3 +19,6 @@ PRELOOP_DISABLE_TELEMETRY=true node scripts/capture-sessions-layout.mjs http://1
 Additional after captures show the [phone list](after-phone-list.png),
 [desktop list footer](after-desktop-list-footer.png),
 [dark desktop](after-desktop-dark.png) and [dark phone](after-phone-dark.png).
+
+The [free-account phone detail](after-phone-free.png) uses `premium: false`
+and verifies that the titles upsell stays on the list screen.

@@ -46,6 +46,7 @@ const browser = await chromium.launch();
 for (const [size, width, height] of [
   ['desktop', 1440, 1000],
   ['phone', 390, 844],
+  ...(revision === 'after' ? [['phone-free', 390, 844]] : []),
 ]) {
   const context = await browser.newContext({
     viewport: { width, height },
@@ -117,7 +118,7 @@ for (const [size, width, height] of [
         permissions: ['view_runtime_sessions'],
       };
     else if (pathname.endsWith('/billing/entitlements'))
-      data = { premium: true };
+      data = { premium: size !== 'phone-free' };
     else if (pathname.endsWith('/features')) data = { features: {} };
     else if (
       pathname.endsWith('/ai-models') ||
@@ -158,7 +159,7 @@ for (const [size, width, height] of [
     path: path.join(output, `${revision}-${size}.png`),
     fullPage: true,
   });
-  if (revision === 'after') {
+  if (revision === 'after' && size !== 'phone-free') {
     if (size === 'desktop') {
       await page
         .locator('preloop-session-observer .sidebar')

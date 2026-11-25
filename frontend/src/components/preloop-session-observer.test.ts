@@ -545,6 +545,36 @@ describe('PreloopSessionObserver', () => {
     expect(modelCalls()).to.have.length(1);
   });
 
+  it('keeps both panes visible for full-layout callers without phone routing', async () => {
+    await setViewport({ width: 390, height: 844 });
+    try {
+      const el = await fixture<PreloopSessionObserver>(html`
+        <preloop-session-observer
+          layout="full"
+          scope="managed_agent"
+          .scopeId=${'example-agent'}
+          .sessions=${[session]}
+          .selectedSessionId=${session.id}
+        ></preloop-session-observer>
+      `);
+      await waitUntil(() =>
+        Boolean(el.shadowRoot!.querySelector('#session-title'))
+      );
+      expect(
+        getComputedStyle(el.shadowRoot!.querySelector<HTMLElement>('.sidebar')!)
+          .display
+      ).to.not.equal('none');
+      expect(
+        getComputedStyle(el.shadowRoot!.querySelector<HTMLElement>('.content')!)
+          .display
+      ).to.not.equal('none');
+      expect(el.shadowRoot!.querySelector('.back-to-list')).to.equal(null);
+      expect(el.shadowRoot!.querySelector('.skip-detail')).to.exist;
+    } finally {
+      await setViewport({ width: 1280, height: 800 });
+    }
+  });
+
   it('renders normalized sessions and keeps optimizations opt-in', async () => {
     const el = (await fixture(
       html`<preloop-session-observer
