@@ -107,6 +107,24 @@ func TestCompareVersionsAndUpdateAvailable(t *testing.T) {
 	}
 }
 
+func TestReleaseCandidateUpdatePath(t *testing.T) {
+	for _, tc := range []struct {
+		current string
+		latest  string
+		want    bool
+	}{
+		{"1.1.0-rc.1", "1.0.2", false},
+		{"1.0.2", "1.1.0-rc.1", true},
+		{"1.1.0-rc.1", "1.1.0", true},
+		{"1.1.0-rc.1", "1.1.0-rc.1", false},
+		{"1.1.0-rc.2", "1.1.0-rc.10", true},
+	} {
+		if got := UpdateAvailable(tc.current, tc.latest); got != tc.want {
+			t.Errorf("UpdateAvailable(%q, %q) = %v, want %v", tc.current, tc.latest, got, tc.want)
+		}
+	}
+}
+
 func TestChecksumForAsset(t *testing.T) {
 	sums := "abc123  preloop-darwin-arm64\ndef456 *preloop-linux-amd64\n"
 	if got := checksumForAsset(sums, "preloop-darwin-arm64"); got != "abc123" {

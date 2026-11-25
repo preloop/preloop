@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Preloop API
   description: REST API for Preloop issue tracking management
-  version: 1.0.2
+  version: 1.1.0-rc.1
 paths:
   /api/v1/overview/bootstrap:
     get:

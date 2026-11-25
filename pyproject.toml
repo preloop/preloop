@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "preloop"
-version = "1.0.2"
+version = "1.1.0-rc.1"
 description = "Preloop - Control plane & safety layer for your agentic AI workforce"
 readme = "README.md"
 authors = [{name = "Dimitris Moraitis", email = "dimitris@preloop.ai"}, {name = "Yannis Chatzikonstantinou", email = "yannis@preloop.ai"}]
@@ -42,6 +42,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
+    "packaging>=24.0",  # Release and prerelease ordering for update checks
     "anthropic>=0.72.0",
     "uvicorn[standard]>=0.36.0",
     "websockets>=13.0",  # Sync client for the Codex upstream Responses WebSocket (#1454)
