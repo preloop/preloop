@@ -215,6 +215,7 @@ def test_helm_uses_same_secret_for_both_images(run: Run) -> None:
     old = values("example/app:0.17.1", run.app_env())
     new = values("example/app:candidate", run.app_env())
     assert old["extraEnv"] == new["extraEnv"]
+    assert "MODEL_ENDPOINT_ALLOWED_CIDRS" in {item["name"] for item in old["extraEnv"]}
     assert old["existingSecret"] == new["existingSecret"] == "acceptance-credentials"
     assert old["image"]["pullPolicy"] == "Never"
     secret = next(
@@ -450,10 +451,12 @@ def test_matrix_requires_both_clients_and_actual_content() -> None:
             "onboard",
             "gateway",
             "policy_apply",
+            "restrictive_defaults",
             "runner_connect_1",
             "runner_connect_2",
             "runner_reconnect",
             "flow",
+            "discovery_report",
         )
     }
     cells = [
@@ -466,6 +469,42 @@ def test_matrix_requires_both_clients_and_actual_content() -> None:
     assert not matrix_passed(cells)
     cells[1]["operations"]["flow"] = {"content_verified": True}
     cells[0]["operations"]["runner_connect_2"] = {"exit_code": 0}
+    assert not matrix_passed(cells)
+
+
+def test_matrix_does_not_treat_unsupported_commands_as_success() -> None:
+    operations = {
+        name: {"content_verified": True}
+        for name in (
+            "login",
+            "discover",
+            "onboard",
+            "gateway",
+            "policy_apply",
+            "restrictive_defaults",
+            "runner_connect_1",
+            "runner_connect_2",
+            "runner_reconnect",
+            "discovery_report",
+            "review_posting_guard",
+            "routing_guard",
+            "extension_policy_unsupported",
+            "account_health_unsupported",
+            "shared_flow_unsupported",
+            "webhook_rotation_unsupported",
+            "managed_bundle_unsupported",
+        )
+    }
+    cells = [
+        {"cli": cli, "server": "baseline", "operations": dict(operations)}
+        for cli in ("baseline", "candidate")
+    ]
+    cells[1]["operations"]["discovery_report"] = {
+        "exit_code": 1,
+        "explicit_unsaved": True,
+    }
+    assert matrix_passed(cells)
+    cells[1]["operations"]["routing_guard"] = {"exit_code": 0}
     assert not matrix_passed(cells)
 
 
@@ -542,3 +581,22 @@ def test_installer_default_encryption_can_be_rehearsed(tmp_path: Path) -> None:
     )
     assert rig.app_env()["SECURITY__ENCRYPTION_KEY"] == ""
     assert rig.app_env()["SECRET_KEY"] == rig.secret
+
+
+def test_running_rig_freezes_probe_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    import runner
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "fixture.py").write_text("before")
+    monkeypatch.setattr(runner, "HERE", source)
+    rig = Run(argparse.Namespace(output=str(tmp_path / "evidence"), rc=None))
+    (source / "fixture.py").write_text("after")
+    assert (rig.harness_source / "fixture.py").read_text() == "before"
+    assert (
+        rig.report["harness_sha256"]["fixture.py"]
+        == hashlib.sha256(b"before").hexdigest()
+    )

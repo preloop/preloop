@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // CIAdminRequest uses the human administration API. It never returns server
@@ -27,6 +28,9 @@ func (c *Client) CIAdminRequest(method, suffix string, payload interface{}, resu
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
+		if strings.HasPrefix(suffix, "/shared-flows/") && (apiErr.StatusCode == http.StatusNotFound || apiErr.StatusCode == http.StatusMethodNotAllowed) {
+			return fmt.Errorf("shared CI flow unavailable: check the flow ID and upgrade the server if it does not support shared flows (HTTP %d)", apiErr.StatusCode)
+		}
 		return fmt.Errorf("CI administration failed (HTTP %d)", apiErr.StatusCode)
 	}
 	return fmt.Errorf("CI administration request failed; inspect safe identity metadata before retrying")

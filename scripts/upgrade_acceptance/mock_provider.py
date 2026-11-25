@@ -8,6 +8,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from fixture import MODEL_KEY
+
 MARKER = "synthetic-upgrade-completion"
 
 
@@ -30,6 +32,9 @@ class Provider(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib HTTP handler protocol
         """Return a completion with measurable usage and a known content marker."""
+        if self.headers.get("Authorization") != f"Bearer {MODEL_KEY}":
+            self.send_error(401)
+            return
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
         if self.path != "/v1/chat/completions" or body.get("stream"):
             self.send_error(400)

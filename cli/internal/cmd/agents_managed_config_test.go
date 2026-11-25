@@ -323,7 +323,7 @@ func TestManagedBundleRevisionHashesArtifact(t *testing.T) {
 }
 
 func TestManagedBundleRegister(t *testing.T) {
-	for _, status := range []int{http.StatusOK, http.StatusForbidden} {
+	for _, status := range []int{http.StatusOK, http.StatusForbidden, http.StatusNotFound} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			testenv.SetTempHome(t)
 			calls := 0
@@ -357,7 +357,7 @@ func TestManagedBundleRegister(t *testing.T) {
 			output := filepath.Join(t.TempDir(), "bundle")
 			command.SetArgs([]string{"claude-code", "--output", output, "--cli-path", "/opt/preloop/bin/preloop", "--platform", "linux", "--register"})
 			err := command.Execute()
-			if (err != nil) != (status == http.StatusForbidden) {
+			if (err != nil) != (status != http.StatusOK) {
 				t.Fatalf("unexpected error %v", err)
 			}
 			if calls != 1 {
@@ -370,8 +370,11 @@ func TestManagedBundleRegister(t *testing.T) {
 			if strings.Contains(string(preview), "This export is offline") {
 				t.Fatal("registered export claims offline")
 			}
-			if status == http.StatusForbidden && strings.Contains(out.String(), "Registered bundle") {
+			if status != http.StatusOK && strings.Contains(out.String(), "Registered bundle") {
 				t.Fatal("failed registration reported success")
+			}
+			if status == http.StatusNotFound && !strings.Contains(err.Error(), "bundle exported locally") {
+				t.Fatalf("missing local export and compatibility guidance: %v", err)
 			}
 		})
 	}

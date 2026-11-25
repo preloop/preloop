@@ -24,6 +24,8 @@ from typing import Any
 
 import yaml
 
+from evidence import scrub
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 RELEASE_RE = re.compile(r"^v?(0\.17\.(\d+))$")
@@ -70,16 +72,6 @@ def published_rc(releases: list[dict[str, Any]], tag: str) -> dict[str, Any]:
     raise AcceptanceError("Final gate requires an actually published 1.0.0 or 1.1.0 RC")
 
 
-def scrub(value: str, sensitive: list[str]) -> str:
-    """Remove known test secrets and common credential forms from artifacts."""
-    for item in sorted(sensitive, key=len, reverse=True):
-        if item:
-            value = value.replace(item, "[redacted]")
-    value = re.sub(r"postgres(?:ql)?(?:\+\w+)?://[^\s'\"]+", "[database-url]", value)
-    value = re.sub(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "[jwt]", value)
-    return value
-
-
 def private_json(path: Path, value: Any) -> None:
     """Write private state without inheriting a permissive umask."""
     path.write_text(json.dumps(value, indent=2) + "\n")
@@ -112,12 +104,30 @@ def matrix_passed(cells: list[dict[str, Any]]) -> bool:
             "onboard",
             "gateway",
             "policy_apply",
+            "restrictive_defaults",
             "runner_connect_1",
             "runner_connect_2",
             "runner_reconnect",
         ]
         if cell.get("server") == "candidate" and cell.get("cli") == "candidate":
             required.append("flow")
+        if cell.get("server") == "baseline" and cell.get("cli") == "candidate":
+            required.extend(
+                [
+                    "review_posting_guard",
+                    "routing_guard",
+                    "extension_policy_unsupported",
+                    "account_health_unsupported",
+                    "shared_flow_unsupported",
+                    "webhook_rotation_unsupported",
+                    "managed_bundle_unsupported",
+                ]
+            )
+            report = operations.get("discovery_report", {})
+            if not (report.get("content_verified") or report.get("explicit_unsaved")):
+                return False
+        else:
+            required.append("discovery_report")
         if any(
             not operations.get(name, {}).get("content_verified") for name in required
         ):
@@ -137,6 +147,10 @@ class Run:
             else Path(tempfile.gettempdir()) / self.name
         )
         self.root.mkdir(mode=0o700, parents=True, exist_ok=False)
+        self.harness_source = self.root / "harness"
+        self.harness_source.mkdir()
+        for path in HERE.glob("*.py"):
+            shutil.copy2(path, self.harness_source / path.name)
         self.env = {
             k: v
             for k, v in os.environ.items()
@@ -194,6 +208,10 @@ class Run:
             "steps": [],
             "final_rc_gate": "pending",
             "cleanup": {},
+            "harness_sha256": {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(self.harness_source.glob("*.py"))
+            },
         }
         self.compose_files: list[str] | None = None
         self.kind_owned = False
@@ -489,7 +507,7 @@ class Run:
             if name in ("api", "migrate", "gateway"):
                 service["image"] = image
                 service["environment"] = self.app_env()
-                service["volumes"] = [f"{HERE}:/acceptance:ro"]
+                service["volumes"] = [f"{self.harness_source}:/acceptance:ro"]
                 if name == "gateway":
                     service["environment"]["PRELOOP_SERVICE_ROLE"] = "gateway"
                 if getattr(self.args, "cli_matrix", False):
@@ -513,7 +531,7 @@ class Run:
             "image": image,
             "command": ["python", "/acceptance/mock_provider.py"],
             "environment": TELEMETRY,
-            "volumes": [f"{HERE}:/acceptance:ro"],
+            "volumes": [f"{self.harness_source}:/acceptance:ro"],
             "cpus": 1,
             "mem_limit": "256m",
             "restart": "no",
@@ -918,7 +936,7 @@ class Run:
                 "--timeout=180s",
             ],
         )
-        fixture = HERE / "fixture.py"
+        fixture = self.harness_source / "fixture.py"
         self.command(
             "kind-fixture",
             [

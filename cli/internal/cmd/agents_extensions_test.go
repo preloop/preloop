@@ -645,6 +645,23 @@ func TestInventoryExtensionsCheckOnlineError(t *testing.T) {
 	}
 }
 
+func TestInventoryExtensionsCheckLegacyServer(t *testing.T) {
+	extensionHome(t)
+	t.Setenv("PRELOOP_TOKEN", "synthetic-token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.NotFound(w, nil)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("PRELOOP_URL", server.URL)
+	stdout, _, err := runExtensions(t, "check", "--online", "--json")
+	if ProcessExitCode(err) != 1 || !strings.Contains(err.Error(), "--policy-file") {
+		t.Fatalf("expected offline alternative, got %v", err)
+	}
+	if strings.Contains(stdout, `"result": "pass"`) {
+		t.Fatal("unsupported export was reported as a policy pass")
+	}
+}
+
 // protects=an unapproved decision stored under the report hash; fails_when=
 // the clear name is unknown and the default check exits 0;
 // no_claim=one local skill whose name contains a home-path segment.

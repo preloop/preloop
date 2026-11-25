@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"regexp"
 	"sort"
@@ -593,6 +594,9 @@ func loadExtensionPolicy(online bool, path string) ([]byte, string, error) {
 	}
 	var payload json.RawMessage
 	if err := client.Get(api.RESTPrefix+"/agents/extension-approvals/export", &payload); err != nil {
+		if api.IsStatus(err, http.StatusNotFound) || api.IsStatus(err, http.StatusMethodNotAllowed) {
+			return nil, "", fmt.Errorf("this server does not support extension policy export; upgrade the server or check an exported policy with --policy-file")
+		}
 		return nil, "", err
 	}
 	if len(payload) > inventoryConfigLimit {

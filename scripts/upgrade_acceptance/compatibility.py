@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import json
+import re
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import httpx
 import yaml
 
 from fixture import MODEL_KEY, PASSWORD, identifier
 from mock_provider import MARKER
+
+if TYPE_CHECKING:
+    import httpx
 
 BASE_URL = "http://mock:9001"
 
@@ -28,6 +32,7 @@ def host_profile(home: Path, env: dict[str, str], token: str) -> None:
     real. This small process replaces the vendor CLI and remote model, making
     the acceptance independent of subscriptions and vendor tool installation.
     """
+    (home / "workspace").mkdir()
     executable = home / "cursor-agent"
     executable.write_text("""#!/usr/local/bin/python
 import json, os, urllib.request
@@ -115,9 +120,23 @@ def exercise_flow(client: httpx.Client, runner_id: str, name: str) -> dict[str, 
                 "CANCELLED",
                 "STOPPED",
             }:
-                result["content_verified"] = execution[
-                    "status"
-                ] == "SUCCEEDED" and MARKER in json.dumps(execution)
+                from evidence import scrub
+
+                diagnostic = scrub(
+                    execution.get("error_message") or "",
+                    [
+                        client.headers["Authorization"].removeprefix("Bearer "),
+                        MODEL_KEY,
+                        PASSWORD,
+                    ],
+                )
+                result["diagnostic"] = re.sub(
+                    r"[A-Za-z0-9_-]{20,}", "[redacted]", diagnostic
+                )[:500]
+                logs = client.get(f"/api/v1/flows/executions/{execution_id}/logs")
+                result["content_verified"] = execution["status"] == "SUCCEEDED" and (
+                    MARKER in json.dumps(execution) or MARKER in logs.text
+                )
                 return result
         time.sleep(2)
     return result
@@ -219,11 +238,14 @@ def provision(name: str) -> str:
         return token
 
 
-def exercise(binary: str, phase: str, cli: str) -> dict[str, Any]:
+def exercise(
+    binary: str, phase: str, cli: str, result: dict[str, Any]
+) -> dict[str, Any]:
     """Verify login, discovered content, enrollment, policy defaults and runner sessions."""
+    import httpx
+
     name = f"matrix-{phase}-{cli}"
     token = provision(name)
-    result: dict[str, Any] = {"cli": cli, "server": phase, "operations": {}}
     with tempfile.TemporaryDirectory(prefix=name) as directory:
         home = Path(directory)
         config = home / ".config/opencode/config.json"
@@ -325,7 +347,7 @@ def exercise(binary: str, phase: str, cli: str) -> dict[str, Any]:
             )
             applied = run("policy_apply", ["policy", "apply", str(policy)])
             if applied.returncode:
-                from runner import scrub
+                from evidence import scrub
 
                 result["operations"]["policy_apply"]["diagnostic"] = scrub(
                     applied.stderr, [token, MODEL_KEY]
@@ -355,6 +377,23 @@ def exercise(binary: str, phase: str, cli: str) -> dict[str, Any]:
                 "not yet supported" in strict.stderr
                 or "not yet supported" in strict.stdout
             )
+            strict_export = client.get("/api/v1/policies/export")
+            strict_document = (
+                yaml.safe_load(strict_export.text)
+                if strict_export.status_code == 200
+                else {}
+            )
+            result["operations"]["restrictive_defaults"]["content_verified"] = (
+                strict.returncode == (1 if phase == "baseline" else 0)
+                and strict_document.get("defaults", {}).get("unknown_tools")
+                == ("allow" if phase == "baseline" else "deny")
+                and (
+                    phase != "baseline"
+                    or result["operations"]["restrictive_defaults"][
+                        "explicit_unsupported"
+                    ]
+                )
+            )
             report = run(
                 "discovery_report",
                 ["agents", "discover", "--report", "--no-onboard-prompt"],
@@ -363,6 +402,15 @@ def exercise(binary: str, phase: str, cli: str) -> dict[str, Any]:
                 unavailable="503" in report.stderr
                 or "unavailable" in report.stderr.lower(),
                 explicit_unsaved="not saved" in report.stderr.lower(),
+            )
+            candidates = client.get("/api/v1/agents/discovery-candidates")
+            result["operations"]["discovery_report"]["content_verified"] = (
+                report.returncode == 0
+                and candidates.status_code == 200
+                and any(
+                    row.get("agent_kind") == "opencode"
+                    for row in candidates.json().get("items", [])
+                )
             )
             if phase == "baseline" and cli == "candidate":
                 for operation, path, args in (
@@ -395,6 +443,47 @@ def exercise(binary: str, phase: str, cli: str) -> dict[str, Any]:
                         content_verified=refused.returncode == 1
                         and "upgrade the server" in refused.stderr.lower()
                         and before == after,
+                    )
+                for operation, args in (
+                    (
+                        "extension_policy_unsupported",
+                        ["agents", "extensions", "check", "--online"],
+                    ),
+                    (
+                        "account_health_unsupported",
+                        ["accounts", "health", str(identifier(name + "/account"))],
+                    ),
+                    (
+                        "shared_flow_unsupported",
+                        ["ci", "shared-flow", str(identifier(name + "/guard-flow"))],
+                    ),
+                    (
+                        "webhook_rotation_unsupported",
+                        [
+                            "flow",
+                            "webhook-secret",
+                            "rotate",
+                            str(identifier(name + "/guard-flow")),
+                        ],
+                    ),
+                    (
+                        "managed_bundle_unsupported",
+                        [
+                            "agents",
+                            "managed-config",
+                            "claude-code",
+                            "--output",
+                            str(home / "bundle"),
+                            "--cli-path",
+                            binary,
+                            "--register",
+                        ],
+                    ),
+                ):
+                    unsupported = run(operation, args)
+                    result["operations"][operation]["content_verified"] = (
+                        unsupported.returncode != 0
+                        and "upgrade the server" in unsupported.stderr.lower()
                     )
             identities = []
             for attempt in (1, 2):
@@ -479,12 +568,16 @@ def main() -> None:
     """Emit a credential-free result even when a particular cell fails."""
     results = []
     for cli in ("baseline", "candidate"):
+        result: dict[str, Any] = {"cli": cli, "server": sys.argv[1], "operations": {}}
         try:
-            results.append(exercise(f"/tools/{cli}/preloop", sys.argv[1], cli))
+            exercise(f"/tools/{cli}/preloop", sys.argv[1], cli, result)
         except Exception as exc:
-            results.append(
-                {"cli": cli, "server": sys.argv[1], "error": type(exc).__name__}
-            )
+            result["error"] = type(exc).__name__
+            result["location"] = [
+                f"{frame.name}:{frame.lineno}"
+                for frame in traceback.extract_tb(exc.__traceback__)[-6:]
+            ]
+        results.append(result)
     print("MATRIX_RESULT=" + json.dumps(results), flush=True)
 
 
