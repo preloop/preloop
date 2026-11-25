@@ -22,7 +22,7 @@ import (
 func TestExtensionInventoryPrivacyAndClaudeLayouts(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "fixture-person")
 	secret := "planted-secret-must-stay-on-device"
-	writeInventoryFixture(t, home, ".claude/plugins/store/reviewer.json", `{"name":"reviewer","marketplace":"claude-plugins-official","version":"1.0.0","installPath":".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer","token":"`+secret+`"}`)
+	writeClaudePluginRecord(t, home, "reviewer", `{"name":"reviewer","marketplace":"claude-plugins-official","version":"1.0.0","installPath":".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer","token":"`+secret+`"}`)
 	writeInventoryFixture(t, home, ".claude/plugins/known_marketplaces.json", `{"claude-plugins-official":{"source":{"source":"git","url":"https://example.com/private-repository?token=`+secret+`"}}}`)
 	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer/.claude-plugin/plugin.json", `{"version":"1.4.0","description":"`+secret+`","env":{"TOKEN":"`+secret+`"}}`)
 	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer/skills/bundled/SKILL.md", secret)
@@ -77,7 +77,7 @@ func TestExtensionInventoryPrivacyAndClaudeLayouts(t *testing.T) {
 func TestExtensionInventoryProjectsAndLimit(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "profile")
 	project := t.TempDir()
-	writeInventoryFixture(t, home, ".claude/plugins/store/reviewer.json", `{"name":"reviewer","marketplace":"community"}`)
+	writeClaudePluginRecord(t, home, "reviewer", `{"name":"reviewer","marketplace":"community"}`)
 	writeInventoryFixture(t, home, ".claude/settings.json", `{"enabledPlugins":{"reviewer@community":true}}`)
 	projects, _ := json.Marshal(map[string]any{"projects": map[string]any{project: map[string]any{}}})
 	writeInventoryFixture(t, home, ".claude.json", string(projects))
@@ -123,8 +123,8 @@ func containsExtensionError(codes []string, want string) bool {
 // or hook aggregation differs; no_claim=synthetic layouts, no runtime load proof.
 func TestExtensionInventoryCodex(t *testing.T) {
 	home := t.TempDir()
-	writeInventoryFixture(t, home, ".codex/plugins/openai-curated-remote/reviewer/plugin.json", `{"version":"2.0.1"}`)
-	writeInventoryFixture(t, home, ".codex/plugins/community/helper/plugin.json", `{"version":"3.0.0"}`)
+	writeInventoryFixture(t, home, ".codex/plugins/cache/openai-curated-remote/reviewer/2.0.1/.codex-plugin/plugin.json", `{"version":"2.0.1"}`)
+	writeInventoryFixture(t, home, ".codex/plugins/cache/community/helper/3.0.0/.codex-plugin/plugin.json", `{"version":"3.0.0"}`)
 	writeInventoryFixture(t, home, ".codex/skills/notes/SKILL.md", "private skill")
 	writeInventoryFixture(t, home, ".codex/hooks.json", `{"hooks":{"Stop":[{"command":"private first"}]}}`)
 	writeInventoryFixture(t, home, ".codex/config.toml", "[[hooks.Stop]]\ncommand='private second'\n")
@@ -256,7 +256,7 @@ func TestExtensionReportToLocalStack(t *testing.T) {
 	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
 	home := t.TempDir()
 	writeInventoryFixture(t, home, ".claude/settings.json", `{}`)
-	writeInventoryFixture(t, home, ".claude/plugins/store/reviewer.json", `{"name":"reviewer","marketplace":"community","version":"1.4.0","description":"synthetic-extension-secret"}`)
+	writeClaudePluginRecord(t, home, "reviewer", `{"name":"reviewer","marketplace":"community","version":"1.4.0","description":"synthetic-extension-secret"}`)
 	oldProbes, oldProfiles := inventoryProbes, inventoryProfiles
 	inventoryProbes = inventoryTestDependencies(t, home)
 	inventoryProfiles = inventoryProfileDependencies{Elevated: func() bool { return true }, Profiles: func() ([]inventoryProfile, bool, error) { return []inventoryProfile{{Home: home}}, false, nil }, OpenRoot: os.OpenRoot}

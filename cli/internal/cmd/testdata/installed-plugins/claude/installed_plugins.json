@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "plugins": {
+    "code-review@claude-plugins-official": [
+      {
+        "scope": "user",
+        "installPath": "{{HOME}}/.claude/plugins/cache/claude-plugins-official/code-review/1.0.1",
+        "version": "1.0.1",
+        "installedAt": "2026-01-01T00:00:00.000Z",
+        "lastUpdated": "2026-01-01T00:00:00.000Z",
+        "gitCommitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "superpowers@superpowers-marketplace": [
+      {
+        "scope": "user",
+        "installPath": "{{HOME}}/.claude/plugins/cache/superpowers-marketplace/superpowers/7.0.2",
+        "version": "7.0.2",
+        "installedAt": "2026-01-01T00:00:00.000Z",
+        "lastUpdated": "2026-01-01T00:00:00.000Z",
+        "gitCommitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  }
+}

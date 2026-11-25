@@ -120,7 +120,7 @@ func TestRunAgentsReconnectPreservesEnrollmentAndConfig(t *testing.T) {
 				}
 				return nil
 			}
-			readReconnectSubscriptionCredential = func(selected AgentConfig) map[string]interface{} {
+			readReconnectSubscriptionCredential = func(selected AgentConfig) (map[string]interface{}, string) {
 				if selected.Name != tc.agent {
 					t.Fatalf("wrong credential store: %s", selected.Name)
 				}
@@ -128,7 +128,7 @@ func TestRunAgentsReconnectPreservesEnrollmentAndConfig(t *testing.T) {
 				if tc.expired {
 					expires = time.Now().Add(-time.Hour).UnixMilli()
 				}
-				return map[string]interface{}{"access": "synthetic", "refresh": "synthetic", "expires": expires, "account_id": "synthetic-account"}
+				return map[string]interface{}{"access": "synthetic", "refresh": "synthetic", "expires": expires, "account_id": "synthetic-account"}, claudeOAuthSourceKeychain
 			}
 			cmd := &cobra.Command{}
 			cmd.Flags().Bool("from-local", tc.fromLocal, "")
@@ -151,6 +151,20 @@ func TestRunAgentsReconnectPreservesEnrollmentAndConfig(t *testing.T) {
 			}
 			after, _ := os.ReadFile(agent.ConfigPath)
 			stateAfter, _ := os.ReadFile(statePath)
+			if tc.wantError == "" && tc.agent == "Claude Code" {
+				var beforeState, afterState localEnrollmentState
+				if json.Unmarshal(stateBefore, &beforeState) != nil || json.Unmarshal(stateAfter, &afterState) != nil {
+					t.Fatal("cannot read enrollment state")
+				}
+				if afterState.ClaudeOAuthCredentialSource != claudeOAuthSourceKeychain {
+					t.Fatal("reconnect did not record the native login source")
+				}
+				afterState.ClaudeOAuthCredentialSource = beforeState.ClaudeOAuthCredentialSource
+				if !reflect.DeepEqual(beforeState, afterState) {
+					t.Fatal("reconnect changed unrelated enrollment state")
+				}
+				stateAfter = stateBefore
+			}
 			if !bytes.Equal(configBytes, after) || !bytes.Equal(stateBefore, stateAfter) {
 				t.Fatal("credential recovery changed local config or enrollment")
 			}
