@@ -7,7 +7,19 @@ search reads a corpus of text chunks, `session_search_document`, and is the
 half every deployment gets. Semantic search reads vectors over the same
 chunks, and an account has to opt in before any exist. The endpoint is
 `POST /api/v1/runtime-sessions/search`; the console box at the top of the
-sessions view calls it in `keyword` mode.
+sessions view calls it in `keyword` mode. The console also queries the sessions
+list with `query` to find titles, agent names and aliases even when no content
+has been indexed. It merges those matches first, deduplicates by session ID,
+and labels identity and content hits separately. If either source fails, the
+other source's results remain available alongside the error.
+
+A content link opens the activity page around its activity, usage or delivered
+note ID. The matching row scrolls into view and is marked for two seconds.
+Activity pages use 20 prompt turns by default in the console, keeping transcript
+messages and tool calls together. The API opts in with `page_by_turn=true` and
+returns `next_before` for older pages. A 2,000-row safety cap can split unusually
+large turns; `partial_turn` identifies that case and the cursor preserves access
+to older rows. Without the opt-in the existing activity overview is unchanged.
 
 ## What is in the corpus, and when it got there
 

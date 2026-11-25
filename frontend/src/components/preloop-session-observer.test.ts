@@ -43,6 +43,65 @@ describe('PreloopSessionObserver', () => {
   /** Pending approvals the stubbed list endpoint returns. */
   const PENDING_APPROVALS: Array<Record<string, unknown>> = [];
 
+  it('does not follow an explicitly idle turn even with a recent ingest timestamp (#2426)', async () => {
+    const element = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        .sessions=${[{ ...session, turn_state: 'idle' }]}
+        .features=${{ liveFollow: true }}
+      ></preloop-session-observer>`
+    );
+    await element.updateComplete;
+    await waitUntil(() => Boolean((element as any).activeSession));
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).not.to.contain('Following live');
+  });
+
+  it('labels imported usage estimates in the detail header (#2425)', async () => {
+    const element = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        .sessions=${[
+          {
+            ...session,
+            total_requests: null,
+            usage_source: 'imported',
+            cost_is_known: true,
+          },
+        ]}
+      ></preloop-session-observer>`
+    );
+    await element.updateComplete;
+    await waitUntil(() => Boolean((element as any).activeSession));
+    await element.updateComplete;
+    expect(
+      element.shadowRoot!.querySelector('.summary-row')!.textContent
+    ).to.contain('est.');
+  });
+
+  it('loads a page around a linked activity instead of walking old pages (#2423)', async () => {
+    const element = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        .sessions=${[session]}
+        .focusTurnId=${'old-turn'}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('/activity?'))
+    );
+    const url = String(
+      fetchStub
+        .getCalls()
+        .find((call) => String(call.args[0]).includes('/activity?'))!.args[0]
+    );
+    expect(new URL(url, location.origin).searchParams.get('around')).to.equal(
+      'old-turn'
+    );
+    expect(
+      new URL(url, location.origin).searchParams.get('page_by_turn')
+    ).to.equal('true');
+  });
+
   beforeEach(() => {
     PENDING_APPROVALS.length = 0;
     localStorage.setItem('accessToken', 'test-access-token');
@@ -1387,7 +1446,7 @@ describe('PreloopSessionObserver', () => {
         .null;
     });
 
-    it('switches out of conversation when a turn is linked', async () => {
+    it('keeps conversation when a turn is linked', async () => {
       const el = (await fixture(
         html`<preloop-session-observer
           defaultReplayMode="conversation"
@@ -1405,14 +1464,14 @@ describe('PreloopSessionObserver', () => {
 
       el.focusTurnId = 'event-1';
       await waitUntil(
-        () => (el as any).replayMode === 'timeline',
-        'Linking a turn did not switch to the transcript',
+        () => Boolean(el.shadowRoot?.querySelector('session-chat-view')),
+        'Conversation did not render',
         { timeout: 3000 }
       );
       const panel = el.shadowRoot?.querySelector(
-        'session-replay-panel'
-      ) as HTMLElement & { focusEventId: string | null };
-      expect(panel.focusEventId).to.equal('event-1');
+        'session-chat-view'
+      ) as HTMLElement & { focusTurnId: string | null };
+      expect(panel.focusTurnId).to.equal('event-1');
     });
 
     it('asks for a linked note with the session activity', async () => {
@@ -1437,7 +1496,7 @@ describe('PreloopSessionObserver', () => {
         .getCalls()
         .map((call) => String(call.args[0]))
         .find((url) => url.includes('/activity'))!;
-      expect(activityUrl).to.contain('operator_note_id=note-7');
+      expect(activityUrl).to.contain('around=note-7');
       expect(el).to.exist;
     });
 
@@ -1461,12 +1520,11 @@ describe('PreloopSessionObserver', () => {
       );
       el.focusTurnId = 'note-2';
       await waitUntil(
-        () =>
-          activityUrls().some((url) => url.includes('operator_note_id=note-2')),
+        () => activityUrls().some((url) => url.includes('around=note-2')),
         'Opening another note did not read activity again',
         { timeout: 3000 }
       );
-      expect(activityUrls()[0]).to.contain('operator_note_id=note-1');
+      expect(activityUrls()[0]).to.contain('around=note-1');
     });
 
     it('drops a stale activity answer for an earlier linked note', async () => {
@@ -1498,14 +1556,12 @@ describe('PreloopSessionObserver', () => {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
+      fetchStub.withArgs(sinon.match(/around=note-a/)).callsFake(async () => {
+        await oldGate;
+        return json({ items: [noteRow('note-a')] });
+      });
       fetchStub
-        .withArgs(sinon.match(/operator_note_id=note-a/))
-        .callsFake(async () => {
-          await oldGate;
-          return json({ items: [noteRow('note-a')] });
-        });
-      fetchStub
-        .withArgs(sinon.match(/operator_note_id=note-b/))
+        .withArgs(sinon.match(/around=note-b/))
         .callsFake(async () => json({ items: [noteRow('note-b')] }));
       el.focusTurnId = 'note-a';
       await el.updateComplete;
@@ -1671,7 +1727,7 @@ describe('PreloopSessionObserver', () => {
     it('offers follow and End session while the session runs', async () => {
       const el = (await fixture(
         html`<preloop-session-observer
-          .sessions=${[session]}
+          .sessions=${[{ ...session, turn_state: 'working', last_activity_at: new Date().toISOString(), last_request_at: new Date().toISOString() }]}
           .features=${{ endSession: true }}
         ></preloop-session-observer>`
       )) as PreloopSessionObserver;

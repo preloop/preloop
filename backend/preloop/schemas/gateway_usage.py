@@ -398,7 +398,9 @@ class RuntimeSessionSummary(BaseModel):
     turn_started_at: Optional[datetime] = None
     turn_ended_at: Optional[datetime] = None
     turn_interrupted: Optional[bool] = None
-    total_requests: int = 0
+    total_requests: Optional[int] = 0
+    usage_source: str = "gateway"
+    cost_is_known: bool = True
     successful_requests: int = 0
     failed_requests: int = 0
     token_usage: GatewayTokenUsage
@@ -984,6 +986,9 @@ class RuntimeSessionActivityItem(BaseModel):
 class RuntimeSessionActivityListResponse(BaseModel):
     """List of activity items for a runtime session."""
 
+    has_more: bool = False
+    next_before: Optional[str] = None
+    partial_turn: bool = False
     items: List[RuntimeSessionActivityItem] = Field(default_factory=list)
 
 

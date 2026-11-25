@@ -1,4 +1,4 @@
-import { expect, fixture, html } from '@open-wc/testing';
+import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import './session-chat-view';
 import type { SessionChatView } from './session-chat-view';
 import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
@@ -74,6 +74,124 @@ async function waitForStableScroll(thread: HTMLElement): Promise<void> {
 }
 
 describe('session-chat-view', () => {
+  it('marks and scrolls to a focused pushed turn (#2423)', async () => {
+    const element = await fixture<SessionChatView>(
+      html` <session-chat-view
+        .focusTurnId=${'matched-message'}
+        .activity=${[
+          activityItem({
+            activity_id: 'matched-message',
+            activity_type: 'transcript_message',
+            timestamp: '2026-11-25T10:00:00Z',
+            title: 'User message',
+            summary: 'Find this example.',
+            metadata: { role: 'user' },
+          }),
+        ]}
+      ></session-chat-view>`
+    );
+    await element.updateComplete;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const target = element.shadowRoot!.querySelector(
+      '[data-focus-id="matched-message"]'
+    );
+    expect(target).not.to.equal(null);
+    expect(target!.classList.contains('jump-highlight')).to.equal(true);
+  });
+
+  for (const kind of [
+    'tool_call',
+    'agent_control_message',
+    'transcript_message',
+  ]) {
+    it(`lands on a ${kind} hit inside the conversation`, async () => {
+      const element = await fixture<SessionChatView>(
+        html` <session-chat-view
+          .focusTurnId=${kind === 'agent_control_message' ? 'example-note' : 'example-row'}
+          .activity=${[
+            activityItem({
+              activity_id: 'example-row',
+              activity_type: kind,
+              timestamp: '2026-11-25T10:00:00Z',
+              title: 'Example activity',
+              summary: 'Example captured content',
+              tool_name: kind === 'tool_call' ? 'read_file' : null,
+              metadata: {
+                role: 'system',
+                kind: 'operator_note',
+                note_id: 'example-note',
+              },
+            }),
+          ]}
+        ></session-chat-view>`
+      );
+      await waitUntil(() =>
+        Boolean(element.shadowRoot!.querySelector('.jump-highlight'))
+      );
+      expect(
+        element
+          .shadowRoot!.querySelector('.jump-highlight')!
+          .getAttribute('data-focus-id')
+      ).to.equal('example-row');
+      const disclosure = element.shadowRoot!.querySelector('sl-details') as any;
+      if (disclosure) expect(disclosure.open).to.equal(true);
+    });
+  }
+
+  it('retains all pushed assistant messages and their batch order (#2422)', async () => {
+    const element = await fixture<SessionChatView>(
+      html` <session-chat-view
+        .activity=${[2, 0, 1].map((index) =>
+          activityItem({
+            activity_id: `same-time-${index}`,
+            activity_type: 'transcript_message',
+            timestamp: '2026-11-25T10:00:00Z',
+            title: 'Message',
+            summary: `Message ${index}`,
+            metadata: {
+              role: index === 0 ? 'user' : 'assistant',
+              external_id: 'example-batch',
+              message_index: index,
+            },
+          })
+        )}
+      ></session-chat-view>`
+    );
+    const rows = [...element.shadowRoot!.querySelectorAll('.bubble')];
+    expect(
+      rows.map((row) => row.querySelector('pre')?.textContent)
+    ).to.deep.equal(['Message 0', 'Message 1', 'Message 2']);
+  });
+
+  it('renders pushed transcript prompts and replies in order (#2422)', async () => {
+    const element = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .activity=${[
+          activityItem({
+            activity_id: 'reply',
+            activity_type: 'transcript_message',
+            timestamp: '2026-11-25T10:01:00Z',
+            title: 'Assistant message',
+            summary: 'The check passed.',
+            metadata: { role: 'assistant' },
+          }),
+          activityItem({
+            activity_id: 'prompt',
+            activity_type: 'transcript_message',
+            timestamp: '2026-11-25T10:00:00Z',
+            title: 'User message',
+            summary: 'Check the example.',
+            metadata: { role: 'user' },
+          }),
+        ]}
+      ></session-chat-view>
+    `);
+    const messages = [...element.shadowRoot!.querySelectorAll('.bubble')];
+    expect(messages.map((row) => row.textContent)).to.have.length(2);
+    expect(messages[0].textContent).to.contain('Check the example.');
+    expect(messages[1].textContent).to.contain('The check passed.');
+  });
+
   it('shows a repository chip on a native tool row and hides it without the marker', async () => {
     const withMarker = await fixture<SessionChatView>(html`
       <session-chat-view

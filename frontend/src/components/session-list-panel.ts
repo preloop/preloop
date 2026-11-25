@@ -449,6 +449,11 @@ export class SessionListPanel extends LitElement {
     );
   }
 
+  private hasMeasuredRequests(session: ObservedSession): boolean {
+    const raw = session.raw as Record<string, unknown> | undefined;
+    return raw?.total_requests !== null && raw?.usage_source !== 'none';
+  }
+
   render() {
     if (!this.sessions.length) {
       return html`<div class="empty">
@@ -502,9 +507,13 @@ export class SessionListPanel extends LitElement {
                   ${this.metaLine(session)}
                 </div>
                 <div class="metric-row">
-                  <div class="metric">
-                    ${formatNumber(session.totalRequests)} requests
-                  </div>
+                  ${
+                    this.hasMeasuredRequests(session)
+                      ? html`<div class="metric">
+                          ${formatNumber(session.totalRequests)} requests
+                        </div>`
+                      : nothing
+                  }
                   <!-- Tokens before cost: the split says whether a session is
                      expensive because it reads a lot or writes a lot. The
                      cache rate is in the figures' tooltip, so the row stays
@@ -513,7 +522,7 @@ export class SessionListPanel extends LitElement {
                   ${
                     totalTokensOf(session.tokenUsage) > 0
                       ? html`<div class="metric tokens">
-                          ·
+                          ${this.hasMeasuredRequests(session) ? '·' : nothing}
                           <token-figures
                             hide-cache
                             .usage=${session.tokenUsage}
@@ -521,9 +530,15 @@ export class SessionListPanel extends LitElement {
                         </div>`
                       : nothing
                   }
-                  <div class="metric cost">
-                    · ${formatCost(session.estimatedCost)}
-                  </div>
+                  ${
+                    (session.raw as Record<string, unknown>)?.cost_is_known !==
+                    false
+                      ? html`<div class="metric cost">
+                          ${this.hasMeasuredRequests(session) || totalTokensOf(session.tokenUsage) > 0 ? '·' : nothing}
+                          ${formatCost(session.estimatedCost)} est.
+                        </div>`
+                      : nothing
+                  }
                 </div>
                 ${this.renderWasteBadge(session)}
                 ${this.renderNoteIndicator(session)}

@@ -54,6 +54,7 @@ export type TranscriptStepKind =
   'tool_call' | 'tool_result' | 'system' | 'injected' | 'intermediate';
 
 export interface TranscriptStep {
+  activityId?: string | null;
   key: string;
   kind: TranscriptStepKind;
   label: string;
@@ -81,6 +82,7 @@ export interface TranscriptMessageItem {
   text: string;
   timestamp: string | null;
   event: FlowGatewayEvent | null;
+  activityId?: string | null;
   redacted?: boolean;
   truncated?: boolean;
   failed?: boolean;
@@ -435,6 +437,25 @@ function atomTime(atom: Atom): number {
  * observer stores them newest-first); `activity` rows supply tool calls,
  * operator messages and lifecycle markers.
  */
+/** Stable source order for messages pushed with one batch timestamp. */
+export function compareTranscriptActivity(
+  left: RuntimeSessionActivityItem,
+  right: RuntimeSessionActivityItem
+): number {
+  const time =
+    new Date(left.timestamp || 0).getTime() -
+    new Date(right.timestamp || 0).getTime();
+  if (time) return time;
+  const source = String(left.metadata?.external_id || '').localeCompare(
+    String(right.metadata?.external_id || '')
+  );
+  if (source) return source;
+  return (
+    Number(left.metadata?.message_index || 0) -
+    Number(right.metadata?.message_index || 0)
+  );
+}
+
 export function buildConversation(
   events: FlowGatewayEvent[],
   activity: RuntimeSessionActivityItem[] = []
@@ -688,7 +709,9 @@ export function buildConversation(
     });
   }
 
-  for (const [index, item] of activity.entries()) {
+  for (const [index, item] of [...activity]
+    .sort(compareTranscriptActivity)
+    .entries()) {
     const activityType = (item.activity_type || '').toLowerCase();
     const key = `activity:${index}:${item.timestamp || ''}`;
     if (activityType === 'browser_step') {
@@ -718,6 +741,48 @@ export function buildConversation(
       });
       continue;
     }
+    if (activityType === 'transcript_message') {
+      const role = String(
+        item.metadata?.role || item.status || 'assistant'
+      ).toLowerCase();
+      const text = item.summary || '';
+      if (role === 'user' || role === 'assistant') {
+        atoms.push({
+          type: 'message',
+          order: order++,
+          item: {
+            type: 'message',
+            key: `activity:${item.activity_id || key}`,
+            kind: role === 'user' ? 'user_prompt' : 'agent_response',
+            role,
+            text,
+            timestamp: item.timestamp || null,
+            event: null,
+            activityId: item.activity_id,
+          },
+        });
+      } else {
+        atoms.push({
+          type: 'step',
+          order: order++,
+          step: {
+            key,
+            activityId: item.activity_id,
+            kind:
+              role === 'tool'
+                ? 'tool_result'
+                : role === 'tool_use'
+                  ? 'tool_call'
+                  : 'system',
+            label: item.title,
+            text,
+            timestamp: item.timestamp || null,
+            detectionExact: true,
+          },
+        });
+      }
+      continue;
+    }
     if (activityType === 'agent_control_message') {
       const metadata = (item.metadata || {}) as Record<string, unknown>;
       const role =
@@ -732,6 +797,7 @@ export function buildConversation(
           type: 'message',
           key,
           kind: 'operator',
+          activityId: item.activity_id,
           role,
           text: item.summary || item.title || '',
           timestamp: item.timestamp || null,
@@ -812,7 +878,11 @@ export function buildConversation(
       items.push(atom.item);
       return;
     }
-    if (atom.item.kind === 'agent_response' && !finalResponses.has(index)) {
+    if (
+      atom.item.kind === 'agent_response' &&
+      !atom.item.activityId &&
+      !finalResponses.has(index)
+    ) {
       currentSteps.push({
         key: atom.item.key,
         kind: 'intermediate',

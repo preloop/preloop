@@ -4962,12 +4962,43 @@ paths:
           type: integer
           maximum: 100
           minimum: 1
-          description: Most recent model interactions merged into the timeline. The
-            console asks for the latest 50 when a session opens.
+          description: Prompt turns when page_by_turn is true; otherwise recent model
+            interactions. The console requests 20 turns per page.
           default: 100
           title: Limit
-        description: Most recent model interactions merged into the timeline. The
-          console asks for the latest 50 when a session opens.
+        description: Prompt turns when page_by_turn is true; otherwise recent model
+          interactions. The console requests 20 turns per page.
+      - name: page_by_turn
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Page complete prompt turns.
+          default: false
+          title: Page By Turn
+        description: Page complete prompt turns.
+      - name: before
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          description: Previous page's next_before cursor.
+          title: Before
+        description: Previous page's next_before cursor.
+      - name: around
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          description: Activity, usage or note id to center in the page.
+          title: Around
+        description: Activity, usage or note id to center in the page.
       - name: operator_note_id
         in: query
         required: false
@@ -5248,6 +5279,17 @@ paths:
         description: With `history=delta`, each event keeps at most its last N messages
           and tool entries, so the oldest event on a page of a long session does not
           carry the whole conversation (#1689).
+      - name: around
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          description: Center on an activity, usage or note id.
+          title: Around
+        description: Center on an activity, usage or note id.
       - name: before
         in: query
         required: false
@@ -54479,6 +54521,19 @@ components:
       description: One activity item in a runtime session timeline.
     RuntimeSessionActivityListResponse:
       properties:
+        has_more:
+          type: boolean
+          title: Has More
+          default: false
+        next_before:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Before
+        partial_turn:
+          type: boolean
+          title: Partial Turn
+          default: false
         items:
           items:
             $ref: '#/components/schemas/RuntimeSessionActivityItem'
@@ -55693,9 +55748,19 @@ components:
           - type: 'null'
           title: Turn Interrupted
         total_requests:
-          type: integer
+          anyOf:
+          - type: integer
+          - type: 'null'
           title: Total Requests
           default: 0
+        usage_source:
+          type: string
+          title: Usage Source
+          default: gateway
+        cost_is_known:
+          type: boolean
+          title: Cost Is Known
+          default: true
         successful_requests:
           type: integer
           title: Successful Requests
@@ -61008,7 +61073,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

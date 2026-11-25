@@ -100,6 +100,7 @@ graph LR
 | [Discovery source observations](docs/architecture/discovery.md) | Versioned discovery evidence: storage, correlation boundary and presentation. |
 | [Telemetry and activity](docs/architecture/telemetry.md) | OpenTelemetry export and ingest, activity and analytics primitives, vendor activity imports, recording timeline sync. |
 | [Similar sessions](docs/architecture/similar-sessions.md) | Finding sessions similar to the one being viewed. |
+| [Session search and navigation](docs/operations/session-search.md) | Identity and content search, scoped turn-page cursors, and deep links into captured activity. |
 | [Platform operations](docs/architecture/operations.md) | Release publication gate, database connection pools, upgrade acceptance, API diagnostics and shared request rate limiting. |
 
 User authentication includes optional TOTP and hashed recovery codes, with

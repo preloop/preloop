@@ -762,6 +762,9 @@ class RuntimeSessionExplorerService:
         runtime_session_id: str,
         interaction_limit: int = 100,
         operator_note_id: Optional[str] = None,
+        before: Optional[str] = None,
+        around: Optional[str] = None,
+        page_by_turn: bool = False,
     ) -> RuntimeSessionActivityListResponse:
         history_window = resolve_history_window(self.db, account=account)
         summary_row = crud_runtime_session.get_account_session_summary(
@@ -787,6 +790,22 @@ class RuntimeSessionExplorerService:
             end_date=end_date,
             history_window=history_window,
         )
+        page = None
+        if page_by_turn:
+            try:
+                page = crud_runtime_session_activity.list_timeline_turn_page(
+                    self.db,
+                    account_id=str(account.id),
+                    runtime_session_id=runtime_session_id,
+                    limit=interaction_limit,
+                    before=before,
+                    around=around or operator_note_id,
+                    start_date=history_window.cutoff,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            start_date = page["window_start"] or start_date
+            end_date = page["window_end"] or end_date
         flow_execution_id = summary_row.get("flow_execution_id")
         interactions = crud_gateway_usage_search_document.search_account_documents(
             self.db,
@@ -811,6 +830,7 @@ class RuntimeSessionExplorerService:
             summary_row=summary_row,
             interactions=interaction_items,
             operator_note_id=operator_note_id,
+            activity_rows=page["rows"] if page is not None else None,
         )
         cutoff = history_window.cutoff
         if cutoff is not None:
@@ -819,7 +839,12 @@ class RuntimeSessionExplorerService:
                 for item in items
                 if self._normalize_timestamp(item.timestamp) >= cutoff
             ]
-        return RuntimeSessionActivityListResponse(items=items)
+        return RuntimeSessionActivityListResponse(
+            items=items,
+            has_more=page["has_more"] if page else False,
+            next_before=page["next_before"] if page else None,
+            partial_turn=page["partial_turn"] if page else False,
+        )
 
     def get_account_session_summary_insight(
         self,
@@ -1233,6 +1258,8 @@ class RuntimeSessionExplorerService:
             turn_interrupted=row.get("turn_interrupted"),
             cwd=row.get("cwd"),
             total_requests=row["total_requests"],
+            usage_source=row.get("usage_source", "gateway"),
+            cost_is_known=row.get("cost_is_known", True),
             successful_requests=row["successful_requests"],
             failed_requests=row["failed_requests"],
             token_usage=GatewayTokenUsage.from_row(row),
@@ -1247,6 +1274,7 @@ class RuntimeSessionExplorerService:
         summary_row: dict,
         interactions,
         operator_note_id: Optional[str] = None,
+        activity_rows: Optional[list[Any]] = None,
     ) -> list[RuntimeSessionActivityItem]:
         items: list[RuntimeSessionActivityItem] = []
         interaction_api_usage_ids = {
@@ -1297,12 +1325,16 @@ class RuntimeSessionExplorerService:
         # History-free rows: a model call's replayed conversation is read
         # from the gateway-events endpoint, never from this timeline.
         activity_rows = (
-            crud_runtime_session_activity.list_timeline_rows_for_runtime_session(
-                self.db,
-                account_id=summary_row["account_id"],
-                runtime_session_id=summary_row["id"],
-                limit=100,
-                operator_note_id=operator_note_id,
+            activity_rows
+            if activity_rows is not None
+            else (
+                crud_runtime_session_activity.list_timeline_rows_for_runtime_session(
+                    self.db,
+                    account_id=summary_row["account_id"],
+                    runtime_session_id=summary_row["id"],
+                    limit=100,
+                    operator_note_id=operator_note_id,
+                )
             )
         )
         if activity_rows:

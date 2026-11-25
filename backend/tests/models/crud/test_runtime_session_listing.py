@@ -15,6 +15,49 @@ from preloop.models.crud.runtime_session import (
 )
 
 
+@pytest.mark.parametrize("field", ["title", "alias", "runtime_principal_name"])
+def test_search_finds_unindexed_session_identity(
+    db_session: Session, session_listing_data: dict[str, Any], field: str
+) -> None:
+    """Title, alias and agent matches do not depend on indexed content (#2424)."""
+    data = session_listing_data
+    session = data["sessions"]["empty"]
+    setattr(session, field, "Example identity needle")
+    setattr(data["sessions"]["other"], field, "Example identity needle")
+    db_session.flush()
+    result = crud_runtime_session.list_account_sessions(
+        db_session, account_id=str(data["account"].id), query="IDENTITY needle"
+    )
+    assert [item["id"] for item in result["items"]] == [str(session.id)]
+
+
+def test_imported_session_usage_is_not_reported_as_zero_gateway_requests(
+    db_session: Session, session_listing_data: dict[str, Any]
+) -> None:
+    """Imported tokens and cost reach list/detail without inventing requests (#2425)."""
+    data = session_listing_data
+    session = data["sessions"]["empty"]
+    usage = data["usage"]("empty")
+    usage.action_type = "imported_usage"
+    usage.usage_source = "imported"
+    usage.cost_basis = "estimated"
+    db_session.flush()
+    listing = crud_runtime_session.list_account_sessions(
+        db_session, account_id=str(data["account"].id)
+    )
+    summary = crud_runtime_session.get_account_session_summary(
+        db_session,
+        account_id=str(data["account"].id),
+        runtime_session_id=str(session.id),
+    )
+    listed = next(item for item in listing["items"] if item["id"] == str(session.id))
+    for item in (listed, summary):
+        assert item["total_tokens"] == 15
+        assert item["estimated_cost"] == pytest.approx(0.01)
+        assert item["usage_source"] == "imported"
+        assert item["total_requests"] is None
+
+
 @pytest.fixture
 def session_listing_data(db_session: Session, create_account: Any) -> dict[str, Any]:
     account = create_account()

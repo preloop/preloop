@@ -32,6 +32,7 @@ const SESSION_OPTIONS = {
 describe('RuntimeSessionsView', () => {
   let fetchStub: sinon.SinonStub;
   let wsStub: sinon.SinonStub;
+  let includeTitleMatches = false;
 
   const SEARCH_URL = '/api/v1/runtime-sessions/search';
 
@@ -161,7 +162,43 @@ describe('RuntimeSessionsView', () => {
     return text;
   }
 
+  it('keeps unindexed identity matches above content matches (#2424)', async () => {
+    includeTitleMatches = true;
+    const element = await renderedSearch();
+    const queryCall = fetchStub.getCalls().find((call) => {
+      const url = new URL(String(call.args[0]), location.origin);
+      return (
+        url.pathname === '/api/v1/runtime-sessions' &&
+        url.searchParams.get('query') === 'rollout plan'
+      );
+    });
+    expect(queryCall).not.to.equal(undefined);
+    const headings = [
+      ...element.shadowRoot!.querySelectorAll('[data-search-kind]'),
+    ];
+    expect(
+      headings.map((row) => row.getAttribute('data-search-kind'))
+    ).to.deep.equal(['title', 'title', 'content']);
+  });
+
+  it('keeps identity matches when content search is unavailable (#2424)', async () => {
+    includeTitleMatches = true;
+    fetchStub.withArgs(SEARCH_URL).resolves(
+      new Response(JSON.stringify({ detail: 'Content search unavailable' }), {
+        status: 503,
+      })
+    );
+    const element = await renderedSearch();
+    expect(
+      element.shadowRoot!.querySelectorAll('[data-search-kind="title"]')
+    ).to.have.length(2);
+    expect(element.shadowRoot!.textContent).to.contain(
+      'Search is unavailable right now'
+    );
+  });
+
   beforeEach(() => {
+    includeTitleMatches = false;
     wsStub = sinon.stub(unifiedWebSocketManager, 'send').returns(true);
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -263,6 +300,13 @@ describe('RuntimeSessionsView', () => {
             },
           ],
         };
+        if (
+          new URL(url, location.origin).searchParams.has('query') &&
+          !includeTitleMatches
+        ) {
+          page.items = [];
+          page.total = 0;
+        }
         if (hasArtifacts) {
           // The server filter, mirrored: only rows holding that kind.
           page.items = page.items.filter((item: any) => {
@@ -1315,11 +1359,11 @@ describe('RuntimeSessionsView', () => {
       expect(
         (searchBody.filters as Record<string, unknown> | undefined) || {}
       ).to.not.have.property('source_kind');
-      // The list endpoint never sees the query.
-      expect(listCalls().length).to.equal(listsBefore);
+      // Identity search uses the same query alongside the content corpus.
+      expect(listCalls().length).to.equal(listsBefore + 1);
       expect(
         listCalls().filter((url) => url.includes('query='))
-      ).to.have.length(0);
+      ).to.have.length(1);
     });
 
     it('ignores a stale list when a later load already finished', async () => {
@@ -2429,7 +2473,7 @@ describe('RuntimeSessionsView', () => {
         '[data-testid="search-empty"]'
       );
       expect(empty).to.not.equal(null);
-      expect(empty!.textContent).to.contain('No session content matched');
+      expect(empty!.textContent).to.contain('No sessions matched');
     });
 
     it('renders an error state when the search fails', async () => {

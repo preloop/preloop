@@ -3313,16 +3313,24 @@ export async function getAccountRuntimeSessionInteractions(
  * Model turns merged into a session's activity timeline when it opens: the
  * latest ones. A busy session's full set was a megabyte (#1586).
  */
-export const SESSION_ACTIVITY_TURNS = 50;
+export const SESSION_ACTIVITY_TURNS = 20;
 
 export async function getAccountRuntimeSessionActivityTimeline(
   runtimeSessionId: string,
-  options: { limit?: number; operatorNoteId?: string | null } = {}
+  options: {
+    limit?: number;
+    operatorNoteId?: string | null;
+    around?: string | null;
+    before?: string | null;
+  } = {}
 ): Promise<RuntimeSessionActivityListResponse> {
   const query = new URLSearchParams({
     limit: String(options.limit ?? SESSION_ACTIVITY_TURNS),
+    page_by_turn: 'true',
   });
-  // A linked note older than the recent page rides along, so the link lands.
+  if (options.around) query.set('around', options.around);
+  if (options.before) query.set('before', options.before);
+  // Older callers can still name a delivered note directly.
   if (options.operatorNoteId) {
     query.set('operator_note_id', options.operatorNoteId);
   }
@@ -3746,6 +3754,7 @@ export async function getRuntimeSessionGatewayEvents(
          * not shift when new events land at the head, as an offset does.
          */
         before?: string;
+        around?: string | null;
         metadataOnly?: boolean;
         /**
          * `delta` leaves out history an older event on the same page already
@@ -3772,6 +3781,7 @@ export async function getRuntimeSessionGatewayEvents(
     if (options.offset !== undefined)
       searchParams.set('offset', String(options.offset));
     if (options.before) searchParams.set('before', options.before);
+    if (options.around) searchParams.set('around', options.around);
     if (options.metadataOnly) searchParams.set('metadata_only', 'true');
     if (options.history === 'delta') searchParams.set('history', 'delta');
     if (options.historyWindow !== undefined)

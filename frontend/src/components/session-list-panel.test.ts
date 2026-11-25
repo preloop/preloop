@@ -141,8 +141,47 @@ describe('session-list-panel figures', () => {
     // Cost follows the tokens in the same line, not the other way round.
     const row = el.shadowRoot?.querySelector('.metric-row') as HTMLElement;
     const rowText = (row.textContent || '').replace(/\s+/g, ' ');
-    expect(rowText.trim().endsWith('$0.42')).to.be.true;
+    expect(rowText.trim().endsWith('$0.42 est.')).to.be.true;
     expect(getComputedStyle(row).flexWrap).to.equal('nowrap');
+  });
+});
+
+describe('imported session figures (#2425)', () => {
+  it('omits an unmeasured request count and labels the known estimate', async () => {
+    const el = await renderPanel([
+      makeSession({
+        totalRequests: 0,
+        estimatedCost: 0.42,
+        tokenUsage: {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          total_tokens: 120,
+        },
+        raw: {
+          total_requests: null,
+          usage_source: 'imported',
+          cost_is_known: true,
+        },
+      }),
+    ]);
+    const row = el.shadowRoot!.querySelector('.metric-row')!;
+    expect(row.textContent).not.to.contain('requests');
+    expect(row.textContent).to.contain('$0.42 est.');
+    expect(row.querySelector('token-figures')).to.exist;
+  });
+  it('omits missing cost instead of displaying zero', async () => {
+    const el = await renderPanel([
+      makeSession({
+        totalRequests: 0,
+        estimatedCost: 0,
+        raw: {
+          total_requests: null,
+          usage_source: 'imported',
+          cost_is_known: false,
+        },
+      }),
+    ]);
+    expect(el.shadowRoot!.querySelector('.metric.cost')).not.to.exist;
   });
 });
 
@@ -153,7 +192,7 @@ describe('session-list-panel empty figures', () => {
     ]);
     const row = el.shadowRoot?.querySelector('.metric-row') as HTMLElement;
     const rowText = (row.textContent || '').replace(/\s+/g, ' ').trim();
-    expect(rowText).to.equal('0 requests · $0.00');
+    expect(rowText).to.equal('0 requests · $0.00 est.');
     expect(row.querySelector('token-figures')).to.not.exist;
   });
 });

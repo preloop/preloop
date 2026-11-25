@@ -3651,9 +3651,18 @@ async def get_account_session_activity_timeline(
         ge=1,
         le=100,
         description=(
-            "Most recent model interactions merged into the timeline. The "
-            "console asks for the latest 50 when a session opens."
+            "Prompt turns when page_by_turn is true; otherwise recent model "
+            "interactions. The console requests 20 turns per page."
         ),
+    ),
+    page_by_turn: bool = Query(False, description="Page complete prompt turns."),
+    before: Optional[str] = Query(
+        None, max_length=64, description="Previous page's next_before cursor."
+    ),
+    around: Optional[str] = Query(
+        None,
+        max_length=64,
+        description="Activity, usage or note id to center in the page.",
     ),
     operator_note_id: Optional[str] = Query(
         None,
@@ -3677,6 +3686,9 @@ async def get_account_session_activity_timeline(
             runtime_session_id=runtime_session_id,
             interaction_limit=limit,
             operator_note_id=operator_note_id,
+            page_by_turn=page_by_turn,
+            before=before,
+            around=around,
         )
     )
 
@@ -3944,6 +3956,9 @@ async def get_account_runtime_session_gateway_events(
             "long session does not carry the whole conversation (#1689)."
         ),
     ),
+    around: str | None = Query(
+        None, max_length=64, description="Center on an activity, usage or note id."
+    ),
     before: str | None = Query(
         None,
         description=(
@@ -3993,6 +4008,19 @@ async def get_account_runtime_session_gateway_events(
         page_limit = (
             min(tail, 200) if tail else min(limit, 5000 if metadata_only else 100)
         )
+        page_offset = offset
+        if around and before is None:
+            try:
+                page_offset = crud_runtime_session_activity.gateway_offset_around(
+                    db,
+                    account_id=account.id,
+                    runtime_session_id=runtime_session_id,
+                    target=around,
+                    limit=page_limit,
+                    start_date=cutoff,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
         rows = crud_runtime_session_activity.list_model_gateway_calls_for_session(
             db,
             start_date=cutoff,
@@ -4000,7 +4028,7 @@ async def get_account_runtime_session_gateway_events(
             runtime_session_id=runtime_session_id,
             tail=tail,
             limit=limit,
-            offset=offset,
+            offset=page_offset,
             metadata_only=metadata_only,
             before=cursor,
             extra=1 if cursor is not None else 0,
@@ -4029,14 +4057,14 @@ async def get_account_runtime_session_gateway_events(
             has_more = cursor_has_more
             next_offset = None
         else:
-            next_offset = offset + len(events)
+            next_offset = page_offset + len(events)
             has_more = next_offset < total
         return {
             "source": "database",
             "logs": events,
             "pagination": {
                 "limit": page_limit,
-                "offset": offset if cursor is None else None,
+                "offset": page_offset if cursor is None else None,
                 "next_offset": next_offset if has_more else None,
                 # The oldest event on this page; pass it as `before`.
                 "next_cursor": str(rows[-1].id) if has_more and rows else None,

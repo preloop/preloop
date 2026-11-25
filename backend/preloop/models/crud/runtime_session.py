@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session, aliased
 
 from preloop.models import models
 from preloop.models.gateway_usage import GATEWAY_USAGE_PURPOSES
-from .api_usage import cache_split_columns, cache_split_from_row
+from .api_usage import CRUDApiUsage, cache_split_columns, cache_split_from_row
 from .base import CRUDBase
 
 ApiUsage = models.ApiUsage
@@ -956,6 +956,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 normalized_query = f"%{' '.join(query.strip().split())}%"
                 stmt = stmt.filter(
                     or_(
+                        RuntimeSession.title.ilike(normalized_query),
+                        RuntimeSession.alias.ilike(normalized_query),
                         RuntimeSession.session_source_type.ilike(normalized_query),
                         RuntimeSession.session_source_id.ilike(normalized_query),
                         RuntimeSession.session_reference.ilike(normalized_query),
@@ -1068,6 +1070,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             normalized_query = f"%{' '.join(query.strip().split())}%"
             session_query = session_query.filter(
                 or_(
+                    self.model.title.ilike(normalized_query),
+                    self.model.alias.ilike(normalized_query),
                     self.model.session_source_type.ilike(normalized_query),
                     self.model.session_source_id.ilike(normalized_query),
                     self.model.session_reference.ilike(normalized_query),
@@ -1321,6 +1325,14 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 summary["last_request_at"] = latest_usage.timestamp
             items.append(summary)
 
+        self._attach_imported_usage(
+            db,
+            account_id=account_id,
+            items=items,
+            start_date=start_date,
+            end_date=end_date,
+            ai_model_id=ai_model_id,
+        )
         if not use_model_page and total is not None:
             has_more = offset + len(items) < total
         return {"total": total, "has_more": has_more, "items": items}
@@ -2280,7 +2292,77 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             summary["latest_model_alias"] = latest_usage.latest_model_alias
             summary["latest_provider_name"] = latest_usage.latest_provider_name
             summary["last_request_at"] = latest_usage.last_request_at
+        self._attach_imported_usage(
+            db,
+            account_id=account_id,
+            items=[summary],
+            start_date=start_date,
+            end_date=end_date,
+            ai_model_id=ai_model_id,
+        )
         return summary
+
+    def _attach_imported_usage(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        items: list[dict[str, Any]],
+        start_date: Optional[datetime],
+        end_date: Optional[datetime],
+        ai_model_id: Optional[str],
+    ) -> None:
+        """Add imported ledger totals to a bounded page without counting requests.
+
+        Imported lifecycle records do not measure model requests. Cost uses the
+        ledger's reconciled-over-estimated precedence within the requested window.
+        """
+        if not items:
+            return
+        usage_crud = CRUDApiUsage(ApiUsage)
+        columns = ("prompt_tokens", "completion_tokens", "total_tokens")
+        query = db.query(
+            ApiUsage.runtime_session_id,
+            func.count(ApiUsage.id).label("records"),
+            *(func.sum(getattr(ApiUsage, key)).label(key) for key in columns),
+            *cache_split_columns(),
+            func.count(ApiUsage.estimated_cost).label("priced"),
+            usage_crud._imported_cost_sum(
+                account_id=account_id,
+                start_date=start_date or datetime.min,
+                end_date=end_date or datetime.max,
+            ).label("estimated_cost"),
+        ).filter(
+            ApiUsage.account_id == account_id,
+            ApiUsage.runtime_session_id.in_([item["id"] for item in items]),
+            ApiUsage.action_type == "imported_usage",
+        )
+        if start_date is not None:
+            query = query.filter(ApiUsage.timestamp >= start_date)
+        if end_date is not None:
+            query = query.filter(ApiUsage.timestamp < end_date)
+        if ai_model_id is not None:
+            query = query.filter(ApiUsage.ai_model_id == ai_model_id)
+        imported = {
+            str(row.runtime_session_id): row
+            for row in query.group_by(ApiUsage.runtime_session_id).all()
+        }
+        for item in items:
+            row = imported.get(item["id"])
+            gateway = bool(item["total_requests"])
+            item["usage_source"] = "gateway" if gateway else "none"
+            item["cost_is_known"] = gateway
+            if row is None:
+                continue
+            item["usage_source"] = "mixed" if gateway else "imported"
+            item["cost_is_known"] = gateway or bool(row.priced)
+            for key in columns:
+                item[key] = (item.get(key) or 0) + (getattr(row, key) or 0)
+            for key, value in cache_split_from_row(row).items():
+                item[key] = (item.get(key) or 0) + value
+            item["estimated_cost"] += float(row.estimated_cost or 0)
+            if not gateway:
+                item["total_requests"] = None
 
     @staticmethod
     def _runtime_session_columns(db: Session) -> frozenset[str]:
