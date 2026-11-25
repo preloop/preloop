@@ -59,7 +59,7 @@ API refusals also carry the `rate_limited` code; OTLP ingest keeps the OTLP
 status envelope its exporters parse.
 
 Rules on the shared limiter: login, refresh, reset-password, register, OAuth
-token/register/authorize, public approval, passkey challenges, verification
+token/register/authorize/revoke, public approval, passkey challenges, verification
 resend and forgot-password, OTLP ingest and admin test pushes. No request
 rate limit keeps a per-process counter; in-flight concurrency caps (heavy
 routes, duplicate checks) are a separate mechanism. Operator notes and desktop views are capped by
