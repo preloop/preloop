@@ -1113,9 +1113,10 @@ def _register_control_plane_routes(
     app.include_router(
         agent_enrollment.router, prefix="/api/v1", tags=["Agent enrollment"]
     )
-    from preloop.api.endpoints import managed_bundle
+    from preloop.api.endpoints import managed_bundle, extension_policy
 
     app.include_router(managed_bundle.router, prefix="/api/v1")
+    app.include_router(extension_policy.router, prefix="/api/v1")
     from preloop.api.endpoints import account_health
 
     app.include_router(account_health.router, prefix="/api/v1")
