@@ -496,6 +496,59 @@ describe('RunnersView', () => {
       .exist;
   });
 
+  it('links a runner with a signed-in Cursor CLI to a new Cursor flow', async () => {
+    const cursorEntry = {
+      harness: 'cursor_cli',
+      display_name: 'Cursor CLI',
+      login_state: 'signed_in',
+      login_source: 'cli',
+      governance: 'partial',
+      support_level: 'flows_only',
+      enabled: true,
+      sessions_enabled: false,
+      session_mode: 'none',
+      billing: 'seat',
+      models: [{ id: 'auto', source: 'profile' }],
+      generated_profile: 'cursor',
+      capabilities: ['host_exec', 'cursor_cli'],
+    };
+    const element = await renderWith([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'jane-mac',
+        status: 'online',
+        capabilities: {
+          host_exec_profiles: [
+            { name: 'cursor', capabilities: ['host_exec', 'cursor_cli'] },
+          ],
+        },
+        harness_inventory: {
+          schema: 1,
+          generated_at: '2026-11-23T10:00:00Z',
+          hash: 'c1',
+          entries: [cursorEntry],
+        },
+      },
+      {
+        id: '22222222-2222-4222-8222-222222222222',
+        name: 'build-box',
+        status: 'online',
+        capabilities: { host_exec_profiles: [] },
+        harness_inventory: {
+          schema: 1,
+          generated_at: '2026-11-23T10:00:00Z',
+          hash: 'c2',
+          entries: [{ ...cursorEntry, login_state: 'signed_out' }],
+        },
+      },
+    ]);
+    const links = element.shadowRoot!.querySelectorAll('a[data-use-in-flow]');
+    expect(links).to.have.lengthOf(1);
+    expect(links[0].getAttribute('href')).to.equal(
+      '/console/flows/new?agent_type=cursor&runner_pool=11111111-1111-4111-8111-111111111111'
+    );
+  });
+
   it('shows inventory unknown for a runner that predates the inventory', async () => {
     const element = await renderWith([
       {

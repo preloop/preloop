@@ -71,7 +71,7 @@ var agentRuntimeProbes = map[string]agentRuntimeProbeSpec{
 		conclusiveOnDarwin: true,
 	},
 	"cursor": {
-		commands:           []string{"cursor"},
+		commands:           []string{"cursor", "cursor-agent"},
 		appBundles:         []string{"Cursor.app"},
 		conclusiveOnDarwin: true,
 	},

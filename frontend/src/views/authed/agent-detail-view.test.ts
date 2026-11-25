@@ -1112,6 +1112,25 @@ describe('AgentDetailView', () => {
     expect((el as any).error).to.equal(null);
   });
 
+  it('offers a Cursor runner flow without requiring the Agent Control tab', async () => {
+    const el = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(() => !(el as any).loading && !!(el as any).agent);
+    (el as any).agent = {
+      ...(el as any).agent,
+      agent_kind: 'cursor',
+      control_enabled: false,
+    };
+    await el.updateComplete;
+    const route = el.shadowRoot!.querySelector('[data-cursor-runner-route]');
+    expect(
+      route?.querySelector('a[href="/console/flows/new?agent_type=cursor"]')
+    ).to.exist;
+    expect(route?.textContent).to.include('not gateway metered');
+    expect(route?.textContent).to.include('consent');
+  });
+
   it('loads associated flows only when that tab is opened', async () => {
     const el = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
