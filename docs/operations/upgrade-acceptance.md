@@ -223,3 +223,41 @@ python scripts/upgrade_acceptance/runner.py --runtime both \
 
 Use the final-RC procedure above when an RC exists; do not substitute one of
 these candidate results for that gate.
+
+## Recorded 1.0.2 candidate rehearsal: 2026-11-25
+
+The [new machine-readable evidence](upgrade-acceptance-1.0.2-results.json)
+records successful local Linux ARM64 runs against main snapshot
+`0ebc16515e361265800239b34fc32db61d44a563` plus the compatibility fixes:
+
+| Baseline and surface | Candidate commit | Result |
+| --- | --- | --- |
+| Published 1.0.2 installer / Compose | `3995cd8c0a720673a930891dea36e94b736d8df5` | Upgrade, four CLI/server cells, mocked flow and gateway, two restarts passed |
+| Published 1.0.2 / Helm | `9330ab8ae5657cc1109e39463ee44d7424f26f9b` | Chart hooks, content and credentials passed |
+| Published 0.17.1 / Compose | `9330ab8ae5657cc1109e39463ee44d7424f26f9b` | Legacy credential cutover and two restarts passed |
+
+The later Compose candidate adds harness assertions and tests; backend and CLI
+source are identical across these candidates. The final fixture fingerprint
+survived both restarts. Restrictive policy defaults and disabled-tool choices
+written by both CLIs also survived both initializer retries. Each run froze its
+harness files and recorded their hashes. Owned stacks and clusters were removed.
+
+| CLI | Server | Core commands, gateway and runner reconnect | Capability difference |
+| --- | --- | --- | --- |
+| 1.0.2 | 1.0.2 | Passed | Restrictive defaults refused; legacy discovery report saved |
+| 1.0.2 | Candidate | Passed | Deny defaults and discovery reporting passed |
+| Candidate | 1.0.2 | Passed | New discovery evidence could not be saved; explicit guidance and newer-feature refusals verified |
+| Candidate | Candidate | Passed | Deny defaults, discovery reporting and mocked flow execution passed |
+
+Core checks cover token login/auth status, local discovery, credentialed
+onboarding, policy content readback, gateway response content/usage and real
+runner WebSocket handshakes. The candidate CLI refuses review-posting and routing
+settings before an older server can silently ignore them. Newer endpoint-based
+commands explain missing support; local inventory remains available.
+
+The 1.0.2 migration/initializer took 3.94 seconds on 40 tracked fixture
+rows plus matrix tenants and normal initializer data. This includes process
+startup and default reconciliation and is **not production-scale timing**.
+Version 1.0.2 already stores encrypted credentials: its run proves preservation;
+the separate 0.17.1 run exercises plaintext backfill. This remains candidate
+evidence; rerun the published RC gate before release acceptance.

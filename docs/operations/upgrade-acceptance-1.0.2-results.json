@@ -1,0 +1,1644 @@
+{
+  "main_commit": "0ebc16515e361265800239b34fc32db61d44a563",
+  "scope": "Local Linux ARM64 candidate rehearsals; published RC gate pending; synthetic data, not production scale.",
+  "runs": {
+    "acceptance-102-run": {
+      "schema_version": 1,
+      "resource_name": "preloop-ua-29d244aca5",
+      "started_at": "2026-11-25T22:57:45.945643+00:00",
+      "mode": "candidate-rehearsal",
+      "status": "passed",
+      "runtimes": {
+        "compose": {
+          "status": "passed",
+          "before": {
+            "digest": "f12a3735dc19768dbad073aa52656a5c286a01b197f2e21ddad203b79579cd11",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "Flow": 2,
+              "FlowExecution": 2,
+              "PolicySnapshot": 2,
+              "DiscoveredAgentCandidate": 2,
+              "DiscoveryObservation": 2,
+              "AuditLog": 2,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": true,
+            "migration_head": "20261205_ci_dispatch_sink",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head",
+              "api_content_readback"
+            ]
+          },
+          "after": {
+            "digest": "f12a3735dc19768dbad073aa52656a5c286a01b197f2e21ddad203b79579cd11",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "Flow": 2,
+              "FlowExecution": 2,
+              "PolicySnapshot": 2,
+              "DiscoveredAgentCandidate": 2,
+              "DiscoveryObservation": 2,
+              "AuditLog": 2,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": true,
+            "migration_head": "20261230_ext_enforcement",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head",
+              "api_content_readback"
+            ]
+          },
+          "retries": [
+            {
+              "digest": "f12a3735dc19768dbad073aa52656a5c286a01b197f2e21ddad203b79579cd11",
+              "counts": {
+                "Account": 2,
+                "User": 2,
+                "Tracker": 2,
+                "Organization": 2,
+                "Project": 2,
+                "Issue": 6,
+                "AIModel": 4,
+                "ManagedAgent": 4,
+                "Flow": 2,
+                "FlowExecution": 2,
+                "PolicySnapshot": 2,
+                "DiscoveredAgentCandidate": 2,
+                "DiscoveryObservation": 2,
+                "AuditLog": 2,
+                "ApiKey": 3,
+                "ManagedAgentCredential": 1
+              },
+              "credential_backfill": true,
+              "migration_head": "20261230_ext_enforcement",
+              "checks": [
+                "stable_data",
+                "password_logins",
+                "existing_user_key",
+                "agent_key",
+                "existing_session",
+                "revoked_key_denied",
+                "local_model_secret",
+                "local_tracker_secret",
+                "local_webhook_secret",
+                "single_migration_head",
+                "api_content_readback",
+                "matrix_policy_defaults_preserved"
+              ]
+            },
+            {
+              "digest": "f12a3735dc19768dbad073aa52656a5c286a01b197f2e21ddad203b79579cd11",
+              "counts": {
+                "Account": 2,
+                "User": 2,
+                "Tracker": 2,
+                "Organization": 2,
+                "Project": 2,
+                "Issue": 6,
+                "AIModel": 4,
+                "ManagedAgent": 4,
+                "Flow": 2,
+                "FlowExecution": 2,
+                "PolicySnapshot": 2,
+                "DiscoveredAgentCandidate": 2,
+                "DiscoveryObservation": 2,
+                "AuditLog": 2,
+                "ApiKey": 3,
+                "ManagedAgentCredential": 1
+              },
+              "credential_backfill": true,
+              "migration_head": "20261230_ext_enforcement",
+              "checks": [
+                "stable_data",
+                "password_logins",
+                "existing_user_key",
+                "agent_key",
+                "existing_session",
+                "revoked_key_denied",
+                "local_model_secret",
+                "local_tracker_secret",
+                "local_webhook_secret",
+                "single_migration_head",
+                "api_content_readback",
+                "matrix_policy_defaults_preserved"
+              ]
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "label": "release-discovery",
+          "exit_code": 0,
+          "seconds": 1.84
+        },
+        {
+          "label": "fetch-baseline",
+          "exit_code": 0,
+          "seconds": 1.94
+        },
+        {
+          "label": "resolve-baseline-source",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "resolve-candidate-source",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "docker-runtime",
+          "exit_code": 0,
+          "seconds": 0.03
+        },
+        {
+          "label": "pull-baseline",
+          "exit_code": 0,
+          "seconds": 1.6
+        },
+        {
+          "label": "inspect-baseline",
+          "exit_code": 0,
+          "seconds": 0.11
+        },
+        {
+          "label": "build-candidate",
+          "exit_code": 0,
+          "seconds": 7.22
+        },
+        {
+          "label": "inspect-candidate",
+          "exit_code": 0,
+          "seconds": 0.1
+        },
+        {
+          "label": "pull-postgres",
+          "exit_code": 0,
+          "seconds": 1.69
+        },
+        {
+          "label": "inspect-postgres",
+          "exit_code": 0,
+          "seconds": 0.18
+        },
+        {
+          "label": "pull-nats",
+          "exit_code": 0,
+          "seconds": 1.17
+        },
+        {
+          "label": "inspect-nats",
+          "exit_code": 0,
+          "seconds": 0.09
+        },
+        {
+          "label": "download-baseline-cli",
+          "exit_code": 0,
+          "seconds": 2.83
+        },
+        {
+          "label": "build-candidate-cli",
+          "exit_code": 0,
+          "seconds": 2.16
+        },
+        {
+          "label": "download-installer",
+          "exit_code": 0,
+          "seconds": 1.64
+        },
+        {
+          "label": "published-installer",
+          "exit_code": 0,
+          "seconds": 20.14
+        },
+        {
+          "label": "installer-drain",
+          "exit_code": 0,
+          "seconds": 11.6
+        },
+        {
+          "label": "compose-infrastructure",
+          "exit_code": 0,
+          "seconds": 10.8
+        },
+        {
+          "label": "compose-baseline-migrate",
+          "exit_code": 0,
+          "seconds": 3.52
+        },
+        {
+          "label": "compose-baseline-api",
+          "exit_code": 0,
+          "seconds": 0.34
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.13
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.13
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.13
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.16
+        },
+        {
+          "label": "compose-api-container",
+          "exit_code": 0,
+          "seconds": 0.07
+        },
+        {
+          "label": "compose-api-image",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "seed-and-check",
+          "exit_code": 0,
+          "seconds": 5.23
+        },
+        {
+          "label": "cli-matrix-baseline",
+          "exit_code": 0,
+          "seconds": 11.25
+        },
+        {
+          "label": "compose-drain-writers",
+          "exit_code": 0,
+          "seconds": 30.21
+        },
+        {
+          "label": "compose-backup",
+          "exit_code": 0,
+          "seconds": 0.22
+        },
+        {
+          "label": "compose-candidate-migrate",
+          "exit_code": 0,
+          "seconds": 3.94
+        },
+        {
+          "label": "compose-candidate-api",
+          "exit_code": 0,
+          "seconds": 0.55
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.14
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.13
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.14
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.14
+        },
+        {
+          "label": "compose-api-container",
+          "exit_code": 0,
+          "seconds": 0.07
+        },
+        {
+          "label": "compose-api-image",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "verify-upgrade",
+          "exit_code": 0,
+          "seconds": 3.42
+        },
+        {
+          "label": "cli-matrix-candidate",
+          "exit_code": 0,
+          "seconds": 21.98
+        },
+        {
+          "label": "compose-drain-retry-1",
+          "exit_code": 0,
+          "seconds": 30.19
+        },
+        {
+          "label": "compose-migrate-retry-1",
+          "exit_code": 0,
+          "seconds": 3.89
+        },
+        {
+          "label": "compose-restart-1",
+          "exit_code": 0,
+          "seconds": 0.28
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.13
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.15
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.15
+        },
+        {
+          "label": "compose-api-container",
+          "exit_code": 0,
+          "seconds": 0.09
+        },
+        {
+          "label": "compose-api-image",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "verify-upgrade",
+          "exit_code": 0,
+          "seconds": 3.85
+        },
+        {
+          "label": "compose-drain-retry-2",
+          "exit_code": 0,
+          "seconds": 30.19
+        },
+        {
+          "label": "compose-migrate-retry-2",
+          "exit_code": 0,
+          "seconds": 4.02
+        },
+        {
+          "label": "compose-restart-2",
+          "exit_code": 0,
+          "seconds": 0.25
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.13
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.17
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.13
+        },
+        {
+          "label": "compose-api-container",
+          "exit_code": 0,
+          "seconds": 0.07
+        },
+        {
+          "label": "compose-api-image",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "verify-upgrade",
+          "exit_code": 0,
+          "seconds": 3.77
+        },
+        {
+          "label": "compose-cleanup",
+          "exit_code": 0,
+          "seconds": 10.4
+        }
+      ],
+      "final_rc_gate": "pending",
+      "cleanup": {
+        "compose": "removed"
+      },
+      "harness_sha256": {
+        "compatibility.py": "2db2f14b3e77e4aa3f924a1f7aeb6064ec85a356e4f34d69528320a691b9a7a9",
+        "evidence.py": "2cef5fd14df8ff26c1da20fcf3e38353815a8f454737f4a8208c0a31402eed36",
+        "fixture.py": "251838540cb1478ca0cd2b542d06982408d85032fb3e2b374769a6b82e4586ae",
+        "helm.py": "4b36bc57a8e528006ea2192b725a64ffc6797cdd877f442c6fa150dad4fed1b1",
+        "mock_provider.py": "e1deb2dac9159dcdf6f9822709a31dbd305d5f7122cd371abc98986bdf1410d7",
+        "runner.py": "cab31853b5cb75fa3d993f3e719cbc3d01ef7714242f3d67e22255e113ed6e1d"
+      },
+      "baseline": {
+        "tag": "v1.0.2",
+        "published_at": "2026-11-12T11:03:37Z",
+        "commit": "d68147a378da5f5c50f39d140b38536babd886a2",
+        "image": "ghcr.io/preloop/preloop:1.0.2",
+        "image_id": "sha256:287b9b6595d2296c45f6cebd5d37bedf2f0547a830bcca3a12b59f02e78cb078",
+        "repo_digests": [
+          "ghcr.io/preloop/preloop@sha256:287b9b6595d2296c45f6cebd5d37bedf2f0547a830bcca3a12b59f02e78cb078"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "d68147a378da5f5c50f39d140b38536babd886a2"
+      },
+      "available_rcs": [],
+      "candidate": {
+        "commit": "3995cd8c0a720673a930891dea36e94b736d8df5",
+        "ref": "HEAD",
+        "image": "preloop-ua-29d244aca5-candidate:3995cd8c0a72",
+        "image_id": "sha256:e5d87d2e6fc7c987df7c8ffa4fdc7c88fe190026880bc33a4f7a8211b0298d99",
+        "repo_digests": [
+          "preloop-ua-29d244aca5-candidate@sha256:e5d87d2e6fc7c987df7c8ffa4fdc7c88fe190026880bc33a4f7a8211b0298d99"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "3995cd8c0a720673a930891dea36e94b736d8df5"
+      },
+      "postgres": {
+        "image": "pgvector/pgvector:pg16",
+        "image_id": "sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f",
+        "repo_digests": [
+          "pgvector/pgvector@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f"
+        ],
+        "platform": "linux/arm64"
+      },
+      "nats": {
+        "image": "nats:2.11-alpine",
+        "image_id": "sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00",
+        "repo_digests": [
+          "nats@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00"
+        ],
+        "platform": "linux/arm64"
+      },
+      "cli_binaries": {
+        "baseline": {
+          "sha256": "29daba4c6eb9a5ae81fe4b80616f88c30fda51f588a959076c04719b81367a31",
+          "release": "v1.0.2"
+        },
+        "candidate": {
+          "sha256": "6739e0282962f0fe9aa714d720469077825977d2eda7aeb0c33944c6397abd1b",
+          "commit": "3995cd8c0a720673a930891dea36e94b736d8df5"
+        }
+      },
+      "installer": {
+        "status": "passed",
+        "asset_sha256": {
+          "install-oss.sh": "cf33c7e9a9379e0d74a92c8a4e73b3eb2752c2328e030b14dbe63f93c400cb7a",
+          "docker-compose.release.yaml": "a8b35664861559e6d3da2b2a359c18034cc136d134ec17b21bb33925da0638a2"
+        }
+      },
+      "compatibility": {
+        "baseline": [
+          {
+            "cli": "baseline",
+            "server": "baseline",
+            "operations": {
+              "login": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "auth_status": {
+                "exit_code": 0
+              },
+              "discover": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "onboard": {
+                "exit_code": 0,
+                "content_verified": true,
+                "agent_api_status": 200
+              },
+              "gateway": {
+                "status": 200,
+                "content_verified": true
+              },
+              "policy_apply": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "restrictive_defaults": {
+                "exit_code": 1,
+                "explicit_unsupported": true,
+                "content_verified": true
+              },
+              "discovery_report": {
+                "exit_code": 0,
+                "unavailable": false,
+                "explicit_unsaved": false,
+                "content_verified": true
+              },
+              "runner_connect_1": {
+                "content_verified": true,
+                "exit_code": 0
+              },
+              "runner_connect_2": {
+                "content_verified": true,
+                "exit_code": 0
+              },
+              "runner_reconnect": {
+                "content_verified": true
+              }
+            },
+            "advertised_version": {
+              "server_version": "1.0.2",
+              "min_client_version": "1.0.2",
+              "max_client_version": "1.0.2",
+              "latest_version": "1.0.2",
+              "min_version": "1.0.2",
+              "download_url": "https://preloop.ai/install/cli",
+              "release_notes": "",
+              "update_available": false,
+              "clients": {}
+            }
+          },
+          {
+            "cli": "candidate",
+            "server": "baseline",
+            "operations": {
+              "login": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "auth_status": {
+                "exit_code": 0
+              },
+              "discover": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "onboard": {
+                "exit_code": 0,
+                "content_verified": true,
+                "agent_api_status": 200
+              },
+              "gateway": {
+                "status": 200,
+                "content_verified": true
+              },
+              "policy_apply": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "restrictive_defaults": {
+                "exit_code": 1,
+                "explicit_unsupported": true,
+                "content_verified": true
+              },
+              "discovery_report": {
+                "exit_code": 1,
+                "unavailable": false,
+                "explicit_unsaved": true,
+                "content_verified": false
+              },
+              "review_posting_guard": {
+                "exit_code": 1,
+                "content_verified": true
+              },
+              "routing_guard": {
+                "exit_code": 1,
+                "content_verified": true
+              },
+              "extension_policy_unsupported": {
+                "exit_code": 1,
+                "content_verified": true
+              },
+              "account_health_unsupported": {
+                "exit_code": 1,
+                "content_verified": true
+              },
+              "shared_flow_unsupported": {
+                "exit_code": 1,
+                "content_verified": true
+              },
+              "webhook_rotation_unsupported": {
+                "exit_code": 1,
+                "content_verified": true
+              },
+              "managed_bundle_unsupported": {
+                "exit_code": 1,
+                "content_verified": true
+              },
+              "runner_connect_1": {
+                "content_verified": true,
+                "exit_code": 0
+              },
+              "runner_connect_2": {
+                "content_verified": true,
+                "exit_code": 0
+              },
+              "runner_reconnect": {
+                "content_verified": true
+              }
+            },
+            "advertised_version": {
+              "server_version": "1.0.2",
+              "min_client_version": "1.0.2",
+              "max_client_version": "1.0.2",
+              "latest_version": "1.0.2",
+              "min_version": "1.0.2",
+              "download_url": "https://preloop.ai/install/cli",
+              "release_notes": "",
+              "update_available": false,
+              "clients": {}
+            }
+          }
+        ],
+        "candidate": [
+          {
+            "cli": "baseline",
+            "server": "candidate",
+            "operations": {
+              "login": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "auth_status": {
+                "exit_code": 0
+              },
+              "discover": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "onboard": {
+                "exit_code": 0,
+                "content_verified": true,
+                "agent_api_status": 200
+              },
+              "gateway": {
+                "status": 200,
+                "content_verified": true
+              },
+              "policy_apply": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "restrictive_defaults": {
+                "exit_code": 0,
+                "explicit_unsupported": false,
+                "content_verified": true
+              },
+              "discovery_report": {
+                "exit_code": 0,
+                "unavailable": false,
+                "explicit_unsaved": false,
+                "content_verified": true
+              },
+              "runner_connect_1": {
+                "content_verified": true,
+                "exit_code": 0
+              },
+              "runner_connect_2": {
+                "content_verified": true,
+                "exit_code": 0
+              },
+              "runner_reconnect": {
+                "content_verified": true
+              }
+            },
+            "advertised_version": {
+              "server_version": "1.0.2",
+              "min_client_version": "1.0.2",
+              "max_client_version": "1.0.2",
+              "latest_version": "1.0.2",
+              "min_version": "1.0.2",
+              "download_url": "https://preloop.ai/install/cli",
+              "release_notes": "",
+              "update_available": false,
+              "clients": {}
+            }
+          },
+          {
+            "cli": "candidate",
+            "server": "candidate",
+            "operations": {
+              "login": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "auth_status": {
+                "exit_code": 0
+              },
+              "discover": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "onboard": {
+                "exit_code": 0,
+                "content_verified": true,
+                "agent_api_status": 200
+              },
+              "gateway": {
+                "status": 200,
+                "content_verified": true
+              },
+              "policy_apply": {
+                "exit_code": 0,
+                "content_verified": true
+              },
+              "restrictive_defaults": {
+                "exit_code": 0,
+                "explicit_unsupported": false,
+                "content_verified": true
+              },
+              "discovery_report": {
+                "exit_code": 0,
+                "unavailable": false,
+                "explicit_unsaved": false,
+                "content_verified": true
+              },
+              "flow": {
+                "create_status": 200,
+                "content_verified": true,
+                "trigger_status": 200,
+                "execution_status": "SUCCEEDED",
+                "waiting_for_owner": false,
+                "diagnostic": ""
+              },
+              "runner_connect_1": {
+                "content_verified": true,
+                "exit_code": 0
+              },
+              "runner_connect_2": {
+                "content_verified": true,
+                "exit_code": 0
+              },
+              "runner_reconnect": {
+                "content_verified": true
+              }
+            },
+            "advertised_version": {
+              "server_version": "1.0.2",
+              "min_client_version": "1.0.2",
+              "max_client_version": "1.0.2",
+              "latest_version": "1.0.2",
+              "min_version": "1.0.2",
+              "download_url": "https://preloop.ai/install/cli",
+              "release_notes": "",
+              "update_available": false,
+              "clients": {}
+            }
+          }
+        ]
+      },
+      "finished_at": "2026-11-25T23:02:13.727425+00:00"
+    },
+    "final-helm-run": {
+      "schema_version": 1,
+      "resource_name": "preloop-ua-f8d7eac9f3",
+      "started_at": "2026-11-25T22:48:41.553130+00:00",
+      "mode": "candidate-rehearsal",
+      "status": "passed",
+      "runtimes": {
+        "helm": {
+          "status": "passed",
+          "before": {
+            "digest": "9ecc9107f32f8d1e3f6985c2196a4184fe8c360ffd7b51da297fcc6cf2470d1b",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "Flow": 2,
+              "FlowExecution": 2,
+              "PolicySnapshot": 2,
+              "DiscoveredAgentCandidate": 2,
+              "DiscoveryObservation": 2,
+              "AuditLog": 2,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": true,
+            "migration_head": "20261205_ci_dispatch_sink",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head",
+              "api_content_readback"
+            ]
+          },
+          "after": {
+            "digest": "9ecc9107f32f8d1e3f6985c2196a4184fe8c360ffd7b51da297fcc6cf2470d1b",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "Flow": 2,
+              "FlowExecution": 2,
+              "PolicySnapshot": 2,
+              "DiscoveredAgentCandidate": 2,
+              "DiscoveryObservation": 2,
+              "AuditLog": 2,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": true,
+            "migration_head": "20261230_ext_enforcement",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head",
+              "api_content_readback"
+            ]
+          }
+        }
+      },
+      "steps": [
+        {
+          "label": "release-discovery",
+          "exit_code": 0,
+          "seconds": 1.68
+        },
+        {
+          "label": "fetch-baseline",
+          "exit_code": 0,
+          "seconds": 2.05
+        },
+        {
+          "label": "resolve-baseline-source",
+          "exit_code": 0,
+          "seconds": 0.01
+        },
+        {
+          "label": "resolve-candidate-source",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "docker-runtime",
+          "exit_code": 0,
+          "seconds": 0.03
+        },
+        {
+          "label": "pull-baseline",
+          "exit_code": 0,
+          "seconds": 1.05
+        },
+        {
+          "label": "inspect-baseline",
+          "exit_code": 0,
+          "seconds": 0.12
+        },
+        {
+          "label": "build-candidate",
+          "exit_code": 0,
+          "seconds": 0.8
+        },
+        {
+          "label": "inspect-candidate",
+          "exit_code": 0,
+          "seconds": 0.1
+        },
+        {
+          "label": "pull-postgres",
+          "exit_code": 0,
+          "seconds": 1.25
+        },
+        {
+          "label": "inspect-postgres",
+          "exit_code": 0,
+          "seconds": 0.05
+        },
+        {
+          "label": "pull-nats",
+          "exit_code": 0,
+          "seconds": 1.28
+        },
+        {
+          "label": "inspect-nats",
+          "exit_code": 0,
+          "seconds": 0.06
+        },
+        {
+          "label": "kind-version",
+          "exit_code": 0,
+          "seconds": 0.03
+        },
+        {
+          "label": "kind-inventory",
+          "exit_code": 0,
+          "seconds": 0.04
+        },
+        {
+          "label": "kind-create",
+          "exit_code": 0,
+          "seconds": 27.53
+        },
+        {
+          "label": "kind-node-limits",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "kind-export-images",
+          "exit_code": 0,
+          "seconds": 7.89
+        },
+        {
+          "label": "kind-load-images",
+          "exit_code": 0,
+          "seconds": 14.97
+        },
+        {
+          "label": "kind-namespace",
+          "exit_code": 0,
+          "seconds": 0.14
+        },
+        {
+          "label": "kind-infrastructure",
+          "exit_code": 0,
+          "seconds": 0.19
+        },
+        {
+          "label": "kind-postgres-ready",
+          "exit_code": 0,
+          "seconds": 7.09
+        },
+        {
+          "label": "kind-fixture",
+          "exit_code": 0,
+          "seconds": 0.06
+        },
+        {
+          "label": "helm-before-dependencies",
+          "exit_code": 0,
+          "seconds": 3.04
+        },
+        {
+          "label": "helm-before",
+          "exit_code": 0,
+          "seconds": 12.99
+        },
+        {
+          "label": "helm-before-api-rollout",
+          "exit_code": 0,
+          "seconds": 0.14
+        },
+        {
+          "label": "helm-api-image",
+          "exit_code": 0,
+          "seconds": 0.04
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.1
+        },
+        {
+          "label": "seed-and-check",
+          "exit_code": 0,
+          "seconds": 6.24
+        },
+        {
+          "label": "helm-after-dependencies",
+          "exit_code": 0,
+          "seconds": 2.85
+        },
+        {
+          "label": "helm-drain-writers",
+          "exit_code": 0,
+          "seconds": 0.1
+        },
+        {
+          "label": "helm-writers-stopped",
+          "exit_code": 0,
+          "seconds": 12.54
+        },
+        {
+          "label": "helm-backup",
+          "exit_code": 0,
+          "seconds": 0.19
+        },
+        {
+          "label": "helm-after",
+          "exit_code": 0,
+          "seconds": 12.89
+        },
+        {
+          "label": "helm-after-api-rollout",
+          "exit_code": 0,
+          "seconds": 2.95
+        },
+        {
+          "label": "helm-api-image",
+          "exit_code": 0,
+          "seconds": 0.04
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.09
+        },
+        {
+          "label": "verify-upgrade",
+          "exit_code": 0,
+          "seconds": 3.86
+        },
+        {
+          "label": "kind-cleanup",
+          "exit_code": 0,
+          "seconds": 4.11
+        }
+      ],
+      "final_rc_gate": "pending",
+      "cleanup": {
+        "kind": "removed"
+      },
+      "harness_sha256": {
+        "compatibility.py": "27368334959fcfc1289e43f144f34c2d30cf510ea8999a9c7fd9115da8633ab5",
+        "evidence.py": "2cef5fd14df8ff26c1da20fcf3e38353815a8f454737f4a8208c0a31402eed36",
+        "fixture.py": "d8e38aebebc049efa333647ec3f2f2eeb733271ccda3bdc471872cc3059d03c1",
+        "helm.py": "4b36bc57a8e528006ea2192b725a64ffc6797cdd877f442c6fa150dad4fed1b1",
+        "mock_provider.py": "e1deb2dac9159dcdf6f9822709a31dbd305d5f7122cd371abc98986bdf1410d7",
+        "runner.py": "11360885eab042b4be2f20d7007c40858444722e8a8134861983e2ae31a7397e"
+      },
+      "baseline": {
+        "tag": "v1.0.2",
+        "published_at": "2026-11-12T11:03:37Z",
+        "commit": "d68147a378da5f5c50f39d140b38536babd886a2",
+        "image": "ghcr.io/preloop/preloop:1.0.2",
+        "image_id": "sha256:287b9b6595d2296c45f6cebd5d37bedf2f0547a830bcca3a12b59f02e78cb078",
+        "repo_digests": [
+          "ghcr.io/preloop/preloop@sha256:287b9b6595d2296c45f6cebd5d37bedf2f0547a830bcca3a12b59f02e78cb078"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "d68147a378da5f5c50f39d140b38536babd886a2"
+      },
+      "available_rcs": [],
+      "candidate": {
+        "commit": "9330ab8ae5657cc1109e39463ee44d7424f26f9b",
+        "ref": "9330ab8ae5657cc1109e39463ee44d7424f26f9b",
+        "image": "preloop-ua-f8d7eac9f3-candidate:9330ab8ae565",
+        "image_id": "sha256:4bcdd1737a751fd52871daf50fc0832494bcaccecae7520fda4186f88abcfe35",
+        "repo_digests": [
+          "preloop-ua-f8d7eac9f3-candidate@sha256:4bcdd1737a751fd52871daf50fc0832494bcaccecae7520fda4186f88abcfe35"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "9330ab8ae5657cc1109e39463ee44d7424f26f9b"
+      },
+      "postgres": {
+        "image": "pgvector/pgvector:pg16",
+        "image_id": "sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f",
+        "repo_digests": [
+          "pgvector/pgvector@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f"
+        ],
+        "platform": "linux/arm64"
+      },
+      "nats": {
+        "image": "nats:2.11-alpine",
+        "image_id": "sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00",
+        "repo_digests": [
+          "nats@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00"
+        ],
+        "platform": "linux/arm64"
+      },
+      "finished_at": "2026-11-25T22:50:53.354440+00:00"
+    },
+    "final-017-run": {
+      "schema_version": 1,
+      "resource_name": "preloop-ua-819e80bd0d",
+      "started_at": "2026-11-25T22:48:43.636446+00:00",
+      "mode": "candidate-rehearsal",
+      "status": "passed",
+      "runtimes": {
+        "compose": {
+          "status": "passed",
+          "before": {
+            "digest": "6e8a25f349af7db505b72e2b2c2f0f949798bc0f8841c6385d5a900c359660c4",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "Flow": 2,
+              "FlowExecution": 2,
+              "PolicySnapshot": 2,
+              "DiscoveredAgentCandidate": 2,
+              "DiscoveryObservation": 2,
+              "AuditLog": 2,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": false,
+            "migration_head": "20261105_fleet_work_tools",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head",
+              "api_content_readback"
+            ]
+          },
+          "after": {
+            "digest": "6e8a25f349af7db505b72e2b2c2f0f949798bc0f8841c6385d5a900c359660c4",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "Flow": 2,
+              "FlowExecution": 2,
+              "PolicySnapshot": 2,
+              "DiscoveredAgentCandidate": 2,
+              "DiscoveryObservation": 2,
+              "AuditLog": 2,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": true,
+            "migration_head": "20261230_ext_enforcement",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head",
+              "api_content_readback"
+            ]
+          },
+          "retries": [
+            {
+              "digest": "6e8a25f349af7db505b72e2b2c2f0f949798bc0f8841c6385d5a900c359660c4",
+              "counts": {
+                "Account": 2,
+                "User": 2,
+                "Tracker": 2,
+                "Organization": 2,
+                "Project": 2,
+                "Issue": 6,
+                "AIModel": 4,
+                "ManagedAgent": 4,
+                "Flow": 2,
+                "FlowExecution": 2,
+                "PolicySnapshot": 2,
+                "DiscoveredAgentCandidate": 2,
+                "DiscoveryObservation": 2,
+                "AuditLog": 2,
+                "ApiKey": 3,
+                "ManagedAgentCredential": 1
+              },
+              "credential_backfill": true,
+              "migration_head": "20261230_ext_enforcement",
+              "checks": [
+                "stable_data",
+                "password_logins",
+                "existing_user_key",
+                "agent_key",
+                "existing_session",
+                "revoked_key_denied",
+                "local_model_secret",
+                "local_tracker_secret",
+                "local_webhook_secret",
+                "single_migration_head",
+                "api_content_readback"
+              ]
+            },
+            {
+              "digest": "6e8a25f349af7db505b72e2b2c2f0f949798bc0f8841c6385d5a900c359660c4",
+              "counts": {
+                "Account": 2,
+                "User": 2,
+                "Tracker": 2,
+                "Organization": 2,
+                "Project": 2,
+                "Issue": 6,
+                "AIModel": 4,
+                "ManagedAgent": 4,
+                "Flow": 2,
+                "FlowExecution": 2,
+                "PolicySnapshot": 2,
+                "DiscoveredAgentCandidate": 2,
+                "DiscoveryObservation": 2,
+                "AuditLog": 2,
+                "ApiKey": 3,
+                "ManagedAgentCredential": 1
+              },
+              "credential_backfill": true,
+              "migration_head": "20261230_ext_enforcement",
+              "checks": [
+                "stable_data",
+                "password_logins",
+                "existing_user_key",
+                "agent_key",
+                "existing_session",
+                "revoked_key_denied",
+                "local_model_secret",
+                "local_tracker_secret",
+                "local_webhook_secret",
+                "single_migration_head",
+                "api_content_readback"
+              ]
+            }
+          ]
+        }
+      },
+      "steps": [
+        {
+          "label": "release-discovery",
+          "exit_code": 0,
+          "seconds": 1.75
+        },
+        {
+          "label": "fetch-baseline",
+          "exit_code": 0,
+          "seconds": 1.87
+        },
+        {
+          "label": "resolve-baseline-source",
+          "exit_code": 0,
+          "seconds": 0.01
+        },
+        {
+          "label": "resolve-candidate-source",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "docker-runtime",
+          "exit_code": 0,
+          "seconds": 0.03
+        },
+        {
+          "label": "pull-baseline",
+          "exit_code": 0,
+          "seconds": 1.03
+        },
+        {
+          "label": "inspect-baseline",
+          "exit_code": 0,
+          "seconds": 0.08
+        },
+        {
+          "label": "build-candidate",
+          "exit_code": 0,
+          "seconds": 0.6
+        },
+        {
+          "label": "inspect-candidate",
+          "exit_code": 0,
+          "seconds": 0.11
+        },
+        {
+          "label": "pull-postgres",
+          "exit_code": 0,
+          "seconds": 1.51
+        },
+        {
+          "label": "inspect-postgres",
+          "exit_code": 0,
+          "seconds": 0.19
+        },
+        {
+          "label": "pull-nats",
+          "exit_code": 0,
+          "seconds": 1.42
+        },
+        {
+          "label": "inspect-nats",
+          "exit_code": 0,
+          "seconds": 0.09
+        },
+        {
+          "label": "compose-infrastructure",
+          "exit_code": 0,
+          "seconds": 10.9
+        },
+        {
+          "label": "compose-baseline-migrate",
+          "exit_code": 0,
+          "seconds": 5.97
+        },
+        {
+          "label": "compose-baseline-api",
+          "exit_code": 0,
+          "seconds": 0.37
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.16
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.15
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.13
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.15
+        },
+        {
+          "label": "compose-api-container",
+          "exit_code": 0,
+          "seconds": 0.08
+        },
+        {
+          "label": "compose-api-image",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "seed-and-check",
+          "exit_code": 0,
+          "seconds": 7.46
+        },
+        {
+          "label": "compose-drain-writers",
+          "exit_code": 0,
+          "seconds": 30.23
+        },
+        {
+          "label": "compose-backup",
+          "exit_code": 0,
+          "seconds": 0.22
+        },
+        {
+          "label": "compose-candidate-migrate",
+          "exit_code": 0,
+          "seconds": 5.4
+        },
+        {
+          "label": "compose-candidate-api",
+          "exit_code": 0,
+          "seconds": 0.6
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.14
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.17
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.17
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.16
+        },
+        {
+          "label": "compose-api-container",
+          "exit_code": 0,
+          "seconds": 0.1
+        },
+        {
+          "label": "compose-api-image",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "verify-upgrade",
+          "exit_code": 0,
+          "seconds": 4.01
+        },
+        {
+          "label": "compose-drain-retry-1",
+          "exit_code": 0,
+          "seconds": 31.42
+        },
+        {
+          "label": "compose-migrate-retry-1",
+          "exit_code": 0,
+          "seconds": 5.69
+        },
+        {
+          "label": "compose-restart-1",
+          "exit_code": 0,
+          "seconds": 0.24
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.13
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.12
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.14
+        },
+        {
+          "label": "compose-api-container",
+          "exit_code": 0,
+          "seconds": 0.07
+        },
+        {
+          "label": "compose-api-image",
+          "exit_code": 0,
+          "seconds": 0.01
+        },
+        {
+          "label": "verify-upgrade",
+          "exit_code": 0,
+          "seconds": 3.54
+        },
+        {
+          "label": "compose-drain-retry-2",
+          "exit_code": 0,
+          "seconds": 30.2
+        },
+        {
+          "label": "compose-migrate-retry-2",
+          "exit_code": 0,
+          "seconds": 3.76
+        },
+        {
+          "label": "compose-restart-2",
+          "exit_code": 0,
+          "seconds": 0.26
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.15
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.14
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.13
+        },
+        {
+          "label": "compose-api-container",
+          "exit_code": 0,
+          "seconds": 0.07
+        },
+        {
+          "label": "compose-api-image",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "verify-upgrade",
+          "exit_code": 0,
+          "seconds": 3.86
+        },
+        {
+          "label": "compose-cleanup",
+          "exit_code": 0,
+          "seconds": 10.41
+        }
+      ],
+      "final_rc_gate": "pending",
+      "cleanup": {
+        "compose": "removed"
+      },
+      "harness_sha256": {
+        "compatibility.py": "27368334959fcfc1289e43f144f34c2d30cf510ea8999a9c7fd9115da8633ab5",
+        "evidence.py": "2cef5fd14df8ff26c1da20fcf3e38353815a8f454737f4a8208c0a31402eed36",
+        "fixture.py": "d8e38aebebc049efa333647ec3f2f2eeb733271ccda3bdc471872cc3059d03c1",
+        "helm.py": "4b36bc57a8e528006ea2192b725a64ffc6797cdd877f442c6fa150dad4fed1b1",
+        "mock_provider.py": "e1deb2dac9159dcdf6f9822709a31dbd305d5f7122cd371abc98986bdf1410d7",
+        "runner.py": "11360885eab042b4be2f20d7007c40858444722e8a8134861983e2ae31a7397e"
+      },
+      "baseline": {
+        "tag": "v0.17.1",
+        "published_at": "2026-10-21T10:41:22Z",
+        "commit": "b46315580acb3b45cfad7590ca6829d0cef9374d",
+        "image": "ghcr.io/preloop/preloop:0.17.1",
+        "image_id": "sha256:a954c650041989148fedfd5895205f4439f719aa1213f579aa6a70e648628578",
+        "repo_digests": [
+          "ghcr.io/preloop/preloop@sha256:a954c650041989148fedfd5895205f4439f719aa1213f579aa6a70e648628578"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "b46315580acb3b45cfad7590ca6829d0cef9374d"
+      },
+      "available_rcs": [],
+      "candidate": {
+        "commit": "9330ab8ae5657cc1109e39463ee44d7424f26f9b",
+        "ref": "9330ab8ae5657cc1109e39463ee44d7424f26f9b",
+        "image": "preloop-ua-819e80bd0d-candidate:9330ab8ae565",
+        "image_id": "sha256:c002043aed0e6bc75b5fa581d3386ff65407fe0afb42b191853ff0c04ceb1ddf",
+        "repo_digests": [
+          "preloop-ua-819e80bd0d-candidate@sha256:c002043aed0e6bc75b5fa581d3386ff65407fe0afb42b191853ff0c04ceb1ddf"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "9330ab8ae5657cc1109e39463ee44d7424f26f9b"
+      },
+      "postgres": {
+        "image": "pgvector/pgvector:pg16",
+        "image_id": "sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f",
+        "repo_digests": [
+          "pgvector/pgvector@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f"
+        ],
+        "platform": "linux/arm64"
+      },
+      "nats": {
+        "image": "nats:2.11-alpine",
+        "image_id": "sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00",
+        "repo_digests": [
+          "nats@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00"
+        ],
+        "platform": "linux/arm64"
+      },
+      "finished_at": "2026-11-25T22:52:02.729268+00:00"
+    }
+  }
+}
