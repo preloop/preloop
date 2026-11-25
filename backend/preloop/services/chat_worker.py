@@ -32,6 +32,32 @@ from preloop.api.auth.permissions import has_permission
 
 logger = logging.getLogger(__name__)
 
+STORED_RESPONSE_REVALIDATION_LIMIT = 12
+
+
+def defer_stored_response(db: Session, row: models.ChatWork) -> None:
+    """Bound safe read retries and retain exhausted answers for inspection."""
+    failures = row.payload.get("revalidation_failures", 0) + 1
+    exhausted = failures >= STORED_RESPONSE_REVALIDATION_LIMIT
+    delay = min(300, 30 * 2 ** min(failures - 1, 4))
+    crud_chat.transition(
+        db,
+        row,
+        "failed" if exhausted else "reply_ready",
+        attempts=0,
+        lease_until=None,
+        payload={**row.payload, "revalidation_failures": failures},
+        next_attempt_at=datetime.utcnow() + timedelta(seconds=delay),
+        last_error=(
+            "Stored response revalidation retry limit reached; "
+            "response retained for inspection"
+            if exhausted
+            else "Waiting to revalidate stored response"
+        ),
+    )
+    if exhausted:
+        logger.warning("Stored chat response %s exhausted revalidation retries", row.id)
+
 
 async def process_one(db: Session, app: Any) -> bool:
     """Claim one durable item; uncertain writes require operator inspection."""
@@ -446,18 +472,10 @@ async def process_one(db: Session, app: Any) -> bool:
     except HTTPException as exc:
         if (
             row.reply is not None
-            and row.status == "reply_ready"
+            and row.status in {"processing", "reply_ready"}
             and (exc.status_code == 429 or exc.status_code >= 500)
         ):
-            crud_chat.transition(
-                db,
-                row,
-                "reply_ready",
-                attempts=0,
-                lease_until=None,
-                next_attempt_at=datetime.utcnow() + timedelta(seconds=30),
-                last_error="Waiting to revalidate stored response",
-            )
+            defer_stored_response(db, row)
             return True
         crud_chat.transition(
             db,
@@ -481,16 +499,8 @@ async def process_one(db: Session, app: Any) -> bool:
                 "uncertain",
                 last_error="Operation outcome is uncertain; inspect before retrying",
             )
-        elif row.reply is not None and row.status == "reply_ready":
-            crud_chat.transition(
-                db,
-                row,
-                "reply_ready",
-                attempts=0,
-                lease_until=None,
-                next_attempt_at=datetime.utcnow() + timedelta(seconds=30),
-                last_error="Waiting to revalidate stored response",
-            )
+        elif row.reply is not None and row.status in {"processing", "reply_ready"}:
+            defer_stored_response(db, row)
         else:
             crud_chat.transition(
                 db,

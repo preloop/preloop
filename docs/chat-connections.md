@@ -287,7 +287,11 @@ worker restarts. Waiting/stopped polls back off from 20 seconds to at most five
 minutes; a follow-up wakes the observer promptly. The stopped notice is recorded
 once, without repeated outbox insert attempts. Transient admission reads retry a
 bounded number of times before explicitly saying the message was not sent;
-stored answers wait for successful revalidation before provider delivery. Starts and follow-up attempts share the five-per-user and
+stored answers wait for successful revalidation before provider delivery. Failed
+revalidation reads back off from 30 seconds to five minutes. After twelve failed
+reads, automatic retries stop and delivery history shows a failed delivery with
+an inspection notice. The stored answer is retained, and the full answer remains
+available in Talk. Starts and follow-up attempts share the five-per-user and
 twenty-per-connection minute limits below. The conversation owner's permissions,
 normal flow budgets, approvals, kill switch, audit identity and metering apply
 through the shared conversation API. Unlinking, disabling the connection or

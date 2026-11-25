@@ -1,13 +1,17 @@
 """Chat conversations retain real API ownership, durable turns and delivery rules."""
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from preloop.api.endpoints.chat import list_deliveries
 from preloop.models import models, schemas
 from preloop.models.crud import crud_chat, crud_flow_execution
 from preloop.models.crud import flow_conversation as conversations
@@ -1057,6 +1061,16 @@ async def test_non_json_conversation_errors_keep_the_http_status(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        HTTPException(429),
+        HTTPException(503),
+        httpx.ConnectError("Synthetic outage"),
+        asyncio.TimeoutError(),
+    ],
+    ids=["rate-limit", "unavailable", "network", "timeout"],
+)
 async def test_stored_answer_survives_revalidation_outage(
     fixture_db: Any,
     real_app: Any,
@@ -1064,10 +1078,9 @@ async def test_stored_answer_survives_revalidation_outage(
     flow: models.Flow,
     delivery: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
 ) -> None:
     """A read outage before sending cannot lose or replay a stored answer."""
-    from fastapi import HTTPException
-
     f = fixture_db
     row = await start(f, real_app, delivery)
     conversations.runtime_turn(
@@ -1077,8 +1090,25 @@ async def test_stored_answer_survives_revalidation_outage(
     assert await process_one(f.db, real_app)
     count = delivery.call_count
     with monkeypatch.context() as patch:
-        patch.setattr(ChatBroker, "request", AsyncMock(side_effect=HTTPException(503)))
-        assert await process_one(f.db, real_app)
+        request = AsyncMock(side_effect=error)
+        patch.setattr(ChatBroker, "request", request)
+        for _ in range(3):
+            assert await process_one(f.db, real_app)
+            answer = next(
+                item
+                for item in crud_chat.work.get_multi(
+                    f.db, account_id=str(f.account.id), limit=1000
+                )
+                if item.payload.get("conversation_notice")
+            )
+            assert answer.status == "reply_ready"
+            crud_chat.work.update(
+                f.db,
+                db_obj=answer,
+                obj_in={"next_attempt_at": datetime.utcnow() - timedelta(seconds=1)},
+            )
+        assert request.call_count == 3
+        assert all(call.args[0] == "GET" for call in request.call_args_list)
     assert delivery.call_count == count
     answer = next(
         item
@@ -1096,6 +1126,80 @@ async def test_stored_answer_survives_revalidation_outage(
     await drain(f, real_app)
     assert delivery.call_args.args[2].startswith("Durable answer")
     assert delivery.call_count == count + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        HTTPException(429),
+        HTTPException(503),
+        httpx.ConnectError("Synthetic outage"),
+        asyncio.TimeoutError(),
+    ],
+    ids=["rate-limit", "unavailable", "network", "timeout"],
+)
+async def test_stored_answer_revalidation_stops_and_retains_history(
+    fixture_db: Any,
+    real_app: Any,
+    provider: str,
+    flow: models.Flow,
+    delivery: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    """Persistent read failures stop retrying without deleting or disclosing answers."""
+    f = fixture_db
+    row = await start(f, real_app, delivery)
+    conversations.runtime_turn(
+        f.db, row, turn=1, answer="Retained answer", finished=True, error=False
+    )
+    watch(f)
+    assert await process_one(f.db, real_app)
+    count = delivery.call_count
+    request = AsyncMock(side_effect=error)
+    monkeypatch.setattr(ChatBroker, "request", request)
+    delays = [30, 60, 120, 240, 300, 300, 300, 300, 300, 300, 300]
+    for failure in range(12):
+        before = datetime.utcnow()
+        assert await process_one(f.db, real_app)
+        answer = next(
+            item
+            for item in crud_chat.work.get_multi(
+                f.db, account_id=str(f.account.id), limit=1000
+            )
+            if item.payload.get("conversation_notice")
+        )
+        assert answer.reply.startswith("Retained answer")
+        assert answer.lease_until is None
+        assert delivery.call_count == count
+        if failure < 11:
+            assert answer.status == "reply_ready"
+            assert before + timedelta(seconds=delays[failure]) <= answer.next_attempt_at
+            assert answer.next_attempt_at <= datetime.utcnow() + timedelta(
+                seconds=delays[failure]
+            )
+        else:
+            assert answer.status == "failed"
+            assert "retry limit reached" in answer.last_error
+            assert "retained for inspection" in answer.last_error
+        crud_chat.work.update(
+            f.db,
+            db_obj=answer,
+            obj_in={"next_attempt_at": datetime.utcnow() - timedelta(seconds=1)},
+        )
+    f.db.expire_all()
+    assert crud_chat.work.get(f.db, answer.id).reply.startswith("Retained answer")
+    history = list_deliveries(f.connection.id, db=f.db, current_user=f.user)
+    retained = next(
+        item for item in history["deliveries"] if item["id"] == str(answer.id)
+    )
+    assert retained["status"] == "failed"
+    assert retained["last_error"] == answer.last_error
+    assert not await process_one(f.db, real_app)
+    assert request.call_count == 12
+    assert all(call.args[0] == "GET" for call in request.call_args_list)
+    assert delivery.call_count == count
 
 
 @pytest.mark.asyncio
