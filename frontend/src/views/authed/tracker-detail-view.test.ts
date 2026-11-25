@@ -750,9 +750,12 @@ describe('TrackerDetailView', () => {
       prHasMore: true,
       pullRequestHandler: (url) => {
         if (url.includes('page=2')) {
-          return new Response(JSON.stringify({ detail: 'fail' }), {
-            status: 502,
-          });
+          return new Response(
+            JSON.stringify({ detail: 'Tracker request failed' }),
+            {
+              status: 502,
+            }
+          );
         }
         return null;
       },
@@ -769,9 +772,74 @@ describe('TrackerDetailView', () => {
     await tick(50);
     await el.updateComplete;
     expect(el.shadowRoot?.textContent).to.contain('Add login');
-    expect(el.shadowRoot?.textContent).to.contain('Could not reach GitHub.');
+    expect(el.shadowRoot?.textContent).to.contain('Tracker request failed');
     expect(el.shadowRoot?.querySelector('table.styled-table')).to.exist;
   });
+
+  for (const [status, body, message] of [
+    [
+      400,
+      JSON.stringify({
+        detail: 'GitLab rejected the access token. Edit the tracker.',
+      }),
+      'GitLab rejected the access token. Edit the tracker.',
+    ],
+    [
+      403,
+      JSON.stringify({
+        detail: "Check the token's api scope and project access.",
+      }),
+      "Check the token's api scope and project access.",
+    ],
+    [502, '<html>Bad gateway</html>', 'Failed to fetch pull requests'],
+    [
+      422,
+      JSON.stringify({ detail: [{ msg: 'validation error' }] }),
+      'Failed to fetch pull requests',
+    ],
+    [
+      400,
+      JSON.stringify({ detail: 'Invalid <img src=x onerror=alert(1)> token' }),
+      'Invalid <img src=x onerror=alert(1)> token',
+    ],
+  ] as const) {
+    it(`shows a safe MR error and recovers on retry (${status}: ${message})`, async () => {
+      window.history.replaceState(
+        {},
+        '',
+        `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
+      );
+      let failing = true;
+      fetchStub = stubFetch({
+        trackerType: 'gitlab',
+        pullRequestHandler: () =>
+          failing ? new Response(body, { status }) : null,
+      });
+      const el = await mountView();
+      await (
+        el as unknown as {
+          _loadPullRequests: (reset: boolean) => Promise<void>;
+        }
+      )._loadPullRequests(true);
+      await el.updateComplete;
+      const error = el.shadowRoot?.querySelector('.prs-error');
+      expect(error?.textContent).to.contain(message);
+      expect(error?.querySelector('img')).to.equal(null);
+      expect(
+        el.shadowRoot
+          ?.querySelector('sl-tab-panel[name="pull-requests"] [slot="count"]')
+          ?.textContent?.trim()
+      ).to.equal('');
+      failing = false;
+      (error?.querySelector('sl-button') as HTMLElement).click();
+      await waitUntil(() => !el.shadowRoot?.querySelector('.prs-error'));
+      expect(
+        el.shadowRoot?.querySelector(
+          'sl-tab-panel[name="pull-requests"] [slot="count"]'
+        )?.textContent
+      ).to.contain('0 open merge requests');
+    });
+  }
 
   it('hides tab for jira', async () => {
     window.history.replaceState({}, '', `/console/trackers/${trackerId}`);

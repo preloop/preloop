@@ -884,6 +884,7 @@ export class TrackerDetailView extends LitElement {
 
   private _pullRequestsCountLabel(): string {
     const loaded = this._pullRequests.length;
+    if (this._prsError && loaded === 0) return '';
     const noun = this._prNoun();
     const singular = noun.endsWith('s') ? noun.slice(0, -1) : noun;
     const unit = loaded === 1 ? singular : noun;
@@ -1550,8 +1551,8 @@ export class TrackerDetailView extends LitElement {
   }
 
   private _renderPrsError() {
-    return html`<div class="prs-error">
-      Could not reach ${this._prHost()}.
+    return html`<div class="prs-error" role="alert">
+      ${this._prsError || `Could not reach ${this._prHost()}.`}
       <sl-button
         size="small"
         variant="text"

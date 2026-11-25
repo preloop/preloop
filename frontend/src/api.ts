@@ -4086,7 +4086,10 @@ export async function listProjectPullRequests(
     `${REST_API_PREFIX}/projects/${encodeURIComponent(projectId)}/pull-requests?${query.toString()}`
   );
   if (!response.ok) {
-    throw new Error('Failed to fetch pull requests');
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      trackerErrorDetail(errorData, 'Failed to fetch pull requests')
+    );
   }
   return response.json();
 }
