@@ -708,3 +708,45 @@ def test_candidate_growth_falls_back_without_truncating_sessions(
     ]
     assert rankings
     assert all("api_usage.runtime_session_id IN (" not in sql for sql in rankings)
+
+
+@pytest.mark.parametrize(
+    ("sort", "expected"),
+    [
+        ("started", ["empty", "legacy", "direct"]),
+        ("cost", ["legacy", "direct", "empty"]),
+        ("requests", ["direct", "legacy", "empty"]),
+    ],
+)
+def test_sort_applies_before_paging_with_filtered_totals(
+    db_session: Session,
+    session_listing_data: dict[str, Any],
+    sort: str,
+    expected: list[str],
+) -> None:
+    """Sort every eligible session, including legacy usage and empty sessions."""
+    data = session_listing_data
+    for name, hours in (("direct", 10), ("legacy", 5), ("empty", 1)):
+        data["sessions"][name].started_at = data["now"] - timedelta(hours=hours)
+    data["usage"]("direct")
+    data["usage"]("direct")
+    expensive = data["usage"](
+        None, flow_execution_id=UUID(data["sessions"]["legacy"].session_source_id)
+    )
+    expensive.estimated_cost = 10
+    db_session.flush()
+    actual = []
+    for offset in range(3):
+        result = crud_runtime_session.list_account_sessions(
+            db_session,
+            account_id=str(data["account"].id),
+            start_date=data["now"] - timedelta(days=1),
+            end_date=data["now"],
+            sort=sort,
+            limit=1,
+            offset=offset,
+        )
+        assert result["total"] == 3
+        assert result["has_more"] is (offset < 2)
+        actual.extend(item["id"] for item in result["items"])
+    assert actual == [str(data["sessions"][name].id) for name in expected]

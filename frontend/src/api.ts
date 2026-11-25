@@ -1372,6 +1372,7 @@ export interface GatewayUsageSearchParams extends GatewayUsageSummaryParams {
 }
 
 export interface RuntimeSessionListParams extends GatewayUsageSummaryParams {
+  sort?: 'last_activity' | 'started' | 'cost' | 'requests';
   query?: string;
   sessionSourceType?: string;
   /**
@@ -1477,6 +1478,7 @@ function buildRuntimeSessionListQuery(
 ): string {
   const queryParams = new URLSearchParams();
 
+  if (params.sort) queryParams.set('sort', params.sort);
   if (params.startDate) {
     queryParams.set('start_date', params.startDate);
   }

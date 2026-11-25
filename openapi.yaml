@@ -4636,6 +4636,20 @@ paths:
           minimum: 0
           default: 0
           title: Offset
+      - name: sort
+        in: query
+        required: false
+        schema:
+          enum:
+          - last_activity
+          - started
+          - cost
+          - requests
+          type: string
+          description: Descending order across all matching sessions
+          default: last_activity
+          title: Sort
+        description: Descending order across all matching sessions
       - name: agent
         in: query
         required: false

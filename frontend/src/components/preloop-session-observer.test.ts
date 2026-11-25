@@ -1,5 +1,6 @@
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { setViewport, sendKeys } from '@web/test-runner-commands';
 import {
   ConnectionState,
   unifiedWebSocketManager,
@@ -43,7 +44,8 @@ describe('PreloopSessionObserver', () => {
   /** Pending approvals the stubbed list endpoint returns. */
   const PENDING_APPROVALS: Array<Record<string, unknown>> = [];
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await setViewport({ width: 1440, height: 1000 });
     PENDING_APPROVALS.length = 0;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');

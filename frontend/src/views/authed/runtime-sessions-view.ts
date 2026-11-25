@@ -228,6 +228,10 @@ export class RuntimeSessionsView extends LitElement {
   @state()
   private selectedSessionId: string | null = null;
 
+  @state() private sort: NonNullable<RuntimeSessionListParams['sort']> =
+    'last_activity';
+  private nextListOffset = 0;
+
   @state()
   private interactions: AccountGatewayUsageSearchResponse | null = null;
 
@@ -343,15 +347,58 @@ export class RuntimeSessionsView extends LitElement {
          wrapping (#1689). */
       list-toolbar sl-select,
       list-toolbar sl-input[type='date'] {
-        min-width: 140px;
-        flex: 0 1 150px;
+        min-width: 150px;
+        flex: 1 0 150px;
         width: 150px;
       }
 
+      list-toolbar sl-select::part(form-control-label) {
+        font-size: var(--console-text-meta);
+      }
+      .count-actions {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-small);
+      }
       .filter-actions {
+        min-width: 116px;
         display: flex;
         gap: var(--sl-spacing-small);
         align-items: end;
+      }
+
+      .filter-actions[hidden] {
+        display: flex;
+        visibility: hidden;
+      }
+      .search-layout {
+        display: grid;
+        grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+        gap: var(--sl-spacing-large);
+        align-items: start;
+      }
+      .search-list {
+        min-width: 0;
+        max-height: calc(100dvh - 120px);
+        overflow: auto;
+      }
+      .search-layout preloop-session-observer {
+        min-width: 0;
+      }
+      @media (max-width: 950px) {
+        .search-layout {
+          display: block;
+        }
+        .search-list {
+          max-height: none;
+        }
+        .sessions-page.has-detail .list-chrome,
+        .sessions-page.has-detail .search-list {
+          display: none;
+        }
+        .sessions-page.has-detail .page {
+          gap: 0;
+        }
       }
 
       .layout {
@@ -720,10 +767,11 @@ export class RuntimeSessionsView extends LitElement {
         display: block;
         width: 100%;
         text-align: left;
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        background: var(--sl-color-neutral-0);
-        padding: var(--sl-spacing-small);
+        border: 0;
+        border-top: 1px solid var(--console-hairline);
+        border-radius: 0;
+        background: transparent;
+        padding: var(--sl-spacing-small) 0;
         cursor: pointer;
         font: inherit;
         color: inherit;
@@ -731,7 +779,7 @@ export class RuntimeSessionsView extends LitElement {
 
       .snippet:hover,
       .snippet:focus-visible {
-        border-color: var(--sl-color-primary-400);
+        background: var(--console-hover-tint);
       }
 
       .snippet-header {
@@ -791,6 +839,9 @@ export class RuntimeSessionsView extends LitElement {
       }
 
       @media (max-width: 720px) {
+        list-toolbar sl-select {
+          --sl-input-height-small: 44px;
+        }
         /* Phone: 44px tap target (DESIGN.md D24). */
         sl-button.new-runner-session {
           --sl-input-height-small: 44px;
@@ -834,6 +885,7 @@ export class RuntimeSessionsView extends LitElement {
       }
       this.connectRealtime();
       window.addEventListener('popstate', this.onPopState);
+      window.addEventListener('keydown', this.handleSearchShortcut);
     }
   }
 
@@ -846,6 +898,7 @@ export class RuntimeSessionsView extends LitElement {
     }
     this.cancelSearchDebounce();
     window.removeEventListener('popstate', this.onPopState);
+    window.removeEventListener('keydown', this.handleSearchShortcut);
   }
 
   /** Whether the page is answering a content query rather than listing. */
@@ -880,6 +933,10 @@ export class RuntimeSessionsView extends LitElement {
     this.sessionSourceType = params.get('source_type') ?? 'all';
     this.status = params.get('status') ?? 'all';
     this.hasArtifacts = params.get('has_artifacts') ?? 'all';
+    const sort = params.get('sort');
+    this.sort = ['started', 'cost', 'requests'].includes(sort ?? '')
+      ? (sort as typeof this.sort)
+      : 'last_activity';
   }
 
   /**
@@ -1068,6 +1125,7 @@ export class RuntimeSessionsView extends LitElement {
     const params: RuntimeSessionListParams = {
       limit: SESSION_PAGE_SIZE,
       status: this.status as 'all' | 'active' | 'ended',
+      sort: this.sort,
     };
 
     const startDate = this.rangeStartIso();
@@ -1216,6 +1274,8 @@ export class RuntimeSessionsView extends LitElement {
       const result = await getAccountRuntimeSessions(this.buildListParams());
       if (seq !== this.loadSequence) return;
       this.sessions = result;
+      this.nextListOffset = result.items.length;
+      this.moreError = null;
       if (
         // In search mode the selection belongs to the results, which are not
         // this page of the list; the list must not steal it back.
@@ -1243,7 +1303,10 @@ export class RuntimeSessionsView extends LitElement {
         if (seq !== this.loadSequence) return;
         this.linkedSessionId = null;
         if (!pinned) {
-          this.selectedSessionId = this.sessions.items[0]?.id ?? null;
+          this.selectedSessionId = window.matchMedia('(max-width: 950px)')
+            .matches
+            ? null
+            : (this.sessions.items[0]?.id ?? null);
           this.syncUrl();
         }
       }
@@ -1319,11 +1382,11 @@ export class RuntimeSessionsView extends LitElement {
     try {
       const page = await getAccountRuntimeSessions({
         ...this.buildListParams(),
-        offset: current.items.length,
+        offset: this.nextListOffset,
       });
       if (seq !== this.loadSequence) return;
-      // The list is ordered by a mutable activity timestamp with no
-      // tiebreaker, so an offset page can repeat a row already on screen.
+      this.nextListOffset += page.items.length;
+      // A mutable sort key can move a row between offset pages.
       // Drop those; a live refresh replaces the window if the order moved.
       const seen = new Set(current.items.map((item) => item.id));
       this.sessions = {
@@ -1490,6 +1553,7 @@ export class RuntimeSessionsView extends LitElement {
       url.searchParams.delete('artifact');
     }
     const filters = {
+      sort: this.sort === 'last_activity' ? '' : this.sort,
       range: this.selectedRange === 'last-30' ? '' : this.selectedRange,
       source_type:
         this.sessionSourceType === 'all' ? '' : this.sessionSourceType,
@@ -1716,7 +1780,71 @@ export class RuntimeSessionsView extends LitElement {
     void this.loadSessions(true);
   }
 
-  private selectSession(sessionId: string) {
+  /** Keep typing shortcuts out of editable fields and open controls. */
+  private handleSearchShortcut = (event: KeyboardEvent): void => {
+    if (
+      event.key !== '/' ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      event.defaultPrevented
+    )
+      return;
+    if (
+      event
+        .composedPath()
+        .some(
+          (node) =>
+            node instanceof HTMLElement &&
+            (node.isContentEditable ||
+              node.matches(
+                'input, textarea, select, sl-input, sl-select, sl-dialog[open], [role="textbox"], [role="combobox"]'
+              ))
+        )
+    )
+      return;
+    event.preventDefault();
+    if (
+      window.matchMedia('(max-width: 950px)').matches &&
+      this.selectedSessionId
+    )
+      this.backToList();
+    void this.updateComplete.then(() => {
+      const toolbar = this.renderRoot.querySelector('list-toolbar');
+      (
+        toolbar?.shadowRoot?.querySelector('sl-input') as HTMLElement | null
+      )?.focus();
+    });
+  };
+
+  private async focusSelectedDetail(): Promise<void> {
+    await this.updateComplete;
+    const observer = this.renderRoot.querySelector(
+      'preloop-session-observer'
+    ) as (HTMLElement & { focusDetail(): Promise<void> }) | null;
+    await observer?.focusDetail();
+  }
+
+  private backToList(): void {
+    this.selectedSessionId = null;
+    this.focusTurnId = null;
+    this.focusArtifactId = null;
+    this.syncUrl({ push: true });
+    void this.updateComplete.then(() => {
+      const observer = this.renderRoot.querySelector(
+        'preloop-session-observer'
+      );
+      const panel = observer?.shadowRoot?.querySelector('session-list-panel');
+      const target = this.isSearching
+        ? this.renderRoot.querySelector<HTMLElement>('.snippet')
+        : panel?.shadowRoot?.querySelector<HTMLElement>(
+            '.session-select[tabindex="0"]'
+          );
+      target?.focus();
+    });
+  }
+
+  private selectSession(sessionId: string): void {
     if (sessionId === this.selectedSessionId) {
       // The observer echoes its own auto selection back. That is not the
       // operator choosing another session, so a focused turn survives it.
@@ -1726,7 +1854,8 @@ export class RuntimeSessionsView extends LitElement {
     // Picking another session is not landing on a turn any more.
     this.focusTurnId = null;
     this.focusArtifactId = null;
-    this.syncUrl();
+    this.syncUrl({ push: true });
+    void this.focusSelectedDetail();
     // Observer loads activity/events for the selection; avoid a duplicate
     // parent getAccountRuntimeSessionDetail fetch.
   }
@@ -1767,6 +1896,7 @@ export class RuntimeSessionsView extends LitElement {
     // (possibly of another session) must not ride along in the URL.
     this.focusArtifactId = null;
     this.syncUrl({ push: true });
+    void this.focusSelectedDetail();
   }
 
   /**
@@ -1850,14 +1980,15 @@ export class RuntimeSessionsView extends LitElement {
     if (this.loading || !this.sessions) {
       return '';
     }
-    const total = this.sessions.total ?? this.sessions.items.length;
     const shown = this.sessions.items.length;
+    const total = this.sessions.total;
+    if (total == null) return `${shown.toLocaleString()} sessions loaded`;
     // While a page is truncated the count must not claim rows it has not
     // listed: "Showing 50 of 120", then "120 sessions" once every row is here.
     if (shown < total) {
-      return `Showing ${this.formatNumber(shown)} of ${this.formatNumber(total)}`;
+      return `${shown.toLocaleString()} of ${total.toLocaleString()} sessions`;
     }
-    return `${this.formatNumber(total)} session${total === 1 ? '' : 's'}`;
+    return `${total.toLocaleString()} session${total === 1 ? '' : 's'}`;
   }
 
   private formatDateTime(value: string | null | undefined): string {
@@ -2460,39 +2591,45 @@ export class RuntimeSessionsView extends LitElement {
 
   private renderObserver(sessions: Array<Record<string, unknown>> | unknown[]) {
     return html`
-      <sl-card>
-        <preloop-session-observer
-          scope="account"
-          hideListSearch
-          .sessions=${sessions}
-          .emptyText=${this.emptySessionsText()}
-          .selectedSessionId=${this.selectedSessionId}
-          .focusTurnId=${this.focusTurnId}
-          .focusArtifactId=${this.focusArtifactId}
-          .syncModeToUrl=${true}
-          layout="full"
-          defaultReplayMode="conversation"
-          .features=${{
-            summaries: true,
-            optimization: this.featureFlags.session_optimization === true,
-            auditLinks: true,
-            liveFollow: true,
-            endSession: true,
-            // On here and nowhere else: this is the page where reading one
-            // session and wanting the one that went the same way is the
-            // actual task. The panel stays collapsed until asked, and an
-            // account with no embedded sessions gets a sentence saying so
-            // rather than an empty box.
-            similarSessions: true,
-            // Shown only when the server lists an online desktop endpoint
-            // for the session (#870); inert otherwise.
-            liveDesktop: true,
-          }}
-          @session-selected=${(event: CustomEvent) => {
-            this.selectSession(event.detail.sessionId);
-          }}
-        ></preloop-session-observer>
-      </sl-card>
+      <preloop-session-observer
+        scope="account"
+        hideListSearch
+        .autoSelect=${false}
+        .hideSidebar=${this.isSearching}
+        .mobileDetail=${!!this.selectedSessionId}
+        @session-list-back=${this.backToList}
+        @session-detail-requested=${() => {
+          if (this.selectedSessionId) void this.focusSelectedDetail();
+        }}
+        .sessions=${sessions}
+        .emptyText=${this.emptySessionsText()}
+        .selectedSessionId=${this.selectedSessionId}
+        .focusTurnId=${this.focusTurnId}
+        .focusArtifactId=${this.focusArtifactId}
+        .syncModeToUrl=${true}
+        layout="full"
+        defaultReplayMode="conversation"
+        .features=${{
+          summaries: true,
+          optimization: this.featureFlags.session_optimization === true,
+          auditLinks: true,
+          liveFollow: true,
+          endSession: true,
+          // On here and nowhere else: this is the page where reading one
+          // session and wanting the one that went the same way is the
+          // actual task. The panel stays collapsed until asked, and an
+          // account with no embedded sessions gets a sentence saying so
+          // rather than an empty box.
+          similarSessions: true,
+          // Shown only when the server lists an online desktop endpoint
+          // for the session (#870); inert otherwise.
+          liveDesktop: true,
+        }}
+        @session-selected=${(event: CustomEvent) => {
+          this.selectSession(event.detail.sessionId);
+        }}
+        >${!this.isSearching ? html`<div slot="list-footer">${this.renderLoadMoreSessions()}</div>` : nothing}</preloop-session-observer
+      >
     `;
   }
 
@@ -2504,8 +2641,9 @@ export class RuntimeSessionsView extends LitElement {
    */
   private renderLoadMoreSessions() {
     if (!this.sessions) return nothing;
-    const total = this.sessions.total ?? this.sessions.items.length;
-    if (this.sessions.items.length >= total) return nothing;
+    const total = this.sessions.total;
+    if (total == null ? !this.sessions.has_more : this.nextListOffset >= total)
+      return nothing;
     return html`
       <div class="more">
         <sl-button
@@ -3029,187 +3167,225 @@ export class RuntimeSessionsView extends LitElement {
 
   render() {
     return html`
-      <view-header
-        headerText="Sessions"
-        description="Everything your agents did, as it happened: prompts, responses, tool calls, and cost per session. Follow live or replay later."
-        width="extra-wide"
+      <div
+        class="sessions-page ${this.selectedSessionId && (!this.isSearching || this.searchResults?.results.some((result) => result.runtime_session_id === this.selectedSessionId)) ? 'has-detail' : ''}"
       >
-        <sl-button
-          slot="main-column"
-          class="new-runner-session"
-          size="small"
-          variant="primary"
-          @click=${() => void this.openNewSession()}
-          >New session</sl-button
+        <view-header
+          class="list-chrome"
+          headerText="Sessions"
+          description="Everything your agents did, as it happened: prompts, responses, tool calls, and cost per session. Follow live or replay later."
+          width="extra-wide"
         >
-      </view-header>
-      <flow-conversation-list></flow-conversation-list>
-      ${
-        this.newSessionError
-          ? html`<sl-alert
-              class="new-session-error"
-              variant="warning"
-              open
-              closable
-              @sl-after-hide=${() => (this.newSessionError = '')}
-            >
-              <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-              ${this.newSessionError}
-            </sl-alert>`
-          : nothing
-      }
-      <new-runner-session-dialog
-        .runners=${this.sessionRunners}
-        ?open=${this.newSessionOpen}
-        @runner-session-dialog-hide=${() => (this.newSessionOpen = false)}
-        @runner-session-started=${this.handleRunnerSessionStarted}
-      ></new-runner-session-dialog>
-      <div class="dashboard extra-wide">
-        <div class="main-column">
-          <div class="page">
-            <list-toolbar
-              searchPlaceholder="Search prompts, responses, tool calls, and artifacts"
-              searchLabel="Search session content"
-              .search=${this.searchQuery}
-              .views=${[]}
-              @search-change=${this.handleSearchChange}
-            >
-              <sl-select
-                label="Date range"
-                value=${this.selectedRange}
-                @sl-change=${this.handleRangeChange}
+          <sl-button
+            slot="main-column"
+            class="new-runner-session"
+            size="small"
+            variant="primary"
+            @click=${() => void this.openNewSession()}
+            >New session</sl-button
+          >
+        </view-header>
+        <flow-conversation-list class="list-chrome"></flow-conversation-list>
+        ${
+          this.newSessionError
+            ? html`<sl-alert
+                class="new-session-error"
+                variant="warning"
+                open
+                closable
+                @sl-after-hide=${() => (this.newSessionError = '')}
               >
-                <sl-option value="last-7">Last 7 days</sl-option>
-                <sl-option value="last-30">Last 30 days</sl-option>
-                <sl-option value="last-90">Last 90 days</sl-option>
-                <sl-option value="all">All time</sl-option>
-                <sl-option value="custom">Custom</sl-option>
-              </sl-select>
-              ${
-                this.selectedRange === 'custom'
-                  ? html`
-                      <sl-input
-                        type="date"
-                        label="Start date"
-                        .value=${this.startDate}
-                        @sl-change=${this.handleStartDateChange}
-                      ></sl-input>
-                      <sl-input
-                        type="date"
-                        label="End date"
-                        .value=${this.endDate}
-                        @sl-change=${this.handleEndDateChange}
-                      ></sl-input>
-                    `
-                  : nothing
-              }
-              <sl-select
-                label="Source type"
-                value=${this.sessionSourceType}
-                @sl-change=${this.handleSessionSourceTypeChange}
+                <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                ${this.newSessionError}
+              </sl-alert>`
+            : nothing
+        }
+        <new-runner-session-dialog
+          .runners=${this.sessionRunners}
+          ?open=${this.newSessionOpen}
+          @runner-session-dialog-hide=${() => (this.newSessionOpen = false)}
+          @runner-session-started=${this.handleRunnerSessionStarted}
+        ></new-runner-session-dialog>
+        <div class="dashboard extra-wide">
+          <div class="main-column">
+            <div class="page">
+              <list-toolbar
+                class="list-chrome"
+                searchPlaceholder="Search sessions"
+                searchLabel="Search session content"
+                .search=${this.searchQuery}
+                .views=${[]}
+                @search-change=${this.handleSearchChange}
               >
-                <sl-option value="all">All sources</sl-option>
-                ${this.sourceTypeOptions().map(
-                  (kind) =>
-                    html`<sl-option value=${kind}
-                      >${this.sourceTypeLabel(kind)}</sl-option
-                    >`
-                )}
-              </sl-select>
-              <sl-select
-                label="Status"
-                value=${this.status}
-                @sl-change=${this.handleStatusChange}
-              >
-                <sl-option value="all">All</sl-option>
-                <sl-option value="active">Active</sl-option>
-                <sl-option value="ended">Ended</sl-option>
-              </sl-select>
-              <sl-select
-                label="Has artifacts"
-                data-testid="has-artifacts-filter"
-                value=${this.hasArtifacts}
-                @sl-change=${this.handleHasArtifactsChange}
-              >
-                <sl-option value="all">Any session</sl-option>
-                <sl-option value="any">Any artifact</sl-option>
-                <sl-option value="transcript">Transcript</sl-option>
-                <sl-option value="screenshot">Screenshot</sl-option>
-                <sl-option value="document">Document</sl-option>
-                <sl-option value="audio">Audio</sl-option>
-              </sl-select>
-              ${
-                // Only when there is something to clear: on the default view
-                // the button wrapped the filters onto a second row and pushed
-                // the conversation down (#1689).
-                this.hasActiveFilters()
-                  ? html`<div class="filter-actions">
-                      <sl-button variant="default" @click=${this.clearFilters}>
-                        Clear filters
-                      </sl-button>
-                    </div>`
-                  : nothing
-              }
-              <span slot="count">${this.sessionCountLabel}</span>
-            </list-toolbar>
-            ${this.renderEmbeddingSettings()}
-            ${
-              this.isPremium
-                ? nothing
-                : html`
-                    <button
-                      type="button"
-                      class="titles-upsell-hint"
-                      @click=${this.openTitlesUpgrade}
-                    >
-                      Unlock AI titles for these sessions
-                    </button>
-                  `
-            }
-            ${
-              this.error && this.sessions
-                ? html`
-                    <sl-alert variant="danger" open>
-                      <sl-icon
-                        slot="icon"
-                        name="exclamation-triangle"
-                      ></sl-icon>
-                      ${this.error}
-                    </sl-alert>
-                  `
-                : ''
-            }
-            ${
-              this.error && !this.sessions && !this.isSearching
-                ? this.renderLoadError()
-                : this.isSearching
-                  ? html`
-                      ${this.renderSearchNotices()}
-                      ${this.renderSearchResults()}
-                      ${
-                        this.selectedSessionId &&
-                        (this.searchResults?.results ?? []).some(
-                          (result) =>
-                            result.runtime_session_id === this.selectedSessionId
-                        )
-                          ? this.renderObserver(this.searchResultSessions())
-                          : ''
-                      }
-                    `
-                  : this.loading
+                <sl-select
+                  size="small"
+                  label="Date range"
+                  value=${this.selectedRange}
+                  @sl-change=${this.handleRangeChange}
+                >
+                  <sl-option value="last-7">Last 7 days</sl-option>
+                  <sl-option value="last-30">Last 30 days</sl-option>
+                  <sl-option value="last-90">Last 90 days</sl-option>
+                  <sl-option value="all">All time</sl-option>
+                  <sl-option value="custom">Custom</sl-option>
+                </sl-select>
+                ${
+                  this.selectedRange === 'custom'
                     ? html`
-                        <sl-card>
-                          <div class="loading-state">
-                            <sl-spinner></sl-spinner>
-                            <div>Loading sessions…</div>
-                          </div>
-                        </sl-card>
+                        <sl-input
+                          type="date"
+                          label="Start date"
+                          .value=${this.startDate}
+                          @sl-change=${this.handleStartDateChange}
+                        ></sl-input>
+                        <sl-input
+                          type="date"
+                          label="End date"
+                          .value=${this.endDate}
+                          @sl-change=${this.handleEndDateChange}
+                        ></sl-input>
                       `
-                    : html`
-                        ${this.renderObserver(this.observerSessions())}
-                        ${this.renderLoadMoreSessions()}
+                    : nothing
+                }
+                <sl-select
+                  size="small"
+                  label="Source type"
+                  value=${this.sessionSourceType}
+                  @sl-change=${this.handleSessionSourceTypeChange}
+                >
+                  <sl-option value="all">All sources</sl-option>
+                  ${this.sourceTypeOptions().map(
+                    (kind) =>
+                      html`<sl-option value=${kind}
+                        >${this.sourceTypeLabel(kind)}</sl-option
+                      >`
+                  )}
+                </sl-select>
+                <sl-select
+                  size="small"
+                  label="Status"
+                  value=${this.status}
+                  @sl-change=${this.handleStatusChange}
+                >
+                  <sl-option value="all">All</sl-option>
+                  <sl-option value="active">Active</sl-option>
+                  <sl-option value="ended">Ended</sl-option>
+                </sl-select>
+                <sl-select
+                  size="small"
+                  label="Has artifacts"
+                  data-testid="has-artifacts-filter"
+                  value=${this.hasArtifacts}
+                  @sl-change=${this.handleHasArtifactsChange}
+                >
+                  <sl-option value="all">Any session</sl-option>
+                  <sl-option value="any">Any artifact</sl-option>
+                  <sl-option value="transcript">Transcript</sl-option>
+                  <sl-option value="screenshot">Screenshot</sl-option>
+                  <sl-option value="document">Document</sl-option>
+                  <sl-option value="audio">Audio</sl-option>
+                </sl-select>
+                <sl-select
+                  size="small"
+                  label="Sort"
+                  .value=${this.sort}
+                  ?disabled=${this.isSearching}
+                  title=${this.isSearching ? 'Search results are ordered by relevance' : 'Descending order across all matching sessions'}
+                  @sl-change=${(event: Event) => {
+                    const value = (event.target as HTMLSelectElement)
+                      .value as typeof this.sort;
+                    if (value === this.sort) return;
+                    this.sort = value;
+                    this.syncUrl();
+                    void this.loadSessions(true);
+                  }}
+                >
+                  <sl-option value="last_activity">Last activity</sl-option>
+                  <sl-option value="started">Started</sl-option>
+                  <sl-option value="cost">Cost</sl-option>
+                  <sl-option value="requests">Requests</sl-option>
+                </sl-select>
+                <span slot="count" class="count-actions">
+                  <span
+                    class="filter-actions"
+                    ?hidden=${!this.hasActiveFilters()}
+                  >
+                    <sl-button
+                      size="small"
+                      variant="default"
+                      @click=${this.clearFilters}
+                      >Clear filters</sl-button
+                    >
+                  </span>
+                  <span class="session-count"
+                    >${this.sessionCountLabel}</span
+                  ></span
+                >
+              </list-toolbar>
+              <div class="list-chrome">${this.renderEmbeddingSettings()}</div>
+              ${
+                this.isPremium
+                  ? nothing
+                  : html`
+                      <button
+                        type="button"
+                        class="titles-upsell-hint"
+                        @click=${this.openTitlesUpgrade}
+                      >
+                        Unlock AI titles for these sessions
+                      </button>
+                    `
+              }
+              ${
+                this.error && this.sessions
+                  ? html`
+                      <sl-alert variant="danger" open>
+                        <sl-icon
+                          slot="icon"
+                          name="exclamation-triangle"
+                        ></sl-icon>
+                        ${this.error}
+                      </sl-alert>
+                    `
+                  : ''
+              }
+              ${
+                this.error && !this.sessions && !this.isSearching
+                  ? this.renderLoadError()
+                  : this.isSearching
+                    ? html`
+                        <div class="search-layout">
+                          <section
+                            class="search-list"
+                            aria-label="Search results"
+                          >
+                            ${this.renderSearchNotices()}
+                            ${this.renderSearchResults()}
+                          </section>
+                          ${
+                            this.selectedSessionId &&
+                            (this.searchResults?.results ?? []).some(
+                              (result) =>
+                                result.runtime_session_id ===
+                                this.selectedSessionId
+                            )
+                              ? this.renderObserver(this.searchResultSessions())
+                              : ''
+                          }
+                        </div>
                       `
-            }
+                    : this.loading
+                      ? html`
+                          <sl-card>
+                            <div class="loading-state">
+                              <sl-spinner></sl-spinner>
+                              <div>Loading sessions…</div>
+                            </div>
+                          </sl-card>
+                        `
+                      : html` ${this.renderObserver(this.observerSessions())} `
+              }
+            </div>
           </div>
         </div>
       </div>
