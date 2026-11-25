@@ -335,8 +335,8 @@ func TestKeychainServiceLabelsAreQuoted(t *testing.T) {
 	setPreflightTestEnv(t)
 	claudeKeychainPresenceProbe = func() bool { return true }
 	state, detail := detectClaudeCodeAuthState()
-	if state != agentAuthStateReady {
-		t.Fatalf("expected ready with keychain probe, got %v (%s)", state, detail)
+	if state != agentAuthStateUnknown {
+		t.Fatalf("expected unknown with keychain probe, got %v (%s)", state, detail)
 	}
 	if !strings.Contains(detail, `"Claude Code-credentials"`) {
 		t.Fatalf("keychain service name must be quoted, got %q", detail)

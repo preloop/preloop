@@ -273,6 +273,15 @@ func writeClaudeSubscriptionCredential(bundle exportedModelCredential) (string, 
 	if !ok {
 		container = map[string]interface{}{}
 	}
+	// Do not rewrite an identical local login merely to change JSON formatting.
+	if lookupString(container, "accessToken") == strings.TrimSpace(bundle.Access) &&
+		(bundle.Refresh == "" || lookupString(container, "refreshToken") == strings.TrimSpace(bundle.Refresh)) &&
+		(bundle.Expires <= 0 || coerceEpochMillis(container["expiresAt"]) == bundle.Expires) {
+		if blob != "" {
+			return "the macOS Keychain", nil
+		}
+		return path, nil
+	}
 	container["accessToken"] = strings.TrimSpace(bundle.Access)
 	if refresh := strings.TrimSpace(bundle.Refresh); refresh != "" {
 		container["refreshToken"] = refresh

@@ -1145,9 +1145,9 @@ func TestDeferredLiveValidationPersistStatus(t *testing.T) {
 			want: "validation_failed",
 		},
 		{
-			name:    "not attempted stays validated",
+			name:    "not attempted remains applied",
 			outcome: &managedLiveValidationOutcome{Attempted: false},
-			want:    "validated",
+			want:    "applied",
 		},
 	}
 	for _, tc := range cases {
@@ -1528,7 +1528,7 @@ func TestOnboardingCompletionHeadline(t *testing.T) {
 		{
 			name:     "kept config degraded",
 			err:      errStringForTest("HTTP 503"),
-			contains: []string{"⚠ Onboarded Hermes with degraded validation"},
+			contains: []string{"✗ Onboarding incomplete for Hermes: gateway validation failed"},
 			excludes: []string{"✓"},
 		},
 	}

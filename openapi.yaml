@@ -28167,7 +28167,9 @@ components:
           title: Credentials Secret Id
           description: Reuse an existing SecretReference instead of minting a new
             one. Used to create several models that share a single provider key. The
-            secret must already belong to the caller's account.
+            secret must already belong to the caller's account. A matching subscription
+            credential_payload may repair a terminally failed shared secret in place;
+            a healthy shared secret is preserved.
       type: object
       required:
       - name
@@ -29135,6 +29137,8 @@ components:
           description: Repoint this model at an existing SecretReference instead of
             minting a new one. Used to keep several models on one provider key or
             OAuth lineage. The secret must already belong to the caller's account.
+            A matching subscription credential_payload may repair a terminally failed
+            shared secret in place; a healthy shared secret is preserved.
         is_default:
           anyOf:
           - type: boolean
@@ -61008,7 +61012,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

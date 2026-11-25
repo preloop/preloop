@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session, joinedload
 from preloop.models import models
 from preloop.models.crud.secret_reference import crud_secret_reference
 from preloop.schemas.openrouter import validate_model_routing
-from preloop.services.secret_service import get_secret_service
+from preloop.services.secret_service import (
+    PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES,
+    get_secret_service,
+)
 
 from .base import CRUDBase
 
@@ -373,14 +376,36 @@ class CRUDAIModel(CRUDBase[AIModel]):
             or credentials_external_ref
             or credentials_meta_data
         )
-        if reuse_secret_id is not None and not has_new_credential_material:
+        service = get_secret_service()
+        if reuse_secret_id is not None:
             secret_ref = crud_secret_reference.get(db, id=reuse_secret_id)
             if secret_ref is None:
                 raise ValueError("Referenced credential secret does not exist")
             crud_secret_reference.validate_model_reuse(
                 db, secret=secret_ref, account_id=account_id
             )
-            return
+            if not has_new_credential_material:
+                if service.oauth_repair_required(secret_ref):
+                    raise ValueError(
+                        service.subscription_repair_message(
+                            (secret_ref.meta_data or {}).get("credential_type", "")
+                        )
+                    )
+                return
+            if (
+                credential_type not in PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES
+                or credential_type
+                != (secret_ref.meta_data or {}).get("credential_type")
+                or credential_payload is None
+                or api_key
+                or credentials_backend_type
+                or credentials_external_ref
+                or credentials_meta_data
+            ):
+                raise ValueError(
+                    "Shared credential repair requires a matching subscription payload"
+                )
+            existing_secret_id = reuse_secret_id
 
         if api_key:
             secret_ref = get_secret_service().create_local_secret_reference(
@@ -405,6 +430,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 secret_value=json.dumps(payload),
                 existing_secret_id=existing_secret_id,
                 meta_data={"credential_type": credential_type},
+                preserve_healthy_oauth=reuse_secret_id is not None,
             )
             obj_data["credentials_secret_id"] = secret_ref.id
             return

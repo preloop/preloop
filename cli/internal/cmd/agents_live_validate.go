@@ -283,6 +283,9 @@ func runGatewayLiveValidation(
 	} else if isUpstreamTransientValidationError(requestErr) {
 		liveValidationStatus = "upstream_transient"
 	}
+	if isClaudeCodeAgent(agent) && requestErr != nil && strings.Contains(requestErr.Error(), "Model credentials could not be refreshed") {
+		liveValidationStatus = "credential_repair_required"
+	}
 	budgetDenied := !passed && isPreloopBudgetDenialValidationError(requestErr)
 	result := mergeStringMaps(validationResult, map[string]interface{}{
 		"live_validation_attempted":      true,
@@ -550,7 +553,7 @@ func liveValidationStatusKeepsGatewayConfig(validationResult map[string]interfac
 		return false
 	}
 	status, _ := validationResult["live_validation_status"].(string)
-	return status == "upstream_transient" || status == "timeout"
+	return status == "upstream_transient" || status == "timeout" || status == "credential_repair_required"
 }
 
 // liveValidationUpstreamNote explains an upstream-side refusal to the operator,
@@ -1399,6 +1402,9 @@ func recoverDeferredGatewayValidationFailure(
 	if result.Err == nil || result.Outcome == nil {
 		return
 	}
+	if result.Outcome.ValidationResult["live_validation_status"] == "credential_repair_required" {
+		return // Keep the route so credential-only reconnect is sufficient.
+	}
 	if liveValidationStatusKeepsGatewayConfig(result.Outcome.ValidationResult) {
 		note := liveValidationUpstreamNote(result.Outcome.ValidationResult)
 		if note == "" {
@@ -1505,7 +1511,10 @@ func persistDeferredLiveValidationResult(
 // live_validation_status / live_validation_error carry the detail the
 // console surfaces.
 func deferredLiveValidationPersistStatus(outcome *managedLiveValidationOutcome) string {
-	if outcome == nil || !outcome.Attempted || outcome.Passed {
+	if outcome == nil || !outcome.Attempted {
+		return "applied"
+	}
+	if outcome.Passed {
 		return "validated"
 	}
 	if liveValidationOutcomeKeepsGatewayConfig(outcome) {
@@ -1605,6 +1614,11 @@ func printDeferredLiveValidationLine(
 	}
 	if result.Err != nil {
 		status, _ := result.Outcome.ValidationResult["live_validation_status"].(string)
+		if status == "credential_repair_required" {
+			fmt.Fprint(output, formatDeferredLiveValidationRoundTrip(result))                            //nolint:errcheck
+			fmt.Fprintf(output, "      Repair: preloop agents reconnect \"Claude Code\" --from-local\n") //nolint:errcheck
+			return
+		}
 		switch status {
 		case "throttled", "upstream_unavailable", "upstream_transient", "timeout":
 			// Keep the nuanced status wording for inconclusive upstream outcomes.
@@ -1679,8 +1693,10 @@ func applyLiveValidationOutcomesToSummary(
 			if resolveAgentDisplayName(outcomes[i].Agent) != name {
 				continue
 			}
-			if result.Outcome != nil && result.Outcome.Attempted && !result.Outcome.Passed && outcomes[i].Status == agentOnboardingStatusOnboarded {
+			if result.Outcome != nil && !result.Outcome.Passed && outcomes[i].Status == agentOnboardingStatusOnboarded {
 				outcomes[i].Status = agentOnboardingStatusPartial
+				outcomes[i].Reason = reason
+				break
 			}
 			if outcomes[i].Reason == "" {
 				outcomes[i].Reason = reason
@@ -1695,7 +1711,13 @@ func applyLiveValidationOutcomesToSummary(
 // liveValidationSummaryReason renders direct gateway probe evidence or failure.
 // Success still leaves application behavior unverified; skipped probes add no evidence.
 func liveValidationSummaryReason(result deferredLiveValidationResult) string {
-	if result.Outcome == nil || !result.Outcome.Attempted {
+	if result.Outcome == nil {
+		return ""
+	}
+	if !result.Outcome.Attempted {
+		if reason, _ := result.Outcome.ValidationResult["live_validation_skip_reason"].(string); reason != "" {
+			return "gateway validation not run: " + reason
+		}
 		return ""
 	}
 	if result.Outcome.Passed {
@@ -1708,6 +1730,8 @@ func liveValidationSummaryReason(result deferredLiveValidationResult) string {
 	)
 	status, _ := result.Outcome.ValidationResult["live_validation_status"].(string)
 	switch status {
+	case "credential_repair_required":
+		return "gateway validation failed: " + firstErrorLine(result.Err) + "; repair: preloop agents reconnect \"Claude Code\" --from-local"
 	case "timeout":
 		return "live validation inconclusive (request timed out); model routing retained; " + revalidate
 	case "throttled":
