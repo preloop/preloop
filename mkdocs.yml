@@ -260,6 +260,7 @@ nav:
           - Full-repo review: guide/flows/repo-review-presets.md
           - Portfolio review: guide/flows/portfolio-review.md
           - Delivery report: guide/flows/delivery-report.md
+          - Daily CI and QA review: guide/flows/daily-ci-qa-review.md
           - Audio transcription agent: guide/flows/audio-transcription-agent.md
           - "Security audit (CRA evidence packs)": guide/flows/security-audit-presets.md
           - Security maintenance: guide/flows/security-maintenance.md
