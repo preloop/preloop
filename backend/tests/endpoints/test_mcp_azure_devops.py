@@ -313,3 +313,38 @@ async def test_work_item_url_and_key_route_to_the_issue_path(
     ]
     assert updated.status == "updated"
     assert updated.url == f"{WORK_ITEM_URL}#50"
+
+
+async def test_create_pull_request_missing_project_explains_remote_inputs() -> None:
+    """A caller without a checkout gets actionable repository guidance."""
+    from fastapi import HTTPException
+
+    with (
+        patch("preloop.api.endpoints.mcp.get_http_request") as request,
+        patch(
+            "preloop.api.endpoints.mcp._get_authenticated_user", new_callable=AsyncMock
+        ) as auth,
+        patch("preloop.models.crud.crud_project") as projects,
+        patch(
+            "preloop.api.endpoints.mcp.get_tracker_client", new_callable=AsyncMock
+        ) as tracker,
+    ):
+        request.return_value.headers = {"authorization": "Bearer test"}
+        auth.return_value = (MagicMock(), MagicMock(account_id="account-1"))
+        projects.get_by_slug_or_identifier.return_value = None
+        with pytest.raises(HTTPException) as exc:
+            await mcp.create_pull_request(
+                project="unknown",
+                title="Example",
+                source_branch="feature",
+                target_branch="main",
+            )
+    assert exc.value.status_code == 404
+    assert "No local checkout is required" in exc.value.detail
+    assert "repository URL" in exc.value.detail
+    assert "branches must already exist" in exc.value.detail
+    assert "Azure DevOps" in exc.value.detail
+    tracker.assert_not_awaited()
+    assert (
+        projects.get_by_slug_or_identifier.call_args.kwargs["account_id"] == "account-1"
+    )

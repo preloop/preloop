@@ -2165,7 +2165,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         extra_options: dict | None = None,
         ctx: Optional[Context] = None,
     ) -> str:
-        """Create a pull request (GitHub, Bitbucket) or merge request (GitLab). Auto-detects platform from project. Provide project as slug (owner/repo), full path, or URL. Use extra_options for GitLab-specific options like squash, remove_source_branch, assignee_ids, reviewer_ids, milestone_id. On Bitbucket, extra_options.close_source_branch deletes the source branch on merge; assignees, labels and milestone are ignored."""
+        """Create a pull request (GitHub, Bitbucket) or merge request (GitLab). Auto-detects platform from project. No local checkout is required: provide project as a synced slug (owner/repo), full path, or repository URL; ask the user for the URL or slug if it is unknown. Source and target branches must already exist remotely. Azure DevOps supports review, not opening pull requests. Use extra_options for GitLab-specific options like squash, remove_source_branch, assignee_ids, reviewer_ids, milestone_id. On Bitbucket, extra_options.close_source_branch deletes the source branch on merge; assignees, labels and milestone are ignored."""
         # Get user context for approval checking
         from preloop.services.dynamic_fastmcp_http import get_current_user_context
 

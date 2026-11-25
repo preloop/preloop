@@ -1,6 +1,10 @@
 import '../../components/runner-compliance';
 import { hasPermission, type UserPermissions } from '../../permissions';
 import { resolveAccountPoolLabel } from '../../utils/runner-pool';
+import {
+  hostExecRunnerChoices,
+  runnerToken,
+} from '../../utils/host-exec-runners';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
@@ -669,6 +673,7 @@ export class RunnersView extends LitElement {
                       </dd>`
                   : nothing
               }
+              ${this.renderUseInFlow(row, entry)}
             </dl>
           </details>`
       )}
@@ -680,6 +685,25 @@ export class RunnersView extends LitElement {
           : nothing
       }
     </div>`;
+  }
+
+  /**
+   * Point a runner's signed-in Cursor at the flow form, which preselects
+   * "Cursor on my runner" and this runner.
+   */
+  private renderUseInFlow(row: RunnerRecord, entry: HarnessInventoryEntry) {
+    if (entry.harness !== 'cursor_cli') return nothing;
+    const choice = hostExecRunnerChoices([row], 'cursor_cli')[0];
+    if (!choice) return nothing;
+    const token = runnerToken(row);
+    return html`<dt>Flows</dt>
+      <dd>
+        <a
+          data-use-in-flow
+          href="/console/flows/new?agent_type=cursor&runner_pool=${encodeURIComponent(token)}"
+          >Use Cursor on this runner in a new flow</a
+        >
+      </dd>`;
   }
 
   private async setScheduling(

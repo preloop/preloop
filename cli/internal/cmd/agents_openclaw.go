@@ -7465,7 +7465,7 @@ func allowsSynthesizedEmptyConfig(agent AgentConfig) bool {
 		return true
 	}
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
-	case "opencode", "openclaw", "copilot cli", "devin":
+	case "opencode", "openclaw", "copilot cli", "devin", "cursor":
 		return true
 	case "hermes":
 		return true

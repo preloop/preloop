@@ -119,9 +119,15 @@ var agentSpecs = []agentSpec{
 		Parser:      parseClaudeConfig,
 	},
 	{
-		Name:        "Cursor",
-		ConfigPaths: []string{".cursor/mcp.json"},
-		Parser:      parseGenericMCP,
+		// Cursor writes ~/.cursor/mcp.json only once an MCP server is
+		// added, so install markers (app bundle, install dirs, ~/.cursor,
+		// the cursor-agent CLI) are probed by detectCursorInstall and
+		// onboarding bootstraps the config.
+		Name:                "Cursor",
+		ConfigPaths:         []string{cursorBootstrapConfigPath},
+		DetectionCommands:   []string{"cursor", "cursor-agent"},
+		BootstrapConfigPath: cursorBootstrapConfigPath,
+		Parser:              parseGenericMCP,
 	},
 	{
 		// VS Code / Copilot Chat. Prefer the native user-profile MCP file;
@@ -3784,6 +3790,9 @@ func detectInstalledAgent(home string, spec agentSpec) (string, bool) {
 	bootstrapPath := expandAgentConfigPath(home, filepath.Join(home, spec.BootstrapConfigPath))
 	if spec.Name == "VSCode / Copilot" {
 		return detectVSCodeInstall(home)
+	}
+	if spec.Name == "Cursor" {
+		return detectCursorInstall(home)
 	}
 	if spec.Name == devinAgentName {
 		if path, err := devinConfigPath("mcp_config.json"); err == nil {

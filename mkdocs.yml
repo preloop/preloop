@@ -148,6 +148,7 @@ nav:
       - OpenCode: guide/clients/opencode.md
       - Hermes: guide/hermes.md
       - Cursor CLI: guide/cursor-cli.md
+      - Cursor runner reviews: guide/cursor-runner-review.md
       - Copilot coverage: guide/copilot.md
       - Copilot CLI: guide/copilot-cli.md
       - Copilot cloud agent: guide/copilot-cloud-agent.md

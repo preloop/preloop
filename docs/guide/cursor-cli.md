@@ -26,6 +26,25 @@ flow selects only that profile name. See
 cursor` remains an operator-initiated launcher and does not lease flow
 jobs.
 
+In the console, choose **Cursor on my runner** as the flow's agent runtime.
+The option is offered once a runner reports a signed-in Cursor CLI; the
+Runners page links to it from that runner's Cursor CLI entry. Choosing it
+targets that runner and its generated `cursor` profile, so no profile name
+is typed, and shows the runner's **Flow runs on this runner** consent. The
+runner owner can change that consent from the form. **Existing agent**
+mode lists Agent Control agents only, so Cursor is not offered there and
+the form points to the runner route instead. Cursor runs go to Cursor
+directly: they are not gateway metered, and the flow's token and spend
+limits do not apply to them.
+
+`preloop agents discover` lists Cursor as soon as the editor (the macOS
+app bundle, the Linux or Windows install, or `~/.cursor`) or the
+`cursor-agent` CLI is installed, before `~/.cursor/mcp.json` exists.
+`preloop agents onboard cursor` creates that file.
+
+For Azure Repos review setup and the generated profile's checkout and trust
+limitations, see [Cursor on a Mac runner](cursor-runner-review.md).
+
 ## Install cursor-agent
 
 The Cursor Agent CLI is a separate install from the Cursor editor and
