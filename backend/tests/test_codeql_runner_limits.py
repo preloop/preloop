@@ -90,4 +90,10 @@ def test_pr_support_jobs_avoid_private_ubuntu_latest_alias(
     filename: str, job: str
 ) -> None:
     workflow = yaml.safe_load(WORKFLOW.with_name(filename).read_text())
-    assert workflow["jobs"][job]["runs-on"] == "ubuntu-24.04"
+    runs_on = workflow["jobs"][job]["runs-on"]
+    # docs.yml takes a picked local slot, else the hosted-only label.
+    assert runs_on in {
+        "ubuntu-24.04",
+        "${{ fromJSON(inputs.runner || '\"ubuntu-24.04\"') }}",
+    }
+    assert "ubuntu-latest" not in runs_on

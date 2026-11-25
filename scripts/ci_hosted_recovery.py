@@ -17,6 +17,7 @@ WATCH_SECONDS = 30 * 60
 CANCEL_SECONDS = 120
 BACKEND_JOB = re.compile(r"Backend Tests \(\d+/\d+\)\Z")
 GENERAL_LABELS = {"self-hosted", "Linux", "X64", "preloop-ci-general"}
+LOCAL_LABELS = {"self-hosted", "Linux", "X64", "preloop-ci-local"}
 
 
 class ApiError(RuntimeError):
@@ -101,11 +102,11 @@ def current_trusted_run(api: GitHub, run: dict) -> bool:
 
 
 def self_hosted_backend(job: dict) -> bool:
-    """Select only the CI matrix's eligible general-pool backend jobs."""
+    """Select only the CI matrix's backend jobs on general or local slots."""
     labels = set(job.get("labels") or [])
     return bool(
         BACKEND_JOB.fullmatch(job.get("name", ""))
-        and GENERAL_LABELS <= labels
+        and (GENERAL_LABELS <= labels or LOCAL_LABELS <= labels)
         and "gce-tests-only" not in labels
     )
 

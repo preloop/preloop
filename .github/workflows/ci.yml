@@ -60,12 +60,47 @@ permissions:
 
 jobs:
   # ==========================================================================
+  # Light-job runners
+  # ==========================================================================
+  # One inventory snapshot for the first two stages. Idle preloop-ci-local
+  # slots take Detect changed paths, Lint & Format and CLI Fast; everything
+  # else, every failure, untrusted sources and reruns use ubuntu-24.04.
+  # Consumers fall back to hosted when this job produced no output.
+  pick-light:
+    permissions:
+      contents: read
+    name: Pick light-job runners
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      changes: ${{ steps.pick.outputs.changes_runner }}
+      lint: ${{ steps.pick.outputs.lint_runner }}
+      cli_fast: ${{ steps.pick.outputs.cli_fast_runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/scripts
+      - name: Assign light jobs to idle local slots
+        id: pick
+        env:
+          RUNNER_READ_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
+          LOCAL_RUNNERS: ${{ vars.CI_LOCAL_RUNNERS }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REPO: ${{ github.repository }}
+          TRUSTED_SOURCE: ${{ github.event_name == 'push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
+        run: bash .github/scripts/pick-runners.sh early
+
+  # ==========================================================================
   # Changed paths (PRs only; push/tag forces every output true)
   # ==========================================================================
 
   changes:
     name: Detect changed paths
-    runs-on: ubuntu-24.04
+    needs: pick-light
+    if: ${{ !cancelled() }}
+    runs-on: ${{ github.run_attempt == 1 && needs.pick-light.outputs.changes && fromJSON(needs.pick-light.outputs.changes) || 'ubuntu-24.04' }}
     permissions:
       contents: read
       # Read earlier CI runs to find the last green `main` commit.
@@ -127,15 +162,18 @@ jobs:
   # Bootstrap and aggregation always run hosted: optional spot capacity must
   # not gate the picker that decides whether self-hosted capacity is available.
   # Every backend shard runs on one runner class: all shards go to idle
-  # general CI runners only when there is one per shard, otherwise all run
-  # hosted. Mixing the slower self-hosted VMs with hosted shards made one
+  # general CI runners when there is one per shard, else to idle
+  # preloop-ci-local slots when there is one per shard, otherwise all run
+  # hosted. Local slots left over go to the docs, fuzz and browser-fixture
+  # leaves; .github/scripts/pick-runners.sh holds the rules. Mixing the slower self-hosted VMs with hosted shards made one
   # straggler set the wall clock. Missing inventory, absent credentials,
   # forks and disabled routing select hosted.
   # A selection-time snapshot cannot reserve capacity or guarantee acquisition
   # if another run takes a slot or a spot VM stops afterwards; see
   # .github/self-hosted-runners.md for automatic hosted recovery and its limits.
   # CI_RUNNER_READ_TOKEN needs repository administration:read.
-  # CI_SELF_HOSTED_TESTS=true opts into self-hosted routing.
+  # CI_SELF_HOSTED_TESTS=true opts into general-pool routing;
+  # CI_LOCAL_RUNNERS=false turns the local pool off.
   # preloop-ci-general is an explicit readiness label; never apply it to the
   # gce-tests-only execution pool.
   #
@@ -159,7 +197,16 @@ jobs:
       self_hosted: ${{ steps.pick.outputs.self_hosted }}
       observed_idle: ${{ steps.pick.outputs.observed_idle }}
       routing_reason: ${{ steps.pick.outputs.routing_reason }}
+      runner_class: ${{ steps.pick.outputs.runner_class }}
+      docs_runner: ${{ steps.pick.outputs.docs_runner }}
+      fuzz_runner: ${{ steps.pick.outputs.fuzz_runner }}
+      browser_fixture_runner: ${{ steps.pick.outputs.browser_fixture_runner }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/scripts
       - name: Assign backend shards to available runner capacity
         id: pick
         env:
@@ -168,93 +215,14 @@ jobs:
           SELF_HOSTED_TESTS: ${{ vars.CI_SELF_HOSTED_TESTS }}
           BACKEND_REQUIRED: ${{ needs.changes.outputs.backend }}
           BACKEND_SHARDS: ${{ needs.changes.outputs.backend_jobs }}
+          LOCAL_RUNNERS: ${{ vars.CI_LOCAL_RUNNERS }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          LEAF_DOCS: ${{ needs.changes.outputs.docs }}
+          LEAF_FUZZ: ${{ needs.changes.outputs.fuzz }}
+          LEAF_BROWSER_FIXTURE: ${{ needs.changes.outputs.browser_fixture }}
           REPO: ${{ github.repository }}
           TRUSTED_SOURCE: ${{ github.event_name == 'push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
-        run: |
-          set -uo pipefail
-
-          SELF_HOSTED_REASON=""
-          if [ "${TRUSTED_SOURCE:-false}" != "true" ]; then
-            SELF_HOSTED_TESTS=false
-            SELF_HOSTED_REASON="untrusted source uses hosted runners"
-          fi
-
-          # Includes the serial job whenever impact selection needs it.
-          SPLITS="${BACKEND_SHARDS:-}"
-
-          emit() {
-            idle="$1"
-            reason="$2"
-            case "$idle" in
-              ''|*[!0-9]*) idle=0 ;;
-            esac
-            # One runner class per run: all shards self-hosted or none.
-            if [ "$idle" -gt 0 ] && [ "$idle" -ge "$SPLITS" ]; then idle=$SPLITS; else idle=0; fi
-
-            runner='"ubuntu-24.04"'
-            if [ "$idle" -gt 0 ]; then
-              runner='["self-hosted","Linux","X64","preloop-ci-general"]'
-            fi
-
-            {
-              echo "self_hosted=$([ "$idle" -gt 0 ] && echo true || echo false)"
-              echo "observed_idle=$idle"
-              echo "routing_reason=$reason"
-              echo "backend_runner=$runner"
-            } >> "$GITHUB_OUTPUT"
-            echo "reason: $reason"
-            echo "shards on self-hosted: $idle / $SPLITS"
-            echo "- self-hosted backend shards: \`$idle / $SPLITS\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "- reason: $reason" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          }
-
-          case "$SPLITS" in
-            ''|0|*[!0-9]*) emit 0 "missing or invalid matrix size" ;;
-          esac
-
-          if [ "${BACKEND_REQUIRED:-true}" != "true" ]; then
-            emit 0 "backend paths are irrelevant; no optional capacity to recover"
-          fi
-
-          if [ "${SELF_HOSTED_TESTS:-false}" != "true" ]; then
-            emit 0 "${SELF_HOSTED_REASON:-self-hosted routing requires CI_SELF_HOSTED_TESTS=true}"
-          fi
-
-          if [ -z "${RUNNER_READ_TOKEN:-}" ]; then
-            emit 0 "secret CI_RUNNER_READ_TOKEN is absent or empty"
-          fi
-
-          if ! runners=$(GH_TOKEN="$RUNNER_READ_TOKEN" timeout 15s gh api "repos/${REPO}/actions/runners" --paginate 2>/dev/null); then
-            emit 0 "could not list repository runners (token scope or API error)"
-          fi
-
-          # Online, not already busy, and carrying the general CI readiness label. Busy
-          # matters: a working VM must not steal shards it cannot start.
-          available=$(printf '%s' "$runners" | jq -s '
-            [ .[].runners[]?
-              | select(.status == "online" and .busy == false)
-              | select(((.name // "") | test("^deb([1-9]|1[0-2])$")) | not)
-              | [.labels[].name] as $labels
-              | select(($labels | index("self-hosted")) != null
-                   and ($labels | index("Linux")) != null
-                   and ($labels | index("X64")) != null
-                   and ($labels | index("preloop-ci-general")) != null
-                   and ($labels | index("gce-tests-only")) == null)
-            ] | length' 2>/dev/null) || available=""
-
-          case "$available" in
-            ''|*[!0-9]*)
-              emit 0 "could not parse the runner list"
-              ;;
-          esac
-
-          echo "idle general runners: $available"
-          if [ "$available" -ge 1 ]; then
-            emit "$available" "one idle general CI runner per shard takes every shard; fewer runs all hosted"
-          fi
-
-          emit 0 "no idle self-hosted Linux/X64 runner is online"
+        run: bash .github/scripts/pick-runners.sh late
 
   # ==========================================================================
   # Requirements resolve (guard)
@@ -331,8 +299,9 @@ jobs:
     permissions:
       contents: read
     name: Lint & Format
-    needs: changes
-    runs-on: ubuntu-24.04
+    needs: [pick-light, changes]
+    if: ${{ !cancelled() && needs.changes.result == 'success' }}
+    runs-on: ${{ github.run_attempt == 1 && needs.pick-light.outputs.lint && fromJSON(needs.pick-light.outputs.lint) || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -451,11 +420,11 @@ jobs:
 
   cli-fast:
     name: CLI Fast
-    needs: changes
-    if: needs.changes.outputs.cli == 'true'
+    needs: [pick-light, changes]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.cli == 'true' }}
     permissions:
       contents: read
-    runs-on: ubuntu-24.04
+    runs-on: ${{ github.run_attempt == 1 && needs.pick-light.outputs.cli_fast && fromJSON(needs.pick-light.outputs.cli_fast) || 'ubuntu-24.04' }}
     timeout-minutes: 10
     # The hosted image exports XDG_*; Go treats an empty value as unset, so
     # os.UserConfigDir/UserCacheDir follow the test's sandboxed HOME.
@@ -680,8 +649,8 @@ jobs:
   # pgvector/pgvector:pg16 and the drop step removes that container.
   # Runner setup: .github/self-hosted-runners.md.
   #
-  # Runner: pick-runner sends all shards to general private VMs when one is
-  # idle per shard, otherwise all to hosted. Self-hosted shards
+  # Runner: pick-runner sends all shards to one private class (general, then
+  # local) when it has one idle runner per shard, otherwise all to hosted. Self-hosted shards
   # run on the machine, not in a nested container, so that address is the
   # VM's Postgres. The VM needs Docker for the fallback start, and the
   # runner user in the docker group. A persistent server avoids the pull.
@@ -1447,33 +1416,36 @@ jobs:
       checkout_ref: ${{ github.sha }}
 
   leaf-docs:
-    needs: [changes, fast]
-    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.docs == 'true') }}
+    needs: [changes, fast, pick-runner]
+    if: ${{ !cancelled() && needs.fast.result == 'success' && needs.pick-runner.result == 'success' && (needs.changes.outputs.docs == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/docs.yml
     with:
       full: ${{ needs.changes.outputs.full == 'true' }}
+      runner: ${{ github.run_attempt == 1 && needs.pick-runner.outputs.docs_runner || '"ubuntu-24.04"' }}
       checkout_ref: ${{ github.sha }}
 
   leaf-fuzz:
-    needs: [changes, fast]
-    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.fuzz == 'true') }}
+    needs: [changes, fast, pick-runner]
+    if: ${{ !cancelled() && needs.fast.result == 'success' && needs.pick-runner.result == 'success' && (needs.changes.outputs.fuzz == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/fuzz.yml
     with:
       full: ${{ needs.changes.outputs.full == 'true' }}
+      runner: ${{ github.run_attempt == 1 && needs.pick-runner.outputs.fuzz_runner || '"ubuntu-24.04"' }}
       checkout_ref: ${{ github.sha }}
 
   leaf-browser-fixture:
-    needs: [changes, fast]
-    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.browser_fixture == 'true') }}
+    needs: [changes, fast, pick-runner]
+    if: ${{ !cancelled() && needs.fast.result == 'success' && needs.pick-runner.result == 'success' && (needs.changes.outputs.browser_fixture == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/browser-fixture.yml
     with:
       full: ${{ needs.changes.outputs.full == 'true' }}
+      runner: ${{ github.run_attempt == 1 && needs.pick-runner.outputs.browser_fixture_runner || '"ubuntu-24.04"' }}
       checkout_ref: ${{ github.sha }}
 
   leaf-totp:

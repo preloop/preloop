@@ -11,6 +11,10 @@ name: Docs
 on:
   workflow_call:
     inputs:
+      runner:
+        description: JSON runs-on value chosen by the CI picker
+        type: string
+        default: '"ubuntu-24.04"'
       full:
         type: boolean
         default: false
@@ -30,8 +34,8 @@ jobs:
     permissions:
       contents: read
     name: mkdocs build --strict
-    # Avoid legacy private ubuntu-latest aliases; keep this label hosted-only.
-    runs-on: ubuntu-24.04
+    # Hosted ubuntu-24.04 unless the CI picker hands over an idle local slot.
+    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-24.04"') }}
     env:
       # Silence the MkDocs 2 notice printed by mkdocs-material.
       NO_MKDOCS_2_WARNING: 'true'
@@ -44,7 +48,8 @@ jobs:
           ref: ${{ inputs.checkout_ref || github.sha }}
 
       - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        # setup-python has no Debian 12 builds; this venvs a system 3.11 there.
+        uses: ./.github/actions/setup-ci-python
         with:
           python-version: '3.11'
 
