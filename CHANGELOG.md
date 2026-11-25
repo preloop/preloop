@@ -7,684 +7,176 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+## [1.1.0-rc.1] - 2026-11-25
 
-- GitHub event review flows can review fork pull requests when a base-repository
-  maintainer applies `preloop-review`. Forks remain excluded by default;
-  new commits stay eligible while the label is present. Preloop verifies the
-  labeler through GitHub, reads and posts only on the base repository, and
-  skips a pending post when the label is removed. Restricted CI still refuses
-  forks.
-
-- CI runs only the backend test files a change can affect, chosen by a static
-  import graph, on pull requests and `main` pushes, in as many shards as they
-  need. Version tags, `ci:full`, full reruns and the nightly run keep the
-  whole suite, and a newer `main` push cancels the older run.
-
-- `preloop agents extensions check` compares installed extensions with an
-  account policy without uploading inventory (#2322). `--policy-file` reads
-  a downloaded file and `--online` fetches the same export. Pinned content
-  hashes are included, so a hash pin fails when the installed content
-  differs. Extensions with no decision stay unknown unless `--fail-on
-  unknown` is set.
-- The **Post review on the pull request** card edits which of a shared
-  flow's repositories Preloop posts for: every repository, or only the
-  ticked ones, with a filter for long lists. Selecting none is allowed and
-  stated before the save. An id no longer on the flow is flagged and
-  dropped on the next save, and turning posting off says the list is
-  cleared.
-- Extension approvals can be pinned to content hashes (#2321). A pinned
-  approval approves only the pinned hashes; a device reporting other content
-  reads `content_changed`, or `content_unverified` when no hash could be
-  computed. Skill and plugin hashes now cover every file in the extension's
-  directory (bounded to 500 files, 16 MiB and depth 8). The upgrade pins
-  existing approved extensions to the hashes reported at that moment, so
-  later changes need a fresh pin. The console's Extensions tab shows the
-  observed hashes with Pin and Unpin, the two new badges and filters, and
-  **Approve this exact content**. Downgrading drops the pins, which turns
-  pinned approvals back into the more permissive name approvals.
-- macOS and Windows runners now report sleep before it happens, so a
-  closed lid shows `asleep` instead of `offline` (#1487, #1507). macOS
-  uses IOKit system power notifications (loaded without cgo) and Windows
-  uses `PowerRegisterSuspendResumeNotification`; both reconnect at once on
-  wake. A failed registration falls back to `offline` as before.
-- Optional, off by default: `{"power": {"keep_awake_while_busy": true}}` in
-  `~/.preloop/runner.json` keeps a Mac from idle sleep (`caffeinate -i`)
-  while a flow job or remote session runs. Lid close still sleeps.
-- A shared read-only review flow can post for some of its projects only:
-  `git_clone_config.platform_review.project_ids` lists them, and the same
-  list decides which projects a pull request event starts a review for.
-  Runs of other projects run and are read as before and are not posted; an
-  explicit publish answers 409 `project_not_in_posting_scope`. Unset keeps
-  today's behaviour. `preloop flow review-posting enable --project` and
-  `set-projects` manage the list, and so does the flow's posting card.
-- The flow form has a **Reasoning effort** select next to the flow's AI
-  model (Model default, Low, Medium, High), so the flow-wide effort no
-  longer needs the API. The execution page shows **Effort sent**, the effort
-  that reached the provider, next to the model, and nothing when none was
-  sent.
-- A flow can set `agent_config.reasoning_effort` (`low`, `medium` or `high`)
-  to change how hard its model thinks, without label rules. A label rule
-  that sets an effort still wins. For DeepSeek models, the gateway now sends
-  the effort as DeepSeek's documented `reasoning_effort` field. The execution
-  detail now includes `effective_requests`, which shows the effort that
-  actually reached the provider. Nothing changes for flows that set no
-  effort.
-
-### Fixed
-
-- Automatic review publication starts when the unchanged 30-second evidence
-  settle window ends, without waiting for the recovery sweep (#2436). A
-  restart can delay posting until the sweep, which now selects settled runs
-  without the former two-minute exclusion. Pending records keep the
-  `awaiting_sweep` fallback deadline visible, including when overdue;
-  `manual_publish_required` and `explicit_publish_required` name runs that
-  need an explicit publish call. The console and CLI explain those reasons
-  and display the fallback deadline.
-
-- A flow with **Enable git workspace cloning** off no longer clones the
-  trigger repository. A run that names no branch now checks out the
-  repository's default branch instead of assuming `main`, so repositories
-  whose default branch is `master` or another name work without setting a
-  source branch. GitLab sync now records each project's default branch, and
-  a failed clone names the branch it tried and the repository's default
-  branch.
-- Tool evidence keeps control characters exactly (#2434). A form feed from
-  text converted from a PDF, ESC colour sequences in command output, and a
-  U+0003 or U+0004 sent to a terminal through `write_stdin` used to be
-  deleted, which marked the record `unsafe_text` and made `platform_review`
-  refuse with `evidence_incomplete`. Such a record is now complete and its
-  digest covers the exact text. Call arguments are no longer decoded and
-  re-encoded unless a masking rule changes them. Lone surrogates, which
-  cannot be encoded, are still removed, now counted in `removed` with reason
-  `lone_surrogates`. The credential scrubber and account storage rules have
-  their own reasons (`credential_scrub`, `storage_rule`), and the evidence
-  summary adds `incomplete_by_reason` and `removed_by_category`.
-
-- A pending review publication says why it waits (#2436): `reason:
-  "evidence_settling"` with `due_at` while tool evidence settles after the
-  run finishes, and `execution_not_finished` while the run runs.
-
-- An approved `ask_user` or `request_approval` form now returns the human's
-  answer to the agent. The approval replay re-ran the tool with the
-  server-only `is_question` and `dropped_item_keys` keys from the stored
-  arguments, and the tool rejected them with a validation error. Stored rows
-  also keep their display fields when they are normalized again.
-
-- `get_pull_request` and `update_pull_request` find the right merge request
-  for GitLab's own `group/project!12` reference and for a bare `12`, `!12`
-  or `#12`. A bare number uses the project that triggered the flow run, or a
-  new `project` argument; otherwise it must belong to the only project in
-  scope, and the error lists candidates when it does not. These forms used to
-  fall back to an unrelated project, which failed with "Organization is not
-  included in tracker scope" or read another repository's pull request. URLs
-  with `/diffs` or `/files` pages, without GitLab's `/-/`, or under a GitLab
-  relative URL root now resolve as well. Errors say what was looked up and
-  which forms are accepted.
-- `get_issue`, `update_issue`, `add_comment`, `get_pull_request` and
-  `update_pull_request` accept a number sent as a JSON integer
-  (`{"issue": 12}`). Some models send numbers that way, and the call used
-  to fail argument validation before any lookup.
-- An issue whose provider page was not stored when it was synced now links
-  to its GitLab or GitHub page. The Preloop fallback link no longer has a
-  doubled `https://https://` scheme.
-
-- Backend Fast stays well under its 15 minute timeout: a changed backend
-  module now selects the test files that import it or are named
-  `test_<module>*` instead of its whole area plus every integration test,
-  and a selection estimated over 240 s of recorded durations narrows to
-  smoke, changed tests and module matches. The receipt records the reason
-  in `fast_reason`. The sharded Backend Tests job still runs everything.
-- A read-only pull request review is now told its time limit: the preamble
-  states the total budget and the UTC time the run is stopped, which is the
-  deadline the orchestrator enforces from admission, and continuation and
-  repair sessions are told the time left. The reviewer is asked to write its
-  answer before the limit and, if it cannot finish, to say so in the result
-  schema's failure or incomplete form instead of reporting a pass. A review
-  result that says it did not finish is kept and readable, but is no longer
-  accepted as a verified review: before this change a schema-valid answer
-  with a status such as `incomplete` or `partial` could succeed and be posted
-  with its verdict.
-
-### Security
-
-- The console and installer TLS proxy use NGINX 1.30.7 to address HTTP/2
-  vulnerabilities CVE-2026-123633 and CVE-2026-123007. Kubernetes ingress
-  controllers need a separate patch. The hosted ingress received both fixes
-  with HTTP/2 enabled.
-- Fresh databases protect execution credential fingerprints immediately. On
-  existing databases, finish the rolling upgrade, then run
-  `python -m preloop.models.credential_encryption --enable-execution-fingerprints`.
-  Before downgrading, run the same module with `--restore-execution-fingerprints`
-  so older workers can read every fingerprint.
+This is a release candidate for testing before 1.1.0. The latest stable release
+remains 1.0.2. Install this candidate explicitly with
+`curl -fsSL https://preloop.ai/install/cli | PRELOOP_VERSION=1.1.0-rc.1 sh`
+or `curl -fsSL 'https://preloop.ai/install/cli?version=1.1.0-rc.1' | sh`.
 
 ### Added
 
-- The guide documents `preloop agents pause` and `preloop agents resume`
-  for when an approval hook cannot reach Preloop. See
-  [If approvals cannot reach Preloop](docs/guide/cli.md#if-approvals-cannot-reach-preloop).
-- A read-only review flow can be started by a GitHub pull request event and
-  Preloop posts the review and the commit status, with no CI identity. The
-  run stays read-only.
-- A read-only review flow can require stored tool evidence before Preloop
-  posts the review. `platform_review.evidence` is `any` (today's behaviour),
-  `captured` (every model request has a record, and the only incomplete
-  records are masked credentials) or `complete` (no incomplete record,
-  masking included). A refusal posts no review, records `evidence_incomplete`
-  and sets the flow's incomplete commit status. The execution result and the
-  publication record include the counts in one call. A manual publish can
-  send `expected_evidence` of `captured` or `complete`; it can only tighten
-  the flow setting.
-- Complete evidence now refuses a native command record whose value a named
-  rule masked. Captured evidence still accepts that record. Both levels also
-  refuse a record changed by an unexplained scrub or by an account
-  storage-redaction rule. A native command with an unexplained scrub is
-  stored incomplete (`capture_complete: false`, reason `unsafe_text`), the
-  same as a gateway record. Evidence set to any is unchanged.
-- OpenRouter-routed executions show which upstream provider served the final
-  answer (**Served by** on the execution page, `upstream_route` on the
-  execution detail and `upstream_providers` / `final_answer_upstream_provider`
-  in CI timings). A native-result run that fails with `no_confirmation`,
-  `result_schema_invalid` or `review_not_inspected` on a route with several
-  upstreams or no provider preference names that provider and links the
-  guide. Saving a flow with a result schema on an OpenRouter model whose
-  provider preference pins no provider returns a non-blocking
-  `config_warnings` entry, shown on the flow and model pages.
+- Stronger sign-in with user-verifying passkeys, passkey-only sign-in,
+  authenticator TOTP, recovery codes and step-up authentication.
+  [#2287](https://github.com/preloop/preloop/pull/2287),
+  [#2299](https://github.com/preloop/preloop/pull/2299),
+  [#2389](https://github.com/preloop/preloop/pull/2389).
+- Model credential lifecycle and status, consumer visibility, and clearer
+  credential ownership and rejected-key guidance.
+  [#2292](https://github.com/preloop/preloop/pull/2292),
+  [#2297](https://github.com/preloop/preloop/pull/2297),
+  [#2303](https://github.com/preloop/preloop/pull/2303).
+- Shared restricted-CI review flows, platform-posted read-only reviews, manual
+  and event-driven publication, evidence gates, and per-project posting scope.
+  [#2295](https://github.com/preloop/preloop/pull/2295),
+  [#2298](https://github.com/preloop/preloop/pull/2298),
+  [#2403](https://github.com/preloop/preloop/pull/2403),
+  [#2415](https://github.com/preloop/preloop/pull/2415).
+- GitHub event reviews can include fork pull requests when a base-repository
+  maintainer applies `preloop-review`. Forks remain excluded by default, and
+  restricted CI continues to refuse them.
+  [#2487](https://github.com/preloop/preloop/pull/2487).
+- Unknown MCP tools can be denied or require approval by default, with an
+  account-level approve-once path for newly observed tools.
+  [#2340](https://github.com/preloop/preloop/pull/2340),
+  [#2346](https://github.com/preloop/preloop/pull/2346).
+- Device extension inventory, console approval decisions, content-hash pins,
+  `content_changed` and `content_unverified` states, and local or offline
+  `preloop agents extensions check` policy checks.
+  [#2350](https://github.com/preloop/preloop/pull/2350),
+  [#2354](https://github.com/preloop/preloop/pull/2354),
+  [#2417](https://github.com/preloop/preloop/pull/2417),
+  [#2418](https://github.com/preloop/preloop/pull/2418).
+- Reviewable Claude Code extension enforcement bundles and a console
+  Enforcement card. Installing the endpoint settings drop-in remains an
+  explicit operator step. Inventory or bundle registration does not prove
+  endpoint enforcement, and vendor-console delivery remains unverified.
+  [#2479](https://github.com/preloop/preloop/pull/2479).
+- Azure DevOps trackers and work items, Azure Repos review anchors,
+  reviewer identity and vote controls, and first-setup guidance.
+  [#2441](https://github.com/preloop/preloop/pull/2441),
+  [#2443](https://github.com/preloop/preloop/pull/2443),
+  [#2466](https://github.com/preloop/preloop/pull/2466),
+  [#2470](https://github.com/preloop/preloop/pull/2470).
+- Opted-in hosted OpenCode conversations in Talk, with resume and lifecycle
+  controls and DeepSeek Harness support. Linked chat identities can start
+  opted-in flows; Microsoft Teams personal chat and Workflows approval
+  notices are supported.
+  [#2440](https://github.com/preloop/preloop/pull/2440),
+  [#2446](https://github.com/preloop/preloop/pull/2446),
+  [#2467](https://github.com/preloop/preloop/pull/2467),
+  [#2468](https://github.com/preloop/preloop/pull/2468).
+- macOS and Windows runner sleep reporting and wake reconnect, optional Mac
+  keep-awake while busy, safer offline routing, and native Codex/OpenCode flow destinations on
+  personal runners. These destinations do not add remote-session adapters.
+  [#2276](https://github.com/preloop/preloop/pull/2276),
+  [#2416](https://github.com/preloop/preloop/pull/2416),
+  [#2486](https://github.com/preloop/preloop/pull/2486).
+- Flow reasoning-effort controls, OpenRouter serving-provider visibility,
+  structured-result route warnings, weekly-report links, and a daily CI/QA
+  review preset.
+  [#2326](https://github.com/preloop/preloop/pull/2326),
+  [#2392](https://github.com/preloop/preloop/pull/2392),
+  [#2411](https://github.com/preloop/preloop/pull/2411),
+  [#2414](https://github.com/preloop/preloop/pull/2414),
+  [#2485](https://github.com/preloop/preloop/pull/2485).
 
 ### Fixed
 
-- A posted review shows a finding's line range (`path:23-25`), not only
-  the first line.
-- A review posted by Preloop includes the finding text the validated result
-  actually holds. Besides `title`, `body` (`description`, `message`,
-  `detail`), `path` (`file`) and `line`, the review shows `problem`,
-  `issue`, `finding` and `summary` as the finding text, `location` or
-  `where` (`path`, `path:LINE`, `path:LINE-LINE`, `path#LLINE`) as the
-  location, and every other field as a labelled block. The summary is
-  `summary`, otherwise `review`, otherwise `overview`. A finding with no
-  title is not labelled "Finding". When text or findings are cut, the review
-  says so and points at the execution. `preloop flow review-posting show`,
-  the flow card and `config_warnings` say which finding fields the schema
-  declares and how each is shown.
-- A publication GitHub already holds is no longer left failed because the
-  review or status was not visible in the first read-back. A few short
-  re-reads distinguish "not visible yet" (`readback_pending`, retried, and
-  finished by reading the recorded ids without posting again) from a real
-  difference (`readback_mismatch`, still final, and named by
-  `readback_check` on the execution record). An explicit publish call can
-  repair an existing `readback_mismatch` row when GitHub matches what was
-  sent, including a row recorded before the check was stored. The body
-  digest and the status URL that were sent are what a later read compares,
-  so a console URL or schema change does not fail a review GitHub already
-  holds. A present difference stays failed.
-
-- A pre-tool permission check that allows a command after evaluating a
-  tool approval workflow with no access rules records the allow that took
-  effect. The audit row's action and status are allow. The details keep
-  what was evaluated (`evaluated_decision`) and why it was not applied
-  (`not_applied_reason`). A permission request that still asks for
-  approval, and a permission prompt, are recorded as approval required,
-  as before. A permission request whose client already allowed the
-  command records allow and creates no approval. A subject-scoped rule
-  stored for another tool source is left out before evaluation, so it
-  does not add an approval-required row. Rows already in the log are
-  left as they are.
-- Tool evidence no longer treats ordinary source as a secret. A GitHub Actions
-  permission such as `id-token: write`, a call such as `token = name(...)`, a
-  colon at the end of a line, or a string joined with `+` stays intact, so a
-  review of a normal repository can be stored as complete. A value that still
-  looks like a credential is masked, that record stays incomplete, and the
-  record names which redaction rule fired (`redactions` on the observation,
-  `redaction_ruleset` on the document). Records already stored are left as
-  they are. See issue #2393.
-
-- A gateway request with zero tokens and no provider cost (a failed or
-  cancelled upstream request) no longer pages admins about a missing catalog
-  price or makes an execution's cost look partial. The budget pre-check no
-  longer pages a pricing gap for OpenRouter models whose usage is priced from
-  the provider's reported cost.
-- Account deletion requests are now checked before they reach the team that
-  runs the server. When you are signed in, the request is made for the
-  account you are signed in to, and only an owner, or the only member of a
-  personal account, can make it. When you are signed out, we email a
-  one-time confirmation link to the account's verified address and pass the
-  request on only after you open it. The page gives the same answer whether
-  or not an address has an account. If the server cannot send email, the
-  page asks you to sign in. Requests are rate limited, the reason for
-  leaving is capped at 1,000 characters, the notification says how the
-  request was confirmed, and each confirmed request is recorded in the
-  account's audit log. See "Deleting your account" in the user guide.
-
-- `get_issue` and the other issue tools now find a GitLab issue from its
-  `/-/work_items/<iid>` URL, the form GitLab 18.10 and later shows in the
-  browser, as well as from `/-/issues/<iid>`. Issue triage no longer refuses
-  an issue whose GitLab `web_url` uses the work items form. Synced GitLab
-  issues now keep their GitLab URL. A bare number such as `12` matches issue
-  12 only, not 112, and a number shared by several projects returns an error
-  listing the matching keys instead of an arbitrary one. A work item URL that
-  names no synced issue says which key was looked up.
-- Hosted read-only reviews are no longer sent into an extra session when they
-  did read the diff in a common way. The inspection check now accepts
-  `git diff <base>..<head>` and `git diff <base> <head>` when the base is the
-  merge base, abbreviated SHAs, `git --no-pager diff`, options that keep the
-  whole patch (`--find-renames`, `--find-copies`, `-M`, `-C`, `--unified=<n>`,
-  diff algorithms), and a read that ends a `;` sequence such as
-  `git diff --stat <base>...<head>; git diff <base>...<head>`. A review that
-  did not read the diff still fails. The instruction a continued session gets
-  now names the command that counts and the forms that do not (`--stat`,
-  `HEAD`, pipes, a diff followed by `;`), so the model does not repeat a
-  summary. In-container check and controller use the same rule and inputs.
-- A native review whose final answer is a valid JSON document inside a single
-  Markdown code fence is accepted: the fence is removed and the document goes
-  through every schema and review check as before, instead of the run spending
-  its repair sessions and failing. The execution records
-  `answer_unwrapped: "markdown_fence"`. A final answer that is not valid JSON
-  now fails as `result_schema_invalid` rather than `no_confirmation`, and the
-  repair prompt says plainly to reply with the JSON object only.
-- REST requests are recorded for every credential (API keys, runtime keys and
-  CI identities as well as login sessions) and every status, including 5xx
-  and requests the CI middleware rejects. Success traffic is rolled up per
-  minute and route template; each 4xx and 5xx is kept individually for at
-  least 7 days. Raw paths and query values are never stored.
-- A refused flow delete names its reason in the `X-Preloop-Delete-Blocker`
-  header and in a `flow_delete_refused` audit row.
-- Keys of flow executions and runtime sessions that ended are deactivated by
-  an hourly maintenance pass (`python -m preloop.services.run_key_maintenance`
-  runs it by hand, as a dry run by default). Keys a person created are never
-  touched.
-- API lists no longer cut off silently. `GET /api/v1/projects`, `GET /api/v1/flows`
-  and `GET /api/v1/flows/summary` now send an `X-Total-Count` header with the
-  number of matching rows, like the approval and execution lists already do.
-  The flow lists apply visibility before paging, so a page is short only at
-  the end. The response bodies are unchanged.
-- The same applies to `GET /api/v1/mcp-servers`, `GET /api/v1/approval-workflows`
-  and `GET /api/v1/runners` (which no longer stop at 100 rows or return short
-  pages) and `GET /api/v1/retention/holds` (which gains an `offset`
-  parameter). `GET /api/v1/agents` and `GET /api/v1/agents/control` apply
-  visibility before paging, and their `total` counts only the agents the
-  caller can see.
-- Issue search compares the `organization_id` filter as a UUID, so an
-  organization filter (in any letter case) finds its issues. An unknown,
-  malformed or excluded organization or project filter returns no results
-  instead of widening the search, and never calls the embedding provider.
-- `GET /api/v1/ai-models/{id}/used-by` checks every agent of the account.
-  `truncated` is true only when more agents use the model than the response
-  lists.
-- `GET /api/v1/approval-requests` no longer writes on every read. A periodic
-  sweep marks requests past their deadline as expired; until it runs, the
-  list already shows them as expired and filters them that way.
-- A pull request review that was running while the flow workers restarted no
-  longer leaves its commit status at "Preloop is reviewing". The worker that
-  finishes the run now sets the final status. Every way a run ends sets it
-  exactly once, on the commit that got the pending status. An error after the
-  final status was set no longer replaces success with failure. The scheduled
-  monitor sets the final status for runs from the last seven days that still
-  have only a pending one.
-- Native-result flows that run on the Codex backend of a ChatGPT plan
-  (provider `openai-codex`) now have their result schema checked when the
-  flow is saved, like flows on OpenAI. A schema the provider would refuse,
-  for example one that uses `oneOf`, is refused with a 422 that names the
-  path and the keyword and says what to use instead. Flows saved earlier keep
-  loading and running; if the provider refuses their schema, the run's error
-  says the same thing the save would have said.
-- Execution recovery: a run that had already stopped, failed or finished, but
-  whose stop was never confirmed, was picked up by the recovery pass every
-  30 seconds without end. Each time its end time and error were overwritten
-  with a timeout message, a session-ended audit entry was written and its
-  end-of-run notifications ran again. Recovery now only checks such a run's
-  runtime: when the runtime is gone (or once it has been stopped) the stop
-  is confirmed and the run leaves recovery in that pass. Its stored outcome is
-  not touched and nothing is notified a second time. This also covers runs
-  whose flow settings changed after launch in a way that made recovery fail
-  each time (for example a run stopped when its pull request merged).
-  As a backstop, a finished run whose stop still cannot be confirmed after
-  five attempts leaves recovery with one error log line instead of being
-  retried forever. Its stop stays unconfirmed and its stop reason says that
-  termination was not verified and needs an operator.
-- Native-result reviews: a run whose sessions never read the change and whose
-  last answer is a progress note (or is missing, not JSON, or otherwise does
-  not match the result schema) gets one more session instead of ending there.
-  That session is told that the review is not complete, what the inspection
-  check requires, and which validation errors the last answer had, and has to
-  inspect and answer. It runs at most once per run and within the execution
-  deadline, and is logged as a `PRELOOP_REVIEW_CONTINUATION` with reason
-  `uninspected_invalid_result`. A run starts at most five sessions after its
-  first (two inspection continuations, this one, two schema repairs). The
-  controller's checks are unchanged: a review that was not inspected still
-  fails with `review_not_inspected`.
-- Native-result reviews: a final answer that exists but does not match the
-  result schema now fails with `result_schema_invalid` and the failing paths
-  even when it carries no completion status. It used to fail with
-  `no_confirmation` and a message saying that no result was written. The
-  `result_schema_invalid` message now lists the other failing paths after the
-  first error.
-- Native-result runs: the `no_confirmation` message says what was observed (no
-  final answer, an answer that is not JSON, or an answer that does not match
-  the schema), and the recorded validation no longer says
-  `No result.json was captured` for a run that is never asked for that file.
-  When the model provider rejected the request before any answer, it says that
-  the model request failed and points to the provider error.
-- Native-result reviews: a final answer that does not match the result schema
-  (a missing required field, a value outside an enum, a wrong type, or no
-  JSON) no longer fails the run at once. The hosted Codex runtime asks the
-  model again, at most twice and within the execution deadline, naming each
-  validation error by JSON path. Each attempt is logged as a
-  `PRELOOP_REVIEW_CONTINUATION` with reason `result_schema_invalid`. An answer
-  that is still invalid fails with `result_schema_invalid` as before.
-- Native-result reviews: a review that was already written when the execution
-  deadline expired is finalized when it passes the same schema, binding,
-  inspection and narrative checks as a review that survives a
-  repeated-tool-loop stop. The completion facts record
-  `time_limit_after_result: true`. Otherwise the run still ends with `timeout`.
+- Hosted reviews bind results to the admitted diff and retain inspection and
+  completion evidence. Result repair is bounded, stopped runs recover more
+  reliably, and Codex tool output has larger limits.
+  [#2302](https://github.com/preloop/preloop/pull/2302),
+  [#2315](https://github.com/preloop/preloop/pull/2315),
+  [#2362](https://github.com/preloop/preloop/pull/2362),
+  [#2377](https://github.com/preloop/preloop/pull/2377),
+  [#2449](https://github.com/preloop/preloop/pull/2449).
+- Review publication preserves finding content and line ranges, reads back
+  posted results consistently, waits for evidence to settle, and does not
+  retroactively post excluded runs.
+  [#2404](https://github.com/preloop/preloop/pull/2404),
+  [#2406](https://github.com/preloop/preloop/pull/2406),
+  [#2420](https://github.com/preloop/preloop/pull/2420),
+  [#2465](https://github.com/preloop/preloop/pull/2465).
+- Extension discovery recognizes installed Claude and Codex plugin layouts
+  and reports incomplete scopes. Offboarding restores a shared Claude
+  subscription credential once across its model-family bindings. Onboarding,
+  reconnect and sync preserve the chosen credential store and retain recovery
+  information on failure.
+  [#2475](https://github.com/preloop/preloop/pull/2475),
+  [#2477](https://github.com/preloop/preloop/pull/2477).
+- Session scrolling and content search, first-run guidance, operator and
+  maintainer navigation, and GitLab merge-request authentication errors are
+  clearer. Same-day audit filters and incident exports include the full day.
+  [#2421](https://github.com/preloop/preloop/pull/2421),
+  [#2432](https://github.com/preloop/preloop/pull/2432),
+  [#2476](https://github.com/preloop/preloop/pull/2476),
+  [#2478](https://github.com/preloop/preloop/pull/2478),
+  [#2480](https://github.com/preloop/preloop/pull/2480),
+  [#2481](https://github.com/preloop/preloop/pull/2481),
+  [#2482](https://github.com/preloop/preloop/pull/2482),
+  [#2483](https://github.com/preloop/preloop/pull/2483).
+- Interactive Talk resumes on the correct branch and reports lifecycle states
+  consistently. Disabled workspace cloning stays disabled; unspecified
+  branches use the repository default.
+  [#2451](https://github.com/preloop/preloop/pull/2451),
+  [#2458](https://github.com/preloop/preloop/pull/2458),
+  [#2460](https://github.com/preloop/preloop/pull/2460).
+- Python package normalization no longer exposes non-SemVer client bounds.
+  Update checks order release candidates before the corresponding stable
+  release. Published installer scripts default to their own release, so a
+  version-query download does not silently install latest stable.
 
 ### Changed
 
-- CI runs the backend suite as six balanced shards instead of eighteen.
-  Each shard runs pytest-xdist with work stealing, one cloned database per
-  worker. Files are packed heaviest first from node durations that green
-  main runs cache for pull requests; the plan fails when the predicted
-  largest shard exceeds 1.15x the mean, and all shards use one runner class.
-- Delivery Report: connecting a tracker no longer creates a Delivery Report
-  flow; a user adds it from the preset or an operator enables it with
-  `python -m preloop.services.delivery_report_maintenance enable`. The same
-  command's `remove-unclaimed` (dry run by default) deletes system-created
-  report flows that no user created or edited and that never succeeded,
-  through the flow delete path. Report launches no longer grow with the number
-  of repositories, skip repositories with no activity in the window, and a
-  refused launch fails as `launch_payload_too_large`. A failed run emails the
-  report recipients once, operator accounts (`OPERATOR_ACCOUNT_IDS`) also
-  alert the admin channels, and the report page flags a flow whose last two
-  scheduled runs failed. Kubernetes agent RBAC gains `create` on Secrets only.
+- **API compatibility:** flow reads, writes and presets no longer return
+  `webhook_config.webhook_secret`. Rotate a webhook secret to receive its
+  value once, then retain it securely. Existing URLs remain valid until
+  rotation; reads expose only presence, a hint and rotation time.
+  [#2344](https://github.com/preloop/preloop/pull/2344).
+- Policy variable references are resolved by the CLI before upload, including
+  dry runs and diffs. Missing variables stop upload; `--no-resolve-env`
+  preserves references. The API accepts but ignores `resolve_env`.
+  [#2348](https://github.com/preloop/preloop/pull/2348).
+- Connecting a tracker no longer creates a Delivery Report flow automatically.
+  Add one from the preset or use the documented maintenance command. Report
+  launch size is bounded, and failures are visible to recipients and operators.
+  [#2335](https://github.com/preloop/preloop/pull/2335),
+  [#2365](https://github.com/preloop/preloop/pull/2365).
+- CI selects affected backend tests with an import graph and isolates serial
+  tests; version tags and full runs retain the whole suite.
+  [#2442](https://github.com/preloop/preloop/pull/2442),
+  [#2484](https://github.com/preloop/preloop/pull/2484).
 
-- Policies: the CLI now resolves variable references; the server no longer does.
-  `policy apply --dry-run` and `policy diff` use the same local resolution.
-  Unset variables stop the upload; `--no-resolve-env` preserves references.
-  The upload API accepts and ignores `resolve_env` and warns about unresolved
-  references.
+### Security and upgrade notes
 
-- **API compatibility:** flow responses (including reads, lists, creates,
-  updates and presets) no longer include `webhook_config.webhook_secret`.
-  Integrations that extracted the secret from those responses must retain
-  their existing URL or call the rotate action and save its one-time
-  `webhook_secret`. Responses expose `webhook_secret_set`,
-  `webhook_secret_hint` and `webhook_secret_rotated_at` instead. Existing
-  secrets and URLs remain valid until explicitly replaced; the migration
-  adds nullable rotation metadata and does not change credentials. Existing
-  unrotated secrets have a null rotation time (#2336).
+- The console and installer TLS proxy use NGINX 1.30.7 to address HTTP/2
+  vulnerabilities CVE-2026-123633 and CVE-2026-123007. Kubernetes ingress
+  controllers need a separate patch.
+- Console CSP, sensitive-log and tool-evidence masking, shared request
+  limiting, and telemetry opt-out handling are hardened. Approval requests
+  can hand off after an upstream scope refusal.
+  [#2286](https://github.com/preloop/preloop/pull/2286),
+  [#2351](https://github.com/preloop/preloop/pull/2351),
+  [#2360](https://github.com/preloop/preloop/pull/2360),
+  [approval hand-off](https://github.com/preloop/preloop/commit/50cdab45).
+- Existing databases must complete their rolling upgrade before running
+  `python -m preloop.models.credential_encryption --enable-execution-fingerprints`.
+  Before downgrading, run the same module with
+  `--restore-execution-fingerprints`. Fresh databases enable protection
+  immediately. [#2398](https://github.com/preloop/preloop/pull/2398).
+- Existing extension approvals are pinned to the content hashes available at
+  upgrade time. Downgrading drops those pins and restores more permissive
+  name-based approvals. Back up the database before upgrading.
 
-- MCP approve-once policies now record account-owned tool routes, share pending approvals, and support review and revocation in Policies → Tools seen.
+### Known gaps
 
-- MCP policies honour `defaults.unknown_tools` for unmatched calls, including
-  hook-observed MCP tools. Allow remains the default for existing accounts;
-  deny and approval defaults are opt-in (#2313).
-
-### Added
-
-- An optional cleanup for sign-ups that were never verified or used. It
-  runs in the existing hourly maintenance task, in dry-run mode by default,
-  and never touches an account with a sign-in, an API key, an agent or any
-  other data. Set `UNVERIFIED_SIGNUP_CLEANUP=apply` to delete; see the
-  operations guide for the conditions and settings.
-
-- Platform operators can read one account's failures and anomalies with
-  `GET /api/v1/operator/accounts/{id}/health` or
-  `preloop accounts health <account-id>`: failed executions by category,
-  successful runs with no tool calls or model requests, routes with repeated
-  errors, empty lists right after a create, and gateway upstream errors.
-- `GET /api/v1/event-webhooks/endpoints/{id}` reads one webhook endpoint
-  (without its signing secret) instead of returning 405.
-- `GET /api/v1/ci-identities/{id}/github-dispatch-subscriptions` lists a CI
-  identity's GitHub dispatch subscriptions, without tokens or secrets.
-- Review posting: a read-only review flow can now post its review only when
-  asked. Platform review has three modes: off, automatic (post when the run
-  finishes, as before; flows already set up keep this) and manual (post only
-  when the publish call is made). The flow editor shows the three choices.
-- Review posting: the publish call
-  (`POST /api/v1/flows/executions/{id}/platform-review`) accepts optional
-  preconditions: the expected head and base commit, the expected result digest
-  and the expected flow revision. If one does not hold, nothing is posted and
-  the call answers 412 naming the precondition and its current value. A
-  malformed value or an unknown member answers 400.
-- `GET .../result` returns `result_sha256`, the digest of the result to
-  compare with what will be posted. The canonical form is documented.
-- The posted-review record, the finished webhook and the audit log say
-  whether a review was posted automatically, manually or not at all.
-
-- flows: changes can be made conditional, so one editor cannot silently
-  overwrite another. Each flow has a configuration revision that goes up by
-  one on every configuration change (never on runs). Flow reads and writes
-  return it as `revision` and as the `ETag` header. Send that value in
-  `If-Match` on `PUT /api/v1/flows/{id}` or the other flow write actions:
-  if the flow changed since you read it, nothing is saved and the response
-  is `412` with the current revision. Requests without `If-Match` work as
-  before. The console editor uses this and offers to reload instead of
-  overwriting, and `preloop flow review-posting` sends it. Triggers accept
-  `If-Match` too, so a caller can refuse to run a configuration it did not
-  review, and each execution records the revision it was created with as
-  `flow_revision` (#2375).
-
-- flows: rotate webhook ingress secrets with
-  `POST /api/v1/flows/{id}/webhook-secret/rotate`,
-  `preloop flow webhook-secret rotate <flow-id-or-name>`, or the console
-  flow page. The new `webhook_secret` is returned once by rotation; the old
-  URL stops working immediately. Each rotation records an audit event
-  without the credential (#2336).
-
-- flows: restricted-CI read-only reviews bind their result to the admitted
-  revision and require repository inspection. A result whose `head_sha`,
-  `base_sha`, `merge_base_sha` or `diff_sha256` differs from what the
-  controller admitted or computed fails with `review_binding_mismatch`; a
-  review with no repository tool call or command fails with
-  `review_not_inspected`. Both are on by default and configurable under
-  `git_clone_config.review_integrity`. Platform posting recomputes both and
-  posts only the error status for an unverified result. Status reads add
-  `startup_receipt_status` (`pending`, `recorded`, `failed`) so an early null
-  receipt is no longer ambiguous (#2100).
-
-- Managed hook exports include a deterministic policy revision. The optional
-  `--register` flag records secret-free manifest metadata in the selected
-  account; exports remain offline by default. A new account-scoped registry
-  and control-expectation store support evidence-based fleet generation,
-  preserving manual expectations and retiring superseded bundle rows.
-
-- auth: authenticator-app two-factor sign-in, ten single-use recovery codes,
-  browser enrollment and recovery, and an operator reset command. Password,
-  email-link, chat and social authentication require a second step for enrolled
-  users; passkey and SSO authentication remain direct. Fresh strong
-  authentication now protects passkey removal and passkey-only settings, with
-  a shared console step-up dialog and extension hooks for account policies.
-- flows: hosted read-only reviews record an offline, canonical diff identity
-  before agent startup and include its digest in completion events. Restricted
-  status/result reads add phase timings and aggregated effective gateway request
-  controls; result reads distinguish process completion, capture, schema validity
-  and publication, with unknown historical observations left null (#2100).
-
-- flows: console and CLI for the review and status Preloop posts on the pull
-  request. Read-only review flows get a **Post review on the pull request**
-  card on the flow page: turn posting on or off, map each verdict to a commit
-  status, and read the prerequisites as checks with the reason when one is
-  missing. The execution page shows the publication record (posted, skipped,
-  failed with the reason) with links to the review, the status and the pull
-  request, and offers **Publish again** to users who may edit flows. New
-  `preloop flow review-posting show|enable|set-states|disable|status|publish`.
-  `GET /api/v1/flows/executions/{id}` now also returns `platform_review` for
-  account users, with `pull_request_url`, `review_url` and `commit_url`
-  (read-only addition).
-- flows: a read-only review flow can have Preloop post the result itself.
-  With `git_clone_config.platform_review` (off by default, valid only with
-  `publication_mode: read_only`, `validate_result` and a `result_schema` that
-  declares a `verdict` enum), the control plane posts one pull request review
-  and one commit status on the exact commit the run reviewed, after the run
-  is terminal and its result passed the schema. It works for shared flows
-  (`ci_project_selection`): each execution posts only on the repository of
-  its own identity. The run still holds no write credential: Preloop mints a
-  GitHub App token per publication for one repository with `pull_requests:
-  write` and `statuses: write` and no contents permission, uses it for those
-  two writes, reads them back and revokes it. The posted text is rendered
-  from validated result fields as literal text (no mentions, links, issue
-  references or HTML). `POST /api/v1/flows/executions/{id}/platform-review`
-  publishes a finished review again without a model run (new CI action
-  `execution:review:publish`), and the execution, its result and
-  `flow.execution.finished` carry a `platform_review` record. Existing CI
-  identities keep working when the opt-in is turned on. GitHub App
-  trackers only. Adds the `platform_review_publication` table (migration
-  `20261208_platform_review`). See `docs/architecture/platform-posted-review.md`.
-- restricted CI: one hosted read-only review flow can be shared by several
-  projects of an account, while every CI identity stays bound to one project.
-  An account administrator sets the flow's project allowlist with
-  `PUT /api/v1/ci-identities/shared-flows/{flow_id}` or
-  `preloop ci share-flow FLOW_ID --input projects.json` (read it back with
-  `GET` or `preloop ci shared-flow FLOW_ID`); Preloop derives each repository
-  from its project and accepts no URL or tracker. An identity on a shared
-  flow can start reviews only for its own repository and can read, list and
-  stop only its own executions; sibling projects, their executions and the
-  allowlist are not visible to it. Identities, `preloop ci preview` and the
-  console now report `binding_mode` (`dedicated` or `shared`), the console
-  offers shared flows when creating an identity, and
-  `preloop ci capabilities` describes both bindings. Existing one-project
-  identities are unchanged and there is no migration.
-  `scripts/verify_shared_ci_flow.py` checks the isolation against two
-  repositories without starting a review. Extra read-only context
-  repositories for a review are designed but not included
-  (`docs/architecture/shared-ci-review-flows.md`) (#2103).
-
-### Fixed
-
-- flows: an agent container now exits when the agent script exits. Since
-  #2367 the output-masking wrapper waited for every process holding the
-  script's output, so the checkpoint loop's `sleep` kept the container alive
-  for up to one checkpoint interval (300 s by default). Runs finished late,
-  and flows with a limit near the interval failed as `timeout` although the
-  agent had finished. The wrapper now ends on the script's exit, still
-  delivers and masks its last output, and signals leftover background
-  processes; the checkpoint loop also stops its `sleep` on exit.
-- Projects: listing projects by organization now returns the matching projects.
-- Trackers: manual sync returns a task ID that also appears in worker logs,
-  and reports a queue failure instead of claiming the sync was queued.
-
-- flows: a Codex native-result read-only review whose session ends with an
-  answer but no command (the model satisfied the result schema on its first
-  turn) is continued in up to two fresh sessions that must inspect the
-  checkout first, inside the flow's existing timeout and budget. If none
-  inspects, the run fails `review_not_inspected`; that category now wins over
-  `review_binding_mismatch` when both apply (#2100).
-
-- models: mark deleted routing, label and enabled retry targets as missing in
-  flow details and lists, including flows with a healthy default model. Repairing
-  each reference clears its warning; routing policy is preserved so a missing
-  target cannot silently select a different model.
-
-- flows: schema-valid native verdicts confirm completion without an additional
-  status field or success marker, and supersede log-text error heuristics.
-  Controller termination metadata is withheld from restricted result JSON so
-  it cannot break a strict schema. Result reads return `409 result_pending`
-  while capture is unsettled, even after an external terminal transition;
-  controller-only termination metadata no longer masquerades as a captured
-  result (`404` after capture settles).
-
-- flows: keep completion notifications durably queued while result capture is
-  pending. Confirmed stopped runs can settle after an interrupted controller's
-  claim expires; waiting consumes no webhook retries. Legacy publication outputs
-  without capture provenance remain readable.
-
-- flows: commit captured results before artifact transfers and finalization.
-  Checkpoint, quota, log shipping, lease cleanup, callback queueing and publication
-  failures are named separately without hiding completed findings or requiring
-  another model run. Required publication gates still govern flow success (#2100).
-- flows: turning `platform_review` on, changing it or turning it off no
-  longer invalidates the flow's existing CI identities. The first release of
-  platform-posted review recorded the flow's posting capabilities in each
-  identity's provisioning snapshot, so enabling posting made every existing
-  key answer 401 until new identities were provisioned. Posting is done by
-  Preloop with its own token and gives an identity no authority, so the
-  snapshot no longer includes it (a stored key from that release is
-  ignored), and posting settings are validated when the flow is saved and
-  before each publication instead of when an identity authenticates.
-  `PATCH /api/v1/ci-identities/{id}` accepts `extend_keys: true` to add the
-  actions a grant change adds (for example `execution:review:publish`) to
-  the identity's active keys in place, without rotation.
-
-- flows: the `platform_review` record no longer reports `posted` when no
-  review was posted. A run that did not succeed (or whose head moved) and
-  only received a commit status now reads `status: "status_only"` with the
-  reason and `review: "skipped"`; `posted` always means a review is on the
-  pull request.
-
-- flows: reviews posted by Preloop no longer show stray backslashes
-  (`calculator\.py`). Text from the result is neutralised with character
-  references instead of backslash escapes, so ordinary text reads as typed,
-  and file paths and identifiers marked as code are shown as code. Mentions,
-  links, issue references, HTML and commands from result text stay inert.
-
-- flows: approval and checkpoint continuations no longer re-test a model key
-  rejected after the run started. Recovery also skips admission probing; a dead
-  key fails at its next model call. Explicit retries still test the stored key
-  before starting a new execution.
-- models: deleting a model that flows still select is refused with `409
-  model_in_use` and the flows, unless `force=true`. Before, the delete
-  silently cleared each flow's model and left routing, label and retry rules
-  pointing at a model that no longer existed. A forced delete records on
-  each flow which model it lost and names every orphaned flow in the audit
-  entry. `GET /ai-models/{id}/used-by` now also returns each flow's enabled
-  state and last run, the CI identities bound to those flows (no key
-  material) and the other models sharing the credential; credential rotation
-  returns the affected models and flows. Flow responses gain `model_health`
-  (`missing` or `error` with the credential error code), and the Flows list
-  marks those rows. The console names the flows in the delete confirmation.
-  Only enabled flows block a delete; disabled ones are counted apart
-  (`enabled_flow_count`, `disabled_flow_count`) and are still marked and
-  audited when the delete goes ahead. The model read gains
-  `credentials_expires_at` for subscription logins (admins and editors only),
-  shown on the model page with the last refresh time.
-
-- models: audit model creation, updates, deletion and credential set,
-  replacement, rotation and removal without key material. First provider API-key
-  rejections now notify account owners once per episode and emit
-  `ai_model.credential_rejected`. Provider billing `402` responses mark credentials
-  with `upstream_billing_rejected`; acceptance or key replacement clears the
-  mark. Before any clone or container, flows probe a model with a standing auth
-  rejection and refuse with `409 model_credentials_rejected` only when the
-  provider rejects authentication again. Successful probes clear the mark;
-  inconclusive probes allow the run. Healthy models and billing marks are never
-  probed. Restricted CI returns only the model name and code.
-
-- flows: a hosted Codex run whose native permission hook would be refused now
-  fails before it starts. Before launch the execution's runtime credential is
-  checked with the same identity rules `POST /api/v1/agents/permission-check`
-  applies, and a credential the hook could not use ends the run `FAILED` with
-  the new `hook_binding_invalid` category: no container, no model calls, no
-  startup receipt. Previously such a run started, and every native command
-  was denied with HTTP 403 while the model kept spending calls. The read-only
-  review startup receipt gains an additive `agent_cli` field
-  (`{"name": "codex", "version": "x.y.z"}`) taken from the version line the
-  container prints before the agent starts, or null when none was seen
-  (part of #2264).
-
-- gateway: an error the upstream model provider produced now says so. A
-  provider-reported 401, 402, 403 or 404 used to reach the client at
-  Preloop's URL as the provider's bare sentence (for example `User not
-  found.`), which read like Preloop rejecting the client's own key. The
-  message now names the provider and status and quotes the provider's
-  sentence as its message, and every gateway error body gains additive
-  `origin` (`upstream` or `gateway`), `provider`, `category`,
-  `upstream_status` and `request_id` fields (Gemini: `google.rpc.ErrorInfo`
-  metadata), including streaming error events. Preloop's own client-auth 401s
-  carry `origin: gateway`. A run stopped with `repeated_upstream_failure` now
-  reports its first failure as the cause in the 424 body (`error.cause`), the
-  execution's error message and the timeline milestone, instead of only the
-  stop reason. Status codes, retry and terminal behaviour and `error_class`
-  values are unchanged (#2288).
-
-- gateway: a model whose own API key the provider rejects (upstream `401`) is
-  now marked on the model itself. The gateway records the provider, its
-  message and the time of the first and latest rejection on the stored
-  credential; `GET /api/v1/ai-models` then reports `credentials_status: error`
-  with `credentials_last_error_code: upstream_auth_rejected`, and the console
-  Models view shows the model as failing with "Rotate the API key for this
-  model." The mark clears when the provider accepts the key again or the key
-  is replaced or rotated. Previously a revoked or wrong-account key failed
-  every run with a 401 while the model still read `active`. Subscription
-  logins, `403` answers and deployment-provided models are unaffected.
+- Compose and Helm upgrade acceptance from 1.0.2 is in progress. The existing
+  harness covers a 0.17.x baseline and restricts published RC selection to
+  1.0.0; it does not establish acceptance for this release pair.
+- Credential repair when re-onboarding with a fresh local login remains in
+  [#2490](https://github.com/preloop/preloop/pull/2490), which is not included
+  in this candidate yet.
 
 ## [1.0.2] - 2026-11-12
 

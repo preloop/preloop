@@ -62,6 +62,24 @@ def _workflow() -> Dict[str, Any]:
     return loaded
 
 
+def test_release_pins_installers_before_checksumming_and_attesting() -> None:
+    """Version-query downloads must install the selected rc, not latest stable."""
+    steps = _workflow()["jobs"]["create-release"]["steps"]
+    prepare = next(
+        step for step in steps if step.get("name") == "Prepare release assets"
+    )
+    script = prepare["run"]
+    pin = 'scripts/release_assets.py installers release-assets --version "${GITHUB_REF_NAME#v}"'
+    assert pin in script
+    assert script.index(pin) < script.index("scripts/release_assets.py checksum")
+    attest = next(
+        step
+        for step in steps
+        if step.get("name") == "Attest build provenance for release assets"
+    )
+    assert steps.index(prepare) < steps.index(attest)
+
+
 def _trigger(workflow: Dict[str, Any]) -> Dict[str, Any]:
     """Return the ``on:`` mapping.
 

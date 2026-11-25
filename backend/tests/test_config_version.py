@@ -2,9 +2,34 @@
 
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
+import pytest
 from unittest.mock import patch
 
 from preloop.config import _load_release_version
+
+
+@pytest.mark.parametrize(
+    ("installed", "expected"),
+    [
+        ("1.1.0rc1", "1.1.0-rc.1"),
+        ("1.1.0a2", "1.1.0-alpha.2"),
+        ("1.1.0b3", "1.1.0-beta.3"),
+        ("1.1.0-rc.1", "1.1.0-rc.1"),
+        ("1.0.2", "1.0.2"),
+    ],
+)
+def test_installed_version_uses_semver_for_clients(
+    installed: str, expected: str
+) -> None:
+    """Wheel normalization must not leak an unparseable CLI version contract."""
+    import preloop
+
+    with (
+        patch("preloop.config.version", return_value=installed),
+        patch("preloop._package_version", return_value=installed),
+    ):
+        assert _load_release_version() == expected
+        assert preloop._resolve_version() == expected
 
 
 def test_load_release_version_uses_package_metadata_when_installed() -> None:

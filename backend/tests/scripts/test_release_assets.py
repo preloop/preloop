@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
 import subprocess
 import tempfile
 import unittest
@@ -48,6 +49,45 @@ class ReleaseAssetsTest(unittest.TestCase):
         release_assets.verify_assets(
             self.directory, self.bundle, "example/project", "v1.2.3", "a" * 40
         )
+
+    def test_published_installers_pin_rc_and_preserve_explicit_override(self) -> None:
+        """A version-query download must not silently install latest stable."""
+        release_assets.stage_installers(
+            REPO_ROOT / "scripts", self.directory, "1.1.0-rc.1"
+        )
+        for name in ("install-cli.sh", "install-oss.sh"):
+            content = (self.directory / name).read_text()
+            # Execute the real defaults and resolver without installing anything.
+            defaults = "\n".join(
+                line for line in content.splitlines() if line.startswith("PRELOOP_")
+            )
+            resolver = content.split("resolve_version() {", 1)[1].split("\n}", 1)[0]
+            script = (
+                defaults + "\nresolve_version() {" + resolver + "\n}\nresolve_version"
+            )
+            for override, expected in (("", "1.1.0-rc.1"), ("1.0.2", "1.0.2")):
+                result = subprocess.run(
+                    ["sh", "-c", script],
+                    env={
+                        "PATH": os.defpath,
+                        "PRELOOP_VERSION": override,
+                        "PRELOOP_DISABLE_TELEMETRY": "true",
+                    },
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.stdout.strip(), expected)
+        powershell = (self.directory / "install-cli.ps1").read_text()
+        self.assertIn("{ '1.1.0-rc.1' } else { $env:PRELOOP_VERSION", powershell)
+
+    def test_installer_staging_rejects_shell_syntax(self) -> None:
+        """A release name cannot inject shell or PowerShell into an asset."""
+        for version in ("1.1.0'; exit", "$(id)", "1.1.0\n"):
+            with self.assertRaises(ValueError):
+                release_assets.stage_installers(
+                    REPO_ROOT / "scripts", self.directory, version
+                )
 
     def test_checksums_cover_all_payloads_and_are_repeatable(self) -> None:
         release_assets.write_checksums(self.directory)

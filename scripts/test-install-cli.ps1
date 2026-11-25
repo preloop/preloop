@@ -20,7 +20,7 @@ $ErrorActionPreference = 'Stop'
 $env:PRELOOP_DISABLE_TELEMETRY = 'true'
 
 if ($Case) {
-  $env:PRELOOP_VERSION = '0.0.0-test'
+  $env:PRELOOP_VERSION = '1.1.0-rc.1'
   $env:PRELOOP_REPO = 'example/fixture'
   $env:PRELOOP_CONFIRM = '1'
   $env:PROCESSOR_ARCHITECTURE = 'AMD64'
@@ -32,6 +32,9 @@ if ($Case) {
 
   function Invoke-WebRequest {
     param([string]$Uri, [string]$OutFile, [switch]$UseBasicParsing)
+    if (-not $Uri.StartsWith('https://github.com/example/fixture/releases/download/v1.1.0-rc.1/')) {
+      throw "Installer did not request the selected release candidate."
+    }
     if ($Uri.EndsWith('/SHA256SUMS')) {
       $valid = "$fixtureHash  preloop-windows-amd64.exe"
       switch ($Case) {

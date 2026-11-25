@@ -5,11 +5,40 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import subprocess
 from pathlib import Path
 
 
 CHECKSUMS = "SHA256SUMS"
+
+
+def stage_installers(source: Path, directory: Path, version: str) -> None:
+    """Pin published installer defaults to their release before signing them.
+
+    The hosted version query serves the script attached to that release.
+    Without a pinned default, that script would still install latest stable.
+    Explicit PRELOOP_VERSION overrides remain available.
+    """
+    if not re.fullmatch(
+        r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", version
+    ):
+        raise ValueError("Installer version must be semantic versioning")
+    for name in ("install-cli.sh", "install-oss.sh", "install-cli.ps1"):
+        content = (source / name).read_text(encoding="utf-8")
+        if name.endswith(".sh"):
+            marker = 'PRELOOP_DEFAULT_VERSION="${PRELOOP_DEFAULT_VERSION:-}"'
+            replacement = (
+                'PRELOOP_DEFAULT_VERSION="${PRELOOP_DEFAULT_VERSION:-' + version + '}"'
+            )
+        else:
+            marker = "{ Get-LatestPreloopVersion -Repo $repo } else"
+            replacement = "{ '" + version + "' } else"
+        if content.count(marker) != 1:
+            raise ValueError(f"Expected one version default in {name}")
+        (directory / name).write_text(
+            content.replace(marker, replacement), encoding="utf-8"
+        )
 
 
 def assets_in(directory: Path) -> list[Path]:
@@ -89,6 +118,10 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     checksum = commands.add_parser("checksum")
     checksum.add_argument("directory", type=Path)
+    installers = commands.add_parser("installers")
+    installers.add_argument("directory", type=Path)
+    installers.add_argument("--source", type=Path, default=Path("scripts"))
+    installers.add_argument("--version", required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("directory", type=Path)
     verify.add_argument("--bundle", type=Path, required=True)
@@ -98,6 +131,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "checksum":
         write_checksums(args.directory)
+    elif args.command == "installers":
+        stage_installers(args.source, args.directory, args.version)
     else:
         verify_assets(args.directory, args.bundle, args.repo, args.tag, args.source_sha)
 
