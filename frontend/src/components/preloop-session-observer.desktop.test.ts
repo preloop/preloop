@@ -239,6 +239,20 @@ describe('PreloopSessionObserver live desktop', () => {
     await waitUntil(() => calls.some((c) => c.method === 'DELETE'));
   });
 
+  it('keeps an online desktop available while the conversation is idle', async () => {
+    const el = await mount({
+      ...SESSION,
+      turn_state: 'idle',
+      activity_status: 'idle',
+      is_active_now: false,
+    });
+    await waitUntil(() => liveDesktopButton(el), 'Idle session desktop');
+    expect(el.shadowRoot!.textContent).not.to.contain('Following live');
+    liveDesktopButton(el)!.click();
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.desktop-panel')).to.exist;
+  });
+
   it('re-checks the endpoint while the session stays selected', async () => {
     const el = await mount();
     await waitUntil(() => liveDesktopButton(el), 'Live desktop button', {

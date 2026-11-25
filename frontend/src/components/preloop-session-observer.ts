@@ -2952,7 +2952,8 @@ export class PreloopSessionObserver extends LitElement {
     if (!this.enabledFeatures.liveDesktop || !this.desktopEndpoint) {
       return nothing;
     }
-    if (!session || !this.isSessionLive(session)) return nothing;
+    // An online desktop remains usable between conversation turns.
+    if (!session || this.isSessionEnded(session)) return nothing;
     return html`
       <sl-button
         class="live-desktop"
@@ -3699,7 +3700,8 @@ export class PreloopSessionObserver extends LitElement {
         ${
           this.desktopPanelOpen &&
           this.desktopEndpoint &&
-          this.isSessionLive(this.activeSession)
+          this.activeSession &&
+          !this.isSessionEnded(this.activeSession)
             ? html`<div class="desktop-split">
                 ${content} ${this.renderDesktopPanel()}
               </div>`
