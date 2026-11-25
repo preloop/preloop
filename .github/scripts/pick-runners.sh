@@ -12,7 +12,7 @@
 #
 # early: Detect changed paths, Lint & Format and CLI Fast. They run in two
 #   stages (changes first, then lint and CLI Fast), so a slot can serve both.
-# late:  backend shards and the docs, fuzz and browser-fixture leaves. The
+# late:  backend shards and the fuzz and browser-fixture leaves. The
 #   backend set goes to exactly one class: general when it has one idle runner
 #   per group, else local when it does, else hosted. Leaves then take the idle
 #   local slots that are left, in priority order; the rest stay hosted.
@@ -23,7 +23,7 @@
 #
 # Environment: RUNNER_READ_TOKEN, REPO, TRUSTED_SOURCE, RUN_ATTEMPT,
 # SELF_HOSTED_TESTS, LOCAL_RUNNERS, and for late mode BACKEND_REQUIRED,
-# BACKEND_SHARDS, LEAF_DOCS, LEAF_FUZZ, LEAF_BROWSER_FIXTURE. Writes
+# BACKEND_SHARDS, LEAF_FUZZ, LEAF_BROWSER_FIXTURE. Writes
 # GITHUB_OUTPUT and GITHUB_STEP_SUMMARY. Always exits 0.
 set -uo pipefail
 
@@ -142,8 +142,7 @@ else
   reason="${general_reason:-fewer idle general runners than shards}; ${local_reason:-fewer idle local slots than shards}; all hosted"
 fi
 
-docs="$HOSTED"; browser_fixture="$HOSTED"; fuzz="$HOSTED"
-[ "${LEAF_DOCS:-false}" = "true" ] && take docs 1
+browser_fixture="$HOSTED"; fuzz="$HOSTED"
 [ "${LEAF_BROWSER_FIXTURE:-false}" = "true" ] && take browser_fixture 1
 [ "${LEAF_FUZZ:-false}" = "true" ] && take fuzz "$FUZZ_SLOTS"
 
@@ -152,9 +151,8 @@ out "runner_class=$class"
 out "self_hosted=$([ "$class" != hosted ] && echo true || echo false)"
 out "observed_idle=$groups"
 out "routing_reason=$reason"
-out "docs_runner=$docs"
 out "fuzz_runner=$fuzz"
 out "browser_fixture_runner=$browser_fixture"
 note "backend groups on $class: \`$groups / ${splits:-0}\` ($reason)"
-note "docs: \`$docs\`, fuzz: \`$fuzz\`, browser fixture: \`$browser_fixture\`"
+note "fuzz: \`$fuzz\`, browser fixture: \`$browser_fixture\`"
 exit 0

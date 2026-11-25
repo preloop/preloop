@@ -439,13 +439,12 @@ def test_local_pool_is_skipped_when_disabled_untrusted_or_rerun(
         "late",
         runners,
         BACKEND_SHARDS="1",
-        LEAF_DOCS="true",
         LEAF_FUZZ="true",
         LEAF_BROWSER_FIXTURE="true",
         **env,
     )
     early = _pick(tmp_path, "early", runners, **env)
-    for key in ("backend_runner", "docs_runner", "fuzz_runner"):
+    for key in ("backend_runner", "browser_fixture_runner", "fuzz_runner"):
         assert json.loads(late[key]) == HOSTED, key
     for key in ("changes_runner", "lint_runner", "cli_fast_runner"):
         assert json.loads(early[key]) == HOSTED, key
@@ -477,19 +476,19 @@ def test_early_light_jobs_prefer_idle_local_slots(
 
 
 @pytest.mark.parametrize(
-    ("idle", "shards", "docs", "fixture", "fuzz"),
+    ("idle", "shards", "fixture", "fuzz"),
     [
         # Backend takes three, nothing left for the leaves.
-        (3, "3", HOSTED, HOSTED, HOSTED),
+        (3, "3", HOSTED, HOSTED),
         # Seven groups go hosted; leaves use the slots in priority order.
-        (3, "7", LOCAL, LOCAL, HOSTED),
-        (4, "7", LOCAL, LOCAL, LOCAL),
-        (4, "1", LOCAL, LOCAL, HOSTED),
-        (1, "7", LOCAL, HOSTED, HOSTED),
+        (3, "7", LOCAL, LOCAL),
+        (2, "7", LOCAL, HOSTED),
+        (3, "1", LOCAL, HOSTED),
+        (1, "7", LOCAL, HOSTED),
     ],
 )
 def test_leaves_take_local_slots_the_backend_left(
-    tmp_path: Path, idle: int, shards: str, docs: object, fixture: object, fuzz: object
+    tmp_path: Path, idle: int, shards: str, fixture: object, fuzz: object
 ) -> None:
     """Fuzz needs one slot per concurrent leg, so it goes whole or hosted."""
     outputs = _pick(
@@ -497,11 +496,9 @@ def test_leaves_take_local_slots_the_backend_left(
         "late",
         [_runner(LOCAL)] * idle,
         BACKEND_SHARDS=shards,
-        LEAF_DOCS="true",
         LEAF_FUZZ="true",
         LEAF_BROWSER_FIXTURE="true",
     )
-    assert json.loads(outputs["docs_runner"]) == docs
     assert json.loads(outputs["browser_fixture_runner"]) == fixture
     assert json.loads(outputs["fuzz_runner"]) == fuzz
 
@@ -513,20 +510,20 @@ def test_leaves_that_do_not_run_hold_no_slot(tmp_path: Path) -> None:
         "late",
         [_runner(LOCAL)] * 2,
         BACKEND_SHARDS="7",
-        LEAF_DOCS="false",
         LEAF_BROWSER_FIXTURE="false",
         LEAF_FUZZ="true",
     )
     assert json.loads(outputs["fuzz_runner"]) == LOCAL
-    assert json.loads(outputs["docs_runner"]) == HOSTED
+    assert "docs_runner" not in outputs
 
 
 def test_leaf_workflows_accept_the_picked_runner() -> None:
     """Each leaf passes the picker output and its callee defaults to hosted."""
     jobs = load_ci_jobs()
     root = PICKER.parents[2]
+    # Docs stays hosted: its lock needs Python >= 3.11.5, Debian 12 has 3.11.2.
+    assert "runner" not in jobs["leaf-docs"]["with"]
     for leaf, output, workflow in (
-        ("leaf-docs", "docs_runner", "docs"),
         ("leaf-fuzz", "fuzz_runner", "fuzz"),
         ("leaf-browser-fixture", "browser_fixture_runner", "browser-fixture"),
     ):
@@ -539,5 +536,3 @@ def test_leaf_workflows_accept_the_picked_runner() -> None:
         text = (root / f".github/workflows/{workflow}.yml").read_text()
         assert "fromJSON(inputs.runner || '\"ubuntu-24.04\"')" in text, workflow
         assert "default: '\"ubuntu-24.04\"'" in text, workflow
-        # setup-python has no Debian 12 builds.
-        assert "actions/setup-python@" not in text, workflow

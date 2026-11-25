@@ -34,7 +34,6 @@ rules:
       - ci.yml
       - browser-fixture.yml
       - codex-tool-surface.yml
-      - docs.yml
 
   # Trusted Publishing (OIDC) for PyPI and npm requires configuration on
   # the registry side (publisher registration per package), which cannot be

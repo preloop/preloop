@@ -96,12 +96,23 @@ snapshot and is covered by `backend/tests/test_github_ci_self_hosted_runner.py`:
   pool when it has one idle slot per group, else all to hosted. With three
   slots that means a narrow impact-selected set (one to three groups) can run
   locally; a full seven-group set stays hosted. Local slots left over go to
-  the docs, browser-fixture and fuzz leaves in that order. Fuzz runs two legs
-  at once, so it needs two free slots or stays hosted.
+  the browser-fixture and fuzz leaves in that order. Fuzz runs two legs at
+  once, so it needs two free slots or stays hosted. The docs leaf stays
+  hosted: its lock needs Python 3.11.5 or later and Debian 12 ships 3.11.2.
 - Anything without an idle slot at selection time, every picker failure,
-  reruns, forks and Dependabot PRs use `ubuntu-24.04`. A job on a local slot
-  runs as a member of the `docker` group, which is root on that VM, so
-  untrusted code never gets one. CI has no `pull_request_target` job.
+  reruns, forks and Dependabot PRs use `ubuntu-24.04`. CI has no
+  `pull_request_target` job.
+
+The picker is defence in depth, not the security boundary. A job on a local
+slot runs as a member of the `docker` group, which is root on that VM. For
+`pull_request` events GitHub runs the workflow file from the PR's merge
+commit, so a fork PR can name `preloop-ci-local` (or `preloop-ci-general`) in
+its own `runs-on` and skip the picker. What stops that today is GitHub's
+fork-workflow approval, which this repository sets to first-time
+contributors only, and the repository-level runners sit in the default
+runner group with no workflow restriction. Requiring approval for all
+outside contributors, or moving the private runners into a runner group
+restricted to workflows on `main`, would make the boundary hard.
 
 The snapshot is not a reservation. A local job whose slot is taken in the
 meantime waits for the next free slot. Backend shards on local slots are
@@ -117,8 +128,9 @@ system libraries are preinstalled, because the slot user has no sudo and
 
 ## Hosted control jobs
 
-Changed-path detection, the runner picker and the final CI aggregator always
-run on GitHub-hosted `ubuntu-24.04`. The general pool is optional spot capacity,
+The runner pickers and the final CI aggregator always run on GitHub-hosted
+`ubuntu-24.04`. Changed-path detection prefers an idle local slot and falls
+back to hosted whenever the light picker produced no answer. The general pool is optional spot capacity,
 so an offline pool must not prevent the picker from selecting hosted shards or
 the aggregator from finishing. `CI_SELF_HOSTED_BOOTSTRAP` is no longer used;
 existing repository values have no effect on this workflow.

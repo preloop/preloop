@@ -164,7 +164,7 @@ jobs:
   # Every backend shard runs on one runner class: all shards go to idle
   # general CI runners when there is one per shard, else to idle
   # preloop-ci-local slots when there is one per shard, otherwise all run
-  # hosted. Local slots left over go to the docs, fuzz and browser-fixture
+  # hosted. Local slots left over go to the browser-fixture and fuzz
   # leaves; .github/scripts/pick-runners.sh holds the rules. Mixing the slower self-hosted VMs with hosted shards made one
   # straggler set the wall clock. Missing inventory, absent credentials,
   # forks and disabled routing select hosted.
@@ -198,7 +198,6 @@ jobs:
       observed_idle: ${{ steps.pick.outputs.observed_idle }}
       routing_reason: ${{ steps.pick.outputs.routing_reason }}
       runner_class: ${{ steps.pick.outputs.runner_class }}
-      docs_runner: ${{ steps.pick.outputs.docs_runner }}
       fuzz_runner: ${{ steps.pick.outputs.fuzz_runner }}
       browser_fixture_runner: ${{ steps.pick.outputs.browser_fixture_runner }}
     steps:
@@ -217,7 +216,6 @@ jobs:
           BACKEND_SHARDS: ${{ needs.changes.outputs.backend_jobs }}
           LOCAL_RUNNERS: ${{ vars.CI_LOCAL_RUNNERS }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
-          LEAF_DOCS: ${{ needs.changes.outputs.docs }}
           LEAF_FUZZ: ${{ needs.changes.outputs.fuzz }}
           LEAF_BROWSER_FIXTURE: ${{ needs.changes.outputs.browser_fixture }}
           REPO: ${{ github.repository }}
@@ -1416,14 +1414,13 @@ jobs:
       checkout_ref: ${{ github.sha }}
 
   leaf-docs:
-    needs: [changes, fast, pick-runner]
-    if: ${{ !cancelled() && needs.fast.result == 'success' && needs.pick-runner.result == 'success' && (needs.changes.outputs.docs == 'true') }}
+    needs: [changes, fast]
+    if: ${{ !cancelled() && needs.fast.result == 'success' && (needs.changes.outputs.docs == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/docs.yml
     with:
       full: ${{ needs.changes.outputs.full == 'true' }}
-      runner: ${{ github.run_attempt == 1 && needs.pick-runner.outputs.docs_runner || '"ubuntu-24.04"' }}
       checkout_ref: ${{ github.sha }}
 
   leaf-fuzz:
