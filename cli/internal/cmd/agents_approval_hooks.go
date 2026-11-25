@@ -88,6 +88,14 @@ func promptForApprovalsOptIn(
 	if !isApprovalHookSupportedAgent(agent) {
 		return false, nil
 	}
+	if isClaudeCodeAgent(agent) {
+		source := permissionSourceForAgent(agent)
+		budget := existingApprovalHookWaitBudget(agent)
+		fmt.Fprintln(writer, "Native tool approvals inherit the account mode (default: Enforce). Calls that need approval wait for a person in the Preloop Console's Approvals page; allowed calls run and denied calls stay blocked.")                                                                   //nolint:errcheck
+		fmt.Fprintln(writer, "This includes shell commands, file edits, Skill, ToolSearch and Agent/subagent calls when policy asks for approval; frequent skills or subagents can repeatedly pause the run.")                                                                                            //nolint:errcheck
+		fmt.Fprintf(writer, "The selected approval workflow sets the timeout; this hook waits at most %d seconds (host timeout: %d seconds). An earlier workflow timeout wins; expiry denies the call.\n", approvalHookWaitBudgetSeconds(source, budget), approvalHookHostTimeoutSeconds(source, budget)) //nolint:errcheck
+		fmt.Fprintln(writer, "For unattended recording, choose 'Off: auto-approve (recorded)' under the agent's Native tool approvals in the Console. This removes the human wait for escalated calls; deny rules still apply.")                                                                          //nolint:errcheck
+	}
 	return confirmActionDefaultYes(
 		reader,
 		writer,

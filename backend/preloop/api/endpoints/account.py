@@ -360,6 +360,8 @@ def _live_validation_disables_gateway(validation: dict) -> bool:
 
 def _managed_agent_onboarding_flags(
     latest_enrollment: Optional[dict],
+    *,
+    gateway_traffic_verified: bool = False,
 ) -> tuple[bool, bool, str]:
     if not latest_enrollment:
         return False, False, "incomplete"
@@ -377,6 +379,8 @@ def _managed_agent_onboarding_flags(
     )
     if _live_validation_disables_gateway(validation):
         model_gateway_configured = False
+    if gateway_traffic_verified:
+        model_gateway_configured = True
 
     if mcp_proxy_configured and model_gateway_configured:
         return True, True, "fully_onboarded"
@@ -883,6 +887,15 @@ def _enrich_managed_agent_summaries(
         else []
     )
 
+    verified_enrollments = crud_managed_agent_enrollment.gateway_verified_enrollments(
+        db,
+        account_id=account_id,
+        enrollment_ids=[
+            str(latest["id"])
+            for latest, _ in enrollment_summaries.values()
+            if latest is not None
+        ],
+    )
     unresolved_model_summaries: list[tuple[dict, str, str]] = []
     for summary in summaries:
         agent_id = str(summary["id"])
@@ -893,7 +906,13 @@ def _enrich_managed_agent_summaries(
             summary["mcp_proxy_configured"],
             summary["model_gateway_configured"],
             summary["onboarding_state"],
-        ) = _managed_agent_onboarding_flags(latest_enrollment_summary)
+        ) = _managed_agent_onboarding_flags(
+            latest_enrollment_summary,
+            gateway_traffic_verified=bool(
+                latest_enrollment_summary
+                and str(latest_enrollment_summary["id"]) in verified_enrollments
+            ),
+        )
         (
             summary["live_validation_supported"],
             summary["live_validation_passed"],
@@ -3133,8 +3152,18 @@ async def update_account_managed_agent(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
+    revoked_managed_credentials = 0
     if should_revoke_runtime_access:
         revoke_timestamp = datetime.now(UTC)
+        revoked_managed_credentials = (
+            crud_managed_agent_credential.revoke_all_for_agent(
+                db,
+                account_id=str(account.id),
+                agent_id=str(agent.id),
+                reason=update.reason or "agent decommissioned",
+                revoked_at=revoke_timestamp,
+            )
+        )
         # Revoke only this agent's keys (plus legacy keys with no agent
         # binding). Several registry entries can share one runtime principal,
         # and a principal-wide sweep would also kill sibling agents' durable
@@ -3206,6 +3235,7 @@ async def update_account_managed_agent(
                     "session_source_type": updated.session_source_type,
                     "session_source_id": updated.session_source_id,
                     "lifecycle_action": update.lifecycle_action,
+                    "revoked_count": revoked_managed_credentials,
                     "previous_lifecycle_state": prior_lifecycle_state,
                     "lifecycle_state": updated.lifecycle_state,
                     "previous_lifecycle_reason": previous_lifecycle_reason,

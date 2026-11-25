@@ -143,3 +143,10 @@ OpenRouter model configurations can enforce provider routing preferences. Gatewa
 usage records include a content-free summary of effective upstream controls and
 the OpenRouter serving host when reported; see the
 [provider guide](docs/guide/providers/openrouter.md).
+
+Claude Code enrollment discloses gateway authentication and cloud-policy changes
+before confirmation. Console route state uses authenticated gateway usage after
+the current enrollment through the CRUD layer; imported telemetry cannot verify
+the route. Offboard revokes managed credential metadata in the lifecycle audit
+transaction and restores only locally owned control artifacts. See the
+[Claude Code guide](docs/guide/clients/claude-code.md).

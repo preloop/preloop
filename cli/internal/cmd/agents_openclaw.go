@@ -732,6 +732,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if len(custody) > 1 && custody[0].Kind == "none" {
 		custody = custody[1:]
 	}
+	if isClaudeCodeAgent(agent) && managedGatewayEnabled && len(custody) > 0 {
+		custody[0].ClaudeCodeGateway = true
+	}
 	printCredentialCustody(output, custody)
 	if err := validateCredentialCustody(custody, opts); err != nil {
 		return err
@@ -4590,7 +4593,7 @@ func validRuntimeApprovalTimeout(value interface{}) bool {
 }
 
 func writeClaudePreloopControlFile(control map[string]interface{}) error {
-	return writePreloopControlFile(claudeControlConfigPath(), control)
+	return writeOwnedClaudeControlFile(control)
 }
 
 func writePreloopControlFile(path string, control map[string]interface{}) error {
@@ -7191,6 +7194,8 @@ func syncManagedAgentRuntimeArtifacts(agent AgentConfig, baseURL, token string) 
 
 func removeManagedAgentRuntimeArtifacts(agent AgentConfig) error {
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
+	case "claude code":
+		return removeClaudeAgentControlArtifacts()
 	case "gemini cli":
 		return removeManagedAgentLauncher("gemini", "gemini-cli.env")
 	case "codex cli":
