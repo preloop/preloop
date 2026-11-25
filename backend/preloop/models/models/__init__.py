@@ -473,6 +473,7 @@ __all__ = [
     "DiscoveredExtension",
     "ExtensionApproval",
     "ExtensionApprovalPin",
+    "ExtensionEnforcementPolicy",
 ]
 
 from .readiness import (
@@ -521,3 +522,5 @@ from .extension_approval import ExtensionApproval
 from .extension_approval_pin import ExtensionApprovalPin
 from .tool_registry_entry import ToolRegistryEntry
 from .flow_conversation import FlowConversation, FlowConversationMessage
+
+from .extension_enforcement_policy import ExtensionEnforcementPolicy

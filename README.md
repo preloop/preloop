@@ -246,3 +246,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Maintainers: follow the [protected-branc
 Release assets carry signed Sigstore build provenance and checksums ([verification](./docs/release-verification.md)). The [release SBOM audit gate](./docs/release-sbom-audit.md) checks both architectures of every release image and the tag's security workflows. Windows CLI notes: [windows-cli.md](./docs/windows-cli.md), [code signing policy](./docs/code-signing-policy.md). Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
 Flows can also open [interactive hosted conversations](docs/guide/flows/interactive-conversations.md) in the console or through Slack, Mattermost, Discord and Microsoft Teams using OpenCode or DeepSeek Harness, with live follow-ups and checkpoint-based resume.
+
+For Claude Code fleet administrators, [extension restrictions](docs/operations/mdm-recipes.md#extension-restrictions)
+export reviewed account plugin denials and marketplace policy as a managed-settings
+drop-in. Preview and registration do not prove installation; vendor admin-console
+delivery for Preloop-routed agents remains unverified.

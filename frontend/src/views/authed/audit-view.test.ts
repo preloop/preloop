@@ -568,8 +568,8 @@ describe('AuditView', () => {
       'Tool',
       'Event type',
       'Outcome',
-      'From date',
-      'To date',
+      'From date (UTC)',
+      'Through date (UTC)',
       'Min cost ($)',
       'Max cost ($)',
     ]);
@@ -964,6 +964,37 @@ describe('AuditView', () => {
       restoreUrl?.();
     });
 
+    for (const { kind, endDate } of [
+      { kind: 'next-midnight', endDate: '2026-02-01' },
+      { kind: 'legacy same-day', endDate: '2026-01-31' },
+    ]) {
+      it(`restores a ${kind} bookmark as an inclusive UTC range`, async () => {
+        const element = openWith(`?start_date=2026-01-31&end_date=${endDate}`);
+        try {
+          await waitUntil(() => !(element as any)._loading, 'did not load');
+          const throughDate = element.shadowRoot!.querySelector(
+            'sl-input[label="Through date (UTC)"]'
+          ) as HTMLInputElement;
+          expect(throughDate.value).to.equal('2026-01-31');
+          const request = fetchStub
+            .getCalls()
+            .map((call) => String(call.args[0]))
+            .find((url) => url.startsWith('/api/v1/audit-logs/grouped'));
+          const params = new URL(request!, window.location.origin).searchParams;
+          expect(params.get('start_date')).to.equal('2026-01-31T00:00:00.000Z');
+          expect(params.get('end_date')).to.equal(
+            '2026-01-31T23:59:59.999999Z'
+          );
+          (element as any)._syncFilterLocation();
+          expect(new URLSearchParams(location.search).get('end_date')).to.equal(
+            '2026-02-01'
+          );
+        } finally {
+          element.remove();
+        }
+      });
+    }
+
     it('expands, marks and holds the event the link asked for', async () => {
       // The id is a sub-event: the row that answers for it is its group.
       const element = openWith('?event=audit-3');
@@ -1036,7 +1067,7 @@ describe('AuditView', () => {
       );
       await element.updateComplete;
       expect((element as any)._startDate).to.equal('2026-03-04');
-      expect((element as any)._endDate).to.equal('2026-03-05');
+      expect((element as any)._throughDate).to.equal('2026-03-04');
       const group = element.shadowRoot?.querySelector(
         '[data-group-key="audit-old"]'
       ) as HTMLElement;
@@ -1276,7 +1307,7 @@ describe('AuditView', () => {
       element.remove();
     });
 
-    it('sends the timeline date filter as the incident period', async () => {
+    it('exports the entire selected UTC day as a half-open incident period', async () => {
       fetchStub
         .withArgs(sinon.match(/^\/api\/v1\/exports\/incident-candidates/))
         .resolves(
@@ -1287,8 +1318,8 @@ describe('AuditView', () => {
         );
 
       const element = await mountView();
-      (element as any)._startDate = '2026-01-01';
-      (element as any)._endDate = '2026-02-01';
+      (element as any)._startDate = '2026-01-31';
+      (element as any)._throughDate = '2026-01-31';
       await element.updateComplete;
 
       exportButtons(element)[1].click();
@@ -1301,7 +1332,7 @@ describe('AuditView', () => {
         .getCalls()
         .map((call) => call.args[0] as string)
         .find((url) => url.startsWith('/api/v1/exports/incident-candidates'));
-      expect(requested).to.contain('from=2026-01-01');
+      expect(requested).to.contain('from=2026-01-31');
       expect(requested).to.contain('to=2026-02-01');
       element.remove();
     });

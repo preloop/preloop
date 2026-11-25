@@ -11,7 +11,7 @@ The CLI emits `policy_revision_hash` as lowercase SHA-256 over exactly the
 and trailing LF. Only the rendered policy is hashed. `manifest.json` and
 `preview.txt` are excluded. Identical exports have identical hashes.
 
-Export stays offline unless `--register` is supplied. That flag writes the bundle
+The `claude-code` hook export stays offline unless `--register` is supplied. That flag writes the bundle
 first, then posts the manifest to `POST /api/v1/agents/managed-config/bundles`
 with the selected CLI authentication. There is no policy-content upload. The API
 rejects unknown fields, including account overrides and credential fields.
@@ -107,3 +107,40 @@ core does not migrate existing manual settings into this table. Registration and
 bundle writes serialize using the same account lock as observation ingestion, so
 concurrent registration cannot leave active rows for a retired revision. There is
 no public expectation-write endpoint.
+
+## Extension enforcement overlays
+
+`app_id="claude-code-extensions"` registers the independent
+`50-preloop-extensions.json` artifact. It retains the existing manifest schema
+identifier and bare lowercase SHA-256 hash format. Registering this app never
+retires the `claude-code` hook revision. Its `delivery` field is informational:
+`endpoint_file` or `vendor_console`. Existing hook manifests can omit it.
+Registration remains immutable per app/platform/hash, including delivery metadata.
+Changing delivery on the same registered hash therefore conflicts; it is not an
+installation receipt or a record of multiple deployments.
+
+The `extension_enforcement_policy` model stores one revisioned document per
+account and agent kind. `GET/PUT /api/v1/agents/extension-policy/claude_code`
+requires `view_agents`/`manage_agents`; PUT replaces the document with a required
+integer `If-Match` revision. An account lock protects both first-create races and
+updates. GET before first save returns revision-zero defaults.
+
+The `manage_agents` renderer endpoint at the same path plus
+`/managed-settings?platform=darwin|linux|windows` reads all durable approvals
+through CRUD. A pure renderer maps only explicit Unapproved marketplace plugin
+IDs to denials; the merged content-pin `effective_state` and the separate
+`preloop.extension-policy.v1` offline check export are not enforcement inputs.
+The renderer's provenance includes revision, count and latest approval timestamp.
+A verified, dated vendor-key table gates every setting. Nothing to enforce is
+409; empty restricted marketplace allow-lists are 422; the managed-hooks lock
+requires an active hook registration for that platform (409 otherwise).
+
+The console downloads this renderer response, which differs from **Download
+policy file** used by `agents extensions check`. The extension exporter calls the
+renderer online by default; `--from-file` is entirely offline. Both support a
+reviewable manifest, preview and explicit output directory; `--dry-run` emits a
+preview without writing or registering. Neither exporter installs managed files.
+See [extension restrictions](../operations/mdm-recipes.md#extension-restrictions)
+for paths, precedence, minimum version, rollback and the unverified vendor-console
+channel for Preloop-routed agents. Extension bundles do not create native-hook
+control expectations; that axis belongs only to the original hook bundle.

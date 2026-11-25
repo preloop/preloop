@@ -1846,6 +1846,141 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/agents/extension-policy/{agent_kind}:
+    get:
+      tags:
+      - Extension enforcement
+      summary: Get Policy
+      description: Return policy to administrators; marketplace headers may contain
+        secrets.
+      operationId: get_policy_api_v1_agents_extension_policy__agent_kind__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_kind
+        in: path
+        required: true
+        schema:
+          const: claude_code
+          type: string
+          title: Agent Kind
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnforcementPolicy'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Extension enforcement
+      summary: Put Policy
+      description: Replace the whole document only if its revision still matches.
+      operationId: put_policy_api_v1_agents_extension_policy__agent_kind__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_kind
+        in: path
+        required: true
+        schema:
+          const: claude_code
+          type: string
+          title: Agent Kind
+      - name: if-match
+        in: header
+        required: true
+        schema:
+          type: string
+          pattern: ^(0|[1-9][0-9]{0,9})$
+          title: If-Match
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnforcementPolicy'
+        '409':
+          description: Stale revision
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/extension-policy/{agent_kind}/managed-settings:
+    get:
+      tags:
+      - Extension enforcement
+      summary: Preview Policy
+      description: Render a reviewable drop-in; vendor-console delivery remains unverified.
+      operationId: preview_policy_api_v1_agents_extension_policy__agent_kind__managed_settings_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_kind
+        in: path
+        required: true
+        schema:
+          const: claude_code
+          type: string
+          title: Agent Kind
+      - name: platform
+        in: query
+        required: false
+        schema:
+          enum:
+          - darwin
+          - linux
+          - windows
+          type: string
+          default: darwin
+          title: Platform
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RenderedOverlay'
+        '409':
+          description: Nothing to enforce or hook prerequisite missing
+        '422':
+          description: Unsafe marketplace lockout
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/operator/accounts/{account_id}/health:
     get:
       tags:
@@ -35117,7 +35252,9 @@ components:
           title: Schema
         app_id:
           type: string
-          const: claude-code
+          enum:
+          - claude-code
+          - claude-code-extensions
           title: App Id
         platform:
           type: string
@@ -35132,14 +35269,33 @@ components:
           title: Policy Revision Hash
         artifact:
           type: string
-          const: managed-settings.json
+          enum:
+          - managed-settings.json
+          - 50-preloop-extensions.json
           title: Artifact
+        delivery:
+          anyOf:
+          - type: string
+            enum:
+            - endpoint_file
+            - vendor_console
+          - type: 'null'
+          title: Delivery
         keys:
           items:
             type: string
-            const: hooks.PreToolUse
+            enum:
+            - hooks.PreToolUse
+            - enabledPlugins
+            - strictKnownMarketplaces
+            - blockedMarketplaces
+            - extraKnownMarketplaces
+            - allowManagedHooksOnly
+            - strictPluginOnlyCustomization
+            - disableSkillShellExecution
+            - disableSideloadFlags
           type: array
-          maxItems: 1
+          maxItems: 8
           minItems: 1
           title: Keys
         target_locations:
@@ -39378,6 +39534,61 @@ components:
       - last_at
       title: EmptyAfterCreate
       description: A list route that came back empty right after a create in its scope.
+    EnforcementOptions:
+      properties:
+        block_unapproved_plugins:
+          type: boolean
+          title: Block Unapproved Plugins
+          default: false
+        restrict_marketplaces:
+          type: boolean
+          title: Restrict Marketplaces
+          default: false
+        managed_hooks_only:
+          type: boolean
+          title: Managed Hooks Only
+          default: false
+        block_user_project_skills:
+          type: boolean
+          title: Block User Project Skills
+          default: false
+        disable_skill_shell:
+          type: boolean
+          title: Disable Skill Shell
+          default: false
+        disable_sideload_flags:
+          type: boolean
+          title: Disable Sideload Flags
+          default: false
+      additionalProperties: false
+      type: object
+      title: EnforcementOptions
+      description: All restrictions are opt-in.
+    EnforcementPolicy:
+      properties:
+        marketplaces:
+          items:
+            $ref: '#/components/schemas/Marketplace'
+          type: array
+          maxItems: 50
+          title: Marketplaces
+        options:
+          $ref: '#/components/schemas/EnforcementOptions'
+        revision:
+          type: integer
+          title: Revision
+          default: 0
+        updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At
+      additionalProperties: false
+      type: object
+      title: EnforcementPolicy
+      description: Saved policy, or the explicit revision-zero defaults before first
+        save.
     Enrollment:
       properties:
         secret:
@@ -40765,6 +40976,27 @@ components:
       - count
       title: FailedExecutionCategory
       description: Failed executions of one failure category.
+    FileSource:
+      properties:
+        source:
+          type: string
+          enum:
+          - file
+          - directory
+          title: Source
+        path:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          pattern: ^(?:/|[A-Za-z]:[\\/]).+
+          title: Path
+      additionalProperties: false
+      type: object
+      required:
+      - source
+      - path
+      title: FileSource
+      description: Local marketplace catalog or directory.
     FleetCodeActivityResponse:
       properties:
         active_within_minutes:
@@ -45317,6 +45549,69 @@ components:
       - tracker_id
       title: GitCloneRepository
       description: Configuration for a single repository to clone.
+    GitSource:
+      properties:
+        source:
+          type: string
+          const: git
+          title: Source
+        url:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Url
+        ref:
+          anyOf:
+          - type: string
+            maxLength: 2000
+            minLength: 1
+          - type: 'null'
+          title: Ref
+        path:
+          anyOf:
+          - type: string
+            maxLength: 2000
+            minLength: 1
+          - type: 'null'
+          title: Path
+      additionalProperties: false
+      type: object
+      required:
+      - source
+      - url
+      title: GitSource
+      description: Documented git marketplace source.
+    GithubSource:
+      properties:
+        source:
+          type: string
+          const: github
+          title: Source
+        repo:
+          type: string
+          pattern: ^[A-Za-z0-9._-]+/(?:[A-Za-z0-9._-]+|\*)$
+          title: Repo
+        ref:
+          anyOf:
+          - type: string
+            maxLength: 2000
+            minLength: 1
+          - type: 'null'
+          title: Ref
+        path:
+          anyOf:
+          - type: string
+            maxLength: 2000
+            minLength: 1
+          - type: 'null'
+          title: Path
+      additionalProperties: false
+      type: object
+      required:
+      - source
+      - repo
+      title: GithubSource
+      description: Documented GitHub marketplace source.
     GrantSample:
       properties:
         available:
@@ -45791,6 +46086,24 @@ components:
       - execution_id
       title: HostExecSessionsResponse
       description: Hook sessions and subscription usage linked to one flow execution.
+    HostSource:
+      properties:
+        source:
+          type: string
+          const: hostPattern
+          title: Source
+        hostPattern:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Hostpattern
+      additionalProperties: false
+      type: object
+      required:
+      - source
+      - hostPattern
+      title: HostSource
+      description: Allow/block matcher, never a registrable marketplace.
     ImportedUsageByConversation:
       properties:
         conversation_id:
@@ -49116,6 +49429,53 @@ components:
       title: ManagedAgentUsageAggregate
       description: Historical usage aggregate across all sessions for one managed
         agent.
+    Marketplace:
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          pattern: ^[A-Za-z0-9._-]+$
+          title: Name
+        state:
+          type: string
+          enum:
+          - allowed
+          - blocked
+          title: State
+        register:
+          type: boolean
+          title: Register
+          default: false
+        source:
+          oneOf:
+          - $ref: '#/components/schemas/GithubSource'
+          - $ref: '#/components/schemas/GitSource'
+          - $ref: '#/components/schemas/URLSource'
+          - $ref: '#/components/schemas/FileSource'
+          - $ref: '#/components/schemas/HostSource'
+          - $ref: '#/components/schemas/PathSource'
+          - $ref: '#/components/schemas/SkillsSource'
+          title: Source
+          discriminator:
+            propertyName: source
+            mapping:
+              directory: '#/components/schemas/FileSource'
+              file: '#/components/schemas/FileSource'
+              git: '#/components/schemas/GitSource'
+              github: '#/components/schemas/GithubSource'
+              hostPattern: '#/components/schemas/HostSource'
+              pathPattern: '#/components/schemas/PathSource'
+              skills-dir: '#/components/schemas/SkillsSource'
+              url: '#/components/schemas/URLSource'
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - state
+      - source
+      title: Marketplace
+      description: An explicit administrator-supplied source, never inferred from
+        inventory.
     McpResourceLink:
       properties:
         type:
@@ -49872,6 +50232,26 @@ components:
       title: ObservedProfile
       description: Keyed local profile scope with fixed failure codes and no clear
         paths.
+    OmittedKey:
+      properties:
+        key:
+          type: string
+          title: Key
+        subject:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Subject
+        reason:
+          type: string
+          title: Reason
+      additionalProperties: false
+      type: object
+      required:
+      - key
+      - reason
+      title: OmittedKey
+      description: A restriction not represented in the emitted settings.
     OnboardingRequest:
       properties:
         email:
@@ -50676,6 +51056,24 @@ components:
       - email
       title: PasswordResetRequest
       description: Model for password reset requests.
+    PathSource:
+      properties:
+        source:
+          type: string
+          const: pathPattern
+          title: Source
+        pathPattern:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Pathpattern
+      additionalProperties: false
+      type: object
+      required:
+      - source
+      - pathPattern
+      title: PathSource
+      description: Local path matcher, never a registrable marketplace.
     PerSubjectBudget:
       properties:
         period:
@@ -51274,6 +51672,20 @@ components:
       - count
       title: PolicyNoticeUserSummaryResponse
       description: Hits of one developer inside the window.
+    PolicyUpdate:
+      properties:
+        marketplaces:
+          items:
+            $ref: '#/components/schemas/Marketplace'
+          type: array
+          maxItems: 50
+          title: Marketplaces
+        options:
+          $ref: '#/components/schemas/EnforcementOptions'
+      additionalProperties: false
+      type: object
+      title: PolicyUpdate
+      description: Whole-document replacement with separate If-Match concurrency control.
     PolicyValidationError:
       properties:
         path:
@@ -52535,6 +52947,79 @@ components:
       title: RegistryEntryResponse
       description: Safe route identity, observation metadata and execution approval
         state.
+    RenderInputs:
+      properties:
+        policy_revision:
+          type: integer
+          title: Policy Revision
+        approvals_updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Approvals Updated At
+        approval_count:
+          type: integer
+          title: Approval Count
+      additionalProperties: false
+      type: object
+      required:
+      - policy_revision
+      - approval_count
+      title: RenderInputs
+      description: Provenance of the rendered account decisions.
+    RenderedOverlay:
+      properties:
+        settings_json:
+          type: string
+          title: Settings Json
+        policy_revision_hash:
+          type: string
+          title: Policy Revision Hash
+        keys:
+          items:
+            type: string
+          type: array
+          title: Keys
+        omitted:
+          items:
+            $ref: '#/components/schemas/OmittedKey'
+          type: array
+          title: Omitted
+        inputs:
+          $ref: '#/components/schemas/RenderInputs'
+        platform:
+          type: string
+          enum:
+          - darwin
+          - linux
+          - windows
+          title: Platform
+        target_path:
+          type: string
+          title: Target Path
+        minimum_claude_code_version:
+          type: string
+          title: Minimum Claude Code Version
+        vendor_console_status:
+          type: string
+          const: unverified_for_preloop_routed_agents
+          title: Vendor Console Status
+          default: unverified_for_preloop_routed_agents
+      additionalProperties: false
+      type: object
+      required:
+      - settings_json
+      - policy_revision_hash
+      - keys
+      - omitted
+      - inputs
+      - platform
+      - target_path
+      - minimum_claude_code_version
+      title: RenderedOverlay
+      description: Exact UTF-8 artifact plus review metadata, suitable for offline
+        CLI export.
     ReportPublication:
       properties:
         enabled:
@@ -58305,6 +58790,18 @@ components:
       - elapsed_ms
       title: SimilarSessionsResponse
       description: Sessions like this one, and everything needed to read the list.
+    SkillsSource:
+      properties:
+        source:
+          type: string
+          const: skills-dir
+          title: Source
+      additionalProperties: false
+      type: object
+      required:
+      - source
+      title: SkillsSource
+      description: Policy-only skills-directory marker.
     SpeechToTextResponse:
       properties:
         text:
@@ -60724,6 +61221,37 @@ components:
         on that account. Closing is never done by the report, so ``close`` only
 
         accepts ``deny``.'
+    URLSource:
+      properties:
+        source:
+          type: string
+          const: url
+          title: Source
+        url:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          pattern: ^https?://[^\s]+$
+          title: Url
+        headers:
+          anyOf:
+          - additionalProperties:
+              type: string
+              maxLength: 2000
+              minLength: 1
+            propertyNames:
+              maxLength: 2000
+              minLength: 1
+            type: object
+          - type: 'null'
+          title: Headers
+      additionalProperties: false
+      type: object
+      required:
+      - source
+      - url
+      title: URLSource
+      description: Documented URL source; header-bearing policies require administration.
     UnpricedModelUsage:
       properties:
         model:

@@ -4086,21 +4086,23 @@ export async function listProjectPullRequests(
     `${REST_API_PREFIX}/projects/${encodeURIComponent(projectId)}/pull-requests?${query.toString()}`
   );
   if (!response.ok) {
-    // Classify the server's configuration error without displaying its raw
-    // detail, which can contain tracker connection settings.
-    let configurationError = false;
-    try {
-      const body = await response.json();
-      configurationError =
-        typeof body?.detail === 'string' &&
-        /^Configuration error for tracker:/i.test(body.detail);
-    } catch {
-      // Proxies can return non-JSON errors; the HTTP status still applies.
-    }
+    const errorData = await response.json().catch(() => ({}));
+    // Older servers included connection settings in this error's detail.
+    const configurationError =
+      typeof errorData?.detail === 'string' &&
+      /^Configuration error for tracker:/i.test(errorData.detail);
+    const repairable =
+      [400, 403].includes(response.status) && !configurationError;
     throw new ApiError(
-      'Failed to fetch pull requests',
+      repairable
+        ? trackerErrorDetail(errorData, 'Failed to fetch pull requests')
+        : 'Failed to fetch pull requests',
       response.status,
-      configurationError ? 'tracker_configuration_error' : undefined
+      configurationError
+        ? 'tracker_configuration_error'
+        : repairable
+          ? 'tracker_repair_required'
+          : undefined
     );
   }
   return response.json();

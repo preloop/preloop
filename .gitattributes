@@ -8,5 +8,8 @@ cli/internal/cmd/testdata/artifacts/** text eol=lf
 # Managed hook bundles are byte-exact LF output on every target platform.
 cli/internal/cmd/testdata/managed-hook-bundle/** text eol=lf
 
+# Extension overlay bundles preserve the renderer's exact LF bytes on every OS.
+cli/internal/cmd/testdata/extension-overlay/** text eol=lf
+
 # The Go/Python profile report wire fixture is byte-exact LF on every OS.
 cli/internal/cmd/testdata/profile-inventory/** text eol=lf
