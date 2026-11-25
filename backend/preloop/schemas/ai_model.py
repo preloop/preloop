@@ -242,8 +242,13 @@ def validate_credential_payload(
             f"invalid credential_payload for {credential_type}: " + "; ".join(problems)
         )
     expires = payload.get("expires")
-    if expires is not None and expires <= int(
-        datetime.now(timezone.utc).timestamp() * 1000
+    # Claude imports require a current native login. Do not consume its
+    # single-use refresh grant merely to establish whether a stale local
+    # bundle is usable. Stored gateway grants still refresh normally.
+    if (
+        credential_type == ANTHROPIC_CLAUDE_CODE_OAUTH_TYPE
+        and expires is not None
+        and expires <= int(datetime.now(timezone.utc).timestamp() * 1000)
     ):
         login = (
             "claude auth login --claudeai"

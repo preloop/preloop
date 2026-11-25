@@ -536,9 +536,6 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 
 	agent = normalizeDiscoveredAgent(agent)
-	if err := preflightClaudeSubscriptionLogin(agent, opts); err != nil {
-		return err
-	}
 	if shouldPromptForEnrollmentName(opts) {
 		agent, err = prepareAgentForEnrollment(bufio.NewReader(input), output, agent, false)
 		if err != nil {
@@ -551,14 +548,6 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	// previous enrollment so re-onboarding does not silently flip a pinned
 	// gateway back to unpinned (or vice versa).
 	pinModelFamilies := resolveEnrollmentPinModelFamilies(agent, opts)
-
-	// Pre-onboarding readiness: when the agent itself is not logged in,
-	// onboarding still proceeds (the MCP/model config is written), but say so
-	// once up front so a later live-validation failure reads as "log the
-	// agent in", not as a Preloop bug.
-	if !opts.DryRun {
-		printAgentAuthPreflightNotice(output, agent)
-	}
 
 	syncAgent := prepareAgentForRemoteServerSync(agent, baseURL)
 
@@ -607,6 +596,13 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			gatewayHints.PreferredModelAlias = selectedAlias
 			gatewayHints.SelectedAIModel = selectedModel
 		}
+	}
+
+	if err := preflightClaudeSubscriptionLogin(agent, opts, gatewayHints.SelectedAIModel); err != nil {
+		return err
+	}
+	if !opts.DryRun && !(isClaudeCodeAgent(agent) && gatewayHints.SelectedAIModel != nil) {
+		printAgentAuthPreflightNotice(output, agent)
 	}
 
 	plan, err := buildManagedMCPEnrollmentPlan(
@@ -1245,7 +1241,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 	if liveValidationErr != nil && validationResult["live_validation_status"] == "credential_repair_required" {
-		fmt.Fprintln(output, "  Repair: preloop agents reconnect \"Claude Code\" --from-local") //nolint:errcheck
+		fmt.Fprintf(output, "  Repair: %s\n", subscriptionReconnectCommand(agent)) //nolint:errcheck
 	} else if liveValidationErr != nil && liveValidationKeepsGatewayConfig {
 		// A 429 (or a billing refusal) proves the durable credential
 		// authenticated at the gateway and the request reached the upstream
@@ -1404,7 +1400,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 	if liveValidationErr != nil {
 		if validationResult["live_validation_status"] == "credential_repair_required" {
-			return fmt.Errorf("onboarding incomplete: %w; repair: preloop agents reconnect \"Claude Code\" --from-local", liveValidationErr)
+			return fmt.Errorf("onboarding incomplete: %w; repair: %s", liveValidationErr, subscriptionReconnectCommand(agent))
 		}
 		// Live validation failed but the managed gateway configuration was
 		// kept in place (upstream throttle / billing refusal / transient
@@ -7483,7 +7479,7 @@ func allowsSynthesizedEmptyConfig(agent AgentConfig) bool {
 		return true
 	}
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
-	case "opencode", "openclaw", "copilot cli", "devin", "cursor":
+	case "opencode", "openclaw", "copilot cli", "devin", "cursor", "claude code":
 		return true
 	case "hermes":
 		return true

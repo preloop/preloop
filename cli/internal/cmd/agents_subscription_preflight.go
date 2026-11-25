@@ -12,11 +12,15 @@ const claudeSubscriptionLoginRepair = "Claude subscription login is expired or i
 // preflightClaudeSubscriptionLogin rejects an unusable local import before
 // enrollment mutations. It never refreshes the single-use local grant. An
 // already managed route may retain a newer server login than the local copy.
-func preflightClaudeSubscriptionLogin(agent AgentConfig, opts managedEnrollmentOptions) error {
+func preflightClaudeSubscriptionLogin(agent AgentConfig, opts managedEnrollmentOptions, selected *aiModelResponse) error {
 	if !isClaudeCodeAgent(agent) || opts.NoCredentialImport {
 		return nil
 	}
-	document, err := loadAgentConfigDocument(agent)
+	if selected != nil && !oauthCredentialStatusIsError(selected) &&
+		(selected.HasAPIKey || aiModelUsesAmbientProviderCredentials(selected)) {
+		return nil
+	}
+	document, _, err := loadJSONDocumentIfExists(agent.ConfigPath)
 	if err != nil {
 		return err
 	}

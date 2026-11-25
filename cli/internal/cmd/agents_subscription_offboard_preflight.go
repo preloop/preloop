@@ -50,9 +50,16 @@ func preflightClaudeOffboardStore(client *api.Client, agent AgentConfig, detail 
 	} else if marker.Source == "" || marker.Source == "keychain" {
 		blob, err := readClaudeOffboardKeychain()
 		if err == nil && strings.TrimSpace(blob) != "" {
-			return nil
+			var document map[string]interface{}
+			if json.Unmarshal([]byte(blob), &document) == nil && document != nil {
+				// Rewriting the identical value checks the existing item's ACL
+				// without importing or rotating a different credential.
+				if err := writeClaudeOffboardKeychain(blob); err == nil {
+					return nil
+				}
+			}
 		}
-		if err == nil && marker.Source == "" {
+		if err == nil && marker.Source == "" && strings.TrimSpace(blob) == "" {
 			// No Keychain entry; the existing writer uses the file.
 			if err := preflightClaudeCredentialFile(); err == nil {
 				return nil

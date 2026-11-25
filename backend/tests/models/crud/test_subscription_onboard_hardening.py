@@ -240,3 +240,12 @@ def test_expired_import_refused_before_storage(
             credential_type=CLAUDE,
             credential_payload={**payload("dead"), "expires": 1700000000000},
         )
+
+
+def test_codex_refreshable_import_retains_existing_contract() -> None:
+    """The Claude native-login precondition must not change Codex imports."""
+    request = AIModelUpdate(
+        credential_type=CODEX,
+        credential_payload={**payload("refreshable"), "expires": 1700000000000},
+    )
+    assert request.credential_payload["refresh"] == "refreshable"

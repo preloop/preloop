@@ -16,8 +16,11 @@ If native Claude also cannot authenticate, run `claude auth login --claudeai`
 first. Do not repeatedly retry a rejected refresh token. Keep credential files
 private; support only needs the error message.
 
-Current onboarding rejects expired local subscription imports before changing
-configuration. Discovery cannot verify a login from Keychain entry presence
+Claude onboarding requires a current native login before importing credentials.
+An expired access token can still have a valid refresh grant, but onboarding
+does not consume that single-use native grant to establish its validity: sign
+in locally first. Stored gateway grants continue to refresh normally. Healthy
+account-held model selections do not require a local subscription import. Discovery cannot verify a login from Keychain entry presence
 alone. A pending or failed gateway probe is not successful onboarding. Unpinned
 Claude family defaults do not require a custom-model menu entry for validation.
 
