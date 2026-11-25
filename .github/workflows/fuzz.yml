@@ -3,6 +3,10 @@ name: Continuous fuzzing
 on:
   workflow_call:
     inputs:
+      runner:
+        description: JSON runs-on value chosen by the CI picker
+        type: string
+        default: '"ubuntu-24.04"'
       full:
         type: boolean
         default: false
@@ -31,7 +35,7 @@ jobs:
     permissions:
       contents: read
     name: Fuzz ${{ matrix.target }}
-    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.execution_host_tests && 'gce-tests-only' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.execution_host_tests && 'gce-tests-only' || fromJSON(inputs.runner || '"ubuntu-24.04"') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
