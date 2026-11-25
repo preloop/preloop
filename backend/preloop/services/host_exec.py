@@ -27,6 +27,10 @@ HOST_EXEC_HARNESSES: Mapping[str, str] = {
 HOST_EXEC_AGENT_TYPES = frozenset({"cursor", "copilot", "devin", "claude_code"})
 # These harnesses also support Docker; native execution requires an explicit profile.
 HOST_EXEC_PROFILE_AGENT_TYPES = frozenset(HOST_EXEC_HARNESSES)
+#: Agent types that may route by ``agent_config.harness`` to the profile the
+#: runner generates. Codex and OpenCode also run hosted, so they route to a
+#: runner only when the flow names the harness.
+HOST_EXEC_HARNESS_ROUTED_AGENT_TYPES = HOST_EXEC_AGENT_TYPES | {"codex", "opencode"}
 HOST_EXEC_LABELS = {
     "cursor": "Cursor",
     "copilot": "Copilot CLI",
@@ -219,13 +223,14 @@ def host_exec_harness_selector(agent_type: Any, agent_config: Any) -> Optional[s
     route exactly as before).
 
     Args:
-        agent_type: Flow agent type (``copilot``, ``cursor``, ``devin`` or
-            ``claude_code``).
+        agent_type: Flow agent type (``copilot``, ``cursor``, ``devin``,
+            ``claude_code``, ``codex`` or ``opencode``).
         agent_config: Flow agent configuration.
 
     Returns:
-        ``copilot_cli`` / ``cursor_cli`` / ``devin_cli`` / ``claude_code``,
-        or None for profile-pinned and non-host flows.
+        ``copilot_cli`` / ``cursor_cli`` / ``devin_cli`` / ``claude_code`` /
+        ``codex_cli`` / ``opencode``, or None for profile-pinned and non-host
+        flows.
     """
     config = _unwrapped_config(agent_config)
     raw = config.get("harness")
@@ -233,7 +238,8 @@ def host_exec_harness_selector(agent_type: Any, agent_config: Any) -> Optional[s
     if (
         not harness
         or host_exec_profile_name(config)
-        or _normalized_agent_type(agent_type) not in HOST_EXEC_AGENT_TYPES
+        or _normalized_agent_type(agent_type)
+        not in HOST_EXEC_HARNESS_ROUTED_AGENT_TYPES
     ):
         return None
     if HOST_EXEC_HARNESSES.get(_normalized_agent_type(agent_type)) != harness:
@@ -249,6 +255,8 @@ HARNESS_GENERATED_PROFILES: Mapping[str, str] = {
     "cursor_cli": "cursor",
     "devin_cli": "devin",
     "claude_code": "claude",
+    "codex_cli": "codex",
+    "opencode": "opencode",
 }
 
 
@@ -642,7 +650,7 @@ def host_exec_flow_error(
             "agent_config.harness on a private runner"
         )
     if (
-        kind in HOST_EXEC_PROFILE_AGENT_TYPES - HOST_EXEC_AGENT_TYPES
+        kind in HOST_EXEC_PROFILE_AGENT_TYPES - HOST_EXEC_HARNESS_ROUTED_AGENT_TYPES
         and isinstance(agent_config, Mapping)
         and agent_config.get("harness")
         and not profile

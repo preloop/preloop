@@ -11,8 +11,18 @@ import type { PreloopFlowForm } from './preloop-flow-form';
 import { resetConfirmDialogForTests } from './confirm-dialog';
 
 const trackers = [
-  { id: 'github', name: 'GitHub', tracker_type: 'github' },
-  { id: 'gitlab', name: 'GitLab', tracker_type: 'gitlab' },
+  {
+    id: 'github',
+    name: 'GitHub',
+    tracker_type: 'github',
+    hosts_repositories: true,
+  },
+  {
+    id: 'gitlab',
+    name: 'GitLab',
+    tracker_type: 'gitlab',
+    hosts_repositories: true,
+  },
   { id: 'jira', name: 'Jira', tracker_type: 'jira' },
 ];
 const projects = [
@@ -92,6 +102,36 @@ describe('PreloopFlowForm repository checkouts', () => {
     return JSON.parse(
       JSON.stringify(listener.firstCall.args[0].detail.flow.git_clone_config)
     );
+  }
+
+  for (const trackerType of ['azure_devops', 'bitbucket_dc', 'future_forge']) {
+    it(`offers repository-capable ${trackerType} trackers`, async () => {
+      const element = await mount();
+      (element as any).trackers = [
+        {
+          id: 'repo-host',
+          name: 'Repository host',
+          tracker_type: trackerType,
+          hosts_repositories: true,
+        },
+        {
+          id: 'issues',
+          name: 'Issues',
+          tracker_type: 'github',
+          hosts_repositories: false,
+        },
+      ];
+      await element.updateComplete;
+      await click(element, '[data-add-repository]');
+      expect(
+        element.flow.git_clone_config?.repositories?.[0].tracker_id
+      ).to.equal('repo-host');
+      const choices = element.shadowRoot!.querySelectorAll(
+        '[data-repository-field="tracker_id"] sl-option'
+      );
+      expect(choices.length).to.equal(1);
+      expect(choices[0].getAttribute('value')).to.equal('repo-host');
+    });
   }
 
   it('creates, saves, reloads and edits two independent checkouts', async () => {

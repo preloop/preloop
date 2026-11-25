@@ -22,6 +22,8 @@ import {
   listOrganizations,
   listProjects,
   getFlowPresets,
+  getUserProfile,
+  updateRunnerConsent,
   type HarnessOption,
   type RunnerRecord,
 } from '../api';
@@ -55,6 +57,19 @@ import {
   resolveAccountPoolLabel,
   runnerSelectionKind,
 } from '../utils/runner-pool';
+import {
+  hostExecRunnerBlockers,
+  hostExecRunnerChoices,
+  selectedHostExecChoice,
+  type HostExecRunnerChoice,
+} from '../utils/host-exec-runners';
+import {
+  FLOW_CONSENT_LABEL,
+  FLOW_CONSENT_OPTIONS,
+  FLOW_CONSENT_OWNER_ONLY,
+  type FlowExecutionConsent,
+} from '../utils/owner-consent';
+import './owner-consent-control';
 import consoleStyles from '../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../styles/console-dialog';
 import './add-tracker-modal';
@@ -255,6 +270,10 @@ const HOST_EXEC_LABELS: Record<HostExecAgentType, string> = {
   opencode: 'OpenCode',
   deepseek: 'DeepSeek CLI (dsh)',
 };
+
+/** Said wherever a Cursor flow's spend could be mistaken for metered. */
+const CURSOR_METERING_NOTE =
+  "Cursor runs go to Cursor directly, on the runner user's Cursor plan. They are not gateway metered, so this flow's token and spend limits do not apply to them.";
 
 /** Agent config key holding each host CLI's per-flow model alias. */
 const HOST_EXEC_MODEL_KEYS: Record<HostExecAgentType, string> = {
@@ -779,6 +798,16 @@ export class PreloopFlowForm extends LitElement {
   @state()
   private runners: RunnerRecord[] = [];
 
+  /** Signed-in user, to decide who may change a runner's consent. */
+  @state()
+  private currentUserId: string | null = null;
+
+  @state()
+  private runnerConsentSaving = false;
+
+  @state()
+  private runnerConsentError = '';
+
   /** Harness inventory choices (GET /api/v1/flows/harness-options). */
   @state()
   private harnessOptions: HarnessOption[] = [];
@@ -969,6 +998,7 @@ export class PreloopFlowForm extends LitElement {
         account,
         flowsResult,
         harnessOptions,
+        profile,
       ] = await Promise.all([
         getTrackers().catch(remember('trackers')),
         getAIModels().catch(remember('models')),
@@ -992,6 +1022,7 @@ export class PreloopFlowForm extends LitElement {
             return { ok: false as const };
           }),
         getFlowHarnessOptions().catch(() => [] as HarnessOption[]),
+        getUserProfile().catch(() => null),
       ]);
 
       if (flowsResult.ok) {
@@ -1012,6 +1043,7 @@ export class PreloopFlowForm extends LitElement {
       this.presets = presets;
       this.runners = runners;
       this.harnessOptions = harnessOptions;
+      this.currentUserId = profile?.id ?? null;
       this.accountDefaultRunnerPool = account?.default_runner_pool ?? null;
       this.hostedMinutesLeft = account?.hosted_minutes_remaining ?? null;
 
@@ -1044,7 +1076,20 @@ export class PreloopFlowForm extends LitElement {
 
       // Check if agent_id URL parameter is present
       const urlAgentId = urlParams.get('agent_id');
-      if (urlAgentId) {
+      const urlAgent = urlAgentId
+        ? this.longRunningAgents.find((a) => a.id === urlAgentId)
+        : undefined;
+      if (
+        urlParams.get('agent_type') === 'cursor' ||
+        (urlAgent &&
+          urlAgent.agent_kind === 'cursor' &&
+          !getAgentControlState(urlAgent).enabled)
+      ) {
+        // Cursor reaches a flow through a runner, never as an existing
+        // agent, so a link from the Cursor agent or runner lands here.
+        this.flowExecutionPath = 'ephemeral';
+        this.selectAgentType('cursor', urlParams.get('runner_pool'));
+      } else if (urlAgentId) {
         this.targetAgentId = urlAgentId;
         this.flowExecutionPath = 'persistent';
       }
@@ -1579,8 +1624,8 @@ export class PreloopFlowForm extends LitElement {
     name: string;
     tracker_type: string;
   }> {
-    return this.trackers.filter((tracker) =>
-      ['github', 'gitlab', 'bitbucket'].includes(tracker.tracker_type)
+    return this.trackers.filter(
+      (tracker) => tracker.hosts_repositories === true
     );
   }
 
@@ -1789,7 +1834,7 @@ export class PreloopFlowForm extends LitElement {
         >
           <sl-icon slot="prefix" name="plus-lg"></sl-icon>Add repository
         </sl-button>
-        ${this.repositoryTrackers.length === 0 ? html`<p class="checkbox-help">Connect a GitHub, GitLab, or Bitbucket tracker to add repositories.</p>` : nothing}
+        ${this.repositoryTrackers.length === 0 ? html`<p class="checkbox-help">Connect a tracker that hosts Git repositories to add repositories.</p>` : nothing}
       </div>
     `;
   }
@@ -2074,7 +2119,7 @@ export class PreloopFlowForm extends LitElement {
         allowed_mcp_servers: this.flow.allowed_mcp_servers || ['preloop-mcp'],
         allowed_mcp_tools: this.flow.allowed_mcp_tools || [],
         ai_model_id:
-          this.flow.ai_model_id === null
+          this.flow.ai_model_id === null || this.harnessRoutedHostedType()
             ? null
             : this.flow.ai_model_id || undefined,
         trigger_event_source: this.flow.trigger_event_source || fallbackSource,
@@ -3032,8 +3077,8 @@ export class PreloopFlowForm extends LitElement {
 
   /** Harness + model picker fed by the runners' harness inventory. */
   private renderHarnessPicker() {
-    const hostType = this.hostExecAgentType();
-    if (!hostType || ['codex', 'opencode', 'deepseek'].includes(hostType)) {
+    const hostType = this.harnessPickerType();
+    if (!hostType) {
       return nothing;
     }
     const harness = HOST_EXEC_HARNESSES[hostType];
@@ -3226,13 +3271,56 @@ export class PreloopFlowForm extends LitElement {
     const kind = (this.flow.agent_type || '') as HostExecAgentType;
     if (
       ['codex', 'opencode', 'deepseek'].includes(kind) &&
-      !this.hostExecProfileName()
+      !this.hostExecProfileName() &&
+      !this.routesByHarness(kind)
     ) {
       return null;
     }
     return Object.prototype.hasOwnProperty.call(HOST_EXEC_MODEL_KEYS, kind)
       ? kind
       : null;
+  }
+
+  /**
+   * Codex and OpenCode also run hosted; they are host runs only when the
+   * flow routes by their harness (or pins a profile).
+   */
+  private routesByHarness(kind: HostExecAgentType): boolean {
+    return (
+      ['codex', 'opencode'].includes(kind) &&
+      this.flow?.agent_config?.harness === HOST_EXEC_HARNESSES[kind]
+    );
+  }
+
+  /**
+   * True for a Codex / OpenCode flow routed by harness without a pinned
+   * profile. Its model comes from the harness model key, so the hosted
+   * catalog model is dropped: the runner's model_map does not list it.
+   */
+  private harnessRoutedHostedType(): boolean {
+    const kind = (this.flow.agent_type || '') as HostExecAgentType;
+    return this.routesByHarness(kind) && !this.hostExecProfileName();
+  }
+
+  /**
+   * Host type for the harness picker: a host run, or a Codex / OpenCode
+   * flow when some runner offers that harness.
+   */
+  private harnessPickerType(): HostExecAgentType | null {
+    const hostType = this.hostExecAgentType();
+    if (hostType) {
+      return hostType === 'deepseek' ? null : hostType;
+    }
+    const kind = (this.flow.agent_type || '') as HostExecAgentType;
+    if (
+      ['codex', 'opencode'].includes(kind) &&
+      this.harnessOptions.some(
+        (item) => item.harness === HOST_EXEC_HARNESSES[kind]
+      )
+    ) {
+      return kind;
+    }
+    return null;
   }
 
   private hostExecProfileName(): string {
@@ -3408,6 +3496,233 @@ export class PreloopFlowForm extends LitElement {
       directory only when its host profile sets <code>allow_checkout</code>.
       Without it the run fails with <code>host_checkout_not_allowed</code>.
     </sl-alert>`;
+  }
+
+  /** Runners that can run this flow on their signed-in Cursor CLI. */
+  private cursorRunnerChoices(): HostExecRunnerChoice[] {
+    return hostExecRunnerChoices(this.runners, HOST_EXEC_HARNESSES.cursor);
+  }
+
+  /**
+   * Change the agent runtime. Choosing Cursor also targets a runner that
+   * advertises it, with that runner's Cursor profile, so nobody has to know
+   * the profile name; leaving Cursor drops the profile it set.
+   */
+  private selectAgentType(kind: string, preferredPool?: string | null) {
+    const previous = this.flow.agent_type;
+    this.flow.agent_type = kind;
+    if (kind === 'cursor') {
+      const choices = this.cursorRunnerChoices();
+      const pick =
+        selectedHostExecChoice(choices, preferredPool) ||
+        selectedHostExecChoice(choices, this.flow.runner_pool) ||
+        choices[0];
+      if (pick) {
+        this.applyCursorRunner(pick);
+      } else if (previous !== 'cursor') {
+        const config = { ...this.parseAgentConfig(this.flow.agent_config) };
+        delete config.host_exec_profile;
+        this.flow = { ...this.flow, agent_config: config };
+      }
+    } else if (previous === 'cursor') {
+      // A Cursor profile must not route another runtime, even if the runner
+      // disappeared or the operator selected a non-default profile.
+      const config = { ...this.parseAgentConfig(this.flow.agent_config) };
+      delete config.host_exec_profile;
+      this.flow = { ...this.flow, agent_config: config };
+    }
+    this.requestUpdate();
+  }
+
+  private applyCursorRunner(choice: HostExecRunnerChoice) {
+    const config = { ...this.parseAgentConfig(this.flow.agent_config) };
+    const current = this.hostExecProfileName();
+    const keepsCurrent =
+      current !== '' &&
+      (choice.runner.capabilities?.host_exec_profiles || []).some(
+        (item) =>
+          (item?.name || '').trim() === current &&
+          (item?.capabilities || []).includes(HOST_EXEC_HARNESSES.cursor)
+      );
+    config.host_exec_profile = keepsCurrent ? current : choice.profile;
+    if (config.harness === HOST_EXEC_HARNESSES.cursor && config.runner_id) {
+      config.runner_id = choice.runner.id;
+    }
+    this.flow = {
+      ...this.flow,
+      runner_pool: choice.token,
+      agent_config: config,
+    };
+    this.requestUpdate();
+  }
+
+  private async setRunnerConsent(
+    runner: RunnerRecord,
+    value: FlowExecutionConsent
+  ) {
+    this.runnerConsentSaving = true;
+    this.runnerConsentError = '';
+    try {
+      const updated = await updateRunnerConsent(runner.id, value);
+      this.runners = this.runners.map((item) =>
+        item.id === runner.id ? { ...item, ...updated } : item
+      );
+    } catch (error) {
+      this.runnerConsentError =
+        error instanceof Error ? error.message : String(error);
+    } finally {
+      this.runnerConsentSaving = false;
+    }
+  }
+
+  /** Which runner a Cursor flow runs on, and whether it will start there. */
+  private renderCursorRunnerPanel() {
+    const choices = this.cursorRunnerChoices();
+    if (choices.length === 0) {
+      const blockers = hostExecRunnerBlockers(
+        this.runners,
+        HOST_EXEC_HARNESSES.cursor
+      );
+      return html`<sl-alert variant="primary" open data-cursor-runner="none">
+        <sl-icon slot="icon" name="info-circle"></sl-icon>
+        ${
+          blockers.length > 0
+            ? blockers.map(
+                (blocker) =>
+                  html`<div data-cursor-blocker=${blocker.reason}>
+                    <strong>${blocker.runner.name}</strong>:
+                    ${
+                      blocker.reason === 'signed_out'
+                        ? html`the Cursor CLI is signed out. Run
+                            <code>cursor-agent login</code> on that machine.`
+                        : blocker.reason === 'login_unknown'
+                          ? 'the Cursor CLI login could not be verified. Run cursor-agent status on that machine, sign in if needed, then refresh the runner inventory.'
+                          : blocker.reason === 'disabled'
+                            ? 'Cursor is disabled on this runner. Enable it in the runner harness settings.'
+                            : 'the Cursor CLI was found but the runner offers no Cursor profile yet. Update the Preloop CLI there and restart the runner.'
+                    }
+                  </div>`
+              )
+            : html`No runner you can use reports a signed-in Cursor CLI yet.
+                Install the Cursor CLI on a machine that runs a Preloop runner
+                and sign in with <code>cursor-agent login</code>; the runner
+                reports it within a minute.`
+        }
+        <div><a href="/console/runners">Open Runners</a></div>
+      </sl-alert>`;
+    }
+    const selected = selectedHostExecChoice(choices, this.flow.runner_pool);
+    return html`<div data-cursor-runner="choices">
+      ${
+        choices.length > 1 || !selected
+          ? html`<sl-select
+              label="Cursor runner"
+              data-cursor-runner-select
+              placeholder="Choose the runner with your Cursor"
+              .value=${selected?.token || ''}
+              @sl-change=${(event: Event) => {
+                const token = (event.target as HTMLSelectElement).value;
+                const choice = choices.find((item) => item.token === token);
+                if (choice) this.applyCursorRunner(choice);
+              }}
+            >
+              ${choices.map(
+                (choice) =>
+                  html`<sl-option .value=${choice.token}
+                    >${choice.runner.name}
+                    (${choice.online ? 'online' : 'offline'})</sl-option
+                  >`
+              )}
+            </sl-select>`
+          : html`<p class="notifications-help" data-cursor-runner-selected>
+              Runs on <strong>${selected.runner.name}</strong>
+              (${selected.online ? 'online' : 'offline'}) with the Cursor login
+              and files of that machine's runner user.
+            </p>`
+      }
+      ${
+        !selected
+          ? html`<p class="notifications-help" data-cursor-runner-unset>
+              This flow's runner selection has no runner with Cursor. Choose one
+              above.
+            </p>`
+          : nothing
+      }
+      ${
+        selected && !selected.online
+          ? html`<p class="notifications-help" data-cursor-runner-offline>
+              ${selected.runner.name} is offline. Reconnect this runner before
+              starting a run here.
+            </p>`
+          : nothing
+      }
+      ${selected ? this.renderRunnerConsent(selected.runner) : nothing}
+      <p class="notifications-help" data-cursor-metering>
+        ${CURSOR_METERING_NOTE}
+      </p>
+    </div>`;
+  }
+
+  private renderRunnerConsent(runner: RunnerRecord) {
+    const consent = runner.flow_execution_consent ?? 'ask_me';
+    const owner =
+      this.currentUserId != null &&
+      runner.registered_by_user_id === this.currentUserId;
+    const who = owner ? 'you get' : 'the runner owner gets';
+    const summary =
+      consent === 'never'
+        ? `${runner.name} is set to never run flows, so this flow will not start there.`
+        : consent === 'always'
+          ? `Runs start on ${runner.name} without asking.`
+          : `Each run waits for approval: ${who} an approval request before it starts on ${runner.name}.`;
+    return html`<div data-cursor-consent=${consent}>
+      ${
+        consent === 'never'
+          ? html`<sl-alert variant="warning" open>
+              <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+              ${summary}
+            </sl-alert>`
+          : html`<p class="notifications-help">${summary}</p>`
+      }
+      <div class="notifications-help">${FLOW_CONSENT_LABEL}</div>
+      <owner-consent-control
+        label=${FLOW_CONSENT_LABEL}
+        value=${consent}
+        .options=${FLOW_CONSENT_OPTIONS}
+        ?editable=${owner}
+        ?saving=${this.runnerConsentSaving}
+        ownerOnly=${owner ? '' : FLOW_CONSENT_OWNER_ONLY}
+        error=${this.runnerConsentError}
+        @consent-change=${(
+          event: CustomEvent<{ value: FlowExecutionConsent }>
+        ) => void this.setRunnerConsent(runner, event.detail.value)}
+      ></owner-consent-control>
+    </div>`;
+  }
+
+  /** Existing agent lists Agent Control agents only; say where Cursor went. */
+  private renderPersistentHostExecNote() {
+    const choices = this.cursorRunnerChoices();
+    return html`<p class="notifications-help" data-persistent-cursor-note>
+      Cursor is not listed here: Existing agent runs a flow on an agent
+      connected through Agent Control, and Cursor runs through a runner on your
+      machine instead.
+      ${
+        choices.length > 0
+          ? html`<sl-button
+              size="small"
+              variant="text"
+              data-use-cursor-runner
+              @click=${() => {
+                this.applyExecutionPath('ephemeral');
+                this.selectAgentType('cursor');
+              }}
+              >Use Cursor on my runner</sl-button
+            >`
+          : html`To use it, sign in to the Cursor CLI on a machine with a
+              <a href="/console/runners">runner</a>, then choose On-demand.`
+      }
+    </p>`;
   }
 
   private renderHostExecProfileField() {
@@ -3668,7 +3983,12 @@ export class PreloopFlowForm extends LitElement {
     if (typeof config !== 'object' || Array.isArray(config)) return undefined;
     const source = config as Record<string, unknown>;
     const supported: Record<string, unknown> = {};
-    for (const key of ['supersede_on_update', 'dedupe_path']) {
+    for (const key of [
+      'supersede_on_update',
+      'dedupe_path',
+      'azure_review_label',
+      'azure_review_comment_enabled',
+    ]) {
       if (key in source) supported[key] = source[key];
     }
     return supported;
@@ -4414,6 +4734,41 @@ export class PreloopFlowForm extends LitElement {
                         `
                       : nothing
                   }
+                  ${
+                    isMREvent && tracker.tracker_type === 'azure_devops'
+                      ? html`
+                          <sl-input
+                            label="Review request label"
+                            .value=${this.flow.webhook_config?.azure_review_label ?? (this.flow.webhook_config?.azure_review_label === null ? '' : 'preloop-review')}
+                            help-text="Requests a review of the current head. Labels are checked periodically. Leave empty to disable."
+                            @sl-input=${(e: any) => {
+                              this.flow.webhook_config = {
+                                ...this.flow.webhook_config,
+                                azure_review_label:
+                                  e.target.value.trim() || null,
+                              };
+                              this.requestUpdate();
+                            }}
+                          ></sl-input>
+                          <sl-checkbox
+                            ?checked=${this.flow.webhook_config?.azure_review_comment_enabled !== false}
+                            @sl-change=${(e: any) => {
+                              this.flow.webhook_config = {
+                                ...this.flow.webhook_config,
+                                azure_review_comment_enabled: e.target.checked,
+                              };
+                              this.requestUpdate();
+                            }}
+                            >Allow /preloop review comments to request a
+                            review</sl-checkbox
+                          >
+                          <p class="help-text">
+                            Requires the Pull request commented on service hook.
+                            Requests during a run become one pending follow-up.
+                          </p>
+                        `
+                      : nothing
+                  }
 
                   <!-- Merge Request / Pull Request State Filters -->
                   ${
@@ -4770,6 +5125,22 @@ export class PreloopFlowForm extends LitElement {
       `;
     }
 
+    const scopedProjects = this.projects.filter(
+      (project) => project.organization_id === this.flow.trigger_organization_id
+    );
+    const hasProjectSelection = Boolean(this.flow.trigger_project_ids?.length);
+    let projectScopeHelp = '';
+    if (this.flow.trigger_organization_id) {
+      if (scopedProjects.length === 0) {
+        projectScopeHelp =
+          'No projects are available to select. Check the tracker’s scope and sync status.';
+      } else {
+        projectScopeHelp = hasProjectSelection
+          ? 'To narrow the scope, remove projects or clear the selection and pick specific projects. A blank selection includes all projects in this organization.'
+          : 'Pick specific projects, or leave the selection blank to include all projects in this organization.';
+      }
+    }
+
     let selectableModels = this.models.filter(
       (m) => !m.is_shared && m.model_kind !== 'stt' && m.model_kind !== 'tts'
     );
@@ -4869,8 +5240,8 @@ export class PreloopFlowForm extends LitElement {
                 variant="primary"
                 open
                 data-testid="preset-disabled-notice"
-                >This preset copy will be saved disabled. Configure its tracker
-                and project scope, then enable it from Flows when
+                >This flow will be saved paused. Review its trigger and AI
+                configuration, then choose Resume on the flow page when
                 ready.</sl-alert
               >`
             : nothing
@@ -5068,27 +5439,30 @@ export class PreloopFlowForm extends LitElement {
 
                       <sl-select
                         label="Projects (optional)"
-                        placeholder="All projects"
+                        help-text=${projectScopeHelp}
+                        placeholder=${
+                          this.flow.trigger_organization_id &&
+                          scopedProjects.length === 0
+                            ? 'No projects available'
+                            : 'All projects'
+                        }
                         multiple
                         clearable
                         .value=${this.flow.trigger_project_ids || []}
                         @sl-change=${(e: any) => {
                           this.flow.trigger_project_ids = e.target.value;
                         }}
-                        ?disabled=${!this.flow.trigger_organization_id}
+                        ?disabled=${
+                          !this.flow.trigger_organization_id ||
+                          (scopedProjects.length === 0 && !hasProjectSelection)
+                        }
                       >
-                        ${this.projects
-                          .filter(
-                            (p) =>
-                              p.organization_id ===
-                              this.flow.trigger_organization_id
-                          )
-                          .map(
-                            (p) =>
-                              html`<sl-option .value=${p.id}
-                                >${p.name || p.identifier || p.key}</sl-option
-                              >`
-                          )}
+                        ${scopedProjects.map(
+                          (project) =>
+                            html`<sl-option .value=${project.id}
+                              >${project.name || project.identifier || project.key}</sl-option
+                            >`
+                        )}
                       </sl-select>
 
                       <sl-select
@@ -5196,23 +5570,26 @@ export class PreloopFlowForm extends LitElement {
                         `
                       : nothing
                   }
+                  ${this.renderPersistentHostExecNote()}
                 `
               : html`
                   <sl-select
                     label="Agent runtime"
                     .value=${this.flow.agent_type || 'codex'}
-                    @sl-change=${(e: any) => {
-                      this.flow.agent_type = e.target.value;
-                      this.requestUpdate();
-                    }}
+                    @sl-change=${(e: any) =>
+                      this.selectAgentType(e.target.value)}
                   >
                     <sl-option value="codex">Codex CLI</sl-option>
                     <sl-option value="gemini">Gemini CLI</sl-option>
                     <sl-option value="opencode">OpenCode</sl-option>
                     <sl-option value="pi">Pi</sl-option>
                     <sl-option value="deepseek">DeepSeek Harness</sl-option>
-                    <sl-option value="cursor"
-                      >Cursor CLI (private runner host profile)</sl-option
+                    <sl-option value="cursor" data-cursor-option
+                      >${
+                        this.cursorRunnerChoices().length > 0
+                          ? 'Cursor on my runner'
+                          : 'Cursor on my runner (no runner reports Cursor yet)'
+                      }</sl-option
                     >
                     <sl-option value="devin"
                       >Devin CLI (private runner host profile)</sl-option
@@ -5228,7 +5605,8 @@ export class PreloopFlowForm extends LitElement {
           }
           ${this.renderSharedModelBindingNotice()}
           ${
-            this.flow.agent_type === 'cursor'
+            this.flow.agent_type === 'cursor' &&
+            this.flowExecutionPath === 'ephemeral'
               ? html`
                   <p class="notifications-help">
                     Cursor runs as cursor-agent on the private runner, using
@@ -5246,6 +5624,7 @@ export class PreloopFlowForm extends LitElement {
                     .value=${this.cursorModelValue()}
                     @sl-input=${this.handleCursorModelInput}
                   ></sl-input>
+                  ${this.renderCursorRunnerPanel()}
                   ${this.renderHostExecCloneNotice('Cursor')}
                 `
               : this.flow.agent_type === 'devin'
@@ -5683,6 +6062,13 @@ export class PreloopFlowForm extends LitElement {
                 .value=${this.flow.max_budget == null ? '' : String(this.flow.max_budget)}
                 @sl-input=${(e: Event) => this.handleInputChange('max_budget', e)}
               ></sl-input>
+              ${
+                this.flow.agent_type === 'cursor'
+                  ? html`<p class="notifications-help" data-cursor-limits-note>
+                      ${CURSOR_METERING_NOTE}
+                    </p>`
+                  : nothing
+              }
 
               <sl-input
                 type="number"

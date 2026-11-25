@@ -297,6 +297,30 @@ class CRUDTracker(CRUDBase[Tracker]):
             db.refresh(tracker)
         return tracker
 
+    def record_ignored_webhook(self, db: Session, *, id: str, reason: str) -> None:
+        """Persist the last scope-related ignored delivery without payload data.
+
+        Lock the row so this metadata update cannot clobber another webhook's
+        metadata. Commit before intake closes its database session.
+        """
+        tracker = (
+            db.query(models.Tracker)
+            .filter(models.Tracker.id == id)
+            .populate_existing()
+            .with_for_update()
+            .first()
+        )
+        if tracker is None:
+            return
+        tracker.meta_data = {
+            **dict(tracker.meta_data or {}),
+            "last_ignored_webhook": {
+                "reason": reason,
+                "at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        db.commit()
+
     def record_unknown_project(
         self,
         db: Session,

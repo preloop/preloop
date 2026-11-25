@@ -1534,6 +1534,17 @@ class WebhookConfig(BaseModel):
             "for webhook triggers; unset on flows triggered by tracker events)"
         ),
     )
+    azure_review_label: Optional[str] = Field(
+        default="preloop-review",
+        min_length=1,
+        max_length=255,
+        description="Azure PR label that requests a review of the current head. Null disables label requests; changes are discovered by polling.",
+    )
+    azure_review_comment_enabled: bool = Field(
+        default=True,
+        description="Accept the exact /preloop review command on Azure PR comments. Requires the Pull request commented on service hook.",
+    )
+
     supersede_on_update: bool = Field(
         default=False,
         description=(
@@ -1555,6 +1566,17 @@ class WebhookConfig(BaseModel):
 
 class WebhookConfigResponse(BaseModel):
     """Webhook settings on a flow response, without ingress credentials."""
+
+    azure_review_label: Optional[str] = Field(
+        default="preloop-review",
+        min_length=1,
+        max_length=255,
+        description="Azure PR label that requests a review of the current head. Null disables label requests; changes are discovered by polling.",
+    )
+    azure_review_comment_enabled: bool = Field(
+        default=True,
+        description="Accept the exact /preloop review command on Azure PR comments. Requires the Pull request commented on service hook.",
+    )
 
     supersede_on_update: bool = Field(
         default=False,

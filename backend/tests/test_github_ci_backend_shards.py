@@ -42,8 +42,7 @@ def test_backend_shards_partition_before_collection() -> None:
     # The selection sizes the matrix: BACKEND_TEST_SPLITS for the whole suite.
     assert groups == "${{ fromJSON(needs.changes.outputs.backend_groups) }}"
     assert backend["name"] == (
-        "Backend Tests (${{ matrix.group }}/"
-        "${{ needs.changes.outputs.backend_shards }})"
+        "Backend Tests (${{ matrix.group }}/${{ needs.changes.outputs.backend_jobs }})"
     )
     assert backend["strategy"]["fail-fast"] is False
 
@@ -107,7 +106,7 @@ def test_backend_coverage_job_combines_shards_before_floor() -> None:
         if s.get("name") == "Combine coverage and enforce floor"
     )
     assert step["env"] == {
-        "SHARDS": "${{ needs.changes.outputs.backend_shards }}",
+        "SHARDS": "${{ needs.changes.outputs.backend_jobs }}",
         "BACKEND_FULL": "${{ needs.changes.outputs.backend_full }}",
     }
     assert "coverage-data.*" in script
@@ -298,7 +297,11 @@ def test_main_runs_refresh_durations_for_pull_requests() -> None:
     # A selective run times only its own files; never let it be the cache.
     assert "needs.changes.outputs.backend_full == 'true'" in job["if"]
     script = step_script(job, "Convert JUnit times to node durations")
-    assert f"--shards {BACKEND_TEST_SPLITS}" in script
+    assert '--shards "$SHARDS"' in script
+    convert = next(
+        s for s in job["steps"] if s.get("name", "").startswith("Convert JUnit")
+    )
+    assert convert["env"]["SHARDS"] == "${{ needs.changes.outputs.backend_jobs }}"
     save = next(
         s for s in job["steps"] if s.get("name") == "Save durations for pull requests"
     )
@@ -315,7 +318,7 @@ def test_coverage_job_summarises_actual_shard_durations() -> None:
         for s in coverage["steps"]
         if s.get("name") == "Summarise actual shard durations"
     )
-    assert step["env"]["SHARDS"] == "${{ needs.changes.outputs.backend_shards }}"
+    assert step["env"]["SHARDS"] == "${{ needs.changes.outputs.backend_jobs }}"
 
 
 def _load_refresh_durations() -> ModuleType:
@@ -352,7 +355,7 @@ def test_refresh_durations_reads_one_shard_and_many(
     """
     module = _load_refresh_durations()
     for shard in range(1, shards + 1):
-        _write_shard_report(tmp_path, shard, 10.0 * shard)
+        _write_shard_report(tmp_path, shard, 60.0 if shard == shards else 10.0)
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     monkeypatch.setattr(
         sys,
@@ -362,8 +365,19 @@ def test_refresh_durations_reads_one_shard_and_many(
     )
     module.main()
     out = capsys.readouterr().out
-    assert f"- shard {shards}: {10.0 * shards:.1f}s" in out
+    assert f"- shard {shards}: 60.0s" in out
     assert out.count("- shard ") == shards
+    median = 60.0 if shards == 1 else 10.0
+    assert f"max / median {median:.1f}s = {60 / median:.3f}" in out
+
+
+def test_zero_median_has_no_duration_ratio(tmp_path: Path) -> None:
+    """Two zero-duration reports make the median zero even with a slow shard."""
+    for shard, seconds in enumerate((0.0, 0.0, 3.0), start=1):
+        _write_shard_report(tmp_path, shard, seconds)
+    summary = _load_refresh_durations().summarise(sorted(tmp_path.glob("*.xml")))
+    assert "max 3.0s / mean 1.0s = 3.000" in summary
+    assert "max / median" not in summary
 
 
 def test_refresh_durations_rejects_a_missing_shard(

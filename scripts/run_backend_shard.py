@@ -137,6 +137,18 @@ def discover_files(root: Path) -> list[str]:
     return sorted(files)
 
 
+# JUnit outliers: cold Go builds, fresh interpreters and bulk database fixtures.
+# Keep their module-scoped fixtures together in one pytest process.
+SERIAL_FILES = frozenset(
+    {
+        "backend/tests/api/test_ci_tool_evidence.py",
+        "backend/tests/api/test_gateway_import_footprint.py",
+        "backend/tests/api/test_multiuser_edition.py",
+        "backend/tests/models/crud/test_ai_model_detail_bounds.py",
+        "backend/tests/test_flow_orchestrator.py",
+    }
+)
+
 SPLIT_FRACTION = 1 / 3
 DEFAULT_MAX_RATIO = 1.15
 _PARAMS = re.compile(r"\[.*\]$")
@@ -313,30 +325,48 @@ def command_plan(args: argparse.Namespace, root: Path) -> int:
         if not files:
             print("::error::the selection receipt names no collectable test file")
             return 2
-    plan = plan_shards(files, _load_durations(args.durations), args.shards, root)
-    plan["durations"] = str(args.durations)
-    peak, mean = spread(plan)
-    plan["predicted_max_over_mean"] = round(peak / mean, 4)
-    args.out.write_text(json.dumps(plan, indent=1) + "\n")
+    durations = _load_durations(args.durations)
+    serial = sorted(SERIAL_FILES.intersection(files))
+    regular = [path for path in files if path not in SERIAL_FILES]
+    plan: dict = {"shards": [], "split_files": []}
     lines = [f"Predicted serial seconds per shard (durations: {args.durations}):"]
-    for index, shard in enumerate(plan["shards"], start=1):
+    ratio = 1.0
+    if regular:
+        plan = plan_shards(regular, durations, args.shards, root)
+        peak, mean = spread(plan)
+        ratio = peak / mean
+        for index, shard in enumerate(plan["shards"], start=1):
+            lines.append(
+                f"- shard {index}: {shard['seconds']:.1f}s, {len(shard['files'])} files,"
+                f" {len(shard['deselect'])} deselected nodes"
+            )
         lines.append(
-            f"- shard {index}: {shard['seconds']:.1f}s, {len(shard['files'])} files,"
-            f" {len(shard['deselect'])} deselected nodes"
+            f"- max {peak:.1f}s / mean {mean:.1f}s = {ratio:.3f}"
+            f" (limit {args.max_ratio}); split files: {len(plan['split_files'])}"
         )
-    lines.append(
-        f"- max {peak:.1f}s / mean {mean:.1f}s = {peak / mean:.3f}"
-        f" (limit {args.max_ratio}); split files: {len(plan['split_files'])}"
-    )
+    if serial:
+        weights, _ = file_weights(serial, durations, root)
+        plan["shards"].append(
+            {
+                "files": serial,
+                "deselect": [],
+                "seconds": round(sum(weights.values()), 3),
+                "serial": True,
+            }
+        )
+        lines.append(
+            f"- group {len(plan['shards'])} runs serially: {', '.join(serial)}"
+        )
+    plan["durations"] = str(args.durations)
+    plan["predicted_max_over_mean"] = round(ratio, 4)
+    args.out.write_text(json.dumps(plan, indent=1) + "\n")
     print("\n".join(lines))
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
-    if peak > args.max_ratio * mean:
-        print(
-            f"::error::predicted shard imbalance {peak / mean:.3f} > {args.max_ratio}"
-        )
+    if ratio > args.max_ratio:
+        print(f"::error::predicted shard imbalance {ratio:.3f} > {args.max_ratio}")
         return 1
     return 0
 
@@ -359,7 +389,9 @@ def command_run(args: argparse.Namespace, root: Path) -> int:
     if options[:1] == ["--"]:
         options = options[1:]
     env = dict(os.environ)
-    if args.workers == "auto":
+    if shard.get("serial"):
+        workers = 1
+    elif args.workers == "auto":
         workers = available_cpus()
     else:
         workers = int(args.workers)

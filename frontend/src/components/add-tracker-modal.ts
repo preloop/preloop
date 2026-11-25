@@ -1693,7 +1693,7 @@ export class AddTrackerModal extends LitElement {
         help-text=${
           this.tracker
             ? 'Leave as is to keep the stored token. Enter a new token to replace it.'
-            : 'Minimum scopes: Code (Read), Pull Request Threads (Read & write), and Service Hooks (Read, write & manage) only for automatic webhook registration.'
+            : 'Minimum scopes: Code (Read) and Pull Request Threads (Read & write). Add Work Items (Read & write) for Azure Boards. Automatic service hook registration also needs project View subscriptions and Edit subscriptions permissions; manual setup is available.'
         }
         required
       ></sl-input>
@@ -3004,6 +3004,19 @@ export class AddTrackerModal extends LitElement {
         .join(', ')} could not be listed. Retry, or deselect ${
         unlisted.length > 1 ? 'them' : 'it'
       } before saving.`;
+      this.isLoading = false;
+      return;
+    }
+    const hasSelection = this.orgs.some(
+      (org) =>
+        this.selectedOrgs[org.id] &&
+        (this.includeFutureProjects ||
+          this.authMethod === 'github_app' ||
+          Object.values(this.selectedProjects[org.id] || {}).some(Boolean))
+    );
+    if (!this.managedOfflineEdit && !hasSelection) {
+      this.errorMessage =
+        'Select at least one organization or repository before saving.';
       this.isLoading = false;
       return;
     }

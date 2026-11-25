@@ -513,6 +513,7 @@ PRESET_COMPLETION_MARKERS = {
     "020-audio-transcription-agent.yaml": '"status": "success" | "error"',
     "021-transcript-evaluation.yaml": '"status": "success" | "error"',
     "022-delivery-report.yaml": '"status": "success" | "error"',
+    "023-daily-ci-qa-review.yaml": '"status": "success" | "failure"',
 }
 
 # Presets that run no agent, so there is no result.json to confirm. Their

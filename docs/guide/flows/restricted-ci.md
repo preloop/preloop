@@ -602,6 +602,22 @@ whatever the last session wrote and applies every check above. If it is still
 invalid, the run fails with `result_schema_invalid` and the validation errors,
 as before. Flows without `agent_config.native_result: true` are unchanged.
 
+The wrapper asks the controller's Draft 2020-12 validator for this decision,
+including the same failing paths and messages used at final capture. Conditional
+rules (`if`/`then`/`else`), composition (`allOf`, `anyOf`, `oneOf`, `not`), `const`,
+and constraints on nested objects and array items therefore trigger repair too.
+Saving a flow retains the existing Draft 2020-12 schema contract: keywords such
+as `dependentSchemas`, `prefixItems`, and `unevaluatedProperties` are evaluated
+by the controller for both repair and final capture. Unknown extension keywords
+and annotation-only `format` retain that validator's behavior in both places.
+If the validation service cannot be reached, the log records
+`PRELOOP_RESULT_VALIDATION_UNAVAILABLE`; final capture still validates the answer
+and never accepts it on the strength of an unavailable repair check.
+Local failures in reading or preparing the repair prompt instead record
+`PRELOOP_RESULT_REPAIR_CHECK_FAILED` with the exception type and stack frames,
+without exception values or answer contents. Validation requests have a shared
+per-capability budget; see [rate limiting](../../operations/rate-limiting.md).
+
 **A fenced answer.** A model that is not held to the schema sometimes writes
 its final answer as the JSON document inside a Markdown code fence
 (```` ```json ````, the document, ```` ``` ````). Preloop removes exactly that

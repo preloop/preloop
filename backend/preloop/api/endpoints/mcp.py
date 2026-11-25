@@ -3672,7 +3672,14 @@ async def create_pull_request(
     if not project_obj:
         raise HTTPException(
             status_code=404,
-            detail=f"Project not found: {project}. Make sure it's synced to your account.",
+            detail=(
+                f"Project not found: {project}. No local checkout is required. "
+                "Provide the repository URL or its synced project slug "
+                "(for example, owner/repo). Ask the user for that URL or slug, "
+                "or sync the repository in Trackers first. The source and target "
+                "branches must already exist on the remote. Azure DevOps "
+                "trackers currently support review, not opening pull requests."
+            ),
         )
 
     # Get tracker client

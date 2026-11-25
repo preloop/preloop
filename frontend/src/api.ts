@@ -4086,7 +4086,22 @@ export async function listProjectPullRequests(
     `${REST_API_PREFIX}/projects/${encodeURIComponent(projectId)}/pull-requests?${query.toString()}`
   );
   if (!response.ok) {
-    throw new Error('Failed to fetch pull requests');
+    // Classify the server's configuration error without displaying its raw
+    // detail, which can contain tracker connection settings.
+    let configurationError = false;
+    try {
+      const body = await response.json();
+      configurationError =
+        typeof body?.detail === 'string' &&
+        /^Configuration error for tracker:/i.test(body.detail);
+    } catch {
+      // Proxies can return non-JSON errors; the HTTP status still applies.
+    }
+    throw new ApiError(
+      'Failed to fetch pull requests',
+      response.status,
+      configurationError ? 'tracker_configuration_error' : undefined
+    );
   }
   return response.json();
 }
@@ -9993,6 +10008,7 @@ export interface AzureDevOpsWebhookRegistration {
 }
 
 export interface AzureDevOpsWebhookStatus {
+  last_ignored_reason?: string | null;
   callback_url: string | null;
   callback_configured: boolean;
   required_events: string[];

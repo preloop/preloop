@@ -35,12 +35,26 @@ organizations" unless you need it) and these custom scopes:
 | Code | Read | List repositories, read pull requests and changed files, clone the repository. |
 | Pull Request Threads | Read & write | Post the review as a comment thread. |
 | Work Items | Read & write | Sync, search, create and update work items, comment on them and link pull requests. Read alone is enough for triggers and sync. |
-| Service Hooks | Read, write & manage | Only if Preloop registers the service hook subscriptions for you. |
 | Code | Read & write | Optional. Required to vote when **Cast the token owner's vote** is enabled. With voting disabled, the decision appears only in the summary. |
 
-Without the Service Hooks scope, set the subscriptions up by hand (see
-[Manual setup](#manual-setup)). Set a PAT expiry and replace the token in the
-tracker before it expires.
+There is no separate **Service Hooks (Read, write & manage)** checkbox to
+select in the PAT screen. **Service Connections** is unrelated. The
+[Subscriptions API](https://learn.microsoft.com/en-us/rest/api/azure/devops/hooks/subscriptions/create?view=azure-devops-rest-7.1)
+lists the event's resource scope: `vso.code` (Code Read) for repository
+events, `vso.work` (Work Items Read) for work item events, and `vso.build`
+for build events. The `vso.hooks_write` name in the OAuth/extension scope
+catalog is not a PAT-screen instruction.
+
+The user also needs the project's **View subscriptions** and **Edit
+subscriptions** service-hook permissions; Project Administrators have
+these by default. An administrator can delegate them to another user or
+group. Token scopes do not grant project permissions. See Microsoft's
+[service-hook permissions](https://learn.microsoft.com/en-us/azure/devops/service-hooks/overview?view=azure-devops#prerequisites).
+Availability depends on project permissions and organization token policy. If **Register** returns permission denied, use
+[Manual setup](#manual-setup) with an authorized project user; do not broaden
+the token to Full access just to find a missing checkbox.
+
+Set a PAT expiry and replace the token in the tracker before it expires.
 
 ## Add the tracker
 
@@ -62,7 +76,13 @@ tracker before it expires.
    edit the tracker to turn it off. With voting off, approve/request changes
    are expressed in the summary and no vote API is called.
 7. Select **Next**. Preloop tests the connection and lists the repositories,
-   grouped by Azure DevOps project. Choose the scope and save.
+   grouped by Azure DevOps project. Check the repositories you want (or
+   **Select All**) and save. Entering a project filters discovery; it does
+   not select repositories. An empty selection cannot be saved.
+
+If the tracker shows **0 repositories imported**, its page explains whether
+no organization is included or a sync/access check is needed. Edit the
+scope and select **Sync Now**.
 
 ### How Azure DevOps maps to Preloop
 
@@ -78,11 +98,12 @@ policies and scope rules attach to repositories.
 
 ## Service hooks
 
-Preloop receives events through five **Web Hooks** service hook
+Preloop receives events through seven **Web Hooks** service hook
 subscriptions on the Azure DevOps project:
 
 - `git.pullrequest.created` (Pull request created)
-- `git.pullrequest.updated` (Pull request updated)
+- `git.pullrequest.updated` (Pull request updated): separate source-push and lifecycle subscriptions
+- `ms.vss-code.git-pullrequest-comment-event` (Pull request commented on)
 - `workitem.created` (Work item created)
 - `workitem.updated` (Work item updated)
 - `workitem.commented` (Work item commented on)
@@ -105,12 +126,13 @@ subscriptions afterwards (register again, or edit the header by hand).
 
 ### Automatic setup
 
-With a PAT that has the Service Hooks (Read, write & manage)
-scope, select **Register** (a secret is generated first if the tracker has
+With the resource scopes and project permissions above, select **Register** (a secret is generated first if the tracker has
 none). Preloop creates the subscriptions with the secret header. The pull
 request ones are filtered to the tracker's repository (or its project when
-no repository is selected), and `Pull request updated` to source branch
-pushes. The work item ones cover the whole project. Registering also stores
+no repository is selected). Separate `Pull request updated` subscriptions cover
+source pushes and lifecycle changes. Lifecycle deliveries carry
+`X-Preloop-Azure-Lifecycle:true` and can stop reviews, never start them. The
+work item ones cover the whole project. Registering also stores
 the token owner's identity and the project's state categories on the
 tracker (see [Work item events](#work-item-events)). Registering again updates Preloop's subscriptions in place and never
 touches others. The panel then shows
@@ -119,7 +141,9 @@ Azure DevOps.
 
 ### Manual setup
 
-A project administrator can create the subscriptions instead:
+A project administrator, or a user with delegated subscription permissions,
+can create the subscriptions instead. Use this path if automatic registration
+is unavailable:
 
 1. Open **Project settings > Service hooks** and select **Create
    subscription**.
@@ -133,10 +157,22 @@ A project administrator can create the subscriptions instead:
    - **Messages to send** and **Detailed messages to send**: None (not
      needed)
    - **Resource version**: 1.0
-5. Select **Test**, then **Finish**.
-6. Repeat for the trigger **Pull request updated** with the same settings,
-   and set its **Change** filter to **Source branch updated**.
-7. Repeat for **Work item created**, **Work item updated** and **Work item
+5. For created/updated PR subscriptions, select **Test**, then **Finish**. A passing Test
+   checks the callback URL and secret header. Azure sends a canned sample;
+   Preloop responds `200` with `test_notification` and starts no review.
+   It does not prove repository scope or flow configuration. A missing or
+   wrong secret still fails. For work item subscriptions, finish the setup
+   and verify with an actual work item event.
+6. Repeat for **Pull request updated**, with **Change** set to **Source branch
+   updated**. Keep this filter: metadata edits must not start reviews.
+7. Add a second **Pull request updated** subscription with **Change** set to
+   **Pull request lifecycle status changed**. Send both the secret header and
+   the additional header `X-Preloop-Azure-Lifecycle:true` (one header per line).
+   This subscription stops reviews on abandon/complete and never starts one.
+   Existing setups need this additional subscription; **Register** adds it.
+8. For comment commands, repeat for **Pull request commented on** with the same
+   repository and action settings. Finish and verify using a real command.
+9. Repeat for **Work item created**, **Work item updated** and **Work item
    commented on**, without filters.
 
 After a manual setup, select **Register** once if the token allows it, or
@@ -150,9 +186,17 @@ Repeat per repository if you filter by repository and several are in scope.
   that does not match the tracker's secret, are rejected with an
   authentication error and start no flow. A tracker without a secret accepts
   no deliveries.
+- Authenticated deliveries for the correct organization but a repository
+  that is not imported or outside the selected scope return `200` and start
+  no flow. The tracker page shows the last ignored reason. This avoids
+  subscription failures and retries for intentional scope exclusions.
+  Real events for another organization still return `403`.
+- Before starting a review, Preloop reads the PR's current state and head.
+  A delayed event for an abandoned/completed PR or an older commit is skipped.
+  Abandon/complete notifications also stop runs still working on that PR.
 - Pull request updates that do not change the source commit (votes,
   reviewers, comments, title or description edits) are ignored. Only a new
-  push to the source branch produces `pull_request_updated`, so a review is
+  push to the source branch produces an automatic `pull_request_updated`, so a review is
   not repeated for unrelated changes.
 
 ## Review the pull requests
@@ -180,6 +224,33 @@ separate thread; the previous details and checked boxes survive until the full
 summary is updated. The hidden markers identify Preloop comments even when the
 PAT owner's name is displayed. API clients can set the preference through
 `connection_details.cast_token_owner_vote` (a boolean).
+
+### Ask for a review again
+
+On an active PR, add the **preloop-review** label or post a comment containing
+only **/preloop review** (case-insensitive; surrounding whitespace is ignored).
+Both request a review of the current head. In the flow's trigger settings you
+can change or disable the label and disable the comment command independently.
+The flow must subscribe to **Pull Request Updated** for this repository.
+
+Azure accepts free-form PR labels, but label changes do not emit a service hook.
+Preloop polls imported, included repositories in bounded pages; discovery can
+take several polling cycles on larger accounts. Comments use the **Pull request
+commented on** hook (`ms.vss-code.git-pullrequest-comment-event`). Add that comment
+subscription using the same repository, callback and secret settings. Verify
+it with a real command; the canned Test support covers created/updated only.
+
+Accepted labels are removed when the token has Code write access and permission
+to edit the PR. If removal is denied, remove the label, allow a polling cycle to
+observe its absence, then re-add it for another request. A label left attached
+does not continually start reviews. Repeated commands and labels are coalesced
+for a short quiet window; while a review runs, at most one follow-up is pending
+per flow and PR. Closed PRs and requests whose head has changed are skipped.
+
+Preloop's own comments and review threads never request another review.
+Title/description edits, votes, reviewer changes and unrelated labels do not
+request reviews. You can also use **Run reviewer** in the tracker's **Pull
+requests** tab to select a reviewer flow explicitly.
 
 ## Azure Boards work items
 
@@ -303,3 +374,8 @@ Only PAT authentication is implemented. See the
 [application identity investigation](azure-devops-application-identity.md)
 for the requirements and remaining verification for Entra service principals
 and managed identities.
+
+Explicit-request bookkeeping retains the latest 256 comment signals per flow/PR.
+Idle rows expire after 90 days without observation; pending work and live leases
+are retained. Polling an open PR refreshes its label state so a label that still
+needs manual removal does not expire and start another review.

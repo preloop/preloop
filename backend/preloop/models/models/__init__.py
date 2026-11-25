@@ -1,5 +1,6 @@
 """ORM model definitions."""
 
+from .azure_review_request import AzureReviewRequest
 from .sso_break_glass_notice import SsoBreakGlassNotice
 
 from .oauth_connection import OAuthProviderConfiguration, OAuthConnectionTransaction
@@ -217,6 +218,7 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "AzureReviewRequest",
     "ToolRegistryEntry",
     "UserMfaFactor",
     "UserMfaRecoveryCode",

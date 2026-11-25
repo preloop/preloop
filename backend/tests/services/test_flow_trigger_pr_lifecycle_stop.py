@@ -888,3 +888,65 @@ async def test_a_failing_stop_never_blocks_triggering(
         )
 
     assert len(executions_for(db_session, release_notes)) == 1
+
+
+@pytest.mark.parametrize(
+    "status,stop_source", [("abandoned", "pr_closed"), ("completed", "pr_merged")]
+)
+async def test_azure_terminal_delivery_stops_running_review(
+    db_session: Session, test_user: models.User, status: str, stop_source: str
+) -> None:
+    from preloop.sync.event_normalizer import normalize_event_type
+    from preloop.utils.azure_devops import normalize_delivery
+
+    repo = "33333333-3333-4333-8333-333333333333"
+    resource = {
+        "pullRequestId": 5,
+        "status": status,
+        "lastMergeSourceCommit": {"commitId": OLD_SHA},
+        "repository": {
+            "id": repo,
+            "name": "widgets",
+            "project": {"name": "Project"},
+            "url": "https://dev.azure.com/example-org/Project/_apis/git/repositories/"
+            + repo,
+        },
+    }
+    delivery = normalize_delivery(
+        {"eventType": "git.pullrequest.updated", "resource": resource},
+        organization="example-org",
+    )
+    assert delivery.accepted
+    reviewer = make_flow(db_session, test_user.account_id)
+    run = make_execution(
+        db_session,
+        reviewer,
+        source="azure_devops",
+        event_type="pull_request_opened",
+        payload=delivery.payload,
+    )
+    other_payload = {
+        **delivery.payload,
+        "pull_request": {**delivery.payload["pull_request"], "number": 6},
+    }
+    other = make_execution(
+        db_session,
+        reviewer,
+        source="azure_devops",
+        event_type="pull_request_opened",
+        payload=other_payload,
+    )
+    db_session.commit()
+    event_type = normalize_event_type(
+        "azure_devops", delivery.event_key, delivery.payload
+    )
+    await deliver(
+        db_session,
+        event("azure_devops", event_type, delivery.payload, test_user.account_id),
+        flows=[],
+    )
+    db_session.refresh(run)
+    db_session.refresh(other)
+    assert run.status == "STOPPED"
+    assert run.stop_source == stop_source
+    assert other.status == "RUNNING"

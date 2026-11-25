@@ -35,6 +35,7 @@ Content-Type: application/json
 | `trackers.connection_test` | `POST /api/v1/trackers/test-and-list-orgs`, `POST /api/v1/trackers/list-projects-for-org`, `POST /api/v1/trackers` | user | 20 / 60 s |
 | `account.deletion_request` | `POST /api/v1/account/deletion-request` | client address, and separately the signed-in account or the address a signed-out request names | 3 / 3600 s |
 | `account.deletion_confirm` | `POST /api/v1/account/deletion-request/confirm` | client address | 10 / 3600 s |
+| `result.validation.capability` | internal native-result validation | launch capability | 10 / 86400 s |
 
 `auth.login.user` counts wrong-password attempts for one account (a username
 and an email of the same person share it) from one client address, and is

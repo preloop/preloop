@@ -55,6 +55,7 @@ from preloop.utils.azure_devops import (
     AZURE_DEVOPS_BASE_URL,
     AZURE_DEVOPS_WEBHOOK_EVENTS,
     PULL_REQUEST_WEBHOOK_EVENTS,
+    LIFECYCLE_HEADER,
     WEBHOOK_SECRET_HEADER,
     branch_from_ref,
     clone_url,
@@ -1364,6 +1365,10 @@ class AzureDevOpsTracker(BaseTracker):
         Returns:
             Thread/comment IDs and URL, plus ``anchored`` and ``fallback_reason``.
         """
+        from preloop.utils.azure_devops import PRELOOP_COMMENT_MARKER
+
+        if PRELOOP_COMMENT_MARKER not in body:
+            body = f"{body}\n\n{PRELOOP_COMMENT_MARKER}"
         base = self._pr(pr_id, repo_full_name)
         body = generated_body(body)
         fallback = None
@@ -1445,6 +1450,10 @@ class AzureDevOpsTracker(BaseTracker):
         repo_full_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Edit a comment body."""
+        from preloop.utils.azure_devops import PRELOOP_COMMENT_MARKER
+
+        if PRELOOP_COMMENT_MARKER not in body:
+            body = f"{body}\n\n{PRELOOP_COMMENT_MARKER}"
         response = await self._request(
             "PATCH",
             f"{self._pr(pr_id, repo_full_name)}/threads/{int(thread_id)}"
@@ -1520,6 +1529,21 @@ class AzureDevOpsTracker(BaseTracker):
             )
             return False
         return True
+
+    async def list_pull_request_labels(
+        self, pr_id: int, repo_full_name: str
+    ) -> List[Dict[str, Any]]:
+        """Read free-form PR labels; Azure does not emit hooks when they change."""
+        return await self._list(f"{self._pr(pr_id, repo_full_name)}/labels")
+
+    async def remove_pull_request_label(
+        self, pr_id: int, repo_full_name: str, label_id: str
+    ) -> None:
+        """Remove an accepted request label when the token has Code write access."""
+        await self._request(
+            "DELETE",
+            f"{self._pr(pr_id, repo_full_name)}/labels/{quote(label_id, safe='')}",
+        )
 
     async def update_pull_request(
         self,
@@ -1640,8 +1664,23 @@ class AzureDevOpsTracker(BaseTracker):
             sub.get("eventType")
             for sub in subs
             if str(sub.get("status") or "enabled").lower().startswith("enabled")
+            and (
+                sub.get("eventType") != "git.pullrequest.updated"
+                or (sub.get("publisherInputs") or {}).get("notificationType")
+                == "PushNotification"
+            )
         }
         missing = [e for e in AZURE_DEVOPS_WEBHOOK_EVENTS if e not in enabled]
+        if not any(
+            sub.get("eventType") == "git.pullrequest.updated"
+            and (sub.get("publisherInputs") or {}).get("notificationType")
+            == "StatusUpdateNotification"
+            and f"{LIFECYCLE_HEADER}:true"
+            in (sub.get("consumerInputs") or {}).get("httpHeaders", "")
+            and str(sub.get("status") or "enabled").lower().startswith("enabled")
+            for sub in subs
+        ):
+            missing.append("git.pullrequest.updated (lifecycle)")
         return {
             "status": "registered" if not missing else "events_missing",
             "missing_events": missing,
@@ -1671,7 +1710,7 @@ class AzureDevOpsTracker(BaseTracker):
 
         Raises:
             TrackerResponseError: When neither project nor repository is set.
-            TrackerPermissionError: When the token lacks service hook scope.
+            TrackerPermissionError: When token scopes or project permissions deny hooks.
         """
         target = repo_full_name or self.repo_full_name
         repository_id: Optional[str] = None
@@ -1685,21 +1724,30 @@ class AzureDevOpsTracker(BaseTracker):
                 "service hooks."
             )
         existing = {
-            sub.get("eventType"): sub
+            (
+                sub.get("eventType"),
+                (sub.get("publisherInputs") or {}).get("notificationType")
+                == "StatusUpdateNotification",
+            ): sub
             for sub in await self.list_service_hooks(callback_url)
         }
         ids: List[str] = []
         created = 0
-        for event in AZURE_DEVOPS_WEBHOOK_EVENTS:
+        subscriptions = [(event, False) for event in AZURE_DEVOPS_WEBHOOK_EVENTS]
+        subscriptions.append(("git.pullrequest.updated", True))
+        for event, lifecycle in subscriptions:
             publisher_inputs = {"projectId": project_id}
             if repository_id and event in PULL_REQUEST_WEBHOOK_EVENTS:
                 # Work item events are project scoped; only pull request
                 # events take a repository filter.
                 publisher_inputs["repository"] = repository_id
             if event == "git.pullrequest.updated":
-                # Only source branch pushes; votes, reviewer and status
-                # changes are not delivered at all.
-                publisher_inputs["notificationType"] = "PushNotification"
+                publisher_inputs["notificationType"] = (
+                    "StatusUpdateNotification" if lifecycle else "PushNotification"
+                )
+            headers = f"{WEBHOOK_SECRET_HEADER}:{secret}"
+            if lifecycle:
+                headers += f"\n{LIFECYCLE_HEADER}:true"
             body = {
                 "publisherId": "tfs",
                 "eventType": event,
@@ -1709,13 +1757,13 @@ class AzureDevOpsTracker(BaseTracker):
                 "publisherInputs": publisher_inputs,
                 "consumerInputs": {
                     "url": callback_url,
-                    "httpHeaders": f"{WEBHOOK_SECRET_HEADER}:{secret}",
+                    "httpHeaders": headers,
                     "resourceDetailsToSend": "all",
                     "messagesToSend": "none",
                     "detailedMessagesToSend": "none",
                 },
             }
-            current = existing.get(event)
+            current = existing.get((event, lifecycle))
             if current and current.get("id"):
                 response = await self._request(
                     "PUT",

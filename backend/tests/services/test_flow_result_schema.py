@@ -73,6 +73,41 @@ def test_errors_are_bounded():
     assert result["error_count"] == RESULT_SCHEMA_MAX_ERRORS + 5
 
 
+def test_many_errors_are_counted_without_retaining_every_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Large invalid arrays must not retain an error object for every item."""
+    from collections.abc import Iterator
+    from typing import Any
+    from weakref import WeakSet
+
+    from jsonschema.exceptions import ValidationError
+
+    from preloop.services import flow_result_schema as module
+
+    live: WeakSet[ValidationError] = WeakSet()
+    peak = 0
+
+    class StreamingValidator:
+        def __init__(self, schema: Any) -> None:
+            pass
+
+        def iter_errors(self, document: Any) -> Iterator[ValidationError]:
+            nonlocal peak
+            for index in range(1_000):
+                error = ValidationError("invalid item", path=["items", index])
+                live.add(error)
+                peak = max(peak, len(live))
+                yield error
+
+    monkeypatch.setattr(module, "Draft202012Validator", StreamingValidator)
+    result = validate_result_document({"items": []}, {})
+    assert result["error_count"] == 1_000
+    expected = sorted(range(1_000), key=str)[:RESULT_SCHEMA_MAX_ERRORS]
+    assert [e["path"] for e in result["errors"]] == [f"$.items[{i}]" for i in expected]
+    assert peak <= RESULT_SCHEMA_MAX_ERRORS + 2
+
+
 def test_check_rejects_invalid_schema_readably():
     with pytest.raises(ResultSchemaError, match="not a valid JSON Schema"):
         check_result_schema({"type": "nonsense"})

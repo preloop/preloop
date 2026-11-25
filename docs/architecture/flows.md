@@ -824,6 +824,17 @@ nonterminal agent status; terminal execution events follow final result,
 integrity and publication checks. See [restricted CI](../guide/flows/restricted-ci.md#result-binding-and-repository-inspection)
 for the supported command forms and gateway output-format compatibility scope.
 
+Native result repair uses the controller's Draft 2020-12 validator through a
+bounded, stateless validation request. A schema-bound capability permits only
+validation of caller-supplied data against the schema selected at launch; it
+grants no access to stored results, accounts, posting, or model providers. The
+wrapper uses the returned errors for its prompt and continuation marker, checks
+the remaining deadline again after validation, and leaves final acceptance to
+the normal capture and publication gates.
+Only rate-limit counters are retained for validation requests. Each launch has
+its own capability budget, and error collection preserves the exact total and
+sorted first 20 errors without retaining every error object for invalid arrays.
+
 ## Hosted flow conversations
 
 `FlowConversation` is the durable owner and admission lock for a hosted thread;
@@ -836,3 +847,14 @@ transport and lifecycle helpers; DeepSeek archives only native session event log
 slot. After shutdown, a new execution restores the explicit native session and
 workspace artifacts. Gateway usage and active runtime are charged across all
 executions bound to the conversation. See the [API and lifecycle guide](../guide/flows/interactive-conversations.md).
+
+## Explicit Azure review requests
+
+Azure PR review dispatch reads the current provider state and head; terminal
+notifications stop runs through the shared lifecycle handler. Explicit Azure
+review requests use a durable `azure_review_request` row per flow and PR,
+serialized with incoming PR events, and coalesce while a review is active.
+Explicit requests follow the current head when dispatched. Comment dedupe keeps
+the latest 256 signals; idle request rows expire after 90 unobserved days.
+The scheduler discovers request labels in bounded repository pages because
+Azure does not emit label hooks. See the [Azure tracker guide](../guide/azure-devops-tracker.md#ask-for-a-review-again).

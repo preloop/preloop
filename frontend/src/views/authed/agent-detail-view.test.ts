@@ -645,6 +645,7 @@ describe('AgentDetailView', () => {
         const el = await loadedView();
         expect(endpoints.callCount).to.equal(1);
         expect(desktopTab(el)).to.be.null;
+        const loadEndpoints = sinon.spy(el as any, 'loadDesktopEndpoints');
         const clock = sinon.useFakeTimers({
           toFake: ['setTimeout', 'clearTimeout'],
         });
@@ -657,11 +658,14 @@ describe('AgentDetailView', () => {
                 composed: true,
               })
             );
-          await clock.tickAsync(0);
+          // Response body reads are asynchronous even with a fake clock.
+          // Wait for discovery to finish before advancing the retry timer.
+          await loadEndpoints.firstCall.returnValue;
           expect(endpoints.callCount).to.equal(2);
           expect(disclosure(el)).to.exist;
           online = true;
           await clock.tickAsync(3000);
+          await loadEndpoints.secondCall.returnValue;
           await el.updateComplete;
           expect(endpoints.callCount).to.equal(3);
           expect(desktopTab(el)).to.exist;
@@ -670,6 +674,7 @@ describe('AgentDetailView', () => {
           expect(endpoints.callCount).to.equal(3);
         } finally {
           el.remove();
+          loadEndpoints.restore();
           clock.restore();
         }
       });
@@ -1110,6 +1115,25 @@ describe('AgentDetailView', () => {
       el.shadowRoot!.querySelector('view-header')?.getAttribute('headerText')
     ).to.equal('Claude Code Workspace');
     expect((el as any).error).to.equal(null);
+  });
+
+  it('offers a Cursor runner flow without requiring the Agent Control tab', async () => {
+    const el = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(() => !(el as any).loading && !!(el as any).agent);
+    (el as any).agent = {
+      ...(el as any).agent,
+      agent_kind: 'cursor',
+      control_enabled: false,
+    };
+    await el.updateComplete;
+    const route = el.shadowRoot!.querySelector('[data-cursor-runner-route]');
+    expect(
+      route?.querySelector('a[href="/console/flows/new?agent_type=cursor"]')
+    ).to.exist;
+    expect(route?.textContent).to.include('not gateway metered');
+    expect(route?.textContent).to.include('consent');
   });
 
   it('loads associated flows only when that tab is opened', async () => {

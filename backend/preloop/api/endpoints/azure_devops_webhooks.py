@@ -1,8 +1,8 @@
 """Azure DevOps service hook setup: inspection, secret rotation, registration.
 
 Webhook capability is reported separately from connection success: a
-personal access token that reads pull requests may lack the Service Hooks
-scope, and a subscription may exist without a usable secret on the Preloop
+personal access token that reads pull requests may lack project subscription
+permissions, and a subscription may exist without a usable secret on the Preloop
 side. Each of those states is visible here.
 
 Azure DevOps service hooks are unsigned. Preloop generates a per-tracker
@@ -53,9 +53,18 @@ SETUP_INSTRUCTIONS = (
     "In Azure DevOps open Project settings, Service hooks, Create subscription, "
     "choose Web Hooks and the event 'Pull request created', filter by the "
     "repository, enter the callback URL and, under HTTP headers, "
-    f"'{WEBHOOK_SECRET_HEADER}:<secret>'. Repeat for 'Pull request updated', "
+    f"'{WEBHOOK_SECRET_HEADER}:<secret>'. Repeat for 'Pull request updated' "
+    "with Change set to Source branch updated, and 'Pull request commented on'. "
+    "Add another Pull request updated subscription with Change set to Pull request "
+    "lifecycle status changed and the additional header X-Preloop-Azure-Lifecycle:true, "
     "and, without a repository filter, for 'Work item created', 'Work item "
     "updated' and 'Work item commented on'. Leave resource details at 'All'. "
+    "Manual setup is available even when the token cannot register hooks. "
+    "Automatic registration uses Code (Read) for PR events and Work Items (Read) "
+    "for work item events, plus the user's project 'Edit subscriptions' and "
+    "'View subscriptions' permissions. Service Connections is unrelated. "
+    "A passing created/updated PR subscription Test checks the URL and secret, "
+    "not repository scope. Verify comment hooks with a real /preloop review comment. "
     "Registering from Preloop also records the token's identity, so changes "
     "Preloop makes to work items do not trigger flows again."
 )
@@ -81,6 +90,9 @@ class AzureDevOpsWebhookStatus(BaseModel):
         ),
     )
     instructions: str
+    last_ignored_reason: Optional[str] = Field(
+        None, description="Most recent scope-related ignored delivery reason."
+    )
 
 
 class AzureDevOpsWebhookSecret(AzureDevOpsWebhookStatus):
@@ -132,6 +144,10 @@ def _status(
         ),
         "registration": registration,
         "instructions": SETUP_INSTRUCTIONS,
+        "last_ignored_reason": (
+            (getattr(tracker, "meta_data", None) or {}).get("last_ignored_webhook")
+            or {}
+        ).get("reason"),
     }
 
 
@@ -259,9 +275,10 @@ def register_azure_devops_webhook(
         raise HTTPException(
             status_code=403,
             detail=(
-                "The stored token cannot manage service hooks (the 'Service "
-                "Hooks: Read, write & manage' scope and project administrator "
-                "rights are required). " + SETUP_INSTRUCTIONS
+                "The stored token cannot manage service hooks. Check its Code "
+                "and Work Items read scopes and the user's project View subscriptions "
+                "and Edit subscriptions permissions, or use manual setup. "
+                + SETUP_INSTRUCTIONS
             ),
         ) from exc
     except TrackerError as exc:

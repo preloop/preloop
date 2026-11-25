@@ -161,6 +161,24 @@ export class AzureDevOpsWebhookPanel extends LitElement {
                   <dd class="registration">${this.registrationLabel()}</dd>
                 </dl>
                 ${
+                  status.last_ignored_reason
+                    ? html`<p class="last-ignored" role="status">
+                        Last event ignored:
+                        ${
+                          status.last_ignored_reason ===
+                          'repository_not_imported'
+                            ? 'repository not imported'
+                            : status.last_ignored_reason ===
+                                'repository_outside_scope'
+                              ? 'repository outside selected scope'
+                              : status.last_ignored_reason.replace(/_/g, ' ')
+                        }.
+                        Edit the tracker scope or the service hook repository
+                        filter.
+                      </p>`
+                    : nothing
+                }
+                ${
                   status.instructions
                     ? html`<p class="instructions">${status.instructions}</p>`
                     : nothing

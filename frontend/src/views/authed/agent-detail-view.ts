@@ -3967,6 +3967,22 @@ export class AgentDetailView extends LitElement {
       </view-header>
       <div class="page" style="padding-top: 0;">
         ${this.renderSummaryStrip(aggregate)} ${this.renderDesktopEnable()}
+        ${
+          this.agent.agent_kind === 'cursor'
+            ? html`
+                <p data-cursor-runner-route>
+                  Run flows with the signed-in Cursor CLI on your machine's
+                  runner. Cursor does not use Existing agent mode.
+                  <a href="/console/flows/new?agent_type=cursor"
+                    >Create flow with Cursor on my runner</a
+                  >
+                  · <a href="/console/runners">Check runners and consent</a>.
+                  Cursor runs are not gateway metered; flow token and spend
+                  limits do not apply.
+                </p>
+              `
+            : nothing
+        }
         <details class="agent-settings">
           <summary>
             ${this.agent.is_shared ? nothing : html`Session permissions: ${SESSION_CONSENT_OPTIONS.find((option) => option.value === (this.agent?.others_may_start_sessions ?? 'ask_me'))?.label} ·`}

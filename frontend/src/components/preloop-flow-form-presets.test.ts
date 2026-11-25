@@ -126,7 +126,7 @@ describe('PreloopFlowForm presets', () => {
     expect(
       element.shadowRoot!.querySelector('[data-testid=preset-disabled-notice]')
         ?.textContent
-    ).to.include('saved disabled');
+    ).to.include('saved paused');
     expect(payload).to.not.have.property('id');
     expect(payload.webhook_config).to.deep.equal({ supersede_on_update: true });
   });
@@ -148,6 +148,23 @@ describe('PreloopFlowForm presets', () => {
     expect((await submit(element)).webhook_config).to.deep.equal({
       supersede_on_update: true,
       dedupe_path: 'data.id',
+    });
+  });
+
+  it('preserves Azure review request settings when saving a flow', async () => {
+    const element = await mount({
+      id: 'reviewer-flow',
+      name: 'Configured reviewer',
+      prompt_template: 'Review',
+      trigger_event_source: GITHUB_TRACKER.id,
+      webhook_config: {
+        azure_review_label: 'review-now',
+        azure_review_comment_enabled: false,
+      },
+    });
+    expect((await submit(element)).webhook_config).to.deep.equal({
+      azure_review_label: 'review-now',
+      azure_review_comment_enabled: false,
     });
   });
 
