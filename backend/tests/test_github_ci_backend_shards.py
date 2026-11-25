@@ -42,8 +42,7 @@ def test_backend_shards_partition_before_collection() -> None:
     # The selection sizes the matrix: BACKEND_TEST_SPLITS for the whole suite.
     assert groups == "${{ fromJSON(needs.changes.outputs.backend_groups) }}"
     assert backend["name"] == (
-        "Backend Tests (${{ matrix.group }}/"
-        "${{ needs.changes.outputs.backend_shards }})"
+        "Backend Tests (${{ matrix.group }}/${{ needs.changes.outputs.backend_jobs }})"
     )
     assert backend["strategy"]["fail-fast"] is False
 
@@ -107,7 +106,7 @@ def test_backend_coverage_job_combines_shards_before_floor() -> None:
         if s.get("name") == "Combine coverage and enforce floor"
     )
     assert step["env"] == {
-        "SHARDS": "${{ needs.changes.outputs.backend_shards }}",
+        "SHARDS": "${{ needs.changes.outputs.backend_jobs }}",
         "BACKEND_FULL": "${{ needs.changes.outputs.backend_full }}",
     }
     assert "coverage-data.*" in script
@@ -298,7 +297,11 @@ def test_main_runs_refresh_durations_for_pull_requests() -> None:
     # A selective run times only its own files; never let it be the cache.
     assert "needs.changes.outputs.backend_full == 'true'" in job["if"]
     script = step_script(job, "Convert JUnit times to node durations")
-    assert f"--shards {BACKEND_TEST_SPLITS}" in script
+    assert '--shards "$SHARDS"' in script
+    convert = next(
+        s for s in job["steps"] if s.get("name", "").startswith("Convert JUnit")
+    )
+    assert convert["env"]["SHARDS"] == "${{ needs.changes.outputs.backend_jobs }}"
     save = next(
         s for s in job["steps"] if s.get("name") == "Save durations for pull requests"
     )
@@ -315,7 +318,7 @@ def test_coverage_job_summarises_actual_shard_durations() -> None:
         for s in coverage["steps"]
         if s.get("name") == "Summarise actual shard durations"
     )
-    assert step["env"]["SHARDS"] == "${{ needs.changes.outputs.backend_shards }}"
+    assert step["env"]["SHARDS"] == "${{ needs.changes.outputs.backend_jobs }}"
 
 
 def _load_refresh_durations() -> ModuleType:

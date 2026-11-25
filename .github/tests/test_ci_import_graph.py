@@ -244,6 +244,16 @@ def test_main_push_outside_backend_runs_only_smoke() -> None:
     assert result["backend_shards"] == 1
 
 
+def test_serial_job_follows_impact_selection() -> None:
+    """Only a selection containing a heavy file needs the extra matrix job."""
+    heavy = "backend/tests/api/test_gateway_import_footprint.py"
+    inventory = sorted([*INVENTORY, heavy])
+    for path, serial in [(heavy, True), ("backend/tests/test_core.py", False)]:
+        result = select([path], POLICY, inventory, read=read, graph=GRAPH)
+        assert (heavy in result["candidate_tests"]) == serial
+        assert result["backend_jobs"] == result["backend_shards"] + int(serial)
+
+
 @pytest.mark.parametrize(
     ("paths", "attempt", "reason"),
     [

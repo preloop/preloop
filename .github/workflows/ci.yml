@@ -92,6 +92,7 @@ jobs:
       claude: ${{ steps.out.outputs.claude }}
       backend_full: ${{ steps.out.outputs.backend_full }}
       backend_shards: ${{ steps.out.outputs.backend_shards }}
+      backend_jobs: ${{ steps.out.outputs.backend_jobs }}
       backend_groups: ${{ steps.out.outputs.backend_groups }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -134,7 +135,7 @@ jobs:
   # if another run takes a slot or a spot VM stops afterwards; see
   # .github/self-hosted-runners.md for automatic hosted recovery and its limits.
   # CI_RUNNER_READ_TOKEN needs repository administration:read.
-  # CI_SELF_HOSTED_TESTS=false disables self-hosted shards without a commit.
+  # CI_SELF_HOSTED_TESTS=true opts into self-hosted routing.
   # preloop-ci-general is an explicit readiness label; never apply it to the
   # gce-tests-only execution pool.
   #
@@ -154,7 +155,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      backend_plan: ${{ steps.pick.outputs.backend_plan }}
+      backend_runner: ${{ steps.pick.outputs.backend_runner }}
       self_hosted: ${{ steps.pick.outputs.self_hosted }}
       observed_idle: ${{ steps.pick.outputs.observed_idle }}
       routing_reason: ${{ steps.pick.outputs.routing_reason }}
@@ -166,7 +167,7 @@ jobs:
           RUNNER_READ_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
           SELF_HOSTED_TESTS: ${{ vars.CI_SELF_HOSTED_TESTS }}
           BACKEND_REQUIRED: ${{ needs.changes.outputs.backend }}
-          BACKEND_SHARDS: ${{ needs.changes.outputs.backend_shards }}
+          BACKEND_SHARDS: ${{ needs.changes.outputs.backend_jobs }}
           REPO: ${{ github.repository }}
           TRUSTED_SOURCE: ${{ github.event_name == 'push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
         run: |
@@ -178,12 +179,8 @@ jobs:
             SELF_HOSTED_REASON="untrusted source uses hosted runners"
           fi
 
-          # Six xdist shards for the whole suite; a narrow selection runs
-          # fewer (scripts/ci_select.py). See backend-plan.
-          SPLITS="${BACKEND_SHARDS:-6}"
-          case "$SPLITS" in
-            ''|*[!0-9]*) SPLITS=6 ;;
-          esac
+          # Includes the serial job whenever impact selection needs it.
+          SPLITS="${BACKEND_SHARDS:-}"
 
           emit() {
             idle="$1"
@@ -192,28 +189,18 @@ jobs:
               ''|*[!0-9]*) idle=0 ;;
             esac
             # One runner class per run: all shards self-hosted or none.
-            if [ "$idle" -ge "$SPLITS" ]; then idle=$SPLITS; else idle=0; fi
+            if [ "$idle" -gt 0 ] && [ "$idle" -ge "$SPLITS" ]; then idle=$SPLITS; else idle=0; fi
 
-            plan=$(IDLE="$idle" SPLITS="$SPLITS" jq -cn '
-              def slot($runner): {runner:$runner};
-              ($ENV.IDLE|tonumber) as $idle
-              | ($ENV.SPLITS|tonumber) as $splits
-              | [null] + [range(0; $splits) | if . >= ($splits - $idle) then slot(["self-hosted","Linux","X64","preloop-ci-general"]) else slot("ubuntu-24.04") end]
-            ') || plan=""
-
-            if [ -z "$plan" ]; then
-              idle=0
-              reason="$reason (plan fallback: all public)"
-              plan=$(python3 -c 'import json, sys; print(json.dumps([None]+[{"runner":"ubuntu-24.04"}]*int(sys.argv[1])))' "$SPLITS")
+            runner='"ubuntu-24.04"'
+            if [ "$idle" -gt 0 ]; then
+              runner='["self-hosted","Linux","X64","preloop-ci-general"]'
             fi
 
             {
               echo "self_hosted=$([ "$idle" -gt 0 ] && echo true || echo false)"
               echo "observed_idle=$idle"
               echo "routing_reason=$reason"
-              echo "backend_plan<<EOF"
-              echo "$plan"
-              echo "EOF"
+              echo "backend_runner=$runner"
             } >> "$GITHUB_OUTPUT"
             echo "reason: $reason"
             echo "shards on self-hosted: $idle / $SPLITS"
@@ -222,12 +209,16 @@ jobs:
             exit 0
           }
 
+          case "$SPLITS" in
+            ''|0|*[!0-9]*) emit 0 "missing or invalid matrix size" ;;
+          esac
+
           if [ "${BACKEND_REQUIRED:-true}" != "true" ]; then
             emit 0 "backend paths are irrelevant; no optional capacity to recover"
           fi
 
-          if [ "${SELF_HOSTED_TESTS:-true}" = "false" ]; then
-            emit 0 "${SELF_HOSTED_REASON:-repository variable CI_SELF_HOSTED_TESTS is false}"
+          if [ "${SELF_HOSTED_TESTS:-false}" != "true" ]; then
+            emit 0 "${SELF_HOSTED_REASON:-self-hosted routing requires CI_SELF_HOSTED_TESTS=true}"
           fi
 
           if [ -z "${RUNNER_READ_TOKEN:-}" ]; then
@@ -678,7 +669,8 @@ jobs:
           path: backend-shard-plan.json
           retention-days: 7
 
-  # Each shard runs its planned files with pytest-xdist (--dist worksteal),
+  # The last group runs selected subprocess-heavy files serially. Each other
+  # group runs its planned files with pytest-xdist (--dist worksteal),
   # one cloned database per worker. Coverage is still collected in every
   # shard and combined before the 60% floor.
   #
@@ -696,10 +688,10 @@ jobs:
   test-backend:
     permissions:
       contents: read
-    name: Backend Tests (${{ matrix.group }}/${{ needs.changes.outputs.backend_shards }})
+    name: Backend Tests (${{ matrix.group }}/${{ needs.changes.outputs.backend_jobs }})
     # Retry attempts bypass cached picker outputs: rerun-failed-jobs does not
     # rerun a successful picker. Recovery must never requeue a lost spot slot.
-    runs-on: ${{ github.run_attempt > 1 && 'ubuntu-24.04' || fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
+    runs-on: ${{ github.run_attempt > 1 && 'ubuntu-24.04' || fromJSON(needs.pick-runner.outputs.backend_runner) }}
     needs: [changes, backend-plan, pick-runner, fast]
     if: ${{ !cancelled() && needs.backend-plan.result == 'success' && needs.pick-runner.result == 'success' && needs.fast.result == 'success' && (needs.changes.outputs.backend == 'true') }}
     # Hang bound, not a speed target: the self-hosted pool (6-CPU slice
@@ -918,7 +910,7 @@ jobs:
       # floor applies to whole-suite runs (tags, ci:full, nightly, ...).
       - name: Combine coverage and enforce floor
         env:
-          SHARDS: ${{ needs.changes.outputs.backend_shards }}
+          SHARDS: ${{ needs.changes.outputs.backend_jobs }}
           BACKEND_FULL: ${{ needs.changes.outputs.backend_full }}
         run: |
           mapfile -t coverage_files < <(find coverage-shards -name 'coverage-data.*' -type f | sort)
@@ -955,7 +947,7 @@ jobs:
 
       - name: Summarise actual shard durations
         env:
-          SHARDS: ${{ needs.changes.outputs.backend_shards }}
+          SHARDS: ${{ needs.changes.outputs.backend_jobs }}
         run: python3 scripts/ci_refresh_durations.py test-results --shards "$SHARDS" --summary
 
   # Main-branch runs whose shards all passed refresh the node durations that
@@ -985,9 +977,11 @@ jobs:
           # per-artifact directory, so merge every shard into one layout.
           merge-multiple: true
       - name: Convert JUnit times to node durations
+        env:
+          SHARDS: ${{ needs.changes.outputs.backend_jobs }}
         run: |
           mkdir -p .ci-durations
-          python3 scripts/ci_refresh_durations.py test-results --shards 6 \
+          python3 scripts/ci_refresh_durations.py test-results --shards "$SHARDS" \
             --out .ci-durations/pytest-durations.json
       - name: Save durations for pull requests
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
