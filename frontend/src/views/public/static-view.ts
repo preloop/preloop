@@ -304,18 +304,16 @@ export class StaticView extends LitElement {
       }
       const text = await response.text();
 
-      // Check if the file is HTML or markdown based on extension
-      if (this.src.endsWith('.html')) {
-        // HTML file - use as-is
-        this.content = text;
-      } else {
-        // Static hosts may answer a missing Markdown file with the SPA's
-        // index.html and status 200. Rendering it would mount a second app.
-        if (/^\s*(?:<!doctype\s+html\b|<html[\s>])/i.test(text)) {
-          throw new Error('Received an HTML document instead of Markdown');
-        }
-        this.content = marked(text) as string;
+      // Static hosts can return index.html with a 200 for missing content.
+      // Mounting that document inside this page would start the app again.
+      if (/^\s*(?:<!doctype\s+html\b|<html[\s>])/i.test(text)) {
+        throw new Error(
+          'Received a full HTML document instead of page content'
+        );
       }
+      this.content = this.src.endsWith('.html')
+        ? text
+        : (marked(text) as string);
     } catch (error: any) {
       console.error('Error fetching static content:', error);
       this.error = 'There was an issue fetching the content.';

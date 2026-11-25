@@ -48,6 +48,25 @@ describe('static content on a host with an SPA fallback', () => {
     );
   });
 
+  it('shows a content error when a missing blog fragment returns the app shell', async () => {
+    const view = await load(
+      '/content/blog/missing.html',
+      '<!doctype html><html><body><lit-app></lit-app></body></html>'
+    );
+    expect(view.shadowRoot!.querySelector('lit-app')).not.to.exist;
+    expect(view.shadowRoot!.querySelector('sl-alert')).to.exist;
+  });
+
+  it('keeps a published article fragment intact', async () => {
+    const view = await load(
+      '/content/blog/example.html',
+      '<article><h1>Release notes</h1></article>'
+    );
+    expect(view.shadowRoot!.querySelector('article h1')?.textContent).to.equal(
+      'Release notes'
+    );
+  });
+
   it('shows the existing content error for other missing pages', async () => {
     const view = await load(
       '/content/terms.md',
