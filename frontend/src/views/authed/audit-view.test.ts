@@ -964,29 +964,36 @@ describe('AuditView', () => {
       restoreUrl?.();
     });
 
-    it('restores a bookmarked date window as an inclusive UTC range', async () => {
-      const element = openWith('?start_date=2026-01-31&end_date=2026-02-01');
-      try {
-        await waitUntil(() => !(element as any)._loading, 'did not load');
-        const throughDate = element.shadowRoot!.querySelector(
-          'sl-input[label="Through date (UTC)"]'
-        ) as HTMLInputElement;
-        expect(throughDate.value).to.equal('2026-01-31');
-        const request = fetchStub
-          .getCalls()
-          .map((call) => String(call.args[0]))
-          .find((url) => url.startsWith('/api/v1/audit-logs/grouped'));
-        const params = new URL(request!, window.location.origin).searchParams;
-        expect(params.get('start_date')).to.equal('2026-01-31T00:00:00.000Z');
-        expect(params.get('end_date')).to.equal('2026-01-31T23:59:59.999999Z');
-        (element as any)._syncFilterLocation();
-        expect(new URLSearchParams(location.search).get('end_date')).to.equal(
-          '2026-02-01'
-        );
-      } finally {
-        element.remove();
-      }
-    });
+    for (const { kind, endDate } of [
+      { kind: 'next-midnight', endDate: '2026-02-01' },
+      { kind: 'legacy same-day', endDate: '2026-01-31' },
+    ]) {
+      it(`restores a ${kind} bookmark as an inclusive UTC range`, async () => {
+        const element = openWith(`?start_date=2026-01-31&end_date=${endDate}`);
+        try {
+          await waitUntil(() => !(element as any)._loading, 'did not load');
+          const throughDate = element.shadowRoot!.querySelector(
+            'sl-input[label="Through date (UTC)"]'
+          ) as HTMLInputElement;
+          expect(throughDate.value).to.equal('2026-01-31');
+          const request = fetchStub
+            .getCalls()
+            .map((call) => String(call.args[0]))
+            .find((url) => url.startsWith('/api/v1/audit-logs/grouped'));
+          const params = new URL(request!, window.location.origin).searchParams;
+          expect(params.get('start_date')).to.equal('2026-01-31T00:00:00.000Z');
+          expect(params.get('end_date')).to.equal(
+            '2026-01-31T23:59:59.999999Z'
+          );
+          (element as any)._syncFilterLocation();
+          expect(new URLSearchParams(location.search).get('end_date')).to.equal(
+            '2026-02-01'
+          );
+        } finally {
+          element.remove();
+        }
+      });
+    }
 
     it('expands, marks and holds the event the link asked for', async () => {
       // The id is a sub-event: the row that answers for it is its group.

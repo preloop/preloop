@@ -711,9 +711,13 @@ export class AuditView extends AuthedElement {
     this._outcomeMatchAny = params.get('outcome_match') === 'any';
     this._toolNameFilter = params.get('tool_name') ?? '';
     this._startDate = validFilterDate(params.get('start_date'));
-    // Existing URLs use the midnight following the last full day.
+    // URLs use the next midnight, except legacy same-day selections that
+    // stored both dates as the selected day.
     const endBoundary = validFilterDate(params.get('end_date'));
-    this._throughDate = endBoundary ? shiftUtcDate(endBoundary, -1) : '';
+    this._throughDate =
+      endBoundary && endBoundary !== this._startDate
+        ? shiftUtcDate(endBoundary, -1)
+        : endBoundary;
     this._minCost = params.get('min_cost') ?? '';
     this._maxCost = params.get('max_cost') ?? '';
     // A linked page of the timeline opens on that page, at that size.
