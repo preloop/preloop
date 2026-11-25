@@ -6,6 +6,64 @@ The Preloop **Model Gateway** centralizes model traffic from managed runtimes. I
 
 ---
 
+## Check executor eligibility before a run
+
+Read `executor_eligibility` on `GET /api/v1/ai-models` or
+`GET /api/v1/ai-models/{id}`. The console model page shows it under **Details**;
+`preloop models list` and `preloop models show <id>` display the same decisions.
+Each entry has `eligible`, a stable `reason` when false, and a short `message`
+with the prerequisite or remedy. For example, the subscription owner before
+opting in sees:
+
+```json
+{
+  "executor_eligibility": {
+    "hosted": {
+      "eligible": false,
+      "reason": "subscription_flow_opt_in_required",
+      "message": "The subscription owner must enable Use from my flows on this model."
+    },
+    "private_runner_container": {
+      "eligible": false,
+      "reason": "subscription_flow_opt_in_required",
+      "message": "The subscription owner must enable Use from my flows on this model."
+    },
+    "private_runner_host": {
+      "eligible": true,
+      "reason": null,
+      "message": "Use your agent's bound login; private runners need a host profile."
+    },
+    "interactive_agent": {
+      "eligible": true,
+      "reason": null,
+      "message": "Use your agent's bound login; private runners need a host profile."
+    }
+  }
+}
+```
+
+`hosted` and `private_runner_container` describe flows **you own**. A private
+pool running a container does not transfer your agent login. The host-profile
+and interactive entries describe using your own bound agent login; choosing
+another agent still requires that agent's authorization. A subscription owner
+can enable hosted use with `preloop models flow-use <id> on`. Another user's
+flows remain ineligible (`subscription_flow_owner_required`); a caller without
+a bound agent login gets `bound_agent_login_required` for agent execution.
+API-key, built-in and own-server registrations have no subscription binding
+restriction.
+
+This field reads credential identity compatibility without contacting a provider.
+Credential health, model/harness capabilities, network reachability, budgets,
+policy and runner availability are still checked at execution. In particular,
+`credentials_status: active` and `supports_server_side_generation` do not answer
+this compatibility question. Eligibility is recomputed on each read; the trigger
+and gateway recheck authorization when work starts and model requests arrive.
+
+For a saved flow, read its [flow preflight](../flows/model-routing.md#check-before-triggering)
+because eligibility follows the flow's creator and execution configuration.
+Restricted CI credentials cannot read the model catalog; they receive only their
+bound flow's preflight decision.
+
 ## Why Use the Gateway
 
 | Direct provider access | Through Preloop Gateway |

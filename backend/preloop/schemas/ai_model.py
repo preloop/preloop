@@ -566,8 +566,29 @@ class AIModelInDBBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ExecutorEligibility(BaseModel):
+    """Credential compatibility, separate from runtime health and availability."""
+
+    eligible: bool
+    reason: Optional[str] = Field(
+        None, description="Stable denial code when ineligible"
+    )
+    message: Optional[str] = Field(
+        None, description="Safe remediation or execution prerequisite"
+    )
+
+
 class AIModelRead(AIModelInDBBase):
     """Schema for reading AIModel entries, including timestamps."""
+
+    executor_eligibility: dict[str, ExecutorEligibility] = Field(
+        default_factory=dict,
+        description=(
+            "Credential identity compatibility for the caller: hosted and private_runner_container "
+            "describe their own flows; private_runner_host and interactive_agent require their "
+            "authorized agent login. Does not probe provider health, budgets or runner availability."
+        ),
+    )
 
     is_built_in: bool = False
 

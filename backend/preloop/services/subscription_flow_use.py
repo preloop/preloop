@@ -81,7 +81,13 @@ def owner_flow_use_enabled(db: Session, ai_model: models.AIModel) -> bool:
     return owner is not None and owner == str(opted_in)
 
 
-def flow_may_use_subscription(db: Session, flow: Any, ai_model: models.AIModel) -> bool:
+def flow_may_use_subscription(
+    db: Session,
+    flow: Any,
+    ai_model: models.AIModel,
+    *,
+    owner_user: Optional[models.User] = None,
+) -> bool:
     """Whether a hosted execution of ``flow`` may use ``ai_model``.
 
     Args:
@@ -89,6 +95,7 @@ def flow_may_use_subscription(db: Session, flow: Any, ai_model: models.AIModel) 
         flow: Flow row (or a duck-typed stand-in with ``account_id`` and
             ``created_by_user_id``).
         ai_model: Subscription-OAuth model row the execution selected.
+        owner_user: Optional caller-loaded user for batch gateway checks.
 
     Returns:
         ``True`` when the flow's owner owns the subscription, opted in, and is
@@ -105,9 +112,10 @@ def flow_may_use_subscription(db: Session, flow: Any, ai_model: models.AIModel) 
         return False
     if subscription_owner_user_id(db, ai_model) != str(flow_owner):
         return False
-    user = crud_user.get(db, id=flow_owner)
+    user = owner_user if owner_user is not None else crud_user.get(db, id=flow_owner)
     return (
         user is not None
+        and str(user.id) == str(flow_owner)
         and bool(user.is_active)
         and str(user.account_id) == str(flow_account)
     )
@@ -156,25 +164,14 @@ def owner_flow_authorized_model_ids(
     )
     if flow is None or str(flow.account_id) != str(account_id):
         return frozenset()
-    owner = flow.created_by_user_id
-    candidates = [
-        ai_model
-        for ai_model in candidates
-        if owner is not None
-        and str(ai_model.owner_flow_use_user_id) == str(owner)
-        and str(ai_model.account_id) == str(flow.account_id)
-    ]
-    if not candidates:
+    owner = getattr(flow, "created_by_user_id", None)
+    if owner is None:
         return frozenset()
     user = crud_user.get(db, id=owner)
-    if (
-        user is None
-        or not user.is_active
-        or str(user.account_id) != str(flow.account_id)
-    ):
+    if user is None:
         return frozenset()
     return frozenset(
         str(ai_model.id)
         for ai_model in candidates
-        if subscription_owner_user_id(db, ai_model) == str(owner)
+        if flow_may_use_subscription(db, flow, ai_model, owner_user=user)
     )

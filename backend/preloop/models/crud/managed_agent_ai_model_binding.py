@@ -351,6 +351,37 @@ class CRUDManagedAgentAIModelBinding(CRUDBase[ManagedAgentAIModelBinding]):
             db.flush()
         return row
 
+    def agent_ids_for_user_model(
+        self, db: Session, *, account_id: Any, user_id: Any, model_id: Any
+    ) -> list[uuid.UUID]:
+        """Return the caller's active agents bound to this exact registration.
+
+        Args:
+            db: Database session.
+            account_id: Calling account.
+            user_id: Calling user.
+            model_id: Registration being read.
+
+        Returns:
+            Agent ids used internally to evaluate gateway authorization.
+        """
+        from preloop.models import models
+
+        return [
+            row[0]
+            for row in db.query(models.ManagedAgent.id)
+            .join(self.model, self.model.managed_agent_id == models.ManagedAgent.id)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.ai_model_id == model_id,
+                self.model.status != "inactive",
+                models.ManagedAgent.account_id == account_id,
+                models.ManagedAgent.owner_user_id == user_id,
+                models.ManagedAgent.lifecycle_state == "active",
+            )
+            .all()
+        ]
+
     def subscription_owner_user_ids(
         self, db: Session, *, account_id: str, ai_model: AIModel
     ) -> set[str]:

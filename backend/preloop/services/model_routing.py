@@ -902,9 +902,9 @@ def validate_execution_model_principal(
     model = crud_ai_model.get(db, id=str(model_id))
     if model is None or model.is_principal_bound_oauth is not True:
         return
-    from preloop.services.subscription_flow_use import flow_may_use_subscription
+    from preloop.services.model_executor_eligibility import hosted_model_eligibility
 
-    if flow_may_use_subscription(db, flow, model):
+    if hosted_model_eligibility(db, model, flow).eligible:
         # The subscription's owner opted in and owns this flow. The gateway
         # re-checks the same rule for the execution's runtime credential.
         return

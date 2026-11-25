@@ -18,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+from preloop.schemas.ai_model import ExecutorEligibility
 from preloop.models.schemas.verification import (
     EffectivePublicationPolicy,
     ResolvedVerificationPolicy,
@@ -2170,8 +2171,16 @@ class FlowConfigWarning(BaseModel):
     docs_url: Optional[str] = None
 
 
+class CiFlowPreflightRead(BaseModel):
+    """Only execution compatibility for a restricted identity's bound flow."""
+
+    id: UUID
+    executor_eligibility: ExecutorEligibility
+
+
 class FlowResponse(FlowBase):
     id: UUID
+    executor_eligibility: Optional[ExecutorEligibility] = None
     config_warnings: List[FlowConfigWarning] = Field(
         default_factory=list,
         description=(

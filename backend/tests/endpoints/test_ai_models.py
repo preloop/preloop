@@ -1204,7 +1204,8 @@ async def test_builtin_catalog_uses_hosted_capability(
         assert public["supports_server_side_generation"] is True
         assert public["credentials_secret_id"] is None
         assert public["api_endpoint"] is None
-        assert "private" not in str(public)
+        assert "private-operator-key" not in str(public)
+        assert "private-routing-data" not in str(public)
 
 
 @pytest.mark.asyncio
@@ -1334,7 +1335,8 @@ async def test_unpriced_builtin_catalog_is_safe(
     assert len(result) == int(is_admin)
     if is_admin:
         assert result[0].is_built_in and result[0].unpriced
-        assert "private" not in str(result[0].model_dump())
+        assert "private-operator-key" not in str(result[0].model_dump())
+        assert "private-routing-data" not in str(result[0].model_dump())
 
 
 @pytest.mark.asyncio
