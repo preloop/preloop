@@ -71,6 +71,40 @@ async function mount(
 
 describe('extension inventory', () => {
   for (const device of [false, true]) {
+    for (const manage of [false, true]) {
+      it(`shows read-only constraints and non-enforcement for ${device ? 'device' : 'account'} ${manage ? 'managers' : 'viewers'}`, async () => {
+        const page = device ? devicePage() : aggregatePage();
+        page.items[0].version_constraint = '2.*';
+        const element = await mount({ device, manage, page });
+        const root = element.shadowRoot!;
+        expect(root.textContent!.replace(/\s+/g, ' ')).to.contain(
+          'Unapproved does not disable or block an extension.'
+        );
+        expect(root.textContent!.replace(/\s+/g, ' ')).to.contain(
+          'Name approval is not a version-compliance verdict'
+        );
+        expect(
+          root.querySelector('td[data-label="Approval"]')!.textContent
+        ).to.contain('2.*');
+        expect(root.querySelector('tbody sl-input')).to.equal(null);
+      });
+    }
+  }
+
+  it('explains unknown coverage and gives reporting and upgrade commands', async () => {
+    const element = await mount({
+      page: { items: [], next_cursor: null, completeness: 'unknown' },
+    });
+    const text = element.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(text).to.contain('preloop agents discover --report');
+    expect(text).to.contain('preloop update');
+    expect(text).to.contain('newer than 1.0.2');
+    expect(text).to.contain('no device has reported');
+    expect(text).to.contain('older collector');
+    expect(text).to.contain('cannot distinguish');
+  });
+
+  for (const device of [false, true]) {
     // protects=one initial fetch per view; fails_when=lifecycle hooks duplicate
     // requests; no_claim=fixture loaders count calls without a live backend.
     it(`loads access and inventory once on the initial ${device ? 'device' : 'account'} render`, async () => {

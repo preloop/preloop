@@ -14,6 +14,7 @@ import { getBrandConfig } from '../../brand-config';
 import { trackGoal } from '../../services/web-analytics';
 import { cloudPlans, loadPricingContent } from '../../utils/pricing-content';
 import type { PricingPlan } from '../../components/pricing-plans';
+import type SlInput from '@shoelace-style/shoelace/dist/components/input/input.js';
 
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -25,6 +26,18 @@ const OAUTH_PROVIDER_CONFIG: Record<string, { label: string; icon: string }> = {
   google: { label: 'Google', icon: 'google' },
   gitlab: { label: 'GitLab', icon: 'gitlab' },
 };
+
+const USERNAME_HELP =
+  'Use 3–50 letters or numbers. No spaces, hyphens, or underscores.';
+
+/** Mirror AuthUserCreate: Python str.isalnum() and 3–50 Unicode code points. */
+function usernameError(username: string): string {
+  if (!username.trim()) return 'Choose a username.';
+  const length = [...username].length;
+  return length < 3 || length > 50 || /[^\p{L}\p{N}]/u.test(username)
+    ? USERNAME_HELP
+    : '';
+}
 
 /**
  * Map raw server/validator error text to human copy. Pydantic validation
@@ -41,6 +54,7 @@ export function humanizeRegisterError(message: string): string {
   if (/username already registered/i.test(raw)) {
     return 'That username is taken. Choose another one.';
   }
+  if (/Username must be alphanumeric/i.test(raw)) return USERNAME_HELP;
   if (/email already registered/i.test(raw)) {
     return 'That email address already has an account. Sign in instead.';
   }
@@ -66,9 +80,8 @@ export function validateRegisterFields(fields: {
   password: string;
 }): string[] {
   const errors: string[] = [];
-  if (!fields.username.trim()) {
-    errors.push('Choose a username.');
-  }
+  const invalidUsername = usernameError(fields.username);
+  if (invalidUsername) errors.push(invalidUsername);
   const email = fields.email.trim();
   if (!email) {
     errors.push('Enter your email address.');
@@ -624,6 +637,11 @@ export class RegisterView extends LitElement {
                 id="username"
                 name="username"
                 autocomplete="username"
+                help-text=${USERNAME_HELP}
+                @sl-input=${(event: Event) => {
+                  const input = event.target as SlInput;
+                  input.setCustomValidity(usernameError(input.value));
+                }}
                 required
               ></sl-input>
             </div>

@@ -30,6 +30,30 @@ function makeRequest(
 }
 
 describe('SessionRequestTimeline', () => {
+  it('labels title generation without relabeling normal subscription requests', async () => {
+    const element = await fixture<SessionRequestTimeline>(html`
+      <session-request-timeline
+        .requests=${[
+          makeRequest({
+            id: 'title',
+            endpoint: 'session-title',
+            estimated_cost: 0.0002,
+          }),
+          makeRequest({
+            id: 'conversation',
+            endpoint: '/v1/messages',
+            estimated_cost: 0,
+          }),
+        ]}
+      ></session-request-timeline>
+    `);
+    const rows = element.shadowRoot!.querySelectorAll('.request-row');
+    expect(rows[0].textContent).to.contain('Title generation');
+    expect(rows[0].textContent).to.contain('gpt-4o');
+    expect(rows[0].textContent).to.contain('$0.0002');
+    expect(rows[1].textContent).not.to.contain('Title generation');
+  });
+
   const requests: RuntimeSessionRequestItem[] = [
     makeRequest({
       id: 'cheap',

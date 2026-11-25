@@ -34,6 +34,8 @@ export interface ExtensionKey {
   extension_kind: 'plugin' | 'skill' | 'hook' | 'command';
   extension_id: string;
   approval_state: ExtensionApprovalState;
+  /** Undefined means the decision could not be read; null means no constraint. */
+  version_constraint?: string | null;
 }
 export interface InstalledExtension extends ExtensionKey {
   fingerprint: string;
@@ -123,14 +125,40 @@ export async function fetchExtensionPolicyText(): Promise<string> {
   return `${JSON.stringify(policy, null, 2)}\n`;
 }
 
-export function getExtensions(
+export async function getExtensions(
   filters: ExtensionFilters = {}
 ): Promise<ExtensionPage> {
   const params = new URLSearchParams({ limit: '50' });
   if (!filters.fingerprint) params.set('group', 'extension');
   for (const [key, value] of Object.entries(filters))
     if (value) params.set(key, value);
-  return request(`/discovery-extensions?${params}`);
+  const page = await request<ExtensionPage>(`/discovery-extensions?${params}`);
+  // The inventory DTO omits constraints. Read only decisions on this page,
+  // once per identity, with bounded concurrency rather than an account scan.
+  const identities = new Map<string, ExtensionKey>();
+  for (const row of page.items) identities.set(approvalPath(row), row);
+  const pending = [...identities.entries()];
+  const constraints = new Map<string, string | null | undefined>();
+  await Promise.all(
+    Array.from({ length: Math.min(4, pending.length) }, async () => {
+      for (let item = pending.pop(); item; item = pending.pop()) {
+        const [key, row] = item;
+        try {
+          const decision = await getExtensionDecision(row);
+          constraints.set(key, decision?.version_constraint ?? null);
+        } catch {
+          constraints.set(key, undefined);
+        }
+      }
+    })
+  );
+  return {
+    ...page,
+    items: page.items.map((row) => ({
+      ...row,
+      version_constraint: constraints.get(approvalPath(row)),
+    })),
+  };
 }
 
 const approvalPath = (extension: ExtensionKey): string =>
@@ -142,13 +170,20 @@ const approvalPath = (extension: ExtensionKey): string =>
 export async function getExtensionPins(
   extension: ExtensionKey
 ): Promise<ExtensionPin[]> {
+  return (await getExtensionDecision(extension))?.pins ?? [];
+}
+
+/** Read one visible decision; a missing decision has no constraint or pins. */
+async function getExtensionDecision(
+  extension: ExtensionKey
+): Promise<ExtensionDecision | null> {
   const response = await fetchWithAuth(
     `${REST_API_PREFIX}/agents/extension-approvals/${approvalPath(extension)}`
   );
-  if (response.status === 404) return [];
+  if (response.status === 404) return null;
   if (!response.ok)
     throw new Error(`Extension request failed (${response.status})`);
-  return ((await response.json()) as ExtensionDecision).pins ?? [];
+  return response.json() as Promise<ExtensionDecision>;
 }
 
 /** Approve one exact content hash under an approved extension. */
