@@ -70,6 +70,21 @@ async function mount(
 }
 
 describe('extension inventory', () => {
+  // protects=AC10 only account managers get enforcement; fails_when=readers
+  // or device views gain editing controls; no_claim=fixture permission loader.
+  it('offers account enforcement only to managers', async () => {
+    for (const options of [
+      { manage: false },
+      { manage: true },
+      { manage: true, device: true },
+    ]) {
+      const element = await mount(options);
+      expect(
+        !!element.shadowRoot?.querySelector('extension-enforcement')
+      ).to.equal(options.manage && !options.device);
+    }
+  });
+
   for (const device of [false, true]) {
     // protects=one initial fetch per view; fails_when=lifecycle hooks duplicate
     // requests; no_claim=fixture loaders count calls without a live backend.

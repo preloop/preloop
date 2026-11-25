@@ -1,0 +1,31 @@
+{
+  "delivery": "endpoint_file",
+  "policy_revision_hash": "8e8dbf77e079a11980bdc81730a9bce689b5593040118da9d6442e22ef0fd5b4",
+  "schema": "preloop.managed-hook-bundle.v1",
+  "app_id": "claude-code-extensions",
+  "platform": "darwin",
+  "artifact": "50-preloop-extensions.json",
+  "keys": [
+    "enabledPlugins"
+  ],
+  "target_locations": [
+    "/Library/Application Support/ClaudeCode/managed-settings.d/50-preloop-extensions.json"
+  ],
+  "managed_source": "system managed-settings.d drop-in",
+  "documented_semantics": "Restrictions stop loading; files remain on disk. Higher-precedence managed sources can supersede this file.",
+  "verification": "unverified",
+  "prerequisites": [
+    "Review effective managed sources before delivery; never overwrite an existing managed source.",
+    "Deploy the managed claude-code hook bundle first when allowManagedHooksOnly is emitted.",
+    "Minimum supported Claude Code version: 2.1.332 (conservative supported floor).",
+    "Vendor admin-console delivery is unverified for agents routed through Preloop (non-default ANTHROPIC_BASE_URL). Prefer the endpoint file."
+  ],
+  "omitted_capabilities": [
+    "enabledPlugins: not a marketplace plugin id"
+  ],
+  "references": [
+    "https://code.claude.com/docs/en/managed-settings",
+    "https://code.claude.com/docs/en/server-managed-settings",
+    "https://code.claude.com/docs/en/settings-reference#enabledplugins"
+  ]
+}

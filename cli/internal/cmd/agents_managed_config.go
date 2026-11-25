@@ -25,7 +25,7 @@ var agentsManagedConfigCmd = newAgentsManagedConfigCmd()
 func init() { agentsCmd.AddCommand(agentsManagedConfigCmd) }
 
 func newAgentsManagedConfigCmd() *cobra.Command {
-	group := &cobra.Command{Use: "managed-config", Short: "Export a secret-free managed hook overlay (offline by default)"}
+	group := &cobra.Command{Use: "managed-config", Short: "Export reviewable managed settings bundles"}
 	claude := &cobra.Command{
 		Use: "claude-code", Short: "Export a Claude Code PreToolUse hook overlay (does not install)", Args: cobra.NoArgs,
 		RunE: runClaudeManagedConfig,
@@ -36,7 +36,7 @@ func newAgentsManagedConfigCmd() *cobra.Command {
 	claude.Flags().Int("timeout", 300, "host hook timeout in seconds (30-3600; include approval wait headroom)")
 	claude.Flags().Bool("register", false, "register the bundle revision and manifest metadata with the selected account (requires authentication)")
 	claude.Flags().Bool("overwrite", false, "replace only existing regular bundle files")
-	group.AddCommand(claude)
+	group.AddCommand(claude, newExtensionManagedConfigCmd())
 	return group
 }
 
@@ -66,6 +66,7 @@ type managedSettings struct {
 }
 
 type managedBundleManifest struct {
+	Delivery            string   `json:"delivery,omitempty"`
 	PolicyRevisionHash  string   `json:"policy_revision_hash"`
 	Schema              string   `json:"schema"`
 	AppID               string   `json:"app_id"`
@@ -291,8 +292,10 @@ func rejectManagedTargetOutput(output string) error {
 	}
 	for _, candidate := range []string{output, absolute} {
 		normalized := strings.TrimRight(strings.ReplaceAll(candidate, `\`, "/"), "/")
-		if strings.EqualFold(normalized, "/Library/Application Support/ClaudeCode") || strings.EqualFold(normalized, "/etc/claude-code") || strings.EqualFold(normalized, "/private/etc/claude-code") || strings.EqualFold(normalized, "C:/Program Files/ClaudeCode") {
-			return errors.New("--output cannot be a managed system target; export to a separate review directory")
+		for _, target := range []string{"/Library/Application Support/ClaudeCode", "/etc/claude-code", "/private/etc/claude-code", "C:/Program Files/ClaudeCode"} {
+			if strings.EqualFold(normalized, target) || strings.HasPrefix(strings.ToLower(normalized), strings.ToLower(target)+"/") {
+				return errors.New("--output cannot be a managed system target; export to a separate review directory")
+			}
 		}
 	}
 	return nil
