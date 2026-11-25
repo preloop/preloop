@@ -128,9 +128,10 @@ class CiReviewBinding(CiReviewRequest):
 class EventReviewBinding(BaseModel):
     """Server-owned pull request snapshot for a tracker-event review.
 
-    Version 2 has no CI principal and no CI key. Fork pull requests are not
-    admitted: ``repository_identifier`` and ``repository_slug`` are the base
-    repository, and the head repository must be that same repository.
+    Version 2 has no CI principal and no CI key. Repository fields always
+    identify the base. Forks require a server-proven label application;
+    older bindings without that proof still require the head repository
+    to match the base.
     """
 
     model_config = ConfigDict(
@@ -164,9 +165,12 @@ class EventReviewBinding(BaseModel):
         "pull_request_reopened",
         "pull_request_ready_for_review",
     ]
-    action: Literal["opened", "synchronize", "reopened", "ready_for_review"]
+    action: Literal["opened", "synchronize", "reopened", "ready_for_review", "labeled"]
     delivery_id: str = Field(strict=True, min_length=1, max_length=128)
     draft: bool = Field(strict=True)
+    fork_label_event_id: str | None = Field(
+        default=None, strict=True, pattern=r"^[1-9][0-9]*$", max_length=64
+    )
 
     @field_validator("version", mode="before")
     @classmethod

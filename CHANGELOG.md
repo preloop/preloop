@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- GitHub event review flows can review fork pull requests when a base-repository
+  maintainer applies `preloop-review`. Forks remain excluded by default;
+  new commits stay eligible while the label is present. Preloop verifies the
+  labeler through GitHub, reads and posts only on the base repository, and
+  skips a pending post when the label is removed. Restricted CI still refuses
+  forks.
+
 - CI runs only the backend test files a change can affect, chosen by a static
   import graph, on pull requests and `main` pushes, in as many shards as they
   need. Version tags, `ci:full`, full reruns and the nightly run keep the

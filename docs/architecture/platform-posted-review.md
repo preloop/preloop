@@ -191,15 +191,48 @@ prompt, the flow text, or the caller. A failure to mint the installation
 token is retried, the same as an HTTP 5xx. A 403 or 404 does not start a
 run.
 
-`head.repo` and `base.repo` must both be the bound repository. A fork pull
-request does not start a posting run. `edited` and `labeled` do not either.
+`base.repo` must always be the bound repository. By default, `head.repo`
+must match it too, so a fork starts no posting run. A fork carrying
+`preloop-review` can opt in when GitHub proves its latest application was
+by someone with write, maintain or admin on the base repository. With the
+tracker's installation token, Preloop paginates
+`GET /repositories/{id}/issues/{number}/events`, selects the latest labeled
+or unlabeled event for that exact label, and reads
+`GET /repositories/{id}/collaborators/{actor}/permission`. Neither the
+webhook sender nor the pull request author's association proves permission.
+These server reads cannot be supplied by the pull request author.
+
+The immutable version-2 binding records `fork_label_event_id` for an opted-in
+fork; older bindings without it retain the same-repository rule. The current
+label application and permission are re-read for every run, at launch and
+before publishing. A removed label, a replaced application or a loss of
+maintainer permission prevents a pending post. Provider 5xx responses retry.
+
+For opted-in forks, `labeled` with this exact label joins opened,
+synchronize, reopened and ready-for-review. New commits remain eligible
+while the label stays present; no reapplication per head is required.
+The normal trigger selection and filters still apply. Label deliveries
+currently normalize to `pull_request_opened`, so that type must be selected
+for the label application to start a run. Same-repository pull requests
+still do not start runs on label actions. `edited` remains excluded.
+
+A fork has the same template, caps and evidence floor. It widens who can
+cause account model spend and an App-authored review: an outside contributor
+can push commits to an opted-in pull request. There is no new rate limiter.
+The read lease remains `contents: read` on the base only. Checkout fetches
+`pull/{number}/head` from the base and checks it against `head_sha`. The
+publish lease is minted for the base slug, with `pull_requests: write` and
+`statuses: write` as configured; the review and status target the base.
+`head.repo` is never a lease repository, clone URL or post target.
 
 Version 1 is unchanged. `authorize_dispatch` returns None for a version-2
 row and does not call `authorize_principal`. At launch and before every
 publish attempt, `authorize_event_review` re-checks the flow, the project,
 the tracker, and that the installation is not suspended. The publish step
-still requires both repository sides to match, and still skips a moved head
-or a closed pull request.
+requires the base repository to match, plus the head repository for bindings
+without fork opt-in, and still skips a moved head or a closed pull request.
+For opted-in forks it also checks the live label immediately before the
+review write.
 
 `platform_review.source` is `tracker_event` or `restricted_ci`.
 `posted_by` stays `automatic` or `manual`.
@@ -423,7 +456,7 @@ reading.
 | 23 | A forged or replayed webhook starts a run that posts | Signature check stays the only ingress. A second copy of the same delivery does not create a second execution. The binding is built from the tracker row and the server read, and it is immutable. | `test_forged_signature_never_starts_a_run`, `test_replayed_delivery_posts_once` |
 | 24 | An event for repository B posts on A | Project and slug come from B's repository id. The lease and the review URL use B's slug. | `test_event_for_repository_b_posts_on_b_only` |
 | 25 | The payload names a different head than the one reviewed | The stored head is the server-read head, and it must equal the webhook head or no row is created. A later push skips the review and sets the status on the stored SHA. | `test_webhook_head_that_disagrees_with_the_server_read_starts_nothing`, `test_moved_head_on_an_event_run_skips_the_review_and_keeps_the_status_on_the_reviewed_sha` |
-| 26 | A fork pull request steers the review onto another repository | Both `head.repo` and `base.repo` must be the bound repository, or no posting run starts. | `test_fork_pull_request_starts_no_posting_run` |
+| 26 | A fork pull request steers a review or starts one without maintainer consent | Forks require a live `preloop-review` label whose latest application and actor's write, maintain or admin permission are read from GitHub. Read and publish leases, checkout URL, review and status target the base only; `head.repo` never names a target. Label removal or replacement prevents the pending post. | `test_fork_pull_request_starts_no_posting_run`, `test_fork_pull_request_posts_on_the_base_repository_only`, `test_label_actor_without_write_starts_nothing`, `test_fork_label_removed_before_publish_skips_the_post`, `test_fork_label_proof_cannot_use_an_old_or_unrelated_application` |
 | 27 | A user who cannot edit the flow causes a post by opening a pull request | The run starts only for a flow an administrator enabled, on a project in `trigger_project_ids`, for an allowlisted action, and only when `trigger_config` matches. Cost is the flow's existing limits and the account kill switch. One active run per pull request and `supersede_on_update` bound how many runs one pull request can start. There is no new rate limit. | `test_opening_a_pull_request_posts_only_inside_the_flow_filters` |
 | 28 | Posting continues after the project is removed or the installation is suspended | `authorize_event_review` before every attempt. Project removed or flow disabled is `admission_revoked`. `suspended_at` set is `installation_suspended` and is not retried. | `test_project_removed_from_the_event_flow_revokes_posting`, `test_suspended_installation_stops_posting_without_a_retry` |
 | 29 | A review is posted for a run whose record of what the reviewer read is incomplete | `platform_review.evidence` is `captured` or `complete`; the publication plan refuses with `evidence_incomplete` and the incomplete commit status, and a caller `expected_evidence` can only tighten that | `test_platform_review.py`: `test_captured_posts_when_records_are_complete`, `test_captured_posts_when_the_only_incomplete_record_is_a_masked_credential`, `test_captured_refuses_incomplete_evidence`, `test_complete_refuses_a_masked_credential`, `test_automatic_sweep_and_explicit_publish_agree_on_the_evidence_gate`, `test_later_publish_succeeds_once_nothing_is_missing`, `test_late_gateway_evidence_is_not_refused_or_posted_early`, `test_publish_reads_the_stored_records_once`, `test_status_projection_does_not_read_tool_evidence`; `test_platform_review_manual.py`: `test_expected_evidence_refuses_with_412_and_cannot_loosen_the_flow_setting`, `test_explicit_publish_answers_409_while_evidence_may_still_arrive` |
@@ -457,12 +490,14 @@ without posting the review again.
 - GitLab and Bitbucket. The opt-in is refused for them.
 - Threaded replies, reactions, re-requesting review, dismissing an earlier
   review, or updating a previous review in place.
-- A pull request label action does not start a posting run.
-- A pull request opened from a fork does not start a posting run.
+- Fork pull requests are not reviewed by default. Only a maintainer-applied
+  `preloop-review` label opts a fork in. Other label actions and
+  same-repository label actions do not start posting runs.
 - A `pending` status at trigger time.
 - Check runs and annotations.
 - Verified against GitHub's documentation and a fake GitHub in tests, not
-  against a live repository: that GitHub echoes a review body byte for byte
+  against a live repository: installation-token label-event and collaborator
+  permission reads, that GitHub echoes a review body byte for byte
   (the read-back compares a digest after normalising line endings), that
   reading a pull request works with `pull_requests` permission alone, and
   that a lease request beyond the installation's permissions answers 422.

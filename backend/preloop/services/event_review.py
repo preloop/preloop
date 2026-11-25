@@ -5,8 +5,9 @@ The execution stores an :class:`EventReviewBinding` (version 2) in
 still has no GitHub write credential: the publish step mints its own
 lease later, for the base repository only.
 
-Fork pull requests are not admitted. ``head.repo`` and ``base.repo`` must
-both be the bound repository, the same rule restricted CI uses.
+Fork pull requests require a server-confirmed maintainer application of
+``preloop-review``. Only the base repository is a lease or post target.
+Restricted CI admission is unchanged.
 
 The pull request is read with the tracker's GitHub App installation
 token, not a downscoped contents lease. GitHub's "Get a pull request"
@@ -47,10 +48,11 @@ EVENT_REVIEW_TYPES: frozenset[str] = frozenset(
     }
 )
 #: Raw GitHub actions that may start a posting run. ``edited`` and
-#: ``labeled`` are pull request events and do not.
+#: unrelated label actions are pull request events and do not.
 EVENT_REVIEW_ACTIONS: frozenset[str] = frozenset(
     {"opened", "synchronize", "reopened", "ready_for_review"}
 )
+FORK_REVIEW_LABEL = "preloop-review"
 _SHA_RE = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 _GITHUB_HOSTS = frozenset({"https://github.com", "https://api.github.com"})
 
@@ -177,33 +179,127 @@ async def read_pull_request_for_event(
     token = await _installation_token(tracker)
     repository = quote(str(repository_id), safe="")
     url = f"{base}/repositories/{repository}/pulls/{pr_number}"
+    async with httpx.AsyncClient(timeout=25) as client:
+        body = await _github_get(client, token, url)
+    if not isinstance(body, dict):
+        raise EventReviewDeniedError("provider_denied")
+    return body
+
+
+async def _github_get(
+    client: httpx.AsyncClient,
+    token: str,
+    url: str,
+    *,
+    params: dict[str, int] | None = None,
+) -> Any:
+    """Read GitHub without redirects; transient failures must be retried."""
     try:
-        async with httpx.AsyncClient(timeout=25) as client:
-            response = await client.get(
-                url,
-                headers={
-                    "Authorization": f"token {token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-                follow_redirects=False,
-            )
+        response = await client.get(
+            url,
+            params=params,
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            follow_redirects=False,
+        )
     except (httpx.HTTPError, TimeoutError):
         raise EventReviewUnavailableError() from None
     if response.status_code in {403, 404}:
         raise EventReviewDeniedError("provider_denied")
     if response.status_code != 200:
-        # 401 and 429 are transient authentication or rate-limit failures.
-        # Anything else that is not 403/404 is also retried rather than
-        # treated as a decision about the pull request.
         raise EventReviewUnavailableError()
     try:
-        body = response.json()
+        return response.json()
     except ValueError:
         raise EventReviewUnavailableError() from None
-    if not isinstance(body, dict):
-        raise EventReviewDeniedError("provider_denied")
-    return body
+
+
+def has_fork_review_label(pull: Mapping[str, Any]) -> bool:
+    """Whether GitHub's live pull request still carries the opt-in label."""
+    return any(
+        isinstance(label, Mapping) and label.get("name") == FORK_REVIEW_LABEL
+        for label in (pull.get("labels") or [])
+    )
+
+
+async def read_fork_review_label_application(
+    tracker: models.Tracker,
+    repository_id: str,
+    pr_number: int,
+    pull: Mapping[str, Any],
+) -> str:
+    """Prove the latest label application and its actor's current permission.
+
+    Issue events and collaborator permissions are read from the base repository
+    with its tracker's installation token. Webhook sender and author association
+    are never authorization evidence. Paginate all events so an older trusted
+    application cannot authorize a later untrusted one.
+
+    Returns:
+        GitHub's immutable id of the current label application.
+
+    Raises:
+        EventReviewDeniedError: Label or maintainer permission is absent.
+        EventReviewUnavailableError: A provider read should be retried.
+    """
+    if not has_fork_review_label(pull):
+        raise EventReviewDeniedError("fork_label_missing")
+    base = _github_api_base(tracker)
+    token = await _installation_token(tracker)
+    repository = quote(repository_id, safe="")
+    root = f"{base}/repositories/{repository}"
+    latest: Mapping[str, Any] | None = None
+    latest_id = 0
+    async with httpx.AsyncClient(timeout=25) as client:
+        page = 1
+        while True:
+            events = await _github_get(
+                client,
+                token,
+                f"{root}/issues/{pr_number}/events",
+                params={"per_page": 100, "page": page},
+            )
+            if not isinstance(events, list):
+                raise EventReviewDeniedError("fork_label_application_missing")
+            for event in events:
+                if not isinstance(event, Mapping):
+                    continue
+                label = event.get("label")
+                if (
+                    event.get("event") not in {"labeled", "unlabeled"}
+                    or not isinstance(label, Mapping)
+                    or label.get("name") != FORK_REVIEW_LABEL
+                ):
+                    continue
+                identifier = event.get("id")
+                if type(identifier) is not int or identifier <= 0:
+                    raise EventReviewDeniedError("fork_label_application_missing")
+                if identifier > latest_id:
+                    latest, latest_id = event, identifier
+            if len(events) < 100:
+                break
+            page += 1
+        if latest is None or latest.get("event") != "labeled":
+            raise EventReviewDeniedError("fork_label_application_missing")
+        actor = latest.get("actor")
+        login = actor.get("login") if isinstance(actor, Mapping) else None
+        if not isinstance(login, str) or not login:
+            raise EventReviewDeniedError("fork_label_actor_not_maintainer")
+        permission = await _github_get(
+            client,
+            token,
+            f"{root}/collaborators/{quote(login, safe='')}/permission",
+        )
+    if not isinstance(permission, Mapping) or permission.get("permission") not in {
+        "write",
+        "maintain",
+        "admin",
+    }:
+        raise EventReviewDeniedError("fork_label_actor_not_maintainer")
+    return str(latest_id)
 
 
 def _mapping(value: Any) -> dict[str, Any] | None:
@@ -237,8 +333,8 @@ async def build_event_review_binding(
     flow that has not opted in.
 
     A posting flow whose action is outside the allowlist, whose server
-    read disagrees with the webhook, or whose pull request is from a
-    fork, is skipped: ``skip_reason`` is set and no execution is inserted.
+    read disagrees with the webhook, or whose fork lacks a maintainer
+    label application, is skipped: ``skip_reason`` is set and no execution is inserted.
     So is an event for a project the flow admits but does not post for
     (``platform_review.project_ids``): ``project_not_in_posting_scope``,
     decided before the provider is read.
@@ -262,7 +358,11 @@ async def build_event_review_binding(
         return EventReviewDecision(binding=None)
     payload = _mapping(event_data.get("payload")) or {}
     action = payload.get("action")
-    if action not in EVENT_REVIEW_ACTIONS:
+    labeled = (
+        action == "labeled"
+        and (_mapping(payload.get("label")) or {}).get("name") == FORK_REVIEW_LABEL
+    )
+    if action not in EVENT_REVIEW_ACTIONS and not labeled:
         return _skip("action_not_allowlisted")
     if str(getattr(flow, "trigger_event_source", "") or "") != str(
         event_data.get("tracker_id") or ""
@@ -352,9 +452,10 @@ async def build_event_review_binding(
     live_slug = base_repo.get("full_name") if base_repo is not None else None
     if not isinstance(live_slug, str):
         return _skip("repository_mismatch")
-    if not _same_repository(head_repo, identifier, slug):
-        # A missing or different head repository is a fork. This version
-        # does not start a posting run for it.
+    is_fork = not _same_repository(head_repo, identifier, slug)
+    if labeled and not is_fork:
+        return _skip("action_not_allowlisted")
+    if is_fork and not has_fork_review_label(live):
         return _skip("fork_pull_request")
     if str(webhook_repo.get("id")) != identifier or (
         not isinstance(webhook_repo.get("full_name"), str)
@@ -387,6 +488,16 @@ async def build_event_review_binding(
     draft = live.get("draft")
     if type(draft) is not bool:
         return _skip("binding_invalid")
+    fork_label_event_id = None
+    if is_fork:
+        if live.get("state") != "open":
+            return _skip("pull_request_closed")
+        try:
+            fork_label_event_id = await read_fork_review_label_application(
+                tracker, identifier, number, live
+            )
+        except EventReviewDeniedError as error:
+            return _skip(error.reason)
     try:
         binding = EventReviewBinding(
             version=2,
@@ -409,6 +520,7 @@ async def build_event_review_binding(
             action=action,  # type: ignore[arg-type]
             delivery_id=delivery_id,
             draft=draft,
+            fork_label_event_id=fork_label_event_id,
         )
     except (ValidationError, ValueError):
         return _skip("binding_invalid")
@@ -514,8 +626,12 @@ def _live_matches(binding: EventReviewBinding, pull: Mapping[str, Any]) -> bool:
     ):
         return False
     head_repo = _mapping(head.get("repo")) if head else None
-    if not _same_repository(
+    if binding.fork_label_event_id is None and not _same_repository(
         head_repo, binding.repository_identifier, binding.repository_slug
+    ):
+        return False
+    if binding.fork_label_event_id is not None and (
+        pull.get("state") != "open" or not has_fork_review_label(pull)
     ):
         return False
     # The base SHA may advance on the same branch. A different base ref
@@ -574,6 +690,12 @@ async def ensure_event_review_admission(
     )
     if not _live_matches(binding, pull):
         raise EventReviewDeniedError("provider_disagrees")
+    if binding.fork_label_event_id is not None:
+        application = await read_fork_review_label_application(
+            tracker, binding.repository_identifier, binding.pr_number, pull
+        )
+        if application != binding.fork_label_event_id:
+            raise EventReviewDeniedError("fork_label_application_changed")
 
 
 def _config_mapping(config: Any) -> dict[str, Any] | None:

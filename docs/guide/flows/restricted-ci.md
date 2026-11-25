@@ -1512,11 +1512,36 @@ The GitHub App needs **Pull requests: Read and write**. It also needs
 read of the pull request uses the installation token and needs **Pull
 requests: Read**. A failure to mint that token is retried. Ready for
 review is `pull_request_ready_for_review`. `trigger_config: {draft: false}`
-skips drafts. A label on its own does not start a posting run, and a pull
-request opened from a fork does not start one either. A pull request
-retargeted onto another branch is not posted; the status stays on the
-reviewed commit. The base commit advancing on the same branch does not
-skip the review.
+skips drafts. Fork pull requests are not reviewed by default. A maintainer
+of the base repository can opt a fork pull request in by applying the
+`preloop-review` label. Preloop reads the label application and the actor's
+current repository permission from GitHub with the tracker's installation
+token; write, maintain or admin is required. Triage and read do not qualify.
+
+For an opted-in fork, applying `preloop-review` starts a review. The label
+must be the label changed by that event. GitHub label actions currently
+match `pull_request_opened`, so select that trigger type to review when the
+label is applied. The flow's project and trigger filters still apply. While
+the label remains present, the selected opened, synchronize, reopened and
+ready-for-review actions also start reviews. New commits need no new label
+application. This lets an outside contributor cause model spend on the
+account and a review posted by the App by pushing new commits to that pull
+request. The existing flow limits and account controls still apply.
+
+The label application and the actor's current permission are checked for
+each run, again at launch, and before publishing. Removing the label stops
+a pending run at launch or skips its pending post. Removing and reapplying
+the label starts a new application; an older run cannot use that new
+application to publish. A same-repository pull request behaves as before,
+with or without the label; its label actions do not start reviews.
+Restricted CI continues to refuse forks.
+
+Fork reads use a `contents: read` lease on the base repository, fetch
+`pull/{number}/head` there, and verify the admitted head SHA. The publish
+lease, review and commit status also target the base repository only.
+A pull request retargeted onto another branch is not posted; the status
+stays on the reviewed commit. The base commit advancing on the same branch
+does not skip the review.
 
 The console and the trigger API do not start it. Retries do not post.
 Manual mode is the same publish call, made by an account user who may edit
@@ -2340,6 +2365,9 @@ the event type answers `admission_revoked`. A suspended installation
 answers `installation_suspended` and is not retried. A tracker that is no
 longer a GitHub App answers `tracker_unsupported`. A project whose
 identifier or slug no longer matches the binding answers `binding_changed`.
+For an opted-in fork, the same label application must still be present and
+its actor must still have write, maintain or admin permission. Removing the
+label before publication skips the pending post.
 
 The identity's provisioning binding (project, flow and snapshot) produces
 `admission_revoked`. A live pull request whose id, repository id or name no

@@ -1,8 +1,8 @@
 """A GitHub pull request event starts a read-only review and Preloop posts it.
 
-Fork pull requests are refused. The binding is version 2 and comes from a
-server read with the tracker's installation token, never from the webhook
-body, the result, or the publish request.
+Fork pull requests require a maintainer-applied review label. The version-2
+binding comes from a server read with the tracker's installation token,
+never from the webhook body, the result, or the publish request.
 """
 
 from __future__ import annotations
@@ -123,6 +123,8 @@ class PullBroker:
         self.calls: list[httpx.Request] = []
         self.token = "installation-token"
         self.mint_error: BaseException | None = None
+        self.events: dict[int, list[dict[str, Any]] | int] = {}
+        self.permissions: dict[str, str | int] = {}
 
     def add(self, identifier: str, number: int, document: dict[str, Any]) -> None:
         self.pulls[(str(identifier), number)] = document
@@ -147,6 +149,19 @@ class PullBroker:
         def handler(request: httpx.Request) -> httpx.Response:
             broker.calls.append(request)
             parts = request.url.path.strip("/").split("/")
+            if len(parts) == 5 and parts[2] == "issues" and parts[4] == "events":
+                found_events = broker.events.get(int(parts[3]), [])
+                if isinstance(found_events, int):
+                    return httpx.Response(found_events, json={})
+                page = int(request.url.params.get("page", "1"))
+                return httpx.Response(
+                    200, json=found_events[(page - 1) * 100 : page * 100]
+                )
+            if len(parts) == 5 and parts[2] == "collaborators":
+                permission = broker.permissions.get(parts[3], "read")
+                if isinstance(permission, int):
+                    return httpx.Response(permission, json={})
+                return httpx.Response(200, json={"permission": permission})
             if len(parts) != 4 or parts[0] != "repositories" or parts[2] != "pulls":
                 return httpx.Response(404, json={})
             found = broker.pulls.get((parts[1], int(parts[3])))
@@ -1663,3 +1678,395 @@ def test_ci_read_only_run_keeps_the_payload_fetch_ref() -> None:
         FlowExecutionOrchestrator._extract_merge_request_ref_from_trigger(orchestrator)
         == "pull/7/head"
     )
+
+
+def label_fork(
+    world: SimpleNamespace, broker: PullBroker, *, actor: str = "maintainer"
+) -> dict[str, Any]:
+    """A server-confirmed label application, independent of webhook sender."""
+    document = _document(world.projects[0], fork=True)
+    document["labels"] = [{"name": "preloop-review"}]
+    broker.add(str(world.projects[0].identifier), 7, document)
+    broker.events[7] = [
+        {
+            "id": 101,
+            "event": "labeled",
+            "label": {"name": "preloop-review"},
+            "actor": {"login": actor},
+        }
+    ]
+    broker.permissions[actor] = "write"
+    event = _event(
+        world, world.projects[0], fork=True, labels=["preloop-review"], action="labeled"
+    )
+    event["payload"]["label"] = {"name": "preloop-review"}
+    event["payload"]["sender"] = {"login": "forged-maintainer"}
+    return event
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("permission", ["write", "maintain", "admin"])
+async def test_fork_pull_request_posts_on_the_base_repository_only(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+    permission: str,
+) -> None:
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    event = label_fork(world, broker)
+    broker.permissions["maintainer"] = permission
+    rows = await deliver(world, event)
+    assert len(rows) == 1
+    execution = rows[0]
+    assert execution.ci_review_binding["fork_label_event_id"] == "101"
+    from preloop.services.event_review import ensure_event_review_admission
+
+    await ensure_event_review_admission(world.db, execution=execution)
+    seen: list[tuple[str, bool]] = []
+
+    async def mint(tracker: Any, url: str, *, write: bool, client: Any) -> Any:
+        del tracker, client
+        seen.append((url, write))
+        return PublicationLease(
+            token="read-lease",
+            repository_url=url,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+
+    monkeypatch.setattr("preloop.services.read_only_review.mint_repository_lease", mint)
+    context: dict[str, Any] = {"prompt": ""}
+    await prepare_read_only_review(world.db, world.flow, execution, context)
+    project = world.projects[0]
+    assert seen == [(f"https://github.com/{project.slug}.git", False)]
+    assert context["read_only_fetch_ref"] == "pull/7/head"
+    assert context["read_only_head_sha"] == HEAD
+    assert context["git_clone_config"]["source_branch"] == HEAD
+    assert list(context["git_credentials_map"]) == [seen[0][0]]
+    execution = finish(world, execution)
+    github = publish_github(world, monkeypatch)
+    github.pulls[(project.slug, 7)] = deepcopy(
+        broker.pulls[(str(project.identifier), 7)]
+    )
+    outcome = await post(world, execution)
+    assert outcome is not None and outcome["review"] == "posted"
+    assert list(github.reviews) == [(project.slug, 7)]
+    assert list(github.statuses) == [(project.slug, HEAD)]
+    assert github.mints
+    assert all(
+        mint["repositories"] == [project.slug.split("/")[1]] for mint in github.mints
+    )
+    assert all(
+        mint["permissions"] == {"pull_requests": "write", "statuses": "write"}
+        for mint in github.mints
+    )
+    assert all("other/fork" not in path for _, path in github.calls)
+    assert all(
+        request.headers["Authorization"] == "token installation-token"
+        for request in broker.calls
+    )
+    paths = [request.url.path for request in broker.calls]
+    assert f"/repositories/{project.identifier}/issues/7/events" in paths
+    assert (
+        f"/repositories/{project.identifier}/collaborators/maintainer/permission"
+        in paths
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "actor,permission",
+    [("fork-author", "read"), ("triage-user", "triage"), ("unprivileged[bot]", "read")],
+)
+async def test_label_actor_without_write_starts_nothing(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+    caplog: pytest.LogCaptureFixture,
+    actor: str,
+    permission: str,
+) -> None:
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    event = label_fork(world, broker, actor=actor)
+    broker.permissions[actor] = permission
+    with caplog.at_level(logging.WARNING):
+        assert await deliver(world, event) == []
+    messages = [
+        record.message
+        for record in caplog.records
+        if "No posting run" in record.message
+    ]
+    assert len(messages) == 1
+    assert event["delivery_id"] in messages[0]
+    assert "reason=fork_label_actor_not_maintainer" in messages[0]
+
+
+@pytest.mark.asyncio
+async def test_fork_permission_5xx_retries_without_execution(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+) -> None:
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    event = label_fork(world, broker)
+    broker.permissions["maintainer"] = 503
+    with pytest.raises(EventReviewUnavailableError):
+        await deliver(world, event)
+    assert _rows(world.db, world.flow) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["removed", "reapplied", "permission_revoked"])
+async def test_fork_label_removed_before_publish_skips_the_post(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+    change: str,
+) -> None:
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    execution = finish(world, (await deliver(world, label_fork(world, broker)))[0])
+    project = world.projects[0]
+    github = publish_github(world, monkeypatch)
+    github.pulls[(project.slug, 7)] = deepcopy(
+        broker.pulls[(str(project.identifier), 7)]
+    )
+    if change == "removed":
+        broker.pulls[(str(project.identifier), 7)]["labels"] = []
+        github.pulls[(project.slug, 7)]["labels"] = []
+    elif change == "reapplied":
+        broker.events[7].append(
+            {
+                "id": 102,
+                "event": "labeled",
+                "label": {"name": "preloop-review"},
+                "actor": {"login": "maintainer"},
+            }
+        )
+    else:
+        broker.permissions["maintainer"] = "read"
+    outcome = await post(world, execution)
+    assert outcome is not None and outcome["review"] == "skipped"
+    assert github.reviews == {} and github.statuses == {}
+    assert github.mints == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action,event_type",
+    [
+        ("opened", "pull_request_opened"),
+        ("synchronize", "pull_request_updated"),
+        ("reopened", "pull_request_reopened"),
+        ("ready_for_review", "pull_request_ready_for_review"),
+    ],
+)
+async def test_labelled_fork_existing_actions_start_a_run(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+    action: str,
+    event_type: str,
+) -> None:
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    event = label_fork(world, broker)
+    event["payload"]["action"] = action
+    event["type"] = event_type
+    # The label was applied before this new head. No reapplication is needed.
+    broker.pulls[(str(world.projects[0].identifier), 7)]["head"]["sha"] = OTHER
+    event["payload"]["pull_request"]["head"]["sha"] = OTHER
+    rows = await deliver(world, event)
+    assert len(rows) == 1
+    assert rows[0].ci_review_binding["head_sha"] == OTHER
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("labels", [[], ["preloop-review"]])
+async def test_same_repository_label_does_not_change_existing_review_actions(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+    labels: list[str],
+) -> None:
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    project = world.projects[0]
+    broker.pulls[(str(project.identifier), 7)]["labels"] = [
+        {"name": label} for label in labels
+    ]
+    labeled = _event(world, project, action="labeled", labels=labels)
+    labeled["payload"]["label"] = {"name": "preloop-review"}
+    assert await deliver(world, labeled) == []
+    rows = await deliver(world, _event(world, project, labels=labels))
+    assert len(rows) == 1
+    assert not rows[0].ci_review_binding.get("fork_label_event_id")
+    execution = finish(world, rows[0])
+    github = publish_github(world, monkeypatch)
+    outcome = await post(world, execution)
+    assert outcome is not None and outcome["review"] == "posted"
+    assert all(
+        "/events" not in request.url.path and "/permission" not in request.url.path
+        for request in broker.calls
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("no_application", "fork_label_application_missing"),
+        ("latest_untrusted", "fork_label_actor_not_maintainer"),
+        ("latest_unlabeled", "fork_label_application_missing"),
+        ("no_actor", "fork_label_actor_not_maintainer"),
+        ("permission_403", "provider_denied"),
+        ("permission_404", "provider_denied"),
+        ("unrelated_label", "action_not_allowlisted"),
+    ],
+)
+async def test_fork_label_proof_cannot_use_an_old_or_unrelated_application(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+    case: str,
+    reason: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    event = label_fork(world, broker)
+    if case == "no_application":
+        broker.events[7] = []
+    elif case.startswith("latest_"):
+        # The current application is beyond the first page of history.
+        broker.events[7] += [{"id": n, "event": "commented"} for n in range(102, 201)]
+        broker.events[7].append(
+            {
+                "id": 201,
+                "event": "unlabeled" if case == "latest_unlabeled" else "labeled",
+                "label": {"name": "preloop-review"},
+                "actor": {"login": "fork-author"},
+            }
+        )
+    elif case == "no_actor":
+        broker.events[7][0]["actor"] = None
+    elif case.startswith("permission_"):
+        broker.permissions["maintainer"] = int(case.rsplit("_", 1)[1])
+    else:
+        event["payload"]["label"] = {"name": "unrelated"}
+    with caplog.at_level(logging.WARNING):
+        assert await deliver(world, event) == []
+    assert "reason=" + reason in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_fork_label_application_on_a_later_page_is_admitted(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+) -> None:
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    event = label_fork(world, broker)
+    broker.events[7] = [
+        {"id": n, "event": "commented"} for n in range(1, 101)
+    ] + broker.events[7]
+    assert len(await deliver(world, event)) == 1
+    assert any(request.url.params.get("page") == "2" for request in broker.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change", ["removed", "head_moved", "closed", "permission_revoked"]
+)
+async def test_fork_admission_is_rechecked_before_launch(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+    change: str,
+) -> None:
+    from preloop.services.event_review import ensure_event_review_admission
+
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    execution = (await deliver(world, label_fork(world, broker)))[0]
+    pull = broker.pulls[(str(world.projects[0].identifier), 7)]
+    if change == "removed":
+        pull["labels"] = []
+    elif change == "head_moved":
+        pull["head"]["sha"] = OTHER
+    elif change == "closed":
+        pull["state"] = "closed"
+    else:
+        broker.permissions["maintainer"] = "read"
+    with pytest.raises(EventReviewDeniedError):
+        await ensure_event_review_admission(world.db, execution=execution)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ("head_moved", "head_moved"),
+        ("closed", "pull_request_closed"),
+        ("label_removed", "fork_label_missing"),
+    ],
+)
+async def test_fork_publish_live_pull_check_skips_the_review(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+    change: str,
+    reason: str,
+) -> None:
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    execution = finish(world, (await deliver(world, label_fork(world, broker)))[0])
+    project = world.projects[0]
+    github = publish_github(world, monkeypatch)
+    pull = deepcopy(broker.pulls[(str(project.identifier), 7)])
+    github.pulls[(project.slug, 7)] = pull
+    if change == "head_moved":
+        pull["head"]["sha"] = OTHER
+    elif change == "closed":
+        pull["state"] = "closed"
+    else:
+        # The label disappeared after installation-token preflight.
+        pull["labels"] = []
+    outcome = await post(world, execution)
+    assert outcome is not None and outcome["review"] == "skipped"
+    assert outcome["review_reason"] == reason
+    assert github.reviews == {}
+    if change == "label_removed":
+        assert github.statuses == {}
+
+
+@pytest.mark.asyncio
+async def test_fork_permission_5xx_at_publish_is_retryable(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+) -> None:
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    execution = finish(world, (await deliver(world, label_fork(world, broker)))[0])
+    github = publish_github(world, monkeypatch)
+    broker.permissions["maintainer"] = 503
+    await post(world, execution)
+    row = publication(world, execution)
+    assert row.retryable is True
+    assert row.next_attempt_at is not None
+    assert github.reviews == {} and github.statuses == {}

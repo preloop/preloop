@@ -2410,8 +2410,13 @@ async def _post_review(
     pull = await github.pull()
     head = pull.get("head") if isinstance(pull, Mapping) else None
     base = pull.get("base") if isinstance(pull, Mapping) else None
+    fork_opted_in = (
+        isinstance(binding, EventReviewBinding)
+        and binding.fork_label_event_id is not None
+    )
+    sides = (base,) if fork_opted_in else (head, base)
     repositories = [
-        side.get("repo") if isinstance(side, Mapping) else None for side in (head, base)
+        side.get("repo") if isinstance(side, Mapping) else None for side in sides
     ]
     if (
         not isinstance(head, Mapping)
@@ -2425,6 +2430,14 @@ async def _post_review(
         )
     ):
         raise PlatformReviewError("binding_changed")
+    if fork_opted_in:
+        from preloop.services.event_review import has_fork_review_label
+
+        if not has_fork_review_label(pull):
+            return {
+                "review_state": STATE_SKIPPED,
+                "review_reason": "fork_label_missing",
+            }
     if pull.get("state") != "open":
         return {"review_state": STATE_SKIPPED, "review_reason": "pull_request_closed"}
     if head.get("sha") != binding.head_sha:
@@ -2808,6 +2821,47 @@ async def _publish_claimed(
         and row.status_state == STATE_POSTED
         and bool(row.status_id)
     )
+    if (
+        isinstance(binding, EventReviewBinding)
+        and binding.fork_label_event_id is not None
+        and (want_review or want_status)
+    ):
+        from preloop.services.event_review import (
+            EventReviewDeniedError,
+            EventReviewUnavailableError,
+            read_fork_review_label_application,
+            read_pull_request_for_event,
+        )
+
+        crud.crud_ci_execution.release_read(db)
+        try:
+            pull = await read_pull_request_for_event(
+                tracker, binding.repository_identifier, binding.pr_number
+            )
+            application = await read_fork_review_label_application(
+                tracker, binding.repository_identifier, binding.pr_number, pull
+            )
+            if application != binding.fork_label_event_id:
+                raise EventReviewDeniedError("fork_label_application_changed")
+        except EventReviewUnavailableError:
+            raise PlatformReviewError("provider_unavailable", retryable=True) from None
+        except EventReviewDeniedError as error:
+            values: dict[str, Any] = {
+                "state": STATE_POSTED
+                if row.review_state == STATE_POSTED
+                else STATE_STATUS_ONLY
+                if row.status_state == STATE_POSTED
+                else STATE_SKIPPED,
+                "reason": error.reason,
+                "retryable": False,
+                "next_attempt_at": None,
+            }
+            if want_review:
+                values.update(review_state=STATE_SKIPPED, review_reason=error.reason)
+            if want_status:
+                values.update(status_state=STATE_SKIPPED, status_reason=error.reason)
+            record(db, row=row, **values)
+            return
     failure: PlatformReviewError | None = None
     need_review = want_review or confirm_review
     need_status = want_status or confirm_status
@@ -2868,6 +2922,17 @@ async def _publish_claimed(
                             plan=plan,
                             schema=getattr(flow, "result_schema", None),
                         )
+                        if (
+                            values.get("review_reason") == "fork_label_missing"
+                            and want_status
+                        ):
+                            want_status = False
+                            row = record(
+                                db,
+                                row=row,
+                                status_state=STATE_SKIPPED,
+                                status_reason="fork_label_missing",
+                            )
                         posted = "_verify" in values
                         verify = values.pop("_verify", None)
                         row = record(db, row=row, **values)
