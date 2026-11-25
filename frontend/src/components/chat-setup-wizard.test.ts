@@ -60,6 +60,99 @@ describe('Discovered chat setup', () => {
     );
     await waitUntil(() => !el.shadowRoot!.querySelector('form'));
   }
+  async function teams(el: ChatSetupWizard) {
+    const select = el.shadowRoot!.querySelector('sl-select')!;
+    select.value = 'teams';
+    select.dispatchEvent(new Event('sl-change'));
+    await el.updateComplete;
+  }
+  it('shows Teams own-app fields and editable manifest URLs', async () => {
+    const el = await view();
+    await teams(el);
+    const labels = [
+      ...el.shadowRoot!.querySelectorAll<SlInput>('sl-input'),
+    ].map((input) => input.label);
+    expect(labels).to.include.members([
+      'Application (client) ID',
+      'Directory (tenant) ID',
+      'Client secret',
+      'Developer website URL',
+      'Privacy URL',
+      'Terms of use URL',
+    ]);
+    expect(el.shadowRoot!.textContent).to.include(
+      'A Teams administrator must allow'
+    );
+    expect(el.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.include(
+      "installation's own public origin"
+    );
+  });
+  it('submits Teams credentials once and shows callback and package download', async () => {
+    const el = await view();
+    await teams(el);
+    await discover(el);
+    const call = stub
+      .getCalls()
+      .find((call) => call.args[0] === '/api/v1/chat/setup')!;
+    expect(JSON.parse(call.args[1].body)).to.include({
+      provider: 'teams',
+      bot_token: 'credential-secret',
+      teams_app_id: 'credential-secret',
+      teams_app_tenant_id: 'credential-secret',
+      teams_developer_url: '',
+      teams_privacy_url: '',
+      teams_terms_url: '',
+    });
+    expect((el as any).token).to.equal('');
+    expect(el.shadowRoot!.querySelector('sl-copy-button')!.value).to.equal(
+      'https://preloop.example.com/api/v1/chat/ingress/draft'
+    );
+    expect(el.shadowRoot!.textContent).to.include('Download Teams app package');
+    expect(el.shadowRoot!.textContent).to.include(
+      'Policy changes can take a few hours'
+    );
+  });
+  it('downloads Teams package with authentication and no credentials in the URL', async () => {
+    const el = await view();
+    await teams(el);
+    await discover(el);
+    stub
+      .withArgs('/api/v1/chat/setup/draft/teams-package')
+      .resolves(new Response('synthetic-zip'));
+    const create = sinon
+      .stub(URL, 'createObjectURL')
+      .returns('blob:synthetic-package');
+    const click = sinon.stub(HTMLAnchorElement.prototype, 'click');
+    [...el.shadowRoot!.querySelectorAll('sl-button')]
+      .find((button) => button.textContent!.includes('Download Teams'))!
+      .click();
+    await waitUntil(() => click.called);
+    expect(create.calledOnce).to.equal(true);
+    const call = stub
+      .getCalls()
+      .find((call) => String(call.args[0]).endsWith('/teams-package'))!;
+    expect(new Headers(call.args[1].headers).get('Authorization')).to.equal(
+      'Bearer fixture-auth'
+    );
+    expect(call.args[1].cache).to.equal('no-store');
+    expect(click.thisValues[0].download).to.equal('preloop-teams.zip');
+  });
+  it('reports a failed Teams download while keeping the setup draft', async () => {
+    const el = await view();
+    await teams(el);
+    await discover(el);
+    stub
+      .withArgs('/api/v1/chat/setup/draft/teams-package')
+      .resolves(json({ detail: 'Expired' }, 404));
+    [...el.shadowRoot!.querySelectorAll('sl-button')]
+      .find((button) => button.textContent!.includes('Download Teams'))!
+      .click();
+    await waitUntil(() => !!el.shadowRoot!.querySelector('[role=alert]'));
+    expect(el.shadowRoot!.textContent).to.include(
+      'Unable to download Teams package'
+    );
+    expect(el.shadowRoot!.querySelector('form')).to.equal(null);
+  });
   it('has no normal bot, workspace ID or slash-token fields for any provider', async () => {
     const el = await view();
     for (const provider of ['mattermost', 'slack', 'discord']) {

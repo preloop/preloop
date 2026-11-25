@@ -443,3 +443,18 @@ def test_lifecycle_subscription_cannot_start_review_on_unseen_head(
     assert bool(dispatched(harness)) is terminal
     if not terminal:
         assert response.json()["reason"] == "not_terminal_lifecycle_event"
+
+
+@pytest.mark.parametrize("binding", [{}, {"project": "Other"}, {"repository": "Other"}])
+@pytest.mark.parametrize("status", ["completed", "abandoned"])
+def test_terminal_delivery_survives_scope_removal(
+    harness: Dict[str, Any], binding: dict, status: str
+) -> None:
+    """Excluded imported repositories still deliver terminal events to stop runs."""
+    harness["tracker"].connection_details = {"organization": "fabrikam", **binding}
+    harness["scope_denial"].return_value = "Project is explicitly excluded"
+    payload = fx("git.pullrequest.updated.completed")
+    payload["resource"]["status"] = status
+    response = post(harness, payload)
+    assert response.status_code == 200
+    assert len(dispatched(harness)) == 1

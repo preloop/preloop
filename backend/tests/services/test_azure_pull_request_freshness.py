@@ -1,5 +1,6 @@
 """Delayed Azure deliveries reconcile with the current PR before starting work."""
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,6 +29,24 @@ def event() -> dict[str, Any]:
             },
         },
     }
+
+
+@pytest.fixture(autouse=True)
+def imported_repository() -> Any:
+    """Bind freshness reads to the imported repository, never delivery names."""
+    project = SimpleNamespace(
+        is_active=True,
+        organization=SimpleNamespace(is_active=True),
+        meta_data={"full_name": "example-org/Project/repo"},
+    )
+    with (
+        patch(
+            "preloop.models.crud.crud_project.get_for_tracker_by_identifier",
+            return_value=project,
+        ),
+        patch("preloop.api.common.project_scope_denial", return_value=None),
+    ):
+        yield project
 
 
 @pytest.mark.asyncio
@@ -60,8 +79,11 @@ async def test_delayed_event_cannot_start_a_stale_review(
         tracker = get_tracker.return_value
         tracker.connection_details = {"organization": "example-org"}
         tracker.resolved_api_key = "test-pat"
+        tracker.is_active = True
+        tracker.is_deleted = False
         read.return_value = {
             "status": status,
+            "repository": {"id": event()["payload"]["repository"]["id"]},
             "lastMergeSourceCommit": {"commitId": sha},
         }
         await service.process_event(event())
@@ -85,6 +107,44 @@ async def test_current_state_read_failure_retries_instead_of_starting_review() -
     ):
         get_tracker.return_value.connection_details = {"organization": "example-org"}
         get_tracker.return_value.resolved_api_key = "test-pat"
+        get_tracker.return_value.is_active = True
+        get_tracker.return_value.is_deleted = False
         read.side_effect = TrackerConnectionError("unavailable")
         with pytest.raises(TrackerConnectionError):
             await service.process_event(event())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["payload_name", "response_id"])
+async def test_repository_identity_cannot_redirect_freshness_read(
+    mismatch: str,
+) -> None:
+    """An imported GUID cannot authorize reads from another repository."""
+    service = FlowTriggerService(MagicMock())
+    delivery = event()
+    if mismatch == "payload_name":
+        delivery["payload"]["repository"]["full_name"] = "example-org/Other/secret"
+    with (
+        patch("preloop.models.crud.crud_tracker.get") as get_tracker,
+        patch(
+            "preloop.sync.trackers.azure_devops.AzureDevOpsTracker.get_pull_request",
+            new_callable=AsyncMock,
+        ) as read,
+    ):
+        tracker = get_tracker.return_value
+        tracker.connection_details = {"organization": "example-org"}
+        tracker.is_active = True
+        tracker.is_deleted = False
+        read.return_value = {
+            "status": "active",
+            "repository": {"id": "other-id"},
+            "lastMergeSourceCommit": {"commitId": "a" * 40},
+        }
+        assert (
+            await service._azure_pull_request_skip_reason(delivery)
+            == "repository_identity_mismatch"
+        )
+        if mismatch == "payload_name":
+            read.assert_not_awaited()
+        else:
+            read.assert_awaited_once_with(7, "example-org/Project/repo")

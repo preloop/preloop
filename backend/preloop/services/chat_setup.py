@@ -175,6 +175,23 @@ async def discover(
     async def get(path: str) -> Any:
         return await provider_request(config, "GET", path, client=client)
 
+    if config.provider == "teams":
+        from preloop.services.teams_auth import bot_token
+
+        if client is None:
+            async with httpx.AsyncClient(
+                trust_env=False, follow_redirects=False
+            ) as active:
+                await bot_token(config, active)
+        else:
+            await bot_token(config, client)
+        return {
+            "bot_user_id": config.bot_user_id,
+            "name": "Microsoft Teams",
+            "workspaces": [
+                {"id": config.teams_app_tenant_id, "name": config.teams_app_tenant_id}
+            ],
+        }
     if config.provider == "slack":
         identity = await get("/auth.test")
         if not isinstance(identity, dict) or identity.get("ok") is not True:

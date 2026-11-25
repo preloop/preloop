@@ -38,6 +38,26 @@ def setup_request(
         db_session, test_tracker.account_id, types=["pull_request_updated"]
     )
     flow.trigger_event_source = str(test_tracker.id)
+    organization = models.Organization(
+        name="Example", identifier="fabrikam", tracker_id=test_tracker.id
+    )
+    db_session.add(organization)
+    db_session.flush()
+    project = models.Project(
+        name="Repository",
+        identifier=REPO_ID,
+        organization_id=organization.id,
+        meta_data={"full_name": "fabrikam/Fabrikam-Fiber-Git/Fabrikam-Fiber-Git"},
+    )
+    db_session.add(project)
+    db_session.add(
+        models.TrackerScopeRule(
+            tracker_id=test_tracker.id,
+            scope_type="ORGANIZATION",
+            rule_type="INCLUDE",
+            identifier="fabrikam",
+        )
+    )
     db_session.flush()
     event = {
         "source": "azure_devops",
@@ -157,7 +177,7 @@ async def test_active_run_gets_exactly_one_pending_followup(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["closed", "head", "disabled", "scope"])
+@pytest.mark.parametrize("change", ["closed", "disabled", "scope"])
 async def test_pending_requests_recheck_current_state(
     db_session: Session, setup_request: Any, change: str
 ) -> None:
@@ -290,7 +310,7 @@ def test_label_discovery_rotates_bounded_repository_pages(
             identifier=f"repo-{i}",
             organization_id=organization.id,
         )
-        for i in range(3)
+        for i in range(2)
     ]
     db_session.add_all(projects)
     db_session.flush()
@@ -363,3 +383,94 @@ def test_changed_repository_binding_discards_pending_scope(
         ),
     ):
         assert _project(db_session, tracker, REPO_ID) is None
+
+
+def test_comment_history_is_bounded(db_session: Session, setup_request: Any) -> None:
+    """Retain recent dedupe keys without storing a PR's entire comment history."""
+    from preloop.models.crud.azure_review_request import MAX_COMMENT_SIGNALS
+
+    flow, event = setup_request
+    for number in range(MAX_COMMENT_SIGNALS + 2):
+        event["payload"]["azure_review_request"]["signal"] = f"1:{number}"
+        assert requests.enqueue(db_session, flow=flow, event=event)
+    row = db_session.query(models.AzureReviewRequest).filter_by(flow_id=flow.id).one()
+    assert len(row.signals["comments"]) == MAX_COMMENT_SIGNALS
+    assert row.signals["comments"][0] == "1:2"
+    assert not requests.enqueue(db_session, flow=flow, event=event)
+
+
+@pytest.mark.parametrize(
+    "pending,leased,expired",
+    [(False, False, True), (True, False, False), (False, True, False)],
+)
+def test_stale_request_cleanup_preserves_pending_work(
+    db_session: Session, setup_request: Any, pending: bool, leased: bool, expired: bool
+) -> None:
+    """Idle bookkeeping expires; pending requests and live leases survive."""
+    flow, event = setup_request
+    now = datetime.now(timezone.utc)
+    requests.enqueue(db_session, flow=flow, event=event, now=now)
+    row = db_session.query(models.AzureReviewRequest).filter_by(flow_id=flow.id).one()
+    row.updated_at = (now - timedelta(days=91)).replace(tzinfo=None)
+    row.due_at = now if pending else None
+    row.lease_until = now + timedelta(minutes=1) if leased else None
+    db_session.commit()
+    assert requests.purge_stale(db_session, now=now) == int(expired)
+    assert (requests.get(db_session, row.id) is None) is expired
+
+
+@pytest.mark.asyncio
+async def test_pending_request_reviews_current_head(
+    db_session: Session, setup_request: Any
+) -> None:
+    """An explicit request waiting behind a run follows the latest source head."""
+    flow, event = setup_request
+    now = datetime.now(timezone.utc)
+    requests.enqueue(db_session, flow=flow, event=event, now=now - timedelta(minutes=1))
+    current = copy.deepcopy(PR)
+    current["lastMergeSourceCommit"]["commitId"] = "e" * 40
+    service = FlowTriggerService(db_session)
+    with (
+        patch(
+            "preloop.sync.trackers.azure_devops.AzureDevOpsTracker.get_pull_request",
+            new=AsyncMock(return_value=current),
+        ),
+        patch(
+            "preloop.services.flow_trigger_service.crud_flow.get_by_trigger",
+            return_value=[flow],
+        ),
+        stubbed_runtime(),
+    ):
+        assert await flush_requests(db_session, service, now) == 1
+    execution = db_session.query(models.FlowExecution).filter_by(flow_id=flow.id).one()
+    assert (
+        execution.trigger_event_details["payload"]["pull_request"]["head"]["sha"]
+        == "e" * 40
+    )
+
+
+def test_observed_label_does_not_expire_and_rearm(
+    db_session: Session, setup_request: Any
+) -> None:
+    """A still-attached label survives retention without requesting another run."""
+    flow, event = setup_request
+    event["payload"]["azure_review_request"] = {
+        "kind": "label",
+        "signal": "label-1",
+        "label": "preloop-review",
+    }
+    now = datetime.now(timezone.utc)
+    requests.enqueue(db_session, flow=flow, event=event)
+    row = db_session.query(models.AzureReviewRequest).filter_by(flow_id=flow.id).one()
+    row.due_at = None
+    row.updated_at = (now - timedelta(days=91)).replace(tzinfo=None)
+    db_session.commit()
+    requests.observe_labels(
+        db_session,
+        tracker_id=row.tracker_id,
+        repository_id=row.repository_id,
+        number=row.number,
+        present={"label-1"},
+    )
+    assert requests.purge_stale(db_session, now=now) == 0
+    assert not requests.enqueue(db_session, flow=flow, event=event)

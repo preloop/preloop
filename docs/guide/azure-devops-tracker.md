@@ -374,3 +374,8 @@ Only PAT authentication is implemented. See the
 [application identity investigation](azure-devops-application-identity.md)
 for the requirements and remaining verification for Entra service principals
 and managed identities.
+
+Explicit-request bookkeeping retains the latest 256 comment signals per flow/PR.
+Idle rows expire after 90 days without observation; pending work and live leases
+are retained. Polling an open PR refreshes its label state so a label that still
+needs manual removal does not expire and start another review.

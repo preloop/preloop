@@ -692,10 +692,17 @@ def normalize_delivery(
     normalized = normalize_pull_request(resource, organization)
     info = normalized["azure_devops"]
     repo_id = info["repository_id"]
-    if bound_project and (info["project"] or "").casefold() != bound_project.casefold():
+    terminal = info["status"] in ("completed", "abandoned")
+    if (
+        not terminal
+        and bound_project
+        and (info["project"] or "").casefold() != bound_project.casefold()
+    ):
         return AzureDevOpsDelivery(False, key, reason="repository_outside_scope")
-    if bound_repository and (
-        (info["repository"] or "").casefold() != bound_repository.casefold()
+    if (
+        not terminal
+        and bound_repository
+        and ((info["repository"] or "").casefold() != bound_repository.casefold())
     ):
         return AzureDevOpsDelivery(False, key, reason="repository_outside_scope")
     if repository_known is not None and not repository_known(repo_id):

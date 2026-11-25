@@ -260,6 +260,7 @@ def create_link_code(
         "expires_at": expires_at.isoformat() + "Z",
         "instruction": {
             "slack": "Send a plain direct message: link CODE",
+            "teams": "Open the Preloop app in Teams and send a personal message: link CODE",
             "mattermost": "Send a private direct message to the bot: link CODE"
             if not provider_config(connection).verification_secret
             else "Run /preloop /link CODE; the command response is private.",
@@ -362,8 +363,16 @@ def ingest(
     # Bound the body while streaming, rather than allocating an arbitrary body.
     raw = from_thread.run(_read_ingress_body, request)
     try:
+        keys = None
+        if connection.provider == "teams":
+            from preloop.services.teams_auth import signing_keys
+
+            scheme, _, token = request.headers.get("authorization", "").partition(" ")
+            if scheme.lower() != "bearer":
+                raise ChatProviderError("Invalid Teams token")
+            keys = from_thread.run(signing_keys, token)
         ingress = verify_ingress(
-            provider_config(connection), bytes(raw), request.headers
+            provider_config(connection), bytes(raw), request.headers, signing_keys=keys
         )
     except (ChatProviderError, ValueError) as exc:
         raise HTTPException(401, "Invalid provider request") from exc
@@ -376,7 +385,7 @@ def ingest(
             mention = f"<@{bot_id}>"
             if bot_id and text.startswith(mention):
                 text = text[len(mention) :].strip()
-        if connection.provider == "slack":
+        if connection.provider in {"slack", "teams"}:
             verb = text.split(maxsplit=1)[0] if text else ""
             if verb in {"link", "note", "message", "approve", "deny", "ask", "help"}:
                 text = "/" + text
@@ -386,6 +395,18 @@ def ingest(
             "channel_id": event.channel_id,
             "thread_id": event.thread_id,
         }
+        if connection.provider == "teams":
+            payload["service_url"] = event.service_url
+            payload["provider_conversation_id"] = event.provider_conversation_id
+            crud_chat.remember_delivery_state(
+                db,
+                connection.id,
+                event.user_id,
+                {
+                    "service_url": event.service_url,
+                    "conversation_id": event.provider_conversation_id,
+                },
+            )
         actor = crud_chat.principal(db, connection, event.user_id)
         if actor is not None:
             payload["actor_id"] = str(actor.id)

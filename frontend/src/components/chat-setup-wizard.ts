@@ -31,6 +31,11 @@ export class ChatSetupWizard extends LitElement {
   @state() private secret = '';
   @state() private origin = '';
   @state() private teamHint = '';
+  @state() private teamsAppId = '';
+  @state() private teamsTenantId = '';
+  @state() private teamsDeveloperUrl = '';
+  @state() private teamsPrivacyUrl = '';
+  @state() private teamsTermsUrl = '';
   @state() private workspace = '';
   @state() private name = '';
   @state() private busy = false;
@@ -117,11 +122,39 @@ export class ChatSetupWizard extends LitElement {
         verification_secret: this.secret,
         base_url: this.origin,
         team_hint: this.teamHint,
+        ...(this.provider === 'teams'
+          ? {
+              teams_app_id: this.teamsAppId,
+              teams_app_tenant_id: this.teamsTenantId,
+              teams_developer_url: this.teamsDeveloperUrl,
+              teams_privacy_url: this.teamsPrivacyUrl,
+              teams_terms_url: this.teamsTermsUrl,
+            }
+          : {}),
       });
       this.token = this.secret = '';
       this.setDraft(draft);
     });
   };
+
+  private downloadTeams = () =>
+    void this.act(async () => {
+      if (!this.draft) return;
+      const response = await fetchWithAuth(
+        `${REST_API_PREFIX}/chat/setup/${this.draft.id}/teams-package`,
+        { cache: 'no-store' }
+      );
+      if (!response.ok)
+        throw new Error(
+          'Unable to download Teams package. Refresh setup and try again.'
+        );
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = 'preloop-teams.zip';
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
 
   private refresh = () =>
     void this.act(async () => {
@@ -178,7 +211,7 @@ export class ChatSetupWizard extends LitElement {
               ${
                 draft.workspaces.length
                   ? html`<sl-select
-                      label=${this.provider === 'mattermost' ? 'Team' : this.provider === 'discord' ? 'Server' : 'Workspace'}
+                      label=${this.provider === 'mattermost' ? 'Team' : this.provider === 'discord' ? 'Server' : this.provider === 'teams' ? 'Directory (tenant)' : 'Workspace'}
                       .value=${this.workspace}
                       @sl-change=${(event: Event) => (this.workspace = (event.target as HTMLSelectElement).value)}
                     >
@@ -230,6 +263,27 @@ export class ChatSetupWizard extends LitElement {
                     : html`<p role="status">
                         ${this.provider === 'slack' ? 'Complete Slack authorization in the opened tab, then refresh.' : 'Install the bot in your server, then refresh.'}
                       </p>`
+              }
+              ${
+                this.provider === 'teams'
+                  ? html`
+                      <p>
+                        Set this callback as the Azure Bot messaging endpoint
+                        and enable the Microsoft Teams channel. Finish here to
+                        activate the endpoint.
+                      </p>
+                      <sl-button
+                        ?disabled=${this.busy}
+                        @click=${this.downloadTeams}
+                        >Download Teams app package</sl-button
+                      >
+                      <p>
+                        A Teams administrator must upload and allow the app.
+                        Policy changes can take a few hours. Then open the app
+                        in Teams and link your account. Personal chat only.
+                      </p>
+                    `
+                  : nothing
               }
               ${draft.install_url ? html`<a href=${draft.install_url} target="_blank" rel="noopener noreferrer">Install in Discord</a>` : nothing}
               ${this.provider !== 'mattermost' ? html`<p>Callback URL: <code>${draft.callback_url}</code><sl-copy-button value=${draft.callback_url} copy-label="Copy callback URL"></sl-copy-button></p>` : html`<p>Send the bot a direct message. No slash command or command token is needed.</p>`}
@@ -307,7 +361,8 @@ export class ChatSetupWizard extends LitElement {
               >
                 <sl-option value="mattermost">Mattermost</sl-option
                 ><sl-option value="slack">Slack</sl-option
-                ><sl-option value="discord">Discord</sl-option>
+                ><sl-option value="discord">Discord</sl-option
+                ><sl-option value="teams">Microsoft Teams</sl-option>
               </sl-select>
               ${
                 this.provider === 'slack' && this.oauth
@@ -334,13 +389,62 @@ export class ChatSetupWizard extends LitElement {
                     >`
                   : nothing
               }
+              ${
+                this.provider === 'teams'
+                  ? html`
+                      <p>
+                        Register your own single-tenant Entra app and Azure Bot
+                        resource. A Teams administrator must allow the app for
+                        your users.
+                      </p>
+                      <sl-input
+                        label="Application (client) ID"
+                        required
+                        .value=${this.teamsAppId}
+                        @sl-input=${(event: Event) => (this.teamsAppId = (event.target as HTMLInputElement).value)}
+                      ></sl-input>
+                      <sl-input
+                        label="Directory (tenant) ID"
+                        required
+                        .value=${this.teamsTenantId}
+                        @sl-input=${(event: Event) => (this.teamsTenantId = (event.target as HTMLInputElement).value)}
+                      ></sl-input>
+                      <details>
+                        <summary>Advanced manifest URLs</summary>
+                        <p>
+                          Blank URLs default to this installation's own public
+                          origin. Set pages appropriate for your installation
+                          before downloading the package.
+                        </p>
+                        <sl-input
+                          label="Developer website URL"
+                          type="url"
+                          .value=${this.teamsDeveloperUrl}
+                          @sl-input=${(event: Event) => (this.teamsDeveloperUrl = (event.target as HTMLInputElement).value)}
+                        ></sl-input>
+                        <sl-input
+                          label="Privacy URL"
+                          type="url"
+                          .value=${this.teamsPrivacyUrl}
+                          @sl-input=${(event: Event) => (this.teamsPrivacyUrl = (event.target as HTMLInputElement).value)}
+                        ></sl-input>
+                        <sl-input
+                          label="Terms of use URL"
+                          type="url"
+                          .value=${this.teamsTermsUrl}
+                          @sl-input=${(event: Event) => (this.teamsTermsUrl = (event.target as HTMLInputElement).value)}
+                        ></sl-input>
+                      </details>
+                    `
+                  : nothing
+              }
               ${this.provider === 'mattermost' ? html`<sl-input label="Mattermost address" type="url" required placeholder="https://chat.example.com" .value=${this.origin} @sl-input=${(event: Event) => (this.origin = (event.target as HTMLInputElement).value)}></sl-input>` : nothing}
               <sl-input
-                label=${this.provider === 'mattermost' ? 'Bot access token' : 'Bot token'}
+                label=${this.provider === 'teams' ? 'Client secret' : this.provider === 'mattermost' ? 'Bot access token' : 'Bot token'}
                 type="password"
                 autocomplete="new-password"
                 required
-                help-text=${this.provider === 'mattermost' ? 'Paste the token secret, not the Token ID. Use a bot account, not a system-admin token.' : 'Use the bot token from your provider developer console. Identity and workspace are discovered automatically.'}
+                help-text=${this.provider === 'teams' ? 'Use the client secret value from your single-tenant Entra app registration.' : this.provider === 'mattermost' ? 'Paste the token secret, not the Token ID. Use a bot account, not a system-admin token.' : 'Use the bot token from your provider developer console. Identity and workspace are discovered automatically.'}
                 .value=${this.token}
                 @sl-input=${(event: Event) => (this.token = (event.target as HTMLInputElement).value)}
               ></sl-input>
@@ -367,7 +471,7 @@ export class ChatSetupWizard extends LitElement {
                 >
               </p>
               <sl-button type="submit" variant="primary" ?loading=${this.busy}
-                >Discover bot and workspace</sl-button
+                >${this.provider === 'teams' ? 'Verify Teams credentials' : 'Discover bot and workspace'}</sl-button
               >
             </form>`
       }

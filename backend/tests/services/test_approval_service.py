@@ -1045,6 +1045,31 @@ class TestPostWebhookNotification:
         assert result is True
         assert "attachments" in captured["payload"]
 
+    async def test_post_webhook_teams_success(
+        self,
+        monkeypatch,
+        approval_service,
+        sample_approval_request,
+        sample_approval_workflow,
+    ) -> None:
+        """Protects card routing; fails when generic; no_claim: real delivery."""
+        sample_approval_workflow.approval_type = "teams"
+        sample_approval_request.summary = "Review sample tool"
+        captured = self._queue(monkeypatch)
+        assert await approval_service.post_webhook_notification(
+            sample_approval_request, sample_approval_workflow
+        )
+        from preloop.services.teams_webhook import approval_card
+
+        request = sample_approval_request
+        assert captured["payload"] == approval_card(
+            (request.summary or "").strip()
+            or f"Approval Required: {request.tool_name}",
+            request.tool_name,
+            request.status,
+            f"{approval_service.base_url}/console/approval/{request.id}?token={request.approval_token}",
+        )
+
     async def test_post_webhook_generic_success(
         self,
         monkeypatch,

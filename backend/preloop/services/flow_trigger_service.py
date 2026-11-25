@@ -2435,12 +2435,42 @@ class FlowTriggerService:
         request = payload.get("azure_review_request")
         if not number or (not head and not request) or not repo.get("full_name"):
             return "missing_pull_request_identity"
+        from fastapi import HTTPException
+
+        from preloop.api.common import azure_devops_repo_full_name, project_scope_denial
+        from preloop.models.crud import crud_project
+
+        project = crud_project.get_for_tracker_by_identifier(
+            self.db, tracker_id=tracker.id, identifier=str(repo.get("id") or "")
+        )
+        if (
+            project is None
+            or not tracker.is_active
+            or tracker.is_deleted
+            or not project.is_active
+            or not project.organization.is_active
+            or project_scope_denial(self.db, tracker, project.organization, project)
+        ):
+            return "repository_outside_scope"
+        try:
+            full_name = azure_devops_repo_full_name(
+                tracker.connection_details or {}, project
+            )
+        except HTTPException:
+            return "repository_outside_scope"
+        if str(repo["full_name"]).casefold() != full_name.casefold():
+            return "repository_identity_mismatch"
         client = AzureDevOpsTracker(
             str(tracker.id),
             tracker.resolved_api_key or "",
             dict(tracker.connection_details or {}),
         )
-        current = await client.get_pull_request(number, repo["full_name"])
+        current = await client.get_pull_request(number, full_name)
+        if (
+            str((current.get("repository") or {}).get("id") or "").casefold()
+            != str(repo.get("id") or "").casefold()
+        ):
+            return "repository_identity_mismatch"
         status = current.get("status")
         if status != "active":
             terminal = {
@@ -2455,7 +2485,7 @@ class FlowTriggerService:
         current_head = (current.get("lastMergeSourceCommit") or {}).get("commitId")
         if not current_head:
             return "missing_current_pull_request_head"
-        if head and current_head != head:
+        if head and current_head != head and not request:
             return "pull_request_head_changed"
         if request:
             from preloop.utils.azure_devops import normalize_pull_request

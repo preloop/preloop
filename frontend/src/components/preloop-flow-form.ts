@@ -4970,12 +4970,12 @@ export class PreloopFlowForm extends LitElement {
             <sl-switch
               data-field="interactive"
               .checked=${this.flow.agent_config?.interactive?.enabled === true}
-              ?disabled=${this.flow.agent_type !== 'opencode'}
+              ?disabled=${!['opencode', 'deepseek'].includes(this.flow.agent_type)}
               @sl-change=${(event: Event) => this.setInteractiveSetting('enabled', (event.target as HTMLInputElement).checked)}
               >Interactive conversations</sl-switch
             >
             <p>
-              ${this.flow.agent_type === 'opencode' ? 'Start a conversation from this flow. Its hosted container waits for follow-up messages.' : 'Interactive conversations require hosted OpenCode. DeepSeek Harness, Pi and other harnesses are not supported.'}
+              ${['opencode', 'deepseek'].includes(this.flow.agent_type) ? 'Start a conversation from this flow. Its hosted container waits for follow-up messages.' : 'Interactive conversations require hosted OpenCode or DeepSeek Harness. Pi and other harnesses are not supported.'}
             </p>
             <sl-input
               type="number"

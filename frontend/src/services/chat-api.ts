@@ -1,7 +1,7 @@
 import { REST_API_PREFIX } from '../api-path';
 import { fetchWithAuth } from '../api';
 
-export type ChatProvider = 'slack' | 'mattermost' | 'discord';
+export type ChatProvider = 'slack' | 'mattermost' | 'discord' | 'teams';
 
 export interface ChatConnection {
   id: string;
@@ -21,7 +21,7 @@ export interface ChatConnection {
 }
 
 export interface ChatConnectionCreate {
-  provider: ChatProvider;
+  provider: Exclude<ChatProvider, 'teams'>;
   workspace_id: string;
   name?: string;
   verification_secret: string;

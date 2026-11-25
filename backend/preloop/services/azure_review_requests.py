@@ -150,9 +150,7 @@ async def poll_labels(db: Session, service: FlowTriggerService, now: datetime) -
             )
         except Exception:
             db.rollback()
-            logger.exception(
-                "Azure review label polling failed for project %s", project_id
-            )
+            logger.error("Azure review label polling failed for project %s", project_id)
 
 
 async def flush_requests(
@@ -215,9 +213,7 @@ async def flush_requests(
                 )
         except Exception:
             db.rollback()
-            logger.exception(
-                "Azure explicit review retry deferred for request %s", row_id
-            )
+            logger.error("Azure explicit review retry deferred for request %s", row_id)
     return dispatched
 
 
@@ -226,4 +222,6 @@ async def run_review_request_tick(db: Session) -> int:
     service = FlowTriggerService(db)
     now = datetime.now(timezone.utc)
     await poll_labels(db, service, now)
-    return await flush_requests(db, service, now)
+    dispatched = await flush_requests(db, service, now)
+    requests.purge_stale(db, now=now)
+    return dispatched

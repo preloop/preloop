@@ -81,5 +81,9 @@ longer the current head. A failed API read retries through the worker rather
 than dispatching from stale payload data. Abandon and complete deliveries
 have separate dedupe identities from source-head updates and reach the shared
 `pr_closed` / `pr_merged` execution stop path, even when no flow subscribes to
-them. The updated subscription must include all changes. This ingress check
+them, including when the imported repository has since been removed from scope.
+Manual setup needs two updated subscriptions: source pushes use
+`PushNotification`; lifecycle updates use `StatusUpdateNotification` and the
+`X-Preloop-Azure-Lifecycle: true` header so they can only stop runs. The lifecycle
+subscription cannot replace the source-push subscription. This ingress check
 does not add Azure to the periodic three-forge refresh described above.

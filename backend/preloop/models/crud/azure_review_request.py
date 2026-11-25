@@ -17,6 +17,8 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 
 QUIET_SECONDS = 15
+MAX_COMMENT_SIGNALS = 256
+RETENTION_DAYS = 90
 
 
 class CRUDAzureReviewRequest:
@@ -109,6 +111,7 @@ class CRUDAzureReviewRequest:
                 db.commit()
                 return False
             seen.append(key)
+            signals["comments"] = seen[-MAX_COMMENT_SIGNALS:]
         row.signals = signals
         row.revision += 1
         row.event = copy.deepcopy(event)
@@ -138,6 +141,8 @@ class CRUDAzureReviewRequest:
             .with_for_update()
         ).all()
         for row in rows:
+            # A label still observed on an open PR must not expire and rearm.
+            row.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
             if row.signals.get("label") not in present:
                 row.signals = {**row.signals, "label": None}
         db.commit()
@@ -181,6 +186,32 @@ class CRUDAzureReviewRequest:
             row.due_at = None if done else now + timedelta(seconds=QUIET_SECONDS)
             row.lease_until = None
             db.commit()
+
+    def purge_stale(self, db: Session, *, now: datetime, limit: int = 100) -> int:
+        """Delete a bounded batch of idle bookkeeping after 90 unobserved days.
+
+        Pending requests and live leases are retained. Open PR label polls
+        refresh updated_at, so a label awaiting manual removal stays deduped.
+        """
+        rows = db.scalars(
+            select(models.AzureReviewRequest)
+            .where(
+                models.AzureReviewRequest.updated_at
+                < (now - timedelta(days=RETENTION_DAYS)).replace(tzinfo=None),
+                models.AzureReviewRequest.due_at.is_(None),
+                or_(
+                    models.AzureReviewRequest.lease_until.is_(None),
+                    models.AzureReviewRequest.lease_until <= now,
+                ),
+            )
+            .order_by(models.AzureReviewRequest.updated_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        ).all()
+        for row in rows:
+            db.delete(row)
+        db.commit()
+        return len(rows)
 
     def claim_projects(
         self, db: Session, *, now: datetime, limit: int = 2

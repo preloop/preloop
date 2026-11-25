@@ -4447,9 +4447,9 @@ class FlowExecutionOrchestrator:
 
         if (self.trigger_event_data or {}).get(
             "_conversation_id"
-        ) and effective_agent_type != "opencode":
+        ) and effective_agent_type not in {"opencode", "deepseek"}:
             raise ValueError(
-                "Interactive conversations require hosted OpenCode; model routing selected an unsupported harness."
+                "Interactive conversations require hosted OpenCode or DeepSeek Harness; model routing selected an unsupported harness."
             )
 
         execution_context = {

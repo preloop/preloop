@@ -96,7 +96,7 @@ graph LR
 | [Runners and remote sessions](docs/architecture/runners.md) | Private runner capabilities, owner consent, native host-profile publication and continuation, remote harness sessions and workspace policy. |
 | [Runner-proxied local models](docs/architecture/runner-local-models.md) | Local models proxied through a private runner (#1833). |
 | [Identity, membership and SSO](docs/architecture/identity.md) | Canonical person identities, users, teams, edition overlays, enterprise sign-on persistence, session assurance and offboarding. |
-| [Chat connections](docs/architecture/chat.md) | Chat provider setup, authenticated operations, and durable chat-triggered flow replies. |
+| [Chat connections](docs/architecture/chat.md) | Chat provider setup (including single-tenant Teams REST transport), authenticated operations, and durable chat-triggered flow replies. |
 | [Discovery source observations](docs/architecture/discovery.md) | Versioned discovery evidence: storage, correlation boundary and presentation. |
 | [Telemetry and activity](docs/architecture/telemetry.md) | OpenTelemetry export and ingest, activity and analytics primitives, vendor activity imports, recording timeline sync. |
 | [Similar sessions](docs/architecture/similar-sessions.md) | Finding sessions similar to the one being viewed. |

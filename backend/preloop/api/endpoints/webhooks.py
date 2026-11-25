@@ -663,9 +663,13 @@ def _prepare_azure_devops_webhook(
                 except HTTPException:
                     delivery.accepted = False
                     delivery.reason = "repository_outside_scope"
-        if project is not None and (
-            project.is_active is False
-            or project_scope_denial(db, tracker, project.organization, project)
+        if (
+            delivery.event_type not in {"pull_request_merged", "pull_request_closed"}
+            and project is not None
+            and (
+                project.is_active is False
+                or project_scope_denial(db, tracker, project.organization, project)
+            )
         ):
             delivery.accepted = False
             delivery.reason = "repository_outside_scope"
