@@ -65,21 +65,27 @@ schedule is evaluated in that zone, so 06:00 stays 06:00 across DST). The
 agent reads CI through the GitHub credential available in the run (`gh`
 or `GITHUB_TOKEN`); without one it writes a failure report saying so.
 
-To run it on your own machine instead of hosted compute, pin the harness
-and runner in `agent_config` (see
-[Run flows on your machine](../runners/your-machine.md#flows-on-your-machine)):
+To run it on your own machine instead of hosted compute, pin the harness,
+runner and host profile in `agent_config` (see
+[Run flows on your machine](../runners/your-machine.md#flows-on-your-machine)
+and [Host execution profiles](../runners/quickstart-linux.md#host-execution-profiles-advanced-override-private-only)):
 
 <!-- example: fragment -->
 ```json
 {
   "harness": "codex_cli",
   "runner_id": "<runner id>",
-  "codex_model": "<model alias the runner advertises>",
+  "host_exec_profile": "<local profile name>",
+  "codex_model": "<model alias the profile maps>",
   "harness_fallback": "fail"
 }
 ```
 
-The harness, runner and model can be changed later with a flow update; the
-flow does not have to be recreated. A pinned flow is only leased to a
-runner that advertises that harness for flows, so check
-`preloop runner inventory` first.
+Host execution cannot publish pull requests yet, so the flow is refused
+when it pins a native harness with `create_pull_request: true`. Until it
+can, a pinned flow uses `publication_mode: read_only`: it still produces
+the report and its local commit, but the commit is not published. The
+harness, runner, model and publication settings can all be changed later
+with a flow update; the flow does not have to be recreated. A pinned flow
+is only leased to a runner that advertises that harness for flows, so
+check `preloop runner inventory` first.
