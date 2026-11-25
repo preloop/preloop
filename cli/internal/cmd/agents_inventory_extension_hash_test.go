@@ -180,7 +180,7 @@ func TestExtensionTreeHashUnreadableFile(t *testing.T) {
 func TestExtensionCommandAndPluginHashes(t *testing.T) {
 	home := t.TempDir()
 	writeInventoryFixture(t, home, ".claude/commands/go.md", "run")
-	writeInventoryFixture(t, home, ".claude/plugins/store/p.json", `{"name":"p","marketplace":"m","installPath":".claude/plugins/marketplaces/m/plugins/p"}`)
+	writeClaudePluginRecord(t, home, "p", `{"name":"p","marketplace":"m","installPath":".claude/plugins/marketplaces/m/plugins/p"}`)
 	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/m/plugins/p/.claude-plugin/plugin.json", `{"version":"1.0.0"}`)
 	script := writeInventoryFixture(t, home, ".claude/plugins/marketplaces/m/plugins/p/bin/tool", "a")
 	collect := func() map[string]inventoryExtension {

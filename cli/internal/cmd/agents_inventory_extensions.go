@@ -387,9 +387,24 @@ func (r *extensionRoot) hookDirectory(base, scope, project string) {
 	}
 }
 
-func extensionEnabled(doc map[string]json.RawMessage) map[string]bool {
-	var enabled map[string]bool
-	_ = json.Unmarshal(doc["enabledPlugins"], &enabled)
+func (r *extensionRoot) extensionEnabled(doc map[string]json.RawMessage) map[string]bool {
+	raw, ok := doc["enabledPlugins"]
+	if !ok {
+		return nil
+	}
+	var values map[string]*bool
+	if json.Unmarshal(raw, &values) != nil || values == nil {
+		r.scan.fail("extension_malformed")
+		return nil
+	}
+	enabled := map[string]bool{}
+	for id, value := range values {
+		if value == nil {
+			r.scan.fail("extension_malformed")
+			continue
+		}
+		enabled[id] = *value
+	}
 	return enabled
 }
 
@@ -452,10 +467,16 @@ func (r *extensionRoot) plugin(id, marketplace string, record map[string]json.Ra
 		}
 		if !filepath.IsLocal(path) {
 			r.scan.fail("extension_unsafe_path")
-		} else {
-			manifest := r.document(filepath.Join(path, ".claude-plugin", "plugin.json"))
-			if codex && manifest == nil {
+		} else if _, err := r.stat(path); err == nil {
+			var manifest map[string]json.RawMessage
+			if codex {
 				manifest = r.document(filepath.Join(path, "plugin.json"))
+				if manifest == nil {
+					manifest = r.document(filepath.Join(path, ".codex-plugin", "plugin.json"))
+				}
+			}
+			if manifest == nil {
+				manifest = r.document(filepath.Join(path, ".claude-plugin", "plugin.json"))
 			}
 			if version := extensionString(manifest["version"]); version != "" {
 				ext.Version = version
@@ -474,86 +495,6 @@ func (r *extensionRoot) plugin(id, marketplace string, record map[string]json.Ra
 		}
 	}
 	return ext
-}
-
-func (r *extensionRoot) claudePlugins(enabled map[string]bool) []inventoryExtension {
-	before := len(r.scan.extensions)
-	marketplaces := r.document(filepath.Join(".claude", "plugins", "known_marketplaces.json"))
-	for _, entry := range r.dirs(filepath.Join(".claude", "plugins", "store")) {
-		path := filepath.Join(".claude", "plugins", "store", entry.Name())
-		if _, err := r.stat(path); err != nil {
-			continue
-		}
-		if entry.IsDir() || filepath.Ext(path) != ".json" {
-			continue
-		}
-		doc := r.document(path)
-		if doc == nil {
-			continue
-		}
-		var records map[string][]map[string]json.RawMessage
-		if raw, ok := doc["plugins"]; ok {
-			if json.Unmarshal(raw, &records) != nil {
-				r.scan.fail("extension_malformed")
-				continue
-			}
-		} else {
-			records = map[string][]map[string]json.RawMessage{strings.TrimSuffix(entry.Name(), ".json"): {doc}}
-		}
-		ids := make([]string, 0, len(records))
-		for id := range records {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			for _, record := range records[id] {
-				market := extensionString(record["marketplace"])
-				if parts := strings.SplitN(id, "@", 2); len(parts) == 2 {
-					market = parts[1]
-				}
-				var known map[string]json.RawMessage
-				_ = json.Unmarshal(marketplaces[market], &known)
-				if record["source"] == nil {
-					record["source"] = known["source"]
-				}
-				if record["installPath"] == nil {
-					install := extensionString(known["installLocation"])
-					if install == "" {
-						install = filepath.Join(".claude", "plugins", "marketplaces", market)
-					}
-					name := extensionString(record["name"])
-					if name == "" {
-						name = strings.Split(id, "@")[0]
-					}
-					record["installPath"], _ = json.Marshal(filepath.Join(install, "plugins", name))
-				}
-				r.scan.add(r.plugin(id, market, record, enabled, false))
-			}
-		}
-	}
-	return append([]inventoryExtension{}, r.scan.extensions[before:]...)
-}
-
-func (r *extensionRoot) codexPlugins() {
-	base := filepath.Join(".codex", "plugins")
-	for _, market := range r.dirs(base) {
-		marketPath := filepath.Join(base, market.Name())
-		if info, err := r.stat(marketPath); err != nil || !info.IsDir() {
-			continue
-		}
-		for _, plugin := range r.dirs(marketPath) {
-			path := filepath.Join(marketPath, plugin.Name())
-			if info, err := r.stat(path); err != nil || !info.IsDir() {
-				continue
-			}
-			record := r.document(filepath.Join(path, "plugin.json"))
-			if record == nil {
-				record = map[string]json.RawMessage{}
-			}
-			record["installPath"], _ = json.Marshal(path)
-			r.scan.add(r.plugin(plugin.Name(), market.Name(), record, nil, true))
-		}
-	}
 }
 
 func collectInventoryExtensions(home, agent, salt string, profileOnly bool) ([]inventoryExtension, []string) {
@@ -578,8 +519,14 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool)
 	defer root.root.Close()
 	if agent == "claude-code" {
 		settings := root.document(filepath.Join(".claude", "settings.json"))
-		enabled := extensionEnabled(settings)
-		plugins := root.claudePlugins(enabled)
+		enabled := root.extensionEnabled(settings)
+		plugins := root.claudePlugins(enabled, profileOnly)
+		installedProjects := map[string]bool{}
+		for _, plugin := range plugins {
+			if plugin.Scope == "project" {
+				installedProjects[plugin.ProjectRefHash+"\x00"+plugin.ID] = true
+			}
+		}
 		root.localFiles(filepath.Join(".claude", "skills"), "user", "", true)
 		root.localFiles(filepath.Join(".claude", "commands"), "user", "", false)
 		root.hooks(settings["hooks"], "user", "")
@@ -610,9 +557,9 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool)
 				}
 				hash := scan.projectHash(path)
 				settings := project.document(filepath.Join(".claude", "settings.json"))
-				overrides := extensionEnabled(settings)
+				overrides := project.extensionEnabled(settings)
 				for _, plugin := range plugins {
-					if value, ok := overrides[plugin.ID]; ok {
+					if value, ok := overrides[plugin.ID]; ok && plugin.Scope == "user" && !installedProjects[hash+"\x00"+plugin.ID] {
 						plugin.Scope = "project"
 						plugin.ProjectRefHash = hash
 						plugin.Enabled = "false"

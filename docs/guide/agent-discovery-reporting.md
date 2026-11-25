@@ -305,19 +305,43 @@ only by SHA-256 hashes; project references use the config-path hashing scheme
 
 | Agent | Kind | Known locations below the profile home | Collected metadata |
 | --- | --- | --- | --- |
-| Claude Code | Plugin | `.claude/plugins/store/*.json`, `.claude/plugins/known_marketplaces.json`, `.claude/plugins/marketplaces/<marketplace>/plugins/<name>/.claude-plugin/plugin.json` | Name and marketplace, manifest version (falling back to record version), source hash, enabled state |
+| Claude Code | Plugin | `.claude/plugins/installed_plugins.json` (version 2), `known_marketplaces.json`, installed content under `cache/<marketplace>/<name>/<version>/` | Name and marketplace, manifest version (falling back to record version), source hash, enabled state |
 | Claude Code | Skill | `.claude/skills/<name>/SKILL.md` | Directory name and file SHA-256 |
 | Claude Code | Hook | `hooks` in `.claude/settings.json`; JSON event mappings in `.claude/hooks/` | Event, command count, one aggregate hash |
 | Claude Code | Command | `.claude/commands/*.md` | File stem and file SHA-256 |
-| Codex CLI | Plugin | `.codex/plugins/<marketplace>/<name>/plugin.json` | Name, marketplace, version when present |
+| Codex CLI | Plugin | `.codex/plugins/cache/<marketplace>/<name>/<version>/`, `[plugins]` in `.codex/config.toml` | Name and marketplace, manifest version, source hash, enabled state |
 | Codex CLI | Skill | `.codex/skills/<name>/` | Directory name and `SKILL.md` SHA-256 when present |
 | Codex CLI | Hook | `.codex/hooks.json`, `[hooks]` in `.codex/config.toml` | Event, command count, one aggregate hash |
 
+The plugin layouts were verified with Claude Code 2.1.332 and Codex CLI 0.172.0
+using their plugin managers. Claude's install registry is authoritative: unused
+cache entries and marketplace catalogs are not installs. The undocumented
+`plugins/store/` layout is not collected. Codex selects the `local` cache version
+when present, otherwise the highest version (SemVer for full semantic versions,
+lexical order otherwise), and reads portable `plugin.json`, then
+`.codex-plugin/plugin.json`, then `.claude-plugin/plugin.json`.
+
+An unreadable registry produces `extension_unreadable`; invalid JSON or an
+invalid registry shape produces `extension_malformed`; an unrecognized Claude
+registry version produces `extension_unsupported_version`. These appear as
+extension probe reason codes and make the app partial. Unsupported install
+scopes produce `extension_unsupported_scope`. Plugin content uses the same
+bounded tree hash as other directory extensions. A missing or oversized content
+tree has an explicit hash status rather than an invented hash.
+
+Collection uses the default locations below each profile's home. Relocated
+agent homes, remote account-only plugins, and runtime plugin activation are not
+established by this scan.
+
 For the current user, project roots already listed in `.claude.json` are also
 scanned for `.claude/skills/`, `.claude/commands/`, `.claude/hooks/`, and
-`.claude/settings.json`. Unknown projects are not searched. A project's explicit
-plugin setting overrides the user's setting in a project-scope record; absence
-of a setting means `unknown`. All-users inventory scans profile-local locations
+`.claude/settings.json`. Unknown projects are not searched. Claude registry
+records with `project` or `local` scope retain their own
+installed version and a hashed project reference; their project settings and
+local settings override user settings. A project's explicit plugin setting
+also produces a project-scope record for a user install, unless that project
+has its own install. Without an applicable setting, enabled state is `unknown`.
+All-users inventory scans profile-local locations
 only. Plugin-bundled skills, hooks and commands are represented by the plugin,
 not duplicated as standalone extensions.
 
