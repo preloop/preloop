@@ -81,8 +81,8 @@ and [Host execution profiles](../runners/quickstart-linux.md#host-execution-prof
 }
 ```
 
-Host execution cannot publish pull requests yet, so the flow is refused
-when it pins a native harness with `create_pull_request: true`. Until it
+Codex host execution cannot publish pull requests yet, so the flow is
+refused when it pins `codex_cli` with `create_pull_request: true`. Until it
 can, a pinned flow uses `publication_mode: read_only`: it still produces
 the report and its local commit, but the commit is not published. The
 harness, runner, model and publication settings can all be changed later
