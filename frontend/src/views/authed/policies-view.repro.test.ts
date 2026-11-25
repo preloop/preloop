@@ -271,6 +271,20 @@ describe('Policies page repro', () => {
     // B-P2: the card's Enable/Disable and Delete now live in one row menu.
     expect(cardEl.querySelectorAll('sl-dropdown')).to.have.length(1);
     expect(cardEl.querySelectorAll('sl-menu-item')).to.have.length(3);
+
+    const expression = toolWithDenyRule.access_rules[0].condition_expression;
+    const conditionInput = ruleDialog(m.element).querySelector(
+      'sl-textarea[aria-label="Policy expression"]'
+    );
+    expect(conditionInput.value).to.equal(expression);
+    dialogSave(m.element).click();
+    const update = () =>
+      m.calls.find(
+        (call) =>
+          call.method === 'PUT' && call.url.endsWith('/access-rules/ar-1')
+      );
+    await waitUntil(() => Boolean(update()), 'no access rule update');
+    expect(update()!.body.condition_expression).to.equal(expression);
   });
 
   it('R7 tool rule Save posts condition_type cel for a CEL expression', async () => {
