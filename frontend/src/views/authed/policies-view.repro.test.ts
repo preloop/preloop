@@ -284,7 +284,7 @@ describe('Policies page repro', () => {
       ruleType: 'tool',
       toolName: 'shell',
       action: 'deny',
-      expression: 'args.command.contains("rm")',
+      toolExpression: 'args.command.contains("rm")',
     });
     await m.element.updateComplete;
     dialogSave(m.element).click();

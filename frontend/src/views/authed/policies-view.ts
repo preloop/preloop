@@ -285,6 +285,7 @@ export class PoliciesView extends LitElement {
     id: '',
     ruleType: 'model' as 'tool' | 'model',
     toolName: '',
+    toolExpression: '',
     target: 'model.request' as 'model.request' | 'model.response',
     enabled: true,
     action: 'deny' as ModelIOFormAction,
@@ -1180,6 +1181,7 @@ export class PoliciesView extends LitElement {
       id: '',
       ruleType: 'model' as 'tool' | 'model',
       toolName: '',
+      toolExpression: '',
       target: preset.target as 'model.request' | 'model.response',
       enabled: true,
       action: preset.action as ModelIOFormAction,
@@ -1220,7 +1222,7 @@ export class PoliciesView extends LitElement {
         ruleType: 'tool',
         toolName: toolRule.toolName,
         action: toolRule.action,
-        expression:
+        toolExpression:
           toolRule.condition && toolRule.condition !== '(condition set)'
             ? toolRule.condition
             : '',
@@ -1239,6 +1241,7 @@ export class PoliciesView extends LitElement {
         id: rule.id,
         ruleType: 'model',
         toolName: '',
+        toolExpression: '',
         target: rule.target,
         enabled: rule.enabled !== false,
         action,
@@ -1522,8 +1525,8 @@ export class PoliciesView extends LitElement {
       }
       const payload = {
         action,
-        condition_expression: form.expression.trim() || null,
-        condition_type: conditionTypeFor(form.expression),
+        condition_expression: form.toolExpression.trim() || null,
+        condition_type: conditionTypeFor(form.toolExpression),
         is_enabled: form.enabled,
         approval_workflow_id:
           action === 'require_approval'
@@ -2957,9 +2960,9 @@ export class PoliciesView extends LitElement {
           aria-label="Policy expression"
           rows="2"
           placeholder="Leave empty to apply to every call to this tool"
-          .value=${form.expression}
+          .value=${form.toolExpression}
           @sl-input=${(e: any) =>
-            this._patchModelIOForm({ expression: e.target.value })}
+            this._patchModelIOForm({ toolExpression: e.target.value })}
         ></sl-textarea>
         <p class="model-io-hint">
           Simple matches a field, for example

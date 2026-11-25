@@ -1590,6 +1590,34 @@ describe('PoliciesView', () => {
         .to.not.exist;
     });
 
+    it('keeps tool and model conditions separate when switching rule type', async () => {
+      const element = await mountWithDialog();
+      const root = element.shadowRoot!;
+      const patch = async (ruleType: 'model' | 'tool') => {
+        (element as any)._patchModelIOForm({ ruleType });
+        await element.updateComplete;
+      };
+      await patch('tool');
+      const input = root.querySelector<HTMLElement & { value: string }>(
+        'sl-textarea[aria-label="Policy expression"]'
+      )!;
+      expect(input.value).to.equal('');
+      input.value = 'args.name == "sample"';
+      input.dispatchEvent(new CustomEvent('sl-input'));
+      await patch('model');
+      expect((element as any)._modelIOForm.expression).to.equal(
+        'pii.found == true'
+      );
+      await patch('tool');
+      expect(
+        (
+          root.querySelector(
+            'sl-textarea[aria-label="Policy expression"]'
+          ) as any
+        ).value
+      ).to.equal('args.name == "sample"');
+    });
+
     it('explains what each detector produces', async () => {
       const element = await mountWithDialog();
 
