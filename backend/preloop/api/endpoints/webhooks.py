@@ -32,6 +32,7 @@ from preloop.services.managed_credentials import (
 )
 from preloop.sync.scanner.core import TrackerClient
 from preloop.sync.services.event_bus import EventBus, get_task_publisher
+from preloop.api.common import project_scope_denial
 from preloop.utils.azure_devops import (
     AZURE_DEVOPS_TRACKER_TYPE,
     WEBHOOK_MAX_BYTES as AZURE_DEVOPS_WEBHOOK_MAX_BYTES,
@@ -583,7 +584,7 @@ def _prepare_azure_devops_webhook(
 
     Raises:
         HTTPException: 404 for an unknown tracker, 403 for a missing or wrong
-            secret or a foreign repository, 400 for malformed payloads.
+            secret or a foreign organization, 400 for malformed payloads.
     """
     try:
         tracker_uuid = uuid.UUID(str(tracker_id))
@@ -637,6 +638,8 @@ def _prepare_azure_devops_webhook(
             bound_project=details.get("project") or None,
             bound_repository=details.get("repository") or None,
             repository_known=lambda repo_id: project_for(repo_id) is not None,
+            lifecycle_only=headers.get("x-preloop-azure-lifecycle", "").lower()
+            == "true",
         )
     except AzureDevOpsWebhookRejectedError as exc:
         logger.warning(
@@ -644,7 +647,38 @@ def _prepare_azure_devops_webhook(
         )
         raise HTTPException(status_code=exc.status_code, detail=exc.reason)
 
+    if delivery.accepted and delivery.repository_id:
+        project = project_for(delivery.repository_id)
+        if delivery.payload.get("azure_review_request"):
+            if project is None:
+                delivery.accepted = False
+                delivery.reason = "repository_not_imported"
+            else:
+                full_name = (project.meta_data or {}).get("full_name") or project.slug
+                delivery.payload["repository"]["full_name"] = full_name
+                from preloop.api.common import azure_devops_repo_full_name
+
+                try:
+                    azure_devops_repo_full_name(details, project)
+                except HTTPException:
+                    delivery.accepted = False
+                    delivery.reason = "repository_outside_scope"
+        if (
+            delivery.event_type not in {"pull_request_merged", "pull_request_closed"}
+            and project is not None
+            and (
+                project.is_active is False
+                or project_scope_denial(db, tracker, project.organization, project)
+            )
+        ):
+            delivery.accepted = False
+            delivery.reason = "repository_outside_scope"
+
     if not delivery.accepted:
+        if delivery.reason in {"repository_not_imported", "repository_outside_scope"}:
+            crud_tracker.record_ignored_webhook(
+                db, id=str(tracker.id), reason=delivery.reason
+            )
         logger.info(
             "Azure DevOps webhook %s acknowledged without dispatch for tracker %s: %s",
             delivery.event_key,
@@ -657,8 +691,10 @@ def _prepare_azure_devops_webhook(
             "tracker_id": tracker.id,
         }
     subscribed = tracker.subscribed_events or []
-    if subscribed and not (
-        delivery.event_key in subscribed or delivery.event_type in subscribed
+    if (
+        delivery.event_type not in {"pull_request_merged", "pull_request_closed"}
+        and subscribed
+        and not (delivery.event_key in subscribed or delivery.event_type in subscribed)
     ):
         return {
             "status": "ignored",

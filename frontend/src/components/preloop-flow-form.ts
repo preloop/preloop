@@ -1579,8 +1579,8 @@ export class PreloopFlowForm extends LitElement {
     name: string;
     tracker_type: string;
   }> {
-    return this.trackers.filter((tracker) =>
-      ['github', 'gitlab', 'bitbucket'].includes(tracker.tracker_type)
+    return this.trackers.filter(
+      (tracker) => tracker.hosts_repositories === true
     );
   }
 
@@ -1789,7 +1789,7 @@ export class PreloopFlowForm extends LitElement {
         >
           <sl-icon slot="prefix" name="plus-lg"></sl-icon>Add repository
         </sl-button>
-        ${this.repositoryTrackers.length === 0 ? html`<p class="checkbox-help">Connect a GitHub, GitLab, or Bitbucket tracker to add repositories.</p>` : nothing}
+        ${this.repositoryTrackers.length === 0 ? html`<p class="checkbox-help">Connect a tracker that hosts Git repositories to add repositories.</p>` : nothing}
       </div>
     `;
   }
@@ -3668,7 +3668,12 @@ export class PreloopFlowForm extends LitElement {
     if (typeof config !== 'object' || Array.isArray(config)) return undefined;
     const source = config as Record<string, unknown>;
     const supported: Record<string, unknown> = {};
-    for (const key of ['supersede_on_update', 'dedupe_path']) {
+    for (const key of [
+      'supersede_on_update',
+      'dedupe_path',
+      'azure_review_label',
+      'azure_review_comment_enabled',
+    ]) {
       if (key in source) supported[key] = source[key];
     }
     return supported;
@@ -4411,6 +4416,41 @@ export class PreloopFlowForm extends LitElement {
                             }}
                             help-text="Jira status name the issue moved to. Use with the Issue Status Changed event."
                           ></sl-input>
+                        `
+                      : nothing
+                  }
+                  ${
+                    isMREvent && tracker.tracker_type === 'azure_devops'
+                      ? html`
+                          <sl-input
+                            label="Review request label"
+                            .value=${this.flow.webhook_config?.azure_review_label ?? (this.flow.webhook_config?.azure_review_label === null ? '' : 'preloop-review')}
+                            help-text="Requests a review of the current head. Labels are checked periodically. Leave empty to disable."
+                            @sl-input=${(e: any) => {
+                              this.flow.webhook_config = {
+                                ...this.flow.webhook_config,
+                                azure_review_label:
+                                  e.target.value.trim() || null,
+                              };
+                              this.requestUpdate();
+                            }}
+                          ></sl-input>
+                          <sl-checkbox
+                            ?checked=${this.flow.webhook_config?.azure_review_comment_enabled !== false}
+                            @sl-change=${(e: any) => {
+                              this.flow.webhook_config = {
+                                ...this.flow.webhook_config,
+                                azure_review_comment_enabled: e.target.checked,
+                              };
+                              this.requestUpdate();
+                            }}
+                            >Allow /preloop review comments to request a
+                            review</sl-checkbox
+                          >
+                          <p class="help-text">
+                            Requires the Pull request commented on service hook.
+                            Requests during a run become one pending follow-up.
+                          </p>
                         `
                       : nothing
                   }

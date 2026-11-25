@@ -81,6 +81,8 @@ export interface FlowWebhookConfig {
    * arrives (#1032). Off unless the flow opts in.
    */
   supersede_on_update?: boolean;
+  azure_review_label?: string | null;
+  azure_review_comment_enabled?: boolean;
 }
 
 /** Server-computed schedule state; read-only for the console. */

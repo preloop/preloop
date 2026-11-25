@@ -255,6 +255,20 @@ async def run_scheduler_async(
         misfire_grace_time=30,
     )
 
+    async def _publish_azure_review_tick() -> None:
+        try:
+            await event_bus_service.publish_task("reconcile_azure_review_requests")
+        except Exception:
+            logger.error("Failed to publish Azure review reconciliation")
+
+    scheduler.add_job(
+        _publish_azure_review_tick,
+        trigger=IntervalTrigger(seconds=15),
+        id="azure_review_reconciliation",
+        replace_existing=True,
+        misfire_grace_time=30,
+    )
+
     # Pull request record refresh: a bounded batch per minute, each record
     # re-armed after five minutes; webhooks make a record due at once.
     async def _publish_pull_request_refresh() -> None:

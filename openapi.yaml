@@ -33929,6 +33929,12 @@ components:
         instructions:
           type: string
           title: Instructions
+        last_ignored_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Ignored Reason
+          description: Most recent scope-related ignored delivery reason.
         secret:
           type: string
           title: Secret
@@ -33977,6 +33983,12 @@ components:
         instructions:
           type: string
           title: Instructions
+        last_ignored_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Ignored Reason
+          description: Most recent scope-related ignored delivery reason.
       type: object
       required:
       - callback_configured
@@ -60348,6 +60360,11 @@ components:
           - type: 'null'
           description: Populated on the tracker detail when a Jira API token cannot
             register webhooks. Null on list responses and for every other tracker.
+        hosts_repositories:
+          type: boolean
+          title: Hosts Repositories
+          description: Whether this tracker's client can supply repository checkouts.
+          readOnly: true
         degraded_projects:
           items:
             type: string
@@ -60409,6 +60426,7 @@ components:
       - account_id
       - created
       - last_updated
+      - hosts_repositories
       - degraded_projects
       - managed
       - token_expires_at
@@ -61540,6 +61558,22 @@ components:
           title: Webhook Secret
           description: Secure token for authenticating webhook requests (auto-generated
             for webhook triggers; unset on flows triggered by tracker events)
+        azure_review_label:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Azure Review Label
+          description: Azure PR label that requests a review of the current head.
+            Null disables label requests; changes are discovered by polling.
+          default: preloop-review
+        azure_review_comment_enabled:
+          type: boolean
+          title: Azure Review Comment Enabled
+          description: Accept the exact /preloop review command on Azure PR comments.
+            Requires the Pull request commented on service hook.
+          default: true
         supersede_on_update:
           type: boolean
           title: Supersede On Update
@@ -61561,6 +61595,22 @@ components:
       description: Configuration for webhook triggers.
     WebhookConfigResponse:
       properties:
+        azure_review_label:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Azure Review Label
+          description: Azure PR label that requests a review of the current head.
+            Null disables label requests; changes are discovered by polling.
+          default: preloop-review
+        azure_review_comment_enabled:
+          type: boolean
+          title: Azure Review Comment Enabled
+          description: Accept the exact /preloop review command on Azure PR comments.
+            Requires the Pull request commented on service hook.
+          default: true
         supersede_on_update:
           type: boolean
           title: Supersede On Update

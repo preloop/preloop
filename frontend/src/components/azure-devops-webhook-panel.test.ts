@@ -65,3 +65,23 @@ describe('azure-devops-webhook-panel', () => {
     );
   });
 });
+
+it('explains an ignored repository delivery', async () => {
+  const client = {
+    getAzureDevOpsWebhookStatus: sinon
+      .stub()
+      .resolves({ ...base, last_ignored_reason: 'repository_not_imported' }),
+    rotateAzureDevOpsWebhookSecret: sinon.stub(),
+    registerAzureDevOpsWebhook: sinon.stub(),
+  };
+  const el = await fixture<AzureDevOpsWebhookPanel>(
+    html`<azure-devops-webhook-panel
+      .apiClient=${client}
+      trackerId="t1"
+    ></azure-devops-webhook-panel>`
+  );
+  await waitUntil(() => !!el.shadowRoot!.querySelector('.last-ignored'));
+  expect(el.shadowRoot!.querySelector('.last-ignored')!.textContent).to.contain(
+    'repository not imported'
+  );
+});

@@ -12,7 +12,9 @@ describe('AddTrackerModal', () => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
     sandbox = sinon.createSandbox();
-    sandbox.stub(window, 'fetch').resolves(new Response(JSON.stringify([])));
+    sandbox
+      .stub(window, 'fetch')
+      .callsFake(async () => new Response(JSON.stringify([])));
   });
 
   afterEach(() => {
@@ -24,7 +26,9 @@ describe('AddTrackerModal', () => {
     const validateStub = sandbox.stub();
     const addStub = sandbox.stub();
     const updateStub = sandbox.stub();
-    const listProjectsStub = sandbox.stub();
+    const listProjectsStub = sandbox
+      .stub()
+      .resolves([{ id: 'repo1', name: 'Repository' }]);
 
     el._api = {
       ...api,
@@ -219,6 +223,8 @@ describe('AddTrackerModal', () => {
           const addButton = element.shadowRoot?.querySelector<HTMLElement>(
             'sl-button[variant="primary"]'
           );
+          (element as any).selectedOrgs = { org1: true };
+          (element as any).selectedProjects = { org1: { repo1: true } };
           const listener = oneEvent(element, 'tracker-added');
           addButton?.click();
           const { detail } = await listener;
@@ -257,6 +263,8 @@ describe('AddTrackerModal', () => {
           const saveButton = element.shadowRoot?.querySelector<HTMLElement>(
             'sl-button[variant="primary"]'
           );
+          (element as any).selectedOrgs = { org1: true };
+          (element as any).selectedProjects = { org1: { repo1: true } };
           const listener = oneEvent(element, 'tracker-updated');
           saveButton?.click();
           const { detail } = await listener;
@@ -295,7 +303,7 @@ describe('AddTrackerModal', () => {
             validateTrackerToken: sandbox.stub(),
             addTracker: sandbox.stub(),
             updateTracker: sandbox.stub(),
-            listProjectsForOrg: sandbox.stub(),
+            listProjectsForOrg: sandbox.stub().resolves([]),
             completeGitHubInstallation: sandbox.stub().resolves({}),
             getGitHubInstallations: sandbox.stub().resolves(installations),
             getTrackerAuthMethods: sandbox
@@ -644,7 +652,7 @@ describe('AddTrackerModal', () => {
           await element.updateComplete;
 
           const cancelButton = element.shadowRoot?.querySelector<HTMLElement>(
-            'sl-button:not([variant="primary"])'
+            '[slot="footer"] sl-button:not([variant="primary"])'
           );
           const listener = oneEvent(element, 'close-modal');
           cancelButton?.click();
@@ -749,7 +757,13 @@ describe('AddTrackerModal', () => {
       element = await fixture(
         html`<add-tracker-modal .tracker=${tracker}></add-tracker-modal>`
       );
-      const { updateStub } = setupStubs(element);
+      const { updateStub, validateStub } = setupStubs(element);
+      validateStub.resolves({
+        success: true,
+        orgs: [{ id: 'org1', name: 'Org One' }],
+      });
+      await element.testConnection();
+      (element as any).selectedOrgs = { org1: true };
       updateStub.resolves({
         id: 'jira-1',
         connection_details: { username: 'edited-user' },
@@ -774,7 +788,9 @@ describe('AddTrackerModal secret fields', () => {
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     sandbox = sinon.createSandbox();
-    sandbox.stub(window, 'fetch').resolves(new Response(JSON.stringify([])));
+    sandbox
+      .stub(window, 'fetch')
+      .callsFake(async () => new Response(JSON.stringify([])));
   });
 
   afterEach(() => {

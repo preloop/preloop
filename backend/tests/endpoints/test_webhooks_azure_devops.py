@@ -52,6 +52,9 @@ def harness():
         patch("preloop.api.app.connect_nats", new_callable=AsyncMock),
         patch("preloop.api.app.close_nats", new_callable=AsyncMock),
         patch("preloop.api.endpoints.webhooks.crud_tracker") as crud_tracker,
+        patch(
+            "preloop.api.endpoints.webhooks.project_scope_denial", return_value=None
+        ) as scope_denial,
         patch("preloop.api.endpoints.webhooks.crud_project") as crud_project,
         patch("preloop.api.endpoints.webhooks.crud_organization"),
         patch(
@@ -87,6 +90,8 @@ def harness():
             "tracker": tracker,
             "crud_project": crud_project,
             "deliveries": deliveries,
+            "crud_tracker": crud_tracker,
+            "scope_denial": scope_denial,
         }
         app.dependency_overrides.clear()
 
@@ -155,16 +160,21 @@ def test_foreign_organization_is_rejected(harness) -> None:
     assert dispatched(harness) == []
 
 
-def test_unknown_repository_is_rejected(harness) -> None:
+def test_unknown_repository_is_acknowledged_and_visible(harness) -> None:
     harness["crud_project"].get_for_tracker_by_identifier.return_value = None
-    assert post(harness, fx("git.pullrequest.created")).status_code == 403
+    response = post(harness, fx("git.pullrequest.created"))
+    assert response.status_code == 200
+    assert response.json()["reason"] == "repository_not_imported"
+    assert dispatched(harness) == []
+    harness["crud_tracker"].record_ignored_webhook.assert_called_once()
 
 
-def test_completed_pull_request_is_acknowledged_without_dispatch(harness) -> None:
+def test_completed_pull_request_dispatches_a_distinct_close_event(harness) -> None:
     response = post(harness, fx("git.pullrequest.updated.completed"))
     assert response.status_code == 200
-    assert response.json()["status"] == "ignored"
-    assert dispatched(harness) == []
+    assert response.json()["status"] == "success"
+    (call,) = dispatched(harness)
+    assert call.kwargs["delivery_id"].endswith(":pull_request_merged")
 
 
 def test_update_on_seen_head_is_a_duplicate(harness) -> None:
@@ -326,3 +336,125 @@ def test_work_item_needs_the_secret(boards) -> None:
     response = post(boards, wi("workitem.created"), secret="wrong")
     assert response.status_code == 403
     boards["crud_issue"].upsert.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "event", ["git.pullrequest.created", "git.pullrequest.updated"]
+)
+@pytest.mark.parametrize("secret", [SECRET, "wrong", None])
+def test_subscription_test_checks_secret_and_never_dispatches(
+    harness: Dict[str, Any], event: str, secret: Optional[str]
+) -> None:
+    samples = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "fixtures"
+            / "azure_devops"
+            / "test_notifications.json"
+        ).read_text()
+    )["events"]
+    harness["tracker"].connection_details = {"organization": "example-org"}
+    response = post(harness, samples[event], secret=secret)
+    assert response.status_code == (200 if secret == SECRET else 403)
+    if secret == SECRET:
+        assert response.json()["reason"] == "test_notification"
+    assert dispatched(harness) == []
+
+
+@pytest.mark.parametrize("binding", [{"project": "Other"}, {"repository": "Other"}])
+def test_outside_bound_scope_is_acknowledged(
+    harness: Dict[str, Any], binding: dict
+) -> None:
+    harness["tracker"].connection_details = {"organization": "fabrikam", **binding}
+    response = post(harness, fx("git.pullrequest.created"))
+    assert response.status_code == 200
+    assert response.json()["reason"] == "repository_outside_scope"
+    assert dispatched(harness) == []
+
+
+def test_previously_imported_repository_excluded_by_scope_is_ignored(
+    harness: Dict[str, Any],
+) -> None:
+    harness[
+        "scope_denial"
+    ].return_value = "Access denied: Project is explicitly excluded."
+    response = post(harness, fx("git.pullrequest.created"))
+    assert response.status_code == 200
+    assert response.json()["reason"] == "repository_outside_scope"
+    assert dispatched(harness) == []
+
+
+def test_close_event_ignores_review_subscription_filter(
+    harness: Dict[str, Any],
+) -> None:
+    harness["tracker"].subscribed_events = ["pull_request_opened"]
+    response = post(harness, fx("git.pullrequest.updated.completed"))
+    assert response.status_code == 200
+    assert len(dispatched(harness)) == 1
+
+
+@pytest.mark.parametrize(
+    "body,accepted",
+    [
+        (" /PrElOoP ReViEw \n", True),
+        ("Please /preloop review", False),
+        ("/preloop review please", False),
+        ("/preloop review\n<!-- preloop:comment -->", False),
+        ("Looks good", False),
+    ],
+)
+def test_exact_comment_command_and_own_comment_marker(
+    harness: Dict[str, Any], body: str, accepted: bool
+) -> None:
+    sample = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "fixtures"
+            / "azure_devops"
+            / "comment_notification.json"
+        ).read_text()
+    )
+    sample["resource"]["content"] = body
+    harness["tracker"].connection_details = {"organization": "example-org"}
+    harness["crud_project"].get_for_tracker_by_identifier.return_value.meta_data = {
+        "full_name": "example-org/Project/repo"
+    }
+    response = post(harness, sample)
+    assert response.status_code == 200
+    assert bool(dispatched(harness)) is accepted
+    if accepted:
+        assert (
+            dispatched(harness)[0].kwargs["payload"]["azure_review_request"]["kind"]
+            == "comment"
+        )
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_lifecycle_subscription_cannot_start_review_on_unseen_head(
+    harness: Dict[str, Any], terminal: bool
+) -> None:
+    """Lifecycle updates only stop runs, including on a previously unseen head."""
+    payload = fx(
+        "git.pullrequest.updated.completed" if terminal else "git.pullrequest.updated"
+    )
+    payload["resource"]["title"] = "An edited title"
+    response = post(harness, payload, headers={"X-Preloop-Azure-Lifecycle": "true"})
+    assert response.status_code == 200
+    assert bool(dispatched(harness)) is terminal
+    if not terminal:
+        assert response.json()["reason"] == "not_terminal_lifecycle_event"
+
+
+@pytest.mark.parametrize("binding", [{}, {"project": "Other"}, {"repository": "Other"}])
+@pytest.mark.parametrize("status", ["completed", "abandoned"])
+def test_terminal_delivery_survives_scope_removal(
+    harness: Dict[str, Any], binding: dict, status: str
+) -> None:
+    """Excluded imported repositories still deliver terminal events to stop runs."""
+    harness["tracker"].connection_details = {"organization": "fabrikam", **binding}
+    harness["scope_denial"].return_value = "Project is explicitly excluded"
+    payload = fx("git.pullrequest.updated.completed")
+    payload["resource"]["status"] = status
+    response = post(harness, payload)
+    assert response.status_code == 200
+    assert len(dispatched(harness)) == 1

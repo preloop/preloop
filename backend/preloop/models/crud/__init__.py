@@ -1,5 +1,6 @@
 """CRUD operation implementations."""
 
+from .azure_review_request import crud_azure_review_request
 from .observation_verification import crud_observation_verification
 
 # Create CRUD instances for each model
@@ -346,6 +347,7 @@ crud_tool_access_rule = CRUDToolAccessRule()  # Instantiate CRUDToolAccessRule
 
 
 __all__ = [
+    "crud_azure_review_request",
     "crud_observation_verification",
     "crud_support",
     "crud_rate_limit",

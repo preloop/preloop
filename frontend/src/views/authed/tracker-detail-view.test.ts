@@ -53,6 +53,17 @@ function stubFetch(opts: StubOpts = {}) {
       const url = String(input);
       const json = (data: unknown, status = 200) =>
         new Response(JSON.stringify(data), { status });
+      if (url.includes('/azure-devops/webhook')) {
+        return json({
+          callback_url: null,
+          callback_configured: false,
+          required_events: [],
+          signature: 'missing_secret',
+          registration: null,
+          instructions: '',
+          header_name: 'X-Preloop-Webhook-Secret',
+        });
+      }
       if (
         url.includes(`/api/v1/trackers/${trackerId}`) &&
         !url.includes('/sync')
@@ -171,6 +182,19 @@ describe('TrackerDetailView', () => {
     localStorage.clear();
     sessionStorage.clear();
     window.history.replaceState({}, '', '/');
+  });
+
+  it('explains zero Azure repositories when the inclusion scope is empty', async () => {
+    fetchStub = stubFetch({
+      trackerType: 'azure_devops',
+      trackerExtra: { scope_rules: [] },
+    });
+    const el = await mountView();
+    (el as any)._projects = [];
+    await el.updateComplete;
+    const diagnostic = el.shadowRoot!.querySelector('.empty-repository-scope');
+    expect(diagnostic?.textContent).to.contain('0 repositories imported');
+    expect(diagnostic?.textContent).to.contain('No organization is included');
   });
 
   it('defaults to the project with the most open issues', async () => {
@@ -764,56 +788,61 @@ describe('TrackerDetailView', () => {
     expect(el.shadowRoot?.textContent).to.not.contain('Run reviewer');
   });
 
-  it('Run reviewer sends pull_request target', async () => {
-    window.history.replaceState(
-      {},
-      '',
-      `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
-    );
-    fetchStub = stubFetch({
-      pullRequests: [
-        {
-          number: 12,
-          iid: 12,
-          title: 'Add login',
-          url: 'https://github.com/acme/widgets/pull/12',
-          author: 'janedoe',
-          source_branch: 'feature',
-          target_branch: 'main',
-          state: 'open',
-          draft: false,
-          updated_at: '2026-01-03T00:00:00Z',
-        },
-      ],
-    });
-    const el = await mountView();
-    (el as unknown as { _selectedProjectId: string })._selectedProjectId =
-      projectA.id;
-    await (
-      el as unknown as { _loadPullRequests: (reset: boolean) => Promise<void> }
-    )._loadPullRequests(true);
-    await el.updateComplete;
-    (
-      el as unknown as {
-        _runReviewer: (pr: { number: number }) => void;
-      }
-    )._runReviewer({ number: 12 });
-    await tick(50);
-    const runCalls = fetchStub
-      .getCalls()
-      .filter((call) =>
-        String(call.args[0]).includes('/api/v1/flows/run-preset')
+  for (const trackerType of ['github', 'azure_devops']) {
+    it(`Run reviewer sends pull_request target for ${trackerType}`, async () => {
+      window.history.replaceState(
+        {},
+        '',
+        `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
       );
-    expect(runCalls.length).to.be.greaterThan(0);
-    const init = runCalls[0].args[1] as RequestInit;
-    const body = JSON.parse(String(init.body));
-    expect(body.preset_slug).to.equal('pull-request-reviewer');
-    expect(body.target).to.deep.equal({
-      kind: 'pull_request',
-      project_id: projectA.id,
-      number: 12,
+      fetchStub = stubFetch({
+        trackerType,
+        pullRequests: [
+          {
+            number: 12,
+            iid: 12,
+            title: 'Add login',
+            url: 'https://github.com/acme/widgets/pull/12',
+            author: 'janedoe',
+            source_branch: 'feature',
+            target_branch: 'main',
+            state: 'open',
+            draft: false,
+            updated_at: '2026-01-03T00:00:00Z',
+          },
+        ],
+      });
+      const el = await mountView();
+      (el as unknown as { _selectedProjectId: string })._selectedProjectId =
+        projectA.id;
+      await (
+        el as unknown as {
+          _loadPullRequests: (reset: boolean) => Promise<void>;
+        }
+      )._loadPullRequests(true);
+      await el.updateComplete;
+      (
+        el as unknown as {
+          _runReviewer: (pr: { number: number }) => void;
+        }
+      )._runReviewer({ number: 12 });
+      await tick(50);
+      const runCalls = fetchStub
+        .getCalls()
+        .filter((call) =>
+          String(call.args[0]).includes('/api/v1/flows/run-preset')
+        );
+      expect(runCalls.length).to.be.greaterThan(0);
+      const init = runCalls[0].args[1] as RequestInit;
+      const body = JSON.parse(String(init.body));
+      expect(body.preset_slug).to.equal('pull-request-reviewer');
+      expect(body.target).to.deep.equal({
+        kind: 'pull_request',
+        project_id: projectA.id,
+        number: 12,
+      });
     });
-  });
+  }
 
   it('Run triage on selected posts a capped targets list', async () => {
     fetchStub = stubFetch({

@@ -102,7 +102,8 @@ describe('AddTrackerModal Azure DevOps', () => {
     const hint = tokens[0].getAttribute('help-text') || '';
     expect(hint).to.contain('Code (Read)');
     expect(hint).to.contain('Pull Request Threads (Read & write)');
-    expect(hint).to.contain('Service Hooks');
+    expect(hint).to.contain('Edit subscriptions');
+    expect(hint).not.to.contain('Service Hooks (');
     const guide = root.querySelector<HTMLAnchorElement>(
       '.azure-devops-guide a'
     );
@@ -188,8 +189,16 @@ describe('AddTrackerModal Azure DevOps', () => {
     ].map((node) => node.getAttribute('data-group'));
     expect(groups).to.include.members(['Platform', 'Docs']);
 
+    await element.toggleSelectAll();
     await element.handleSave();
     const payload = stubs.addTracker.firstCall.args[0];
+    expect(payload.scope_rules).to.deep.equal([
+      {
+        rule_type: 'INCLUDE',
+        scope_type: 'ORGANIZATION',
+        identifier: 'example-org',
+      },
+    ]);
     expect(payload.type).to.equal('azure_devops');
     expect(payload.url).to.equal('https://dev.azure.com');
     expect(payload.auth_type).to.equal('api_token');
@@ -199,6 +208,57 @@ describe('AddTrackerModal Azure DevOps', () => {
       project: 'Platform',
       cast_token_owner_vote: false,
     });
+  });
+
+  for (const trackerType of ['azure_devops', 'bitbucket', 'gitlab']) {
+    it(`refuses an empty scope for ${trackerType}`, async () => {
+      const { stubs, api: stubbedApi } = buildApi(sandbox);
+      await open(stubbedApi);
+      const state = element as any;
+      state.trackerType = trackerType;
+      state.trackerName = 'Example tracker';
+      state.trackerToken = 'pat';
+      state.azureDevOpsOrganization = 'example-org';
+      state.azureDevOpsProject = 'Platform';
+      state.orgs = [{ id: 'example-org', name: 'Example' }];
+      state.projects = { 'example-org': [{ id: 'r1', name: 'web' }] };
+      await element.handleSave();
+      expect(stubs.addTracker).not.to.have.been.called;
+      expect(state.errorMessage).to.contain('Select at least one');
+      expect(state.isLoading).to.equal(false);
+    });
+  }
+
+  it('saves the repository selected in the rendered tree', async () => {
+    const { stubs, api: stubbedApi } = buildApi(sandbox);
+    await open(stubbedApi);
+    await selectType(element, 'azure_devops');
+    const state = element as any;
+    state.trackerName = 'Azure DevOps';
+    state.trackerToken = 'pat';
+    state.azureDevOpsOrganization = 'example-org';
+    state.azureDevOpsProject = 'Platform';
+    await element.testConnection();
+    await element.loadProjects('example-org');
+    state.includeFutureProjects = false;
+    await element.updateComplete;
+    const repo = element.shadowRoot!.querySelector<any>(
+      'sl-tree-item[value="r2"]'
+    );
+    repo.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, composed: true })
+    );
+    repo.click();
+    await waitUntil(() => state.selectedProjects['example-org']?.r2 === true);
+    await element.handleSave();
+    expect(stubs.addTracker.firstCall.args[0].scope_rules).to.deep.equal([
+      {
+        rule_type: 'INCLUDE',
+        scope_type: 'ORGANIZATION',
+        identifier: 'example-org',
+      },
+      { rule_type: 'INCLUDE', scope_type: 'PROJECT', identifier: 'r2' },
+    ]);
   });
 
   it('keeps the stored token and details when editing', async () => {
@@ -222,6 +282,7 @@ describe('AddTrackerModal Azure DevOps', () => {
         },
       ],
     });
+    await element.testConnection();
     await element.handleSave();
     const [id, payload] = stubs.updateTracker.firstCall.args;
     expect(id).to.equal('existing-1');
