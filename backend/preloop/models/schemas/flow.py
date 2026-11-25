@@ -18,7 +18,7 @@ from pydantic import (
     model_validator,
 )
 
-from preloop.schemas.ai_model import ExecutorEligibility
+from preloop.models.schemas.executor_eligibility import ExecutorEligibility
 from preloop.models.schemas.verification import (
     EffectivePublicationPolicy,
     ResolvedVerificationPolicy,

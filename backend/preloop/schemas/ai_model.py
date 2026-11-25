@@ -13,6 +13,7 @@ from pydantic import (
     model_validator,
 )
 
+from preloop.models.schemas.executor_eligibility import ExecutorEligibility
 from preloop.schemas.gateway_usage import (
     GatewayTokenUsage,
     GatewayUsageByDay,
@@ -564,18 +565,6 @@ class AIModelInDBBase(BaseModel):
         return str(value) if value is not None else None
 
     model_config = ConfigDict(from_attributes=True)
-
-
-class ExecutorEligibility(BaseModel):
-    """Credential compatibility, separate from runtime health and availability."""
-
-    eligible: bool
-    reason: Optional[str] = Field(
-        None, description="Stable denial code when ineligible"
-    )
-    message: Optional[str] = Field(
-        None, description="Safe remediation or execution prerequisite"
-    )
 
 
 class AIModelRead(AIModelInDBBase):

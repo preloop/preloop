@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_managed_agent_ai_model_binding
-from preloop.schemas.ai_model import ExecutorEligibility
+from preloop.models.schemas.executor_eligibility import ExecutorEligibility
 from preloop.services.subscription_flow_use import (
     subscription_owner_user_id,
 )

@@ -10,7 +10,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_ai_model, crud_flow
-from preloop.schemas.ai_model import ExecutorEligibility
+from preloop.models.schemas.executor_eligibility import ExecutorEligibility
 from preloop.schemas.openrouter import (
     STRUCTURED_RESULTS_DOCS_URL,
     pins_upstream_provider,
