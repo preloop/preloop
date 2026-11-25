@@ -48,7 +48,7 @@ func TestClaudeSubscriptionPreflightAcceptsFreshLogin(t *testing.T) {
 	writePreflightFixture(t, path, `{}`)
 	data, _ := json.Marshal(map[string]interface{}{"claudeAiOauth": map[string]interface{}{"accessToken": "sk-ant-oat01-synthetic", "refreshToken": "synthetic", "expiresAt": time.Now().Add(time.Hour).UnixMilli()}})
 	writePreflightFixture(t, filepath.Join(home, ".claude", ".credentials.json"), string(data))
-	if err := preflightClaudeSubscriptionLogin(AgentConfig{Name: "Claude Code", ConfigPath: path}); err != nil {
+	if err := preflightClaudeSubscriptionLogin(AgentConfig{Name: "Claude Code", ConfigPath: path}, managedEnrollmentOptions{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -178,5 +178,23 @@ func TestClaudeOffboardFilePreflightCanRecreateMissingLogin(t *testing.T) {
 	writePreflightFixture(t, path, "malformed")
 	if err := preflightClaudeCredentialFile(); err == nil {
 		t.Fatal("malformed existing credential document must stop before export")
+	}
+}
+
+func TestExpiredClaudeCacheDoesNotBlockUnrelatedCredentialSelection(t *testing.T) {
+	home := setPreflightTestEnv(t)
+	path := filepath.Join(home, ".claude", "settings.json")
+	writePreflightFixture(t, path, `{}`)
+	writePreflightFixture(t, filepath.Join(home, ".claude", ".credentials.json"), `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-synthetic","refreshToken":"synthetic","expiresAt":1700000000000}}`)
+	agent := AgentConfig{Name: "Claude Code", ConfigPath: path}
+	if err := preflightClaudeSubscriptionLogin(agent, managedEnrollmentOptions{NoCredentialImport: true}); err != nil {
+		t.Fatalf("no-import selection was blocked by an unused cache: %v", err)
+	}
+	writePreflightFixture(t, filepath.Join(home, ".claude.json"), `{"primaryApiKey":"synthetic-api-key"}`)
+	if err := preflightClaudeSubscriptionLogin(agent, managedEnrollmentOptions{}); err != nil {
+		t.Fatalf("configured API key was blocked by an unused cache: %v", err)
+	}
+	if state, detail := detectClaudeCodeAuthState(); state != agentAuthStateReady {
+		t.Fatalf("configured API key should determine readiness: %s %s", state, detail)
 	}
 }

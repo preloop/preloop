@@ -140,6 +140,9 @@ func detectClaudeCodeAuthState() (agentAuthState, string) {
 	if err != nil {
 		return agentAuthStateUnknown, "could not resolve home directory"
 	}
+	if resolveClaudePrimaryAPIKey() != "" {
+		return agentAuthStateReady, "API key configured in ~/.claude.json"
+	}
 	credentialsPath := filepath.Join(home, ".claude", ".credentials.json")
 	if data, readErr := os.ReadFile(credentialsPath); readErr == nil {
 		if credential := parseClaudeOAuthCredentialBlob(string(data), 0); credential != nil {
@@ -154,9 +157,6 @@ func detectClaudeCodeAuthState() (agentAuthState, string) {
 			return agentAuthStateReady, "credential file present (~/.claude/.credentials.json)"
 		}
 		return agentAuthStateNotLoggedIn, "credential file exists but holds no usable token"
-	}
-	if resolveClaudePrimaryAPIKey() != "" {
-		return agentAuthStateReady, "API key configured in ~/.claude.json"
 	}
 	if claudeKeychainPresenceProbe() {
 		return agentAuthStateUnknown, "OS keychain entry present (service: \"Claude Code-credentials\"); subscription validity has not been checked"

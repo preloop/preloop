@@ -536,7 +536,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 
 	agent = normalizeDiscoveredAgent(agent)
-	if err := preflightClaudeSubscriptionLogin(agent); err != nil {
+	if err := preflightClaudeSubscriptionLogin(agent, opts); err != nil {
 		return err
 	}
 	if shouldPromptForEnrollmentName(opts) {
