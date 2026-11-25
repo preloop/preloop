@@ -116,6 +116,10 @@ AUTH_REGISTER = Rule("auth.register", 10, 3600)
 OAUTH_TOKEN = Rule("oauth.token", 30, 60)
 OAUTH_REGISTER = Rule("oauth.register", 10, 3600)
 OAUTH_AUTHORIZE = Rule("oauth.authorize", 60, 60)
+# Token revocation per client address. A login is revoked at most once, so the
+# budget follows token issuance; keep it at or above ``oauth.token`` or a
+# sign-out can be refused where the sign-in was allowed.
+OAUTH_REVOKE = Rule("oauth.revoke", 30, 60)
 APPROVAL_PUBLIC_IP = Rule("approval.public.ip", 30, 60)
 APPROVAL_PUBLIC_REQUEST = Rule("approval.public.request", 10, 60)
 # Limits that predate this module and moved onto it unchanged. Their callers
@@ -750,6 +754,7 @@ __all__ = [
     "NOTIFICATIONS_TEST_PUSH",
     "OAUTH_AUTHORIZE",
     "OAUTH_REGISTER",
+    "OAUTH_REVOKE",
     "OAUTH_TOKEN",
     "PostgresStore",
     "RATE_LIMITED_CODE",

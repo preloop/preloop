@@ -417,7 +417,12 @@ async function refreshToken(): Promise<RefreshResult> {
         }
       }
 
-      if (!response || response.status >= 500) {
+      // A 429 is the request rate limiter refusing this attempt, not the
+      // server rejecting the refresh token: the session is still valid. It is
+      // not retried here, because another attempt inside the same window
+      // would only spend more of a budget shared with everyone behind this
+      // address.
+      if (!response || response.status >= 500 || response.status === 429) {
         // Still transient: keep the session. The next 401 will try again.
         console.error('Token refresh failed transiently; keeping session');
         return { token: null, terminal: false };

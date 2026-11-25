@@ -14,7 +14,8 @@ import uuid
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
+from sqlalchemy import delete
+from sqlalchemy.orm import Session, sessionmaker
 
 from preloop.api.auth import auth_router
 from preloop.api.auth.jwt import get_password_hash
@@ -22,6 +23,7 @@ from preloop.models.crud import crud_account, crud_user
 from preloop.api.endpoints.oauth_server import router as oauth_router
 from preloop.api.endpoints.public_approval import router as approval_router
 from preloop.models.db.session import get_db_session
+from preloop.models.models.rate_limit import RateLimitBucket
 from preloop.services import rate_limit
 from preloop.services.rate_limit import install_rate_limit_handler
 
@@ -372,3 +374,243 @@ def test_hit_increments_metric(client: TestClient) -> None:
         for i in range(11):
             _login(client, f"u{i}@example.com", _ip(15))
     assert ("preloop_rate_limit_hits_total", "auth.login.ip") in calls
+
+
+# ---------------------------------------------------------------------------
+# Token revocation
+# ---------------------------------------------------------------------------
+
+
+def _revoke(client: TestClient, n: int) -> Any:
+    with patch(
+        "preloop.api.endpoints.oauth_consent.get_oauth_provider", return_value=None
+    ):
+        return client.post("/oauth/revoke", data={"token": "junk"}, headers=_ip(n))
+
+
+def test_oauth_revoke_is_limited_per_ip(client: TestClient) -> None:
+    for _ in range(30):
+        assert _revoke(client, 20).status_code != 429
+    _assert_limited(_revoke(client, 20))
+    # Another client can still revoke its own login.
+    assert _revoke(client, 21).status_code != 429
+
+
+def test_oauth_revoke_default_matches_token_issuance() -> None:
+    """A login is revoked at most once, so revoke needs no more than issue."""
+    assert rate_limit.OAUTH_REVOKE.effective() == rate_limit.OAUTH_TOKEN.effective()
+
+
+# ---------------------------------------------------------------------------
+# Every endpoint class: shared budget, and behaviour when the store is down
+# ---------------------------------------------------------------------------
+
+
+def _refresh(client: TestClient, n: int) -> Any:
+    return client.post(
+        "/api/v1/auth/refresh", json={"refresh_token": "junk"}, headers=_ip(n)
+    )
+
+
+def _oauth_token(client: TestClient, n: int) -> Any:
+    form = {"grant_type": "refresh_token", "refresh_token": "junk"}
+    return client.post("/oauth/token", data=form, headers=_ip(n))
+
+
+def _oauth_authorize(client: TestClient, n: int) -> Any:
+    url = "/oauth/authorize?redirect_uri=http://127.0.0.1:9/cb"
+    return client.get(url, headers=_ip(n), follow_redirects=False)
+
+
+def _oauth_register(client: TestClient, n: int) -> Any:
+    with patch(
+        "preloop.api.endpoints.oauth_consent.get_oauth_provider", return_value=None
+    ):
+        return client.post("/oauth/register", json={}, headers=_ip(n))
+
+
+def _reset_password(client: TestClient, n: int) -> Any:
+    payload = {"token": "junk", "new_password": "Sufficiently-long-1"}
+    return client.post("/api/v1/auth/reset-password", json=payload, headers=_ip(n))
+
+
+_APPROVAL_ID = uuid4()
+
+
+def _approval(client: TestClient, n: int) -> Any:
+    return client.get(f"/approval/{_APPROVAL_ID}/data?token=junk", headers=_ip(n))
+
+
+def _wrong_password(client: TestClient, n: int) -> Any:
+    return _login(client, f"nobody{n}@example.com", _ip(n))
+
+
+# (rule the request is refused by, one request from client n)
+ENDPOINT_CLASSES: list[tuple[Any, Any]] = [
+    (rate_limit.AUTH_LOGIN_IP, _wrong_password),
+    (rate_limit.AUTH_REFRESH, _refresh),
+    (rate_limit.AUTH_RESET_PASSWORD, _reset_password),
+    (rate_limit.OAUTH_TOKEN, _oauth_token),
+    (rate_limit.OAUTH_AUTHORIZE, _oauth_authorize),
+    (rate_limit.OAUTH_REGISTER, _oauth_register),
+    (rate_limit.OAUTH_REVOKE, _revoke),
+    (rate_limit.APPROVAL_PUBLIC_IP, _approval),
+]
+_CLASS_IDS = [rule.name for rule, _ in ENDPOINT_CLASSES]
+
+
+@pytest.fixture
+def pg_factory(db_engine: Any) -> Iterator[Any]:
+    """A committing session factory; rows under the test prefix are removed."""
+    factory = sessionmaker(bind=db_engine)
+    yield factory
+    with factory() as db:
+        db.execute(delete(RateLimitBucket).where(RateLimitBucket.key.like("pgtest:%")))
+        db.commit()
+
+
+@pytest.mark.parametrize(("rule", "send"), ENDPOINT_CLASSES, ids=_CLASS_IDS)
+def test_two_replicas_share_one_endpoint_budget(
+    rule: Any,
+    send: Any,
+    client: TestClient,
+    pg_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two API replicas on one database grant one budget, not two."""
+    monkeypatch.setenv("RATE_LIMIT_BACKEND", "postgres")
+    monkeypatch.setenv(rule.env_name, "2/60")
+    run = uuid4().hex
+    monkeypatch.setattr(
+        rate_limit, "_key", lambda r, ident: f"pgtest:{run}:{r.name}:{ident}"
+    )
+    replica_a = rate_limit.PostgresStore(pg_factory)
+    replica_b = rate_limit.PostgresStore(pg_factory)
+    monkeypatch.setattr(rate_limit, "_postgres_store", replica_a)
+    assert send(client, 30).status_code != 429
+    monkeypatch.setattr(rate_limit, "_postgres_store", replica_b)
+    assert send(client, 30).status_code != 429
+    _assert_limited(send(client, 30))
+    monkeypatch.setattr(rate_limit, "_postgres_store", replica_a)
+    _assert_limited(send(client, 30))
+    with pg_factory() as db:
+        count = (
+            db.query(RateLimitBucket.count)
+            .filter(RateLimitBucket.key.like(f"pgtest:{run}:{rule.name}:%"))
+            .scalar()
+        )
+    assert count == 4
+
+
+@pytest.mark.parametrize(("rule", "send"), ENDPOINT_CLASSES, ids=_CLASS_IDS)
+def test_store_outage_degrades_to_a_per_process_budget(
+    rule: Any,
+    send: Any,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Store down: the endpoint answers, and one process still throttles.
+
+    Neither fail-open (unlimited guessing while the database is degraded)
+    nor fail-closed (sign-in, token refresh and approval links down with the
+    limiter). Only second-factor proofs fail closed; see
+    ``tests/test_mfa.py::test_shared_store_outage_fails_closed``.
+    """
+
+    def broken_session() -> Any:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setenv("RATE_LIMIT_BACKEND", "postgres")
+    monkeypatch.setenv(rule.env_name, "2/60")
+    monkeypatch.setattr(rate_limit, "_last_store_error_log", 0.0)
+    errors: list[str] = []
+    monkeypatch.setattr(
+        rate_limit,
+        "_count",
+        lambda name, _desc, counted: errors.append(f"{name}:{counted.name}"),
+    )
+    rate_limit.set_postgres_session_factory(broken_session)
+    try:
+        with caplog.at_level("ERROR", logger="preloop.services.rate_limit"):
+            assert send(client, 31).status_code not in (429, 500, 503)
+            assert send(client, 31).status_code not in (429, 500, 503)
+        assert "Rate limit store unavailable" in caplog.text
+        _assert_limited(send(client, 31))
+    finally:
+        rate_limit.set_postgres_session_factory(None)
+    assert f"preloop_rate_limit_store_errors_total:{rule.name}" in errors
+    assert f"preloop_rate_limit_hits_total:{rule.name}" in errors
+
+
+# ---------------------------------------------------------------------------
+# Legitimate bursts at the default limits
+# ---------------------------------------------------------------------------
+
+# Developers behind one office address who sign the CLI in or out in the same
+# minute. Each `preloop auth login` is one /oauth/authorize and one
+# /oauth/token; each `preloop auth logout` is one /oauth/revoke.
+SHARED_ADDRESS_CLI_LOGINS = 25
+# Console tabs behind one address whose access tokens expire in the same
+# minute (they were all issued in the minute after a deploy the day before).
+# Each tab sends one /auth/refresh.
+SHARED_ADDRESS_CONSOLE_REFRESHES = 50
+# CLI processes behind one address (a CI fleet's egress) that find their
+# access token expired in the same minute. Each sends one refresh grant.
+SHARED_ADDRESS_CLI_REFRESHES = 25
+
+
+def test_cli_logins_from_one_address_fit_the_defaults(client: TestClient) -> None:
+    for _ in range(SHARED_ADDRESS_CLI_LOGINS):
+        assert _oauth_authorize(client, 40).status_code == 302
+        code = {"grant_type": "authorization_code", "code": "junk"}
+        exchange = client.post("/oauth/token", data=code, headers=_ip(40))
+        assert exchange.status_code != 429
+    for _ in range(SHARED_ADDRESS_CLI_LOGINS):
+        assert _revoke(client, 40).status_code != 429
+
+
+def test_refresh_storm_from_one_address_fits_the_defaults(
+    client: TestClient,
+) -> None:
+    for _ in range(SHARED_ADDRESS_CONSOLE_REFRESHES):
+        assert _refresh(client, 41).status_code != 429
+    for _ in range(SHARED_ADDRESS_CLI_REFRESHES):
+        assert _oauth_token(client, 41).status_code != 429
+
+
+def test_repeated_correct_password_logins_fit_the_defaults(
+    client: TestClient, db_session: Session
+) -> None:
+    """A script that signs in before each step is not locked out."""
+    user = _password_user(db_session)
+    for _ in range(10):
+        assert _login_with(client, user.username, PASSWORD, 42).status_code == 200
+
+
+def test_authenticated_api_traffic_spends_no_auth_budget(
+    client: TestClient, db_session: Session
+) -> None:
+    """Bearer-authenticated calls (CLI, CI identities, agents) are never charged.
+
+    Only credential-issuing and public endpoints carry a rule, so a busy
+    automation client behind one address cannot spend the sign-in budget of
+    the people sharing that address.
+    """
+    user = _password_user(db_session)
+    token = _login_with(client, user.username, PASSWORD, 43).json()["access_token"]
+    charged: list[str] = []
+    original = rate_limit._with_fallback
+
+    def spy(rule: Any, *args: Any) -> Any:
+        charged.append(rule.name)
+        return original(rule, *args)
+
+    with patch.object(rate_limit, "_with_fallback", side_effect=spy):
+        for _ in range(200):
+            response = client.get(
+                "/api/v1/auth/users/me",
+                headers={**_ip(43), "Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == 200
+    assert charged == []
