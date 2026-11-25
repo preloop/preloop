@@ -1408,7 +1408,7 @@ answer_path, schema_path, prompt_path, out_path = sys.argv[1:5]
 inspection = sys.argv[5] if len(sys.argv) > 5 else ""
 try:
     import os, stat
-    def read(path, limit):
+    def read(path: str, limit: int) -> str:
         # Root reads files the agent may have replaced: never follow a link,
         # never block on a FIFO, accept only a bounded regular file.
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -1425,7 +1425,13 @@ try:
         raw = read(answer_path, 256 * 1024)
     except FileNotFoundError:
         raw = None
-    text = repair_prompt(raw, schema, prompt, inspection)
+    # One controller verdict per check, shared by the prompt and marker.
+    verdicts: dict[str, Any] = {}
+    def validate(document: Any, schema: Any) -> dict[str, Any]:
+        if not verdicts:
+            verdicts.update(controller_validation(document, schema))
+        return verdicts
+    text = repair_prompt(raw, schema, prompt, inspection, validator=validate)
     if not text:
         sys.exit(0)
     fd = os.open(
@@ -1436,8 +1442,9 @@ try:
 except SystemExit:
     raise
 except Exception:
+    print("PRELOOP_RESULT_VALIDATION_UNAVAILABLE", file=sys.stderr)
     sys.exit(0)
-print(json.dumps(repair_paths(raw, schema)))
+print(json.dumps(repair_paths(raw, schema, validator=validate)))
 sys.exit(1)
 """
         )
@@ -1476,7 +1483,8 @@ if [ "$CODEX_EXIT_CODE" -eq 0 ] \
     && [ "$(_pl_repair_left)" -ge {NATIVE_RESULT_REPAIR_MIN_SECONDS - NATIVE_RESULT_REPAIR_MARGIN_SECONDS} ] \
     && ! {inspection_check} \
     && rm -f -- "{NATIVE_RESULT_REPAIR_PATH}" \
-    && ! _pl_repair_paths=$({check} {requirement}); then
+    && ! _pl_repair_paths=$({check} {requirement}) \
+    && [ "$(_pl_repair_left)" -ge {NATIVE_RESULT_REPAIR_MIN_SECONDS - NATIVE_RESULT_REPAIR_MARGIN_SECONDS} ]; then
     echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":1,"reason":"{UNINSPECTED_REPAIR_REASON}","paths":'"$_pl_repair_paths"'}}' \
         | tee -a "{AGENT_OUTPUT_LOG_PATH}"
 {note_call}    _pl_repair_limit=""
@@ -1513,7 +1521,8 @@ while [ "$CODEX_EXIT_CODE" -eq 0 ] \
     && [ "$(_pl_repair_left)" -ge {NATIVE_RESULT_REPAIR_MIN_SECONDS - NATIVE_RESULT_REPAIR_MARGIN_SECONDS} ] \
     && {inspected} \
     && rm -f -- "{NATIVE_RESULT_REPAIR_PATH}" \
-    && ! _pl_repair_paths=$({check}); do
+    && ! _pl_repair_paths=$({check}) \
+    && [ "$(_pl_repair_left)" -ge {NATIVE_RESULT_REPAIR_MIN_SECONDS - NATIVE_RESULT_REPAIR_MARGIN_SECONDS} ]; do
     _pl_result_repair=$((_pl_result_repair + 1))
     echo '{REVIEW_CONTINUATION_MARKER} {{"attempt":'"$_pl_result_repair"',"reason":"result_schema_invalid","paths":'"$_pl_repair_paths"'}}' \
         | tee -a "{AGENT_OUTPUT_LOG_PATH}"
@@ -1810,6 +1819,28 @@ exclude = ["*TOKEN*", "*KEY*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*", "*CAPAB
             Environment variables dict
         """
         env = {}
+
+        if (execution_context.get("agent_config") or {}).get(
+            "native_result"
+        ) is True and isinstance(execution_context.get("result_schema"), dict):
+            from preloop.services.result_validation_capability import (
+                result_validation_environment,
+            )
+
+            mcp_url = (
+                os.getenv("PRELOOP_MCP_URL_K8S") if self.use_kubernetes else None
+            ) or os.getenv(
+                "PRELOOP_MCP_URL",
+                "http://preloop-api:8000/mcp/v1"
+                if self.use_kubernetes
+                else "http://host.docker.internal:8000/mcp/v1",
+            )
+            env.update(
+                result_validation_environment(
+                    execution_context["result_schema"],
+                    api_url=mcp_url.rstrip("/").removesuffix("/mcp/v1"),
+                )
+            )
 
         # Add API key - use provider-specific env var for custom models
         model_provider = execution_context.get("model_provider", "openai").lower()

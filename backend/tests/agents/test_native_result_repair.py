@@ -1,6 +1,6 @@
 """A native final answer that does not match the result schema is asked for again.
 
-Unit tests for the stdlib checker, and shell tests that run the generated
+Unit tests for repair prompts, and shell tests that run the generated
 continuation blocks with a stub ``codex`` standing in for the CLI and its
 model. No model provider is called.
 """
@@ -31,6 +31,7 @@ from preloop.services.native_result_repair import (
     schema_errors,
 )
 from preloop.utils.execve_limits import PROMPT_FILE_PATH
+from tests.agents.result_validation_server import validation_server
 
 SHA = {"type": "string", "pattern": "^[0-9a-f]{40}$"}
 TEXT = {"type": "string", "pattern": "\\S"}
@@ -69,6 +70,20 @@ SCHEMA: dict[str, Any] = {
             },
         },
     },
+}
+
+CONDITIONAL_SCHEMA = {
+    **SCHEMA,
+    "allOf": [
+        {
+            "if": {
+                "required": ["verdict"],
+                "properties": {"verdict": {"const": "pass"}},
+            },
+            "then": {"properties": {"success": {"const": True}}},
+            "else": {"properties": {"success": {"const": False}}},
+        }
+    ],
 }
 
 
@@ -192,7 +207,7 @@ def test_checker_follows_local_references_and_any_of() -> None:
     }
     assert schema_errors({"verdict": "pass", "note": None}, schema) == []
     paths = [e["path"] for e in schema_errors({"verdict": "x", "note": 1}, schema)]
-    assert paths == ["$.verdict", "$.note"]
+    assert paths == ["$.note", "$.verdict"]
 
 
 @pytest.mark.parametrize(
@@ -276,6 +291,9 @@ def _run(
     answers: list[Any],
     *,
     inspect_from: int = 1,
+    result_schema: dict[str, Any] = SCHEMA,
+    clock_epoch: int | None = None,
+    validation_env_override: dict[str, str] | None = None,
 ) -> tuple[int, Path, str]:
     """Run the first session and ``block``; return calls, answer and log."""
     repo = tmp_path / "repo"
@@ -312,9 +330,14 @@ def _run(
     stub.chmod(0o755)
     state = tmp_path / "state"
     state.mkdir()
+    if clock_epoch is not None:
+        (state / "clock").write_text(str(clock_epoch))
+        date = bindir / "date"
+        date.write_text('#!/bin/bash\ncat "$STATE/clock"\n')
+        date.chmod(0o755)
     result = tmp_path / "result.json"
     schema = tmp_path / "schema"
-    schema.write_text(json.dumps(SCHEMA))
+    schema.write_text(json.dumps(result_schema))
     prompt = tmp_path / "prompt"
     prompt.write_text("Review the change")
     log = tmp_path / "attempt.log"
@@ -335,26 +358,30 @@ def _run(
         f"codex exec --output-last-message {result} < {prompt} > {log}\n"
         "CODEX_EXIT_CODE=0\n" + block + '\necho "EXIT=$CODEX_EXIT_CODE"\n'
     )
-    proc = subprocess.run(
-        ["bash", "-c", script],
-        env={
-            # The block runs python3; slim images keep it in /usr/local/bin.
-            "PATH": f"{bindir}:{Path(sys.executable).parent}:/usr/bin:/bin",
-            "PRELOOP_DISABLE_TELEMETRY": "true",
-            "PRELOOP_REVIEW_BASE_SHA": base,
-            "PRELOOP_REVIEW_HEAD_SHA": head,
-            "STATE": str(state),
-            "ANSWERS": str(answers_dir),
-            "INSPECT_FROM": str(inspect_from),
-        },
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    with validation_server(result_schema) as validation_env:
+        proc = subprocess.run(
+            ["bash", "-c", script],
+            env={
+                **validation_env,
+                **(validation_env_override or {}),
+                # The block runs python3; slim images keep it in /usr/local/bin.
+                "PATH": f"{bindir}:{Path(sys.executable).parent}:/usr/bin:/bin",
+                "PRELOOP_DISABLE_TELEMETRY": "true",
+                "PRELOOP_REVIEW_BASE_SHA": base,
+                "PRELOOP_REVIEW_HEAD_SHA": head,
+                "STATE": str(state),
+                "ANSWERS": str(answers_dir),
+                "INSPECT_FROM": str(inspect_from),
+            },
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
     assert "EXIT=0" in proc.stdout
     calls = int((state / "calls").read_text())
-    return calls, result, out_log.read_text() if out_log.exists() else ""
+    log_text = out_log.read_text() if out_log.exists() else ""
+    return calls, result, log_text + proc.stderr
 
 
 def _markers(log: str) -> list[dict[str, Any]]:
@@ -379,6 +406,31 @@ def test_invalid_answer_gets_one_repair_naming_the_errors(tmp_path: Path) -> Non
     assert _markers(log) == [
         {"attempt": 1, "reason": "result_schema_invalid", "paths": ["$.findings"]}
     ]
+
+
+def test_conditional_answer_gets_repair_with_controller_errors(tmp_path: Path) -> None:
+    """A completed inspection and exit zero must not hide a conditional error."""
+    invalid = review(success=True, verdict="changes_requested")
+    expected = [{"path": "$.success", "message": "False was expected"}]
+    assert validate_result_document(invalid, CONDITIONAL_SCHEMA)["errors"] == expected
+    calls, result, log = _run(
+        tmp_path,
+        _blocks(_context(result_schema=CONDITIONAL_SCHEMA)),
+        [invalid, review(success=False)],
+        result_schema=CONDITIONAL_SCHEMA,
+    )
+    validation = validate_result_document(
+        json.loads(result.read_text()), CONDITIONAL_SCHEMA
+    )
+    assert calls == 2, (calls, _markers(log), validation)
+    assert validation["valid"]
+    assert _markers(log) == [
+        {"attempt": 1, "reason": "result_schema_invalid", "paths": ["$.success"]}
+    ]
+    assert (
+        "- $.success: False was expected"
+        in (tmp_path / "state" / "prompt-2").read_text()
+    )
 
 
 def test_fenced_valid_answer_needs_no_repair(tmp_path: Path) -> None:
@@ -406,6 +458,71 @@ def test_no_repair_without_room_in_the_run_budget(tmp_path: Path) -> None:
     calls, _, log = _run(tmp_path, _blocks(context), [review(findings=...)])
     assert calls == 1
     assert _markers(log) == []
+
+
+@pytest.mark.parametrize("seconds_left,expected_calls", [(29, 1), (30, 2)])
+def test_conditional_repair_deadline_boundary(
+    tmp_path: Path, seconds_left: int, expected_calls: int
+) -> None:
+    context = _context(
+        result_schema=CONDITIONAL_SCHEMA,
+        **{RUN_DEADLINE_EPOCH_CONTEXT_KEY: 2_000_000_000 + seconds_left},
+    )
+    calls, _, _ = _run(
+        tmp_path,
+        _blocks(context),
+        [review(success=True), review(success=False)],
+        result_schema=CONDITIONAL_SCHEMA,
+        clock_epoch=2_000_000_000,
+    )
+    assert calls == expected_calls
+
+
+def test_validation_time_cannot_start_a_repair_below_thirty_seconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from preloop.api.endpoints import result_validation
+
+    requests = []
+
+    def validate(document: Any, schema: Any) -> dict[str, Any]:
+        requests.append(document)
+        (tmp_path / "state" / "clock").write_text("2000000003")
+        return validate_result_document(document, schema)
+
+    monkeypatch.setattr(result_validation, "validate_result_document", validate)
+    context = _context(
+        result_schema=CONDITIONAL_SCHEMA,
+        **{RUN_DEADLINE_EPOCH_CONTEXT_KEY: 2_000_000_032},
+    )
+    calls, _, log = _run(
+        tmp_path,
+        _blocks(context),
+        [review(success=True)],
+        result_schema=CONDITIONAL_SCHEMA,
+        clock_epoch=2_000_000_000,
+    )
+    assert len(requests) == 1
+    assert calls == 1
+    assert _markers(log) == []
+
+
+def test_unavailable_validation_is_visible_and_does_not_accept_the_answer(
+    tmp_path: Path,
+) -> None:
+    calls, result, log = _run(
+        tmp_path,
+        _blocks(_context(result_schema=CONDITIONAL_SCHEMA)),
+        [review(success=True)],
+        result_schema=CONDITIONAL_SCHEMA,
+        validation_env_override={"PRELOOP_RESULT_VALIDATION_CAPABILITY": "invalid"},
+    )
+    assert calls == 1
+    assert "PRELOOP_RESULT_VALIDATION_UNAVAILABLE" in log
+    assert _markers(log) == []
+    assert not validate_result_document(
+        json.loads(result.read_text()), CONDITIONAL_SCHEMA
+    )["valid"]
 
 
 def test_repair_session_is_cut_at_the_run_budget() -> None:
