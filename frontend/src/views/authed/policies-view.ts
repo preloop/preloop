@@ -285,6 +285,7 @@ export class PoliciesView extends LitElement {
     id: '',
     ruleType: 'model' as 'tool' | 'model',
     toolName: '',
+    toolExpression: '',
     target: 'model.request' as 'model.request' | 'model.response',
     enabled: true,
     action: 'deny' as ModelIOFormAction,
@@ -1180,6 +1181,7 @@ export class PoliciesView extends LitElement {
       id: '',
       ruleType: 'model' as 'tool' | 'model',
       toolName: '',
+      toolExpression: '',
       target: preset.target as 'model.request' | 'model.response',
       enabled: true,
       action: preset.action as ModelIOFormAction,
@@ -1220,7 +1222,7 @@ export class PoliciesView extends LitElement {
         ruleType: 'tool',
         toolName: toolRule.toolName,
         action: toolRule.action,
-        expression:
+        toolExpression:
           toolRule.condition && toolRule.condition !== '(condition set)'
             ? toolRule.condition
             : '',
@@ -1239,6 +1241,7 @@ export class PoliciesView extends LitElement {
         id: rule.id,
         ruleType: 'model',
         toolName: '',
+        toolExpression: '',
         target: rule.target,
         enabled: rule.enabled !== false,
         action,
@@ -1522,8 +1525,8 @@ export class PoliciesView extends LitElement {
       }
       const payload = {
         action,
-        condition_expression: form.expression.trim() || null,
-        condition_type: conditionTypeFor(form.expression),
+        condition_expression: form.toolExpression.trim() || null,
+        condition_type: conditionTypeFor(form.toolExpression),
         is_enabled: form.enabled,
         approval_workflow_id:
           action === 'require_approval'
@@ -1863,6 +1866,13 @@ export class PoliciesView extends LitElement {
         Approving authorizes this MCP tool route for the account when
         approve-once is enabled and no explicit rule matches. Deny revokes that
         authorization.
+        <sl-button
+          size="small"
+          variant="text"
+          data-testid="tools-seen-defaults"
+          @click=${() => this._showPolicyTab('rules', true)}
+          >Configure first-time tool approval</sl-button
+        >
       </p>
       <sl-select
         label="State"
@@ -1968,9 +1978,11 @@ export class PoliciesView extends LitElement {
       invalid || this._yamlUnavailable || !this._canManagePolicies;
     return html`<section
       class="policy-defaults"
+      id="policy-defaults"
+      tabindex="-1"
       aria-labelledby="policy-defaults-title"
     >
-      <h3 id="policy-defaults-title">Defaults</h3>
+      <h3 id="policy-defaults-title">Unlisted MCP tools</h3>
       <p class="model-io-hint">
         Apply to MCP tools when no rule matches. Native tools keep their client
         permission decision.
@@ -2008,7 +2020,36 @@ export class PoliciesView extends LitElement {
             </sl-select>`
           : nothing
       }
+      <p class="model-io-hint">
+        ${this._yamlDirty ? 'Unsaved policy changes.' : 'Changes use the policy YAML draft.'}
+        <sl-button
+          size="small"
+          variant="text"
+          data-testid="review-defaults"
+          @click=${() => this._showPolicyTab('files')}
+          >Review and save in YAML</sl-button
+        >
+      </p>
     </section>`;
+  }
+
+  /** Navigate to the existing policy editor without replacing its draft. */
+  private async _showPolicyTab(
+    name: 'rules' | 'files',
+    focusDefaults = false
+  ): Promise<void> {
+    this.shadowRoot
+      ?.querySelector<HTMLElement & { show: (panel: string) => void }>(
+        'sl-tab-group'
+      )
+      ?.show(name);
+    await this.updateComplete;
+    if (focusDefaults) {
+      const section =
+        this.shadowRoot?.querySelector<HTMLElement>('#policy-defaults');
+      section?.focus();
+      section?.scrollIntoView({ block: 'nearest' });
+    }
   }
 
   private _triggerImport = () => {
@@ -2527,6 +2568,7 @@ export class PoliciesView extends LitElement {
   private renderRulesTab() {
     const rules = this.filteredRules(this.unifiedRules());
     return html`
+      ${this._renderDefaults()}
       <div class="rule-search-row">
         <sl-input
           data-testid="rule-search"
@@ -2589,7 +2631,7 @@ export class PoliciesView extends LitElement {
           `
         )}
       </div>
-      <p class="model-io-hint">
+      <p class="model-io-hint" data-testid="condition-attributes">
         Condition attributes:
         <code>pii.found</code>, <code>pii.types_found</code>,
         <code>injection.score</code>, <code>moderation.flagged</code>,
@@ -2608,7 +2650,7 @@ export class PoliciesView extends LitElement {
                     ? 'No rules yet'
                     : 'No rules of this kind'
                 }
-                message="Describe a change, add a rule, or import YAML. Traffic is allowed when no rule matches."
+                message="Describe a change, add a rule, or import YAML. Unlisted MCP tools follow the defaults above."
               ></table-state>
             `
           : html`
@@ -2957,9 +2999,9 @@ export class PoliciesView extends LitElement {
           aria-label="Policy expression"
           rows="2"
           placeholder="Leave empty to apply to every call to this tool"
-          .value=${form.expression}
+          .value=${form.toolExpression}
           @sl-input=${(e: any) =>
-            this._patchModelIOForm({ expression: e.target.value })}
+            this._patchModelIOForm({ toolExpression: e.target.value })}
         ></sl-textarea>
         <p class="model-io-hint">
           Simple matches a field, for example
@@ -3153,7 +3195,12 @@ export class PoliciesView extends LitElement {
       );
     return html`
       <div class="policy-files-container">
-        ${this._renderDefaults()}
+        <sl-button
+          size="small"
+          variant="text"
+          @click=${() => this._showPolicyTab('rules', true)}
+          >Edit unlisted MCP tool defaults on Rules</sl-button
+        >
         <div class="yaml-editor-header">
           ${
             baseline
@@ -4144,7 +4191,7 @@ defaults:
           this._activeTab === 'governance' &&
           hasCapability(this._features, 'governance_review')
             ? 'The AI usage policy the weekly review checks sessions against. It reports and never blocks work.'
-            : 'Instance rules for tool calls and model input and output. Traffic is allowed when no rule matches.'
+            : 'Instance rules for tool calls and model input and output. Unlisted MCP tools follow the policy defaults.'
         }
         width="extra-wide"
       >

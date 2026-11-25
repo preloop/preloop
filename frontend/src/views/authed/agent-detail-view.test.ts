@@ -645,6 +645,7 @@ describe('AgentDetailView', () => {
         const el = await loadedView();
         expect(endpoints.callCount).to.equal(1);
         expect(desktopTab(el)).to.be.null;
+        const loadEndpoints = sinon.spy(el as any, 'loadDesktopEndpoints');
         const clock = sinon.useFakeTimers({
           toFake: ['setTimeout', 'clearTimeout'],
         });
@@ -657,11 +658,14 @@ describe('AgentDetailView', () => {
                 composed: true,
               })
             );
-          await clock.tickAsync(0);
+          // Response body reads are asynchronous even with a fake clock.
+          // Wait for discovery to finish before advancing the retry timer.
+          await loadEndpoints.firstCall.returnValue;
           expect(endpoints.callCount).to.equal(2);
           expect(disclosure(el)).to.exist;
           online = true;
           await clock.tickAsync(3000);
+          await loadEndpoints.secondCall.returnValue;
           await el.updateComplete;
           expect(endpoints.callCount).to.equal(3);
           expect(desktopTab(el)).to.exist;
@@ -670,6 +674,7 @@ describe('AgentDetailView', () => {
           expect(endpoints.callCount).to.equal(3);
         } finally {
           el.remove();
+          loadEndpoints.restore();
           clock.restore();
         }
       });

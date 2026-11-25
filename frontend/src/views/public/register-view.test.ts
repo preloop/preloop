@@ -7,6 +7,7 @@ import {
   parseBootstrapFragment,
   parsePlanChoice,
   isFreePlanId,
+  validateRegisterFields,
 } from './register-view';
 import { invalidateApiCaches } from '../../api';
 import { Router } from '../../router';
@@ -62,6 +63,71 @@ describe('RegisterView', () => {
       'sl-button[type="submit"]'
     );
     expect(registerButton).to.exist;
+  });
+
+  it('explains the username rule and refuses a hyphen before contacting the server', async () => {
+    const username = element.shadowRoot!.querySelector<any>('#username');
+    expect(username.helpText).to.contain('3–50 letters or numbers');
+    username.value = 'jane-doe';
+    username.dispatchEvent(new Event('sl-input'));
+    expect(username.validationMessage).to.contain('letters or numbers');
+    element.shadowRoot!.querySelector<any>('#email').value = 'jane@example.com';
+    element.shadowRoot!.querySelector<any>('#password').value = 'password123';
+    element
+      .shadowRoot!.querySelector('form')!
+      .dispatchEvent(
+        new SubmitEvent('submit', { bubbles: true, cancelable: true })
+      );
+    await element.updateComplete;
+    expect(fetchStub).not.to.have.been.called;
+    expect(
+      element.shadowRoot!.querySelector('.error-message')!.textContent
+    ).to.contain('letters or numbers');
+    username.value = 'Jane123';
+    username.dispatchEvent(new Event('sl-input'));
+    expect(username.validationMessage).to.equal('');
+  });
+
+  it('matches AuthUserCreate Unicode alphanumeric and code-point length rules', () => {
+    for (const username of [
+      'Jane123',
+      'Élodie',
+      '用户甲',
+      'abc²',
+      'Ⅷ23',
+      '𐐀'.repeat(50),
+    ]) {
+      expect(
+        validateRegisterFields({
+          username,
+          email: 'jane@example.com',
+          password: 'password123',
+        }),
+        username
+      ).to.deep.equal([]);
+    }
+    for (const username of [
+      'ab',
+      'a'.repeat(51),
+      '𐐀'.repeat(51),
+      'jane-doe',
+      'jane_doe',
+      'abc ',
+      'e\u0301lo',
+      'abc\n',
+    ]) {
+      expect(
+        validateRegisterFields({
+          username,
+          email: 'jane@example.com',
+          password: 'password123',
+        }),
+        username
+      ).to.have.length(1);
+    }
+    expect(
+      humanizeRegisterError('Value error, Username must be alphanumeric')
+    ).not.to.contain('Value error');
   });
 
   it('should show an error message on failed registration', async () => {
