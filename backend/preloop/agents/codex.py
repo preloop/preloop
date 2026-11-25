@@ -1406,6 +1406,8 @@ done
 import sys
 answer_path, schema_path, prompt_path, out_path = sys.argv[1:5]
 inspection = sys.argv[5] if len(sys.argv) > 5 else ""
+class ValidationUnavailable(Exception):
+    pass
 try:
     import os, stat
     def read(path: str, limit: int) -> str:
@@ -1429,7 +1431,10 @@ try:
     verdicts: dict[str, Any] = {}
     def validate(document: Any, schema: Any) -> dict[str, Any]:
         if not verdicts:
-            verdicts.update(controller_validation(document, schema))
+            try:
+                verdicts.update(controller_validation(document, schema))
+            except (OSError, ValueError, KeyError) as exc:
+                raise ValidationUnavailable(type(exc).__name__) from exc
         return verdicts
     text = repair_prompt(raw, schema, prompt, inspection, validator=validate)
     if not text:
@@ -1441,8 +1446,15 @@ try:
         handle.write(text)
 except SystemExit:
     raise
-except Exception:
-    print("PRELOOP_RESULT_VALIDATION_UNAVAILABLE", file=sys.stderr)
+except ValidationUnavailable as exc:
+    print("PRELOOP_RESULT_VALIDATION_UNAVAILABLE", str(exc), file=sys.stderr)
+    sys.exit(0)
+except Exception as exc:
+    import traceback
+    print("PRELOOP_RESULT_REPAIR_CHECK_FAILED", type(exc).__name__, file=sys.stderr)
+    # Stack frames identify the failed operation without printing answer
+    # contents, credentials, exception values, or local variables.
+    traceback.print_tb(exc.__traceback__, file=sys.stderr)
     sys.exit(0)
 print(json.dumps(repair_paths(raw, schema, validator=validate)))
 sys.exit(1)
@@ -1835,10 +1847,15 @@ exclude = ["*TOKEN*", "*KEY*", "*SECRET*", "*PASSWORD*", "*CREDENTIAL*", "*CAPAB
                 if self.use_kubernetes
                 else "http://host.docker.internal:8000/mcp/v1",
             )
+            api_url = mcp_url.rstrip("/")
+            for suffix in ("/mcp/v1", "/mcp"):
+                if api_url.endswith(suffix):
+                    api_url = api_url[: -len(suffix)]
+                    break
             env.update(
                 result_validation_environment(
                     execution_context["result_schema"],
-                    api_url=mcp_url.rstrip("/").removesuffix("/mcp/v1"),
+                    api_url=api_url,
                 )
             )
 

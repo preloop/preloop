@@ -5,6 +5,7 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import jwt
 
@@ -30,6 +31,7 @@ def result_validation_environment(
             "aud": AUDIENCE,
             "exp": datetime.now(UTC) + timedelta(hours=24, minutes=5),
             "schema_digest": schema_digest(schema),
+            "jti": str(uuid4()),
         },
         settings.security.secret_key,
         algorithm="HS256",

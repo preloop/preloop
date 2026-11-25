@@ -214,7 +214,12 @@ def _headers(schema: dict[str, Any]) -> dict[str, str]:
 def test_validation_requires_the_narrow_capability(
     client: TestClient, kind: str
 ) -> None:
-    claims = {"aud": AUDIENCE, "exp": 4_000_000_000, "schema_digest": schema_digest({})}
+    claims = {
+        "aud": AUDIENCE,
+        "exp": 4_000_000_000,
+        "schema_digest": schema_digest({}),
+        "jti": "synthetic-capability",
+    }
     if kind == "expired":
         claims["exp"] = 1
     if kind == "wrong-audience":
@@ -296,3 +301,45 @@ async def test_validation_transport_is_set_for_native_runs_without_mcp_tools(
         audience=AUDIENCE,
     )
     assert claims["schema_digest"] == schema_digest(CONDITIONAL_SCHEMA)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kubernetes", [False, True])
+@pytest.mark.parametrize("suffix", ["/mcp", "/mcp/", "/mcp/v1", "/mcp/v1/"])
+async def test_validation_url_falls_back_to_the_runtime_mcp_base(
+    monkeypatch: pytest.MonkeyPatch, kubernetes: bool, suffix: str
+) -> None:
+    monkeypatch.delenv("PRELOOP_EXECUTION_API_URL", raising=False)
+    monkeypatch.setenv("PRELOOP_MCP_URL", "https://docker.example.com" + suffix)
+    monkeypatch.setenv("PRELOOP_MCP_URL_K8S", "https://cluster.example.com" + suffix)
+    agent = CodexAgent({})
+    agent.use_kubernetes = kubernetes
+    env = await agent._prepare_environment(
+        {"agent_config": {"native_result": True}, "result_schema": CONDITIONAL_SCHEMA}
+    )
+    host = "cluster" if kubernetes else "docker"
+    assert env["PRELOOP_RESULT_VALIDATION_URL"] == (
+        f"https://{host}.example.com" + VALIDATION_PATH
+    )
+
+
+def test_validation_capability_has_its_own_request_budget(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATE_LIMIT_BACKEND", "memory")
+    monkeypatch.setenv("RATE_LIMIT_RESULT_VALIDATION_CAPABILITY", "2/86400")
+    headers = _headers({})
+    payload = {"schema": {}, "document": {}}
+    for _ in range(2):
+        assert (
+            client.post(VALIDATION_PATH, json=payload, headers=headers).status_code
+            == 200
+        )
+    response = client.post(VALIDATION_PATH, json=payload, headers=headers)
+    assert response.status_code == 429
+    assert int(response.headers["retry-after"]) > 0
+    assert (
+        client.post(VALIDATION_PATH, json=payload, headers=_headers({})).status_code
+        == 200
+    )

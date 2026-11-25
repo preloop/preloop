@@ -613,6 +613,10 @@ and annotation-only `format` retain that validator's behavior in both places.
 If the validation service cannot be reached, the log records
 `PRELOOP_RESULT_VALIDATION_UNAVAILABLE`; final capture still validates the answer
 and never accepts it on the strength of an unavailable repair check.
+Local failures in reading or preparing the repair prompt instead record
+`PRELOOP_RESULT_REPAIR_CHECK_FAILED` with the exception type and stack frames,
+without exception values or answer contents. Validation requests have a shared
+per-capability budget; see [rate limiting](../../operations/rate-limiting.md).
 
 **A fenced answer.** A model that is not held to the schema sometimes writes
 its final answer as the JSON document inside a Markdown code fence

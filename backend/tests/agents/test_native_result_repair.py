@@ -525,6 +525,18 @@ def test_unavailable_validation_is_visible_and_does_not_accept_the_answer(
     )["valid"]
 
 
+def test_missing_schema_is_a_checker_failure_not_a_transport_failure(
+    tmp_path: Path,
+) -> None:
+    block = _blocks(_context()).replace(
+        "/tmp/preloop-native-result-schema.json", "/workspace/missing-schema.json"
+    )
+    calls, _, log = _run(tmp_path, block, [review(findings=...)])
+    assert calls == 1
+    assert "PRELOOP_RESULT_REPAIR_CHECK_FAILED FileNotFoundError" in log
+    assert "PRELOOP_RESULT_VALIDATION_UNAVAILABLE" not in log
+
+
 def test_repair_session_is_cut_at_the_run_budget() -> None:
     context = _context(**{RUN_DEADLINE_EPOCH_CONTEXT_KEY: 2_000_000_000})
     block = CodexAgent({})._native_result_repair_block(

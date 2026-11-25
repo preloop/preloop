@@ -10,10 +10,12 @@ from starlette.concurrency import run_in_threadpool
 from preloop.config import settings
 from preloop.services.flow_artifacts import sanitize_captured_result
 from preloop.services.flow_result_schema import validate_result_document
+from preloop.services.rate_limit import Rule, enforce_async
 from preloop.services.result_validation_capability import AUDIENCE, schema_digest
 
 router = APIRouter()
 MAX_REQUEST_BYTES = 384 * 1024
+VALIDATION_REQUESTS = Rule("result.validation.capability", 10, 24 * 60 * 60)
 
 
 @router.post("/internal/result-validation", include_in_schema=False)
@@ -33,12 +35,18 @@ async def validate_native_result(
             settings.security.secret_key,
             algorithms=["HS256"],
             audience=AUDIENCE,
-            options={"require": ["exp", "schema_digest", "aud"]},
+            options={"require": ["exp", "schema_digest", "aud", "jti"]},
         )
-        if claims["aud"] != AUDIENCE or not isinstance(claims["schema_digest"], str):
+        if (
+            claims["aud"] != AUDIENCE
+            or not isinstance(claims["schema_digest"], str)
+            or not isinstance(claims["jti"], str)
+            or not claims["jti"]
+        ):
             raise ValueError("invalid capability")
     except (jwt.PyJWTError, ValueError, TypeError) as exc:
         raise HTTPException(401, "invalid_result_validation_capability") from exc
+    await enforce_async(VALIDATION_REQUESTS, claims["jti"])
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)

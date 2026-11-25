@@ -475,6 +475,7 @@
   "POST /api/v1/flows/{flow_id}/dismiss-preset-update": "deny",
   "POST /api/v1/flows/{flow_id}/trigger": "flow:trigger",
   "POST /api/v1/flows/{flow_id}/webhook-secret/rotate": "deny",
+  "POST /api/v1/internal/result-validation": "deny",
   "POST /api/v1/invitations": "deny",
   "POST /api/v1/invitations/accept": "deny",
   "POST /api/v1/invitations/{invitation_id}/resend": "deny",

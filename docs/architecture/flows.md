@@ -831,6 +831,9 @@ grants no access to stored results, accounts, posting, or model providers. The
 wrapper uses the returned errors for its prompt and continuation marker, checks
 the remaining deadline again after validation, and leaves final acceptance to
 the normal capture and publication gates.
+Only rate-limit counters are retained for validation requests. Each launch has
+its own capability budget, and error collection preserves the exact total and
+sorted first 20 errors without retaining every error object for invalid arrays.
 
 ## Hosted flow conversations
 
