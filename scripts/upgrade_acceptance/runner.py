@@ -685,6 +685,7 @@ class Run:
         after = self.probe(prefix, False, before)
         if getattr(self.args, "cli_matrix", False):
             self.matrix(prefix, "candidate")
+            before["verify_matrix_policies"] = True
         retries = []
         for attempt in (1, 2):
             # Stop writers before repeating the initializer, just as on upgrade.

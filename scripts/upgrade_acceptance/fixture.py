@@ -505,6 +505,7 @@ def snapshot() -> dict[str, Any]:
 def check(previous: dict[str, Any]) -> dict[str, Any]:
     """Verify fresh login, existing tokens, revoked denial and schema head."""
     import httpx
+    import yaml
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
@@ -569,6 +570,33 @@ def check(previous: dict[str, Any]) -> dict[str, Any]:
                 response.json().get(field) == expected,
                 f"{resource} API content changed",
             )
+        if previous.get("verify_matrix_policies"):
+            for cli in ("baseline", "candidate"):
+                login = client.post(
+                    "/api/v1/auth/token/json",
+                    json={
+                        "username": f"matrix-candidate-{cli}",
+                        "password": PASSWORD,
+                    },
+                )
+                require(login.status_code == 200, "Matrix account did not survive")
+                exported = client.get(
+                    "/api/v1/policies/export",
+                    headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+                )
+                require(exported.status_code == 200, "Matrix policy readback failed")
+                document = yaml.safe_load(exported.text)
+                require(
+                    document.get("defaults", {}).get("unknown_tools") == "deny",
+                    "Initializer reset restrictive policy defaults",
+                )
+                require(
+                    any(
+                        tool.get("name") == "get_issue" and tool.get("enabled") is False
+                        for tool in document.get("tools", [])
+                    ),
+                    "Initializer reset the disabled tool policy",
+                )
     models_dir = "/app/backend/preloop/models"
     config = Config(f"{models_dir}/alembic.ini")
     config.set_main_option("script_location", f"{models_dir}/alembic")
@@ -597,6 +625,8 @@ def check(previous: dict[str, Any]) -> dict[str, Any]:
         "single_migration_head",
         "api_content_readback",
     ]
+    if previous.get("verify_matrix_policies"):
+        state["checks"].append("matrix_policy_defaults_preserved")
     return state
 
 

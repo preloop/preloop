@@ -508,14 +508,19 @@ def test_matrix_does_not_treat_unsupported_commands_as_success() -> None:
     assert not matrix_passed(cells)
 
 
+@pytest.mark.parametrize("with_matrix", [False, True])
 def test_compose_checks_content_after_each_of_two_initializer_retries(
-    run: Run, monkeypatch: pytest.MonkeyPatch
+    run: Run, monkeypatch: pytest.MonkeyPatch, with_matrix: bool
 ) -> None:
+    import runner
+
+    run.args.cli_matrix = with_matrix
     run.baseline_source = run.candidate_source = Path(__file__).resolve().parents[3]
     run.baseline_image = run.candidate_image = "synthetic-app"
     run.pg_image, run.nats_image = "synthetic-postgres", "synthetic-nats"
     calls: list[tuple[str, list[str]]] = []
     probes = []
+    policy_checks = []
 
     def command(label: str, argv: list[str], **kwargs: Any) -> str:
         calls.append((label, argv))
@@ -525,6 +530,7 @@ def test_compose_checks_content_after_each_of_two_initializer_retries(
         prefix: list[str], seed: bool, previous: dict[str, Any]
     ) -> dict[str, Any]:
         probes.append(seed)
+        policy_checks.append(previous.get("verify_matrix_policies", False))
         return {
             key: "synthetic"
             for key in (
@@ -536,12 +542,18 @@ def test_compose_checks_content_after_each_of_two_initializer_retries(
             )
         }
 
+    def matrix(prefix: list[str], phase: str) -> None:
+        run.report.setdefault("compatibility", {})[phase] = []
+
     monkeypatch.setattr(run, "command", command)
     monkeypatch.setattr(run, "probe", probe)
     monkeypatch.setattr(run, "ready", lambda prefix: None)
     monkeypatch.setattr(run, "require_compose_image", lambda cmd, label: None)
+    monkeypatch.setattr(run, "matrix", matrix)
+    monkeypatch.setattr(runner, "matrix_passed", lambda cells: True)
     run.run_compose()
     assert probes == [True, False, False, False]
+    assert policy_checks == [False, False, with_matrix, with_matrix]
     assert len(run.report["runtimes"]["compose"]["retries"]) == 2
     for label, argv in calls:
         if "drain" in label:
