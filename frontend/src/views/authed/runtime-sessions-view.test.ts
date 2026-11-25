@@ -1041,6 +1041,15 @@ describe('RuntimeSessionsView', () => {
       ...Array.from(toolbar.querySelectorAll('sl-select')),
     ] as HTMLElement[];
     expect(controls).to.have.length(6);
+    expect(
+      controls.slice(1).map((control) => control.getAttribute('label'))
+    ).to.deep.equal([
+      'Source type',
+      'Status',
+      'Date range',
+      'Has artifacts',
+      'Sort',
+    ]);
     const before = controls.map((node) =>
       node.getBoundingClientRect().toJSON()
     );

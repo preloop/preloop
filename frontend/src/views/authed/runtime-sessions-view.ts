@@ -3227,6 +3227,30 @@ export class RuntimeSessionsView extends LitElement {
               >
                 <sl-select
                   size="small"
+                  label="Source type"
+                  value=${this.sessionSourceType}
+                  @sl-change=${this.handleSessionSourceTypeChange}
+                >
+                  <sl-option value="all">All sources</sl-option>
+                  ${this.sourceTypeOptions().map(
+                    (kind) =>
+                      html`<sl-option value=${kind}
+                        >${this.sourceTypeLabel(kind)}</sl-option
+                      >`
+                  )}
+                </sl-select>
+                <sl-select
+                  size="small"
+                  label="Status"
+                  value=${this.status}
+                  @sl-change=${this.handleStatusChange}
+                >
+                  <sl-option value="all">All</sl-option>
+                  <sl-option value="active">Active</sl-option>
+                  <sl-option value="ended">Ended</sl-option>
+                </sl-select>
+                <sl-select
+                  size="small"
                   label="Date range"
                   value=${this.selectedRange}
                   @sl-change=${this.handleRangeChange}
@@ -3255,30 +3279,6 @@ export class RuntimeSessionsView extends LitElement {
                       `
                     : nothing
                 }
-                <sl-select
-                  size="small"
-                  label="Source type"
-                  value=${this.sessionSourceType}
-                  @sl-change=${this.handleSessionSourceTypeChange}
-                >
-                  <sl-option value="all">All sources</sl-option>
-                  ${this.sourceTypeOptions().map(
-                    (kind) =>
-                      html`<sl-option value=${kind}
-                        >${this.sourceTypeLabel(kind)}</sl-option
-                      >`
-                  )}
-                </sl-select>
-                <sl-select
-                  size="small"
-                  label="Status"
-                  value=${this.status}
-                  @sl-change=${this.handleStatusChange}
-                >
-                  <sl-option value="all">All</sl-option>
-                  <sl-option value="active">Active</sl-option>
-                  <sl-option value="ended">Ended</sl-option>
-                </sl-select>
                 <sl-select
                   size="small"
                   label="Has artifacts"
