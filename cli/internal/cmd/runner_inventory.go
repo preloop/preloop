@@ -65,7 +65,10 @@ type harnessInventoryEntry struct {
 	Billing          string         `json:"billing"`
 	Models           []harnessModel `json:"models"`
 	GeneratedProfile *string        `json:"generated_profile,omitempty"`
-	Capabilities     []string       `json:"capabilities"`
+	// SetupStep names the onboarding step that keeps a presence-only
+	// harness from running flows (for example the approval hook).
+	SetupStep    string   `json:"setup_step,omitempty"`
+	Capabilities []string `json:"capabilities"`
 }
 
 type harnessInventory struct {

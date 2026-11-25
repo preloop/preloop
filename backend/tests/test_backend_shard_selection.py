@@ -305,3 +305,41 @@ def test_plan_command_rejects_an_empty_selection(
     )
     assert sharding.command_plan(args, tmp_path) == 2
     assert not args.out.exists()
+
+
+@pytest.mark.parametrize("include_regular", [True, False])
+def test_serial_lane_uses_only_selected_files_without_xdist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, include_regular: bool
+) -> None:
+    """The serial group owns its files exclusively and starts plain pytest."""
+    files = _files(tmp_path, 4)
+    monkeypatch.setattr(sharding, "SERIAL_FILES", set(files[:2]))
+    monkeypatch.setattr(sharding, "discover_files", lambda root: files)
+    chosen = [files[0], *(files[2:] if include_regular else [])]
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text(json.dumps({"candidate_tests": chosen}))
+    durations = tmp_path / "durations.json"
+    durations.write_text(json.dumps({files[0]: 500, files[2]: 1, files[3]: 1}))
+    args = argparse.Namespace(
+        shards=2 if include_regular else 0,
+        selection=receipt,
+        durations=durations,
+        out=tmp_path / "plan.json",
+        max_ratio=1.15,
+    )
+    assert sharding.command_plan(args, tmp_path) == 0
+    plan = json.loads(args.out.read_text())
+    assert _covered(plan) == sorted(chosen)
+    assert plan["shards"][-1]["files"] == [files[0]]
+    assert plan["shards"][-1]["serial"]
+    calls = []
+    monkeypatch.setattr(
+        sharding.subprocess,
+        "run",
+        lambda cmd, cwd, env: calls.append(cmd) or argparse.Namespace(returncode=0),
+    )
+    run = argparse.Namespace(
+        plan=args.out, group=len(plan["shards"]), workers="auto", pytest_args=[]
+    )
+    assert sharding.command_run(run, tmp_path) == 0
+    assert calls == [[sys.executable, "-m", "pytest", files[0]]]

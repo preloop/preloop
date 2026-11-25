@@ -1,18 +1,4 @@
-"""Guard the self-hosted runner routing in the GitHub CI workflow.
-
-Idle private VMs take backend shards immediately; remaining work uses
-ubuntu-24.04. GitHub will wait forever on a self-hosted ``runs-on`` rather
-than fall back to hosted, so sending every test job to three VMs serializes
-the suite. Two properties matter enough to pin down here:
-
-1. Routing reaches only backend shards, per group. Frontend, plugins, and
-   coverage stay on ubuntu-24.04 and must not wait for pick-runner.
-2. The fallback is unconditional. ``pick-runner`` must never fail the
-   workflow and must never leave ``backend_plan`` unset: a missing secret,
-   a token without ``administration: read``, or an API error all have to
-   land on eighteen hosted shards. Otherwise an unrelated PR goes red over
-   CI plumbing.
-"""
+"""Exercise the backend runner picker and its hosted fallback."""
 
 from __future__ import annotations
 
@@ -21,14 +7,11 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from tests.ci_workflow import load_ci_jobs, step_script
-from tests.test_github_ci_backend_shards import BACKEND_TEST_SPLITS
 
-BACKEND_SHARD = "[matrix.group]"
 HOSTED_JOBS = (
     "test-backend-coverage",
     "test-frontend",
@@ -54,44 +37,11 @@ def _pick_script() -> str:
     raise AssertionError("pick-runner has no step with id 'pick'")
 
 
-def _hosted_slot() -> dict[str, Any]:
-    """Public ubuntu-24.04 shard. Postgres is the machine's, not a service."""
-    return {"runner": "ubuntu-24.04"}
-
-
-def _overflow_slot(pyver: str = "3.11") -> dict[str, Any]:
-    """Idle self-hosted shard. Same machine Postgres, no nested container.
-
-    ``pyver`` is unused. The VM supplies Python 3.11; a nested
-    ``python:3.11-bookworm`` would hide ``127.0.0.1:5432``.
-    """
-    del pyver
-    return {"runner": ["self-hosted", "Linux", "X64", "preloop-ci-general"]}
-
-
-def _backend_plan(idle: int, pyver: str = "3.11") -> list[dict[str, Any] | None]:
-    """One runner class per run: every shard is private only with one VM each.
-
-    GitHub expressions cannot subtract, so the array is 1-based: a dummy
-    ``null`` at index 0 lets ``[matrix.group]`` address groups 1 through
-    the shard count. Mirrors pick-runner's jq in Python so GitLab's unit
-    image (no ``jq``) can still pin the routing.
-    """
-    idle = BACKEND_TEST_SPLITS if int(idle) >= BACKEND_TEST_SPLITS else 0
-    threshold = BACKEND_TEST_SPLITS - idle
-    shards: list[dict[str, Any] | None] = [None]
-    shards.extend(
-        _overflow_slot(pyver) if index >= threshold else _hosted_slot()
-        for index in range(BACKEND_TEST_SPLITS)
-    )
-    return shards
-
-
 def test_backend_shards_route_through_pick_runner_plan() -> None:
-    """Each backend shard reads its own slot from backend_plan."""
+    """Every group reads the same runner class, including the serial group."""
     backend = load_ci_jobs()["test-backend"]
-    assert BACKEND_SHARD in backend["runs-on"]
-    assert "backend_plan" in backend["runs-on"]
+    assert "matrix." not in backend["runs-on"]
+    assert "fromJSON(needs.pick-runner.outputs.backend_runner)" in backend["runs-on"]
     assert "pick-runner" in backend["needs"]
     assert "container" not in backend
     # GitHub expressions have no arithmetic. `matrix.group - 1` makes the
@@ -140,7 +90,9 @@ def test_bootstrap_and_aggregation_do_not_depend_on_optional_capacity() -> None:
     for name in ("changes", "pick-runner", "ci"):
         assert jobs[name]["runs-on"] == "ubuntu-24.04", name
     pick = jobs["pick-runner"]
-    assert pick["outputs"]["backend_plan"] == "${{ steps.pick.outputs.backend_plan }}"
+    assert (
+        pick["outputs"]["backend_runner"] == "${{ steps.pick.outputs.backend_runner }}"
+    )
     assert "timeout-minutes" in pick
 
 
@@ -149,7 +101,7 @@ def test_pick_runner_falls_back_to_the_public_runner() -> None:
     script = _pick_script()
     pick = load_ci_jobs()["pick-runner"]
     assert "CI_SELF_HOSTED_TESTS" in str(pick)
-    assert '"${SELF_HOSTED_TESTS:-true}" = "false"' in script
+    assert '"${SELF_HOSTED_TESTS:-false}" != "true"' in script
     assert "TRUSTED_SOURCE" in str(pick)
     assert "github.event.pull_request.head.repo.full_name == github.repository" in str(
         pick
@@ -180,46 +132,9 @@ def test_pick_runner_requires_an_idle_matching_runner() -> None:
     for label in ("self-hosted", "Linux", "X64"):
         assert f'index("{label}")' in script
     # One runner class per run: all shards private, or all hosted.
-    assert 'SPLITS="${BACKEND_SHARDS:-6}"' in script
-    assert "SPLITS=6 ;;" in script
-    assert 'if [ "$idle" -ge "$SPLITS" ]; then idle=$SPLITS; else idle=0; fi' in script
+    assert 'SPLITS="${BACKEND_SHARDS:-}"' in script
     assert "$idle / $SPLITS" in script
     assert "/ 8" not in script
-    assert "range(0; $splits)" in script
-    assert ". >= ($splits - $idle)" in script
-    # Dummy at [0] so YAML can index with matrix.group (no minus).
-    assert "[null] +" in script
-    assert "*int(sys.argv[1])" in script
-
-
-def test_too_few_idle_runners_never_mix_runner_classes() -> None:
-    """Three VMs cannot take six shards, so every shard stays hosted."""
-    plan = _backend_plan(3)
-    assert plan[0] is None
-    assert len(plan) == BACKEND_TEST_SPLITS + 1
-    assert all(
-        slot is not None and slot["runner"] == "ubuntu-24.04" for slot in plan[1:]
-    )
-
-
-def test_one_idle_runner_per_shard_takes_every_shard() -> None:
-    """Enough VMs move the whole matrix to private capacity."""
-    plan = _backend_plan(BACKEND_TEST_SPLITS + 2)
-    assert all(
-        slot is not None
-        and slot["runner"] == ["self-hosted", "Linux", "X64", "preloop-ci-general"]
-        for slot in plan[1:]
-    )
-
-
-def test_zero_idle_runners_keeps_every_shard_on_hosted() -> None:
-    """No private capacity means the matrix matches pre-self-hosted CI."""
-    plan = _backend_plan(0)
-    assert plan[0] is None
-    assert len(plan) == BACKEND_TEST_SPLITS + 1
-    shards = plan[1:]
-    assert all(slot is not None and slot["runner"] == "ubuntu-24.04" for slot in shards)
-    assert all(slot is not None and "container" not in slot for slot in shards)
 
 
 def test_ci_aggregator_fails_when_pick_runner_fails() -> None:
@@ -294,7 +209,9 @@ def test_test_jobs_are_bounded_and_start_clean() -> None:
 def test_backend_postgres_reuses_a_listening_instance() -> None:
     """Shards do not start a service container before checking the machine."""
     pick = load_ci_jobs()["pick-runner"]
-    assert pick["outputs"]["backend_plan"] == ("${{ steps.pick.outputs.backend_plan }}")
+    assert pick["outputs"]["backend_runner"] == (
+        "${{ steps.pick.outputs.backend_runner }}"
+    )
     script = _pick_script()
     assert "bookworm" not in script
 
@@ -327,12 +244,14 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
         ("missing-token", 0, "6"),
         ("standby", 0, "6"),
         ("irrelevant", 0, "6"),
-        ("many", 6, "6"),
+        ("many", 7, "7"),
+        ("unset", 0, "2"),
+        ("partial", 0, "2"),
         # A narrow selection runs fewer shards, so three idle VMs cover all.
         ("available", 2, "2"),
         ("available", 3, "3"),
-        # A malformed count falls back to the whole matrix.
-        ("many", 6, "not-a-number"),
+        # Malformed counts cannot opt an unknown matrix into private capacity.
+        ("many", 0, "not-a-number"),
     ],
 )
 def test_real_selector_uses_available_capacity(
@@ -376,7 +295,7 @@ print(json.dumps({'runners': runners}))
         BACKEND_SHARDS=shards,
         TRUSTED_SOURCE="false" if case == "fork" else "true",
         RUNNER_READ_TOKEN="" if case == "missing-token" else "synthetic",
-        SELF_HOSTED_TESTS="false" if case == "disabled" else "true",
+        SELF_HOSTED_TESTS={"disabled": "false", "unset": ""}.get(case, "true"),
         REPO="example/repository",
         GITHUB_OUTPUT=str(output),
         GITHUB_STEP_SUMMARY=str(tmp_path / "summary"),
@@ -389,15 +308,11 @@ print(json.dumps({'runners': runners}))
         timeout=15,
     )
     assert result.returncode == 0, result.stderr
-    plan = json.loads(
-        output.read_text().split("backend_plan<<EOF\n", 1)[1].splitlines()[0]
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    runner = json.loads(outputs["backend_runner"])
+    assert runner == (
+        ["self-hosted", "Linux", "X64", "preloop-ci-general"]
+        if expected
+        else "ubuntu-24.04"
     )
-    splits = int(shards) if shards.isdigit() else BACKEND_TEST_SPLITS
-    assert len(plan) == splits + 1
-    assert plan[0] is None
-    private = [slot for slot in plan[1:] if isinstance(slot["runner"], list)]
-    assert len(private) == expected
-    assert all("preloop-ci-general" in slot["runner"] for slot in private)
-    assert sum(slot["runner"] == "ubuntu-24.04" for slot in plan[1:]) == (
-        splits - expected
-    )
+    assert int(outputs["observed_idle"]) == expected

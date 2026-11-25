@@ -16,9 +16,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
-from preloop.api.common import get_tracker_client
+from preloop.api.common import get_tracker_client, tracker_request_http_error
+from preloop.models import models
 from preloop.models.db.session import get_db_session as get_db
-from preloop.models.models.user import User
 from preloop.schemas.pull_request import PullRequestListResponse
 from preloop.services.preset_runner import PresetRunnerError, _load_visible_project
 from preloop.sync.exceptions import TrackerError
@@ -26,6 +26,7 @@ from preloop.utils.permissions import require_permission
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+User = models.User
 
 _PR_LIST_CACHE: Dict[Tuple[str, str, str, int, int], Tuple[float, dict]] = {}
 _PR_LIST_CACHE_LOCK = threading.Lock()
@@ -140,7 +141,7 @@ def list_project_pull_requests(
         logger.warning(
             "Tracker request failed listing pull requests: %s", type(exc).__name__
         )
-        raise HTTPException(status_code=502, detail="Tracker request failed") from exc
+        raise tracker_request_http_error(exc, tracker_type=kind) from exc
     except (httpx.HTTPError, gitlab.exceptions.GitlabError) as exc:
         logger.error("Unexpected tracker error listing pull requests")
         raise HTTPException(status_code=502, detail="Tracker request failed") from exc

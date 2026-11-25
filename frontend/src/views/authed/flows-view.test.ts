@@ -102,6 +102,17 @@ describe('FlowsView', () => {
     window.history.replaceState(null, '', window.location.pathname);
   });
 
+  it('links to execution history without any in-flight runs', async () => {
+    fetchStub = createFetchStub();
+    const el = await fixture<FlowsView>(html`<flows-view></flows-view>`);
+    await waitUntil(() => !(el as any).isLoading);
+    const link = el.shadowRoot!.querySelector(
+      'view-header sl-button[href="/console/flows/executions"]'
+    );
+    expect(link?.textContent?.trim()).to.equal('View executions');
+    expect(el.shadowRoot!.querySelector('.active-executions')).to.not.exist;
+  });
+
   it('renders flow rows before execution requests finish', async () => {
     let release!: () => void;
     const pending = new Promise<void>((resolve) => {

@@ -1558,16 +1558,20 @@ export class TrackerDetailView extends LitElement {
     const error = this._prsError;
     const configuration =
       error instanceof ApiError && error.code === 'tracker_configuration_error';
+    const repairable =
+      error instanceof ApiError && error.code === 'tracker_repair_required';
     const upstream =
       error instanceof ApiError && [502, 503, 504].includes(error.status);
     const message = configuration
       ? `${this._prHost()} configuration error. Check the tracker connection settings and credentials.`
-      : upstream
-        ? `${this._prHost()} request failed. Check connectivity and tracker access, then retry.`
-        : `Could not load ${this._prNoun()} from ${this._prHost()}. Retry, or check the tracker settings if this continues.`;
+      : repairable
+        ? error.message
+        : upstream
+          ? `${this._prHost()} request failed. Check connectivity and tracker access, then retry.`
+          : `Could not load ${this._prNoun()} from ${this._prHost()}. Retry, or check the tracker settings if this continues.`;
     return html`<div class="prs-error" role="alert">
       ${message}
-      ${configuration ? html`<sl-button size="small" variant="text" @click=${this.handleEdit}>Edit tracker</sl-button>` : ''}
+      ${configuration || repairable ? html`<sl-button size="small" variant="text" @click=${this.handleEdit}>Edit tracker</sl-button>` : ''}
       <sl-button
         size="small"
         variant="text"

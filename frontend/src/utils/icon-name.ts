@@ -7,6 +7,7 @@ export const ICON_ALIASES: Readonly<Record<string, string>> = {
   broom: 'eraser',
   beaker: 'clipboard-check',
   checklist: 'list-check',
+  'document-report': 'file-earmark-text',
 };
 
 /** The shipped icon to render for a stored icon name. */

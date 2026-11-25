@@ -512,3 +512,29 @@ async def test_azure_fetched_comments_are_ingested_with_embeddings(
         force_update=False,
     )
     client._comments.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 503])
+async def test_factory_failures_keep_upstream_status_for_issue_lookup(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+) -> None:
+    """Interactive fallback retains status through the common factory's HTTP mapping."""
+    from preloop.api import common
+    from preloop.sync.exceptions import TrackerAuthenticationError, TrackerResponseError
+
+    _project(db_session, test_user.account_id, "github", "acme/web#12")
+    error = (
+        TrackerAuthenticationError("secret response")
+        if status == 401
+        else TrackerResponseError("secret response", status_code=status)
+    )
+    monkeypatch.setattr(common, "create_tracker_client", AsyncMock(side_effect=error))
+    with pytest.raises(HTTPException) as caught:
+        await mcp._find_or_sync_issue(db_session, "acme/web#12", test_user)
+    assert caught.value.status_code == 502
+    assert str(status) in caught.value.detail
+    assert "secret" not in caught.value.detail

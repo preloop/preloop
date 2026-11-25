@@ -156,8 +156,17 @@ Runners page. Every entry has these fields:
 | `session_mode` | `resume`, `stream`, `replay` or `none`. |
 | `billing` | `seat` (subscription, not metered by the gateway), `metered` or `unknown`. |
 | `models[]` | Up to 64 `{id, source}` pairs; `source` is `probed`, `configured`, `static` or `observed`. |
-| `generated_profile` | Name of the host execution profile the runner generated (`copilot`, `cursor`), or null when a hand-written profile wins. |
+| `generated_profile` | Name of the host execution profile the runner generated (`copilot`, `cursor`, `devin`, `claude`, `codex`, `opencode`), or null when a hand-written profile wins. |
 | `capabilities` | Host execution capability flags. |
+| `setup_step` | The onboarding step that keeps a `presence_only` harness from running flows, for example the `preloop agents onboard "Codex CLI" --approvals` command. Absent once the harness is runnable. |
+
+Codex CLI and OpenCode get a generated profile and `flows_only` support once
+the executable is on the runner's `PATH`, the login is verified (an API key
+variable or the harness's own auth file) and the Preloop approval integration
+is installed. A flow with agent type `codex` or `opencode` then routes to the
+runner when `agent_config.harness` names `codex_cli` or `opencode`; without
+it the flow keeps running hosted. `preloop runner inventory` prints the
+missing step as `next step:` until then.
 
 The inventory carries at most 32 entries and a `sha256:` hash of its entries.
 Executable paths, arguments, environment values and user names never leave
