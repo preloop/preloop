@@ -5085,11 +5085,18 @@ export class PreloopFlowForm extends LitElement {
     const scopedProjects = this.projects.filter(
       (project) => project.organization_id === this.flow.trigger_organization_id
     );
-    const projectScopeHelp = !this.flow.trigger_organization_id
-      ? ''
-      : scopedProjects.length > 0
-        ? 'Select the projects that can start this flow, or clear the selection to include all projects in this organization.'
-        : 'No projects are available to select. Check the tracker’s scope and sync status.';
+    const hasProjectSelection = Boolean(this.flow.trigger_project_ids?.length);
+    let projectScopeHelp = '';
+    if (this.flow.trigger_organization_id) {
+      if (scopedProjects.length === 0) {
+        projectScopeHelp =
+          'No projects are available to select. Check the tracker’s scope and sync status.';
+      } else {
+        projectScopeHelp = hasProjectSelection
+          ? 'To narrow the scope, remove projects or clear the selection and pick specific projects. A blank selection includes all projects in this organization.'
+          : 'Pick specific projects, or leave the selection blank to include all projects in this organization.';
+      }
+    }
 
     let selectableModels = this.models.filter(
       (m) => !m.is_shared && m.model_kind !== 'stt' && m.model_kind !== 'tts'
@@ -5404,8 +5411,7 @@ export class PreloopFlowForm extends LitElement {
                         }}
                         ?disabled=${
                           !this.flow.trigger_organization_id ||
-                          (scopedProjects.length === 0 &&
-                            !this.flow.trigger_project_ids?.length)
+                          (scopedProjects.length === 0 && !hasProjectSelection)
                         }
                       >
                         ${scopedProjects.map(

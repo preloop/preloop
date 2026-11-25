@@ -163,12 +163,22 @@ describe('PreloopFlowForm copy', () => {
 
     expect(picker().hasAttribute('disabled')).to.equal(false);
     expect(picker().getAttribute('help-text')).to.include(
-      'clear the selection to include all projects in this organization'
+      'leave the selection blank to include all projects in this organization'
     );
     expect(picker().querySelector('sl-option')?.textContent?.trim()).to.equal(
       'Widgets'
     );
     expect(picker().querySelectorAll('sl-option').length).to.equal(1);
+
+    el.flow = { ...el.flow, trigger_project_ids: ['project-1'] };
+    await el.updateComplete;
+
+    expect(picker().getAttribute('help-text')).to.include(
+      'remove projects or clear the selection and pick specific projects'
+    );
+    expect(picker().getAttribute('help-text')).to.include(
+      'A blank selection includes all projects in this organization.'
+    );
   });
 
   it('names the execution modes by what they do', async () => {

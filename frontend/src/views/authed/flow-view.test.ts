@@ -646,6 +646,23 @@ describe('FlowView detail page language', () => {
     }
   });
 
+  it('points to the CI identity when a read-only review has no executions', async () => {
+    const element = await renderDetail({
+      git_clone_config: { publication_mode: 'read_only' },
+    });
+    try {
+      element.recentExecutions = [];
+      await element.updateComplete;
+      const runs = element.shadowRoot.querySelector('[data-recent-executions]');
+      expect(runs.textContent).to.include(
+        'Runs start from this flow’s CI identity.'
+      );
+      expect(runs.textContent).not.to.include('Run now starts one.');
+    } finally {
+      element.remove();
+    }
+  });
+
   it('puts recent executions before the prompt (#1692)', async () => {
     const element = await renderDetail({ prompt_template: 'Review it' });
     try {
