@@ -824,6 +824,17 @@ nonterminal agent status; terminal execution events follow final result,
 integrity and publication checks. See [restricted CI](../guide/flows/restricted-ci.md#result-binding-and-repository-inspection)
 for the supported command forms and gateway output-format compatibility scope.
 
+Native result repair uses the controller's Draft 2020-12 validator through a
+bounded, stateless validation request. A schema-bound capability permits only
+validation of caller-supplied data against the schema selected at launch; it
+grants no access to stored results, accounts, posting, or model providers. The
+wrapper uses the returned errors for its prompt and continuation marker, checks
+the remaining deadline again after validation, and leaves final acceptance to
+the normal capture and publication gates.
+Only rate-limit counters are retained for validation requests. Each launch has
+its own capability budget, and error collection preserves the exact total and
+sorted first 20 errors without retaining every error object for invalid arrays.
+
 ## Hosted flow conversations
 
 `FlowConversation` is the durable owner and admission lock for a hosted thread;

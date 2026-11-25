@@ -1,20 +1,13 @@
-"""Find why a native result does not match its schema, inside the agent container.
+"""Build repair prompts using the controller's authoritative schema verdict.
 
-Stdlib only: :func:`repair_prompt` runs in the hosted wrapper (see
-``CodexAgent._native_result_repair_block``), where ``jsonschema`` is not
-installed. It covers the keywords a native-result schema can use (types,
-``enum``/``const``, ``properties``/``required``/``additionalProperties``,
-``minProperties``/``maxProperties``, ``items``, ``uniqueItems``, length and
-size bounds, ``pattern``, numeric bounds, ``multipleOf``, ``anyOf`` and local
-``$ref``). It only decides whether to ask the model for a corrected
-answer; the controller validates the captured document with the full draft
-2020-12 validator and stays authoritative. A keyword this module does not
-know is skipped, so it can under-report but never invents an error that the
-controller would not also find for the keywords it does check.
+The hosted wrapper embeds this stdlib-only client and calls the controller.
+Local callers use the same validator directly. No schema keywords are skipped.
 """
 
-import re
-from typing import Any
+import json
+import os
+from typing import Any, Callable, cast
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 try:
     from preloop.services.native_answer import parse_native_answer
@@ -31,9 +24,6 @@ NOT_JSON_INSTRUCTION = (
 MAX_REPAIR_ERRORS = 20
 #: Longest previous answer quoted back to the model, in characters.
 MAX_PREVIOUS_ANSWER_CHARS = 64 * 1024
-#: Longest value shown inside one error message, in characters (the
-#: controller caps stored messages at 300 characters too).
-MAX_VALUE_CHARS = 200
 
 REPAIR_INSTRUCTIONS = """
 
@@ -72,269 +62,80 @@ required field, only allowed values, the declared types. A progress note or a \
 plan is not an answer; the final answer must be the finished review.
 """
 
-_TYPES: dict[str, Any] = {
-    "object": lambda value: isinstance(value, dict),
-    "array": lambda value: isinstance(value, list),
-    "string": lambda value: isinstance(value, str),
-    "boolean": lambda value: isinstance(value, bool),
-    "null": lambda value: value is None,
-    "number": lambda value: isinstance(value, (int, float))
-    and not isinstance(value, bool),
-    "integer": lambda value: (isinstance(value, int) and not isinstance(value, bool))
-    or (isinstance(value, float) and value.is_integer()),
-}
+Validator = Callable[[Any, Any], dict[str, Any]]
 
 
-def _show(value: Any) -> str:
-    """``repr`` of a value, shortened so one error cannot flood the prompt."""
-    text = repr(value)
-    if len(text) <= MAX_VALUE_CHARS:
-        return text
-    return text[: MAX_VALUE_CHARS - 3] + "..."
+class _NoValidationRedirect(HTTPRedirectHandler):
+    """Never forward the validation capability to another destination."""
 
-
-def _path(parts: list[Any]) -> str:
-    path = "$"
-    for part in parts:
-        path += f"[{part}]" if isinstance(part, int) else f".{part}"
-    return path
-
-
-def _resolve(root: Any, reference: Any) -> Any:
-    if not isinstance(reference, str) or not reference.startswith("#"):
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
         return None
-    target = root
-    for part in reference[2:].split("/") if reference.startswith("#/") else []:
-        part = part.replace("~1", "/").replace("~0", "~")
-        if isinstance(target, list) and part.isdecimal():
-            index = int(part)
-            target = target[index] if index < len(target) else None
-        elif isinstance(target, dict):
-            target = target.get(part)
-        else:
-            return None
-    return target
 
 
-def schema_errors(document: Any, schema: Any) -> list[dict[str, str]]:
-    """Validation errors of ``document`` against a native-result ``schema``.
+def controller_validation(document: Any, schema: Any) -> dict[str, Any]:
+    """Ask the controller to validate against the launch-bound schema.
 
-    Args:
-        document: The parsed final answer.
-        schema: The flow's result schema.
-
-    Returns:
-        ``[{"path", "message"}]`` in document order; empty when no checked
-        keyword fails. Paths name a missing property itself (``$.findings``),
-        as the controller's validator reports them.
+    Raises:
+        OSError: When the controller cannot be reached.
+        ValueError: When the controller response is not a validation verdict.
     """
-    errors: list[dict[str, str]] = []
-
-    def check(value: Any, node: Any, parts: list[Any], depth: int) -> None:
-        if not isinstance(node, dict) or depth > 64:
-            return
-        if "$ref" in node:
-            check(value, _resolve(schema, node["$ref"]), parts, depth + 1)
-        if "anyOf" in node and isinstance(node["anyOf"], list):
-            if not any(
-                not _collect(value, option, depth + 1) for option in node["anyOf"]
-            ):
-                errors.append(
-                    {
-                        "path": _path(parts),
-                        "message": f"{_show(value)} is not valid under any of the "
-                        "given schemas",
-                    }
-                )
-        declared = node.get("type")
-        if declared is not None:
-            names = declared if isinstance(declared, list) else [declared]
-            known = [name for name in names if name in _TYPES]
-            if known and not any(_TYPES[name](value) for name in known):
-                wanted = ", ".join(repr(name) for name in known)
-                errors.append(
-                    {
-                        "path": _path(parts),
-                        "message": f"{_show(value)} is not of type {wanted}",
-                    }
-                )
-                return
-        if "enum" in node and isinstance(node["enum"], list):
-            if not any(_equal(value, option) for option in node["enum"]):
-                errors.append(
-                    {
-                        "path": _path(parts),
-                        "message": f"{_show(value)} is not one of {_show(node['enum'])}",
-                    }
-                )
-        if "const" in node and not _equal(value, node["const"]):
-            errors.append(
-                {
-                    "path": _path(parts),
-                    "message": f"{_show(node['const'])} was expected",
-                }
-            )
-        if isinstance(value, str):
-            _string(value, node, parts)
-        if _TYPES["number"](value):
-            _number(value, node, parts)
-        if isinstance(value, list):
-            _array(value, node, parts, depth)
-        if isinstance(value, dict):
-            _object(value, node, parts, depth)
-
-    def _collect(value: Any, node: Any, depth: int) -> list[dict[str, str]]:
-        before = len(errors)
-        check(value, node, [], depth)
-        found = errors[before:]
-        del errors[before:]
-        return found
-
-    def _string(value: str, node: dict[str, Any], parts: list[Any]) -> None:
-        minimum, maximum = node.get("minLength"), node.get("maxLength")
-        if isinstance(minimum, int) and len(value) < minimum:
-            errors.append(
-                {"path": _path(parts), "message": f"{_show(value)} is too short"}
-            )
-        if isinstance(maximum, int) and len(value) > maximum:
-            errors.append(
-                {"path": _path(parts), "message": f"{_show(value)} is too long"}
-            )
-        pattern = node.get("pattern")
-        if isinstance(pattern, str):
-            try:
-                matched = re.search(pattern, value) is not None
-            except re.error:
-                matched = True
-            if not matched:
-                errors.append(
-                    {
-                        "path": _path(parts),
-                        "message": f"{_show(value)} does not match {pattern!r}",
-                    }
-                )
-
-    def _number(value: Any, node: dict[str, Any], parts: list[Any]) -> None:
-        bounds = (
-            ("minimum", lambda limit: value < limit, "less than the minimum of"),
-            ("maximum", lambda limit: value > limit, "greater than the maximum of"),
-            (
-                "exclusiveMinimum",
-                lambda limit: value <= limit,
-                "less than or equal to the minimum of",
-            ),
-            (
-                "exclusiveMaximum",
-                lambda limit: value >= limit,
-                "greater than or equal to the maximum of",
-            ),
+    request = Request(
+        os.environ["PRELOOP_RESULT_VALIDATION_URL"],
+        data=json.dumps(
+            {"document": document, "schema": schema},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Preloop-Result-Capability": os.environ[
+                "PRELOOP_RESULT_VALIDATION_CAPABILITY"
+            ],
+        },
+        method="POST",
+    )
+    with build_opener(_NoValidationRedirect).open(request, timeout=5) as response:
+        payload = response.read(64 * 1024 + 1)
+    if len(payload) > 64 * 1024:
+        raise ValueError("Validation response is too large")
+    result = json.loads(payload)
+    if (
+        not isinstance(result, dict)
+        or type(result.get("valid")) is not bool
+        or not isinstance(result.get("errors"), list)
+        or result["valid"] != (not result["errors"])
+        or any(
+            not isinstance(error, dict)
+            or not isinstance(error.get("path"), str)
+            or not isinstance(error.get("message"), str)
+            for error in result["errors"]
         )
-        for keyword, fails, words in bounds:
-            limit = node.get(keyword)
-            if _TYPES["number"](limit) and fails(limit):
-                errors.append(
-                    {
-                        "path": _path(parts),
-                        "message": f"{_show(value)} is {words} {limit!r}",
-                    }
-                )
-        step = node.get("multipleOf")
-        if _TYPES["number"](step) and step > 0:
-            quotient = value / step
-            if isinstance(quotient, float) and not quotient.is_integer():
-                errors.append(
-                    {
-                        "path": _path(parts),
-                        "message": f"{_show(value)} is not a multiple of {step!r}",
-                    }
-                )
-
-    def _array(
-        value: list[Any], node: dict[str, Any], parts: list[Any], depth: int
-    ) -> None:
-        minimum, maximum = node.get("minItems"), node.get("maxItems")
-        if isinstance(minimum, int) and len(value) < minimum:
-            errors.append(
-                {"path": _path(parts), "message": f"{_show(value)} is too short"}
-            )
-        if isinstance(maximum, int) and len(value) > maximum:
-            errors.append(
-                {"path": _path(parts), "message": f"{_show(value)} is too long"}
-            )
-        if node.get("uniqueItems") is True:
-            seen: list[Any] = []
-            for item in value:
-                if any(_equal(item, other) for other in seen):
-                    errors.append(
-                        {
-                            "path": _path(parts),
-                            "message": f"{_show(value)} has non-unique elements",
-                        }
-                    )
-                    break
-                seen.append(item)
-        items = node.get("items")
-        if isinstance(items, dict):
-            for index, item in enumerate(value):
-                check(item, items, [*parts, index], depth + 1)
-
-    def _object(
-        value: dict[str, Any], node: dict[str, Any], parts: list[Any], depth: int
-    ) -> None:
-        properties = node.get("properties")
-        properties = properties if isinstance(properties, dict) else {}
-        required = node.get("required")
-        for name in required if isinstance(required, list) else []:
-            if isinstance(name, str) and name not in value:
-                errors.append(
-                    {
-                        "path": _path([*parts, name]),
-                        "message": f"{_show(name)} is a required property",
-                    }
-                )
-        fewest, most = node.get("minProperties"), node.get("maxProperties")
-        if isinstance(fewest, int) and len(value) < fewest:
-            errors.append(
-                {
-                    "path": _path(parts),
-                    "message": f"{_show(value)} does not have enough properties",
-                }
-            )
-        if isinstance(most, int) and len(value) > most:
-            errors.append(
-                {
-                    "path": _path(parts),
-                    "message": f"{_show(value)} has too many properties",
-                }
-            )
-        extra = node.get("additionalProperties")
-        unexpected = [name for name in value if name not in properties]
-        if extra is False and unexpected:
-            names = ", ".join(repr(name) for name in unexpected)
-            errors.append(
-                {
-                    "path": _path(parts),
-                    "message": f"Additional properties are not allowed ({names} "
-                    f"{'was' if len(unexpected) == 1 else 'were'} unexpected)",
-                }
-            )
-        for name, child in value.items():
-            if name in properties:
-                check(child, properties[name], [*parts, name], depth + 1)
-            elif isinstance(extra, dict):
-                check(child, extra, [*parts, name], depth + 1)
-
-    check(document, schema, [], 0)
-    return errors
+    ):
+        raise ValueError("Invalid validation verdict")
+    return result
 
 
-def _equal(left: Any, right: Any) -> bool:
-    if isinstance(left, bool) or isinstance(right, bool):
-        return type(left) is type(right) and bool(left == right)
-    return bool(left == right)
+def schema_errors(
+    document: Any, schema: Any, validator: Validator | None = None
+) -> list[dict[str, str]]:
+    """Return the controller's errors, including its paths and message bounds."""
+    if not isinstance(document, dict):
+        return [{"path": "$", "message": "The final answer was not a JSON object"}]
+    if validator is None:
+        from preloop.services.flow_result_schema import validate_result_document
+
+        validator = validate_result_document
+    return cast(list[dict[str, str]], validator(document, schema)["errors"])
 
 
-def repair_prompt(raw: Any, schema: Any, prompt: str, inspection: str = "") -> str:
+def repair_prompt(
+    raw: Any,
+    schema: Any,
+    prompt: str,
+    inspection: str = "",
+    *,
+    validator: Validator | None = None,
+) -> str:
     """The continuation prompt for an invalid final answer, or "" when valid.
 
     Args:
@@ -346,10 +147,11 @@ def repair_prompt(raw: Any, schema: Any, prompt: str, inspection: str = "") -> s
             given, the prompt is the combined one for a session that neither
             read the change nor answered usably: it asks for the inspection
             and the answer. Empty for a plain schema repair.
+        validator: Controller transport, or the local controller validator.
 
     Returns:
-        An empty string when the answer is a JSON document with no error this
-        module checks for; otherwise the prompt naming each error.
+        An empty string when the controller accepts the answer; otherwise
+        the prompt naming each error.
     """
     if raw is None or not str(raw).strip():
         errors = [{"path": "$", "message": "No final answer was written"}]
@@ -367,7 +169,7 @@ def repair_prompt(raw: Any, schema: Any, prompt: str, inspection: str = "") -> s
                 }
             ]
         else:
-            errors = schema_errors(document, schema)
+            errors = schema_errors(document, schema, validator)
     if not errors:
         return ""
     lines = [f"- {error['path']}: {error['message']}" for error in errors]
@@ -385,12 +187,15 @@ def repair_prompt(raw: Any, schema: Any, prompt: str, inspection: str = "") -> s
     )
 
 
-def repair_paths(raw: Any, schema: Any) -> list[str]:
+def repair_paths(
+    raw: Any, schema: Any, *, validator: Validator | None = None
+) -> list[str]:
     """JSON paths that fail, for the continuation marker (no values).
 
     Args:
         raw: The final answer as text, or None.
         schema: The flow's result schema.
+        validator: Controller transport, or the local controller validator.
 
     Returns:
         Up to :data:`MAX_REPAIR_ERRORS` distinct paths.
@@ -399,5 +204,5 @@ def repair_paths(raw: Any, schema: Any) -> list[str]:
         document, _ = parse_native_answer(raw)
     except (TypeError, ValueError):
         return ["$"]
-    paths = [error["path"] for error in schema_errors(document, schema)]
+    paths = [error["path"] for error in schema_errors(document, schema, validator)]
     return list(dict.fromkeys(paths))[:MAX_REPAIR_ERRORS]

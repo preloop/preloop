@@ -22,7 +22,14 @@ from preloop.services.flow_orchestrator import (
     TimeoutBudget,
     _utcnow,
 )
-from tests.agents.test_native_result_repair import SCHEMA, _blocks, _context, _run
+from tests.agents.test_native_result_repair import (
+    CONDITIONAL_SCHEMA,
+    SCHEMA,
+    _blocks,
+    _context,
+    _markers,
+    _run,
+)
 from tests.agents.test_native_result_repair import review as make_review
 
 HEAD = "a" * 40
@@ -147,6 +154,41 @@ async def test_answer_still_invalid_after_repairs_fails_as_before(
     assert result["failure_category"] == "result_schema_invalid"
     assert "$.findings" in result["error_message"]
     assert orch._result_schema_validation["errors"][0]["path"] == "$.findings"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corrected", [True, False], ids=["repaired", "exhausted"])
+async def test_conditional_review_finalizes_after_repair(
+    tmp_path: Path, corrected: bool
+) -> None:
+    """Only a model-written correction can pass the final schema gate."""
+    answers = [make_review(success=True)]
+    if corrected:
+        answers.append(make_review(success=False))
+    calls, answer, log = _run(
+        tmp_path,
+        _blocks(_context(result_schema=CONDITIONAL_SCHEMA)),
+        answers,
+        result_schema=CONDITIONAL_SCHEMA,
+    )
+    document = json.loads(answer.read_text())
+    document.update(head_sha=HEAD, base_sha=BASE)
+    orch = orchestrator()
+    orch.flow.result_schema = CONDITIONAL_SCHEMA
+    status, result = await finalize(orch, executor(document, AgentStatus.SUCCEEDED))
+    assert calls == (2 if corrected else 3)
+    assert all(marker["paths"] == ["$.success"] for marker in _markers(log))
+    assert result["result"]["success"] is (not corrected)
+    if corrected:
+        assert status == "SUCCEEDED", result.get("error_message")
+        assert orch._result_schema_validation["valid"] is True
+    else:
+        assert status == "FAILED"
+        assert result["failure_category"] == "result_schema_invalid"
+        assert "$.success: False was expected" in result["error_message"]
+        assert orch._result_schema_validation["errors"] == [
+            {"path": "$.success", "message": "False was expected"}
+        ]
 
 
 # --- defect 2: valid answer, then the time limit ---------------------------

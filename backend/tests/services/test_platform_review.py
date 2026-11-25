@@ -12,6 +12,7 @@ import json
 import re
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -22,6 +23,7 @@ import pytest_asyncio
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from preloop.agents.base import AgentStatus
 from preloop.api.auth import get_current_active_user
 from preloop.models import crud, models
 from preloop.models.crud.base import CRUDBase
@@ -36,6 +38,18 @@ from preloop.services.platform_review import (
     render_review,
 )
 from preloop.services.trusted_publisher import PublicationError
+from tests.agents.test_native_result_repair import (
+    CONDITIONAL_SCHEMA,
+    _blocks,
+    _context,
+    _run,
+    review,
+)
+from tests.services.test_native_result_finalization import (
+    executor,
+    finalize,
+    orchestrator,
+)
 
 HEAD = "a" * 40
 OTHER_HEAD = "c" * 40
@@ -293,7 +307,14 @@ def github(monkeypatch: pytest.MonkeyPatch) -> FakeGitHub:
         "github_app",
         SimpleNamespace(app_id="1", private_key="-----BEGIN KEY-----"),
     )
-    monkeypatch.setattr(publication_credentials.jwt, "encode", lambda *a, **k: "jwt")
+    monkeypatch.setattr(
+        publication_credentials,
+        "jwt",
+        SimpleNamespace(
+            encode=lambda *a, **k: "jwt",
+            PyJWTError=publication_credentials.jwt.PyJWTError,
+        ),
+    )
     return fake
 
 
@@ -655,6 +676,63 @@ async def test_stored_result_that_no_longer_matches_the_schema_is_not_posted(
     outcome = await publish(world, execution)
     assert outcome is not None and outcome["review_reason"] == "result_not_valid"
     assert world.github.reviews == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corrected", [True, False], ids=["repaired", "exhausted"])
+async def test_conditional_native_review_is_posted_only_after_correction(
+    world: SimpleNamespace, tmp_path: Path, corrected: bool
+) -> None:
+    """The actual wrapper, finalization gates and publisher agree on acceptance."""
+    answers = [review(success=True)]
+    if corrected:
+        answers.append(review(success=False))
+    calls, answer, _ = _run(
+        tmp_path,
+        _blocks(_context(result_schema=CONDITIONAL_SCHEMA)),
+        answers,
+        result_schema=CONDITIONAL_SCHEMA,
+    )
+    document = json.loads(answer.read_text())
+    document.update(head_sha=HEAD, base_sha="b" * 40)
+    orch = orchestrator()
+    orch.flow.result_schema = CONDITIONAL_SCHEMA
+    status, result = await finalize(orch, executor(document, AgentStatus.SUCCEEDED))
+    assert calls == (2 if corrected else 3)
+    world.flow.result_schema = CONDITIONAL_SCHEMA
+    config = dict(world.flow.git_clone_config)
+    config["platform_review"] = {
+        **OPT_IN,
+        "status": {
+            **OPT_IN["status"],
+            "verdict_states": {
+                "pass": "success",
+                "changes_requested": "failure",
+                "error": "error",
+            },
+        },
+    }
+    world.flow.git_clone_config = config
+    execution = finished(
+        world,
+        identity(world, world.projects[0]),
+        status=status,
+        result=result["result"],
+        valid=orch._result_schema_validation["valid"],
+    )
+    outcome = await publish(world, execution)
+    assert outcome is not None
+    if corrected:
+        assert status == "SUCCEEDED"
+        assert outcome["review"] == "posted"
+        assert outcome["commit_status"] == "failure"
+        assert len(world.github.reviews[(world.projects[0].slug, 7)]) == 1
+    else:
+        assert status == "FAILED"
+        assert result["failure_category"] == "result_schema_invalid"
+        assert "$.success: False was expected" in result["error_message"]
+        assert world.github.reviews == {}
+        assert outcome["commit_status"] == "error"
 
 
 @pytest.mark.asyncio

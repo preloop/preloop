@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
+from heapq import nsmallest
 from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError
+from jsonschema.exceptions import SchemaError, ValidationError
 
 #: Largest accepted schema, as compact JSON text.
 RESULT_SCHEMA_MAX_BYTES = 64 * 1024
@@ -372,8 +374,19 @@ def validate_result_document(
             instance.pop(key, None)
     try:
         validator = Draft202012Validator(dict(schema))
-        found = sorted(
-            validator.iter_errors(instance),
+        error_count = 0
+
+        def counted_errors() -> Iterator[ValidationError]:
+            nonlocal error_count
+            for error in validator.iter_errors(instance):
+                error_count += 1
+                yield error
+
+        # Keep the same sorted first errors and exact count without retaining
+        # every ValidationError for large invalid arrays.
+        found = nsmallest(
+            RESULT_SCHEMA_MAX_ERRORS,
+            counted_errors(),
             key=lambda err: (list(map(str, err.absolute_path)), err.message),
         )
     except Exception as exc:  # A stored schema that no longer applies.
@@ -391,7 +404,7 @@ def validate_result_document(
         {"path": _error_path(err), "message": _bounded(err.message)}
         for err in found[:RESULT_SCHEMA_MAX_ERRORS]
     ]
-    return {"valid": not found, "errors": errors, "error_count": len(found)}
+    return {"valid": not found, "errors": errors, "error_count": error_count}
 
 
 def flow_result_schema(flow: Any) -> Optional[dict[str, Any]]:
