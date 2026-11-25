@@ -464,6 +464,9 @@ def test_matrix_requires_both_clients_and_actual_content() -> None:
         for cli in ("baseline", "candidate")
     ]
     assert matrix_passed(cells)
+    cells[1]["error"] = "RuntimeError"
+    assert not matrix_passed(cells)
+    del cells[1]["error"]
     assert not matrix_passed(cells[:1])
     cells[1]["operations"]["flow"] = {"create_status": 200, "trigger_status": 200}
     assert not matrix_passed(cells)
@@ -504,6 +507,9 @@ def test_matrix_does_not_treat_unsupported_commands_as_success() -> None:
         "explicit_unsaved": True,
     }
     assert matrix_passed(cells)
+    cells[1]["operations"]["discovery_report"]["exit_code"] = 0
+    assert not matrix_passed(cells)
+    cells[1]["operations"]["discovery_report"]["exit_code"] = 1
     cells[1]["operations"]["routing_guard"] = {"exit_code": 0}
     assert not matrix_passed(cells)
 

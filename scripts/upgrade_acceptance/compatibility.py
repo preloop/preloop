@@ -16,13 +16,33 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from fixture import MODEL_KEY, PASSWORD, identifier
+from fixture import MODEL_KEY, PASSWORD, FixtureError, identifier
 from mock_provider import MARKER
 
 if TYPE_CHECKING:
     import httpx
 
 BASE_URL = "http://mock:9001"
+
+
+def onboarded_gateway_token(options: dict[str, Any], account_token: str) -> str:
+    """Require the managed agent credential installed by either supported CLI."""
+    token = options.get("apiKey")
+    if not isinstance(token, str) or not token.strip() or token == account_token:
+        raise FixtureError("Onboarding did not install an independent agent key")
+    return token
+
+
+def persisted_native_result(execution: dict[str, Any]) -> bool:
+    """Verify the Cursor runner's typed result, which stores identity, not text."""
+    result = execution.get("result")
+    return (
+        execution.get("status") == "SUCCEEDED"
+        and isinstance(result, dict)
+        and result.get("status") == "success"
+        and result.get("harness") == "cursor_cli"
+        and result.get("session_id") == "synthetic-acceptance"
+    )
 
 
 def unchanged_object(before: httpx.Response, after: httpx.Response) -> bool:
@@ -143,8 +163,13 @@ def exercise_flow(client: httpx.Client, runner_id: str, name: str) -> dict[str, 
                     r"[A-Za-z0-9_-]{20,}", "[redacted]", diagnostic
                 )[:500]
                 logs = client.get(f"/api/v1/flows/executions/{execution_id}/logs")
-                result["content_verified"] = execution["status"] == "SUCCEEDED" and (
-                    MARKER in json.dumps(execution) or MARKER in logs.text
+                result["result_content_verified"] = persisted_native_result(execution)
+                result["model_output_verified"] = (
+                    logs.status_code == 200 and MARKER in logs.text
+                )
+                result["content_verified"] = (
+                    result["result_content_verified"]
+                    and result["model_output_verified"]
                 )
                 return result
         time.sleep(2)
@@ -330,7 +355,7 @@ def exercise(
             )
             # Read the installed agent's gateway token, never expose it in evidence.
             options = managed.get("provider", {}).get("preloop", {}).get("options", {})
-            gateway_token = options.get("apiKey", token)
+            gateway_token = onboarded_gateway_token(options, token)
             response = client.post(
                 "/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {gateway_token}"},

@@ -110,7 +110,10 @@ connection/reconnection. Password login is independently checked by the corpus.
 The candidate/candidate cell also triggers a real flow through the API,
 orchestrator and CLI runner. A deterministic local executable substitutes for
 the vendor agent CLI and sends its model request through the real gateway to
-the mock upstream; its output marker must survive into the persisted result.
+the mock upstream. The native Cursor runner deliberately persists a typed result
+containing status, harness and session identity; model text is stored in execution
+logs. The gate requires the expected persisted result fields **and** the upstream
+output marker in the persisted logs. A success status or log marker alone fails.
 This proves dispatch/result plumbing, not a vendor agent's behavior. The simple
 HTTP test proxy routes API and gateway traffic; runner WebSockets connect
 directly to the API service. Restrictive defaults and discovery-report behavior

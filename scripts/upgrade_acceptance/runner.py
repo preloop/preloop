@@ -97,6 +97,8 @@ def matrix_passed(cells: list[dict[str, Any]]) -> bool:
     if {cell.get("cli") for cell in cells} != {"baseline", "candidate"}:
         return False
     for cell in cells:
+        if cell.get("error"):
+            return False
         operations = cell.get("operations", {})
         required = [
             "login",
@@ -124,7 +126,12 @@ def matrix_passed(cells: list[dict[str, Any]]) -> bool:
                 ]
             )
             report = operations.get("discovery_report", {})
-            if not (report.get("content_verified") or report.get("explicit_unsaved")):
+            explicit_refusal = (
+                report.get("explicit_unsaved")
+                and isinstance(report.get("exit_code"), int)
+                and report["exit_code"] != 0
+            )
+            if not (report.get("content_verified") or explicit_refusal):
                 return False
         else:
             required.append("discovery_report")
