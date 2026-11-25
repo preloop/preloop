@@ -179,6 +179,27 @@ describe('PreloopFlowForm Cursor on my runner', () => {
     expect(blocker?.textContent).to.include('signed out');
   });
 
+  it('clears another runtime profile when Cursor has no eligible runner', async () => {
+    runners = [];
+    const element = await mount({
+      ...newFlow(),
+      agent_type: 'devin',
+      agent_config: { host_exec_profile: 'devin' },
+    });
+    await chooseRuntime(element, 'cursor');
+    expect(element.flow.agent_config).not.to.have.property('host_exec_profile');
+  });
+
+  it('explains an unknown Cursor login instead of offering the runner', async () => {
+    runners[0].harness_inventory.entries[0].login_state = 'unknown';
+    const element = await mount(newFlow());
+    await chooseRuntime(element, 'cursor');
+    expect(
+      q(element, '[data-cursor-blocker="login_unknown"]')?.textContent
+    ).to.include('could not be verified');
+    expect(element.flow.agent_config).not.to.have.property('host_exec_profile');
+  });
+
   it('choosing Cursor selects the runner and its profile', async () => {
     const element = await mount(newFlow());
     await chooseRuntime(element, 'cursor');

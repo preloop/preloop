@@ -3476,6 +3476,10 @@ export class PreloopFlowForm extends LitElement {
         choices[0];
       if (pick) {
         this.applyCursorRunner(pick);
+      } else if (previous !== 'cursor') {
+        const config = { ...this.parseAgentConfig(this.flow.agent_config) };
+        delete config.host_exec_profile;
+        this.flow = { ...this.flow, agent_config: config };
       }
     } else if (previous === 'cursor') {
       // A Cursor profile must not route another runtime, even if the runner
@@ -3548,9 +3552,11 @@ export class PreloopFlowForm extends LitElement {
                       blocker.reason === 'signed_out'
                         ? html`the Cursor CLI is signed out. Run
                             <code>cursor-agent login</code> on that machine.`
-                        : blocker.reason === 'disabled'
-                          ? 'Cursor is disabled on this runner. Enable it in the runner harness settings.'
-                          : 'the Cursor CLI was found but the runner offers no Cursor profile yet. Update the Preloop CLI there and restart the runner.'
+                        : blocker.reason === 'login_unknown'
+                          ? 'the Cursor CLI login could not be verified. Run cursor-agent status on that machine, sign in if needed, then refresh the runner inventory.'
+                          : blocker.reason === 'disabled'
+                            ? 'Cursor is disabled on this runner. Enable it in the runner harness settings.'
+                            : 'the Cursor CLI was found but the runner offers no Cursor profile yet. Update the Preloop CLI there and restart the runner.'
                     }
                   </div>`
               )

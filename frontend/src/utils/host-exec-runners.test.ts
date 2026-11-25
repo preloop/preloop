@@ -66,4 +66,11 @@ describe('Cursor runner selection', () => {
       hostExecRunnerBlockers(runners, 'cursor_cli').map((item) => item.reason)
     ).to.deep.equal(['signed_out', 'disabled']);
   });
+  it('treats an unknown login as unavailable despite an advertised profile', () => {
+    const runners = [runner('runner-1', 'mac', 'unknown')];
+    expect(hostExecRunnerChoices(runners, 'cursor_cli')).to.deep.equal([]);
+    expect(hostExecRunnerBlockers(runners, 'cursor_cli')[0].reason).to.equal(
+      'login_unknown'
+    );
+  });
 });

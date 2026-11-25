@@ -19,7 +19,7 @@ export interface HostExecRunnerChoice {
 /** A runner whose inventory lists the harness but cannot run it yet. */
 export interface HostExecRunnerBlocker {
   runner: RunnerRecord;
-  reason: 'signed_out' | 'disabled' | 'no_profile';
+  reason: 'signed_out' | 'login_unknown' | 'disabled' | 'no_profile';
 }
 
 function profilesFor(runner: RunnerRecord, harness: string): string[] {
@@ -61,7 +61,7 @@ export function hostExecRunnerChoices(
     const profiles = profilesFor(runner, harness);
     if (
       profiles.length === 0 ||
-      entry?.login_state === 'signed_out' ||
+      (entry != null && entry.login_state !== 'signed_in') ||
       entry?.enabled === false
     )
       continue;
@@ -93,7 +93,7 @@ export function hostExecRunnerBlockers(
     if (
       !entry ||
       (profilesFor(runner, harness).length > 0 &&
-        entry.login_state !== 'signed_out' &&
+        entry.login_state === 'signed_in' &&
         entry.enabled !== false)
     )
       continue;
@@ -104,7 +104,9 @@ export function hostExecRunnerBlockers(
           ? 'signed_out'
           : entry.enabled === false
             ? 'disabled'
-            : 'no_profile',
+            : entry.login_state !== 'signed_in'
+              ? 'login_unknown'
+              : 'no_profile',
     });
   }
   return blockers;
