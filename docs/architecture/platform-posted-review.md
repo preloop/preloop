@@ -231,8 +231,10 @@ publish attempt, `authorize_event_review` re-checks the flow, the project,
 the tracker, and that the installation is not suspended. The publish step
 requires the base repository to match, plus the head repository for bindings
 without fork opt-in, and still skips a moved head or a closed pull request.
-For opted-in forks it also checks the live label immediately before the
-review write.
+For opted-in forks it also rechecks the live label application id and the
+actor's permission immediately before each review and status write,
+including an inline-position fallback retry. The pre-lease check alone
+cannot authorize a later write.
 
 `platform_review.source` is `tracker_event` or `restricted_ci`.
 `posted_by` stays `automatic` or `manual`.

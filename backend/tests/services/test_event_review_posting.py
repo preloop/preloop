@@ -2070,3 +2070,100 @@ async def test_fork_permission_5xx_at_publish_is_retryable(
     assert row.retryable is True
     assert row.next_attempt_at is not None
     assert github.reviews == {} and github.statuses == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "phase,change",
+    [
+        ("lease", "reapplied"),
+        ("lease", "permission_revoked"),
+        ("status_only_lease", "reapplied"),
+        ("review", "reapplied"),
+        ("review", "removed"),
+        ("review", "permission_revoked"),
+        ("review", "permission_5xx"),
+        ("fallback", "reapplied"),
+    ],
+)
+async def test_fork_authorization_is_rechecked_immediately_before_each_write(
+    db_session: Session,
+    test_user: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    quiet_dispatch: None,
+    phase: str,
+    change: str,
+) -> None:
+    """A lease or earlier write must not preserve an obsolete opt-in."""
+    world = world_for(db_session, test_user)
+    broker = arm(monkeypatch, world)
+    result = {**RESULT, "head_sha": OTHER} if phase == "status_only_lease" else RESULT
+    execution = finish(
+        world, (await deliver(world, label_fork(world, broker)))[0], result=result
+    )
+    project = world.projects[0]
+    github = publish_github(world, monkeypatch)
+    github.pulls[(project.slug, 7)] = deepcopy(
+        broker.pulls[(str(project.identifier), 7)]
+    )
+
+    def revoke() -> None:
+        if change == "removed":
+            broker.pulls[(str(project.identifier), 7)]["labels"] = []
+            github.pulls[(project.slug, 7)]["labels"] = []
+        elif change == "reapplied":
+            broker.events[7].extend(
+                [
+                    {
+                        "id": 102,
+                        "event": "unlabeled",
+                        "label": {"name": "preloop-review"},
+                    },
+                    {
+                        "id": 103,
+                        "event": "labeled",
+                        "label": {"name": "preloop-review"},
+                        "actor": {"login": "triage-user"},
+                    },
+                ]
+            )
+            broker.permissions["triage-user"] = "triage"
+        else:
+            broker.permissions["maintainer"] = (
+                503 if change == "permission_5xx" else "read"
+            )
+
+    if phase in {"lease", "status_only_lease"}:
+        original_mint = platform_review._mint
+
+        async def mint(*args: Any, **kwargs: Any) -> Any:
+            lease = await original_mint(*args, **kwargs)
+            revoke()
+            return lease
+
+        monkeypatch.setattr(platform_review, "_mint", mint)
+    else:
+        original_create = platform_review._GitHub.create_review
+
+        async def create(self: Any, payload: Any) -> Any:
+            if phase == "fallback":
+                revoke()
+                raise platform_review.PlatformReviewError("provider_rejected")
+            created = await original_create(self, payload)
+            revoke()
+            return created
+
+        monkeypatch.setattr(platform_review._GitHub, "create_review", create)
+    outcome = await post(world, execution)
+    assert outcome is not None
+    assert github.statuses == {}
+    assert len(github.reviews.get((project.slug, 7), [])) == (
+        1 if phase == "review" else 0
+    )
+    row = publication(world, execution)
+    if change == "permission_5xx":
+        assert row.retryable is True
+        assert row.next_attempt_at is not None
+    else:
+        assert row.retryable is False
+        assert outcome["review"] == ("posted" if phase == "review" else "skipped")

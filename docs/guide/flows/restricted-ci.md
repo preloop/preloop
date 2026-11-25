@@ -1529,7 +1529,8 @@ account and a review posted by the App by pushing new commits to that pull
 request. The existing flow limits and account controls still apply.
 
 The label application and the actor's current permission are checked for
-each run, again at launch, and before publishing. Removing the label stops
+each run, again at launch, and immediately before each review and status
+write. Removing the label stops
 a pending run at launch or skips its pending post. Removing and reapplying
 the label starts a new application; an older run cannot use that new
 application to publish. A same-repository pull request behaves as before,

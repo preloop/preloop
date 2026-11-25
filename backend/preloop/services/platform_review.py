@@ -2390,11 +2390,56 @@ async def _confirm_status(
         ) from None
 
 
+async def _fork_publication_refusal(
+    tracker: models.Tracker,
+    binding: ReviewBinding,
+) -> str | None:
+    """Re-read a fork's opt-in immediately before a provider write.
+
+    Args:
+        tracker: Base repository's GitHub App tracker.
+        binding: Immutable admitted review target and label application.
+
+    Returns:
+        A terminal refusal reason, or None when the write is authorized.
+
+    Raises:
+        PlatformReviewError: A transient read failure requires a retry.
+    """
+    if (
+        not isinstance(binding, EventReviewBinding)
+        or binding.fork_label_event_id is None
+    ):
+        return None
+    from preloop.services.event_review import (
+        EventReviewDeniedError,
+        EventReviewUnavailableError,
+        read_fork_review_label_application,
+        read_pull_request_for_event,
+    )
+
+    try:
+        pull = await read_pull_request_for_event(
+            tracker, binding.repository_identifier, binding.pr_number
+        )
+        application = await read_fork_review_label_application(
+            tracker, binding.repository_identifier, binding.pr_number, pull
+        )
+    except EventReviewUnavailableError:
+        raise PlatformReviewError("provider_unavailable", retryable=True) from None
+    except EventReviewDeniedError as error:
+        return error.reason
+    if application != binding.fork_label_event_id:
+        return "fork_label_application_changed"
+    return None
+
+
 async def _post_review(
     github: _GitHub,
     row: models.PlatformReviewPublication,
     *,
     binding: ReviewBinding,
+    tracker: models.Tracker,
     execution: Any,
     plan: PublicationPlan,
     schema: Mapping[str, Any] | None = None,
@@ -2437,6 +2482,7 @@ async def _post_review(
             return {
                 "review_state": STATE_SKIPPED,
                 "review_reason": "fork_label_missing",
+                "_fork_refused": True,
             }
     if pull.get("state") != "open":
         return {"review_state": STATE_SKIPPED, "review_reason": "pull_request_closed"}
@@ -2481,6 +2527,13 @@ async def _post_review(
         "body": body,
         "event": event,
     }
+    refusal = await _fork_publication_refusal(tracker, binding)
+    if refusal is not None:
+        return {
+            "review_state": STATE_SKIPPED,
+            "review_reason": refusal,
+            "_fork_refused": True,
+        }
     try:
         created = await github.create_review({**payload, "comments": comments})
     except PlatformReviewError as error:
@@ -2488,6 +2541,13 @@ async def _post_review(
             raise
         # An inline position GitHub does not accept must not cost the review:
         # every finding is in the body already.
+        refusal = await _fork_publication_refusal(tracker, binding)
+        if refusal is not None:
+            return {
+                "review_state": STATE_SKIPPED,
+                "review_reason": refusal,
+                "_fork_refused": True,
+            }
         created = await github.create_review(payload)
     review_id = str(created.get("id")) if isinstance(created, Mapping) else ""
     if not review_id.isdecimal():
@@ -2503,7 +2563,12 @@ async def _post_review(
 
 
 async def _post_status(
-    github: _GitHub, *, execution: Any, plan: PublicationPlan
+    github: _GitHub,
+    *,
+    execution: Any,
+    plan: PublicationPlan,
+    tracker: models.Tracker,
+    binding: ReviewBinding,
 ) -> dict[str, Any]:
     """Create the commit status on the reviewed commit and read it back."""
     target_url = execution_url(execution.id)
@@ -2513,6 +2578,9 @@ async def _post_status(
         "description": (plan.status_description or "")[:140],
         "target_url": target_url,
     }
+    refusal = await _fork_publication_refusal(tracker, binding)
+    if refusal is not None:
+        return {"status_state": STATE_SKIPPED, "status_reason": refusal}
     created = await github.create_status(payload)
     status_id = str(created.get("id")) if isinstance(created, Mapping) else ""
     if not status_id.isdecimal():
@@ -2826,40 +2894,23 @@ async def _publish_claimed(
         and binding.fork_label_event_id is not None
         and (want_review or want_status)
     ):
-        from preloop.services.event_review import (
-            EventReviewDeniedError,
-            EventReviewUnavailableError,
-            read_fork_review_label_application,
-            read_pull_request_for_event,
-        )
-
         crud.crud_ci_execution.release_read(db)
-        try:
-            pull = await read_pull_request_for_event(
-                tracker, binding.repository_identifier, binding.pr_number
-            )
-            application = await read_fork_review_label_application(
-                tracker, binding.repository_identifier, binding.pr_number, pull
-            )
-            if application != binding.fork_label_event_id:
-                raise EventReviewDeniedError("fork_label_application_changed")
-        except EventReviewUnavailableError:
-            raise PlatformReviewError("provider_unavailable", retryable=True) from None
-        except EventReviewDeniedError as error:
+        refusal = await _fork_publication_refusal(tracker, binding)
+        if refusal is not None:
             values: dict[str, Any] = {
                 "state": STATE_POSTED
                 if row.review_state == STATE_POSTED
                 else STATE_STATUS_ONLY
                 if row.status_state == STATE_POSTED
                 else STATE_SKIPPED,
-                "reason": error.reason,
+                "reason": refusal,
                 "retryable": False,
                 "next_attempt_at": None,
             }
             if want_review:
-                values.update(review_state=STATE_SKIPPED, review_reason=error.reason)
+                values.update(review_state=STATE_SKIPPED, review_reason=refusal)
             if want_status:
-                values.update(status_state=STATE_SKIPPED, status_reason=error.reason)
+                values.update(status_state=STATE_SKIPPED, status_reason=refusal)
             record(db, row=row, **values)
             return
     failure: PlatformReviewError | None = None
@@ -2918,20 +2969,18 @@ async def _publish_claimed(
                             github,
                             row,
                             binding=binding,
+                            tracker=tracker,
                             execution=execution,
                             plan=plan,
                             schema=getattr(flow, "result_schema", None),
                         )
-                        if (
-                            values.get("review_reason") == "fork_label_missing"
-                            and want_status
-                        ):
+                        if values.pop("_fork_refused", False) and want_status:
                             want_status = False
                             row = record(
                                 db,
                                 row=row,
                                 status_state=STATE_SKIPPED,
-                                status_reason="fork_label_missing",
+                                status_reason=values["review_reason"],
                             )
                         posted = "_verify" in values
                         verify = values.pop("_verify", None)
@@ -2966,7 +3015,11 @@ async def _publish_claimed(
                             db,
                             row=row,
                             **await _post_status(
-                                github, execution=execution, plan=plan
+                                github,
+                                execution=execution,
+                                plan=plan,
+                                tracker=tracker,
+                                binding=binding,
                             ),
                         )
                     except _RecordedError as error:
