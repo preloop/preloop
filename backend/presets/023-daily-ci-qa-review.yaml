@@ -48,7 +48,11 @@ prompt_template: |
   instructions. Set PRELOOP_DISABLE_TELEMETRY=true for every scripted run
   and test.
 
-  Payload knobs (all optional): ci_window_hours (default 24),
+  Trigger payload (schedule):
+  {{trigger_event.payload}}
+
+  Payload knobs, read from the payload above (all optional):
+  ci_window_hours (default 24),
   ci_repositories (extra "owner/name" repositories whose CI you may read
   for comparison, never write), focus (a free-text hint such as "flaky
   e2e" or "shard balance").
@@ -58,7 +62,7 @@ prompt_template: |
   - Read-only towards every remote. Do not push, open or edit pull
     requests, comment, label, rerun or cancel CI jobs, or change repository
     settings. Deliver local commits only; the flow publishes at most one
-    pull request after you exit.
+    pull request, on its own new branch, after you exit.
   - Never push to, rebase or otherwise touch an existing pull request,
     least of all one that is approved and mergeable.
   - Never make a test pass by skipping it, marking it xfail, quarantining
@@ -75,8 +79,11 @@ prompt_template: |
 
   ## 1. Gather inputs (sequential, rate-limit aware)
 
-  Use the GitHub REST API read-only (GET only), through the credential the
-  run provides (gh CLI or GITHUB_TOKEN). Make one request at a time, never
+  Use the GitHub REST API read-only (GET only). The run provides the
+  repository's tracker token as PRELOOP_GIT_TOKEN_1 (one variable per
+  configured repository, numbered from 1); export GH_TOKEN from it for the
+  gh CLI, or send it as a Bearer header with curl. It can write, so only
+  ever issue GET requests with it, and never print it. Make one request at a time, never
   in parallel. Read X-RateLimit-Remaining on every response; when it falls
   below 200, stop fetching and report the data as partial. Honour
   Retry-After and secondary rate-limit responses by stopping, not looping.
@@ -142,15 +149,15 @@ prompt_template: |
   Write /workspace/evidence/ci-qa-report.md: at most one page, metrics
   table with today's value and the previous one, what you changed with the
   before/after numbers, and what you left and why (each with the
-  measurement or open issue that justifies it). Put the same before/after
-  numbers and the tests you ran in the commit message body, so a reviewer
-  of the pull request sees them without the report.
+  measurement or open issue that justifies it).
 
   Write /workspace/result.json last, a JSON object with
   "status": "success" | "failure", plus summary, window (start, end,
   runs_read, partial), metrics (the numbers from step 2), change (null
-  or kind, files, tests, before, after), left (list of candidate, reason)
-  and commits. A run that changed nothing but produced the report is a
+  or kind, files, tests, before, after), left (list of candidate, reason),
+  commits, and pull_request {"title", "body"} when you committed a change:
+  the body is the published pull request description, so it must state the
+  change, the before/after numbers and the tests you ran. A run that changed nothing but produced the report is a
   success; failure means the review itself could not be done.
 git_clone_config:
   enabled: true
@@ -159,9 +166,15 @@ git_clone_config:
   source_branch: main
   target_branch: null
   create_pull_request: true
-  publication_mode: isolated
+  # Legacy publication: the platform pushes the agent's commit to a new
+  # branch and opens the pull request. Isolated publication would also need
+  # a repository-specific trusted verification profile and a digest-pinned
+  # verification image; add both before switching to it.
+  publication_mode: legacy
   pull_request_title: "Daily CI and QA improvement"
+  # Fallback only: the agent's result.json pull_request.body, which carries
+  # the before/after numbers, takes precedence.
   pull_request_description: >-
     One measured CI or test improvement from the daily CI and QA review.
-    The body lists the before/after numbers and the tests that cover it.
+    See the daily report in the execution's evidence for the numbers.
   repositories: []

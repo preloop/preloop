@@ -39,8 +39,10 @@ tests and measured before/after numbers, and writes a short daily report.
 
 - The agent is read-only towards every remote: no pushes, no pull request
   edits, no comments, no CI reruns. The platform publishes at most one
-  pull request per run (isolated publication) after the agent exits, so a
-  run can never push to an existing pull request, approved or not.
+  pull request per run, on a new branch, after the agent exits, so a run
+  never pushes to an existing pull request, approved or not. The pull
+  request body is the `pull_request.body` the agent writes in
+  `result.json`, with the before/after numbers and the tests it ran.
 - No skip, xfail, quarantine, retry wrapper or raised timeout to make a
   test green, and no weakening of CI gates.
 - Performance tests run only against services started in the run's own
@@ -62,8 +64,20 @@ tests and measured before/after numbers, and writes a short daily report.
 Clone the preset, add the repository to the flow's git clone
 configuration, and set the schedule's timezone to the team's zone (the
 schedule is evaluated in that zone, so 06:00 stays 06:00 across DST). The
-agent reads CI through the GitHub credential available in the run (`gh`
-or `GITHUB_TOKEN`); without one it writes a failure report saying so.
+schedule payload reaches the agent through `{{trigger_event.payload}}` in
+the prompt; keep that line if you customize the prompt.
+
+The agent reads CI with the repository's tracker token, which the run
+exports as `PRELOOP_GIT_TOKEN_1` (one variable per configured repository).
+The prompt restricts it to GET requests. To read another repository's CI
+(`ci_repositories`), the tracker token must have read access to Actions
+there; without any usable token the run writes a failure report saying so.
+
+The preset uses legacy publication: the platform pushes the agent's commit
+to a new branch and opens the pull request. Isolated publication also
+requires a repository-specific verification profile in `mode: gate` and a
+digest-pinned verification image under `git_clone_config.verification`;
+add both before switching `publication_mode` to `isolated`.
 
 To run it on your own machine instead of hosted compute, pin the harness,
 runner and host profile in `agent_config` (see

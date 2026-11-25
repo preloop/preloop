@@ -79,7 +79,58 @@ def test_agent_has_only_read_tools_and_platform_publishes(
     assert tools == {"search_issues", "get_issue", "get_pull_request"}
     clone = preset["git_clone_config"]
     assert clone["create_pull_request"] is True
-    assert clone["publication_mode"] == "isolated"
+    assert clone["publication_mode"] == "legacy"
+
+
+def test_publication_mode_is_runnable_without_a_profile(
+    preset: dict[str, Any],
+) -> None:
+    """Isolated publication needs a trusted gate profile and pinned image.
+
+    The preset is generic, so it cannot ship a repository's profile; it must
+    therefore not ask for isolated publication, which would refuse every run
+    before the agent starts.
+    """
+    from preloop.services.verification import (
+        pinned_verification_image,
+        resolve_verification_policy,
+    )
+
+    clone = preset["git_clone_config"]
+    policy = resolve_verification_policy(clone)
+    image = (clone.get("verification") or {}).get("image", "")
+    isolated_ready = (
+        policy.mode == "gate"
+        and policy.profile is not None
+        and pinned_verification_image(image) is not None
+    )
+    assert clone["publication_mode"] != "isolated" or isolated_ready
+
+
+def test_prompt_receives_the_schedule_payload(prompt: str) -> None:
+    """The payload knobs only reach the agent through a prompt placeholder."""
+    assert "{{trigger_event.payload}}" in prompt
+    for knob in ("ci_window_hours", "ci_repositories", "focus"):
+        assert knob in prompt
+
+
+def test_prompt_names_the_credential_the_runtime_provides(prompt: str) -> None:
+    """CI reads use the tracker token the container exports, GET only."""
+    from preloop.utils.git_credentials import git_token_env_var
+
+    assert git_token_env_var(0) in prompt
+    assert "GITHUB_TOKEN" not in prompt
+    assert "only ever issue GET requests" in prompt
+
+
+def test_published_body_comes_from_the_result(prompt: str) -> None:
+    """The PR body with the numbers is the agent's result metadata."""
+    from preloop.utils.pr_metadata import read_result_metadata
+
+    assert 'pull_request {"title", "body"}' in prompt
+    raw = b'{"pull_request": {"title": "t", "body": "before 3/20 after 0/20"}}'
+    _, body, _ = read_result_metadata(raw)
+    assert body == "before 3/20 after 0/20"
 
 
 @pytest.mark.parametrize(
