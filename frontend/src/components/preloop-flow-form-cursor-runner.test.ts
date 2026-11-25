@@ -206,6 +206,24 @@ describe('PreloopFlowForm Cursor on my runner', () => {
     );
   });
 
+  for (const unavailable of [false, true]) {
+    it(`clears a custom Cursor profile on runtime change (runner unavailable: ${unavailable})`, async () => {
+      if (unavailable) runners = [];
+      const element = await mount({
+        ...newFlow(),
+        agent_type: 'cursor',
+        agent_config: {
+          host_exec_profile: 'cursor-review',
+          cursor_model: 'auto',
+        },
+      });
+      await chooseRuntime(element, 'codex');
+      expect(element.flow.agent_config).not.to.have.property(
+        'host_exec_profile'
+      );
+    });
+  }
+
   it('lets the user pick among several Cursor runners, online first', async () => {
     runners = [
       cursorRunner({

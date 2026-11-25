@@ -3478,15 +3478,11 @@ export class PreloopFlowForm extends LitElement {
         this.applyCursorRunner(pick);
       }
     } else if (previous === 'cursor') {
-      const profile = this.hostExecProfileName();
-      if (
-        profile &&
-        this.cursorRunnerChoices().some((choice) => choice.profile === profile)
-      ) {
-        const config = { ...this.parseAgentConfig(this.flow.agent_config) };
-        delete config.host_exec_profile;
-        this.flow = { ...this.flow, agent_config: config };
-      }
+      // A Cursor profile must not route another runtime, even if the runner
+      // disappeared or the operator selected a non-default profile.
+      const config = { ...this.parseAgentConfig(this.flow.agent_config) };
+      delete config.host_exec_profile;
+      this.flow = { ...this.flow, agent_config: config };
     }
     this.requestUpdate();
   }
