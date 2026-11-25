@@ -170,7 +170,6 @@ func buildExtendedEntry(spec extendedHarnessSpec, d harnessInventoryDeps, discov
 	if err == nil && d.Version != nil {
 		entry.Version = d.Version(executable)
 	}
-	handwritten := handwrittenProfileResolves(id, d)
 	switch {
 	case err != nil:
 		entry.SetupStep = fmt.Sprintf(harnessSetupStepInstall, entry.DisplayName)
@@ -178,29 +177,37 @@ func buildExtendedEntry(spec extendedHarnessSpec, d harnessInventoryDeps, discov
 		entry.SetupStep = spec.loginStep
 	case !approved:
 		entry.SetupStep = spec.approvalStep
+	case d.HandwrittenErr:
+		entry.SetupStep = "fix the invalid host execution profile file, then `preloop runner restart`"
 	}
-	if err == nil && (entry.SetupStep == "" || handwritten) {
+	// Harness routing leases the reserved profile name (codex, opencode),
+	// so the entry is runnable only when that name is advertised: generated
+	// here, or a valid hand-written profile under the same name.
+	reserved := generatedProfileName(id)
+	if entry.SetupStep == "" {
+		if name := generatedProfileFor(id, d); name != "" {
+			entry.GeneratedProfile = &name
+		} else if d.harnessEnabled(id) && !handwrittenProfileNamed(id, reserved, d) {
+			entry.SetupStep = fmt.Sprintf("name the hand-written %s profile %q to route by harness, or pin it with agent_config.host_exec_profile", entry.DisplayName, reserved)
+		}
+	}
+	if err == nil && (entry.GeneratedProfile != nil || handwrittenProfileNamed(id, reserved, d)) {
 		// Runner flows only: there is no runner session adapter for these
 		// harnesses, so sessions are not offered.
 		entry.SupportLevel = harnessSupportFlowsOnly
 		entry.Capabilities = hostExecCapabilitiesFor(id)
 	}
-	if entry.SetupStep == "" {
-		if name := generatedProfileFor(id, d); name != "" {
-			entry.GeneratedProfile = &name
-		}
-	}
 	return entry, true
 }
 
-// handwrittenProfileResolves reports whether a valid hand-written profile
-// covers the harness and its executable resolves.
-func handwrittenProfileResolves(id string, d harnessInventoryDeps) bool {
-	if d.HandwrittenErr || d.Resolve == nil {
+// handwrittenProfileNamed reports whether a valid hand-written profile with
+// the given name covers the harness and its executable resolves.
+func handwrittenProfileNamed(id, name string, d harnessInventoryDeps) bool {
+	if d.HandwrittenErr || d.Resolve == nil || name == "" {
 		return false
 	}
 	for _, profile := range d.Handwritten {
-		if hostExecProfileHarness(profile) != id {
+		if hostExecProfileHarness(profile) != id || !strings.EqualFold(profile.Name, name) {
 			continue
 		}
 		if _, err := d.Resolve(profile.Executable); err == nil {

@@ -29,18 +29,19 @@ func TestBuildHarnessInventoryExtendedHarnesses(t *testing.T) {
 		codexApprovalStep = "run `preloop agents onboard \"Codex CLI\" --approvals` as the runner user"
 	)
 	for _, tc := range []struct {
-		name          string
-		harness       string
-		agent         AgentConfig
-		installed     bool
-		approved      bool
-		env           map[string]string
-		handwritten   []hostExecProfile
-		wantSupport   string
-		wantProfile   string
-		wantStep      string
-		wantLogin     string
-		wantGoverance string
+		name           string
+		harness        string
+		agent          AgentConfig
+		installed      bool
+		approved       bool
+		env            map[string]string
+		handwritten    []hostExecProfile
+		handwrittenErr bool
+		wantSupport    string
+		wantProfile    string
+		wantStep       string
+		wantLogin      string
+		wantGoverance  string
 	}{
 		{
 			name:          "codex ready gets generated profile",
@@ -96,15 +97,39 @@ func TestBuildHarnessInventoryExtendedHarnesses(t *testing.T) {
 			wantGoverance: "governed",
 		},
 		{
-			name:          "handwritten codex profile keeps flows and suppresses generated",
+			name:          "handwritten codex profile under another name is not harness routable",
 			harness:       "codex_cli",
 			agent:         AgentConfig{Name: "Codex CLI", RuntimeState: "present", AuthState: "ready"},
 			installed:     true,
+			approved:      true,
 			handwritten:   []hostExecProfile{{Name: "my-codex", Executable: "codex"}},
-			wantSupport:   "flows_only",
-			wantStep:      codexApprovalStep,
+			wantSupport:   "presence_only",
+			wantStep:      "name the hand-written Codex CLI profile \"codex\" to route by harness, or pin it with agent_config.host_exec_profile",
 			wantLogin:     "signed_in",
-			wantGoverance: "ungoverned",
+			wantGoverance: "governed",
+		},
+		{
+			name:          "handwritten profile named codex is harness routable",
+			harness:       "codex_cli",
+			agent:         AgentConfig{Name: "Codex CLI", RuntimeState: "present", AuthState: "ready"},
+			installed:     true,
+			approved:      true,
+			handwritten:   []hostExecProfile{{Name: "codex", Executable: "codex"}},
+			wantSupport:   "flows_only",
+			wantLogin:     "signed_in",
+			wantGoverance: "governed",
+		},
+		{
+			name:           "invalid profile file keeps codex presence only",
+			harness:        "codex_cli",
+			agent:          AgentConfig{Name: "Codex CLI", RuntimeState: "present", AuthState: "ready"},
+			installed:      true,
+			approved:       true,
+			handwrittenErr: true,
+			wantSupport:    "presence_only",
+			wantStep:       "fix the invalid host execution profile file, then `preloop runner restart`",
+			wantLogin:      "signed_in",
+			wantGoverance:  "governed",
 		},
 		{
 			name:          "opencode ready gets generated profile",
@@ -139,6 +164,7 @@ func TestBuildHarnessInventoryExtendedHarnesses(t *testing.T) {
 				hints:       &harnessRuntimeHints{},
 			}
 			d := host.deps("darwin")
+			d.HandwrittenErr = tc.handwrittenErr
 			d.Version = func(string) string { return "0.171.0" }
 			d.CodexHook = func() bool { return tc.approved }
 			d.OpenCodeHook = func() bool { return tc.approved }
@@ -149,6 +175,17 @@ func TestBuildHarnessInventoryExtendedHarnesses(t *testing.T) {
 			}
 			if entry.SupportLevel != tc.wantSupport || profile != tc.wantProfile || entry.SetupStep != tc.wantStep || entry.LoginState != tc.wantLogin || entry.Governance != tc.wantGoverance {
 				t.Fatalf("entry = %+v (profile %q)", entry, profile)
+			}
+			// Harness routing leases the reserved name, so a runnable entry
+			// must advertise it (generated or hand-written).
+			if entry.SupportLevel == "flows_only" {
+				advertised := profile == "codex" || profile == "opencode"
+				for _, p := range tc.handwritten {
+					advertised = advertised || p.Name == generatedProfileName(tc.harness)
+				}
+				if !advertised {
+					t.Fatalf("flows_only without the reserved profile: %+v", entry)
+				}
 			}
 			if tc.installed && entry.Version != "0.171.0" {
 				t.Fatalf("version = %q", entry.Version)

@@ -182,6 +182,21 @@ describe('PreloopFlowForm harness + model picker', () => {
     expect(config.host_exec_profile).to.equal(undefined);
   });
 
+  it('drops the hosted catalog model when Codex routes by harness', async () => {
+    const element = await mount({
+      name: 'Codex on my runner',
+      prompt_template: 'review',
+      agent_type: 'codex',
+      ai_model_id: '33333333-3333-4333-8333-333333333333',
+      agent_config: { harness: 'codex_cli' },
+    });
+    const submitted = oneEvent(element, 'flow-submit');
+    void (element as any).handleFormSubmit(new Event('submit'));
+    const event = await submitted;
+    expect(event.detail.flow.ai_model_id).to.equal(null);
+    expect(event.detail.flow.agent_config.harness).to.equal('codex_cli');
+  });
+
   it('hides the picker for OpenCode when no runner reports it', async () => {
     const element = await mount({
       name: 'Hosted OpenCode',

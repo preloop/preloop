@@ -873,9 +873,10 @@ func TestOpenCodeServiceInventoryRequiresRunnableInstall(t *testing.T) {
 					}
 				}
 			}
-			// A local profile enables native flows only when the strict
-			// executable resolver can actually launch the install.
-			deps.Handwritten = []hostExecProfile{{Name: "local-opencode", Executable: "opencode"}}
+			// A local profile under the reserved name enables native flows
+			// only when the strict executable resolver can actually launch
+			// the install. (Harness routing leases the reserved name.)
+			deps.Handwritten = []hostExecProfile{{Name: "opencode", Executable: "opencode"}}
 			deps.Resolve = lookupHostExecBinary
 			withProfile := buildHarnessInventory(deps)
 			if kind == "executable" {
