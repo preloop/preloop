@@ -1262,9 +1262,16 @@ class JiraTracker(BaseTracker):
         Returns:
             Issue object.
         """
-        issue_data = await self._make_request(
-            "GET", f"issue/{issue_id}", api_version="3"
-        )
+        try:
+            issue_data = await self._make_request(
+                "GET", f"issue/{issue_id}", api_version="3"
+            )
+        except TrackerResponseError as exc:
+            if exc.status_code == HTTP_STATUS_NOT_FOUND:
+                raise TrackerResponseError(
+                    f"Issue {issue_id} not found", status_code=HTTP_STATUS_NOT_FOUND
+                ) from exc
+            raise
 
         # Extract project key from issue data or issue key
         fields = issue_data.get("fields", {})
