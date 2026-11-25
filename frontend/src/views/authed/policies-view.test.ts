@@ -366,7 +366,7 @@ describe('PoliciesView', () => {
           .shadowRoot!.querySelector('view-header')!
           .getAttribute('description')
       ).to.equal(
-        'Instance rules for tool calls and model input and output. Traffic is allowed when no rule matches.'
+        'Instance rules for tool calls and model input and output. Unlisted MCP tools follow the policy defaults.'
       );
       expect((element as any)._activeTab).to.equal('rules');
       expect(element.shadowRoot!.querySelector('.rule-actions')).not.to.equal(
@@ -1981,6 +1981,65 @@ describe('PoliciesView', () => {
         'sl-select[label="Default approval workflow"]'
       )
     ).to.exist;
+  });
+
+  it('links Tools seen to the only defaults form on Rules and keeps the YAML draft', async () => {
+    fetchStub = createFetchStub({ workflows: [sampleWorkflow] });
+    const element = await fixture<PoliciesView>(
+      html`<policies-view></policies-view>`
+    );
+    await waitUntil(() => !(element as any)._loading);
+    const view = element as any;
+    const root = element.shadowRoot!;
+    const toggle = root.querySelector<any>(
+      'sl-tab-panel[name="rules"] [data-testid="approve-once"]'
+    );
+    expect(toggle).to.exist;
+    expect(
+      root.querySelectorAll('[data-testid="approve-once"]')
+    ).to.have.length(1);
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('sl-change'));
+    await element.updateComplete;
+    expect(view._yamlDraft).to.contain('require_approval_for_new_tools: true');
+    expect(view._yamlDirty).to.equal(true);
+    const draft = view._yamlDraft;
+    root.querySelector<any>('sl-tab-group').show('tools-seen');
+    await waitUntil(
+      () => !!root.querySelector('[data-testid="tools-seen-defaults"]')
+    );
+    root
+      .querySelector<HTMLElement>('[data-testid="tools-seen-defaults"]')!
+      .click();
+    await waitUntil(() => view._activeTab === 'rules');
+    expect(view._yamlDraft).to.equal(draft);
+    expect(
+      root.querySelector<any>('[data-testid="approve-once"]').checked
+    ).to.equal(true);
+    root.querySelector<HTMLElement>('[data-testid="review-defaults"]')!.click();
+    await waitUntil(() => view._activeTab === 'files');
+    expect(view._yamlDraft).to.equal(draft);
+    expect(root.querySelector('[data-testid="policy-yaml-save"]')).to.exist;
+  });
+
+  it('describes unmatched calls honestly when defaults deny or require approval', async () => {
+    fetchStub = createFetchStub();
+    const element = await fixture<PoliciesView>(
+      html`<policies-view></policies-view>`
+    );
+    await waitUntil(() => !(element as any)._loading);
+    for (const action of ['deny', 'require_approval']) {
+      (element as any)._setDefaults('unknown_tools', action);
+      await element.updateComplete;
+      expect(
+        element
+          .shadowRoot!.querySelector('view-header')!
+          .getAttribute('description')
+      ).to.contain('follow the policy defaults');
+      expect(element.shadowRoot!.textContent).not.to.contain(
+        'Traffic is allowed when no rule matches'
+      );
+    }
   });
 
   const seenEntry = () => ({

@@ -4087,8 +4087,22 @@ export async function listProjectPullRequests(
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(
-      trackerErrorDetail(errorData, 'Failed to fetch pull requests')
+    // Older servers included connection settings in this error's detail.
+    const configurationError =
+      typeof errorData?.detail === 'string' &&
+      /^Configuration error for tracker:/i.test(errorData.detail);
+    const repairable =
+      [400, 403].includes(response.status) && !configurationError;
+    throw new ApiError(
+      repairable
+        ? trackerErrorDetail(errorData, 'Failed to fetch pull requests')
+        : 'Failed to fetch pull requests',
+      response.status,
+      configurationError
+        ? 'tracker_configuration_error'
+        : repairable
+          ? 'tracker_repair_required'
+          : undefined
     );
   }
   return response.json();

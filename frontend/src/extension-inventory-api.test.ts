@@ -14,6 +14,36 @@ describe('extension inventory API', () => {
   beforeEach(() => localStorage.setItem('accessToken', 'synthetic-token'));
   afterEach(() => localStorage.removeItem('accessToken'));
   afterEach(() => sinon.restore());
+  for (const status of [200, 404, 500]) {
+    it(`reads each visible constraint once and preserves inventory when the decision returns ${status}`, async () => {
+      const fetch = sinon.stub(window, 'fetch').callsFake(async (input) => {
+        if (String(input).includes('/discovery-extensions?')) {
+          return new Response(
+            JSON.stringify({
+              items: [key, key],
+              next_cursor: null,
+              completeness: 'complete',
+            })
+          );
+        }
+        return new Response(
+          JSON.stringify({ ...key, version_constraint: '2.*' }),
+          { status }
+        );
+      });
+      const page = await getExtensions();
+      expect(page.items).to.have.length(2);
+      expect(fetch.callCount).to.equal(2);
+      expect(String(fetch.lastCall.args[0])).to.contain(
+        '/extension-approvals/claude_code/plugin/reviewer%40community'
+      );
+      for (const row of page.items) {
+        expect(row.version_constraint).to.equal(
+          status === 200 ? '2.*' : status === 404 ? null : undefined
+        );
+      }
+    });
+  }
   // protects=REST context and filters; fails_when=device reads become account
   // aggregates; no_claim=fetch stub, backend tested separately.
   it('encodes device filters and requests account aggregates', async () => {

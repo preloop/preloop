@@ -30,6 +30,7 @@ import '../../components/list-toolbar.ts';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import {
   BITBUCKET_CLOUD_OAUTH_FEATURE,
+  ApiError,
   JIRA_CLOUD_OAUTH_FEATURE,
   disconnectJira,
   getJiraConnectionStatus,
@@ -211,7 +212,7 @@ export class TrackerDetailView extends LitElement {
   private _prsLoading = false;
 
   @state()
-  private _prsError: string | null = null;
+  private _prsError: Error | null = null;
 
   private _trackerId = '';
   private readonly _issuesPageSize = 20;
@@ -883,8 +884,9 @@ export class TrackerDetailView extends LitElement {
   }
 
   private _pullRequestsCountLabel(): string {
+    if (this._prsError) return 'Count unavailable';
+    if (this._prsLoading && !this._pullRequests.length) return 'Loading…';
     const loaded = this._pullRequests.length;
-    if (this._prsError && loaded === 0) return '';
     const noun = this._prNoun();
     const singular = noun.endsWith('s') ? noun.slice(0, -1) : noun;
     const unit = loaded === 1 ? singular : noun;
@@ -1535,7 +1537,9 @@ export class TrackerDetailView extends LitElement {
       }
     } catch (error) {
       this._prsError =
-        error instanceof Error ? error.message : 'Could not reach tracker.';
+        error instanceof Error
+          ? error
+          : new Error('Failed to fetch pull requests');
     } finally {
       this._prsLoading = false;
     }
@@ -1551,8 +1555,23 @@ export class TrackerDetailView extends LitElement {
   }
 
   private _renderPrsError() {
+    const error = this._prsError;
+    const configuration =
+      error instanceof ApiError && error.code === 'tracker_configuration_error';
+    const repairable =
+      error instanceof ApiError && error.code === 'tracker_repair_required';
+    const upstream =
+      error instanceof ApiError && [502, 503, 504].includes(error.status);
+    const message = configuration
+      ? `${this._prHost()} configuration error. Check the tracker connection settings and credentials.`
+      : repairable
+        ? error.message
+        : upstream
+          ? `${this._prHost()} request failed. Check connectivity and tracker access, then retry.`
+          : `Could not load ${this._prNoun()} from ${this._prHost()}. Retry, or check the tracker settings if this continues.`;
     return html`<div class="prs-error" role="alert">
-      ${this._prsError || `Could not reach ${this._prHost()}.`}
+      ${message}
+      ${configuration || repairable ? html`<sl-button size="small" variant="text" @click=${this.handleEdit}>Edit tracker</sl-button>` : ''}
       <sl-button
         size="small"
         variant="text"
