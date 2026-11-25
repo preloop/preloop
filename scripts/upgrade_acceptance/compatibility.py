@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 BASE_URL = "http://mock:9001"
 
 
+def unchanged_object(before: httpx.Response, after: httpx.Response) -> bool:
+    """Require successful object reads before claiming a refused write was safe."""
+    return (
+        before.status_code == 200
+        and after.status_code == 200
+        and before.json() == after.json()
+    )
+
+
 def host_profile(home: Path, env: dict[str, str], token: str) -> None:
     """Install a deterministic test harness that calls the real gateway.
 
@@ -230,9 +239,7 @@ def provision(name: str) -> str:
                 "agent_type": "codex",
                 "agent_config": {},
                 "is_enabled": False,
-                "git_clone_config": {
-                    "repositories": [{"url": "https://example.com/repository.git"}]
-                },
+                "git_clone_config": {"enabled": False, "repositories": []},
             },
         )
         return token
@@ -436,13 +443,13 @@ def exercise(
                         ],
                     ),
                 ):
-                    before = client.get(path).json()
+                    before = client.get(path)
                     refused = run(operation, args)
-                    after = client.get(path).json()
+                    after = client.get(path)
                     result["operations"][operation].update(
                         content_verified=refused.returncode == 1
                         and "upgrade the server" in refused.stderr.lower()
-                        and before == after,
+                        and unchanged_object(before, after),
                     )
                 for operation, args in (
                     (
@@ -455,7 +462,13 @@ def exercise(
                     ),
                     (
                         "shared_flow_unsupported",
-                        ["ci", "shared-flow", str(identifier(name + "/guard-flow"))],
+                        [
+                            "--url",
+                            "http://127.0.0.1:8000",
+                            "ci",
+                            "shared-flow",
+                            str(identifier(name + "/guard-flow")),
+                        ],
                     ),
                     (
                         "webhook_rotation_unsupported",
@@ -485,6 +498,12 @@ def exercise(
                         unsupported.returncode != 0
                         and "upgrade the server" in unsupported.stderr.lower()
                     )
+                    if not result["operations"][operation]["content_verified"]:
+                        from evidence import scrub
+
+                        result["operations"][operation]["diagnostic"] = scrub(
+                            unsupported.stderr, [token, MODEL_KEY, PASSWORD]
+                        )[:500]
             identities = []
             for attempt in (1, 2):
                 runner_log = home / f"runner-{attempt}.log"
