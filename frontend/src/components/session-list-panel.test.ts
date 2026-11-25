@@ -417,7 +417,11 @@ describe('session-list-panel design (#2431)', () => {
       await loadShoelaceTokens();
       await setViewport({ width, height: 844 });
       const el = await renderPanel([
-        makeSession({ id: 'first', lastActivityAt: '2026-01-01T12:00:00Z' }),
+        makeSession({
+          id: 'first',
+          lastActivityAt: '2026-01-01T12:00:00Z',
+          totalRequests: 12400,
+        }),
         makeSession({ id: 'second' }),
       ]);
       el.style.setProperty('--console-hairline', 'var(--sl-color-neutral-200)');
@@ -438,6 +442,12 @@ describe('session-list-panel design (#2431)', () => {
         getComputedStyle(title).color
       );
       expect(cost.textContent).to.contain('est.');
+      expect(row.querySelector('.metric')!.textContent).to.contain(
+        '12.4K requests'
+      );
+      expect(row.querySelector('.metric')!.getAttribute('title')).to.equal(
+        '12,400 requests'
+      );
       expect(row.querySelector('.meta')!.textContent).to.contain('ago');
       expect(row.querySelector('.meta')!.getAttribute('title')).to.contain(
         'Last activity'

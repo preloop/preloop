@@ -642,6 +642,18 @@ describe('PreloopSessionObserver', () => {
     ).to.contain('min-height: 520px');
   });
 
+  it('uses compact header tokens with the exact count available on hover', async () => {
+    const el = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        .sessions=${[session]}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot!.querySelector('.session-facts dd'));
+    const tokens = el.shadowRoot!.querySelector('.session-facts dd')!;
+    expect(tokens.textContent?.trim()).to.equal('1.3K');
+    expect(tokens.getAttribute('title')).to.equal('1,300');
+  });
+
   it('scrolls a long session list inside the bounded panel', async () => {
     const many = Array.from({ length: 60 }, (_, index) => ({
       ...session,

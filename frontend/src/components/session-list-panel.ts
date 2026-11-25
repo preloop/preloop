@@ -6,7 +6,8 @@ import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import type { ObservedSession } from '../utils/session-observer';
-import { formatCost, formatNumber } from '../utils/session-observer';
+import { formatCost } from '../utils/session-observer';
+import { formatCount, formatCountExact } from '../utils/count-format';
 import {
   noteAuthorIcon,
   noteAuthorKind,
@@ -574,8 +575,11 @@ export class SessionListPanel extends LitElement {
                   ${this.metaLine(session)}
                 </div>
                 <div class="metric-row">
-                  <div class="metric">
-                    ${formatNumber(session.totalRequests)} requests
+                  <div
+                    class="metric"
+                    title="${formatCountExact(session.totalRequests)} requests"
+                  >
+                    ${formatCount(session.totalRequests)} requests
                   </div>
                   <!-- Tokens before cost: the split says whether a session is
                      expensive because it reads a lot or writes a lot. The

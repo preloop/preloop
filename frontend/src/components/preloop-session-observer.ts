@@ -1,3 +1,4 @@
+import { formatCount, formatCountExact } from '../utils/count-format';
 import { randomUuid } from '../utils/random-uuid';
 import {
   formatRelativeTime,
@@ -3165,7 +3166,9 @@ export class PreloopSessionObserver extends LitElement {
           ? html`<dl class="session-facts">
               <div>
                 <dt>Tokens</dt>
-                <dd>${formatNumber(session.tokenUsage.total_tokens)}</dd>
+                <dd title=${formatCountExact(session.tokenUsage.total_tokens)}>
+                  ${formatCount(session.tokenUsage.total_tokens)}
+                </dd>
               </div>
               <div>
                 <dt>Cost est.</dt>
