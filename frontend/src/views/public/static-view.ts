@@ -2,6 +2,7 @@ import { LitElement, html, css, PropertyValues, unsafeCSS } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { marked } from 'marked';
+import { getBrandConfig, hasBrandConfig } from '../../brand-config';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -308,7 +309,11 @@ export class StaticView extends LitElement {
         // HTML file - use as-is
         this.content = text;
       } else {
-        // Markdown file - parse with marked
+        // Static hosts may answer a missing Markdown file with the SPA's
+        // index.html and status 200. Rendering it would mount a second app.
+        if (/^\s*(?:<!doctype\s+html\b|<html[\s>])/i.test(text)) {
+          throw new Error('Received an HTML document instead of Markdown');
+        }
         this.content = marked(text) as string;
       }
     } catch (error: any) {
@@ -332,6 +337,18 @@ export class StaticView extends LitElement {
 
   private _renderDynamicContent() {
     if (this.error) {
+      const docsUrl =
+        this.src === '/content/docs.md' && hasBrandConfig()
+          ? getBrandConfig().docs_url
+          : undefined;
+      if (docsUrl) {
+        return html`<h1>Documentation</h1>
+          <p>
+            Find installation instructions, configuration guides, and the API
+            reference.
+          </p>
+          <a href=${docsUrl}>Open documentation</a>`;
+      }
       return html`
         <sl-alert variant="danger" open>
           <sl-icon slot="icon" name="exclamation-octagon"></sl-icon>
