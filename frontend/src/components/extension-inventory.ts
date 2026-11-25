@@ -27,6 +27,9 @@ import {
   type InstalledExtension,
 } from '../extension-inventory-api';
 
+// Exclusive lower bound: this release has no extension collector.
+export const EXTENSION_COLLECTOR_VERSION_FLOOR = '1.0.2';
+
 const sources: ExtensionSource[] = [
   'official_marketplace',
   'third_party_marketplace',
@@ -400,16 +403,29 @@ export class ExtensionInventory extends LitElement {
   }
 
   private approval(row: ExtensionKey): TemplateResult {
-    if (!this.canManage) return html`<span>${label(row.approval_state)}</span>`;
-    return html`<sl-select
-      size="small"
-      aria-label=${`Approval for ${row.extension_id}`}
-      .value=${row.approval_state}
-      ?disabled=${!!this.busy}
-      @sl-change=${(event: Event) => this.approve(row, event)}
-    >
-      ${states.map((state) => html`<sl-option value=${state}>${label(state)}</sl-option>`)}
-    </sl-select>`;
+    const constraint = row.version_constraint;
+    return html`${
+      this.canManage
+        ? html`<sl-select
+            size="small"
+            aria-label=${`Approval for ${row.extension_id}`}
+            .value=${row.approval_state}
+            ?disabled=${!!this.busy}
+            @sl-change=${(event: Event) => this.approve(row, event)}
+          >
+            ${states.map((state) => html`<sl-option value=${state}>${label(state)}</sl-option>`)}
+          </sl-select>`
+        : html`<span>${label(row.approval_state)}</span>`
+    }
+    ${
+      constraint
+        ? html`<span class="meta"
+            >Version constraint: <code>${constraint}</code></span
+          >`
+        : constraint === undefined
+          ? html`<span class="meta">Version constraint unavailable</span>`
+          : nothing
+    }`;
   }
 
   private hash(value: string | null): TemplateResult | typeof nothing {
@@ -467,7 +483,9 @@ export class ExtensionInventory extends LitElement {
     return html`
       <p class="meta">
         Installed files do not prove an agent loaded or ran an extension.
-        Approval decisions apply to the whole account.
+        Approval decisions apply to the whole account. Unapproved does not
+        disable or block an extension. Name approval is not a version-compliance
+        verdict; stored version constraints are shown read-only.
       </p>
       <div class="filters">
         <sl-select
@@ -505,7 +523,35 @@ export class ExtensionInventory extends LitElement {
         </sl-button>
       </div>
       ${this.error ? html`<p role="alert">${this.error} <sl-button size="small" @click=${() => this.refresh()}>Retry</sl-button></p>` : nothing}
-      ${this.page?.completeness !== 'complete' && this.page ? html`<p class="meta" role="note">${this.page.completeness === 'partial' ? 'Collection is incomplete. Previously observed extensions are retained; other installed extensions may be missing.' : 'Collection completeness is unknown. Run discovery with a current collector.'}</p>` : nothing}
+      ${
+        this.page?.completeness !== 'complete' && this.page
+          ? html`
+              <div class="meta" role="note">
+                <p>
+                  ${
+                    this.page.completeness === 'partial'
+                      ? 'Collection is incomplete. Previously observed extensions are retained; other installed extensions may be missing.'
+                      : 'Extension coverage is unknown: no device has reported, an older collector reported without extensions, or the report did not cover user configuration. This inventory cannot distinguish these cases.'
+                  }
+                </p>
+                <p>
+                  On the device to scan, use a Preloop CLI newer than
+                  ${EXTENSION_COLLECTOR_VERSION_FLOOR} with extension
+                  collection. Upgrade with <code>preloop update</code> and check
+                  <code>preloop version</code>. If no newer release is
+                  available, extension reporting requires a later collector
+                  release.
+                </p>
+                <p>
+                  Sign in to this instance with
+                  <code>preloop auth login --url ${window.location.origin}</code
+                  >, then run <code>preloop agents discover --report</code> to
+                  send the inventory. Reload this page after reporting.
+                </p>
+              </div>
+            `
+          : nothing
+      }
       ${this.loading && !this.page ? html`<p role="status">Loading extensions…</p>` : nothing}
       ${
         this.page?.items.length

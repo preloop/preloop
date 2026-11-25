@@ -726,6 +726,66 @@ describe('TrackerDetailView', () => {
     expect(el.shadowRoot?.textContent).to.not.contain('? ->');
   });
 
+  for (const scenario of [
+    {
+      status: 500,
+      detail: 'Configuration error for tracker: invalid settings',
+      message: 'GitLab configuration error',
+    },
+    {
+      status: 502,
+      detail: 'Tracker request failed',
+      message: 'GitLab request failed',
+    },
+    {
+      status: 500,
+      detail: 'Unexpected internal error',
+      message: 'Could not load merge requests from GitLab',
+    },
+  ]) {
+    it(`shows an honest count and actionable ${scenario.status} error for ${scenario.detail}`, async () => {
+      history.replaceState(
+        {},
+        '',
+        `/console/trackers/${trackerId}?tab=pull-requests&project=${projectA.id}`
+      );
+      let failed = true;
+      fetchStub = stubFetch({
+        trackerType: 'gitlab',
+        pullRequestHandler: () =>
+          failed
+            ? new Response(JSON.stringify({ detail: scenario.detail }), {
+                status: scenario.status,
+              })
+            : null,
+      });
+      const el = await mountView();
+      await (el as any)._loadPullRequests(true);
+      await el.updateComplete;
+      const panel = el.shadowRoot!.querySelector(
+        'sl-tab-panel[name="pull-requests"]'
+      )!;
+      expect(panel.textContent).to.contain(scenario.message);
+      expect(panel.textContent).not.to.contain('0 open merge requests');
+      expect(panel.textContent).not.to.contain(scenario.detail);
+      expect(
+        panel.querySelector('[slot="count"]')!.textContent!.trim()
+      ).to.equal('Count unavailable');
+      if (scenario.detail.startsWith('Configuration')) {
+        expect(panel.querySelector('.prs-error')!.textContent).to.contain(
+          'Edit tracker'
+        );
+        expect(panel.textContent).not.to.contain('Could not reach');
+      }
+      failed = false;
+      (
+        panel.querySelector('.prs-error sl-button:last-child') as HTMLElement
+      ).click();
+      await waitUntil(() => !panel.querySelector('.prs-error'));
+      expect(panel.textContent).to.contain('0 open merge requests');
+    });
+  }
+
   it('keeps rows when Load more fails', async () => {
     window.history.replaceState(
       {},
@@ -769,7 +829,7 @@ describe('TrackerDetailView', () => {
     await tick(50);
     await el.updateComplete;
     expect(el.shadowRoot?.textContent).to.contain('Add login');
-    expect(el.shadowRoot?.textContent).to.contain('Could not reach GitHub.');
+    expect(el.shadowRoot?.textContent).to.contain('GitHub request failed.');
     expect(el.shadowRoot?.querySelector('table.styled-table')).to.exist;
   });
 

@@ -331,7 +331,7 @@ export class SessionRequestTimeline extends LitElement {
         </sl-badge>
         <div class="request-main">
           <div class="request-title">
-            ${model}
+            ${row.endpoint === 'session-title' ? html`Title generation · ` : nothing}${model}
             ${
               row.error_class === 'upstream_policy_refusal'
                 ? html`<sl-badge variant="danger" pill

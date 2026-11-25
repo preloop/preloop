@@ -94,8 +94,9 @@ describe('PoliciesView notify action', () => {
 
   it('describes both model identities in the condition hint', async () => {
     const element = await mountWithDialog();
-    const text =
-      element.shadowRoot?.querySelector('.model-io-hint')?.textContent;
+    const text = element.shadowRoot?.querySelector(
+      '[data-testid="condition-attributes"]'
+    )?.textContent;
     expect(text).to.contain('model.id');
     expect(text).to.contain('Preloop model UUID');
     expect(text).to.contain('model.name');
