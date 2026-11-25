@@ -79,6 +79,36 @@ describe('provider discovery authentication contract', () => {
     expect(navigate.called).to.equal(false);
   });
 
+  it('keeps the session when the refresh itself is rate limited', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) =>
+      String(input).includes('/auth/refresh')
+        ? new Response(
+            JSON.stringify({
+              detail: 'Too many requests. Try again in 20 seconds.',
+              code: 'rate_limited',
+              retry_after: 20,
+            }),
+            { status: 429, headers: { 'Retry-After': '20' } }
+          )
+        : new Response(JSON.stringify({ detail: 'Token expired' }), {
+            status: 401,
+          })
+    );
+    try {
+      await getAvailableModelsForProvider('openai', 'synthetic-key');
+    } catch {
+      // The caller sees the failed request; only the session matters here.
+    }
+    const refreshCalls = fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('/auth/refresh'));
+    // One attempt: a retry would only spend more of the shared budget.
+    expect(refreshCalls).to.have.length(1);
+    expect(localStorage.getItem('accessToken')).to.equal('synthetic-access');
+    expect(localStorage.getItem('refreshToken')).to.equal('synthetic-refresh');
+    expect(navigate.called).to.equal(false);
+  });
+
   it('ends a revoked console session during discovery', async () => {
     fetchStub.callsFake(
       async () =>
