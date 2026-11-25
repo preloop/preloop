@@ -763,6 +763,12 @@ export class FlowsView extends LitElement {
           flex: 1;
           min-width: 0;
         }
+        .header-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-small);
+        }
+
         .section-header {
           display: flex;
           justify-content: space-between;
@@ -1666,12 +1672,6 @@ export class FlowsView extends LitElement {
                   <div class="active-executions">
                     <div class="section-header">
                       <h2>In flight</h2>
-                      <sl-button
-                        size="small"
-                        href=${router.urlForPath('/console/flows/executions')}
-                      >
-                        View all
-                      </sl-button>
                     </div>
                     <div class="executions-list">
                       ${inFlight
@@ -1763,10 +1763,13 @@ export class FlowsView extends LitElement {
         description="Event-driven agent runs. A flow starts an agent when something happens, a new issue or a webhook, and stops it when the run completes."
         width="extra-wide"
       >
-        ${
-          this.flows.length > 0
-            ? html`
-                <div slot="main-column">
+        <div slot="main-column" class="header-actions">
+          <sl-button href=${router.urlForPath('/console/flows/executions')}>
+            View executions
+          </sl-button>
+          ${
+            this.flows.length > 0
+              ? html`
                   <sl-button
                     variant="primary"
                     @click=${() => Router.go('/console/flows/new')}
@@ -1774,10 +1777,10 @@ export class FlowsView extends LitElement {
                     <sl-icon slot="prefix" name="plus-lg"></sl-icon>
                     Create flow
                   </sl-button>
-                </div>
-              `
-            : nothing
-        }
+                `
+              : nothing
+          }
+        </div>
       </view-header>
     `;
   }

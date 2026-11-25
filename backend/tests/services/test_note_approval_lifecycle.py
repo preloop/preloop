@@ -1,18 +1,21 @@
 """Real note preparation, approval persistence, and MCP polling replay."""
 
 import json
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_managed_agent, crud_user
 from preloop.models.crud.agent_note_policy import seed_note_policy
-from preloop.models.db.session import SyncApprovalSession
+from preloop.models.db.session import SyncApprovalSession, get_db_session
 from preloop.services.approval_service import ApprovalService
 from preloop.services.dynamic_mcp_server import UserContext
 from preloop.services.initialize_mcp import initialize_mcp_with_tools
@@ -34,6 +37,11 @@ class ApprovalTestSession(SyncApprovalSession):
 async def test_note_approval_lifecycle(
     db_session: Session, test_user: models.User, decision: str, decision_path: str
 ) -> None:
+    """Exercise note decisions and preserve the token route after mock cleanup."""
+    # Bind FastAPI's dependencies before replacing the shared session factory.
+    # Importing this module inside the patches would retain a mock in Depends.
+    from preloop.api.endpoints import public_approval
+
     author = crud_managed_agent.create_custom_agent(
         db_session,
         account_id=test_user.account_id,
@@ -85,7 +93,7 @@ async def test_note_approval_lifecycle(
     approval_db = ApprovalTestSession(db_session)
 
     @asynccontextmanager
-    async def async_session():
+    async def async_session() -> AsyncIterator[ApprovalTestSession]:
         yield approval_db
 
     async def replay(name: str, arguments: dict, *, account_id: str) -> str:
@@ -103,10 +111,7 @@ async def test_note_approval_lifecycle(
             side_effect=lambda: iter([db_session]),
         ),
         patch("preloop.models.db.session.get_async_db_session", new=async_session),
-        patch(
-            "preloop.api.endpoints.public_approval.get_async_db_session",
-            new=async_session,
-        ),
+        patch.object(public_approval, "get_async_db_session", new=async_session),
         patch.object(db_session, "close"),
         patch(
             "preloop.services.approval_summary.generate_approval_summary",
@@ -176,14 +181,9 @@ async def test_note_approval_lifecycle(
 
         async def decide(action: str) -> None:
             if decision_path == "token":
-                from preloop.api.endpoints.public_approval import (
-                    ApprovalDecisionRequest,
-                    _decide_with_token,
-                )
-
-                await _decide_with_token(
+                await public_approval._decide_with_token(
                     request_id,
-                    ApprovalDecisionRequest(action=action),
+                    public_approval.ApprovalDecisionRequest(action=action),
                     request.approval_token,
                     db_session,
                 )
@@ -247,3 +247,15 @@ async def test_note_approval_lifecycle(
         if notes:
             assert str(notes[0].runtime_session_id) == worker.runtime_session_id
             assert notes[0].created_by_managed_agent_id == author.id
+
+    # A later HTTP request must still resolve the real route dependencies after
+    # the lifecycle's session patches have been undone.
+    app = FastAPI()
+    app.include_router(public_approval.router)
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    with TestClient(app) as client:
+        response = client.get(
+            f"/approval/{request_id}/data", params={"token": request.approval_token}
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == expected_status

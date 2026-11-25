@@ -1,12 +1,11 @@
 # Self-hosted runners
 
-After the fast gate succeeds, CI routes all six backend shards to one runner
-class. They run self-hosted only when six online idle general self-hosted
-runners are available, one per shard; otherwise all six use GitHub-hosted
-`ubuntu-24.04`. Mixing classes made the slower private shards the
-stragglers. Self-hosted shards run two xdist workers each, since a runner slot
-is not a whole VM. Unreadable inventory,
-an absent read token, or `CI_SELF_HOSTED_TESTS=false` keeps every shard hosted.
+Backend tests use GitHub-hosted `ubuntu-24.04` by default. Setting
+`CI_SELF_HOSTED_TESTS=true` opts into the general pool when there is one idle
+runner for every selected job, including the serial subprocess tests. A full
+run starts six xdist shards and one serial job. An impact-selected run starts
+only the groups it needs. All groups read one runner label from the picker.
+Self-hosted xdist shards run two workers each.
 Fork and Dependabot PRs always remain hosted. Trusted same-repository PRs and
 pushes may use the general pool.
 

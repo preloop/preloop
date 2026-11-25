@@ -1,5 +1,6 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import './ci-identities-view';
+import { pageTitle } from '../../../utils/page-title';
 import type { CiIdentitiesView } from './ci-identities-view';
 import { CI_ACTIONS, type CiIdentity } from '../../../ci-administration-api';
 import {
@@ -130,6 +131,17 @@ describe('restricted CI settings view', () => {
     await ready(element);
     return element;
   }
+
+  it('names the browser tab for the CI settings page', async () => {
+    api = mockApi({ routes: routes() });
+    const previous = document.title;
+    try {
+      await render();
+      expect(document.title).to.equal(pageTitle('CI identities'));
+    } finally {
+      document.title = previous;
+    }
+  });
 
   for (const state of [
     null,

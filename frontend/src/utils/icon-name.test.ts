@@ -6,6 +6,7 @@ describe('icon-name', () => {
     expect(safeIconName('broom')).to.equal('eraser');
     expect(safeIconName('beaker')).to.equal('clipboard-check');
     expect(safeIconName('checklist')).to.equal('list-check');
+    expect(safeIconName('document-report')).to.equal('file-earmark-text');
     expect(safeIconName('gear')).to.equal('gear');
     expect(safeIconName(undefined)).to.equal(undefined);
   });

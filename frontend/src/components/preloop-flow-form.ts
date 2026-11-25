@@ -5082,6 +5082,22 @@ export class PreloopFlowForm extends LitElement {
       `;
     }
 
+    const scopedProjects = this.projects.filter(
+      (project) => project.organization_id === this.flow.trigger_organization_id
+    );
+    const hasProjectSelection = Boolean(this.flow.trigger_project_ids?.length);
+    let projectScopeHelp = '';
+    if (this.flow.trigger_organization_id) {
+      if (scopedProjects.length === 0) {
+        projectScopeHelp =
+          'No projects are available to select. Check the tracker’s scope and sync status.';
+      } else {
+        projectScopeHelp = hasProjectSelection
+          ? 'To narrow the scope, remove projects or clear the selection and pick specific projects. A blank selection includes all projects in this organization.'
+          : 'Pick specific projects, or leave the selection blank to include all projects in this organization.';
+      }
+    }
+
     let selectableModels = this.models.filter(
       (m) => !m.is_shared && m.model_kind !== 'stt' && m.model_kind !== 'tts'
     );
@@ -5181,8 +5197,8 @@ export class PreloopFlowForm extends LitElement {
                 variant="primary"
                 open
                 data-testid="preset-disabled-notice"
-                >This preset copy will be saved disabled. Configure its tracker
-                and project scope, then enable it from Flows when
+                >This flow will be saved paused. Review its trigger and AI
+                configuration, then choose Resume on the flow page when
                 ready.</sl-alert
               >`
             : nothing
@@ -5380,27 +5396,30 @@ export class PreloopFlowForm extends LitElement {
 
                       <sl-select
                         label="Projects (optional)"
-                        placeholder="All projects"
+                        help-text=${projectScopeHelp}
+                        placeholder=${
+                          this.flow.trigger_organization_id &&
+                          scopedProjects.length === 0
+                            ? 'No projects available'
+                            : 'All projects'
+                        }
                         multiple
                         clearable
                         .value=${this.flow.trigger_project_ids || []}
                         @sl-change=${(e: any) => {
                           this.flow.trigger_project_ids = e.target.value;
                         }}
-                        ?disabled=${!this.flow.trigger_organization_id}
+                        ?disabled=${
+                          !this.flow.trigger_organization_id ||
+                          (scopedProjects.length === 0 && !hasProjectSelection)
+                        }
                       >
-                        ${this.projects
-                          .filter(
-                            (p) =>
-                              p.organization_id ===
-                              this.flow.trigger_organization_id
-                          )
-                          .map(
-                            (p) =>
-                              html`<sl-option .value=${p.id}
-                                >${p.name || p.identifier || p.key}</sl-option
-                              >`
-                          )}
+                        ${scopedProjects.map(
+                          (project) =>
+                            html`<sl-option .value=${project.id}
+                              >${project.name || project.identifier || project.key}</sl-option
+                            >`
+                        )}
                       </sl-select>
 
                       <sl-select
