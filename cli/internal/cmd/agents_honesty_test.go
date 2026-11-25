@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
 func TestClaudeSubscriptionCustodyDisclosesGatewayEffects(t *testing.T) {
@@ -22,7 +24,7 @@ func TestClaudeSubscriptionCustodyDisclosesGatewayEffects(t *testing.T) {
 }
 
 func TestClaudeApprovalPromptExplainsWaitWithoutChangingDefault(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testenv.SetTempHome(t)
 	var output bytes.Buffer
 	yes, err := promptForApprovalsOptIn(strings.NewReader("\n"), &output, AgentConfig{Name: "Claude Code"})
 	if err != nil || !yes {
@@ -38,18 +40,25 @@ func TestClaudeApprovalPromptExplainsWaitWithoutChangingDefault(t *testing.T) {
 func TestClaudeControlOffboardOwnership(t *testing.T) {
 	for _, existing := range []bool{false, true} {
 		t.Run(map[bool]string{false: "created", true: "preexisting"}[existing], func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
+			home := testenv.SetTempHome(t)
 			t.Setenv("PRELOOP_CONFIG_DIR", filepath.Join(home, ".preloop"))
 			path := claudeControlConfigPath()
 			original := []byte("{\"custom\": true}\n")
 			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 				t.Fatal(err)
 			}
+			var originalMode os.FileMode
 			if existing {
 				if err := os.WriteFile(path, original, 0640); err != nil {
 					t.Fatal(err)
 				}
+			}
+			if existing {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				originalMode = info.Mode().Perm()
 			}
 			// Claude enrollment does not install a sidecar service. An existing
 			// service belongs to the operator even if its path looks familiar.
@@ -74,7 +83,7 @@ func TestClaudeControlOffboardOwnership(t *testing.T) {
 					t.Fatal("preexisting control file was not restored")
 				}
 				info, _ := os.Stat(path)
-				if info.Mode().Perm() != 0640 {
+				if info.Mode().Perm() != originalMode {
 					t.Fatal("original permissions were not restored")
 				}
 			} else if !os.IsNotExist(err) {
@@ -91,8 +100,7 @@ func TestClaudeControlOffboardOwnership(t *testing.T) {
 }
 
 func TestClaudeOffboardPreservesUnownedControl(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := testenv.SetTempHome(t)
 	t.Setenv("PRELOOP_CONFIG_DIR", filepath.Join(home, ".preloop"))
 	path := claudeControlConfigPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -113,8 +121,7 @@ func TestClaudeOffboardPreservesUnownedControl(t *testing.T) {
 func TestClaudeControlPreservesChangesAfterEnrollment(t *testing.T) {
 	for _, symlink := range []bool{false, true} {
 		t.Run(map[bool]string{false: "edited", true: "symlink"}[symlink], func(t *testing.T) {
-			home := t.TempDir()
-			t.Setenv("HOME", home)
+			home := testenv.SetTempHome(t)
 			t.Setenv("PRELOOP_CONFIG_DIR", filepath.Join(home, ".preloop"))
 			if err := writeClaudePreloopControlFile(map[string]interface{}{"enabled": true}); err != nil {
 				t.Fatal(err)
