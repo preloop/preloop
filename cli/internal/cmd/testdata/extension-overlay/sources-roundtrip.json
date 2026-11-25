@@ -1,0 +1,94 @@
+{
+  "policy": {
+    "options": {
+      "restrict_marketplaces": true
+    },
+    "marketplaces": [
+      {
+        "name": "example-0",
+        "state": "allowed",
+        "source": {
+          "source": "github",
+          "repo": "example/plugins",
+          "ref": "main"
+        }
+      },
+      {
+        "name": "example-1",
+        "state": "allowed",
+        "source": {
+          "source": "git",
+          "url": "https://example.com/plugins.git"
+        }
+      },
+      {
+        "name": "example-2",
+        "state": "allowed",
+        "source": {
+          "source": "url",
+          "url": "https://example.com/catalog.json",
+          "headers": {
+            "X-Example": "café"
+          }
+        }
+      },
+      {
+        "name": "example-3",
+        "state": "allowed",
+        "source": {
+          "source": "file",
+          "path": "/opt/café/catalog.json"
+        }
+      },
+      {
+        "name": "example-4",
+        "state": "allowed",
+        "source": {
+          "source": "directory",
+          "path": "/opt/plugins"
+        }
+      },
+      {
+        "name": "example-5",
+        "state": "allowed",
+        "source": {
+          "source": "hostPattern",
+          "hostPattern": "^example[.]com$"
+        }
+      },
+      {
+        "name": "example-6",
+        "state": "allowed",
+        "source": {
+          "source": "pathPattern",
+          "pathPattern": "^/opt/plugins/"
+        }
+      },
+      {
+        "name": "example-7",
+        "state": "allowed",
+        "source": {
+          "source": "skills-dir"
+        }
+      }
+    ]
+  },
+  "response": {
+    "settings_json": "{\n  \"blockedMarketplaces\": [],\n  \"strictKnownMarketplaces\": [\n    {\n      \"ref\": \"main\",\n      \"repo\": \"example/plugins\",\n      \"source\": \"github\"\n    },\n    {\n      \"source\": \"git\",\n      \"url\": \"https://example.com/plugins.git\"\n    },\n    {\n      \"headers\": {\n        \"X-Example\": \"café\"\n      },\n      \"source\": \"url\",\n      \"url\": \"https://example.com/catalog.json\"\n    },\n    {\n      \"path\": \"/opt/café/catalog.json\",\n      \"source\": \"file\"\n    },\n    {\n      \"path\": \"/opt/plugins\",\n      \"source\": \"directory\"\n    },\n    {\n      \"hostPattern\": \"^example[.]com$\",\n      \"source\": \"hostPattern\"\n    },\n    {\n      \"pathPattern\": \"^/opt/plugins/\",\n      \"source\": \"pathPattern\"\n    },\n    {\n      \"source\": \"skills-dir\"\n    }\n  ]\n}\n",
+    "policy_revision_hash": "d8974edb48817d5fc564d4ec03820674970d1d9bfee5aff9afddc73a8abbb63d",
+    "keys": [
+      "blockedMarketplaces",
+      "strictKnownMarketplaces"
+    ],
+    "omitted": [],
+    "inputs": {
+      "policy_revision": 0,
+      "approvals_updated_at": null,
+      "approval_count": 0
+    },
+    "platform": "linux",
+    "target_path": "/etc/claude-code/managed-settings.d/50-preloop-extensions.json",
+    "minimum_claude_code_version": "2.1.332",
+    "vendor_console_status": "unverified_for_preloop_routed_agents"
+  }
+}

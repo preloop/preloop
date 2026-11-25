@@ -174,6 +174,10 @@ export class ExtensionEnforcement extends LitElement {
       !this.canManage
     )
       return;
+    await this.reload();
+  }
+  private async reload(): Promise<void> {
+    if (this.busy || !this.canManage) return;
     this.busy = true;
     this.error = '';
     try {
@@ -183,6 +187,9 @@ export class ExtensionEnforcement extends LitElement {
       ]);
       this.policy = policy;
       this.registrations = registrations;
+      this.dirty = false;
+      this.overlay = null;
+      this.copied = false;
     } catch (error) {
       this.error =
         error instanceof Error
@@ -407,6 +414,9 @@ export class ExtensionEnforcement extends LitElement {
                 </button>
                 <button type="button" data-preview @click=${this.preview}>
                   ${this.dirty ? 'Save and preview' : 'Preview'}
+                </button>
+                <button type="button" data-reload @click=${this.reload}>
+                  Reload saved policy (discard edits)
                 </button>
               </div>
               <p class="meta">

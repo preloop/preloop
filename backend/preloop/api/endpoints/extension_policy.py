@@ -24,15 +24,15 @@ router = APIRouter(prefix="/agents/extension-policy", tags=["Extension enforceme
 
 
 @router.get("/{agent_kind}", response_model=EnforcementPolicy)
-@require_permission("view_agents")
+@require_permission("manage_agents")
 def get_policy(
     agent_kind: Literal["claude_code"],
     account: Annotated[models.Account, Depends(get_account_for_user)],
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> EnforcementPolicy:
-    """Return revision-zero defaults before the first explicit save."""
-    ensure_permission_in_oss(db, current_user, "view_agents")
+    """Return policy to administrators; marketplace headers may contain secrets."""
+    ensure_permission_in_oss(db, current_user, "manage_agents")
     row = policies.get(db, account_id=account.id, agent_kind=agent_kind)
     return EnforcementPolicy.model_validate(row) if row else EnforcementPolicy()
 

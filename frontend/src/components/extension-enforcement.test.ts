@@ -185,4 +185,62 @@ describe('extension enforcement', () => {
     await el.updateComplete;
     expect(el.shadowRoot!.querySelector('[data-download]')).to.equal(null);
   });
+  // protects=AC10 stale-edit recovery; fails_when=409 cannot be followed by a
+  // fresh revision save; no_claim=fixture API models concurrent administration.
+  it('reloads the saved policy and registrations after a stale save', async () => {
+    let loads = 0;
+    let registrations = 0;
+    const saved: number[] = [];
+    const el = await mount({
+      policyLoader: async () => ({
+        ...policy(),
+        revision: ++loads === 1 ? 3 : 4,
+      }),
+      registryLoader: async () => {
+        registrations++;
+        return [];
+      },
+      saver: async (p: EnforcementPolicy) => {
+        saved.push(p.revision);
+        if (p.revision === 3)
+          throw new Error('Policy revision changed; reload before saving');
+        return { ...p, revision: 5 };
+      },
+    });
+    const edit = () =>
+      (
+        el.shadowRoot!.querySelector(
+          '[data-option="disable_skill_shell"]'
+        ) as HTMLInputElement
+      ).click();
+    const preview = () =>
+      (
+        el.shadowRoot!.querySelector('[data-preview]') as HTMLButtonElement
+      ).click();
+    edit();
+    preview();
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes('revision changed')
+    );
+    const reload = el.shadowRoot!.querySelector(
+      '[data-reload]'
+    ) as HTMLButtonElement;
+    expect(reload).not.to.equal(null);
+    reload.click();
+    await waitUntil(
+      () => loads === 2 && !el.shadowRoot!.querySelector('[role="alert"]')
+    );
+    expect(registrations).to.equal(2);
+    expect(
+      (
+        el.shadowRoot!.querySelector(
+          '[data-option="disable_skill_shell"]'
+        ) as HTMLInputElement
+      ).checked
+    ).to.equal(false);
+    edit();
+    preview();
+    await waitUntil(() => !!el.shadowRoot!.querySelector('[data-download]'));
+    expect(saved).to.deep.equal([3, 4]);
+  });
 });

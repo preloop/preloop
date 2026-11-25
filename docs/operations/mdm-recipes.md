@@ -324,6 +324,11 @@ not infer source URLs from hashed inventory. Content pins and version constraint
 remain inventory/check evidence: this overlay cannot enforce them. Approved and
 Unknown plugins are not force-enabled or disabled.
 
+Reading, editing and rendering this policy require `manage_agents`: marketplace
+headers may contain credentials. After a concurrent edit rejects a save, use
+**Reload saved policy (discard edits)** to load the latest revision and bundle
+registrations before editing again.
+
 1. If **Managed hooks only** is selected, deploy and register the `claude-code`
    hook bundle for the target platform first. The renderer requires that active
    registration, but registration alone does not prove the hook is installed.

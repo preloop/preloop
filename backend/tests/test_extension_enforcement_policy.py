@@ -206,7 +206,7 @@ def test_hook_and_extension_registration(client: TestClient) -> None:
 
 
 def test_api_permission_checks(client: TestClient) -> None:
-    """protects=AC1 view/manage boundaries in OSS; fails_when=unauthorized rendering
+    """protects=AC1 administration boundaries in OSS; fails_when=unauthorized rendering
     or writes succeed; no_claim=permission resolver mocked to refuse.
     """
     from fastapi import HTTPException
@@ -216,8 +216,94 @@ def test_api_permission_checks(client: TestClient) -> None:
         side_effect=HTTPException(403, "Forbidden"),
     ) as guard:
         assert client.get(URL).status_code == 403
-        assert guard.call_args.args[2] == "view_agents"
+        assert guard.call_args.args[2] == "manage_agents"
         assert client.put(URL, json={}, headers={"If-Match": "0"}).status_code == 403
         assert guard.call_args.args[2] == "manage_agents"
         assert client.get(URL + "/managed-settings").status_code == 403
         assert guard.call_args.args[2] == "manage_agents"
+
+
+@pytest.mark.parametrize("character", ["\x00", "\x7f", "\x85", "\u202e", "\u200d"])
+@pytest.mark.parametrize(
+    "source,field",
+    [
+        ({"source": "url", "url": "https://example.com/catalog.json"}, "url"),
+        ({"source": "file", "path": "/opt/plugins/catalog.json"}, "path"),
+        ({"source": "directory", "path": "/opt/plugins"}, "path"),
+        ({"source": "git", "url": "https://example.com/plugins.git"}, "url"),
+        ({"source": "github", "repo": "example/plugins", "ref": "main"}, "ref"),
+        ({"source": "hostPattern", "hostPattern": "example[.]com"}, "hostPattern"),
+        ({"source": "pathPattern", "pathPattern": "^/opt/plugins"}, "pathPattern"),
+    ],
+)
+def test_source_text_matches_cli_character_safety(
+    source: dict[str, str], field: str, character: str
+) -> None:
+    """protects=API/CLI compatibility; fails_when=stored controls cannot export;
+    no_claim=source existence or regular-expression semantics.
+    """
+    source = {**source, field: source[field] + character}
+    with pytest.raises(ValidationError):
+        PolicyUpdate(
+            marketplaces=[{"name": "example", "state": "allowed", "source": source}]
+        )
+
+
+def test_viewer_cannot_read_marketplace_headers(client: TestClient) -> None:
+    """protects=marketplace header confidentiality; fails_when=view-only users
+    receive policy credentials; no_claim=permission resolver is a role fixture.
+    """
+    from fastapi import HTTPException
+
+    saved = client.put(
+        URL,
+        headers={"If-Match": "0"},
+        json={
+            "marketplaces": [
+                {
+                    "name": "example",
+                    "state": "allowed",
+                    "source": {
+                        "source": "url",
+                        "url": "https://example.com/catalog.json",
+                        "headers": {"Authorization": "Bearer synthetic-test-value"},
+                    },
+                }
+            ]
+        },
+    )
+    assert saved.status_code == 200
+
+    def viewer_only(db: Session, user: models.User, permission: str) -> None:
+        """Model a read-only role without administration permissions."""
+        if permission != "view_agents":
+            raise HTTPException(403, "Forbidden")
+
+    with patch(
+        "preloop.api.endpoints.extension_policy.ensure_permission_in_oss",
+        side_effect=viewer_only,
+    ):
+        response = client.get(URL)
+    assert response.status_code == 403
+    assert "synthetic-test-value" not in response.text
+
+
+def test_api_policy_round_trips_through_shared_cli_fixture() -> None:
+    """protects=API/render/export shape agreement across all source kinds;
+    fails_when=accepted source output cannot export; no_claim=vendor delivery.
+    """
+    import json
+    from pathlib import Path
+
+    from preloop.schemas.extension_policy import EnforcementPolicy
+    from preloop.services.extension_policy_render import render_overlay
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "cli/internal/cmd/testdata/extension-overlay/sources-roundtrip.json"
+        ).read_text()
+    )
+    policy = EnforcementPolicy.model_validate(fixture["policy"])
+    response = render_overlay(policy, [], platform="linux")
+    assert response.model_dump(mode="json") == fixture["response"]

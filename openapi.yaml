@@ -1851,7 +1851,8 @@ paths:
       tags:
       - Extension enforcement
       summary: Get Policy
-      description: Return revision-zero defaults before the first explicit save.
+      description: Return policy to administrators; marketplace headers may contain
+        secrets.
       operationId: get_policy_api_v1_agents_extension_policy__agent_kind__get
       security:
       - bearerAuth: []
@@ -40972,6 +40973,7 @@ components:
         path:
           type: string
           maxLength: 2000
+          minLength: 1
           pattern: ^(?:/|[A-Za-z]:[\\/]).+
           title: Path
       additionalProperties: false
@@ -45543,14 +45545,12 @@ components:
           type: string
           maxLength: 2000
           minLength: 1
-          pattern: ^[^\x00-\x1f\x7f]+$
           title: Url
         ref:
           anyOf:
           - type: string
             maxLength: 2000
             minLength: 1
-            pattern: ^[^\x00-\x1f\x7f]+$
           - type: 'null'
           title: Ref
         path:
@@ -45558,7 +45558,6 @@ components:
           - type: string
             maxLength: 2000
             minLength: 1
-            pattern: ^[^\x00-\x1f\x7f]+$
           - type: 'null'
           title: Path
       additionalProperties: false
@@ -45583,7 +45582,6 @@ components:
           - type: string
             maxLength: 2000
             minLength: 1
-            pattern: ^[^\x00-\x1f\x7f]+$
           - type: 'null'
           title: Ref
         path:
@@ -45591,7 +45589,6 @@ components:
           - type: string
             maxLength: 2000
             minLength: 1
-            pattern: ^[^\x00-\x1f\x7f]+$
           - type: 'null'
           title: Path
       additionalProperties: false
@@ -46079,7 +46076,6 @@ components:
           type: string
           maxLength: 2000
           minLength: 1
-          pattern: ^[^\x00-\x1f\x7f]+$
           title: Hostpattern
       additionalProperties: false
       type: object
@@ -51050,7 +51046,6 @@ components:
           type: string
           maxLength: 2000
           minLength: 1
-          pattern: ^[^\x00-\x1f\x7f]+$
           title: Pathpattern
       additionalProperties: false
       type: object
@@ -61215,16 +61210,15 @@ components:
         url:
           type: string
           maxLength: 2000
+          minLength: 1
           pattern: ^https?://[^\s]+$
           title: Url
         headers:
           anyOf:
-          - patternProperties:
-              ^[^\x00-\x1f\x7f]+$:
-                type: string
-                maxLength: 2000
-                minLength: 1
-                pattern: ^[^\x00-\x1f\x7f]+$
+          - additionalProperties:
+              type: string
+              maxLength: 2000
+              minLength: 1
             propertyNames:
               maxLength: 2000
               minLength: 1
@@ -61237,7 +61231,7 @@ components:
       - source
       - url
       title: URLSource
-      description: Documented URL marketplace source; credentials belong on devices.
+      description: Documented URL source; header-bearing policies require administration.
     UnpricedModelUsage:
       properties:
         model:

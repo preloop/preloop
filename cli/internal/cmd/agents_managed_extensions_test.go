@@ -211,3 +211,25 @@ func TestExtensionOverlayRejectsConflictingModes(t *testing.T) {
 		}
 	}
 }
+
+// protects=API/render/export compatibility; fails_when=accepted source shapes
+// cannot export; no_claim=vendor delivery or source availability.
+func TestExtensionOverlaySourceRoundTrip(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "extension-overlay", "sources-roundtrip.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Response extensionOverlayResponse `json:"response"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	files, err := renderExtensionBundle(fixture.Response, "endpoint_file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(files[0].data) != fixture.Response.SettingsJSON {
+		t.Fatal("export changed the API-rendered bytes")
+	}
+}

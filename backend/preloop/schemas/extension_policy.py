@@ -1,14 +1,30 @@
 """Strict inputs and canonical output for Claude Code extension overlays."""
 
 import json
+import unicodedata
 from datetime import datetime
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    model_validator,
+)
+
+
+def validate_source_text(value: str) -> str:
+    """Match the CLI's rejection of Unicode control and format characters."""
+    if any(unicodedata.category(char) in {"Cc", "Cf"} for char in value):
+        raise ValueError("Marketplace text cannot contain control or format characters")
+    return value
+
 
 Platform = Literal["darwin", "linux", "windows"]
 Text = Annotated[
-    str, Field(min_length=1, max_length=2000, pattern=r"^[^\x00-\x1f\x7f]+$")
+    str, Field(min_length=1, max_length=2000), AfterValidator(validate_source_text)
 ]
 Name = Annotated[str, Field(pattern=r"^[A-Za-z0-9._-]+$", max_length=128)]
 
@@ -38,10 +54,14 @@ class GitSource(StrictModel):
 
 
 class URLSource(StrictModel):
-    """Documented URL marketplace source; credentials belong on devices."""
+    """Documented URL source; header-bearing policies require administration."""
 
     source: Literal["url"]
-    url: Annotated[str, Field(pattern=r"^https?://[^\s]+$", max_length=2000)]
+    url: Annotated[
+        str,
+        Field(min_length=1, max_length=2000, pattern=r"^https?://[^\s]+$"),
+        AfterValidator(validate_source_text),
+    ]
     headers: dict[Text, Text] | None = None
 
 
@@ -49,7 +69,11 @@ class FileSource(StrictModel):
     """Local marketplace catalog or directory."""
 
     source: Literal["file", "directory"]
-    path: Annotated[str, Field(pattern=r"^(?:/|[A-Za-z]:[\\/]).+", max_length=2000)]
+    path: Annotated[
+        str,
+        Field(min_length=1, max_length=2000, pattern=r"^(?:/|[A-Za-z]:[\\/]).+"),
+        AfterValidator(validate_source_text),
+    ]
 
 
 class HostSource(StrictModel):
