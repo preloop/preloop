@@ -969,6 +969,18 @@ def _find_issue_by_identifier(db: Session, identifier: str, account_id: str) -> 
         # 3. Parse issue key from URL and fall through to key-based lookups
         parsed_url = parse_issue_url(normalized)
         if not parsed_url:
+            pr_words = (
+                "/pull/",
+                "/merge_requests/",
+                "/pull-requests/",
+                "/pullrequest/",
+            )
+            if any(
+                word in urlparse(normalized).path for word in pr_words
+            ) and _parse_pr_key_from_url(normalized):
+                raise IssueIsPullRequestError(
+                    "This is a pull or merge request; use get_pull_request."
+                )
             raise IssueNotFoundError(f"Issue not found by URL: {identifier}")
         issue_obj = crud_issue.get_by_key(db, key=parsed_url.key, account_id=account_id)
         if issue_obj:
@@ -1010,12 +1022,16 @@ def _find_issue_by_identifier(db: Session, identifier: str, account_id: str) -> 
             "'group/project#<iid>' or 'owner/repo#<number>', or the issue URL."
         )
 
-    # Try key postfix match
-    issue_obj = crud_issue.get_by_key_postfix(
-        db, key_postfix=identifier, account_id=account_id
-    )
-    if issue_obj:
-        return issue_obj
+    # Only partial references may use suffix lookup. A full path or Jira key
+    # names one project exactly and must reach live fallback on a local miss.
+    from preloop.services.issue_lookup import parse_issue_reference
+
+    if parse_issue_reference(identifier) is None:
+        issue_obj = crud_issue.get_by_key_postfix(
+            db, key_postfix=identifier, account_id=account_id
+        )
+        if issue_obj:
+            return issue_obj
 
     # Validate UUID syntax before querying: a non-UUID key must not abort the
     # database transaction needed for the subsequent tracker fallback.
@@ -1038,7 +1054,7 @@ async def _find_or_sync_issue(db: Session, identifier: str, current_user: Any) -
 
     try:
         return _find_issue_by_identifier(db, identifier, current_user.account_id)
-    except IssueAmbiguousError:
+    except (IssueAmbiguousError, IssueIsPullRequestError):
         raise
     except IssueNotFoundError as missing:
         try:

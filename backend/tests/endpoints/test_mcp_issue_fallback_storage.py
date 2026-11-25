@@ -388,3 +388,127 @@ async def test_triage_provider_syncs_first(
     assert stored.key == "acme/web#12"
     assert provider.number == "12"
     client.get_issue.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,key,url", [CASES[1], CASES[3]])
+@pytest.mark.parametrize("tool", ["get_issue", "update_issue", "add_comment"])
+async def test_qualified_keys_never_use_another_projects_suffix(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    key: str,
+    url: str,
+    tool: str,
+) -> None:
+    """Qualified reads and writes cannot hit XPROJ-12 for PROJ-12."""
+    project = _project(db_session, test_user.account_id, kind, key)
+    wrong_key = "X" + key if kind == "jira" else "outer/" + key
+    other = _project(db_session, test_user.account_id, kind, wrong_key)
+    if kind == "jira":
+        other.slug = "XPROJ"
+    db_session.add(
+        models.Issue(
+            title="Another issue",
+            project_id=other.id,
+            tracker_id=other.organization.tracker_id,
+            external_id="99912",
+            key=wrong_key,
+        )
+    )
+    db_session.commit()
+    client = _client(project, key, url)
+    client.update_issue = AsyncMock()
+    client.add_comment = AsyncMock(
+        return_value=SimpleNamespace(id="50", meta_data={"url": url})
+    )
+    monkeypatch.setattr(mcp, "get_tracker_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(crud_issue_embedding, "create_embeddings", MagicMock())
+    _authenticate(monkeypatch, db_session, test_user)
+    if tool == "get_issue":
+        response = await mcp.get_issue(issue=key)
+        assert response.key == key
+    elif tool == "update_issue":
+        await mcp.update_issue(issue=key, title="Updated example")
+        assert client.update_issue.await_args.args[0] == key
+    else:
+        await mcp.add_comment(target=key, comment="Example comment")
+        assert client.add_comment.await_args.args[0] == key
+    client.get_issue.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/acme/web/pull/12",
+        "https://github.com/acme/web/pull/12/files?show=1#discussion_4",
+        "https://gitlab.example.com/acme/team/web/-/merge_requests/12",
+        "https://gitlab.example.com/acme/web/merge_requests/12/diffs",
+    ],
+)
+async def test_pr_urls_suggest_pull_request_tool_without_fetching(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+) -> None:
+    """PR/MR URLs identify the appropriate tool even without a stored project."""
+    factory = AsyncMock()
+    monkeypatch.setattr(mcp, "get_tracker_client", factory)
+    _authenticate(monkeypatch, db_session, test_user)
+    with pytest.raises(HTTPException) as caught:
+        await mcp.get_issue(issue=url)
+    assert caught.value.status_code == 404
+    assert "get_pull_request" in caught.value.detail
+    factory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_azure_fetched_comments_are_ingested_with_embeddings(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Already-fetched Azure comments use the scanner's comment and embedding path."""
+    from preloop.models.crud import crud_comment
+
+    kind, key, url = CASES[-1]
+    project = _project(db_session, test_user.account_id, kind, key)
+    client = _client(project, key, url)
+    timestamp = "2026-01-02T03:04:05Z"
+    comment = client._to_comment(
+        {
+            "id": 50,
+            "text": "Example comment",
+            "format": "markdown",
+            "createdBy": {"id": "example-user", "displayName": "Jane Doe"},
+            "createdDate": timestamp,
+            "modifiedDate": timestamp,
+        },
+        "My Project",
+        12,
+    )
+    client._comments.return_value = [comment]
+    monkeypatch.setattr(mcp, "get_tracker_client", AsyncMock(return_value=client))
+    embeddings = MagicMock()
+    monkeypatch.setattr(crud_issue_embedding, "create_embeddings", embeddings)
+    issue = await mcp._find_or_sync_issue(db_session, key, test_user)
+    stored = crud_comment.get_by_external_id(
+        db_session,
+        external_id="50",
+        issue_id=issue.id,
+        account_id=test_user.account_id,
+    )
+    assert stored is not None
+    assert stored.body == "Example comment"
+    assert stored.meta_data["external_author"] == "Jane Doe"
+    assert stored.meta_data["url"] == url + "#50"
+    embeddings.assert_any_call(
+        db=db_session,
+        issue_id=issue.id,
+        comment_id=stored.id,
+        force_update=False,
+    )
+    client._comments.assert_awaited_once()

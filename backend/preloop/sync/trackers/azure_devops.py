@@ -588,7 +588,10 @@ class AzureDevOpsTracker(BaseTracker):
             work_item, self.organization, state_category=category
         )
         issue = self._summary_to_issue(summary, comments or [])
-        issue._sync_data = summary
+        issue._sync_data = {
+            **summary,
+            "comments": [comment.model_dump(mode="json") for comment in comments or []],
+        }
         return issue
 
     def _summary_to_issue(

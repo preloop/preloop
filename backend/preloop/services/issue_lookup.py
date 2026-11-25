@@ -39,8 +39,16 @@ class IssueNotFoundOnTracker(HTTPException):
         )
 
 
-def _issue_reference(identifier: str) -> tuple[str, str, str] | None:
-    """Return exact project path, number/key and URL host, if qualified."""
+def parse_issue_reference(identifier: str) -> tuple[str, str, str] | None:
+    """Parse a qualified reference without guessing a project from a suffix.
+
+    Args:
+        identifier: Issue key or supported issue URL.
+
+    Returns:
+        Exact project path, number/key and URL host, or None for bare numbers
+        and partial references. An empty host denotes a key rather than a URL.
+    """
     identifier = identifier.strip()
     host = ""
     if identifier.startswith(("https://", "http://")):
@@ -96,7 +104,7 @@ def resolve_synced_issue_project(
     Raises:
         HTTPException: 404 when the named project is not synced in this account.
     """
-    reference = _issue_reference(identifier)
+    reference = parse_issue_reference(identifier)
     if reference is None:
         return None
     path, number, host = reference
@@ -181,7 +189,7 @@ async def sync_missing_issue(
                 request_timeout=ISSUE_LOOKUP_TIMEOUT_SECONDS,
             )
             upstream = await client.get_issue(number)
-        reference = _issue_reference(identifier)
+        reference = parse_issue_reference(identifier)
         assert reference is not None
         project_path, issue_number, _ = reference
         expected_key = (
