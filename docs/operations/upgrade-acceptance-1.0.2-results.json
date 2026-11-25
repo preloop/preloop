@@ -2,17 +2,17 @@
   "main_commit": "0ebc16515e361265800239b34fc32db61d44a563",
   "scope": "Local Linux ARM64 candidate rehearsals; published RC gate pending; synthetic data, not production scale.",
   "runs": {
-    "acceptance-102-run": {
+    "reviewed-102-run": {
       "schema_version": 1,
-      "resource_name": "preloop-ua-29d244aca5",
-      "started_at": "2026-11-25T22:57:45.945643+00:00",
+      "resource_name": "preloop-ua-6491222f16",
+      "started_at": "2026-11-25T23:38:50.903973+00:00",
       "mode": "candidate-rehearsal",
       "status": "passed",
       "runtimes": {
         "compose": {
           "status": "passed",
           "before": {
-            "digest": "f12a3735dc19768dbad073aa52656a5c286a01b197f2e21ddad203b79579cd11",
+            "digest": "27448521f3970c126f565ac833e23bbb9c3fbacb8dbf0d551a3f1e128d455397",
             "counts": {
               "Account": 2,
               "User": 2,
@@ -48,7 +48,7 @@
             ]
           },
           "after": {
-            "digest": "f12a3735dc19768dbad073aa52656a5c286a01b197f2e21ddad203b79579cd11",
+            "digest": "27448521f3970c126f565ac833e23bbb9c3fbacb8dbf0d551a3f1e128d455397",
             "counts": {
               "Account": 2,
               "User": 2,
@@ -85,7 +85,7 @@
           },
           "retries": [
             {
-              "digest": "f12a3735dc19768dbad073aa52656a5c286a01b197f2e21ddad203b79579cd11",
+              "digest": "27448521f3970c126f565ac833e23bbb9c3fbacb8dbf0d551a3f1e128d455397",
               "counts": {
                 "Account": 2,
                 "User": 2,
@@ -122,7 +122,7 @@
               ]
             },
             {
-              "digest": "f12a3735dc19768dbad073aa52656a5c286a01b197f2e21ddad203b79579cd11",
+              "digest": "27448521f3970c126f565ac833e23bbb9c3fbacb8dbf0d551a3f1e128d455397",
               "counts": {
                 "Account": 2,
                 "User": 2,
@@ -165,17 +165,17 @@
         {
           "label": "release-discovery",
           "exit_code": 0,
-          "seconds": 1.84
+          "seconds": 1.73
         },
         {
           "label": "fetch-baseline",
           "exit_code": 0,
-          "seconds": 1.94
+          "seconds": 2.2
         },
         {
           "label": "resolve-baseline-source",
           "exit_code": 0,
-          "seconds": 0.02
+          "seconds": 0.01
         },
         {
           "label": "resolve-candidate-source",
@@ -185,12 +185,12 @@
         {
           "label": "docker-runtime",
           "exit_code": 0,
-          "seconds": 0.03
+          "seconds": 0.04
         },
         {
           "label": "pull-baseline",
           "exit_code": 0,
-          "seconds": 1.6
+          "seconds": 2.0
         },
         {
           "label": "inspect-baseline",
@@ -200,22 +200,22 @@
         {
           "label": "build-candidate",
           "exit_code": 0,
-          "seconds": 7.22
+          "seconds": 12.11
         },
         {
           "label": "inspect-candidate",
           "exit_code": 0,
-          "seconds": 0.1
+          "seconds": 0.11
         },
         {
           "label": "pull-postgres",
           "exit_code": 0,
-          "seconds": 1.69
+          "seconds": 1.73
         },
         {
           "label": "inspect-postgres",
           "exit_code": 0,
-          "seconds": 0.18
+          "seconds": 0.17
         },
         {
           "label": "pull-nats",
@@ -225,47 +225,157 @@
         {
           "label": "inspect-nats",
           "exit_code": 0,
-          "seconds": 0.09
+          "seconds": 0.1
         },
         {
           "label": "download-baseline-cli",
           "exit_code": 0,
-          "seconds": 2.83
+          "seconds": 2.78
         },
         {
           "label": "build-candidate-cli",
           "exit_code": 0,
-          "seconds": 2.16
+          "seconds": 2.31
         },
         {
           "label": "download-installer",
           "exit_code": 0,
-          "seconds": 1.64
+          "seconds": 1.73
         },
         {
           "label": "published-installer",
           "exit_code": 0,
-          "seconds": 20.14
+          "seconds": 20.15
         },
         {
           "label": "installer-drain",
           "exit_code": 0,
-          "seconds": 11.6
+          "seconds": 11.48
         },
         {
           "label": "compose-infrastructure",
           "exit_code": 0,
-          "seconds": 10.8
+          "seconds": 10.78
         },
         {
           "label": "compose-baseline-migrate",
           "exit_code": 0,
-          "seconds": 3.52
+          "seconds": 3.43
         },
         {
           "label": "compose-baseline-api",
           "exit_code": 0,
-          "seconds": 0.34
+          "seconds": 0.31
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.12
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.12
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.13
+        },
+        {
+          "label": "compose-api-container",
+          "exit_code": 0,
+          "seconds": 0.07
+        },
+        {
+          "label": "compose-api-image",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "seed-and-check",
+          "exit_code": 0,
+          "seconds": 5.14
+        },
+        {
+          "label": "cli-matrix-baseline",
+          "exit_code": 0,
+          "seconds": 11.04
+        },
+        {
+          "label": "compose-drain-writers",
+          "exit_code": 0,
+          "seconds": 30.19
+        },
+        {
+          "label": "compose-backup",
+          "exit_code": 0,
+          "seconds": 0.22
+        },
+        {
+          "label": "compose-candidate-migrate",
+          "exit_code": 0,
+          "seconds": 3.77
+        },
+        {
+          "label": "compose-candidate-api",
+          "exit_code": 0,
+          "seconds": 0.52
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.12
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.12
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.13
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
+          "seconds": 0.14
+        },
+        {
+          "label": "compose-api-container",
+          "exit_code": 0,
+          "seconds": 0.07
+        },
+        {
+          "label": "compose-api-image",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "verify-upgrade",
+          "exit_code": 0,
+          "seconds": 3.28
+        },
+        {
+          "label": "cli-matrix-candidate",
+          "exit_code": 0,
+          "seconds": 16.7
+        },
+        {
+          "label": "compose-drain-retry-1",
+          "exit_code": 0,
+          "seconds": 30.2
+        },
+        {
+          "label": "compose-migrate-retry-1",
+          "exit_code": 0,
+          "seconds": 3.62
+        },
+        {
+          "label": "compose-restart-1",
+          "exit_code": 0,
+          "seconds": 0.25
         },
         {
           "label": "api-readiness",
@@ -275,7 +385,47 @@
         {
           "label": "api-readiness",
           "exit_code": 1,
+          "seconds": 0.12
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 0,
           "seconds": 0.13
+        },
+        {
+          "label": "compose-api-container",
+          "exit_code": 0,
+          "seconds": 0.07
+        },
+        {
+          "label": "compose-api-image",
+          "exit_code": 0,
+          "seconds": 0.02
+        },
+        {
+          "label": "verify-upgrade",
+          "exit_code": 0,
+          "seconds": 3.62
+        },
+        {
+          "label": "compose-drain-retry-2",
+          "exit_code": 0,
+          "seconds": 30.22
+        },
+        {
+          "label": "compose-migrate-retry-2",
+          "exit_code": 0,
+          "seconds": 3.92
+        },
+        {
+          "label": "compose-restart-2",
+          "exit_code": 0,
+          "seconds": 0.27
+        },
+        {
+          "label": "api-readiness",
+          "exit_code": 1,
+          "seconds": 0.14
         },
         {
           "label": "api-readiness",
@@ -298,169 +448,14 @@
           "seconds": 0.02
         },
         {
-          "label": "seed-and-check",
-          "exit_code": 0,
-          "seconds": 5.23
-        },
-        {
-          "label": "cli-matrix-baseline",
-          "exit_code": 0,
-          "seconds": 11.25
-        },
-        {
-          "label": "compose-drain-writers",
-          "exit_code": 0,
-          "seconds": 30.21
-        },
-        {
-          "label": "compose-backup",
-          "exit_code": 0,
-          "seconds": 0.22
-        },
-        {
-          "label": "compose-candidate-migrate",
-          "exit_code": 0,
-          "seconds": 3.94
-        },
-        {
-          "label": "compose-candidate-api",
-          "exit_code": 0,
-          "seconds": 0.55
-        },
-        {
-          "label": "api-readiness",
-          "exit_code": 1,
-          "seconds": 0.14
-        },
-        {
-          "label": "api-readiness",
-          "exit_code": 1,
-          "seconds": 0.13
-        },
-        {
-          "label": "api-readiness",
-          "exit_code": 1,
-          "seconds": 0.14
-        },
-        {
-          "label": "api-readiness",
-          "exit_code": 0,
-          "seconds": 0.14
-        },
-        {
-          "label": "compose-api-container",
-          "exit_code": 0,
-          "seconds": 0.07
-        },
-        {
-          "label": "compose-api-image",
-          "exit_code": 0,
-          "seconds": 0.02
-        },
-        {
           "label": "verify-upgrade",
           "exit_code": 0,
-          "seconds": 3.42
-        },
-        {
-          "label": "cli-matrix-candidate",
-          "exit_code": 0,
-          "seconds": 21.98
-        },
-        {
-          "label": "compose-drain-retry-1",
-          "exit_code": 0,
-          "seconds": 30.19
-        },
-        {
-          "label": "compose-migrate-retry-1",
-          "exit_code": 0,
-          "seconds": 3.89
-        },
-        {
-          "label": "compose-restart-1",
-          "exit_code": 0,
-          "seconds": 0.28
-        },
-        {
-          "label": "api-readiness",
-          "exit_code": 1,
-          "seconds": 0.13
-        },
-        {
-          "label": "api-readiness",
-          "exit_code": 1,
-          "seconds": 0.15
-        },
-        {
-          "label": "api-readiness",
-          "exit_code": 0,
-          "seconds": 0.15
-        },
-        {
-          "label": "compose-api-container",
-          "exit_code": 0,
-          "seconds": 0.09
-        },
-        {
-          "label": "compose-api-image",
-          "exit_code": 0,
-          "seconds": 0.02
-        },
-        {
-          "label": "verify-upgrade",
-          "exit_code": 0,
-          "seconds": 3.85
-        },
-        {
-          "label": "compose-drain-retry-2",
-          "exit_code": 0,
-          "seconds": 30.19
-        },
-        {
-          "label": "compose-migrate-retry-2",
-          "exit_code": 0,
-          "seconds": 4.02
-        },
-        {
-          "label": "compose-restart-2",
-          "exit_code": 0,
-          "seconds": 0.25
-        },
-        {
-          "label": "api-readiness",
-          "exit_code": 1,
-          "seconds": 0.13
-        },
-        {
-          "label": "api-readiness",
-          "exit_code": 1,
-          "seconds": 0.17
-        },
-        {
-          "label": "api-readiness",
-          "exit_code": 0,
-          "seconds": 0.13
-        },
-        {
-          "label": "compose-api-container",
-          "exit_code": 0,
-          "seconds": 0.07
-        },
-        {
-          "label": "compose-api-image",
-          "exit_code": 0,
-          "seconds": 0.02
-        },
-        {
-          "label": "verify-upgrade",
-          "exit_code": 0,
-          "seconds": 3.77
+          "seconds": 3.55
         },
         {
           "label": "compose-cleanup",
           "exit_code": 0,
-          "seconds": 10.4
+          "seconds": 10.42
         }
       ],
       "final_rc_gate": "pending",
@@ -468,12 +463,12 @@
         "compose": "removed"
       },
       "harness_sha256": {
-        "compatibility.py": "2db2f14b3e77e4aa3f924a1f7aeb6064ec85a356e4f34d69528320a691b9a7a9",
+        "compatibility.py": "f25aefd5c51a6af69dd33b7c3ec9d3a1840fac4f5eb8f66db31e4945773765cb",
         "evidence.py": "2cef5fd14df8ff26c1da20fcf3e38353815a8f454737f4a8208c0a31402eed36",
         "fixture.py": "251838540cb1478ca0cd2b542d06982408d85032fb3e2b374769a6b82e4586ae",
         "helm.py": "4b36bc57a8e528006ea2192b725a64ffc6797cdd877f442c6fa150dad4fed1b1",
         "mock_provider.py": "e1deb2dac9159dcdf6f9822709a31dbd305d5f7122cd371abc98986bdf1410d7",
-        "runner.py": "cab31853b5cb75fa3d993f3e719cbc3d01ef7714242f3d67e22255e113ed6e1d"
+        "runner.py": "378922ed56b98d7d7ab0cf5f79ac82070991c2f13f794f1428b16b259aeaf0d0"
       },
       "baseline": {
         "tag": "v1.0.2",
@@ -489,15 +484,15 @@
       },
       "available_rcs": [],
       "candidate": {
-        "commit": "3995cd8c0a720673a930891dea36e94b736d8df5",
+        "commit": "28b462c573df79cc084977725034f88aae2066f1",
         "ref": "HEAD",
-        "image": "preloop-ua-29d244aca5-candidate:3995cd8c0a72",
-        "image_id": "sha256:e5d87d2e6fc7c987df7c8ffa4fdc7c88fe190026880bc33a4f7a8211b0298d99",
+        "image": "preloop-ua-6491222f16-candidate:28b462c573df",
+        "image_id": "sha256:1fbe9488f803c3e8f96d8c0c559abbafa4b2134986155a1e3b4b149f613d3f73",
         "repo_digests": [
-          "preloop-ua-29d244aca5-candidate@sha256:e5d87d2e6fc7c987df7c8ffa4fdc7c88fe190026880bc33a4f7a8211b0298d99"
+          "preloop-ua-6491222f16-candidate@sha256:1fbe9488f803c3e8f96d8c0c559abbafa4b2134986155a1e3b4b149f613d3f73"
         ],
         "platform": "linux/arm64",
-        "image_revision": "3995cd8c0a720673a930891dea36e94b736d8df5"
+        "image_revision": "28b462c573df79cc084977725034f88aae2066f1"
       },
       "postgres": {
         "image": "pgvector/pgvector:pg16",
@@ -521,8 +516,8 @@
           "release": "v1.0.2"
         },
         "candidate": {
-          "sha256": "6739e0282962f0fe9aa714d720469077825977d2eda7aeb0c33944c6397abd1b",
-          "commit": "3995cd8c0a720673a930891dea36e94b736d8df5"
+          "sha256": "16d44c3610b3e67697d906124d52456feb74ea6ed7219c460492c14fb8d93887",
+          "commit": "28b462c573df79cc084977725034f88aae2066f1"
         }
       },
       "installer": {
@@ -798,7 +793,9 @@
                 "trigger_status": 200,
                 "execution_status": "SUCCEEDED",
                 "waiting_for_owner": false,
-                "diagnostic": ""
+                "diagnostic": "",
+                "result_content_verified": true,
+                "model_output_verified": true
               },
               "runner_connect_1": {
                 "content_verified": true,
@@ -826,7 +823,7 @@
           }
         ]
       },
-      "finished_at": "2026-11-25T23:02:13.727425+00:00"
+      "finished_at": "2026-11-25T23:43:14.087839+00:00"
     },
     "final-helm-run": {
       "schema_version": 1,

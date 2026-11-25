@@ -235,12 +235,12 @@ records successful local Linux ARM64 runs against main snapshot
 
 | Baseline and surface | Candidate commit | Result |
 | --- | --- | --- |
-| Published 1.0.2 installer / Compose | `3995cd8c0a720673a930891dea36e94b736d8df5` | Upgrade, four CLI/server cells, mocked flow and gateway, two restarts passed |
+| Published 1.0.2 installer / Compose | `28b462c573df79cc084977725034f88aae2066f1` | Upgrade, four CLI/server cells, mocked flow and gateway, two restarts passed |
 | Published 1.0.2 / Helm | `9330ab8ae5657cc1109e39463ee44d7424f26f9b` | Chart hooks, content and credentials passed |
 | Published 0.17.1 / Compose | `9330ab8ae5657cc1109e39463ee44d7424f26f9b` | Legacy credential cutover and two restarts passed |
 
-The later Compose candidate adds harness assertions and tests; backend and CLI
-source are identical across these candidates. The final fixture fingerprint
+Backend source is identical across these candidates. The later Compose candidate
+adds harness assertions and tests and restores the CLI discovery-report disclosure. The final fixture fingerprint
 survived both restarts. Restrictive policy defaults and disabled-tool choices
 written by both CLIs also survived both initializer retries. Each run froze its
 harness files and recorded their hashes. Owned stacks and clusters were removed.
@@ -258,7 +258,7 @@ runner WebSocket handshakes. The candidate CLI refuses review-posting and routin
 settings before an older server can silently ignore them. Newer endpoint-based
 commands explain missing support; local inventory remains available.
 
-The 1.0.2 migration/initializer took 3.94 seconds on 40 tracked fixture
+The 1.0.2 migration/initializer took 3.77 seconds on 40 tracked fixture
 rows plus matrix tenants and normal initializer data. This includes process
 startup and default reconciliation and is **not production-scale timing**.
 Version 1.0.2 already stores encrypted credentials: its run proves preservation;
