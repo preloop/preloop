@@ -3498,6 +3498,9 @@ export class PreloopFlowForm extends LitElement {
           (item?.capabilities || []).includes(HOST_EXEC_HARNESSES.cursor)
       );
     config.host_exec_profile = keepsCurrent ? current : choice.profile;
+    if (config.harness === HOST_EXEC_HARNESSES.cursor && config.runner_id) {
+      config.runner_id = choice.runner.id;
+    }
     this.flow = {
       ...this.flow,
       runner_pool: choice.token,
@@ -3599,7 +3602,8 @@ export class PreloopFlowForm extends LitElement {
       ${
         selected && !selected.online
           ? html`<p class="notifications-help" data-cursor-runner-offline>
-              ${selected.runner.name} is offline. Runs wait until it reconnects.
+              ${selected.runner.name} is offline. Reconnect this runner before
+              starting a run here.
             </p>`
           : nothing
       }

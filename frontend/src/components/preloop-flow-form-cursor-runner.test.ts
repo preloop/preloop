@@ -250,6 +250,30 @@ describe('PreloopFlowForm Cursor on my runner', () => {
     );
   });
 
+  it('moves an existing harness runner pin with the Cursor runner picker', async () => {
+    const otherId = '33333333-3333-4333-8333-333333333333';
+    runners.push(cursorRunner({ id: otherId, name: 'second-mac' }));
+    const element = await mount({
+      ...newFlow(),
+      agent_type: 'cursor',
+      runner_pool: RUNNER_ID,
+      agent_config: {
+        harness: 'cursor_cli',
+        runner_id: RUNNER_ID,
+        host_exec_profile: 'cursor',
+      },
+    });
+    const select = q(element, '[data-cursor-runner-select]') as any;
+    select.value = otherId;
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await element.updateComplete;
+    const submitted = oneEvent(element, 'flow-submit');
+    void (element as any).handleFormSubmit(new Event('submit'));
+    const event = await submitted;
+    expect(event.detail.flow.runner_pool).to.equal(otherId);
+    expect(event.detail.flow.agent_config.runner_id).to.equal(otherId);
+  });
+
   it('explains ask_me consent and lets the owner allow runs', async () => {
     const element = await mount(newFlow());
     await chooseRuntime(element, 'cursor');
