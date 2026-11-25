@@ -71,6 +71,9 @@ def summarise(reports: list[Path]) -> str:
     lines.append(
         f"- max {max(seconds):.1f}s / mean {mean:.1f}s = {max(seconds) / mean:.3f}"
     )
+    median = statistics.median(seconds)
+    if median:
+        lines.append(f"- max / median {median:.1f}s = {max(seconds) / median:.3f}")
     return "\n".join(lines)
 
 

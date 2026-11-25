@@ -364,6 +364,8 @@ def test_refresh_durations_reads_one_shard_and_many(
     out = capsys.readouterr().out
     assert f"- shard {shards}: {10.0 * shards:.1f}s" in out
     assert out.count("- shard ") == shards
+    median = 5.0 * (shards + 1)
+    assert f"max / median {median:.1f}s = {10 * shards / median:.3f}" in out
 
 
 def test_refresh_durations_rejects_a_missing_shard(
