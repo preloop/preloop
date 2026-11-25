@@ -128,6 +128,8 @@ async def get_tracker_client(
     project_id: Union[str, UUID],
     db: Session,
     current_user: User,
+    *,
+    request_timeout: Optional[float] = None,
 ):
     """Get the appropriate tracker client for the given organization and project,
     ensuring the current user has access.
@@ -137,6 +139,7 @@ async def get_tracker_client(
         project_id: The project ID or identifier.
         db: Database session.
         current_user: The authenticated user.
+        request_timeout: Bound provider initialization for interactive lookups.
 
     Returns:
         A tracker client instance.
@@ -324,21 +327,32 @@ async def get_tracker_client(
             f"Using GitHub App OAuth with installation ID: {tracker.oauth_installation.external_id}"
         )
 
-    logger.debug(
-        f"Creating tracker client of type '{tracker_type}' with config: {full_config}"
-    )
+    logger.debug(f"Creating tracker client of type '{tracker_type}'")
 
     try:
+        tracker_id = str(tracker.id)
+        api_key = tracker.resolved_api_key
+        credential_source = tracker_credential_source(tracker)
+        if request_timeout is not None:
+            from preloop.models.db.session import release_transaction
+
+            release_transaction(db)
+
         # Create the tracker client using the combined config. A managed grant
         # (auth_type managed_oauth) carries no stored key: the client resolves
         # a fresh credential through the provider plugin before each request,
         # after the account/project authorization checks above.
         tracker_client = await create_tracker_client(
             tracker_type=tracker_type,
-            tracker_id=str(tracker.id),
-            api_key=tracker.resolved_api_key,  # May be empty for OAuth
+            tracker_id=tracker_id,
+            api_key=api_key,  # May be empty for OAuth
             connection_details=full_config,
-            credential_source=tracker_credential_source(tracker),
+            credential_source=credential_source,
+            **(
+                {"request_timeout": request_timeout, "raise_on_error": True}
+                if request_timeout is not None
+                else {}
+            ),
         )
         if not tracker_client:
             # Raise specific error if factory returns None (e.g., unsupported type or config error)
@@ -348,6 +362,10 @@ async def get_tracker_client(
 
         return tracker_client
     except ValueError as ve:  # Catch config errors from factory
+        if request_timeout is not None:
+            raise HTTPException(
+                502, "Tracker configuration refused the lookup."
+            ) from None
         logger.error(
             f"Configuration error creating tracker client: {type(ve).__name__}"
         )
@@ -355,6 +373,8 @@ async def get_tracker_client(
             status_code=500, detail=f"Configuration error for tracker: {str(ve)}"
         )
     except Exception as e:
+        if request_timeout is not None:
+            raise
         logger.error(f"Error creating tracker client: {type(e).__name__}")
         raise HTTPException(
             status_code=500, detail=f"Error creating tracker client: {str(e)}"

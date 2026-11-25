@@ -4,7 +4,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,9 @@ class IssueRelation(BaseModel):
 
 class Issue(BaseModel):
     """Standardized issue representation across trackers."""
+
+    # Source payload for scanner ingestion; never serialized in tool responses.
+    _sync_data: Dict[str, Any] = PrivateAttr(default_factory=dict)
 
     # Core issue data
     id: str = Field(..., description="Issue identifier in the tracker")

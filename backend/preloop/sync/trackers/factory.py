@@ -1,5 +1,6 @@
 """Factory for creating tracker clients."""
 
+import asyncio
 import logging
 from typing import Any, Dict, Optional, Type
 
@@ -84,6 +85,7 @@ async def create_tracker_client(
     *,
     credential_source: Optional[CredentialSource] = None,
     raise_on_error: bool = False,
+    request_timeout: Optional[float] = None,
 ) -> Optional[BaseTracker]:
     """Create a tracker client.
 
@@ -101,6 +103,7 @@ async def create_tracker_client(
             ``preloop.services.managed_credentials.tracker_credential_source``.
 
         raise_on_error: Preserve initialization errors for interactive validation.
+        request_timeout: Bound synchronous client initialization and socket I/O.
 
     Returns:
         A tracker client or None if the tracker type is not supported, or when
@@ -163,7 +166,15 @@ async def create_tracker_client(
                 github_installation_id=github_installation_id,
             )
         elif tracker_type == "gitlab":
-            return GitLabTracker(tracker_id, api_key, connection_details)
+            if request_timeout is None:
+                return GitLabTracker(tracker_id, api_key, connection_details)
+            return await asyncio.to_thread(
+                GitLabTracker,
+                tracker_id,
+                api_key,
+                connection_details,
+                request_timeout=request_timeout,
+            )
         elif tracker_type == "jira":
             if credential_source is not None:
                 return JiraTracker(
@@ -172,7 +183,15 @@ async def create_tracker_client(
                     connection_details,
                     credential_source=credential_source,
                 )
-            return JiraTracker(tracker_id, api_key, connection_details)
+            if request_timeout is None:
+                return JiraTracker(tracker_id, api_key, connection_details)
+            return await asyncio.to_thread(
+                JiraTracker,
+                tracker_id,
+                api_key,
+                connection_details,
+                request_timeout=request_timeout,
+            )
         elif tracker_type == "bitbucket_dc":
             return BitbucketDCTracker(tracker_id, api_key, connection_details)
         elif tracker_type == "azure_devops":

@@ -303,6 +303,7 @@ class JiraTracker(BaseTracker):
         connection_details: Dict[str, Any],
         *,
         initialize_client: bool = True,
+        request_timeout: Optional[float] = None,
         credential_source: Optional[CredentialSource] = None,
     ) -> None:
         """
@@ -372,8 +373,8 @@ class JiraTracker(BaseTracker):
                 self.jira_client = JIRA(
                     server=self.jira_url,
                     basic_auth=(self.username, api_key),
-                    timeout=probe_timeout() or 20,
-                    max_retries=0 if probe_timeout() else 3,
+                    timeout=request_timeout or probe_timeout() or 20,
+                    max_retries=0 if request_timeout or probe_timeout() else 3,
                 )
             except JIRAError as e:
                 # A scoped token is rejected by the site during the library
@@ -393,6 +394,10 @@ class JiraTracker(BaseTracker):
                     raise TrackerAuthenticationError(
                         f"Jira client authentication failed: {e.text}"
                     )
+                elif request_timeout is not None:
+                    raise TrackerResponseError(
+                        "Jira client initialization failed", status_code=e.status_code
+                    ) from e
                 else:
                     raise TrackerConnectionError(
                         f"Jira client connection/setup failed: {e.text}"
@@ -1257,14 +1262,9 @@ class JiraTracker(BaseTracker):
         Returns:
             Issue object.
         """
-        try:
-            issue_data = await self._make_request(
-                "GET", f"issue/{issue_id}", api_version="3"
-            )
-        except TrackerResponseError as e:
-            if "404" in str(e):
-                raise TrackerResponseError(f"Issue {issue_id} not found")
-            raise
+        issue_data = await self._make_request(
+            "GET", f"issue/{issue_id}", api_version="3"
+        )
 
         # Extract project key from issue data or issue key
         fields = issue_data.get("fields", {})
@@ -1276,7 +1276,9 @@ class JiraTracker(BaseTracker):
                 project_key = issue_key.split("-")[0]
 
         # Use the mapper to convert to Issue object
-        return self._map_jira_issue(issue_data, project_key)
+        issue = self._map_jira_issue(issue_data, project_key)
+        issue._sync_data = issue_data
+        return issue
 
     async def get_comments(self, issue_id: str) -> List[IssueComment]:
         """Get comments for an issue."""

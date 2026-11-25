@@ -66,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MCP issue tools fetch missing GitHub, GitLab, Jira and Azure Boards issues
+  from the tracker when their project is already synced in the caller's
+  account, then store them through the scanner. Lookups distinguish missing
+  issues from upstream failures and direct pull requests to `get_pull_request`.
+
 - Automatic review publication starts when the unchanged 30-second evidence
   settle window ends, without waiting for the recovery sweep (#2436). A
   restart can delay posting until the sweep, which now selects settled runs

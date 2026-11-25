@@ -587,7 +587,9 @@ class AzureDevOpsTracker(BaseTracker):
         summary = work_item_summary(
             work_item, self.organization, state_category=category
         )
-        return self._summary_to_issue(summary, comments or [])
+        issue = self._summary_to_issue(summary, comments or [])
+        issue._sync_data = summary
+        return issue
 
     def _summary_to_issue(
         self, summary: Dict[str, Any], comments: List[IssueComment]

@@ -310,6 +310,14 @@ class IssueNotFoundError(IssueProcessingError):
     pass
 
 
+class IssueMissingOnTrackerError(IssueNotFoundError):
+    """The issues endpoint returned 404 for a qualified reference."""
+
+
+class IssueIsPullRequestError(IssueNotFoundError):
+    """GitHub returned a pull request through its issues endpoint."""
+
+
 class IssueAmbiguousError(IssueNotFoundError):
     """A bare issue number names issues in more than one project."""
 
@@ -902,8 +910,8 @@ def _azure_work_item_target(db: Any, target: str, account_id: Any) -> bool:
     """True when ``target`` names an Azure Boards work item.
 
     Work item keys (``org/project#id``) look like pull request slugs
-    (``owner/repo#n``); a key is treated as a work item only when a stored
-    Azure DevOps issue has exactly that key. Work item URLs always qualify.
+    (``owner/repo#n``); stored issues or an unambiguous synced Azure Boards
+    project select the work item path. Work item URLs always qualify.
 
     Args:
         db: Database session.
@@ -919,10 +927,21 @@ def _azure_work_item_target(db: Any, target: str, account_id: Any) -> bool:
         return False
     issue = crud_issue.get_by_key(db, key=target, account_id=account_id)
     tracker = getattr(issue, "tracker", None) if issue is not None else None
-    return str(getattr(tracker, "tracker_type", "") or "").lower() == "azure_devops"
+    if tracker is not None:
+        return str(getattr(tracker, "tracker_type", "") or "").lower() == "azure_devops"
+    from preloop.services.issue_lookup import resolve_synced_issue_project
+
+    try:
+        resolved = resolve_synced_issue_project(db, target, account_id)
+    except HTTPException:
+        return False
+    return (
+        resolved is not None
+        and resolved[0].organization.tracker.tracker_type == "azure_devops"
+    )
 
 
-def _find_issue_by_identifier(db, identifier: str, account_id: str) -> Issue:
+def _find_issue_by_identifier(db: Session, identifier: str, account_id: str) -> Issue:
     """Find an issue by identifier (URL, key, or ID) with comprehensive lookup logic."""
     if not identifier or not identifier.strip():
         raise IssueNotFoundError(f"Empty or invalid issue identifier: '{identifier}'")
@@ -998,15 +1017,47 @@ def _find_issue_by_identifier(db, identifier: str, account_id: str) -> Issue:
     if issue_obj:
         return issue_obj
 
-    # Try direct ID lookup if identifier looks like a UUID
+    # Validate UUID syntax before querying: a non-UUID key must not abort the
+    # database transaction needed for the subsequent tracker fallback.
     try:
-        issue_obj = crud_issue.get(db, id=identifier, account_id=account_id)
+        issue_id = uuid.UUID(identifier)
+    except ValueError:
+        issue_id = None
+    if issue_id is not None:
+        issue_obj = crud_issue.get(db, id=str(issue_id), account_id=account_id)
         if issue_obj:
             return issue_obj
-    except Exception:  # Catch potential UUID conversion errors
-        pass
 
     raise IssueNotFoundError(f"Issue not found: {identifier}")
+
+
+async def _find_or_sync_issue(db: Session, identifier: str, current_user: Any) -> Issue:
+    """Read a synced issue, fetching a qualified database miss from its tracker."""
+    from preloop.services.issue_lookup import IssueNotFoundOnTracker, sync_missing_issue
+    from preloop.sync.exceptions import TrackerIssueIsPullRequestError
+
+    try:
+        return _find_issue_by_identifier(db, identifier, current_user.account_id)
+    except IssueAmbiguousError:
+        raise
+    except IssueNotFoundError as missing:
+        try:
+            issue = await sync_missing_issue(
+                db, identifier, current_user, get_tracker_client
+            )
+        except TrackerIssueIsPullRequestError:
+            raise IssueIsPullRequestError(
+                "This is a pull request; use get_pull_request."
+            ) from None
+        except IssueNotFoundOnTracker as exc:
+            raise IssueMissingOnTrackerError(exc.detail) from None
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                raise IssueNotFoundError(exc.detail) from None
+            raise
+        if issue is None:
+            raise missing
+        return issue
 
 
 def _issue_web_url(issue_obj: Any, preloop_url: str) -> str:
@@ -1118,7 +1169,7 @@ async def _triage_provider(
     from preloop.services.issue_triage_provider import IssueTriageProvider
 
     try:
-        issue_obj = _find_issue_by_identifier(db, issue, current_user.account_id)
+        issue_obj = await _find_or_sync_issue(db, issue, current_user)
     except IssueAmbiguousError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except IssueNotFoundError as exc:
@@ -1458,7 +1509,7 @@ async def get_issue(
             + ", ".join(TRIAGE_INCLUDES),
         )
     try:
-        issue_obj = _find_issue_by_identifier(db, issue, current_user.account_id)
+        issue_obj = await _find_or_sync_issue(db, issue, current_user)
     except IssueAmbiguousError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except IssueNotFoundError as e:
@@ -1740,7 +1791,7 @@ async def update_issue(
         )
 
     try:
-        issue_obj = _find_issue_by_identifier(db, issue, current_user.account_id)
+        issue_obj = await _find_or_sync_issue(db, issue, current_user)
     except IssueAmbiguousError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     except IssueNotFoundError as e:
@@ -2455,6 +2506,42 @@ async def add_comment(
         project_path = slug_parts[0]
         logger.info(f"Detected PR/MR slug format: {project_path}#{pr_mr_number}")
 
+    # General # references may name an issue or a PR. Explicit review comments
+    # and ! references retain PR/MR routing; GitHub's issues API distinguishes
+    # pull requests with its pull_request field.
+    resolved_issue = None
+    if (
+        not target.startswith("http")
+        and re.fullmatch(r"[^#\s]+/[^#]+#[1-9][0-9]*", target)
+        and path is None
+        and in_reply_to is None
+    ):
+        candidates = crud_project.list_by_repository_path(
+            db,
+            account_id=current_user.account_id,
+            path=target.rsplit("#", 1)[0],
+            tracker_types=["github", "gitlab"],
+        )
+        if len(candidates) > 1:
+            raise HTTPException(409, "Issue project is ambiguous; pass an issue URL.")
+        if candidates or _azure_work_item_target(db, target, current_user.account_id):
+            try:
+                resolved_issue = await _find_or_sync_issue(db, target, current_user)
+                project_path = pr_mr_number = None
+            except IssueIsPullRequestError:
+                pass  # Continue through the PR comment path below.
+            except IssueMissingOnTrackerError as exc:
+                # GitLab gives issues and merge requests separate IID spaces.
+                if (
+                    not candidates
+                    or candidates[0].organization.tracker.tracker_type != "gitlab"
+                ):
+                    raise HTTPException(404, str(exc)) from exc
+            except IssueAmbiguousError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            except IssueNotFoundError as exc:
+                raise HTTPException(404, str(exc)) from exc
+
     # Handle PR/MR comments separately
     if is_pull_request or is_merge_request or (project_path and pr_mr_number):
         # Find the project
@@ -2477,7 +2564,7 @@ async def add_comment(
             if not project_obj:
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Project not found for {project_path}",
+                    detail=f"Project {project_path!r} is not synced in this account.",
                 )
         else:
             raise HTTPException(
@@ -2736,7 +2823,9 @@ async def add_comment(
         # This is a regular issue. The lookup parses tracker URLs (GitHub,
         # GitLab /-/issues/ and /-/work_items/, Jira) to an exact key itself.
         try:
-            issue_obj = _find_issue_by_identifier(db, target, current_user.account_id)
+            issue_obj = resolved_issue or await _find_or_sync_issue(
+                db, target, current_user
+            )
         except IssueAmbiguousError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         except IssueNotFoundError as e:
@@ -3946,9 +4035,7 @@ async def update_comment(
     if _azure_work_item_target(db, target.strip(), current_user.account_id):
         # Azure Boards work item comment (URL or org/project#id key).
         try:
-            issue_obj = _find_issue_by_identifier(
-                db, target.strip(), current_user.account_id
-            )
+            issue_obj = await _find_or_sync_issue(db, target.strip(), current_user)
         except IssueAmbiguousError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
         except IssueNotFoundError as e:
