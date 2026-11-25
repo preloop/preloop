@@ -822,3 +822,119 @@ def test_orchestrator_falls_back_when_author_may_not_use_pooled_runner(
     orchestrator._apply_harness_routing_decision()
     assert orchestrator.agent_type == "codex"
     assert orchestrator.execution_log.routing_reason == "fell_back_to_server"
+
+
+# --- Codex CLI and OpenCode harness routing -----------------------------------
+
+
+@pytest.mark.parametrize(
+    ("agent_type", "harness", "profile"),
+    [("codex", "codex_cli", "codex"), ("opencode", "opencode", "opencode")],
+)
+def test_codex_and_opencode_route_by_harness(agent_type, harness, profile) -> None:
+    """Codex and OpenCode route to the runner's generated profile."""
+    config = {"harness": harness}
+    assert host_exec_harness_selector(agent_type, config) == harness
+    assert host_exec_effective_profile(agent_type, config) == profile
+    assert (
+        host_exec_flow_error(
+            agent_type=agent_type, agent_config=config, runner_pool=None
+        )
+        is None
+    )
+    # Without a harness they stay hosted harnesses: no profile required.
+    assert host_exec_harness_selector(agent_type, {}) is None
+    assert (
+        host_exec_flow_error(agent_type=agent_type, agent_config={}, runner_pool=None)
+        is None
+    )
+
+
+def test_deepseek_harness_still_requires_explicit_profile() -> None:
+    assert host_exec_harness_selector("deepseek", {"harness": "deepseek"}) is None
+    assert "explicit host_exec_profile" in host_exec_flow_error(
+        agent_type="deepseek", agent_config={"harness": "deepseek"}, runner_pool=None
+    )
+
+
+def test_codex_lease_payload_names_generated_profile() -> None:
+    config = {"harness": "codex_cli", "codex_model": "gpt-6.2-astra"}
+    flow = SimpleNamespace(
+        agent_type="codex",
+        agent_config=config,
+        runner_pool=None,
+        git_clone_config=None,
+        custom_commands=None,
+        timeout_seconds=None,
+        ai_model=None,
+        account_id=uuid4(),
+    )
+    executor = RemoteRunnerExecutor(
+        "codex", config, db=MagicMock(), pool="auto", account_id=uuid4(), flow=flow
+    )
+    payload = executor._lease_payload(
+        execution_id=uuid4(), flow_id=uuid4(), prompt="review"
+    )
+    assert payload["host_exec"] == {
+        "harness": "codex_cli",
+        "profile": "codex",
+        "model": "gpt-6.2-astra",
+    }
+    assert payload["host_exec_profile"] == "codex"
+    assert payload["completion_protocol"] == "host_exec"
+
+
+def test_harness_options_offer_codex_with_generated_profile() -> None:
+    account_id = uuid4()
+    inventory = _inventory()
+    inventory["entries"].append(
+        {
+            "harness": "codex_cli",
+            "display_name": "Codex CLI",
+            "version": "0.171.0",
+            "login_state": "signed_in",
+            "login_source": "cli_status",
+            "governance": "governed",
+            "support_level": "flows_only",
+            "enabled": True,
+            "session_mode": "none",
+            "billing": "seat",
+            "models": [{"id": "gpt-6.2-astra", "source": "observed"}],
+            "generated_profile": "codex",
+            "capabilities": ["host_exec", "codex_cli", "stdout", "cancel"],
+        }
+    )
+    HarnessInventory.model_validate(inventory)
+    runner = _runner(
+        account_id,
+        inventory=inventory,
+        profiles=[
+            {
+                "name": "codex",
+                "capabilities": ["host_exec", "codex_cli", "stdout", "cancel"],
+            }
+        ],
+    )
+    result = harness_options(
+        None, [runner], account_id=account_id, usable=lambda runner: True
+    )
+    codex = next(i for i in result["harnesses"] if i["harness"] == "codex_cli")
+    assert codex["display_name"] == "Codex CLI"
+    assert codex["agent_type"] == "codex"
+    assert codex["runners_online"] == 1
+    assert [m["id"] for m in codex["models"]] == ["gpt-6.2-astra"]
+
+
+def test_inventory_entry_keeps_setup_step() -> None:
+    inventory = _inventory()
+    step = 'run `preloop agents onboard "Codex CLI" --approvals` as the runner user'
+    inventory["entries"].append(
+        {
+            "harness": "codex_cli",
+            "display_name": "Codex CLI",
+            "support_level": "presence_only",
+            "setup_step": step,
+        }
+    )
+    parsed = HarnessInventory.model_validate(inventory)
+    assert parsed.entries[-1].setup_step == step

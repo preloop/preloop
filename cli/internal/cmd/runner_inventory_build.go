@@ -85,8 +85,19 @@ type harnessInventoryDeps struct {
 	// ClaudeLogin returns the `claude auth status` verdict only.
 	ClaudeLogin func(executable string) string
 	// ClaudeHook reports whether the Preloop approval hook is installed.
-	ClaudeHook  func() bool
-	Handwritten []hostExecProfile
+	ClaudeHook func() bool
+	// CodexHook and OpenCodeHook report whether the Preloop approval
+	// integration is installed for that harness.
+	CodexHook    func() bool
+	OpenCodeHook func() bool
+	// CodexModel and OpenCodeModel return the model configured in the
+	// harness's own config file, or "".
+	CodexModel    func() string
+	OpenCodeModel func() string
+	// AuthFileLogin inspects a harness's own auth file shape (never its
+	// values) and returns a login state.
+	AuthFileLogin func(displayName string) string
+	Handwritten   []hostExecProfile
 	// HandwrittenErr means the profile file exists but is invalid; no
 	// profile is generated until the operator fixes it.
 	HandwrittenErr bool
@@ -187,6 +198,11 @@ func defaultHarnessInventoryDeps() harnessInventoryDeps {
 		CopilotLogin:   probeCopilotLogin,
 		ClaudeLogin:    probeClaudeLogin,
 		ClaudeHook:     claudeApprovalHookInstalled,
+		CodexHook:      codexApprovalInstalled,
+		OpenCodeHook:   openCodeApprovalInstalled,
+		CodexModel:     codexConfiguredModel,
+		OpenCodeModel:  openCodeConfiguredModel,
+		AuthFileLogin:  authFileLogin,
 		DevinStatus:    probeDevinStatus,
 		Handwritten:    handwritten,
 		HandwrittenErr: err != nil,
@@ -535,6 +551,10 @@ func generatedProfileName(harness string) string {
 		return "cursor"
 	case hostExecHarnessClaude:
 		return "claude"
+	case hostExecHarnessCodex:
+		return "codex"
+	case hostExecHarnessOpenCode:
+		return "opencode"
 	}
 	return ""
 }
@@ -579,6 +599,11 @@ func buildHarnessInventory(d harnessInventoryDeps) harnessInventory {
 	}
 	if entry, ok := buildClaudeEntry(d, discovered); ok {
 		entries[entry.Harness] = entry
+	}
+	for _, spec := range extendedHarnessSpecs {
+		if entry, ok := buildExtendedEntry(spec, d, discovered); ok {
+			entries[entry.Harness] = entry
+		}
 	}
 	for id, agent := range discovered {
 		if _, done := entries[id]; done {
@@ -784,10 +809,7 @@ func buildDiscoveredEntry(id string, agent AgentConfig, d harnessInventoryDeps) 
 	default:
 		entry.LoginState, entry.LoginSource = discoveryLogin(agent)
 	}
-	switch id {
-	case "codex_cli", "opencode":
-		entry.SupportLevel = harnessSupportFlowsOnly
-	}
+	entry.Version = harnessVersionFor(id, d)
 	return entry
 }
 
@@ -811,6 +833,8 @@ func generatedHostExecProfiles(inv harnessInventory) []hostExecProfile {
 			executable = "cursor-agent"
 		case hostExecHarnessClaude:
 			executable = "claude"
+		case hostExecHarnessCodex, hostExecHarnessOpenCode:
+			executable = harnessExecutables[entry.Harness]
 		default:
 			continue
 		}

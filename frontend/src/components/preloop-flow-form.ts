@@ -2119,7 +2119,7 @@ export class PreloopFlowForm extends LitElement {
         allowed_mcp_servers: this.flow.allowed_mcp_servers || ['preloop-mcp'],
         allowed_mcp_tools: this.flow.allowed_mcp_tools || [],
         ai_model_id:
-          this.flow.ai_model_id === null
+          this.flow.ai_model_id === null || this.harnessRoutedHostedType()
             ? null
             : this.flow.ai_model_id || undefined,
         trigger_event_source: this.flow.trigger_event_source || fallbackSource,
@@ -3077,8 +3077,8 @@ export class PreloopFlowForm extends LitElement {
 
   /** Harness + model picker fed by the runners' harness inventory. */
   private renderHarnessPicker() {
-    const hostType = this.hostExecAgentType();
-    if (!hostType || ['codex', 'opencode', 'deepseek'].includes(hostType)) {
+    const hostType = this.harnessPickerType();
+    if (!hostType) {
       return nothing;
     }
     const harness = HOST_EXEC_HARNESSES[hostType];
@@ -3271,13 +3271,56 @@ export class PreloopFlowForm extends LitElement {
     const kind = (this.flow.agent_type || '') as HostExecAgentType;
     if (
       ['codex', 'opencode', 'deepseek'].includes(kind) &&
-      !this.hostExecProfileName()
+      !this.hostExecProfileName() &&
+      !this.routesByHarness(kind)
     ) {
       return null;
     }
     return Object.prototype.hasOwnProperty.call(HOST_EXEC_MODEL_KEYS, kind)
       ? kind
       : null;
+  }
+
+  /**
+   * Codex and OpenCode also run hosted; they are host runs only when the
+   * flow routes by their harness (or pins a profile).
+   */
+  private routesByHarness(kind: HostExecAgentType): boolean {
+    return (
+      ['codex', 'opencode'].includes(kind) &&
+      this.flow?.agent_config?.harness === HOST_EXEC_HARNESSES[kind]
+    );
+  }
+
+  /**
+   * True for a Codex / OpenCode flow routed by harness without a pinned
+   * profile. Its model comes from the harness model key, so the hosted
+   * catalog model is dropped: the runner's model_map does not list it.
+   */
+  private harnessRoutedHostedType(): boolean {
+    const kind = (this.flow.agent_type || '') as HostExecAgentType;
+    return this.routesByHarness(kind) && !this.hostExecProfileName();
+  }
+
+  /**
+   * Host type for the harness picker: a host run, or a Codex / OpenCode
+   * flow when some runner offers that harness.
+   */
+  private harnessPickerType(): HostExecAgentType | null {
+    const hostType = this.hostExecAgentType();
+    if (hostType) {
+      return hostType === 'deepseek' ? null : hostType;
+    }
+    const kind = (this.flow.agent_type || '') as HostExecAgentType;
+    if (
+      ['codex', 'opencode'].includes(kind) &&
+      this.harnessOptions.some(
+        (item) => item.harness === HOST_EXEC_HARNESSES[kind]
+      )
+    ) {
+      return kind;
+    }
+    return null;
   }
 
   private hostExecProfileName(): string {

@@ -1079,7 +1079,7 @@ func beginHostExecJob(
 			secrets = append(secrets, repo.Token)
 		}
 	}
-	buffer := &runnerLogBuffer{native: true, harness: hostExecHarnessForAgentType(agentType), resultPath: run.resultPath, secrets: secrets}
+	buffer := &runnerLogBuffer{native: true, harness: hostExecHarnessForAgentType(agentType), requestedModel: jobModelIdentifier(job), resultPath: run.resultPath, secrets: secrets}
 	var governance *hostExecGovernanceGate
 	if run.governanceNonce != "" {
 		governance, err = newHostExecGovernanceGate(cmd, run.stdinPrompt, run.governanceNonce)

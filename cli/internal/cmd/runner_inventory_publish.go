@@ -244,6 +244,9 @@ func printHarnessInventory(w interface{ Write([]byte) (int, error) }, inv harnes
 		if entry.GeneratedProfile != nil {
 			fmt.Fprintf(w, "  host profile: %s (generated)\n", *entry.GeneratedProfile) //nolint:errcheck
 		}
+		if entry.SetupStep != "" {
+			fmt.Fprintf(w, "  next step: %s\n", entry.SetupStep) //nolint:errcheck
+		}
 		if len(entry.Models) > 0 {
 			ids := make([]string, 0, len(entry.Models))
 			for _, model := range entry.Models {
