@@ -843,6 +843,9 @@ type localEnrollmentState struct {
 	// CodexOAuthSyncModelIDs caches one model row id per distinct Codex
 	// OAuth secret for this enrollment, so a marker check is one request.
 	CodexOAuthSyncModelIDs []string `json:"codex_oauth_sync_model_ids,omitempty"`
+	// ClaudeOAuthCredentialSource identifies the local store selected during
+	// enrollment or sync, without retaining any credential contents.
+	ClaudeOAuthCredentialSource string `json:"claude_oauth_credential_source,omitempty"`
 	// ClaudeOAuthSyncedLocalExpiresMS is the Claude Code login's expiresAt
 	// (epoch milliseconds) at the last sync in either direction. A later
 	// local expiry means Claude Code rotated its login and the hooks push it.
@@ -4828,7 +4831,8 @@ func restoreClaudeGatewayEnvFromOriginal(
 	if writer != nil {
 		fmt.Fprintf(
 			writer,
-			"  Note: Restored Claude Code's local Anthropic auth/model settings because Preloop gateway live validation failed. MCP remains onboarded; set ANTHROPIC_API_KEY and rerun onboarding to use stable API billing.\n",
+			"  Note: Restored Claude Code's local Anthropic auth/model settings because Preloop gateway live validation failed. MCP remains onboarded. %s\n",
+			claudeSubscriptionRecoveryAdvice(),
 		) //nolint:errcheck
 	}
 	return nil
@@ -6155,18 +6159,19 @@ func createLocalEnrollmentBackup(agent AgentConfig, configExisted bool, original
 					discoveredConfig = plan.SanitizedDiscovered
 				}
 				return &localEnrollmentState{
-					AgentName:           agent.Name,
-					DisplayName:         resolveAgentDisplayName(agent),
-					RuntimePrincipalID:  runtimePrincipalIDForAgent(agent),
-					ConfigPath:          agent.ConfigPath,
-					ConfigExisted:       existingState.ConfigExisted,
-					BackupPath:          existingState.BackupPath,
-					ManagedServerName:   plan.ManagedServerName,
-					ManagedServerURL:    plan.ManagedServerURL,
-					ManagedControlWSURL: plan.ManagedControlWSURL,
-					AppliedAt:           time.Now().UTC(),
-					DiscoveredConfig:    discoveredConfig,
-					ManagedConfig:       plan.SanitizedManaged,
+					AgentName:                   agent.Name,
+					DisplayName:                 resolveAgentDisplayName(agent),
+					RuntimePrincipalID:          runtimePrincipalIDForAgent(agent),
+					ConfigPath:                  agent.ConfigPath,
+					ConfigExisted:               existingState.ConfigExisted,
+					BackupPath:                  existingState.BackupPath,
+					ManagedServerName:           plan.ManagedServerName,
+					ManagedServerURL:            plan.ManagedServerURL,
+					ManagedControlWSURL:         plan.ManagedControlWSURL,
+					AppliedAt:                   time.Now().UTC(),
+					DiscoveredConfig:            discoveredConfig,
+					ManagedConfig:               plan.SanitizedManaged,
+					ClaudeOAuthCredentialSource: existingState.ClaudeOAuthCredentialSource,
 				}, nil
 			}
 		}

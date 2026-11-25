@@ -20,6 +20,11 @@ Optionally, Preloop can also install a **native tool-approval hook** so Claude C
 ## Prerequisites
 
 - Claude Code installed, see [Anthropic's installation docs](https://docs.anthropic.com/en/docs/claude-code) (e.g. `npm install -g @anthropic-ai/claude-code`).
+- Node.js 20 or newer on `PATH` for the Agent Control plugin, including when
+  Claude Code itself uses a native installer. Verify `node --version` in the
+  shell where you run onboarding. On macOS with Homebrew, run
+  `brew install node@22`, then
+  `export PATH="$(brew --prefix node@22)/bin:$PATH"`.
 - The Preloop CLI:
 
 ```bash
@@ -58,11 +63,25 @@ The server also rejects re-imports of refresh tokens it has recently consumed.
 ### One refresh lineage, two holders
 
 Onboarding with `--from-local` copies the Claude Code login (the macOS Keychain
-entry `Claude Code-credentials`, or `~/.claude/.credentials.json` on Linux) into
+entry `Claude Code-credentials`, or `~/.claude/.credentials.json`) into
 Preloop and leaves the local login signed in. Both copies sit on one
 single-use refresh lineage: a long-running Claude Code process can renew its
 login on its own, and the Preloop gateway renews its stored copy. Whichever
 holder refreshes second with the already-consumed token gets `invalid_grant`.
+
+Onboarding records which local credential store it selected. Sync and offboard
+write back to that store. File-based enrollment works while Keychain is locked.
+For older enrollments without a recorded source, the manual `sync-credentials`
+command can select a valid credentials file when Keychain is unavailable.
+Automatic hooks stop and ask you to unlock Keychain or select the file explicitly;
+a temporary lock must not switch the enrollment to a stale or unrelated file.
+An explicitly enrolled Keychain login still requires Keychain access; unlock it
+or reconnect the subscription.
+
+Claude Code displays "API billing" for the gateway token after onboarding;
+model calls still use your Anthropic subscription and appear at $0 spend in
+the Preloop Console. If routing fails, try subscription sync or reconnect
+before choosing a separately billed Anthropic API key.
 
 The Preloop hooks keep both copies aligned. At `SessionStart`, on each
 `UserPromptSubmit`, and before tool calls (`PreToolUse`/`PermissionRequest`),
@@ -241,6 +260,18 @@ preloop agents offboard "claude code"   # restore config and remove managed enro
 ```
 
 `offboard` also removes the approvals hook and its credential if they were installed, and can optionally clean up the managed model and MCP servers in your account (`--remove-model`, `--remove-mcp-servers`).
+
+Before cleanup, offboard restores the live subscription credential held by
+Preloop. The ordinary four Claude model families share one credential and need
+one recovery. If export or local write-back fails, offboard stops with the
+local login and enrollment intact so you can retry. Distinct subscriptions
+cannot replace one local login: recover them separately, or reconnect this
+enrollment to one subscription before retrying offboard. A configuration backup
+alone cannot recover a refresh token that has rotated.
+
+The CLI prints the effective approval wait separately from the host hook
+timeout. Claude Code caps the host timeout at 600 seconds, leaving up to 570
+seconds for approval and 30 seconds for the hook to finish.
 
 ---
 

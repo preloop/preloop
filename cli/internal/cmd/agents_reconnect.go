@@ -42,7 +42,7 @@ var runReconnectSubscriptionLogin = func(cmd *cobra.Command, args []string) erro
 	return login.Run()
 }
 
-var readReconnectSubscriptionCredential = func(agent AgentConfig) map[string]interface{} {
+var readReconnectSubscriptionCredential = func(agent AgentConfig) (map[string]interface{}, string) {
 	if isClaudeCodeAgent(agent) {
 		credential, _ := resolveClaudeOAuthCredential()
 		if runtime.GOOS == "darwin" {
@@ -50,15 +50,15 @@ var readReconnectSubscriptionCredential = func(agent AgentConfig) map[string]int
 			credential = selectClaudeReconnectCredential(credential, native, true)
 		}
 		if credential != nil {
-			return credential.Payload()
+			return credential.Payload(), credential.Source
 		}
 	} else if isCodexCLIAgent(agent) {
 		credential, _ := resolveCodexOAuthCredential()
 		if credential != nil {
-			return credential.Payload()
+			return credential.Payload(), ""
 		}
 	}
-	return nil
+	return nil, ""
 }
 
 func selectClaudeReconnectCredential(file, keychain *claudeOAuthCredential, darwin bool) *claudeOAuthCredential {
@@ -101,7 +101,8 @@ func runAgentsReconnect(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := loadLocalEnrollmentState(agent); err != nil {
+	state, err := loadLocalEnrollmentState(agent)
+	if err != nil {
 		return fmt.Errorf("%s is not enrolled on this machine", canonical)
 	}
 	client, err := api.NewClient(FlagToken, FlagURL)
@@ -126,13 +127,19 @@ func runAgentsReconnect(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("subscription sign-in failed: %w", err)
 		}
 	}
-	payload := readReconnectSubscriptionCredential(agent)
+	payload, source := readReconnectSubscriptionCredential(agent)
 	if err := validateReconnectCredential(payload); err != nil {
 		return fmt.Errorf("%w; run %s and retry with --from-local", err, strings.Join(loginArgs, " "))
 	}
 	count, err := reconnectCredentialGroups(client, groups, wantType, payload)
 	if err != nil {
 		return err
+	}
+	if isClaudeCodeAgent(agent) {
+		state.ClaudeOAuthCredentialSource = source
+		if err := saveLocalEnrollmentState(state); err != nil {
+			return fmt.Errorf("subscription reconnected but local credential source was not saved: %w", err)
+		}
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Reconnected %s subscription: updated %d credential(s). Enrollment preserved.\n", canonical, count) //nolint:errcheck
 	return nil
