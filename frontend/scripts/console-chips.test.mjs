@@ -44,6 +44,8 @@ const UNVERIFIED_ALLOWANCE = {
   'components/mcp-server-card.ts': 1,
   'components/preloop-execution-tree.ts': 1,
   'components/preloop-gateway-event.ts': 2,
+  // Session identity uses agentStateChip; its state matrix permits no primary.
+  'components/preloop-session-observer.ts': 1,
   'components/session-approval-card.ts': 1,
   'components/session-chat-view.ts': 1,
   'components/session-embedding-settings.ts': 1,

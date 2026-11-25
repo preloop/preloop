@@ -672,6 +672,38 @@ describe('PreloopSessionObserver', () => {
     ).to.contain('min-height: 520px');
   });
 
+  it('uses only semantic chip colors for every header state', async () => {
+    const el = await fixture<PreloopSessionObserver>(html`
+      <preloop-session-observer
+        .sessions=${[session]}
+      ></preloop-session-observer>
+    `);
+    await waitUntil(() =>
+      Boolean(el.shadowRoot!.querySelector('.session-heading .chip'))
+    );
+    for (const [state, label, variant] of [
+      ['working', 'Working', 'success'],
+      ['waiting_for_approval', 'Needs approval', 'warning'],
+      ['your_turn', 'Your turn', 'neutral'],
+      ['idle', 'Idle', 'neutral'],
+      ['ended', 'Ended', 'neutral'],
+      ['unknown', 'Idle', 'neutral'],
+    ]) {
+      el.sessions = [
+        {
+          ...session,
+          turn_state: state,
+          last_activity_at: new Date().toISOString(),
+        },
+      ];
+      await el.updateComplete;
+      const chip = el.shadowRoot!.querySelector('.session-heading .chip')!;
+      expect(chip.textContent?.trim()).to.equal(label);
+      expect(chip.getAttribute('variant')).to.equal(variant);
+      expect(chip.hasAttribute('pill')).to.be.true;
+    }
+  });
+
   it('uses compact header tokens with the exact count available on hover', async () => {
     const el = await fixture<PreloopSessionObserver>(
       html`<preloop-session-observer
