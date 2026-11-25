@@ -70,6 +70,16 @@ Tracker-backed clone and MR publication can use the stored GitLab type; use
 the tracker/project binding rather than an unbound raw URL, and test your
 chosen hostname end to end.
 
+## Issues load but merge requests fail
+
+Issues are read from Preloop's synced data; merge requests are fetched live
+from GitLab. A previous successful connection check does not prove that the
+saved token still works. For a rejected token (HTTP 400), edit the tracker
+and replace an expired, revoked or invalid token. For denied access (HTTP
+403), check the token's `api` scope and membership in the selected group and
+project. A configuration error (HTTP 400) asks you to check the GitLab URL
+and re-enter the token. Provider connection failures return HTTP 502.
+
 ## Webhooks and network access
 
 Set `PRELOOP_URL` on the API, scanner/scheduler and workers to the externally

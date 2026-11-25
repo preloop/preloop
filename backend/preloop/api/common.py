@@ -1,36 +1,78 @@
 """Common utility functions for the Preloop API."""
 
 import logging
-from typing import Any, Dict, Optional, List, Union
+import os
+from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
+import yaml
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from preloop.utils.tracker_scope import project_scope_identifiers
-from preloop.models.db.session import get_db_session
 from preloop.api.auth import get_current_active_user
-from preloop.schemas.issue_compliance import CompliancePromptMetadata
-from preloop.services.managed_credentials import tracker_credential_source
-from preloop.sync.trackers import create_tracker_client
+from preloop.models import models
 from preloop.models.crud import (
     CRUDOrganization,
     CRUDProject,
     crud_account,
     crud_tracker_scope_rule,
 )
-from preloop.models.models.account import Account
-from preloop.models.models.user import User
-from preloop.models.models.organization import Organization
-from preloop.models.models.project import Project
-import yaml
-import os
+from preloop.models.db.session import get_db_session
+from preloop.schemas.issue_compliance import CompliancePromptMetadata
+from preloop.services.managed_credentials import tracker_credential_source
+from preloop.sync.exceptions import (
+    TrackerAuthenticationError,
+    TrackerError,
+    TrackerPermissionError,
+)
+from preloop.sync.trackers import create_tracker_client
+from preloop.sync.trackers.base import BaseTracker
+from preloop.utils.tracker_scope import project_scope_identifiers
 
 logger = logging.getLogger(__name__)
+
+Account = models.Account
+User = models.User
+Organization = models.Organization
+Project = models.Project
 
 # Initialize CRUD operations
 crud_organization = CRUDOrganization(Organization)
 crud_project = CRUDProject(Project)
+
+
+def tracker_request_http_error(
+    error: TrackerError, *, tracker_type: str
+) -> HTTPException:
+    """Translate tracker failures without exposing provider bodies or secrets.
+
+    Args:
+        error: Typed failure from client construction or a provider request.
+        tracker_type: Provider whose connection needs attention.
+
+    Returns:
+        An actionable 4xx for credentials or permissions, otherwise a 502.
+    """
+    if isinstance(error, TrackerAuthenticationError):
+        detail = (
+            "GitLab rejected the access token. Edit the tracker and enter a valid "
+            "personal, group, or project access token with the api scope."
+            if tracker_type == "gitlab"
+            else "Tracker authentication failed. Edit the tracker and reconnect "
+            "or replace its credentials."
+        )
+        # The user's Preloop session is valid; the saved provider token is not.
+        return HTTPException(status_code=400, detail=detail)
+    if isinstance(error, TrackerPermissionError):
+        detail = (
+            "GitLab denied access. Check the token's api scope and access to "
+            "the selected group and project."
+            if tracker_type == "gitlab"
+            else "Tracker access denied. Check the saved credentials' permissions "
+            "for this project."
+        )
+        return HTTPException(status_code=403, detail=detail)
+    return HTTPException(status_code=502, detail="Tracker request failed")
 
 
 def azure_devops_repo_full_name(config: Dict[str, Any], project: Any) -> str:
@@ -128,7 +170,7 @@ async def get_tracker_client(
     project_id: Union[str, UUID],
     db: Session,
     current_user: User,
-):
+) -> BaseTracker:
     """Get the appropriate tracker client for the given organization and project,
     ensuring the current user has access.
 
@@ -324,9 +366,7 @@ async def get_tracker_client(
             f"Using GitHub App OAuth with installation ID: {tracker.oauth_installation.external_id}"
         )
 
-    logger.debug(
-        f"Creating tracker client of type '{tracker_type}' with config: {full_config}"
-    )
+    logger.debug("Creating tracker client of type '%s'", tracker_type)
 
     try:
         # Create the tracker client using the combined config. A managed grant
@@ -339,26 +379,33 @@ async def get_tracker_client(
             api_key=tracker.resolved_api_key,  # May be empty for OAuth
             connection_details=full_config,
             credential_source=tracker_credential_source(tracker),
+            raise_on_error=True,
         )
         if not tracker_client:
-            # Raise specific error if factory returns None (e.g., unsupported type or config error)
-            raise ValueError(
-                f"Failed to create tracker client for type '{tracker_type}'. Check configuration: {full_config}"
-            )
+            # Unsupported providers have no client even with raise_on_error.
+            raise ValueError("Unsupported tracker type")
 
         return tracker_client
-    except ValueError as ve:  # Catch config errors from factory
+    except TrackerError as exc:
+        logger.warning("Tracker client initialization failed: %s", type(exc).__name__)
+        raise tracker_request_http_error(exc, tracker_type=tracker_type) from exc
+    except ValueError as ve:  # Catch config and credential-resolution errors
         logger.error(
             f"Configuration error creating tracker client: {type(ve).__name__}"
         )
-        raise HTTPException(
-            status_code=500, detail=f"Configuration error for tracker: {str(ve)}"
+        detail = (
+            "Invalid GitLab tracker configuration. Edit the tracker, check its "
+            "GitLab URL, and re-enter an access token with the api scope."
+            if tracker_type == "gitlab"
+            else "Invalid tracker configuration. Edit the tracker and check its "
+            "URL and authentication settings."
         )
+        raise HTTPException(status_code=400, detail=detail) from ve
     except Exception as e:
         logger.error(f"Error creating tracker client: {type(e).__name__}")
         raise HTTPException(
-            status_code=500, detail=f"Error creating tracker client: {str(e)}"
-        )
+            status_code=500, detail="Error creating tracker client"
+        ) from e
 
 
 def get_compliance_prompts_from_config(
