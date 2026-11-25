@@ -3882,7 +3882,7 @@ export class AgentsView extends LitElement {
       },
       {
         id: 'spend',
-        header: '$ est.',
+        header: 'Est. spend',
         pickerLabel: 'Estimated spend',
         numeric: true,
         sort: 'number',
@@ -3898,7 +3898,7 @@ export class AgentsView extends LitElement {
       },
       {
         id: 'without_subscriptions',
-        header: 'W/o subs.',
+        header: 'Without subscriptions',
         pickerLabel: 'Estimated spend without subscriptions',
         numeric: true,
         sort: 'number',

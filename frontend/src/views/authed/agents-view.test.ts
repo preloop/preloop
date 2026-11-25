@@ -691,14 +691,13 @@ describe('AgentsView', () => {
       // Tokens come before cost: volume is the fact, price is the
       // consequence of it.
       'Tokens',
-      '$ est.',
-      'W/o subs.',
+      'Est. spend',
+      'Without subscriptions',
       'Last seen',
       'Actions',
     ]);
 
-    // "$ est." is short enough to read as "dollar est." out loud, so the
-    // sort button carries the full name. Index 0 is the select-all checkbox.
+    // Index 0 is the select-all checkbox.
     // The totals are all time, whatever the Last seen filter says, so the
     // headers say so (U-16).
     const spendButton = headers[5].querySelector('.sort-button');
