@@ -128,6 +128,7 @@ func newDiscoverTestCmd(t *testing.T, args ...string) *cobra.Command {
 	cmd.Flags().Bool("skip-live-validate", false, "")
 	cmd.Flags().Bool("report", false, "")
 	cmd.Flags().String("device-ref", "", "")
+	cmd.Flags().StringArray("project", nil, "")
 	if err := cmd.Flags().Parse(args); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +258,7 @@ func TestDiscoverReportEnvEnablesReporting(t *testing.T) {
 }
 
 func TestDiscoverReportWithoutLoginFails(t *testing.T) {
-	err := sendDiscoveryReport(nil, nil, io.Discard)
+	err := sendDiscoveryReport(nil, nil, io.Discard, "")
 	if err == nil || !strings.Contains(err.Error(), "login") {
 		t.Fatalf("expected a login error, got %v", err)
 	}

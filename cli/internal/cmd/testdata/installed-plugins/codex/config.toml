@@ -1,0 +1,6 @@
+[marketplaces.superpowers-marketplace]
+source_type = "git"
+source = "https://example.com/community-plugins.git"
+
+[plugins."superpowers@superpowers-marketplace"]
+enabled = true

@@ -22,6 +22,22 @@ func addDiscoveryExtensions(report *discoveryReportRequest, salt, home string, d
 	scan := collectAgentInventory(deps)
 	ref := inventoryProfileRef(salt, report.WorkstationFingerprint, home)
 	evidence := &inventoryReportEvidence{SchemaVersion: 3, ObservationID: fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]), CollectorVersion: report.CLIVersion, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: deps.Now().UTC(), ScanScope: []string{"user_config"}, Completeness: "complete", Errors: []string{}, Profiles: []inventoryProfileResult{{ProfileRef: ref, Completeness: "complete"}}, Applications: []inventoryReportApplication{}}
+	// Extension coverage follows the supported collectors, independently of
+	// unrelated application/runtime probes and missing discovery candidates.
+	evidence.ExtensionCompleteness = "complete"
+	reportedKinds := map[string]bool{}
+	for _, candidate := range report.Candidates {
+		reportedKinds[candidate.AgentKind] = true
+	}
+	for _, app := range scan.Apps {
+		supported, ok := extensionAppByID(app.AppID)
+		if !ok {
+			continue
+		}
+		if app.Completeness != "complete" || (len(app.Extensions) > 0 && !reportedKinds[supported.kind]) {
+			evidence.ExtensionCompleteness = "partial"
+		}
+	}
 	apps := map[string]inventoryApp{}
 	for _, app := range scan.Apps {
 		for name, appID := range inventoryAppIDs {
@@ -34,6 +50,7 @@ func addDiscoveryExtensions(report *discoveryReportRequest, salt, home string, d
 	if len(report.Candidates) > 100 {
 		report.Candidates = report.Candidates[:100]
 		evidence.Completeness = "partial"
+		evidence.ExtensionCompleteness = "partial"
 		evidence.Errors = []string{"unavailable"}
 	}
 	for i := range report.Candidates {
@@ -51,7 +68,6 @@ func addDiscoveryExtensions(report *discoveryReportRequest, salt, home string, d
 			evidence.Profiles[0].ErrorCode = "probe_incomplete"
 		}
 	}
-	evidence.ExtensionCompleteness = evidence.Completeness
 	report.Evidence = evidence
 	return nil
 }

@@ -912,6 +912,7 @@ func init() {
 
 	agentsDiscoverCmd.Flags().Bool("add", false, "deprecated: use 'preloop agents onboard <agent>' instead")
 	agentsDiscoverCmd.Flags().Bool("json", false, "output safe discovery summaries as JSON (read-only, no prompts)")
+	agentsDiscoverCmd.Flags().StringArray("project", nil, "include a Claude project root in --inventory or --report (repeatable; use . for the current directory)")
 	agentsDiscoverCmd.Flags().Bool("all-users", false, "scan bounded local profiles with elevated rights; requires --inventory or --report")
 	agentsDiscoverCmd.Flags().Bool("inventory", false, "output offline known-app inventory JSON (no auth, network, prompts, or writes)")
 	agentsDiscoverCmd.Flags().Bool("no-onboard-prompt", false, "do not prompt to onboard discovered agents")
@@ -965,6 +966,10 @@ func init() {
 
 // runAgentsDiscover scans for AI agents on the machine.
 func runAgentsDiscover(cmd *cobra.Command, args []string) error {
+	projects, projectErr := extensionProjects(cmd)
+	if projectErr != nil {
+		return projectErr
+	}
 	if isOfflineInventoryCommand(cmd) {
 		return runAgentsInventory(cmd)
 	}
@@ -990,6 +995,9 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 	report, _ := cmd.Flags().GetBool("report")
 	deviceRef, _ := cmd.Flags().GetString("device-ref")
 
+	if len(projects) > 0 && !discoveryReportingRequested(report) {
+		return errors.New("--project requires --inventory or --report")
+	}
 	if addServers {
 		return fmt.Errorf("discover is now read-only; use 'preloop agents onboard <agent>'")
 	}
@@ -1017,7 +1025,7 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 		if asJSON {
 			reportOut = os.Stderr
 		}
-		if err := sendDiscoveryReport(client, discovered, reportOut, deviceRef); err != nil {
+		if err := sendDiscoveryReport(client, discovered, reportOut, deviceRef, projects...); err != nil {
 			return err
 		}
 	}

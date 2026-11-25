@@ -25,7 +25,7 @@ func TestRunnerFingerprintMatchesDiscovery(t *testing.T) {
 	if got != workstationFingerprint(testDiscoverySalt, testMachineID) {
 		t.Fatalf("fingerprint mismatch: %q", got)
 	}
-	if err := sendDiscoveryReport(client, nil, io.Discard); err != nil {
+	if err := sendDiscoveryReport(client, nil, io.Discard, ""); err != nil {
 		t.Fatal(err)
 	}
 	var report discoveryReportRequest
