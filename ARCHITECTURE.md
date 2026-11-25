@@ -74,6 +74,7 @@ graph LR
 | [Governance](docs/architecture/governance.md) | Subject-scoped allowed models, tool access rules, and tool output filters. |
 | [Account access rules](docs/architecture/account-access-rules.md) | Closed policy syntax, audited CRUD/snapshots, committed H4 invalidation, and H3 resource sharing integration. Includes the portable exact-resource selector and resource requirement contract. Core owns atomic storage, reference validation and generation invalidation; Enterprise owns preview authorization and enforcement of independent local gates. |
 | [Approvals](docs/architecture/approvals.md) | Tool configuration, human-in-the-loop approval workflows, [external consent hand-off](docs/guide/webhooks.md#external-approval-hand-off), `ask_user`, and native-tool permission-check. |
+| [Claude Code enrollment](docs/guide/clients/claude-code.md) | Gateway disclosures, server-observed route state, approval waits, owned artifacts and audited credential revocation. |
 | [Managed bundles](docs/architecture/managed-bundles.md) | Account-scoped bundle revisions, verified Claude Code extension overlays and durable control expectations for optional evidence-based fleet generation. |
 | [Agent Control](docs/architecture/agent-control.md) | Operator channel to managed agents, operator notes delivered at model/tool boundaries through the gateway, carrying permission hooks, or native lifecycle/model-input hooks; non-carrying approval hooks leave notes pending, CLI/desktop enrollment, mobile/watch voice contact, and persistent flow execution on a live Agent Control target. |
 | [Cost](docs/architecture/cost.md) | `ApiUsage` ledger, OSS spend and budget-health surfaces, and the Enterprise plugin boundary. |
@@ -143,10 +144,3 @@ OpenRouter model configurations can enforce provider routing preferences. Gatewa
 usage records include a content-free summary of effective upstream controls and
 the OpenRouter serving host when reported; see the
 [provider guide](docs/guide/providers/openrouter.md).
-
-Claude Code enrollment discloses gateway authentication and cloud-policy changes
-before confirmation. Console route state uses authenticated gateway usage after
-the current enrollment through the CRUD layer; imported telemetry cannot verify
-the route. Offboard revokes managed credential metadata in the lifecycle audit
-transaction and restores only locally owned control artifacts. See the
-[Claude Code guide](docs/guide/clients/claude-code.md).
