@@ -145,3 +145,9 @@ OpenRouter model configurations can enforce provider routing preferences. Gatewa
 usage records include a content-free summary of effective upstream controls and
 the OpenRouter serving host when reported; see the
 [provider guide](docs/guide/providers/openrouter.md).
+
+
+Stored read-only review recovery reuses native selection and review finalization
+checks without starting an agent. Its preview/apply digest, human authorization,
+audit and publication boundaries are documented in
+[platform-posted review](docs/architecture/platform-posted-review.md#stored-execution-re-finalization).

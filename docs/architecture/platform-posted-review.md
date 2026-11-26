@@ -465,6 +465,7 @@ reading.
 | 30 | A shared flow posts for, or starts an event review for, a project the administrator did not choose | `platform_review.project_ids`: checked at `publish_platform_review` on the project of the stored binding (both versions), again inside the attempt, closed with a terminal `skipped` publication when a run finishes outside the list (so a later widening of the list neither sweeps nor publishes it), in `build_event_review_binding` (no execution inserted) and in `authorize_event_review`; save refuses an id outside `trigger_project_ids`; the allowlist write prunes the list | `test_platform_review_project_scope.py`: `test_event_on_the_unlisted_project_inserts_no_execution`, `test_ci_run_of_the_unlisted_project_finishes_and_is_not_posted`, `test_sweep_closes_runs_outside_the_list_without_posting`, `test_unpublished_run_is_not_posted_after_its_project_is_added`, `test_automatic_finish_outside_the_list_records_a_terminal_skip`, `test_sweep_skips_the_run_after_its_project_is_added`, `test_explicit_publish_is_refused_before_and_after_the_list_grows`, `test_new_run_started_after_the_project_is_added_is_posted`, `test_run_stopped_outside_the_worker_is_not_posted_after_a_quick_widening`, `test_explicit_publish_out_of_scope_is_refused_with_its_own_reason`, `test_user_publish_out_of_scope_answers_409`, `test_ci_identity_publish_out_of_scope_answers_409`, `test_binding_project_decides_never_the_caller`, `test_project_removed_from_the_list_while_in_flight_is_not_posted`, `test_list_change_between_check_and_claim_is_not_posted`, `test_empty_list_posts_for_no_project`, `test_save_accepts_a_member_and_refuses_an_id_the_flow_does_not_admit` |
 | 31 | Adding a posting list changes anything for a flow without one | absent or null is every project; no new key is stored or returned | `test_unset_list_starts_from_any_admitted_project_and_posts_ci_runs`, `test_explicit_null_list_is_the_same_as_unset` |
 | 32 | A review is posted although the reviewer saw only part of a diff read, and nothing says so | Not refused. Hosted Codex cuts each tool result to a per-result limit (for a custom model, one tenth of its context window in tokens, at most 64,000; see `restricted-ci.md`, "Tool output limit and clipped results"). A result Codex cut is stored with `agent_clipped: true` and Codex's original token count, kept separate from Preloop's own `truncated`, and leaves `capture_complete` true. `tool_evidence` counts `agent_clipped_results`, and `bound_reads`, `clipped_bound_reads` and `unknown_bound_reads` for successful bound reads joined to their result by call id. The inspection floor is not proof of coverage; a controller checks `clipped_bound_reads == 0` and `unknown_bound_reads == 0` before publishing | `test_platform_review.py`: `test_summary_counts_a_clipped_bound_read`, `test_summary_reports_zero_clips_for_a_whole_read`, `test_running_session_read_is_unknown_not_whole`, `test_clipped_unrelated_result_is_not_a_bound_read`, `test_clipped_diff_read_still_posts_under_captured`; `test_execution_tool_evidence.py`: `test_clipped_exec_result_is_recorded_and_stays_complete`, `test_sentence_elsewhere_in_a_result_is_not_a_clip` |
+| 33 | A failed or tampered execution is turned into a posted review | Human owner/admin only; controller capture provenance and a narrow failure allowlist; no stop, timeout or prior gate rejection; shared pure native selection and schema/binding/inspection/integrity evaluation; captured evidence floor and the configured stricter level; unchanged stored flow revision; preview digest rechecked with flow/execution locks; atomic outcome/audit receipt; normal publication authority, target checks and unique claim, with the recovered base SHA pinned on periodic attempts too | `test_execution_refinalize.py`: `test_envelope_is_not_authority`, `test_tampered_evidence_cannot_promote`, `test_live_rejection_and_timeout_receipts_cannot_be_overridden`, `test_flow_edit_cannot_reinterpret_old_answer`, `test_changed_result_invalidates_preview`, `test_base_moved_cannot_post_even_on_periodic_pass`, `test_publication_race_posts_once`; API: `test_ci_identity_cannot_preview`, `test_member_cannot_recover`, `test_agent_credential_cannot_inherit_owner` |
 
 ## GitHub App permissions
 
@@ -503,3 +504,48 @@ without posting the review again.
   (the read-back compares a digest after normalising line endings), that
   reading a pull request works with `pull_requests` permission alone, and
   that a lease request beyond the installation's permissions answers 422.
+
+
+## Stored execution re-finalization
+
+`POST /flows/executions/{id}/refinalize` defaults to preview. It serves a
+controller finalization failure with an intact stored review, including a native
+capture transport persisted as the result after worker handover. It cannot
+repair an agent answer or waive evidence. See the [operator
+contract](../guide/flows/restricted-ci.md#re-finalize-a-saved-review-without-another-model-run).
+
+`review_finalization.select_native_candidate` is a pure decision shared with the
+orchestrator: explicit native failures win; otherwise a valid native candidate,
+then a valid file candidate, then the native/file for failure diagnostics.
+`evaluate_review_document` shares the controller validator and the live
+schema → binding/inspection/integrity sequence. Recovery supplies only the
+stored binding, verified diff receipt and captured inspection observations.
+The tool-evidence gate uses `platform_review.evidence_satisfied`; recovery never
+accepts less than captured evidence or a clipped/unknown bound read.
+
+The transport key and result metadata are untrusted. Recovery requires the
+controller's `_native_result` decision and completion capture source for an
+envelope, refuses nested or unknown transports, and independently checks every
+candidate. Controller-recorded gate rejection, stop and timeout evidence always
+wins over candidate validity. Missing facts refuse recovery rather than being
+inferred from model text. An agent-posted publication receipt requirement is
+reported as an unavailable gate for this operation.
+
+The apply digest covers raw stored JSON (including private transport members),
+selection, gate outcomes, controller receipt, admission binding and flow
+configuration. The existing monotonic `flow_revision` must match the execution;
+a caller cannot supply a replacement schema or target. CRUD locks the flow and
+execution, rechecks the preview, then atomically stores the selected document,
+validation, status and an `execution_refinalize` audit event. The
+`startup_receipt._refinalization` mark projects to the human execution read and
+console. It records actor/time, previous and new status/category and result
+digests. No migration, usage write, agent start or billing event is involved.
+Refused applies are audited; previews and idempotent repeats write nothing.
+
+Preview and posting share `publication_context` and `review_target_refusal`.
+Preview performs no publication claim or provider write. Apply hands off to
+`publish_platform_review` in automatic mode; manual mode, automatic recovery
+cutoffs, closed posting scope and previous publication claims retain their
+meaning. Every later attempt for a recovered run also requires the recorded
+flow revision/result digest and exact bound base SHA. The existing unique
+publication row and claim protocol arbitrate concurrent calls and the sweep.

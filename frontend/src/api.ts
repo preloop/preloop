@@ -10109,3 +10109,40 @@ export async function registerAzureDevOpsWebhook(
   }
   return response.json();
 }
+
+export interface RefinalizePreview {
+  selected_result?: unknown;
+  eligible: boolean;
+  digest: string;
+  gates: Record<string, { passed: boolean; reason?: string }>;
+  publication?: { would_publish?: boolean; reason?: string };
+  refinalization?: { at: string; user_name: string };
+}
+
+/** Preview by default; applying pins the exact reviewed stored state. */
+export async function refinalizeExecution(
+  executionId: string,
+  digest?: string
+): Promise<RefinalizePreview> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/flows/executions/${encodeURIComponent(executionId)}/refinalize`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        dry_run: !digest,
+        ...(digest ? { expected_digest: digest } : {}),
+      }),
+    }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(
+      body.detail?.message ||
+        (typeof body.detail === 'string'
+          ? body.detail
+          : 'The saved review could not be re-finalized. Preview again.')
+    );
+  }
+  return response.json();
+}
