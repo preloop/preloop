@@ -77,6 +77,27 @@ describe('OAuth login guidance', () => {
     );
     expect(el.shadowRoot!.textContent).to.contain('Authorize Application');
   });
+  it('keeps manual authorization instructions generic for another client', async () => {
+    sinon
+      .stub(window, 'fetch')
+      .callsFake(
+        async () =>
+          new Response(
+            JSON.stringify({ action: 'manual', code: 'SYNTHETIC-CODE' })
+          )
+      );
+    const el = await mount('urn:ietf:wg:oauth:2.0:oob', 'other-client');
+    (el.shadowRoot!.querySelector('sl-button') as HTMLElement).click();
+    await waitUntil(() => !!el.shadowRoot!.querySelector('.manual-code-box'));
+    expect(el.shadowRoot!.textContent).to.contain(
+      'Finish authorization in your application'
+    );
+    expect(el.shadowRoot!.textContent).not.to.contain('preloop login');
+    expect(el.shadowRoot!.textContent).not.to.contain(
+      'Successfully authenticated!'
+    );
+  });
+
   it('keeps consent errors visible without showing a code', async () => {
     sinon
       .stub(window, 'fetch')

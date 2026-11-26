@@ -191,6 +191,7 @@ export class OAuthConsentView extends LitElement {
   }
 
   render(): TemplateResult {
+    const isCli = this.clientId === 'cli';
     if (this.manualCode) {
       return html`
         <div class="container">
@@ -199,16 +200,25 @@ export class OAuthConsentView extends LitElement {
             class="header-icon"
             style="color: var(--sl-color-success-600);"
           ></sl-icon>
-          <h1>Finish login in your terminal</h1>
+          <h1>
+            ${isCli ? 'Finish login in your terminal' : 'Finish authorization in your application'}
+          </h1>
           <p>
-            Browser approval is complete. Your CLI is still waiting for this
-            code.
+            Browser approval is complete. Your ${isCli ? 'CLI' : 'application'}
+            is still waiting for this code.
           </p>
-          <p>
-            Copy the one-time code, then paste it at
-            <strong>Authorization code:</strong> in the terminal where you ran
-            <code>preloop login</code>.
-          </p>
+          ${
+            isCli
+              ? html`<p>
+                  Copy the one-time code, then paste it at
+                  <strong>Authorization code:</strong> in the terminal where you
+                  ran <code>preloop login</code>.
+                </p>`
+              : html`<p>
+                  Copy the one-time code and paste it into the application that
+                  requested access.
+                </p>`
+          }
           <div class="manual-code-box" aria-label="One-time authorization code">
             ${this.manualCode}
           </div>
@@ -227,10 +237,16 @@ export class OAuthConsentView extends LitElement {
             Finish this step before closing this tab. The code expires 5 minutes
             after approval and can be used only once.
           </p>
-          <p>
-            Wait for <strong>Successfully authenticated!</strong> in your
-            terminal. Then you can close this tab.
-          </p>
+          ${
+            isCli
+              ? html`<p>
+                  Wait for <strong>Successfully authenticated!</strong> in your
+                  terminal. Then you can close this tab.
+                </p>`
+              : html`<p>
+                  Close this tab after your application confirms authorization.
+                </p>`
+          }
         </div>
       `;
     }
