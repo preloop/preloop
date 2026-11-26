@@ -1,5 +1,6 @@
 import { chromium, expect } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
+import { fleetExtensionFindings } from '../src/test-helpers/fleet-extension-findings.ts';
 
 process.env.PRELOOP_DISABLE_TELEMETRY = 'true';
 const revision = process.argv[2];
@@ -43,33 +44,7 @@ const device = {
   agents: [],
   possible_same_machine_as: [],
   sources: [],
-  findings: [
-    { extension_id: 'review-helper', kind: 'skill', reason: 'unapproved' },
-    {
-      extension_id: 'release-check',
-      kind: 'hook',
-      reason: 'content_changed',
-      approval_state: 'approved',
-    },
-    {
-      extension_id: 'build-tools',
-      kind: 'plugin',
-      reason: 'version_outside_constraint',
-      effective_state: 'approved',
-    },
-  ].map((evidence, index) => ({
-    id: `finding-${index}`,
-    rule: 'unapproved_extension',
-    device_key: 'fp:' + 'a'.repeat(64),
-    state: 'open',
-    opened_at: base.started_at,
-    last_evaluated_at: base.last_activity_at,
-    evidence,
-    title: 'An installed agent extension needs approval.',
-    detail:
-      'Inventory proves files are present, not that the agent loaded or executed them.',
-    limitation: 'Self-reported inventory.',
-  })),
+  findings: fleetExtensionFindings,
 };
 const browser = await chromium.launch();
 try {

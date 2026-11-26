@@ -5,7 +5,8 @@ import sinon from 'sinon';
 import { mockApi, type MockApi } from '../../test-helpers/capability-api';
 import { invalidateApiCaches } from '../../api';
 import { capabilityRoutesFor } from '../../lazy-routes';
-import { hasFleetPermission } from '../../device-fleet-api';
+import { hasFleetPermission, type FleetFinding } from '../../device-fleet-api';
+import { fleetExtensionFindings } from '../../test-helpers/fleet-extension-findings';
 import { sampleFleetMap } from '../../test-helpers/fleet-map-graph';
 import './device-fleet-view';
 
@@ -112,7 +113,8 @@ describe('Device fleet', () => {
   });
   function setup(
     enabled = true,
-    permissions: string[] = ['view_device_fleet', 'manage_device_fleet']
+    permissions: string[] = ['view_device_fleet', 'manage_device_fleet'],
+    findings: FleetFinding[] = device.findings
   ) {
     api = mockApi({
       capabilities: enabled ? ['fleet_coverage'] : [],
@@ -122,7 +124,7 @@ describe('Device fleet', () => {
           path: '/api/v1/fleet/device-fleet',
           body: {
             schema_version: 1,
-            items: [device],
+            items: [{ ...device, findings }],
             total: 1,
             truncated: false,
             summary: {
@@ -137,7 +139,11 @@ describe('Device fleet', () => {
         },
         {
           path: '/api/v1/fleet/device-fleet/detail',
-          body: { schema_version: 1, device, observations: [] },
+          body: {
+            schema_version: 1,
+            device: { ...device, findings },
+            observations: [],
+          },
         },
         { path: '/api/v1/fleet/settings', body: settings },
         {
@@ -165,6 +171,26 @@ describe('Device fleet', () => {
     await view.updateComplete;
     return view;
   }
+  it('renders extension findings from the fleet API producer contract', async () => {
+    history.replaceState(
+      {},
+      '',
+      '?device=' + encodeURIComponent(device.device_key)
+    );
+    setup(true, ['view_device_fleet'], fleetExtensionFindings);
+    const view = await mount();
+    expect(api.callsTo('/api/v1/fleet/device-fleet/detail')).to.have.length(1);
+    const titles = Array.from(
+      view.shadowRoot.querySelectorAll(
+        '[data-testid="device-findings"] .row-main > span:first-child'
+      )
+    ).map((row) => (row as HTMLElement).textContent!.trim());
+    expect(titles).to.deep.equal([
+      'review-helper (skill): Unapproved',
+      'release-check (hook): Content changed',
+      'build-tools (plugin): Version outside constraint',
+    ]);
+  });
   it('names each extension finding and its effective reason before expanding evidence', async () => {
     history.replaceState(
       {},
