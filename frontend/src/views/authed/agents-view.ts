@@ -48,6 +48,7 @@ import '../../components/list-selection.ts';
 import '../../components/talk-button.ts';
 import '../../components/confirm-dialog.ts';
 import '../../components/discovered-agents-panel.ts';
+import '../../components/extension-inventory';
 import { totalTokensOf } from '../../components/token-figures';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
