@@ -1,0 +1,50 @@
+name: Sandboxed agent rig
+
+# Onboards, resumes and offboards Claude Code inside containers whose
+# configuration is read-only, against a local stack and a mocked model
+# provider. See examples/sandboxed-agent-rig/README.md.
+
+on:
+  pull_request:
+    paths:
+      - cli/**
+      - examples/sandboxed-agent-rig/**
+      - backend/preloop/services/managed_agent_onboarding_cleanup.py
+      - backend/preloop/services/managed_agent_manual_setup.py
+      - backend/preloop/models/crud/managed_agent_enrollment.py
+      - .github/workflows/sandboxed-agent-rig.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandboxed-agent-rig-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PRELOOP_DISABLE_TELEMETRY: "true"
+
+jobs:
+  rig:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the rig
+        working-directory: examples/sandboxed-agent-rig
+        run: ./run.sh
+      - name: Print transcripts
+        if: always()
+        working-directory: examples/sandboxed-agent-rig
+        run: |
+          for transcript in out/*.txt; do
+            [ -f "$transcript" ] || continue
+            echo "::group::$transcript"
+            cat "$transcript"
+            echo "::endgroup::"
+          done

@@ -363,7 +363,7 @@ func TestReadOnlySettingsOnboardingGoesManualAndKeepsTheKey(t *testing.T) {
 		"shown here once",
 		"export ANTHROPIC_API_KEY='" + syntheticAgentKey + "'",
 		"claude --settings",
-		"What each form does not enable",
+		"does not enable",
 		"Waiting for local configuration: Claude Code is NOT onboarded yet.",
 		"expires 2026-11-29T12:00:00Z",
 		`preloop agents onboard --resume "Claude Code"`,
@@ -750,5 +750,68 @@ func TestSkippedProbeDoesNotBlessAnImportedSubscriptionLogin(t *testing.T) {
 	}
 	if subscriptionUnverifiedHeadline(agent, apiKey, false, false) != "" {
 		t.Fatal("an API key upstream is not a subscription login")
+	}
+}
+
+func applyRigResult(t *testing.T, home manualRigHome, mutate func(string) string) {
+	t.Helper()
+	home.unlockSettings(t)
+	root := filepath.Join(home.home, ".preloop", "manual-setup")
+	entries, _ := os.ReadDir(root)
+	result, err := os.ReadFile(filepath.Join(root, entries[0].Name(), "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(home.settings, []byte(mutate(string(result))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A key issued from the console is not the one the setup printed. It is
+// accepted when the real request proves it, and refused when nothing does.
+func TestResumeAcceptsAnotherKeyOnlyWhenARealRequestProvesIt(t *testing.T) {
+	rig := newManualRigServer(t)
+	home := newManualRigHome(t)
+	home.lockSettings(t)
+	if _, err := runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{}); err == nil {
+		t.Fatal("expected a pending setup")
+	}
+	state, _ := loadManualResumeState(home.agent)
+	const consoleKey = "agt_SYNTHETICCONSOLE00000000000000000000000002"
+	applyRigResult(t, home, func(text string) string { return strings.ReplaceAll(text, syntheticAgentKey, consoleKey) })
+
+	var skipped bytes.Buffer
+	err := resumeManualEnrollment(rig.client(), state, manualResumeOptions{SkipLiveValidate: true}, &skipped)
+	var notApplied *manualNotAppliedError
+	if !errors.As(err, &notApplied) || strings.Contains(skipped.String(), "✓ Onboarded") {
+		t.Fatalf("an unproven foreign key must not be accepted: %v\n%s", err, skipped.String())
+	}
+	var out bytes.Buffer
+	if err := resumeManualEnrollment(rig.client(), state, manualResumeOptions{}, &out); err != nil {
+		t.Fatalf("a foreign key the request proves should be accepted: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "✓ Onboarded Claude Code") || rig.probeKeys[len(rig.probeKeys)-1] != consoleKey {
+		t.Fatalf("output:\n%s", out.String())
+	}
+}
+
+func TestResumeWithSkippedProbeDoesNotSayOnboarded(t *testing.T) {
+	rig := newManualRigServer(t)
+	home := newManualRigHome(t)
+	home.lockSettings(t)
+	if _, err := runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{}); err == nil {
+		t.Fatal("expected a pending setup")
+	}
+	state, _ := loadManualResumeState(home.agent)
+	applyRigResult(t, home, func(text string) string { return text })
+	var out bytes.Buffer
+	if err := resumeManualEnrollment(rig.client(), state, manualResumeOptions{SkipLiveValidate: true}, &out); err != nil {
+		t.Fatalf("resume: %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "✓ Onboarded") || !strings.Contains(out.String(), "NOT verified") {
+		t.Fatalf("a skipped probe must not read as Onboarded:\n%s", out.String())
+	}
+	if rig.probeCalls != 0 {
+		t.Fatal("skip must not probe")
 	}
 }

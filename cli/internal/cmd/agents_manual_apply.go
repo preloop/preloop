@@ -280,7 +280,7 @@ func renderManualInstructions(displayName string, plan manualApplyPlan, bundleDi
 		fmt.Fprintf(&out, "\nAlternative B: load the block per session\n%s\n", plan.SettingsFlag)
 	}
 	if len(plan.Limitations) > 0 {
-		fmt.Fprintln(&out, "\nWhat each form does not enable:")
+		fmt.Fprintln(&out, "\nWhat this setup and each form does not enable:")
 		for _, limitation := range plan.Limitations {
 			fmt.Fprintf(&out, "  - %s\n", limitation)
 		}
@@ -422,6 +422,8 @@ func diagnoseJSONSyntax(data []byte) *jsonSyntaxProblem {
 		problem.Reason = "expected a key in double quotes here; check for a missing quote"
 	case strings.Contains(message, "after object key"):
 		problem.Reason = "missing colon or closing quote after this key"
+	case strings.Contains(message, "after top-level value"):
+		problem.Reason = "extra content after the end of the JSON object; the file must hold exactly one object"
 	case strings.Contains(message, "unexpected end of JSON input"):
 		problem.Reason = "the file ends early; a closing quote, } or ] is missing"
 	case strings.Contains(message, "in string literal"):

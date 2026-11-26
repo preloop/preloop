@@ -465,6 +465,12 @@ func buildManualApplyPlan(in *manualEnrollmentInputs) (manualApplyPlan, []string
 		plan.Limitations = append(plan.Limitations,
 			"Agent Control (remote steer and stop) is not enabled: its control file location is not writable.")
 	}
+	if supportsAgentControlChannel(agent) && report.writable(writeRoleControl) {
+		plan.Limitations = append(plan.Limitations, fmt.Sprintf(
+			"Manual setup does not install the Agent Control runtime plugin (remote steer and stop). After resume, run: preloop agents install-plugin %s",
+			shellQuoteAgentName(resolveAgentDisplayName(agent)),
+		))
+	}
 	if !stateWritable {
 		plan.Limitations = append(plan.Limitations,
 			"~/.preloop is not writable: no local backup of the original configuration was kept, so `preloop agents offboard` will print the removal instead of restoring a backup.")

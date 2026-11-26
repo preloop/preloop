@@ -2826,6 +2826,12 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		fmt.Println("  Preloop: no managed record matched this install; nothing was removed there.")
 	}
 	fmt.Printf("  %s\n", local.Line)
+	if isClaudeCodeAgent(agent) && urlPointsAtPreloop(os.Getenv("ANTHROPIC_BASE_URL"), baseURL) {
+		// The environment-variable form lives wherever the user set it (a
+		// Compose file, a shell profile); the CLI cannot remove it.
+		localLeftovers = append(localLeftovers,
+			"this shell's environment still sets ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY for Preloop. Remove them where you set them (Compose file, env_file or shell profile); the key no longer works.")
+	}
 	for _, leftover := range localLeftovers {
 		fmt.Printf("  This machine: %s\n", leftover)
 	}

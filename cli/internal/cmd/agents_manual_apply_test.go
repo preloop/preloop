@@ -82,6 +82,7 @@ func TestDiagnoseJSONSyntaxNamesLineAndSlip(t *testing.T) {
 		{"unterminated", "{\n  \"a\": \"1\n}\n", 2, "missing double quote"},
 		{"cut off", "{\n  \"a\": {\n", 2, "ends early"},
 		{"empty", "  \n", 1, "empty"},
+		{"two objects", "{\"a\": 1}\n{\"b\": 2}\n", 2, "exactly one object"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -263,7 +264,7 @@ func TestRenderManualInstructionsIsCopyable(t *testing.T) {
 		"Remove these keys if present: env.CLAUDE_CODE_OAUTH_TOKEN",
 		"export ANTHROPIC_API_KEY='" + syntheticAgentKey + "'",
 		"claude --settings",
-		"What each form does not enable",
+		"does not enable",
 		`preloop agents onboard --resume "Claude Code"`,
 	} {
 		if !strings.Contains(text, want) {

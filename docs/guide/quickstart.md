@@ -146,6 +146,9 @@ claude mcp add \
 !!! tip "One-command alternative"
     **Tools > Connect an agent** shows the same path: install the CLI, run `preloop login`, then `preloop agents discover`. The CLI detects Claude Code (and Codex, Gemini, OpenClaw, OpenCode and others), wires the MCP server through Preloop with the correct token, and lets you confirm each change. See [Onboard local agents with the CLI](quickstart-cli.md).
 
+!!! tip "Claude Code in a container or sandbox"
+    If Claude Code runs in a container and its settings file is read-only, the CLI prints the change for you to apply and verifies it afterwards. See [Sandboxed and containerised agents](clients/sandboxed-agents.md).
+
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
     <source src="../../assets/animations/quickstart/claude_setup.mp4" type="video/mp4">

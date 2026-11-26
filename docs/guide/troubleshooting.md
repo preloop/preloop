@@ -90,6 +90,18 @@ preloop agents restore <agent>    # put the local config back
 preloop agents offboard <agent>   # restore config AND remove the managed enrollment
 ```
 
+### "Preloop cannot write these files from here" / "Waiting for local configuration"
+
+The agent's configuration is read-only where the CLI runs, typically a bind mount in a container. Onboarding printed the change for you to make and is waiting for it. Apply the block, then run:
+
+```bash
+preloop agents onboard --resume "<agent>"
+```
+
+Resume lists exactly what is missing, or the line and reason of a JSON syntax error. Exit status 3 means "waiting for a manual step", not a failure. A setup that is never resumed expires after 72 hours by default; cancel it earlier with `preloop agents onboard --cancel "<agent>"`.
+
+The full flow, the environment-variable alternative, rejected Claude logins in containers and offboarding are covered in [Sandboxed and containerised agents](clients/sandboxed-agents.md#troubleshooting).
+
 ## MCP connections
 
 ### Client connects but shows no tools

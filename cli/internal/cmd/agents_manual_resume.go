@@ -118,7 +118,24 @@ func resumeManualEnrollment(
 		return fmt.Errorf("cannot read the pending setup for %s: %w", displayName, err)
 	}
 
-	effective, problems := checkManualChangeInPlace(plan, opts, state.TokenSHA256, output)
+	// A key other than the one this setup issued (for example one issued
+	// from the console) is accepted only if the real request below proves it:
+	// first check quietly against the issued key, then against any key.
+	otherKey := false
+	effective, problems := checkManualChangeInPlace(plan, opts, state.TokenSHA256, io.Discard)
+	if problems > 0 && state.TokenSHA256 != "" {
+		if _, lenient := checkManualChangeInPlace(plan, opts, "", io.Discard); lenient == 0 {
+			otherKey = true
+		}
+	}
+	checkSHA := state.TokenSHA256
+	if otherKey {
+		checkSHA = ""
+	}
+	effective, problems = checkManualChangeInPlace(plan, opts, checkSHA, output)
+	if otherKey {
+		printManualLine(output, "  The key in place is not the one this setup printed; it is accepted only if the real request below succeeds with it.")
+	}
 	if problems > 0 {
 		printManualLine(output, "")
 		printManualLine(output, "Not onboarded yet. Fix the lines above, then run: %s", manualResumeCommand(displayName))
@@ -164,6 +181,11 @@ func resumeManualEnrollment(
 		}
 	}
 
+	if otherKey && status != "validated" {
+		printManualLine(output, "✗ %s is NOT onboarded: the key in place is not the one issued for this setup, and no real request was made to prove it works.", displayName)
+		printManualLine(output, "  Put the key the CLI printed in place, or rerun without --skip-live-validate.")
+		return &manualNotAppliedError{Agent: displayName, Problems: 1}
+	}
 	request := map[string]interface{}{"status": status, "validation_result": validationResult}
 	var updated managedAgentEnrollmentSummary
 	if err := client.Post(
@@ -175,13 +197,19 @@ func resumeManualEnrollment(
 	}
 	removeManualResumeState(state.AgentName, state.ConfigPath)
 
-	printManualLine(output, "✓ Onboarded %s", displayName)
+	if opts.SkipLiveValidate && status != "validated" && effective != nil && supportsManagedLiveValidation(agent) {
+		// No request was made, so nothing shows that the route, or a
+		// subscription login behind it, works: do not call it onboarded.
+		printManualLine(output, "Configured %s; the change is in place but the route and any subscription login behind it were NOT verified (gateway validation skipped).", displayName)
+		printManualLine(output, "  Verify with one real request: preloop agents validate %s --live", shellQuoteAgentName(displayName))
+	} else {
+		printManualLine(output, "✓ Onboarded %s", displayName)
+	}
 	printManualLine(output, "  Managed agent: %s", state.AgentID)
 	switch {
 	case status == "validated":
 		printManualLine(output, "  Gateway validation: passed (one real request, recorded in the console)")
 	case opts.SkipLiveValidate:
-		printManualLine(output, "  Gateway validation: skipped at your request; run `preloop agents validate %s --live` to make the real request", shellQuoteAgentName(displayName))
 	case !probeRan:
 		printManualLine(output, "  Gateway validation: not applicable (MCP only)")
 	}

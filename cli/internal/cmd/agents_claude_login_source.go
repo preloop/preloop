@@ -56,8 +56,12 @@ func loadedClaudeLoginSource(agent AgentConfig) string {
 // claudeLoginIsEnvSourced reports whether this enrollment imported its
 // subscription login from the environment token.
 func claudeLoginIsEnvSourced(agent AgentConfig) bool {
-	state, err := loadLocalEnrollmentState(agent)
-	return err == nil && state.ClaudeOAuthCredentialSource == claudeOAuthSourceEnv
+	if state, err := loadLocalEnrollmentState(agent); err == nil && state.ClaudeOAuthCredentialSource != "" {
+		return state.ClaudeOAuthCredentialSource == claudeOAuthSourceEnv
+	}
+	// No recorded store (for example ~/.preloop is read-only): the token in
+	// the process environment is what import read, and what Claude Code uses.
+	return strings.TrimSpace(os.Getenv(claudeOAuthTokenEnvName)) != ""
 }
 
 // rejectedSubscriptionLoginAdvice explains a rejected imported login: where
