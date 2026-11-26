@@ -3506,7 +3506,7 @@ def _finish_onboarding_cleanup(
     response_model=ManagedAgentEnrollmentCancelResponse,
 )
 @require_permission("manage_agents")
-async def cancel_account_managed_agent_enrollment(
+def cancel_account_managed_agent_enrollment(
     agent_id: str,
     enrollment_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
@@ -3523,9 +3523,7 @@ async def cancel_account_managed_agent_enrollment(
     never used, or decommissioned when it is left without a usable key, and
     the enrollment becomes ``cancelled``. All of it commits together.
     """
-    await run_db_off_loop(
-        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
-    )
+    ensure_permission_in_oss(db, current_user, "manage_agents")
     account_id = str(account.id)
     # Same lock order as credential issuance: account, then agent rows.
     billing.lock_account(db, account_id)
@@ -3588,7 +3586,7 @@ async def cancel_account_managed_agent_enrollment(
     response_model=ManagedAgentOnboardingRollbackResponse,
 )
 @require_permission("manage_agents")
-async def rollback_account_managed_agent_onboarding(
+def rollback_account_managed_agent_onboarding(
     agent_id: str,
     payload: ManagedAgentOnboardingRollbackRequest,
     account: Annotated[Account, Depends(get_account_for_user)],
@@ -3604,9 +3602,7 @@ async def rollback_account_managed_agent_onboarding(
     decommissioned or kept by the same rules. Ids that do not belong to the
     account and the agent are ignored.
     """
-    await run_db_off_loop(
-        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
-    )
+    ensure_permission_in_oss(db, current_user, "manage_agents")
     account_id = str(account.id)
     result = onboarding_cleanup.cleanup_onboarding_resources(
         db,
@@ -3639,7 +3635,7 @@ async def rollback_account_managed_agent_onboarding(
     response_model=ManagedAgentManualSetupResponse,
 )
 @require_permission("view_agents")
-async def get_account_managed_agent_manual_setup(
+def get_account_managed_agent_manual_setup(
     agent_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
     request: Request,
