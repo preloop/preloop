@@ -4149,6 +4149,11 @@ export class PreloopFlowForm extends LitElement {
       servers.push('preloop-mcp');
     }
 
+    const scheduled =
+      preset.trigger_event_source === 'schedule' ||
+      Boolean(preset.schedule_config) ||
+      (Array.isArray(preset.trigger_event_types) &&
+        preset.trigger_event_types.includes('schedule'));
     this.flow = {
       name: preset.name,
       description: preset.description,
@@ -4156,6 +4161,10 @@ export class PreloopFlowForm extends LitElement {
       prompt_template: preset.prompt_template,
       trigger_event_types: Array.isArray(preset.trigger_event_types)
         ? [...preset.trigger_event_types]
+        : undefined,
+      trigger_event_source: scheduled ? 'schedule' : undefined,
+      schedule_config: scheduled
+        ? structuredClone(preset.schedule_config ?? defaultScheduleConfig())
         : undefined,
       trigger_config: preset.trigger_config ?? undefined,
       webhook_config: this.supportedWebhookConfig(preset.webhook_config),

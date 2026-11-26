@@ -55,7 +55,21 @@ const OBSERVE_EVAL = {
   agent_config: {},
 };
 
-const PRESETS = [ISSUE_TRIAGE, PR_REVIEWER, OBSERVE_EVAL];
+const DAILY_REVIEW = {
+  ...OBSERVE_EVAL,
+  id: 'preset-004',
+  name: 'Daily review',
+  trigger_event_source: null,
+  trigger_event_types: ['schedule'],
+  schedule_config: {
+    type: 'daily',
+    at: '06:00',
+    timezone: 'UTC',
+    payload: { previous_result_execution_id: 'last' },
+  },
+};
+
+const PRESETS = [ISSUE_TRIAGE, PR_REVIEWER, OBSERVE_EVAL, DAILY_REVIEW];
 
 describe('PreloopFlowForm presets', () => {
   let sandbox: SinonSandbox;
@@ -129,6 +143,20 @@ describe('PreloopFlowForm presets', () => {
     ).to.include('saved paused');
     expect(payload).to.not.have.property('id');
     expect(payload.webhook_config).to.deep.equal({ supersede_on_update: true });
+  });
+
+  it('preserves a preset schedule when the account has a tracker', async () => {
+    const element = await mount();
+    await (element as any).applyPresetSelection(DAILY_REVIEW.id);
+    await element.updateComplete;
+
+    expect(element.shadowRoot!.querySelector('schedule-config-editor')).to
+      .exist;
+    const payload = await submit(element);
+    expect(payload.trigger_event_source).to.equal('schedule');
+    expect(payload.trigger_event_types).to.deep.equal(['schedule']);
+    expect(payload.schedule_config).to.deep.equal(DAILY_REVIEW.schedule_config);
+    expect(payload.is_enabled).to.equal(false);
   });
 
   it('keeps the saved webhook settings when a preset flow is reopened and edited', async () => {
