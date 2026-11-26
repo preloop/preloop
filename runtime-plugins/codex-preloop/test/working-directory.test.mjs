@@ -35,11 +35,13 @@ test("without runner.json Talk refuses the home and credential directories", asy
   process.env.HOME = home;
   try {
     await fs.mkdir(path.join(home, ".ssh"));
+    await fs.mkdir(path.join(home, ".cursor"));
     await fs.mkdir(path.join(home, "project"));
     const config = { workspace_root: home };
     assert.equal(await resolveWorkingDirectory(config, path.join(home, "project")), path.join(home, "project"));
     await assert.rejects(resolveWorkingDirectory(config, home), /home directory/);
     await assert.rejects(resolveWorkingDirectory(config, path.join(home, ".ssh")), /credentials/);
+    await assert.rejects(resolveWorkingDirectory(config, path.join(home, ".cursor")), /credentials/);
     await assert.rejects(
       resolveWorkingDirectory({ workspace_root: path.join(home, "missing") }, path.join(home, "project")),
       /workspace_root does not exist/,

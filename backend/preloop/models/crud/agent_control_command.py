@@ -366,6 +366,10 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             query.filter(
                 AgentControlCommand.managed_agent_id == managed_agent_id,
                 AgentControlCommand.kind == "command",
+                func.coalesce(
+                    AgentControlCommand.envelope["payload"]["delivery_route"].astext, ""
+                )
+                != "herdr_pane",
                 AgentControlCommand.status == "pending",
                 (AgentControlCommand.expires_at.is_(None))
                 | (AgentControlCommand.expires_at > now),
@@ -428,6 +432,10 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             )
         expired = query.filter(
             AgentControlCommand.status == "pending",
+            func.coalesce(
+                AgentControlCommand.envelope["payload"]["delivery_route"].astext, ""
+            )
+            != "herdr_pane",
             AgentControlCommand.expires_at.isnot(None),
             AgentControlCommand.expires_at <= now,
         ).update({"status": "expired", "expired_at": now}, synchronize_session="fetch")

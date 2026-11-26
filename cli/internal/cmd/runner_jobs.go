@@ -50,7 +50,8 @@ type runnerJobs struct {
 	events      chan publicationEvent
 	// sessions hosts remote harness sessions; nil in one-shot and test
 	// loops that never accept them.
-	sessions *runnerSessionManager
+	sessions     *runnerSessionManager
+	herdrPrompts *runnerHerdrPrompts
 	// power carries host sleep and wake events (runner_power.go); nil when
 	// no watcher runs, and a nil channel never fires.
 	power <-chan runnerPowerEvent

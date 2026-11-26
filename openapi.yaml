@@ -4867,6 +4867,16 @@ paths:
           title: Has Artifacts
         description: 'Only sessions holding an available artifact: ''any'', or an
           artifact kind such as transcript, screenshot, document or audio'
+      - name: workspace_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 256
+          - type: 'null'
+          title: Workspace Id
       - name: owner_user_id
         in: query
         required: false
@@ -46222,6 +46232,10 @@ components:
           type: array
           maxItems: 32
           title: Entries
+        herdr:
+          anyOf:
+          - $ref: '#/components/schemas/HerdrInventory'
+          - type: 'null'
       type: object
       required:
       - generated_at
@@ -46482,6 +46496,125 @@ components:
       - eligible
       title: HarnessRunnerOption
       description: One runner reporting the harness (for the ``runner_id`` pin).
+    HerdrAgent:
+      properties:
+        multiplexer:
+          type: string
+          const: herdr
+          title: Multiplexer
+          default: herdr
+        workspace_id:
+          type: string
+          maxLength: 256
+          title: Workspace Id
+        workspace_label:
+          type: string
+          maxLength: 256
+          title: Workspace Label
+          default: ''
+        tab_id:
+          type: string
+          maxLength: 256
+          title: Tab Id
+        tab_label:
+          type: string
+          maxLength: 256
+          title: Tab Label
+          default: ''
+        pane_id:
+          type: string
+          maxLength: 256
+          title: Pane Id
+        pane_label:
+          type: string
+          maxLength: 256
+          title: Pane Label
+          default: ''
+        terminal_title:
+          type: string
+          maxLength: 256
+          title: Terminal Title
+          default: ''
+        state:
+          type: string
+          enum:
+          - working
+          - idle
+          - blocked
+          - done
+          - closed
+          - unknown
+          title: State
+        harness_kind:
+          type: string
+          maxLength: 256
+          title: Harness Kind
+        harness_session_id:
+          type: string
+          maxLength: 512
+          title: Harness Session Id
+          default: ''
+        cwd:
+          anyOf:
+          - type: string
+            maxLength: 4096
+          - type: 'null'
+          title: Cwd
+        runtime_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Runtime Session Id
+        managed:
+          type: boolean
+          title: Managed
+          default: false
+      type: object
+      required:
+      - workspace_id
+      - tab_id
+      - pane_id
+      - state
+      - harness_kind
+      title: HerdrAgent
+      description: Observed agent; unknown harnesses and native identities stay unmanaged.
+    HerdrInventory:
+      properties:
+        protocol:
+          type: integer
+          title: Protocol
+        observe_enabled:
+          type: boolean
+          title: Observe Enabled
+        prompt_enabled:
+          type: boolean
+          title: Prompt Enabled
+          default: false
+        observed_at:
+          type: string
+          format: date-time
+          title: Observed At
+        status:
+          anyOf:
+          - type: string
+            const: herdr_protocol_unsupported
+          - type: 'null'
+          title: Status
+        agents:
+          items:
+            $ref: '#/components/schemas/HerdrAgent'
+          type: array
+          maxItems: 512
+          title: Agents
+      type: object
+      required:
+      - protocol
+      - observe_enabled
+      - observed_at
+      - agents
+      title: HerdrInventory
+      description: Complete observation snapshot; malformed lists must never imply
+        closure.
     HollowSuccessSignal:
       properties:
         count:
@@ -55838,6 +55971,11 @@ components:
             - control_offline
             - terminal_session
             - turn_in_progress
+            - agent_blocked
+            - herdr_unavailable
+            - session_owner_unknown
+            - session_directory_unknown
+            - session_unavailable
             - runner_away
           - type: 'null'
           title: Reason Code
@@ -56630,6 +56768,10 @@ components:
         session_source_id:
           type: string
           title: Session Source Id
+        terminal_location:
+          anyOf:
+          - $ref: '#/components/schemas/TerminalLocation'
+          - type: 'null'
         session_reference:
           anyOf:
           - type: string
@@ -60351,6 +60493,80 @@ components:
       type: object
       title: TeamUpdate
       description: Schema for updating a team.
+    TerminalLocation:
+      properties:
+        multiplexer:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Multiplexer
+          default: herdr
+        workspace_id:
+          type: string
+          maxLength: 256
+          title: Workspace Id
+        workspace_label:
+          type: string
+          maxLength: 256
+          title: Workspace Label
+          default: ''
+        tab_id:
+          type: string
+          maxLength: 256
+          title: Tab Id
+        tab_label:
+          type: string
+          maxLength: 256
+          title: Tab Label
+          default: ''
+        pane_id:
+          type: string
+          maxLength: 256
+          title: Pane Id
+        pane_label:
+          type: string
+          maxLength: 256
+          title: Pane Label
+          default: ''
+        terminal_title:
+          type: string
+          maxLength: 256
+          title: Terminal Title
+          default: ''
+        state:
+          type: string
+          enum:
+          - working
+          - idle
+          - blocked
+          - done
+          - closed
+          - unknown
+          title: State
+        device_id:
+          type: string
+          maxLength: 256
+          title: Device Id
+        observed_at:
+          type: string
+          format: date-time
+          title: Observed At
+        pane_closed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Pane Closed At
+      type: object
+      required:
+      - workspace_id
+      - tab_id
+      - pane_id
+      - state
+      - device_id
+      - observed_at
+      title: TerminalLocation
+      description: Session-retained location linked to an authenticated device report.
     TestConnectionRequest:
       properties:
         organization:

@@ -1,0 +1,768 @@
+{
+  "id": "example-request",
+  "result": {
+    "type": "session_snapshot",
+    "snapshot": {
+      "version": "0.9.5",
+      "protocol": 22,
+      "workspaces": [
+        {
+          "workspace_id": "workspace-example",
+          "label": "Example workspace"
+        }
+      ],
+      "tabs": [
+        {
+          "tab_id": "tab-example",
+          "workspace_id": "workspace-example",
+          "label": "Example tab"
+        }
+      ],
+      "panes": [
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000000"
+          },
+          "agent_status": "idle",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-00",
+          "terminal_id": "terminal-00",
+          "terminal_title_stripped": "Example agent 0",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 0"
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000001"
+          },
+          "agent_status": "working",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-01",
+          "terminal_id": "terminal-01",
+          "terminal_title_stripped": "Example agent 1",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 1"
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000002"
+          },
+          "agent_status": "blocked",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-02",
+          "terminal_id": "terminal-02",
+          "terminal_title_stripped": "Example agent 2",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 2"
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000003"
+          },
+          "agent_status": "done",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-03",
+          "terminal_id": "terminal-03",
+          "terminal_title_stripped": "Example agent 3",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 3"
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000004"
+          },
+          "agent_status": "idle",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-04",
+          "terminal_id": "terminal-04",
+          "terminal_title_stripped": "Example agent 4",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 4"
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000005"
+          },
+          "agent_status": "working",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-05",
+          "terminal_id": "terminal-05",
+          "terminal_title_stripped": "Example agent 5",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 5"
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000006"
+          },
+          "agent_status": "blocked",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-06",
+          "terminal_id": "terminal-06",
+          "terminal_title_stripped": "Example agent 6",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 6"
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000007"
+          },
+          "agent_status": "done",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-07",
+          "terminal_id": "terminal-07",
+          "terminal_title_stripped": "Example agent 7",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 7"
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000008"
+          },
+          "agent_status": "idle",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-08",
+          "terminal_id": "terminal-08",
+          "terminal_title_stripped": "Example agent 8",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 8"
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000009"
+          },
+          "agent_status": "working",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-09",
+          "terminal_id": "terminal-09",
+          "terminal_title_stripped": "Example agent 9",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 9"
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000010"
+          },
+          "agent_status": "blocked",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-10",
+          "terminal_id": "terminal-10",
+          "terminal_title_stripped": "Example agent 10",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 10"
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000011"
+          },
+          "agent_status": "done",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-11",
+          "terminal_id": "terminal-11",
+          "terminal_title_stripped": "Example agent 11",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 11"
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000012"
+          },
+          "agent_status": "idle",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-12",
+          "terminal_id": "terminal-12",
+          "terminal_title_stripped": "Example agent 12",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 12"
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000013"
+          },
+          "agent_status": "working",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-13",
+          "terminal_id": "terminal-13",
+          "terminal_title_stripped": "Example agent 13",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 13"
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000014"
+          },
+          "agent_status": "blocked",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-14",
+          "terminal_id": "terminal-14",
+          "terminal_title_stripped": "Example agent 14",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 14"
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000015"
+          },
+          "agent_status": "done",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-15",
+          "terminal_id": "terminal-15",
+          "terminal_title_stripped": "Example agent 15",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 15"
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000016"
+          },
+          "agent_status": "idle",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-16",
+          "terminal_id": "terminal-16",
+          "terminal_title_stripped": "Example agent 16",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 16"
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000017"
+          },
+          "agent_status": "working",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-17",
+          "terminal_id": "terminal-17",
+          "terminal_title_stripped": "Example agent 17",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 17"
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000018"
+          },
+          "agent_status": "blocked",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-18",
+          "terminal_id": "terminal-18",
+          "terminal_title_stripped": "Example agent 18",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 18"
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000019"
+          },
+          "agent_status": "done",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-19",
+          "terminal_id": "terminal-19",
+          "terminal_title_stripped": "Example agent 19",
+          "focused": false,
+          "revision": 1,
+          "label": "Example pane 19"
+        }
+      ],
+      "layouts": [],
+      "agents": [
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000000"
+          },
+          "agent_status": "idle",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-00",
+          "terminal_id": "terminal-00",
+          "terminal_title_stripped": "Example agent 0",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000001"
+          },
+          "agent_status": "working",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-01",
+          "terminal_id": "terminal-01",
+          "terminal_title_stripped": "Example agent 1",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000002"
+          },
+          "agent_status": "blocked",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-02",
+          "terminal_id": "terminal-02",
+          "terminal_title_stripped": "Example agent 2",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000003"
+          },
+          "agent_status": "done",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-03",
+          "terminal_id": "terminal-03",
+          "terminal_title_stripped": "Example agent 3",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000004"
+          },
+          "agent_status": "idle",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-04",
+          "terminal_id": "terminal-04",
+          "terminal_title_stripped": "Example agent 4",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000005"
+          },
+          "agent_status": "working",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-05",
+          "terminal_id": "terminal-05",
+          "terminal_title_stripped": "Example agent 5",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000006"
+          },
+          "agent_status": "blocked",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-06",
+          "terminal_id": "terminal-06",
+          "terminal_title_stripped": "Example agent 6",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000007"
+          },
+          "agent_status": "done",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-07",
+          "terminal_id": "terminal-07",
+          "terminal_title_stripped": "Example agent 7",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000008"
+          },
+          "agent_status": "idle",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-08",
+          "terminal_id": "terminal-08",
+          "terminal_title_stripped": "Example agent 8",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000009"
+          },
+          "agent_status": "working",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-09",
+          "terminal_id": "terminal-09",
+          "terminal_title_stripped": "Example agent 9",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000010"
+          },
+          "agent_status": "blocked",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-10",
+          "terminal_id": "terminal-10",
+          "terminal_title_stripped": "Example agent 10",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000011"
+          },
+          "agent_status": "done",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-11",
+          "terminal_id": "terminal-11",
+          "terminal_title_stripped": "Example agent 11",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000012"
+          },
+          "agent_status": "idle",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-12",
+          "terminal_id": "terminal-12",
+          "terminal_title_stripped": "Example agent 12",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000013"
+          },
+          "agent_status": "working",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-13",
+          "terminal_id": "terminal-13",
+          "terminal_title_stripped": "Example agent 13",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000014"
+          },
+          "agent_status": "blocked",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-14",
+          "terminal_id": "terminal-14",
+          "terminal_title_stripped": "Example agent 14",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000015"
+          },
+          "agent_status": "done",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-15",
+          "terminal_id": "terminal-15",
+          "terminal_title_stripped": "Example agent 15",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000016"
+          },
+          "agent_status": "idle",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-16",
+          "terminal_id": "terminal-16",
+          "terminal_title_stripped": "Example agent 16",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000017"
+          },
+          "agent_status": "working",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-17",
+          "terminal_id": "terminal-17",
+          "terminal_title_stripped": "Example agent 17",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "codex",
+          "agent_session": {
+            "source": "example",
+            "agent": "codex",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000018"
+          },
+          "agent_status": "blocked",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-18",
+          "terminal_id": "terminal-18",
+          "terminal_title_stripped": "Example agent 18",
+          "focused": false,
+          "revision": 1
+        },
+        {
+          "agent": "claude",
+          "agent_session": {
+            "source": "example",
+            "agent": "claude",
+            "kind": "id",
+            "value": "00000000-0000-4000-8000-000000000019"
+          },
+          "agent_status": "done",
+          "cwd": "/home/example/project",
+          "workspace_id": "workspace-example",
+          "tab_id": "tab-example",
+          "pane_id": "pane-19",
+          "terminal_id": "terminal-19",
+          "terminal_title_stripped": "Example agent 19",
+          "focused": false,
+          "revision": 1
+        }
+      ]
+    }
+  }
+}

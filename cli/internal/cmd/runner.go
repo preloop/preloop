@@ -230,6 +230,9 @@ type runnerWSMessage struct {
 	Actor           *runnerSessionActor `json:"actor,omitempty"`
 	Limits          map[string]any      `json:"limits,omitempty"`
 
+	// Herdr prompt fields are accepted only through the local guarded transport.
+	herdrPromptCommand
+
 	// InventoryWanted on an ack asks for the full harness inventory.
 	InventoryWanted bool                `json:"inventory_wanted,omitempty"`
 	OwnerNotices    []runnerOwnerNotice `json:"owner_notices,omitempty"`
@@ -725,6 +728,10 @@ func runRunnerSession(
 	// Publication controllers talk to the server over this socket, so they
 	// cannot outlive the session. The jobs themselves can, and do.
 	defer jobs.abortPublications()
+	defer runnerHerdr.reconnect()
+	if jobs.herdrPrompts == nil {
+		jobs.herdrPrompts = newRunnerHerdrPrompts()
+	}
 	_ = conn.SetReadDeadline(time.Now().Add(runnerReadWait))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(runnerReadWait))
@@ -846,6 +853,10 @@ func runRunnerSession(
 					return err
 				}
 			}
+		case result := <-jobs.herdrPrompts.results:
+			if err := writeRunnerJSON(conn, result); err != nil {
+				return err
+			}
 		case <-jobs.sessions.notifyChan():
 			if err := jobs.sessions.flush(sendSessionFrame); err != nil {
 				return fmt.Errorf("session delivery: %w", err)
@@ -891,6 +902,12 @@ func runRunnerSession(
 				return err
 			}
 		case msg := <-incoming:
+			if msg.Type == "herdr_prompt" {
+				command := msg.herdrPromptCommand
+				command.Text = msg.Text
+				jobs.herdrPrompts.submit(command)
+				continue
+			}
 			if msg.Type == "model_request" {
 				modelProxy.handle(msg.runnerModelRequest)
 				continue

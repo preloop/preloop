@@ -1380,6 +1380,7 @@ export interface GatewayUsageSearchParams extends GatewayUsageSummaryParams {
 }
 
 export interface RuntimeSessionListParams extends GatewayUsageSummaryParams {
+  workspaceId?: string;
   sort?: 'last_activity' | 'started' | 'cost' | 'requests';
   query?: string;
   sessionSourceType?: string;
@@ -1505,6 +1506,7 @@ function buildRuntimeSessionListQuery(
   if (params.status) {
     queryParams.set('status', params.status);
   }
+  if (params.workspaceId) queryParams.set('workspace_id', params.workspaceId);
   if (params.hasArtifacts) {
     queryParams.set('has_artifacts', params.hasArtifacts);
   }
@@ -6154,6 +6156,29 @@ export interface HarnessInventory {
   generated_at: string;
   hash: string;
   entries: HarnessInventoryEntry[];
+  herdr?: {
+    protocol: number;
+    observe_enabled: boolean;
+    prompt_enabled: boolean;
+    observed_at: string;
+    status?: string;
+    agents: Array<{
+      harness_kind: string;
+      harness_session_id: string;
+      cwd?: string | null;
+      multiplexer: 'herdr';
+      workspace_id: string;
+      workspace_label: string | null;
+      tab_id: string;
+      tab_label: string | null;
+      pane_id: string;
+      terminal_title: string | null;
+      pane_label?: string | null;
+      state: string;
+      runtime_session_id: string | null;
+      managed: boolean;
+    }>;
+  } | null;
 }
 
 /** One model a harness can run, with how many eligible runners list it. */
@@ -6495,6 +6520,12 @@ export interface RuntimeSessionControl {
     | 'no_control_plugin'
     | 'control_offline'
     | 'terminal_session'
+    | 'turn_in_progress'
+    | 'agent_blocked'
+    | 'herdr_unavailable'
+    | 'session_owner_unknown'
+    | 'session_directory_unknown'
+    | 'session_unavailable'
     | 'runner_away'
     | null;
   reason: string | null;

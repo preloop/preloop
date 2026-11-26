@@ -31,6 +31,7 @@ from preloop.api.auth.jwt import (
 )
 from preloop.config import settings
 from preloop.models import models
+from preloop.models.crud.herdr_command import is_herdr_command
 from preloop.models.crud import (
     crud_agent_control_command,
     crud_audit_log,
@@ -651,6 +652,7 @@ async def _send_control_command(
         if (
             record is None
             or record.kind != "command"
+            or is_herdr_command(record)
             or record.status not in {"pending", "delivered"}
         ):
             return None
@@ -788,6 +790,14 @@ def _handle_command_ack(
         return
     command_id = inbound.payload.get("command_id")
     if not isinstance(command_id, str) or not command_id.strip():
+        return
+    record = crud_agent_control_command.get_by_command_id(
+        db,
+        account_id=connection.account_id,
+        managed_agent_id=connection.managed_agent_id,
+        command_id=command_id.strip(),
+    )
+    if is_herdr_command(record):
         return
     try:
         with db.begin_nested():
@@ -1036,7 +1046,7 @@ def _persist_agent_control_result(
         managed_agent_id=context.managed_agent_id,
         command_id=command_id.strip(),
     )
-    if command is None or command.kind != "command":
+    if command is None or command.kind != "command" or is_herdr_command(command):
         return None
     if command.status in {"failed", "expired", "cancelled"} or isinstance(
         crud_agent_control_command.command_result_payload(command), dict
@@ -1141,7 +1151,12 @@ def _persist_agent_control_progress(
         managed_agent_id=context.managed_agent_id,
         command_id=command_id,
     )
-    if command is None or command.kind != "command" or command.status != "acked":
+    if (
+        command is None
+        or command.kind != "command"
+        or is_herdr_command(command)
+        or command.status != "acked"
+    ):
         return None
     kind = inbound.payload.get("kind")
     call_id = inbound.payload.get("call_id")
@@ -1400,6 +1415,7 @@ def _resolve_command_progress_target(
     if (
         command is None
         or command.kind != "command"
+        or is_herdr_command(command)
         or command.status not in {"delivered", "acked"}
     ):
         return None
@@ -1588,6 +1604,7 @@ def _bind_command_session(
     if (
         command is None
         or command.kind != "command"
+        or is_herdr_command(command)
         or command.status not in {"delivered", "acked"}
     ):
         return
@@ -2242,9 +2259,13 @@ async def _route_managed_agent_prompt(
         target_session is not None
         and target_session.session_source_type in NATIVE_NOTE_ROUTED_SOURCES
     )
-    # Native sessions decide below whether the prompt becomes a note, which
-    # needs no live plugin. Everything else still requires one.
-    if not native_target and not _agent_has_control_config(
+    herdr_pane = native_target and (
+        (getattr(target_session, "terminal_location", None) or {}).get("multiplexer")
+        == "herdr"
+    )
+    # A native session in a Herdr pane is driven through Herdr and needs no
+    # plugin; every other prompt (and any interrupt) still requires one.
+    if (request.interrupt or not herdr_pane) and not _agent_has_control_config(
         db, account_id=str(agent.account_id), agent=agent
     ):
         raise HTTPException(
@@ -2270,6 +2291,7 @@ async def _route_managed_agent_prompt(
     await _require_session_start_consent(
         db, agent=agent, request=request, current_user=current_user
     )
+    herdr_target = None
     cancel_notes_for = None
     if target_session is not None and native_target and not request.interrupt:
         from preloop.api.endpoints.operator_notes import _create_note
@@ -2288,7 +2310,10 @@ async def _route_managed_agent_prompt(
                 raise HTTPException(
                     409,
                     {
-                        "code": "session_unavailable",
+                        "code": decision.reason_code
+                        if decision.reason_code
+                        in {"agent_blocked", "herdr_unavailable"}
+                        else "session_unavailable",
                         "message": decision.reason,
                         "resume_command": resume_command(target_session),
                     },
@@ -2327,6 +2352,7 @@ async def _route_managed_agent_prompt(
                 command_envelope=envelope,
                 delivery_message=decision.reason,
             )
+        herdr_target = decision.herdr_target
         # Supersede pending notes only once the prompt was delivered.
         cancel_notes_for = target_session.id
     identity = _existing_session_identity(target_session)
@@ -2341,24 +2367,45 @@ async def _route_managed_agent_prompt(
             directories[0] if directories else None
         )
     try:
-        dispatched = await dispatch_operator_message(
-            db,
-            managed_agent=agent,
-            text=request.message,
-            metadata=request.metadata,
-            start_new_session=request.start_new_session,
-            target_session_id=request.target_session_id,
-            source=_command_source(request.metadata),
-            input_mode=request.input_mode,
-            interrupt=request.interrupt,
-            spawn_worktree=request.spawn_worktree,
-            voice=request.voice,
-            session_mode=session_mode,
-            session_identity=identity,
-            created_by_user_id=current_user.id,
-            require_delivery=True,
-            consuming_account_id=current_user.account_id,
-        )
+        if herdr_target is not None:
+            if (
+                request.interrupt
+                or request.spawn_worktree
+                or request.input_mode != "text"
+            ):
+                raise AgentControlDispatchError(
+                    "Herdr accepts only text prompts to the selected idle pane"
+                )
+            from preloop.services.herdr_commands import dispatch_prompt
+
+            dispatched = dispatch_prompt(
+                db,
+                agent=agent,
+                session=target_session,
+                target=herdr_target,
+                text=request.message,
+                user_id=current_user.id,
+                source=_command_source(request.metadata),
+            )
+        else:
+            dispatched = await dispatch_operator_message(
+                db,
+                managed_agent=agent,
+                text=request.message,
+                metadata=request.metadata,
+                start_new_session=request.start_new_session,
+                target_session_id=request.target_session_id,
+                source=_command_source(request.metadata),
+                input_mode=request.input_mode,
+                interrupt=request.interrupt,
+                spawn_worktree=request.spawn_worktree,
+                voice=request.voice,
+                session_mode=session_mode,
+                session_identity=identity,
+                created_by_user_id=current_user.id,
+                require_delivery=True,
+                consuming_account_id=current_user.account_id,
+            )
     except AgentControlDispatchError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     if cancel_notes_for is not None:
@@ -2399,6 +2446,7 @@ async def _route_managed_agent_prompt(
             status="delivered" if local_delivery else "queued",
             metadata={
                 "kind": "operator_command",
+                "delivery_route": "herdr_pane" if herdr_target else "agent_control",
                 # Not "author_*": the activity redactor masks any key that
                 # contains "auth".
                 "sent_by": author_display,

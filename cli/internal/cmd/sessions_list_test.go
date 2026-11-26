@@ -432,3 +432,12 @@ func TestSessionsWideIncludesLocalResumeIdentity(t *testing.T) {
 		if !strings.Contains(out.String(), value) { t.Fatalf("wide output omitted %q", value) }
 	}
 }
+
+func TestJoinNonEmptySkipsMissingLabels(t *testing.T) {
+	if got := joinNonEmpty(" / ", "", "Example tab", ""); got != "Example tab" {
+		t.Fatalf("got %q", got)
+	}
+	if got := joinNonEmpty(" / ", "", ""); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}

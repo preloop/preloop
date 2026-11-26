@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
+from preloop.models.schemas.terminal_location import TerminalLocation
 from preloop.schemas.resource_share import SharedResourceRead
 
 from preloop.services.cache_accounting import compute_cache_hit_ratio
@@ -369,6 +370,7 @@ class RuntimeSessionSummary(BaseModel):
     id: str
     session_source_type: str
     session_source_id: str
+    terminal_location: Optional[TerminalLocation] = None
     session_reference: Optional[str] = None
     #: The session that spawned this one, when the harness reported it.
     #: ``None`` means the lineage is unknown, which is the normal case: most

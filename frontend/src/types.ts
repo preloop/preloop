@@ -624,9 +624,26 @@ export interface AccountGatewayUsageSearchResponse {
   items: GatewayUsageSearchResultItem[];
 }
 
+/** Metadata only: terminal output is never collected. */
+export interface TerminalLocation {
+  multiplexer: 'herdr';
+  device_id: string;
+  workspace_id: string;
+  workspace_label: string | null;
+  tab_id: string;
+  tab_label: string | null;
+  pane_id: string;
+  terminal_title: string | null;
+  pane_label?: string | null;
+  state: string;
+  observed_at: string;
+  pane_closed_at?: string | null;
+}
+
 export interface RuntimeSessionSummary {
   parent_session_id?: string | null;
   subagent_role?: string | null;
+  terminal_location?: TerminalLocation | null;
   harness_session_id?: string | null;
   start_directory?: string | null;
   resume_command?: string | null;

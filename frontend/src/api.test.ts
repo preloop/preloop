@@ -89,6 +89,16 @@ describe('api', () => {
   });
 
   describe('getAccountRuntimeSessions', () => {
+    it('passes terminal workspace filtering to the server', async () => {
+      fetchStub.resolves(
+        new Response(JSON.stringify({ items: [] }), { status: 200 })
+      );
+      await getAccountRuntimeSessions({ workspaceId: 'workspace-1' });
+      expect(String(fetchStub.lastCall.args[0])).to.contain(
+        'workspace_id=workspace-1'
+      );
+    });
+
     it('sends the owner filter as owner_user_id', async () => {
       fetchStub.resolves(
         new Response(JSON.stringify({ items: [] }), { status: 200 })
