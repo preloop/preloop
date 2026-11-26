@@ -55,7 +55,7 @@ if ($Case) {
     } else {
       Copy-Item -LiteralPath $Fixture -Destination $OutFile
       Set-Content -LiteralPath $OutFile -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
-      if ($Case -eq 'binary-unavailable', 'success-stdin-closed', 'success-stdin-pipe') { throw 'Fixture binary download failed after partial write.' }
+      if ($Case -eq 'binary-unavailable') { throw 'Fixture binary download failed after partial write.' }
     }
   }
 
@@ -94,7 +94,7 @@ public static class InstallerFixture {
 }
 '@ -OutputAssembly $fixturePath -OutputType ConsoleApplication
   $expectedHash = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash
-  $cases = @('success', 'success-binary', 'unavailable', 'malformed', 'missing', 'empty', 'duplicate', 'duplicate-malformed', 'mismatch', 'binary-unavailable')
+  $cases = @('success', 'success-binary', 'unavailable', 'malformed', 'missing', 'empty', 'duplicate', 'duplicate-malformed', 'mismatch', 'binary-unavailable', 'success-stdin-closed', 'success-stdin-pipe')
   foreach ($testCase in $cases) {
     $caseRoot = Join-Path $root $testCase
     $installDir = Join-Path $caseRoot 'install'
