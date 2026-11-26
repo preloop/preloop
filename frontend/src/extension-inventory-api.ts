@@ -1,4 +1,4 @@
-import { fetchWithAuth, getUserProfile } from './api';
+import { fetchWithAuth, getUserProfile, onApiCachesInvalidated } from './api';
 import { REST_API_PREFIX } from './api-path';
 import { hasFleetPermission } from './device-fleet-api';
 
@@ -172,7 +172,7 @@ export async function getExtensions(
   // parallel with the page, through the paginated list, not once per row.
   const [page, constraints] = await Promise.all([
     request<ExtensionPage>(`/discovery-extensions?${params}`),
-    getVersionConstraints().catch(() => null),
+    cachedVersionConstraints().catch(() => null),
   ]);
   return {
     ...page,
@@ -184,6 +184,38 @@ export async function getExtensions(
         : undefined,
     })),
   };
+}
+
+/** How long one constraint scan serves later pages and filter changes. */
+export const CONSTRAINT_CACHE_MS = 60_000;
+let constraintCache: {
+  at: number;
+  value: Promise<Map<string, string | null>>;
+} | null = null;
+
+/** Drop the constraint scan so the next read sees a decision just written. */
+export function invalidateVersionConstraints(): void {
+  constraintCache = null;
+}
+
+// Constraints are account data: sign-out and account switches drop them.
+onApiCachesInvalidated(invalidateVersionConstraints);
+
+/**
+ * One account scan serves the first page, Load more and filter changes.
+ * The console never edits constraints, so a short reuse window is safe; a
+ * failed scan is not kept.
+ */
+function cachedVersionConstraints(): Promise<Map<string, string | null>> {
+  const now = Date.now();
+  if (!constraintCache || now - constraintCache.at > CONSTRAINT_CACHE_MS) {
+    const value = getVersionConstraints();
+    constraintCache = { at: now, value };
+    value.catch(() => {
+      if (constraintCache?.value === value) constraintCache = null;
+    });
+  }
+  return constraintCache.value;
 }
 
 /** Every stored version constraint, keyed by approval path. */
@@ -266,6 +298,7 @@ export async function setExtensionApproval(
   contentHash?: string
 ): Promise<void> {
   const path = approvalPath(extension);
+  invalidateVersionConstraints();
   const response = await fetchWithAuth(
     `${REST_API_PREFIX}/agents/extension-approvals/${path}`
   );

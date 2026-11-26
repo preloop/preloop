@@ -833,7 +833,7 @@ def test_coverage_uses_latest_device_reasons_and_is_account_scoped(
         db_session, account_id=test_user.account_id
     )
     # The report time lets the inventory tell a fresh report from a stale one.
-    assert all(row.pop("reported_at") is not None for row in stored)
+    assert [row.pop("reported_at") for row in stored] == [NOW]
     assert stored == expected
     api = client.get(EXTENSIONS).json()["coverage"]
     assert all(row.pop("reported_at") for row in api)
@@ -853,6 +853,10 @@ def test_coverage_uses_latest_device_reasons_and_is_account_scoped(
     )
     assert coverage[0]["completeness"] == "complete"
     assert coverage[0]["reasons"] == []
+    # The stale-report guidance reads the latest report's end time.
+    assert coverage[0]["reported_at"] == NOW + timedelta(minutes=1)
+    reported = client.get(EXTENSIONS).json()["coverage"][0]["reported_at"]
+    assert datetime.fromisoformat(reported) == NOW + timedelta(minutes=1)
 
 
 def test_extension_reason_codes_preserve_legacy_bytes_and_reject_paths() -> None:

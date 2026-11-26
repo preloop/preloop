@@ -57,10 +57,15 @@ func TestInstalledPluginLayouts(t *testing.T) {
 					if ext.Details == nil || ext.Details.ScriptCount == nil {
 						t.Fatal("missing bundled skill metadata")
 					}
-					// The parent can be withheld when it contains a private
-					// home-path segment, including a temporary-directory name.
-					if ext.Details.Plugin != "" && ext.Details.Plugin != "code-review@claude-plugins-official" && ext.Details.Plugin != "superpowers@superpowers-marketplace" {
-						t.Fatal("unexpected plugin parent")
+					parent := "superpowers@superpowers-marketplace"
+					if strings.HasPrefix(ext.ID, "code-review:") {
+						parent = "code-review@claude-plugins-official"
+					}
+					// The inherited privacy filter can withhold a parent when a
+					// Windows drive letter or short temp-path segment matches it.
+					want, _ := (&extensionScan{home: home}).detailText(parent)
+					if ext.Details.Plugin != want {
+						t.Fatalf("plugin parent = %q, want %q", ext.Details.Plugin, want)
 					}
 					continue
 				}

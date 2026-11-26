@@ -43,7 +43,7 @@ func TestExtensionInventoryPrivacyAndClaudeLayouts(t *testing.T) {
 	}
 	found := map[string]inventoryExtension{}
 	for _, ext := range app.Extensions {
-		if ext.Details == nil || ext.Details.Plugin == "" {
+		if ext.Kind != "skill" || ext.IDHashed {
 			found[ext.Kind] = ext
 		}
 	}

@@ -235,7 +235,7 @@ export class DiscoveredAgentsPanel extends LitElement {
                         title=${candidate.first_seen_at}
                         >${formatRelativeTime(candidate.first_seen_at)}</time
                       >
-                      ${isNewDiscovery(candidate) ? html`<sl-badge class="new-discovery" variant="primary">New this week</sl-badge>` : nothing}
+                      ${isNewDiscovery(candidate) ? html`<sl-badge class="new-discovery" variant="warning" pill>New this week</sl-badge>` : nothing}
                     </td>
                     <td>${formatRelativeTime(candidate.last_seen_at)}</td>
                     <td>

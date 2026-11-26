@@ -94,6 +94,8 @@ describe('discovered-agents-panel', () => {
     const badges = el.shadowRoot!.querySelectorAll('.new-discovery');
     expect(badges.length).to.equal(1);
     expect(badges[0].textContent).to.contain('New this week');
+    expect(badges[0].getAttribute('variant')).to.equal('warning');
+    expect(badges[0].hasAttribute('pill')).to.equal(true);
     expect(el.shadowRoot!.textContent).to.contain('First seen');
   });
 

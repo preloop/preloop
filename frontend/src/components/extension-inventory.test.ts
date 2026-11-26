@@ -576,6 +576,20 @@ describe('extension inventory notices', () => {
     });
   }
 
+  it('keeps the caveats visible at every width when there are no rows', async () => {
+    const element = await mount({
+      page: {
+        items: [],
+        next_cursor: null,
+        completeness: 'unknown',
+        coverage: [],
+      },
+    });
+    const how = element.shadowRoot!.querySelector('.how-always details.how');
+    expect(how).to.exist;
+    expect(getComputedStyle(how!.parentElement!).display).not.to.equal('none');
+  });
+
   it('shows the sign-in and report steps in the empty state', async () => {
     const element = await mount({
       page: {
