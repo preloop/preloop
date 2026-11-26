@@ -530,7 +530,10 @@ is not `approved` returns 422, a missing approval or a pin of another approval
 content_hash, version, note, pinned_by_user_id, pinned_by, pinned_at}]`.
 
 In the console, the Agents page's **Extensions** tab lists distinct extensions
-with device counts and versions seen. Device detail shows per-profile inventory,
+with device counts and versions seen. A managed agent's detail page has an
+**Extensions** section with the same list filtered to that agent's kind (for
+example `claude_code`) across the account, not to one device, and the count in
+its heading. Device detail shows per-profile inventory,
 source/project hash prefixes, scope and enabled state. Both views filter by
 effective state (including **Content changed** and **Content unverified**) and
 source. A pinned approval shows **Pinned (n)**; **Content hashes** expands the

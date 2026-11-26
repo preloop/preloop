@@ -79,6 +79,7 @@ export interface ExtensionPage {
 }
 export interface ExtensionFilters {
   fingerprint?: string;
+  agent_kind?: string;
   state?: ExtensionEffectiveState;
   source_kind?: ExtensionSource;
   cursor?: string;
