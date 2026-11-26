@@ -3063,6 +3063,8 @@ async def update_account_managed_agent(
     await run_db_off_loop(
         lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
     )
+    # Match credential issuance and the CRUD lifecycle transition lock order.
+    billing.lock_account(db, str(account.id))
     # Locked for the whole handler: ``lifecycle_state`` is read here and the
     # credential restore/revoke decision below is made from that read, so a
     # concurrent operator action (a resume racing a decommission) must not

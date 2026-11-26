@@ -93,8 +93,9 @@ def test_only_current_server_gateway_success_proves_route(
     assert after["model_gateway_configured"] is False
 
 
-def test_credential_creation_locks_agent_before_issuing(
-    client: Any, db_session: Session, test_user: models.User
+@pytest.mark.parametrize("operation", ["issue", "decommission"])
+def test_credential_lifecycle_uses_account_then_agent_lock(
+    client: Any, db_session: Session, test_user: models.User, operation: str
 ) -> None:
     """Issuance must serialize with decommission before inserting an active key."""
     agent_id, _ = _seed_pauseable_agent(
@@ -116,13 +117,19 @@ def test_credential_creation_locks_agent_before_issuing(
 
     event.listen(connection, "before_cursor_execute", record_statement)
     try:
-        response = client.post(
-            f"/api/v1/agents/{agent_id}/credentials",
-            json={"name": "serialized-credential", "scopes": ["mcp:read"]},
-        )
+        if operation == "issue":
+            response = client.post(
+                f"/api/v1/agents/{agent_id}/credentials",
+                json={"name": "serialized-credential", "scopes": ["mcp:read"]},
+            )
+        else:
+            response = client.patch(
+                f"/api/v1/agents/{agent_id}",
+                json={"lifecycle_action": "decommission"},
+            )
     finally:
         event.remove(connection, "before_cursor_execute", record_statement)
-    assert response.status_code == 201
+    assert response.status_code == (201 if operation == "issue" else 200)
     lock_indexes = [
         index
         for index, statement in enumerate(statements)
@@ -137,12 +144,17 @@ def test_credential_creation_locks_agent_before_issuing(
     assert account_lock < lock_indexes[0], (
         "lock account before agent, as decommission does"
     )
-    key_insert = next(
+    write_statement = (
+        "insert into api_key "
+        if operation == "issue"
+        else "update managed_agent_credential "
+    )
+    credential_write = next(
         index
         for index, statement in enumerate(statements)
-        if "insert into api_key " in statement
+        if write_statement in statement
     )
-    assert lock_indexes[0] < key_insert
+    assert lock_indexes[0] < credential_write
 
 
 def test_offboard_revokes_credential_metadata_and_audits(
