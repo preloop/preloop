@@ -20094,6 +20094,66 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: execution:result-export:read
+  /api/v1/flows/executions/{execution_id}/refinalize:
+    post:
+      tags:
+      - Flows
+      summary: Refinalize Flow Execution
+      description: 'Preview or re-finalize a saved review as a human owner or administrator.
+
+
+        Runs no inference. Apply requires expected_digest from a qualifying preview.
+
+        Gates and publication authorization are recomputed; the original usage is
+
+        preserved. A repeated apply returns already_refinalized without writing.'
+      operationId: refinalize_flow_execution_api_v1_flows_executions__execution_id__refinalize_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefinalizeRequest'
+              default:
+                dry_run: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Refinalize Flow Execution Api V1 Flows Executions  Execution
+                  Id  Refinalize Post
+        '403':
+          description: A human account owner or administrator is required.
+        '404':
+          description: Execution not found in this account.
+        '409':
+          description: Stored finalization gate failed; detail.gates names it.
+        '412':
+          description: Missing or stale preview digest; preview again.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/platform-review:
     post:
       tags:
@@ -43110,6 +43170,14 @@ components:
           title: Estimated Cost
           description: Estimated cost in USD for this execution
           default: 0.0
+        refinalization:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Refinalization
+          description: 'Controller audit mark: when and by whom this stored review
+            was re-finalized.'
         pull_request:
           anyOf:
           - $ref: '#/components/schemas/ExecutionPullRequest'
@@ -53070,6 +53138,22 @@ components:
       - recovery_codes
       title: RecoveryCodes
       description: New recovery codes, shown once and never returned by status.
+    RefinalizeRequest:
+      properties:
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: true
+        expected_digest:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Expected Digest
+      additionalProperties: false
+      type: object
+      title: RefinalizeRequest
+      description: A dry run by default; application requires the exact preview digest.
     RefreshRequest:
       properties:
         refresh_token:

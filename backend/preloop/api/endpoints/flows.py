@@ -59,6 +59,7 @@ from preloop.models.schemas.flow import (
     flow_schedule_state,
 )
 from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable, get_authorizer
+from preloop.schemas.execution_refinalize import RefinalizeRequest
 from preloop.schemas.ci_execution import (
     CiExecutionResponse,
     CiExecutionResultResponse,
@@ -1686,6 +1687,9 @@ def read_flow_execution(
         db, account_id=current_user.account_id, execution=execution
     )
     execution.platform_review = _platform_review_with_links(db, execution)
+    from preloop.services.execution_refinalize import refinalization_mark
+
+    execution.refinalization = refinalization_mark(execution)
     # One usage query feeds both projections of the same request facts.
     request_facts = _execution_request_facts(
         db, execution, account_id=current_user.account_id
@@ -2045,6 +2049,60 @@ def get_execution_result_export(
         raise _halted_response() from None
     except (LookupError, PermissionError, ValueError, CiReviewUnavailableError) as exc:
         _result_export_error(exc)
+
+
+@router.post(
+    "/flows/executions/{execution_id}/refinalize",
+    responses={
+        403: {"description": "A human account owner or administrator is required."},
+        404: {"description": "Execution not found in this account."},
+        409: {"description": "Stored finalization gate failed; detail.gates names it."},
+        412: {"description": "Missing or stale preview digest; preview again."},
+    },
+)
+def refinalize_flow_execution(
+    execution_id: uuid.UUID,
+    body: RefinalizeRequest = Body(default=RefinalizeRequest()),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Preview or re-finalize a saved review as a human owner or administrator.
+
+    Runs no inference. Apply requires expected_digest from a qualifying preview.
+    Gates and publication authorization are recomputed; the original usage is
+    preserved. A repeated apply returns already_refinalized without writing.
+    """
+    from preloop.services.execution_refinalize import (
+        RefinalizePreconditionFailedError,
+        RefinalizeRefusedError,
+        refinalize_execution,
+    )
+    from preloop.tools.utils import run_async
+
+    try:
+        return run_async(
+            refinalize_execution(
+                db,
+                actor=current_user,
+                execution_id=execution_id,
+                dry_run=body.dry_run,
+                expected_digest=body.expected_digest,
+            )
+        )
+    except PermissionError:
+        raise HTTPException(
+            403, "Re-finalization requires a human owner or administrator"
+        ) from None
+    except LookupError:
+        raise HTTPException(404, "Flow execution not found") from None
+    except RefinalizePreconditionFailedError as error:
+        raise HTTPException(
+            412, {"code": "refinalize_precondition_failed", "message": str(error)}
+        ) from None
+    except RefinalizeRefusedError as error:
+        raise HTTPException(
+            409, {"code": "refinalize_refused", "gates": str(error)}
+        ) from None
 
 
 @router.post(
