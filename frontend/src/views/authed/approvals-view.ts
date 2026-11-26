@@ -607,6 +607,9 @@ export class ApprovalsView extends AuthedElement {
     this.statsController?.abort();
     if (this.statsTimer !== null) window.clearTimeout(this.statsTimer);
     this.statsTimer = null;
+    if (this.causeRefreshTimer !== null)
+      window.clearTimeout(this.causeRefreshTimer);
+    this.causeRefreshTimer = null;
     window.removeEventListener('popstate', this.onFilterPopState);
     if (this.filterSearchTimer !== null)
       window.clearTimeout(this.filterSearchTimer);
@@ -924,9 +927,23 @@ export class ApprovalsView extends AuthedElement {
         ];
         this.applyFilters();
         this.calculateStats();
+        if (status === 'approved' || status === 'declined') {
+          this.refreshDecisionCausesSoon();
+        }
       }
       this.refreshStatsSoon();
     }
+  }
+
+  private causeRefreshTimer: number | null = null;
+
+  /** Read a page of evidence without marking individual requests opened. */
+  private refreshDecisionCausesSoon(): void {
+    if (this.causeRefreshTimer !== null) return;
+    this.causeRefreshTimer = window.setTimeout(() => {
+      this.causeRefreshTimer = null;
+      if (this.isConnected) void this.loadApprovalRequests();
+    }, 500);
   }
 
   private statsTimer: number | null = null;
@@ -1602,10 +1619,10 @@ export class ApprovalsView extends AuthedElement {
         message: result?.error || 'No result returned',
       });
     }
-    // Whatever the server said about the failures, the page may be out of
-    // date about them; a reload is cheaper than guessing.
-    if (failed.length > 0) {
-      void this.loadApprovalRequests();
+    // Batch status replies omit attribution. Refresh once for all outcomes,
+    // including failures whose current state may differ from the local row.
+    if (succeeded.length > 0 || failed.length > 0) {
+      this.refreshDecisionCausesSoon();
     }
     return { succeeded, failed };
   }

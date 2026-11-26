@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from preloop.models import models
-from preloop.models.crud import crud_account, crud_approval_request
+from preloop.models.crud import crud_account, crud_approval_event, crud_approval_request
 
 
 @pytest.fixture
@@ -128,6 +128,19 @@ def test_search_matches_summary_and_arguments_literally(
 
 
 def test_stats_cover_the_whole_account(db_session: Session, account) -> None:
+    rows = crud_approval_request.get_multi_by_account(
+        db_session, account_id=str(account.id)
+    )
+    approved = next(row for row in rows if row.summary == "Deploy staging")
+    approved.responses = [{"user_id": "anonymous", "decision": "approved"}]
+    declined = next(row for row in rows if row.status == "declined")
+    crud_approval_event.record(
+        db_session,
+        account_id=account.id,
+        approval_request_id=declined.id,
+        event_type="vote_received",
+        detail="Token decision",
+    )
     stats = crud_approval_request.stats_by_account(
         db_session, account_id=str(account.id)
     )
@@ -144,3 +157,24 @@ def test_stats_cover_the_whole_account(db_session: Session, account) -> None:
     # Mean of 10, 30, 20 and 20 minutes over approved and declined.
     assert stats["avg_response_minutes"] == 20
     assert stats["tools"] == ["bash", "create_pr", "send_email"]
+
+
+def test_human_stats_require_positive_vote_evidence(
+    db_session: Session, account: models.Account
+) -> None:
+    """Terminal status and missing automatic fields do not establish a person."""
+    rows = crud_approval_request.get_multi_by_account(
+        db_session, account_id=str(account.id)
+    )
+    for row in rows:
+        row.responses = [
+            {"decision": row.status},
+            {"user_id": "", "decision": row.status},
+            {"user_id": False, "decision": row.status},
+        ]
+    db_session.flush()
+    stats = crud_approval_request.stats_by_account(
+        db_session, account_id=str(account.id)
+    )
+    assert stats["human_approved"] == 0
+    assert stats["human_declined"] == 0

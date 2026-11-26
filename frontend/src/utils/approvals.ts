@@ -72,6 +72,7 @@ export function decisionOutcome(
   updated: Partial<ApprovalRequest> | null | undefined
 ): Partial<ApprovalRequest> {
   return {
+    ...updated,
     status: updated?.status ?? decision,
     resolved_at: updated?.resolved_at ?? null,
     my_decision: updated?.my_decision ?? decision,

@@ -463,6 +463,7 @@ def _for_caller(
             has_vote_event
             or any(
                 isinstance(vote, dict)
+                and isinstance(vote.get("user_id"), str)
                 and bool(vote.get("user_id"))
                 and vote.get("decision") in {"approved", "declined"}
                 for vote in votes

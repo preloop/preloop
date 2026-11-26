@@ -570,16 +570,20 @@ export class ExtensionInventory extends LitElement {
                                   .</code
                                 >.
                               `
-                            : html`Check the local scan output with
-                                <code
-                                  >preloop agents extensions --project .</code
-                                >
-                                from the repository, address the reported
-                                collection failures, then run
-                                <code
-                                  >preloop agents discover --report --project
-                                  .</code
-                                >.`
+                            : device.reasons.length
+                              ? html`Check the local scan output with
+                                  <code
+                                    >preloop agents extensions --project .</code
+                                  >
+                                  from the repository, address the reported
+                                  collection failures, then run
+                                  <code
+                                    >preloop agents discover --report --project
+                                    .</code
+                                  >.`
+                              : html`Check <code>preloop version</code> on this
+                                  device and report again to establish its
+                                  extension coverage.`
                         }
                         ${
                           collectorTooOld(device.collector_version)
