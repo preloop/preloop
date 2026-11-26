@@ -366,3 +366,27 @@ test("execution-scoped workers register with the execution credential", async ()
     if(original.alias===undefined) delete process.env.PRELOOP_SESSION_ALIAS; else process.env.PRELOOP_SESSION_ALIAS=original.alias;
   }
 });
+
+test("a pre-start thread never exposes its temporary identity", async () => {
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const thread = {id: null, run(_text, options) {
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        const error = new Error("aborted"); error.name = "AbortError"; reject(error);
+      }, {once: true});
+      entered();
+    });
+  }};
+  const manager = new SessionManager(baseConfig, () => ({startThread: () => thread, resumeThread: () => thread}));
+  const running = manager.sendMessage({text: "Example", startNewSession: true});
+  try {
+    await started;
+    assert.deepEqual(manager.ownedSessionIds(), []);
+    assert.equal(await manager.release(), undefined);
+    assert.equal((await running).session_id, undefined);
+  } finally {
+    manager.stop();
+    await running;
+  }
+});

@@ -62,7 +62,7 @@ export type CodexClientFactory = (config: ControlConfig) => CodexClient;
 export type TurnOutcome = {
   reply_text: string;
   working_directory?: string;
-  session_id: string;
+  session_id?: string;
   usage?: CodexUsage | null;
   /** Set when the in-flight run was aborted by interrupt. */
   stopped?: boolean;
@@ -387,7 +387,7 @@ export class SessionManager {
       return {
         reply_text: turn.finalResponse ?? "",
         working_directory: session.cwd,
-        session_id: session.thread.id ?? session.key,
+        session_id: session.thread.id ?? undefined,
         usage: turn.usage ?? null,
       };
     } catch (error) {
@@ -401,7 +401,7 @@ export class SessionManager {
         this.remember(session);
         return {
           reply_text: "",
-          session_id: session.thread.id ?? session.key,
+          session_id: session.thread.id ?? undefined,
           stopped: true,
         };
       }
@@ -435,7 +435,7 @@ export class SessionManager {
     const session = targetSessionId
       ? this.find(targetSessionId)
       : this.mostRecent();
-    const sessionId = session?.thread.id ?? session?.key;
+    const sessionId = session?.thread.id ?? undefined;
     if (session) {
       session.controller?.abort();
       this.sessions.delete(session.key);
@@ -459,7 +459,7 @@ export class SessionManager {
   ownedSessionIds(): string[] {
     const ids = new Set<string>();
     for (const session of this.sessions.values()) {
-      ids.add(session.thread.id ?? session.key);
+      if (session.thread.id) ids.add(session.thread.id);
     }
     return [...ids];
   }
