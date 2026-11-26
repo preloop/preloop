@@ -74,11 +74,11 @@ class TestJiraTrackerNewMethods(IsolatedAsyncioTestCase):
             "GET", "issue/TEST-123", api_version="3"
         )
 
-    async def test_get_issue_not_found(self):
+    async def test_get_issue_not_found(self) -> None:
         """Test error when issue is not found."""
         # Arrange
         self.tracker._make_request = AsyncMock(
-            side_effect=TrackerResponseError("404 Not Found")
+            side_effect=TrackerResponseError("404 Not Found", status_code=404)
         )
 
         # Act & Assert
@@ -86,6 +86,7 @@ class TestJiraTrackerNewMethods(IsolatedAsyncioTestCase):
             await self.tracker.get_issue("TEST-999")
 
         self.assertIn("Issue TEST-999 not found", str(context.exception))
+        self.assertEqual(context.exception.status_code, 404)
 
     async def test_get_issue_no_assignee(self):
         """Test issue retrieval when no assignee is set."""

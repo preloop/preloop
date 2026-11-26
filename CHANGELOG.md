@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- MCP issue tools fetch missing GitHub, GitLab, Jira and Azure Boards issues
+  from the tracker when their project is already synced in the caller's
+  account, then store them through the scanner. Lookups distinguish missing
+  issues from upstream failures and direct pull requests to `get_pull_request`.
+
 ## [1.1.0-rc.1] - 2026-11-25
 
 This is a release candidate for testing before 1.1.0. The latest stable release
