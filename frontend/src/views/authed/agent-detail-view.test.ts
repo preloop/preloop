@@ -500,7 +500,15 @@ describe('AgentDetailView', () => {
       section.querySelector('[data-testid="agent-extensions-caption"]')!
         .textContent
     ).to.contain('Extensions reported for claude_code agents in this account');
+    expect(section.querySelector('extension-inventory')).to.equal(null);
+    (section as HTMLDetailsElement).open = true;
+    section.dispatchEvent(new Event('toggle'));
+    await element.updateComplete;
     const inventory = section.querySelector('extension-inventory') as any;
+    (section as HTMLDetailsElement).open = false;
+    section.dispatchEvent(new Event('toggle'));
+    await element.updateComplete;
+    expect(section.querySelector('extension-inventory')).to.equal(inventory);
     expect(inventory.agentKind).to.equal('claude_code');
     inventory.dispatchEvent(
       new CustomEvent('extensions-loaded', {
@@ -514,6 +522,7 @@ describe('AgentDetailView', () => {
     window.history.replaceState(null, '', '/console/agents/agent-2');
     element.onBeforeEnter({ params: { agentId: 'agent-2' } });
     expect((element as any).extensionCount).to.equal(null);
+    expect((element as any).extensionsOpened).to.equal(false);
   });
 
   it('distinguishes never-run, failed and unsupported checks without claiming they are disabled', async () => {
