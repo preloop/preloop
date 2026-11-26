@@ -148,6 +148,45 @@ describe('session-list-panel figures', () => {
   });
 });
 
+describe('imported session figures (#2425)', () => {
+  it('omits an unmeasured request count and labels the known estimate', async () => {
+    const el = await renderPanel([
+      makeSession({
+        totalRequests: 0,
+        estimatedCost: 0.42,
+        tokenUsage: {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          total_tokens: 120,
+        },
+        raw: {
+          total_requests: null,
+          usage_source: 'imported',
+          cost_is_known: true,
+        },
+      }),
+    ]);
+    const row = el.shadowRoot!.querySelector('.metric-row')!;
+    expect(row.textContent).not.to.contain('requests');
+    expect(row.textContent).to.contain('$0.42 est.');
+    expect(row.querySelector('token-figures')).to.exist;
+  });
+  it('omits missing cost instead of displaying zero', async () => {
+    const el = await renderPanel([
+      makeSession({
+        totalRequests: 0,
+        estimatedCost: 0,
+        raw: {
+          total_requests: null,
+          usage_source: 'imported',
+          cost_is_known: false,
+        },
+      }),
+    ]);
+    expect(el.shadowRoot!.querySelector('.metric.cost')).not.to.exist;
+  });
+});
+
 describe('session-list-panel empty figures', () => {
   it('drops the token segment when no tokens were recorded', async () => {
     const el = await renderPanel([

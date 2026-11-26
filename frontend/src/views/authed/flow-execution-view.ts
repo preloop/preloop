@@ -89,6 +89,7 @@ import '../../components/view-header.ts';
 import '../../components/execution-records-card';
 import '../../components/execution-report-panel';
 import '../../components/execution-platform-review';
+import '../../components/execution-refinalize';
 import { hasPermission } from '../../permissions';
 import type { PlatformReviewRecord } from '../../utils/platform-review';
 import { getEvidenceStatus, type EvidenceStatus } from '../../records-api';
@@ -197,6 +198,7 @@ interface FlowExecution {
    * with platform_review on. Null without the opt-in or on older servers.
    */
   platform_review?: PlatformReviewRecord | null;
+  refinalization?: { at: string; user_name: string } | null;
   mcp_usage_logs?: any[];
   tool_calls_count?: number;
   total_tokens?: number;
@@ -4817,6 +4819,16 @@ ${execution.resolved_input_prompt}</pre>
             execution-id=${execution.id}
           ></preloop-execution-tree>
           ${this.renderOperatorNotes(execution)}
+          ${
+            ['FAILED', 'SUCCEEDED'].includes(execution.status) ||
+            execution.refinalization
+              ? html`<execution-refinalize
+                  .executionId=${execution.id}
+                  .mark=${execution.refinalization ?? null}
+                  @execution-refinalized=${() => void this.fetchExecution()}
+                ></execution-refinalize>`
+              : nothing
+          }
           <sl-tab-group
             no-scroll-controls
             class="execution-tabs"

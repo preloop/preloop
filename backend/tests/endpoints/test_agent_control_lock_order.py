@@ -21,7 +21,7 @@ from preloop.models.crud import crud_managed_agent, crud_runtime_session
 @pytest.fixture
 def presence_scope(db_engine: Engine) -> Iterator[tuple[UUID, UUID, UUID]]:
     """Commit one synthetic active agent and its runtime session."""
-    old = datetime.now(UTC) - timedelta(minutes=5)
+    old = datetime.now(UTC) - timedelta(hours=4)
     with Session(db_engine) as db:
         account = models.Account(organization_name="Presence lock test")
         db.add(account)
@@ -136,7 +136,36 @@ def test_heartbeat_does_not_hold_runtime_while_waiting_for_operator_agent_lock(
         runtime = db.get(models.RuntimeSession, runtime_id)
         agent = db.get(models.ManagedAgent, agent_id)
         assert runtime is not None and agent is not None
-        assert runtime.last_activity_at.replace(tzinfo=UTC) == observed_at
+        assert runtime.last_activity_at == runtime.started_at
         assert agent.control_last_heartbeat_at.replace(tzinfo=UTC) == observed_at
         assert agent.control_session_mode == "remote"
         assert agent.lifecycle_state == "active"
+
+
+def test_idle_control_heartbeat_preserves_record_time(
+    db_engine: Engine, presence_scope: tuple[UUID, UUID, UUID]
+) -> None:
+    """A connected plugin does not make an hours-idle conversation live (#2426)."""
+    account_id, runtime_id, agent_id = presence_scope
+    with Session(db_engine) as db:
+        runtime = db.get(models.RuntimeSession, runtime_id)
+        agent = db.get(models.ManagedAgent, agent_id)
+        assert runtime is not None and agent is not None
+        record_time = runtime.last_activity_at
+        context = AgentControlConnectionContext(
+            account_id=str(account_id),
+            runtime_session_id=str(runtime_id),
+            managed_agent_id=str(agent_id),
+            session_source_type="test",
+            session_source_id=agent.session_source_id,
+            managed_agent_session_source_type="test",
+            managed_agent_session_source_id=agent.session_source_id,
+        )
+        _touch_presence(db, context, observed_at=datetime.now(UTC))
+        db.refresh(runtime)
+        assert runtime.last_activity_at == record_time
+        summary = crud_runtime_session.get_account_session_summary(
+            db, account_id=str(account_id), runtime_session_id=str(runtime_id)
+        )
+        assert summary["is_active_now"] is False
+        assert summary["activity_status"] == "idle"

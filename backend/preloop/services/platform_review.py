@@ -441,6 +441,16 @@ def evidence_satisfied(summary: Mapping[str, Any] | None, level: str) -> bool:
     return incomplete == masking
 
 
+def refinalization_evidence_satisfied(evidence: Mapping[str, Any], config: Any) -> bool:
+    """Recovery retains captured evidence and refuses clipped or unknown reads."""
+    return evidence_satisfied(
+        evidence, stricter_evidence(evidence_level(config), "captured")
+    ) and not any(
+        evidence.get(key)
+        for key in ("missing_records", "clipped_bound_reads", "unknown_bound_reads")
+    )
+
+
 def stored_tool_evidence(db: Session, execution: Any) -> dict[str, Any]:
     """The public tool-evidence counts for one execution.
 
@@ -2434,25 +2444,10 @@ async def _fork_publication_refusal(
     return None
 
 
-async def _post_review(
-    github: _GitHub,
-    row: models.PlatformReviewPublication,
-    *,
-    binding: ReviewBinding,
-    tracker: models.Tracker,
-    execution: Any,
-    plan: PublicationPlan,
-    schema: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Post the review of one claimed publication, or decide to skip it.
-
-    Returns:
-        Column values to record on the publication row.
-    """
-    assert plan.review_action is not None and plan.verdict is not None
-    event = REVIEW_EVENTS[plan.review_action]
-    marker = review_marker(execution.id, binding.head_sha, row.nonce)
-    pull = await github.pull()
+def review_target_refusal(
+    binding: ReviewBinding, pull: Any, *, require_base_sha: bool = False
+) -> str | None:
+    """Apply the publication target checks to one provider PR read."""
     head = pull.get("head") if isinstance(pull, Mapping) else None
     base = pull.get("base") if isinstance(pull, Mapping) else None
     fork_opted_in = (
@@ -2479,22 +2474,55 @@ async def _post_review(
         from preloop.services.event_review import has_fork_review_label
 
         if not has_fork_review_label(pull):
-            return {
-                "review_state": STATE_SKIPPED,
-                "review_reason": "fork_label_missing",
-                "_fork_refused": True,
-            }
+            return "fork_label_missing"
     if pull.get("state") != "open":
-        return {"review_state": STATE_SKIPPED, "review_reason": "pull_request_closed"}
+        return "pull_request_closed"
     if head.get("sha") != binding.head_sha:
         # The verdict belongs to the reviewed commit. It is never attached to
         # a head that was not reviewed, and no review is left on a stale one.
-        return {"review_state": STATE_SKIPPED, "review_reason": "head_moved"}
+        return "head_moved"
     if not isinstance(base, Mapping) or base.get("ref") != binding.base_branch:
         # The verdict was computed against the admitted base. A retarget
         # makes the live diff a different change, so the review is not posted.
         # The base SHA may advance on the same branch; only the ref is compared.
-        return {"review_state": STATE_SKIPPED, "review_reason": "base_moved"}
+        return "base_moved"
+    if require_base_sha and base.get("sha") != binding.base_sha:
+        return "base_moved"
+    return None
+
+
+async def _post_review(
+    github: _GitHub,
+    row: models.PlatformReviewPublication,
+    *,
+    binding: ReviewBinding,
+    tracker: models.Tracker,
+    execution: Any,
+    plan: PublicationPlan,
+    schema: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Post the review of one claimed publication, or decide to skip it.
+
+    Returns:
+        Column values to record on the publication row.
+    """
+    assert plan.review_action is not None and plan.verdict is not None
+    event = REVIEW_EVENTS[plan.review_action]
+    marker = review_marker(execution.id, binding.head_sha, row.nonce)
+    pull = await github.pull()
+    from preloop.services.execution_refinalize import refinalization_mark
+
+    refusal = review_target_refusal(
+        binding,
+        pull,
+        require_base_sha=bool(refinalization_mark(execution)),
+    )
+    if refusal:
+        return {
+            "review_state": STATE_SKIPPED,
+            "review_reason": refusal,
+            **({"_fork_refused": True} if refusal == "fork_label_missing" else {}),
+        }
     if row.attempts > 1:
         # A previous attempt may have posted and then lost its claim. The
         # nonce is unguessable before the first post, so a match is ours.
@@ -2724,27 +2752,20 @@ async def _confirm_recorded_status(
         ) from None
 
 
-async def _publish_claimed(
+def publication_context(
     db: Session,
-    row: models.PlatformReviewPublication,
     *,
     flow: models.Flow,
-    execution: models.FlowExecution,
+    execution: Any,
     preconditions: ReviewPreconditions | None = None,
     evidence: Mapping[str, Any] | None = None,
-) -> None:
-    """Run one attempt for a claimed row and record its outcome.
-
-    Raises:
-        PreconditionFailedError: A caller precondition no longer holds on
-            the re-read flow and execution, or on the live pull request.
-            Raised before the first write to the provider.
-    """
+    candidate: Any = None,
+) -> tuple[ReviewBinding, models.Tracker, PublicationPlan]:
+    """Recheck authority, configuration and the publication plan without writing."""
     from preloop.services.read_only_review import validate_read_only_flow
 
     pre = preconditions or ReviewPreconditions()
 
-    record = crud.crud_platform_review_publication.record
     # The execution's own identity must still be admitted: active, its
     # project on the flow, its snapshot unchanged, and holding the grant it
     # used to trigger or the explicit publish action.
@@ -2773,8 +2794,6 @@ async def _publish_claimed(
         or binding.tracker_type != "github"
         or str(flow.id) != str(binding.flow_id)
         or str(flow.account_id) != str(binding.account_id)
-        or (row.repository, row.pull_request, row.head_sha)
-        != (binding.repository_slug.lower(), str(binding.pr_number), binding.head_sha)
     ):
         raise PlatformReviewError("binding_changed")
     # The list may have changed since the entry check: re-read it.
@@ -2825,12 +2844,61 @@ async def _publish_claimed(
 
     # Recomputed from stored evidence at every attempt, never read back from
     # a stored outcome or the result itself.
+    reviewed = candidate if candidate is not None else execution
     plan = plan_publication(
         flow,
-        execution,
-        integrity=evaluate_execution(db, flow, execution, require_head=True),
+        reviewed,
+        integrity=evaluate_execution(db, flow, reviewed, require_head=True),
         evidence=evidence,
     )
+    from preloop.services.execution_refinalize import refinalization_mark
+    from preloop.services.execution_tool_evidence import digest
+
+    mark = refinalization_mark(execution)
+    if mark and (
+        mark.get("flow_revision") != flow.config_revision
+        or mark.get("result_sha256") != digest(execution.result)
+    ):
+        raise PlatformReviewError("refinalized_state_changed")
+    if mark and not refinalization_evidence_satisfied(
+        evidence if evidence is not None else stored_tool_evidence(db, execution),
+        flow.git_clone_config,
+    ):
+        raise PlatformReviewError("evidence_incomplete")
+    return binding, tracker, plan
+
+
+async def _publish_claimed(
+    db: Session,
+    row: models.PlatformReviewPublication,
+    *,
+    flow: models.Flow,
+    execution: models.FlowExecution,
+    preconditions: ReviewPreconditions | None = None,
+    evidence: Mapping[str, Any] | None = None,
+) -> None:
+    """Run one attempt for a claimed row and record its outcome.
+
+    Raises:
+        PreconditionFailedError: A caller precondition no longer holds on
+            the re-read flow and execution, or on the live pull request.
+            Raised before the first write to the provider.
+    """
+    pre = preconditions or ReviewPreconditions()
+    record = crud.crud_platform_review_publication.record
+    binding, tracker, plan = publication_context(
+        db,
+        flow=flow,
+        execution=execution,
+        preconditions=pre,
+        evidence=evidence,
+    )
+    if (row.repository, row.pull_request, row.head_sha) != (
+        binding.repository_slug.lower(),
+        str(binding.pr_number),
+        binding.head_sha,
+    ):
+        raise PlatformReviewError("binding_changed")
     if (
         plan.review_action is not None
         and row.review_state == STATE_SKIPPED
@@ -3747,3 +3815,101 @@ async def sweep_platform_reviews(limit: int = 20) -> int:
     finally:
         session.close()
     return attempted
+
+
+async def preview_refinalized_publication(
+    db: Session,
+    flow: models.Flow,
+    execution: Any,
+    preview: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Plan publication with normal checks and a provider read, without claiming."""
+    from preloop.services.event_review import (
+        EventReviewDeniedError,
+        EventReviewUnavailableError,
+        read_pull_request_for_event,
+    )
+
+    def refused(reason: str) -> dict[str, Any]:
+        return {"would_publish": False, "reason": reason}
+
+    if not preview["eligible"]:
+        return refused("refinalization_refused")
+    mode = platform_review_mode(flow.git_clone_config)
+    if mode == MODE_OFF:
+        return refused("platform_review_disabled")
+    if mode == MODE_MANUAL:
+        return refused("manual_publish_required")
+    binding = parse_stored_review_binding(execution.ci_review_binding)
+    if binding is None:
+        return refused("no_review_binding")
+    if not project_in_posting_scope(
+        flow.git_clone_config, binding.project_id
+    ) or _closed_out_of_scope(db, execution.id):
+        return refused(OUT_OF_SCOPE_REASON)
+    row = crud.crud_platform_review_publication.get_for_execution(
+        db, execution_id=execution.id
+    )
+    if row is not None:
+        if row.review_state == STATE_POSTED:
+            return refused("already_posted")
+        if row.review_state == STATE_SKIPPED:
+            return refused(row.review_reason or row.reason or "review_already_decided")
+        if row.state == STATE_SKIPPED or (
+            row.state == STATE_FAILED and not row.retryable
+        ):
+            return refused("explicit_publish_required")
+        if row.state == STATE_PUBLISHING and row.claimed_at is not None:
+            claimed_at = row.claimed_at.replace(tzinfo=None)
+            if (
+                claimed_at
+                >= datetime.now(timezone.utc).replace(tzinfo=None) - CLAIM_STALE_AFTER
+            ):
+                return refused("publication_in_progress")
+    elif not _automatic_recovery_available(execution, flow):
+        return refused("explicit_publish_required")
+    if evidence_level(flow.git_clone_config) != "any" and evidence_may_still_arrive(
+        execution
+    ):
+        return refused("evidence_pending")
+    from types import SimpleNamespace
+
+    candidate = SimpleNamespace(
+        id=execution.id,
+        status="SUCCEEDED",
+        failure_category=None,
+        result=preview["selected_result"],
+        result_schema_validation=preview["gates"]["schema"]["validation"],
+        ci_review_binding=execution.ci_review_binding,
+        startup_receipt=execution.startup_receipt,
+    )
+    try:
+        binding, tracker, plan = publication_context(
+            db,
+            flow=flow,
+            execution=execution,
+            candidate=candidate,
+            evidence=preview["gates"]["tool_evidence"]["evidence"],
+        )
+        if plan.review_action is None:
+            return refused(plan.reason or "review_unavailable")
+        pull = await read_pull_request_for_event(
+            tracker, binding.repository_identifier, binding.pr_number
+        )
+        reason = review_target_refusal(binding, pull, require_base_sha=True)
+        if reason:
+            return refused(reason)
+        if (
+            isinstance(binding, EventReviewBinding)
+            and binding.fork_label_event_id is not None
+        ):
+            refusal = await _fork_publication_refusal(tracker, binding)
+            if refusal:
+                return refused(refusal)
+    except PlatformReviewError as error:
+        return refused(error.reason)
+    except (PermissionError, EventReviewDeniedError):
+        return refused("admission_revoked")
+    except EventReviewUnavailableError:
+        return refused("provider_unavailable")
+    return {"would_publish": True, "reason": None, "review_action": plan.review_action}

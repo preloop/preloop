@@ -1,8 +1,9 @@
 import subprocess
 import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import patch
+
 from preloop import server
 
 
@@ -22,10 +23,12 @@ def test_server_enables_fatal_tracebacks_before_startup() -> None:
 
 
 @patch("uvicorn.run")
-def test_start_server(mock_uvicorn_run):
-    """
-    Tests the start_server function.
-    """
+def test_start_server(
+    mock_uvicorn_run: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test server startup without leaking test-data seeding to later tests."""
+    # Track the flag so teardown restores it after start_server mutates it.
+    monkeypatch.setenv("INIT_TEST_DATA", "false")
     server.start_server(host="127.0.0.1", port=8080, debug=True, init_test_data=True)
     mock_uvicorn_run.assert_called_once_with(
         "preloop.api.app:create_app",

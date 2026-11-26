@@ -4149,13 +4149,26 @@ export class PreloopFlowForm extends LitElement {
       servers.push('preloop-mcp');
     }
 
+    const triggerEventTypes = Array.isArray(preset.trigger_event_types)
+      ? [...preset.trigger_event_types]
+      : undefined;
+    const scheduled =
+      preset.trigger_event_source === 'schedule' ||
+      Boolean(preset.schedule_config) ||
+      triggerEventTypes?.includes('schedule');
+    const webhook =
+      preset.trigger_event_source === 'webhook' ||
+      !triggerEventTypes?.some((type) => type !== 'webhook');
+    this.triggerType = scheduled ? 'schedule' : webhook ? 'webhook' : 'tracker';
     this.flow = {
       name: preset.name,
       description: preset.description,
       icon: preset.icon,
       prompt_template: preset.prompt_template,
-      trigger_event_types: Array.isArray(preset.trigger_event_types)
-        ? [...preset.trigger_event_types]
+      trigger_event_types: triggerEventTypes,
+      trigger_event_source: scheduled ? 'schedule' : undefined,
+      schedule_config: scheduled
+        ? structuredClone(preset.schedule_config ?? defaultScheduleConfig())
         : undefined,
       trigger_config: preset.trigger_config ?? undefined,
       webhook_config: this.supportedWebhookConfig(preset.webhook_config),
@@ -4181,15 +4194,13 @@ export class PreloopFlowForm extends LitElement {
   }
 
   private async _autoPopulatePresetFields() {
-    const hasTrackerEvents = Boolean(this.flow.trigger_event_types?.length);
     if (
-      hasTrackerEvents &&
+      this.triggerType === 'tracker' &&
       this.trackers.length > 0 &&
       !this.flow.trigger_event_source
     ) {
       const tracker = this.trackers[this.trackers.length - 1];
       this.flow.trigger_event_source = tracker.id;
-      this.triggerType = 'tracker';
 
       const allOrganizations = await listOrganizations().catch(() => []);
       this.organizations = allOrganizations.filter(
@@ -4213,8 +4224,6 @@ export class PreloopFlowForm extends LitElement {
       } else {
         this.startPollingOrganizations(tracker.id);
       }
-    } else if (!hasTrackerEvents) {
-      this.triggerType = 'webhook';
     }
 
     if (!this.flow.ai_model_id && !this.hostExecAgentType()) {

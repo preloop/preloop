@@ -27,6 +27,16 @@ function reply(body: unknown, status = 200): Response {
   });
 }
 
+let originalLocation: { state: unknown; href: string };
+
+beforeEach(() => {
+  originalLocation = { state: history.state, href: location.href };
+});
+
+afterEach(() => {
+  history.replaceState(originalLocation.state, '', originalLocation.href);
+});
+
 describe('Cost progressive loading', () => {
   let fetchStub: sinon.SinonStub;
   let urls: URL[];

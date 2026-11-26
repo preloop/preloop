@@ -20,6 +20,219 @@ from preloop.models.models.managed_agent import ManagedAgent
 from preloop.models.models.runtime_session import RuntimeSession
 
 
+def test_activity_pages_keep_complete_turns_and_focus_old_matches(
+    db_session: Session, create_account: Callable[..., models.Account]
+) -> None:
+    """Dense transcript rows cannot starve tools or an old search hit (#2422/#2423)."""
+    account = create_account()
+    at = datetime.now(UTC) - timedelta(days=1)
+    session = models.RuntimeSession(
+        account_id=account.id,
+        session_source_type="codex_cli",
+        session_source_id="example-large-session",
+        started_at=at,
+    )
+    db_session.add(session)
+    db_session.flush()
+    rows = []
+    for turn in range(300):
+        for position in range(18):
+            tool = position % 3 == 1
+            row = models.RuntimeSessionActivity(
+                account_id=account.id,
+                runtime_session_id=session.id,
+                timestamp=at + timedelta(minutes=turn, seconds=position),
+                activity_type="tool_call" if tool else "transcript_message",
+                tool_name="read_file" if tool else None,
+                summary=("Example captured text. " * 24),
+                metadata_={
+                    "role": "user" if position == 0 else "assistant",
+                    "arguments": {"path": "example.py"},
+                }
+                if tool
+                else {"role": "user" if position == 0 else "assistant"},
+            )
+            rows.append(row)
+    db_session.add_all(rows)
+    db_session.flush()
+    kwargs = {"account_id": str(account.id), "runtime_session_id": str(session.id)}
+    import time
+
+    started = time.perf_counter()
+    baseline = crud_runtime_session_activity.list_timeline_rows_for_runtime_session(
+        db_session, **kwargs, limit=100
+    )
+    print(
+        f"baseline: {len(rows)} rows, 300 turns; {len(baseline)} rows in "
+        f"{(time.perf_counter() - started) * 1000:.1f} ms"
+    )
+    page = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **kwargs, limit=20
+    )
+    assert len(page["rows"]) == 360
+    assert sum(row.activity_type == "tool_call" for row in page["rows"]) == 120
+    assert page["has_more"]
+    older = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **kwargs, limit=20, before=page["next_before"]
+    )
+    assert not ({row.id for row in page["rows"]} & {row.id for row in older["rows"]})
+    focused = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **kwargs, limit=20, around=str(rows[18 * 7 + 2].id)
+    )
+    assert rows[18 * 7 + 2].id in {row.id for row in focused["rows"]}
+    assert rows[18 * 7 + 1].id in {row.id for row in focused["rows"]}
+    assert len(focused["rows"]) <= 360
+
+
+def test_transcript_turn_pages_preserve_same_timestamp_message_order(
+    db_session: Session, create_account: Callable[..., models.Account]
+) -> None:
+    """A pushed batch can give every prompt and reply the same timestamp."""
+    account = create_account()
+    at = datetime.now(UTC)
+    session = models.RuntimeSession(
+        account_id=account.id,
+        session_source_type="test",
+        session_source_id=str(uuid4()),
+        started_at=at,
+    )
+    db_session.add(session)
+    db_session.flush()
+    rows = [
+        models.RuntimeSessionActivity(
+            account_id=account.id,
+            runtime_session_id=session.id,
+            timestamp=at,
+            activity_type="transcript_message",
+            summary=f"Message {index}",
+            metadata_={
+                "role": "user" if index % 2 == 0 else "assistant",
+                "external_id": "example-batch",
+                "message_index": index,
+            },
+        )
+        for index in range(8)
+    ]
+    db_session.add_all(rows)
+    db_session.flush()
+    kwargs = {
+        "account_id": str(account.id),
+        "runtime_session_id": str(session.id),
+        "limit": 2,
+    }
+    page = crud_runtime_session_activity.list_timeline_turn_page(db_session, **kwargs)
+    assert [row.summary for row in page["rows"]] == [
+        f"Message {i}" for i in (7, 6, 5, 4)
+    ]
+    earlier = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **kwargs, before=page["next_before"]
+    )
+    assert [row.summary for row in earlier["rows"]] == [
+        f"Message {i}" for i in (3, 2, 1, 0)
+    ]
+    assert not earlier["has_more"]
+    one_turn = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **{**kwargs, "limit": 1}, after=earlier["next_after"]
+    )
+    assert [row.summary for row in one_turn["rows"]] == ["Message 5", "Message 4"]
+    final_turn = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **{**kwargs, "limit": 1}, after=one_turn["next_after"]
+    )
+    assert [row.summary for row in final_turn["rows"]] == ["Message 7", "Message 6"]
+    assert not final_turn["has_newer"]
+
+
+@pytest.mark.parametrize("same_timestamp", [False, True])
+@pytest.mark.parametrize(("row_count", "focus_index"), [(2100, 5), (6200, 2200)])
+def test_focus_survives_an_oversized_turn_and_respects_history(
+    db_session: Session,
+    create_account: Callable[..., models.Account],
+    same_timestamp: bool,
+    row_count: int,
+    focus_index: int,
+) -> None:
+    """A safety cap cannot hide the search target or disclose expired history."""
+    account = create_account()
+    at = datetime.now(UTC) - timedelta(days=1)
+    session = models.RuntimeSession(
+        account_id=account.id,
+        session_source_type="test",
+        session_source_id=str(uuid4()),
+        started_at=at,
+    )
+    db_session.add(session)
+    db_session.flush()
+    rows = [
+        models.RuntimeSessionActivity(
+            account_id=account.id,
+            runtime_session_id=session.id,
+            timestamp=at if same_timestamp else at + timedelta(seconds=index),
+            activity_type="transcript_message",
+            summary=f"Example row {index}",
+            metadata_={
+                "role": "user" if index == 0 else "assistant",
+                "external_id": "example-batch",
+                "message_index": index,
+            },
+        )
+        for index in range(row_count)
+    ]
+    db_session.add_all(rows)
+    db_session.flush()
+    kwargs = {
+        "account_id": str(account.id),
+        "runtime_session_id": str(session.id),
+        "limit": 20,
+    }
+    focused = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **kwargs, around=str(rows[focus_index].id)
+    )
+    assert rows[focus_index].id in {row.id for row in focused["rows"]}
+    assert len(focused["rows"]) <= 2000
+    assert focused["partial_turn"]
+    assert focused["has_more"] is (focus_index > 1000)
+    if not focused["has_more"]:
+        assert focused["next_before"] is None
+    assert focused["has_newer"]
+    seen = {row.id for row in focused["rows"]}
+    for direction, flag, cursor in (
+        ("before", "has_more", "next_before"),
+        ("after", "has_newer", "next_after"),
+    ):
+        page = focused
+        while page[flag]:
+            page = crud_runtime_session_activity.list_timeline_turn_page(
+                db_session, **kwargs, **{direction: page[cursor]}
+            )
+            page_ids = {row.id for row in page["rows"]}
+            assert page_ids, "An advertised cursor must make progress"
+            assert len(page_ids) <= 2000
+            assert not seen & page_ids
+            seen.update(page_ids)
+    assert seen == {row.id for row in rows}
+    latest = crud_runtime_session_activity.list_timeline_turn_page(db_session, **kwargs)
+    older = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **kwargs, before=latest["next_before"]
+    )
+    recovered = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **kwargs, after=older["next_after"]
+    )
+    assert {row.id for row in recovered["rows"]} == {row.id for row in latest["rows"]}
+    for method in (
+        crud_runtime_session_activity.list_timeline_turn_page,
+        crud_runtime_session_activity.gateway_offset_around,
+    ):
+        focus_arg = (
+            {"around": str(rows[5].id)}
+            if method.__name__ == "list_timeline_turn_page"
+            else {"target": str(rows[5].id)}
+        )
+        with pytest.raises(ValueError, match="not found"):
+            method(
+                db_session, **kwargs, **focus_arg, start_date=at + timedelta(hours=1)
+            )
+
+
 @pytest.mark.parametrize("newest_first", [False, True])
 def test_bounded_gateway_payload_pages_preserve_equal_timestamp_order(
     db_session: Session,

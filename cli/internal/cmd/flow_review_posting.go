@@ -79,6 +79,7 @@ Examples:
 		newReviewPostingDisableCmd(),
 		newReviewPostingStatusCmd(),
 		newReviewPostingPublishCmd(),
+		newReviewPostingRefinalizeCmd(),
 	)
 	return group
 }
@@ -1045,4 +1046,42 @@ func printPostingProjects(out io.Writer, flow map[string]any, block map[string]a
 	for _, item := range listed {
 		fmt.Fprintf(out, "  %v\n", item)
 	}
+}
+
+func newReviewPostingRefinalizeCmd() *cobra.Command {
+	var apply bool
+	var digest string
+	cmd := &cobra.Command{
+		Use:   "refinalize <execution-id>",
+		Short: "Preview recovery of an intact saved review without running the model",
+		Long: `Preview re-finalization of a stored review. Requires a personal owner or
+administrator credential. Inspect the returned gates and publication decision,
+then pass --apply --expected-digest <digest> from that preview to apply it.
+The original run's usage and cost are preserved.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !uuidPattern.MatchString(args[0]) {
+				return fmt.Errorf("execution id must be a UUID")
+			}
+			if apply && !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(digest) {
+				return fmt.Errorf("--apply requires --expected-digest from a preview")
+			}
+			client, err := reviewPostingClient()
+			if err != nil {
+				return err
+			}
+			body := map[string]any{"dry_run": !apply}
+			if digest != "" {
+				body["expected_digest"] = digest
+			}
+			var response map[string]any
+			if err := client.Post(flowsPath+"/executions/"+url.PathEscape(args[0])+"/refinalize", body, &response); err != nil {
+				return err
+			}
+			return writeJSON(cmd.OutOrStdout(), response)
+		},
+	}
+	cmd.Flags().BoolVar(&apply, "apply", false, "apply the previewed recovery")
+	cmd.Flags().StringVar(&digest, "expected-digest", "", "digest returned by the preview")
+	return cmd
 }
