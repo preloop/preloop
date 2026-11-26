@@ -266,3 +266,17 @@ class TestTheShippedCatalog:
             for preset in FLOW_PRESETS:
                 sync.build_preset_flow_create(preset)
         assert "FlowCreate does not define" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Daily CI and QA review", "Weekly model price review"],
+)
+def test_scheduled_repository_preset_follows_the_repository_default(
+    sync, name: str
+) -> None:
+    """A scheduled preset has no trigger branch and must allow any default."""
+    preset = next(preset for preset in sync.FLOW_PRESETS if preset["name"] == name)
+    clone_config = sync.preset_row_fields(preset)["git_clone_config"]
+    assert clone_config["enabled"] is True
+    assert clone_config["source_branch"] is None
