@@ -1,4 +1,4 @@
-import { fetchWithAuth, getUserProfile } from './api';
+import { fetchWithAuth, getUserProfile, onApiCachesInvalidated } from './api';
 import { REST_API_PREFIX } from './api-path';
 import { hasFleetPermission } from './device-fleet-api';
 
@@ -171,6 +171,9 @@ let constraintCache: {
 export function invalidateVersionConstraints(): void {
   constraintCache = null;
 }
+
+// Constraints are account data: sign-out and account switches drop them.
+onApiCachesInvalidated(invalidateVersionConstraints);
 
 /**
  * One account scan serves the first page, Load more and filter changes.

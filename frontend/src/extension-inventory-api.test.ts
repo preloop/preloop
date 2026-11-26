@@ -1,5 +1,6 @@
 import { expect } from '@open-wc/testing';
 import sinon from 'sinon';
+import { invalidateApiCaches } from './api';
 import {
   getExtensions,
   invalidateVersionConstraints,
@@ -85,6 +86,14 @@ describe('extension inventory API', () => {
     invalidateVersionConstraints();
     await getExtensions();
     expect(scans()).to.equal(2);
+    // Sign-out and account switches run the shared cache broom.
+    invalidateApiCaches();
+    await getExtensions();
+    expect(scans()).to.equal(3);
+    // An approval write drops the scan too.
+    await setExtensionApproval(key, 'approved').catch(() => undefined);
+    await getExtensions();
+    expect(scans()).to.equal(4);
   });
 
   // protects=REST context and filters; fails_when=device reads become account
