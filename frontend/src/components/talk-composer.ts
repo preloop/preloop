@@ -193,7 +193,16 @@ export class TalkComposer extends LitElement {
               })
             );
           }
-          if (status.terminal && status.delivery_state !== 'finished') {
+          // A finished new-session command that never bound a session would
+          // otherwise leave the composer stuck in "Starting".
+          const unbound =
+            pending.startNewSession &&
+            !pending.targetSessionId &&
+            !status.runtime_session_id;
+          if (
+            status.terminal &&
+            (status.delivery_state !== 'finished' || unbound)
+          ) {
             this.setPending(
               this.pending.map((item) =>
                 item.id === pendingId
@@ -201,7 +210,11 @@ export class TalkComposer extends LitElement {
                       ...item,
                       state: 'failed',
                       error:
-                        status.last_error || `Command ${status.delivery_state}`,
+                        status.delivery_state === 'finished'
+                          ? status.last_error ||
+                            'The session finished without reporting its id'
+                          : status.last_error ||
+                            `Command ${status.delivery_state}`,
                     }
                   : item
               )

@@ -28,3 +28,24 @@ test("Talk respects an existing read-only authorized directory", async () => {
     await assert.rejects(resolveWorkingDirectory({ workspace_root: root, runner_config_path: configPath }, directory), /authorized|writable/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+
+test("without runner.json Talk refuses the home and credential directories", async () => {
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "talk-home-")));
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    await fs.mkdir(path.join(home, ".ssh"));
+    await fs.mkdir(path.join(home, "project"));
+    const config = { workspace_root: home };
+    assert.equal(await resolveWorkingDirectory(config, path.join(home, "project")), path.join(home, "project"));
+    await assert.rejects(resolveWorkingDirectory(config, home), /home directory/);
+    await assert.rejects(resolveWorkingDirectory(config, path.join(home, ".ssh")), /credentials/);
+    await assert.rejects(
+      resolveWorkingDirectory({ workspace_root: path.join(home, "missing") }, path.join(home, "project")),
+      /workspace_root does not exist/,
+    );
+  } finally {
+    process.env.HOME = previousHome;
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});

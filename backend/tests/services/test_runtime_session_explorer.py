@@ -1147,3 +1147,11 @@ def test_summary_insight_omits_unknown_imported_measurements(
             account=_make_account(), runtime_session_id=row["id"]
         )
     assert not any("request" in item or "spend" in item for item in insight.highlights)
+
+
+def test_summary_row_to_schema_keeps_the_start_directory():
+    summary = RuntimeSessionExplorerService._summary_row_to_schema(
+        _make_summary_row(cwd="/tmp/later", start_directory="/tmp/example")
+    )
+    assert summary.start_directory == "/tmp/example"
+    assert summary.cwd == "/tmp/later"

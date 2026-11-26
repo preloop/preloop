@@ -1240,6 +1240,50 @@ describe('Talk native startup recovery', () => {
     el.remove();
   });
 
+  it('fails a finished new-session command that never bound a session', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    sinon.stub(window, 'fetch').callsFake(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/directories'))
+        return new Response(JSON.stringify(['/tmp/example']));
+      if (url.endsWith('/commands/unbound-command'))
+        return new Response(
+          JSON.stringify({
+            runtime_session_id: null,
+            terminal: true,
+            delivery_state: 'finished',
+          })
+        );
+      return new Response(
+        JSON.stringify({
+          command_id: 'unbound-command',
+          runtime_session_id: null,
+          target_session_id: null,
+        }),
+        { status: 202 }
+      );
+    });
+    const el = await fixture<TalkComposer>(
+      html`<talk-composer
+        .agent=${agent({ agent_kind: 'codex' })}
+        .sessionId=${null}
+      ></talk-composer>`
+    );
+    const input = textarea(el);
+    input.value = 'Example new task';
+    input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    await waitUntil(
+      () => el.pendingMessages[0]?.state === 'failed',
+      'unbound command stayed starting',
+      { timeout: 5000 }
+    );
+    expect(el.pendingMessages[0].targetSessionId).to.equal(null);
+    el.remove();
+  });
+
   it('retains a follow-up draft while its new session is still starting', async () => {
     localStorage.setItem('accessToken', 'test-token');
     const fetchStub = sinon.stub(window, 'fetch').callsFake(

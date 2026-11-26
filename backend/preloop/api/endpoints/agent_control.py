@@ -76,12 +76,18 @@ from preloop.services.agent_control_dispatch import (
     create_command_history_session,
     dispatch_operator_message,
     persist_and_deliver_command,
-    resolve_session_control_mode,
+    TERMINAL_SESSION_REASON,
+    TERMINAL_SESSION_REASON_CODE,
     native_session_id,
+    resolve_session_control_mode,
     session_managed_agent,
+    session_reachable_by_control,
 )
 
 logger = logging.getLogger(__name__)
+
+#: Harnesses whose idle or terminal sessions take a prompt as an operator note.
+NATIVE_NOTE_ROUTED_SOURCES = frozenset({"claude_code", "codex"})
 router = APIRouter()
 
 # Close code sent to an evicted WebSocket so clients can distinguish eviction
@@ -2220,14 +2226,6 @@ async def _route_managed_agent_prompt(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This harness supports text messages to active sessions only",
         )
-    if request.target_session_id is None and not _agent_has_control_config(
-        db, account_id=str(agent.account_id), agent=agent
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Managed agent does not have an Agent Control plugin configured",
-        )
-
     if (
         str(agent.account_id) != str(current_user.account_id)
         and not request.start_new_session
@@ -2240,14 +2238,40 @@ async def _route_managed_agent_prompt(
         agent=agent,
         request=request,
     )
+    native_target = (
+        target_session is not None
+        and target_session.session_source_type in NATIVE_NOTE_ROUTED_SOURCES
+    )
+    # Native sessions decide below whether the prompt becomes a note, which
+    # needs no live plugin. Everything else still requires one.
+    if not native_target and not _agent_has_control_config(
+        db, account_id=str(agent.account_id), agent=agent
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Managed agent does not have an Agent Control plugin configured",
+        )
+    if (
+        session_mode == "existing"
+        and target_session is not None
+        and not native_target
+        and not session_reachable_by_control(agent, target_session)
+    ):
+        # The plugin cannot type into this terminal; a command would resume
+        # the same session in a second process and fork it. The operator
+        # sends a note instead (POST /operator-notes).
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": TERMINAL_SESSION_REASON_CODE,
+                "message": TERMINAL_SESSION_REASON,
+            },
+        )
     await _require_session_start_consent(
         db, agent=agent, request=request, current_user=current_user
     )
-    if (
-        target_session is not None
-        and target_session.session_source_type in {"claude_code", "codex"}
-        and not request.interrupt
-    ):
+    cancel_notes_for = None
+    if target_session is not None and native_target and not request.interrupt:
         from preloop.api.endpoints.operator_notes import _create_note
         from preloop.schemas.operator_notes import OperatorNoteCreate
         from preloop.services.agent_control_dispatch import resume_command
@@ -2278,13 +2302,19 @@ async def _route_managed_agent_prompt(
                 ),
                 route_session=False,
             )
-            envelope = build_operator_envelope(
-                agent, name="operator_note", payload={"text": request.message}
-            ).model_copy(
-                update={
-                    "runtime_session_id": target_session.id,
-                    "message_id": note.command_id,
-                }
+            # No live binding is required here: the note is already
+            # persisted, so the envelope only describes it.
+            envelope = AgentControlEnvelope(
+                type="command",
+                name="operator_note",
+                message_id=str(note.command_id),
+                account_id=agent.account_id,
+                managed_agent_id=agent.id,
+                runtime_session_id=target_session.id,
+                session_source_type=agent.session_source_type,
+                session_source_id=agent.session_source_id,
+                timestamp=datetime.now(UTC),
+                payload={"text": request.message},
             )
             return AgentControlCommandResponse(
                 command_id=note.command_id,
@@ -2297,12 +2327,8 @@ async def _route_managed_agent_prompt(
                 command_envelope=envelope,
                 delivery_message=decision.reason,
             )
-        crud_agent_control_command.cancel_pending_session_notes(
-            db,
-            account_id=current_user.account_id,
-            runtime_session_id=target_session.id,
-            user_id=current_user.id,
-        )
+        # Supersede pending notes only once the prompt was delivered.
+        cancel_notes_for = target_session.id
     identity = _existing_session_identity(target_session)
     if target_session is None:
         directories = crud_runtime_session.recent_directories(
@@ -2335,6 +2361,14 @@ async def _route_managed_agent_prompt(
         )
     except AgentControlDispatchError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    if cancel_notes_for is not None:
+        crud_agent_control_command.cancel_pending_session_notes(
+            db,
+            account_id=current_user.account_id,
+            runtime_session_id=cancel_notes_for,
+            user_id=current_user.id,
+        )
+        db.commit()
 
     envelope = dispatched.envelope
     local_delivery = dispatched.local_delivery
