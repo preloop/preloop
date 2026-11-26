@@ -70,6 +70,10 @@ const keyOf = (row: ExtensionKey): string =>
 @customElement('extension-inventory')
 export class ExtensionInventory extends LitElement {
   @property() fingerprint = '';
+  /** Limit rows to one agent kind, for example claude_code. */
+  @property() agentKind = '';
+  /** Replaces the default empty-state sentence when set. */
+  @property() emptyText = '';
   @property({ attribute: false }) loader = getExtensions;
   @property({ attribute: false }) updater = setExtensionApproval;
   @property({ attribute: false }) accessLoader = extensionAccess;
@@ -205,8 +209,11 @@ export class ExtensionInventory extends LitElement {
     void this.refresh();
   }
   protected updated(changes: PropertyValues): void {
-    if (changes.has('fingerprint') && changes.get('fingerprint') !== undefined)
-      void this.refresh();
+    for (const key of ['fingerprint', 'agentKind'] as const)
+      if (changes.has(key) && changes.get(key) !== undefined) {
+        void this.refresh();
+        return;
+      }
   }
   disconnectedCallback(): void {
     this.requestId++;
@@ -226,6 +233,7 @@ export class ExtensionInventory extends LitElement {
       if (!access.view) return;
       const filters: ExtensionFilters = {
         fingerprint: this.fingerprint || undefined,
+        agent_kind: this.agentKind || undefined,
         state: (this.stateFilter || undefined) as
           ExtensionEffectiveState | undefined,
         source_kind: (this.sourceFilter || undefined) as
@@ -238,6 +246,16 @@ export class ExtensionInventory extends LitElement {
         append && this.page
           ? { ...page, items: [...this.page.items, ...page.items] }
           : page;
+      this.dispatchEvent(
+        new CustomEvent('extensions-loaded', {
+          detail: {
+            count: this.page.items.length,
+            more: !!this.page.next_cursor,
+          },
+          bubbles: true,
+          composed: true,
+        })
+      );
       // An open hash list re-reads its pins so pin and unpin show at once.
       if (this.expandedRow && !append) {
         const pins = await this.pinLoader(this.expandedRow);
@@ -679,12 +697,13 @@ export class ExtensionInventory extends LitElement {
             </div>`
           : this.page && !this.loading
             ? html`<p class="empty">
-                No extensions reported for this selection.
+                ${this.emptyText ||
+                'No extensions reported for this selection.'}
               </p>`
             : nothing
       }
       ${this.page ? html`<div class="footer"><span class="meta" aria-live="polite">${this.page.items.length} extensions shown</span>${this.page.next_cursor ? html`<sl-button size="small" ?loading=${this.loading} @click=${() => this.refresh(true)}>Load more</sl-button>` : nothing}</div>` : nothing}
-      ${!this.fingerprint && this.canManage ? html`<extension-enforcement .canManage=${this.canManage} .approvalRevision=${this.approvalRevision}></extension-enforcement>` : nothing}
+      ${!this.fingerprint && !this.agentKind && this.canManage ? html`<extension-enforcement .canManage=${this.canManage} .approvalRevision=${this.approvalRevision}></extension-enforcement>` : nothing}
     `;
   }
 }
