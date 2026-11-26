@@ -829,6 +829,7 @@ export class AgentDetailView extends LitElement {
       this.associatedFlowsLoaded = false;
       this.associatedFlowsError = null;
       this.associatedFlows = [];
+      this.extensionCount = null;
       this.loading = true;
       void this.loadData();
     }

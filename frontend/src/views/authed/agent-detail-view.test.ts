@@ -511,6 +511,9 @@ describe('AgentDetailView', () => {
     expect(section.querySelector('summary')!.textContent).to.contain(
       'Extensions (63)'
     );
+    window.history.replaceState(null, '', '/console/agents/agent-2');
+    element.onBeforeEnter({ params: { agentId: 'agent-2' } });
+    expect((element as any).extensionCount).to.equal(null);
   });
 
   it('distinguishes never-run, failed and unsupported checks without claiming they are disabled', async () => {
