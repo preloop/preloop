@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
 from preloop.models import models
-from preloop.models.crud import crud_approval_workflow, crud_user
+from preloop.models.crud import crud_approval_event, crud_approval_workflow, crud_user
 from preloop.models.models.approval_request import ApprovalRequest
 from preloop.models.models.tool_configuration import ToolConfiguration
 from preloop.models.schemas.tool_configuration import ApprovalWorkflowCreate
@@ -214,3 +214,53 @@ def test_awaiting_me_filters_voted_rows_before_the_page_limit(
     everything = client.get("/api/v1/approval-requests", params={"status": "pending"})
     ids = {r["id"] for r in everything.json()}
     assert {str(v.id) for v in voted} | {str(older.id)} <= ids
+
+
+@pytest.mark.parametrize(
+    ("evidence", "status", "automatic", "ai", "expected"),
+    [
+        ("none", "approved", None, False, False),
+        ("response", "approved", None, False, True),
+        ("event", "declined", None, False, True),
+        ("viewed", "approved", None, False, False),
+        ("response", "pending", None, False, False),
+        ("response", "approved", "native_tool_approvals_off", False, False),
+        ("event", "approved", None, True, False),
+    ],
+)
+def test_human_attribution_requires_recorded_decision_evidence(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    evidence: str,
+    status: str,
+    automatic: str | None,
+    ai: bool,
+    expected: bool,
+) -> None:
+    """List and detail distinguish votes from absent automatic metadata."""
+    row = _pending_with_vote(db_session, test_user.account_id, test_user.id, status)
+    row.status = status
+    row.auto_approved_reason = automatic
+    row.decided_by_ai = ai
+    if evidence != "response":
+        row.responses = None
+    db_session.flush()
+    if evidence in {"event", "viewed"}:
+        crud_approval_event.record(
+            db_session,
+            approval_request_id=row.id,
+            account_id=row.account_id,
+            event_type="vote_received" if evidence == "event" else "viewed",
+            detail="Recorded token decision" if evidence == "event" else "Viewed",
+        )
+    detail = client.get(f"/api/v1/approval-requests/{row.id}")
+    assert detail.status_code == 200
+    assert detail.json()["human_decision_recorded"] is expected
+    page = client.get("/api/v1/approval-requests")
+    item = next(item for item in page.json() if item["id"] == str(row.id))
+    assert item["human_decision_recorded"] is expected
+    assert "responses" not in item
+    assert not crud_approval_event.request_ids_with_votes(
+        db_session, account_id=uuid4(), request_ids=[row.id]
+    )

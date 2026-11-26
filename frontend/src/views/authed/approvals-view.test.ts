@@ -110,13 +110,14 @@ describe('ApprovalsView', () => {
       { auto_approved_reason: 'bypass' },
       { auto_approved_reason: 'flow_approval_policy' },
       { decided_by_ai: true },
+      { human_decision_recorded: true },
       { decided_by_human: true },
-      {},
       { auto_approved_reason: 'future_reason' },
     ].map((cause, i) =>
       baseRequest({
         id: `cause-${i}`,
         status: 'approved',
+        requested_at: '2026-01-01T00:00:00Z',
         auto_approval_bypass_id: null,
         ...cause,
       })

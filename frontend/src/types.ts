@@ -2795,6 +2795,8 @@ export interface ApprovalRequest {
    * would overstate how much human oversight actually happened.
    */
   decided_by_human?: boolean;
+  /** A stored vote response or event supports this human decision. */
+  human_decision_recorded?: boolean;
   /**
    * Why this request exists: the policy rule that gated the call, captured
    * when the request was created. Absent on rows created before this field

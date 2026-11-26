@@ -231,7 +231,7 @@ export function approvalDecisionCause(request: ApprovalRequest): {
       decider: 'an AI reviewer',
       description: 'Decided by an AI reviewer. No person reviewed this call.',
     };
-  if (request.decided_by_human)
+  if (request.human_decision_recorded)
     return {
       label: 'Person',
       decider: 'a person',

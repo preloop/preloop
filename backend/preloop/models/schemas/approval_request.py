@@ -263,6 +263,10 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     api_key_id: Optional[UUID] = None
     # AI decision tracking fields
     decided_by_ai: bool = False
+    human_decision_recorded: bool = Field(
+        False,
+        description="A terminal human decision has a stored vote response or event",
+    )
     ai_model: Optional[str] = None
     ai_confidence: Optional[float] = None
     ai_reasoning: Optional[str] = None
