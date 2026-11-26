@@ -177,28 +177,45 @@ describe('ApprovalsView', () => {
     it(`refreshes ${label} evidence after a websocket decision`, async () => {
       const request = baseRequest();
       const element = await renderList([request]);
-      fetchStub.callsFake(
-        async () =>
-          new Response(
-            JSON.stringify({
-              ...request,
-              ...cause,
-              status: 'approved',
-            }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
-          )
-      );
-      (element as any).statusFilter = 'all';
-      (element as any).handleWebSocketMessage({
-        type: 'approval_approved',
-        approval_request_id: request.id,
+      fetchStub.resetHistory();
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), window.location.origin);
+        return new Response(
+          JSON.stringify(
+            url.pathname.endsWith('/approval-requests')
+              ? url.searchParams.get('status') === 'pending'
+                ? []
+                : [{ ...request, ...cause, status: 'approved' }]
+              : {}
+          ),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
       });
+      (element as any).statusFilter = 'all';
+      for (let i = 0; i < 3; i++) {
+        (element as any).handleWebSocketMessage({
+          type: 'approval_approved',
+          approval_request_id: request.id,
+        });
+      }
       await waitUntil(
         () =>
           element
             .shadowRoot!.querySelector('[data-decision-cause]')
             ?.textContent?.trim() === label
       );
+      const reads = fetchStub
+        .getCalls()
+        .map((call) => new URL(String(call.args[0]), window.location.origin));
+      expect(
+        reads.filter((url) => url.pathname.endsWith('/approval-requests'))
+          .length
+      ).to.equal(2);
+      expect(
+        reads.some((url) =>
+          url.pathname.endsWith(`/approval-requests/${request.id}`)
+        )
+      ).to.equal(false);
     });
   }
 
@@ -206,6 +223,62 @@ describe('ApprovalsView', () => {
     batchOutcomes = {};
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
+  });
+
+  it('refreshes a bulk decision with bounded list reads and no detail reads', async () => {
+    const requests = Array.from({ length: 5 }, (_, i) =>
+      baseRequest({ id: `bulk-cause-${i}` })
+    );
+    const element = await renderList(requests);
+    (element as any).statusFilter = 'all';
+    fetchStub.resetHistory();
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.origin);
+      const data = url.pathname.endsWith('/decide-batch')
+        ? {
+            results: requests.map((row) => ({
+              id: row.id,
+              ok: true,
+              status: 'approved',
+            })),
+          }
+        : url.pathname.endsWith('/approval-requests')
+          ? url.searchParams.get('status') === 'pending'
+            ? []
+            : requests.map((row) => ({
+                ...row,
+                status: 'approved',
+                human_decision_recorded: true,
+              }))
+          : {};
+      return new Response(JSON.stringify(data), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    await (element as any).sendBatchDecision(requests, true);
+    await waitUntil(() => {
+      const labels = Array.from(
+        element.shadowRoot!.querySelectorAll('[data-decision-cause]')
+      );
+      return (
+        labels.length === 5 &&
+        labels.every((label) => label.textContent!.trim() === 'Person')
+      );
+    });
+    const paths = fetchStub
+      .getCalls()
+      .map(
+        (call) => new URL(String(call.args[0]), window.location.origin).pathname
+      );
+    expect(
+      paths.filter((path) => path.endsWith('/approval-requests')).length
+    ).to.equal(2);
+    expect(
+      paths.some((path) =>
+        requests.some((row) => path.endsWith(`/approval-requests/${row.id}`))
+      )
+    ).to.equal(false);
   });
 
   afterEach(async () => {
