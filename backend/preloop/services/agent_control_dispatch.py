@@ -587,6 +587,7 @@ class SessionControlMode:
     #: operator and where a command-mode line is sent (runner sessions).
     kind: Optional[str] = None
     send_path: Optional[str] = None
+    herdr_target: Optional[dict[str, str]] = None
 
     @property
     def delivery(self) -> str:
@@ -872,7 +873,7 @@ def resolve_session_control_mode(
             agent,
         )
     if not agent_has_control_config(db, account_id=account_id, agent=agent):
-        return SessionControlMode(
+        unavailable = SessionControlMode(
             "note",
             "no_control_plugin",
             f"{name} is governed through hooks or the gateway and has no "
@@ -881,29 +882,56 @@ def resolve_session_control_mode(
             "mode)",
             agent,
         )
-    if agent.runtime_session_id is None or not control_heartbeat_is_fresh(
+    elif agent.runtime_session_id is None or not control_heartbeat_is_fresh(
         agent.control_last_heartbeat_at, now=now
     ):
         seconds = int(AGENT_CONTROL_PRESENCE_TTL.total_seconds())
-        return SessionControlMode(
+        unavailable = SessionControlMode(
             "note",
             "control_offline",
             f"{name} has no live Agent Control connection (no heartbeat in the "
             f"last {seconds}s); a line is a note until it reconnects",
             agent,
         )
-    if not session_reachable_by_control(agent, session):
-        return SessionControlMode(
+    elif not session_reachable_by_control(agent, session):
+        unavailable = SessionControlMode(
             "note",
             TERMINAL_SESSION_REASON_CODE,
             TERMINAL_SESSION_REASON,
             agent,
         )
-    if (
-        getattr(session, "turn_state", None) in {"working", "waiting_for_approval"}
-        and session.ended_at is None
-    ):
+    else:
+        if (
+            getattr(session, "turn_state", None) in {"working", "waiting_for_approval"}
+            and session.ended_at is None
+        ):
+            return SessionControlMode(
+                "note", "turn_in_progress", "Delivers at the agent's next step", agent
+            )
+        return SessionControlMode("command", None, None, agent)
+    # One additional delivery rung, only after sidecar resume was unavailable.
+    from preloop.models.crud.herdr_command import eligible_target
+
+    target = eligible_target(db, account_id=account_id, session=session, agent=agent)
+    if target is not None:
+        return SessionControlMode("command", None, None, agent, herdr_target=target)
+    location = getattr(session, "terminal_location", None) or {}
+    if location.get("multiplexer") == "herdr":
+        if location.get("state") == "working":
+            return SessionControlMode(
+                "note", "turn_in_progress", "Delivers at the agent's next step", agent
+            )
+        if location.get("state") == "blocked":
+            return SessionControlMode(
+                "note",
+                "agent_blocked",
+                "The agent is waiting at a terminal dialog. Handle it locally.",
+                agent,
+            )
         return SessionControlMode(
-            "note", "turn_in_progress", "Delivers at the agent's next step", agent
+            "note",
+            "herdr_unavailable",
+            "The pane or device is unavailable for prompting. Check the pane and enable herdr prompting locally.",
+            agent,
         )
-    return SessionControlMode("command", None, None, agent)
+    return unavailable

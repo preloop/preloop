@@ -1038,7 +1038,9 @@ async def _deliver_session_messages(
     """Send pending remote session frames, enforcing the kill switch first."""
     if flows_or_tools_halted(db, runner.account_id):
         end_sessions_for_kill_switch(db, runner.account_id)
-    messages = pending_runner_messages(db, runner)
+    from preloop.services.herdr_commands import pending_messages
+
+    messages = pending_runner_messages(db, runner) + pending_messages(db, runner)
     release_transaction(db)
     for message in messages:
         await websocket.send_json(message)
@@ -1390,6 +1392,13 @@ async def runner_ws(
                 release_transaction(db)
                 await websocket.send_json(reply)
                 await _deliver_session_messages(db, websocket, runner)
+                continue
+
+            if msg_type == "herdr_prompt_result":
+                from preloop.services.herdr_commands import apply_result
+
+                apply_result(db, runner, raw)
+                await websocket.send_json({"type": "ack"})
                 continue
 
             if msg_type in RUNNER_SESSION_MESSAGE_TYPES:

@@ -503,9 +503,17 @@ Pane prompting is a Talk transport with these required device-side guards:
   terminal command states with actionable reasons. A timeout or stalled result
   does not prove no input was submitted, so it must not trigger a blind retry.
 
-The transport belongs after the sidecar-resume rung and before cannot-deliver in
-the shared Talk routing decision. It must not introduce a separate routing
-ladder. Observation alone never enables that transport. Replies come through
+The transport follows sidecar resume in the shared Talk routing decision.
+Observation alone never enables it. Commands retain the existing
+`AgentControlCommand` audit identity and bind one authenticated runner, device,
+pane, harness, and native session. Sidecar replay and result handlers exclude
+these runner-bound commands. The device journals command IDs, payload hashes,
+expiry, and outcomes before injection; prompt text is not stored in that journal.
+An accepted command without a saved result returns an uncertain outcome after a
+restart and is never injected again. Commands expire even if the runner stays
+offline, and terminal outcomes retain actionable reasons.
+
+Replies come through
 the existing governed session record; terminal output is never scraped and
 `herdr agent read` is never used. Ungoverned agents have no visible reply record.
 Remote herdr targets and creating workspaces from the console are outside this

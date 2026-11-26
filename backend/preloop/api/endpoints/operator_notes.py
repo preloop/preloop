@@ -248,6 +248,10 @@ def _create_note(
                     agent_id=decision.agent.id,
                     session_id=runtime_session_id,
                 )
+            if decision.reason_code in {"agent_blocked", "herdr_unavailable"}:
+                raise HTTPException(
+                    409, {"code": decision.reason_code, "message": decision.reason}
+                )
             terminal_open = (
                 getattr(session, "ended_at", None) is None
                 and getattr(session, "control_owned", None) is not True

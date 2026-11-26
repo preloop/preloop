@@ -55499,6 +55499,8 @@ components:
             - control_offline
             - terminal_session
             - turn_in_progress
+            - agent_blocked
+            - herdr_unavailable
             - runner_away
           - type: 'null'
           title: Reason Code

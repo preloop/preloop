@@ -62,6 +62,8 @@ func SaveSettings(dir string, s Settings) error {
 }
 
 type Agent struct {
+	InteractiveReady bool   `json:"-"`
+	LaunchPending    bool   `json:"-"`
 	PaneLabel        string `json:"pane_label"`
 	HarnessKind      string `json:"harness_kind"`
 	HarnessSessionID string `json:"harness_session_id"`
@@ -98,8 +100,10 @@ type snapshot struct {
 		Label string `json:"label"`
 	} `json:"tabs"`
 	Agents []struct {
-		Agent   string `json:"agent"`
-		Session *struct {
+		InteractiveReady bool   `json:"interactive_ready"`
+		LaunchPending    bool   `json:"launch_pending"`
+		Agent            string `json:"agent"`
+		Session          *struct {
 			Kind  string `json:"kind"`
 			Value string `json:"value"`
 			Agent string `json:"agent"`
@@ -198,7 +202,7 @@ func Parse(data []byte) (Report, error) {
 		}
 		seenPanes[a.PaneID] = true
 		id := ""
-		if a.Session != nil && a.Session.Kind == "id" {
+		if a.Session != nil && a.Session.Kind == "id" && Harness(a.Session.Agent) == Harness(a.Agent) {
 			id = a.Session.Value
 			if !validID(id, 512) {
 				return Report{}, errors.New("invalid herdr session identity")
@@ -210,7 +214,7 @@ func Parse(data []byte) (Report, error) {
 		default:
 			state = "unknown"
 		}
-		r.Agents = append(r.Agents, Agent{PaneLabel: labels[a.PaneID], HarnessKind: Harness(a.Agent), HarnessSessionID: id, Cwd: Clean(a.Cwd, 4096), Multiplexer: "herdr", WorkspaceID: a.WorkspaceID, WorkspaceLabel: ws[a.WorkspaceID], TabID: a.TabID, TabLabel: ts[a.TabID], PaneID: a.PaneID, TerminalTitle: Clean(a.Title, 256), State: state})
+		r.Agents = append(r.Agents, Agent{InteractiveReady: a.InteractiveReady, LaunchPending: a.LaunchPending, PaneLabel: labels[a.PaneID], HarnessKind: Harness(a.Agent), HarnessSessionID: id, Cwd: Clean(a.Cwd, 4096), Multiplexer: "herdr", WorkspaceID: a.WorkspaceID, WorkspaceLabel: ws[a.WorkspaceID], TabID: a.TabID, TabLabel: ts[a.TabID], PaneID: a.PaneID, TerminalTitle: Clean(a.Title, 256), State: state})
 	}
 	sort.Slice(r.Agents, func(i, j int) bool { return r.Agents[i].PaneID < r.Agents[j].PaneID })
 	return r, nil
@@ -220,6 +224,7 @@ func Snapshot(ctx context.Context) (Report, error) {
 	defer cancel()
 	var b limitedBuffer
 	cmd := exec.CommandContext(ctx, "herdr", "api", "snapshot")
+	cmd.WaitDelay = 250 * time.Millisecond
 	cmd.Stdout = &b
 	e := cmd.Run()
 	if e != nil {
@@ -253,11 +258,13 @@ func validID(s string, limit int) bool {
 	return s != "" && !strings.HasPrefix(s, "-") && len(s) <= limit && Clean(s, limit) == s
 }
 
-type limitedBuffer struct{ bytes.Buffer }
+type limitedBuffer struct{ buffer bytes.Buffer }
+
+func (b *limitedBuffer) Bytes() []byte { return b.buffer.Bytes() }
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
-	if b.Len()+len(p) > maxSnapshotBytes {
+	if b.buffer.Len()+len(p) > maxSnapshotBytes {
 		return 0, errors.New("herdr snapshot exceeds size limit")
 	}
-	return b.Buffer.Write(p)
+	return b.buffer.Write(p)
 }

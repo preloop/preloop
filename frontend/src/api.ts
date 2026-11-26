@@ -6528,6 +6528,9 @@ export interface RuntimeSessionControl {
     | 'no_control_plugin'
     | 'control_offline'
     | 'terminal_session'
+    | 'turn_in_progress'
+    | 'agent_blocked'
+    | 'herdr_unavailable'
     | 'runner_away'
     | null;
   reason: string | null;
