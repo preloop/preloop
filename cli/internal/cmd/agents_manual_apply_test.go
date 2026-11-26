@@ -271,7 +271,7 @@ func TestRenderManualInstructionsIsCopyable(t *testing.T) {
 			t.Fatalf("missing %q in:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "—") {
+	if strings.Contains(text, "\u2014") {
 		t.Fatal("no em dashes in user-facing text")
 	}
 }
