@@ -250,3 +250,40 @@ func TestDiscoverClaudeCodeHonoursClaudeConfigDir(t *testing.T) {
 	}
 	t.Fatal("Claude Code not discovered under CLAUDE_CONFIG_DIR")
 }
+
+// On Linux a read-only bind mount of a file owned by another uid fails the
+// ownership check first. The reason must still mention the read-only mount,
+// or the user fixes the owner and is refused again.
+func TestProbeReasonNamesReadOnlyMountBehindAPermissionError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := filepath.EvalSymlinks(path)
+	mountInfo := filepath.Join(dir, "mountinfo")
+	line := "41 22 8:1 /home/jane/.claude/settings.json " + resolved + " ro,relatime - ext4 /dev/sda1 rw\n"
+	if err := os.WriteFile(mountInfo, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previousPath, previousLoader := procMountInfoPath, mountTableLoader
+	procMountInfoPath = mountInfo
+	mountTableLoader = func() []mountInfoEntry {
+		data, _ := os.ReadFile(procMountInfoPath)
+		return parseMountInfo(string(data))
+	}
+	defer func() { procMountInfoPath, mountTableLoader = previousPath, previousLoader }()
+	restore := stubWriteProbes(
+		func(string) error { return &os.PathError{Op: "open", Path: path, Err: syscall.EACCES} },
+		nil,
+	)
+	defer restore()
+
+	probe := probeWriteTarget(configWriteTarget{Path: path})
+	if probe.Writable || !strings.Contains(probe.Reason, "permission denied") || !strings.Contains(probe.Reason, "the mount is read-only") {
+		t.Fatalf("reason should name both causes: %q", probe.Reason)
+	}
+	if probe.HostSource() != "/home/jane/.claude/settings.json" {
+		t.Fatalf("host source: %q", probe.HostSource())
+	}
+}

@@ -49,6 +49,9 @@ type configWriteProbe struct {
 	InPlaceOnly bool
 	Reason      string
 	Mount       *mountInfoEntry
+	// resolvedPath is the target with symlinks resolved, which is the path
+	// the mount table knows.
+	resolvedPath string
 }
 
 // HostSource is the host path the target probably comes from, read from the
@@ -57,7 +60,11 @@ func (p configWriteProbe) HostSource() string {
 	if p.Mount == nil {
 		return ""
 	}
-	return p.Mount.hostSourceFor(p.Target.Path)
+	path := p.Target.Path
+	if p.resolvedPath != "" {
+		path = p.resolvedPath
+	}
+	return p.Mount.hostSourceFor(path)
 }
 
 // openForAppendProbe and createTempProbe are the two kernel questions. Tests
@@ -117,7 +124,8 @@ func probeWriteTarget(target configWriteTarget) configWriteProbe {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
-	probe.Mount = mountForPath(loadMountTable(), path)
+	probe.resolvedPath = path
+	probe.Mount = mountForPath(mountTableLoader(), path)
 	info, statErr := os.Stat(path)
 	probe.Exists = statErr == nil
 
@@ -137,6 +145,13 @@ func probeWriteTarget(target configWriteTarget) configWriteProbe {
 
 	if err := openForAppendProbe(path); err != nil {
 		probe.Reason = describeWriteRefusal(err, path)
+		// The kernel checks ownership before the mount flag, so a read-only
+		// mount of a file owned by someone else reports only the ownership.
+		// Both have to change for the file to be writable: say both.
+		if probe.Mount != nil && probe.Mount.ReadOnly && probe.Mount.MountPoint != "/" &&
+			!strings.Contains(probe.Reason, "read-only") {
+			probe.Reason += ", and the mount is read-only"
+		}
 		return probe
 	}
 	probe.Writable = true
@@ -179,6 +194,9 @@ type mountInfoEntry struct {
 }
 
 var procMountInfoPath = "/proc/self/mountinfo"
+
+// mountTableLoader reads the mount table; tests replace it.
+var mountTableLoader = loadMountTable
 
 func loadMountTable() []mountInfoEntry {
 	if runtime.GOOS != "linux" {

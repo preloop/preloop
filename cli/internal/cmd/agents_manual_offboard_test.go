@@ -247,3 +247,52 @@ func TestManualRemovalNeverPrintsTheUsersOwnCredential(t *testing.T) {
 		t.Fatalf("restored secrets must be placeholders: %s", hidden)
 	}
 }
+
+// Offboard used to offer for deletion whichever account model matched the
+// alias the agent last used. A request the gateway routed to a model the
+// account already owned made that model the candidate. Only a model that
+// onboarding created for this agent may be offered.
+func TestOffboardCleanupOffersOnlyModelsCreatedForThisAgent(t *testing.T) {
+	rig := newManualRigServer(t)
+	rig.models = []map[string]interface{}{
+		{
+			"id": "model-account", "name": "Account model", "provider_name": "example",
+			"model_identifier": "example-flash",
+			"meta_data":        map[string]interface{}{"gateway": map[string]interface{}{"model_alias": "example/example-flash"}},
+		},
+		{
+			"id": "model-agent", "name": "Agent model", "provider_name": "anthropic",
+			"model_identifier": "claude-sonnet-4-5",
+			"meta_data": map[string]interface{}{
+				"managed_agent_id": "agent-1",
+				"gateway":          map[string]interface{}{"model_alias": "anthropic/claude-sonnet-4-5"},
+			},
+		},
+	}
+	candidates, err := collectOffboardCleanupCandidates(rig.client(), managedAgentSummary{
+		ID: "agent-1", DisplayName: "Claude Code", LatestModelAlias: "example/example-flash",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range candidates {
+		if candidate.Kind == "ai_model" {
+			t.Fatalf("an account model this agent merely used must not be offered for deletion: %+v", candidate)
+		}
+	}
+	candidates, err = collectOffboardCleanupCandidates(rig.client(), managedAgentSummary{
+		ID: "agent-1", DisplayName: "Claude Code", LatestModelAlias: "anthropic/claude-sonnet-4-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, candidate := range candidates {
+		if candidate.Kind == "ai_model" && candidate.ResourceID == "model-agent" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the model onboarding created for this agent should still be offered: %+v", candidates)
+	}
+}

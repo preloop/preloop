@@ -3108,6 +3108,13 @@ func collectOffboardCleanupCandidates(client *api.Client, current managedAgentSu
 			if gatewayAliasForAIModel(model) != current.LatestModelAlias {
 				continue
 			}
+			// Only a model onboarding created for this agent is ours to
+			// remove. The agent's last used alias can name a model the
+			// account already owned (a request routed to another model),
+			// and deleting that would destroy someone else's credential.
+			if owner, _ := model.MetaData["managed_agent_id"].(string); strings.TrimSpace(owner) != current.ID {
+				continue
+			}
 			referencedBy := []string{}
 			recentlyUsedBy := []string{}
 			for _, other := range otherAgents {

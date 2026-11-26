@@ -196,7 +196,9 @@ JSON
   run_tty "$svc" '\n\ny\nn\nlater\n' "preloop agents onboard 'Claude Code'"
   expect_status 3
   expect "Running inside a container"
-  expect "read-only file system"
+  # Linux reports the foreign owner first, Docker Desktop the read-only
+  # mount; the mount line is printed in both cases.
+  expect "mounted read-only at /home/agent/.claude/settings.json"
   expect "Onboarding continues in manual mode"
   expect "Merge these keys into the file and keep everything else:"
   expect "Waiting for local configuration: Claude Code is NOT onboarded yet."
