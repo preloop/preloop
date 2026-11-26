@@ -112,8 +112,14 @@ def live_api(
         time.sleep(0.02)
     assert server.started, "uvicorn did not start"
     port = server.servers[0].sockets[0].getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+    # Serve one authenticated round trip before a test starts its clock. The
+    # first request on a cold app pays for auth, database and route warm-up,
+    # which on a loaded runner took seconds and is not part of the probe bound.
+    for path in ("/api/v1/ping", "/api/v1/trackers"):
+        assert httpx.get(f"{base}{path}", timeout=30.0).status_code == 200
     try:
-        yield f"http://127.0.0.1:{port}"
+        yield base
     finally:
         # Drop the held connections first so a client stuck on them returns.
         silent_server.close()
