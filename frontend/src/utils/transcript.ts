@@ -77,7 +77,8 @@ export interface TranscriptStep {
 export interface TranscriptMessageItem {
   type: 'message';
   key: string;
-  kind: 'user_prompt' | 'agent_response' | 'operator';
+  kind: 'user_prompt' | 'agent_response' | 'operator' | 'tool_output';
+  originLabel?: 'Tool output' | 'Skill output';
   role: string;
   text: string;
   timestamp: string | null;
@@ -300,6 +301,8 @@ export interface RawToolResultScan {
    *  NONE yielded usable text). An EMPTY set is a positive claim: the raw
    *  body was parsed and contains no tool results at all. */
   prefixes: Set<string> | null;
+  /** Full user envelopes with structured tool output, including mixed blocks. */
+  envelopes?: Set<string>;
   /** Tool-result-shaped items that yielded no matchable text. When
    *  `prefixes` is non-null and this is > 0, exact detection is PARTIAL for
    *  the event: the unextractable results cannot be matched and may be
@@ -333,6 +336,7 @@ export function collectRawToolResultPrefixes(
   if (!arrays.length) return { prefixes: null, unusableToolResults: 0 };
 
   const prefixes = new Set<string>();
+  const envelopes = new Set<string>();
   let unusableToolResults = 0;
   let sawToolResultShape = false;
   for (const rawMessages of arrays) {
@@ -352,6 +356,7 @@ export function collectRawToolResultPrefixes(
       for (const block of content) {
         if (!isRecord(block)) continue;
         if (String(block.type || '').toLowerCase() === 'tool_result') {
+          envelopes.add(normalizeForMatch(contentToText(content)));
           sawToolResultShape = true;
           const text = contentToText(block.content ?? block);
           if (text.trim()) prefixes.add(normalizeForMatch(text));
@@ -367,7 +372,28 @@ export function collectRawToolResultPrefixes(
   if (sawToolResultShape && !prefixes.size) {
     return { prefixes: null, unusableToolResults };
   }
-  return { prefixes, unusableToolResults };
+  return { prefixes, envelopes, unusableToolResults };
+}
+
+/** Preserve generated origin when a provider wraps output in a user message. */
+function toolOutputOrigin(
+  text: string,
+  callIds?: readonly string[],
+  toolEnvelopes?: Set<string> | null
+): 'Tool output' | 'Skill output' | undefined {
+  // Claude's generated skill envelope has a specific directory header. A
+  // human mentioning skills in ordinary prose must remain a human prompt.
+  if (
+    /^(?:Launching skill:[^\n]+\n\s*)?Base directory for this skill:[^\n]+(?:\n|$)/i.test(
+      text
+    )
+  ) {
+    return 'Skill output';
+  }
+  if (callIds?.length || toolEnvelopes?.has(normalizeForMatch(text))) {
+    return 'Tool output';
+  }
+  return undefined;
 }
 
 function previewMessages(
@@ -657,12 +683,18 @@ export function buildConversation(
         return;
       }
 
+      const originLabel = toolOutputOrigin(
+        text,
+        message.tool_call_ids,
+        scan.envelopes
+      );
       atoms.push({
         type: 'message',
         order: order++,
         item: {
           type: 'message',
-          kind: 'user_prompt',
+          kind: originLabel ? 'tool_output' : 'user_prompt',
+          originLabel,
           role: message.role || 'user',
           event,
           ...base,
@@ -747,13 +779,27 @@ export function buildConversation(
       ).toLowerCase();
       const text = item.summary || '';
       if (role === 'user' || role === 'assistant') {
+        const originLabel =
+          role === 'user'
+            ? toolOutputOrigin(
+                text,
+                Array.isArray(item.metadata?.tool_call_ids)
+                  ? item.metadata.tool_call_ids
+                  : undefined
+              )
+            : undefined;
         atoms.push({
           type: 'message',
           order: order++,
           item: {
             type: 'message',
             key: `activity:${item.activity_id || key}`,
-            kind: role === 'user' ? 'user_prompt' : 'agent_response',
+            kind: originLabel
+              ? 'tool_output'
+              : role === 'user'
+                ? 'user_prompt'
+                : 'agent_response',
+            originLabel,
             role,
             text,
             timestamp: item.timestamp || null,

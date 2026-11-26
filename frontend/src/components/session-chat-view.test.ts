@@ -1377,6 +1377,115 @@ describe('session-chat-view terminal-ordered turns', () => {
     ).to.equal('•');
   });
 
+  for (const previewOnly of [false, true]) {
+    it(`labels generated skill and tool output without a human bubble (preview only: ${previewOnly})`, async () => {
+      const skill =
+        'Launching skill: example-review\nBase directory for this skill: /workspace/.claude/skills/example-review\n\nReview the example document.';
+      const tool = 'Example command output\nAdditional captured output';
+      const event = previewEvent(
+        'example-origin',
+        '2026-08-06T10:00:09Z',
+        [
+          {
+            role: 'user',
+            text: 'Please explain the phrase Launching skill and review this example.',
+          },
+          { role: 'user', text: skill },
+          { role: 'user', text: tool },
+        ],
+        previewOnly
+          ? {}
+          : {
+              request: {
+                messages: [
+                  {
+                    role: 'user',
+                    content:
+                      'Please explain the phrase Launching skill and review this example.',
+                  },
+                  {
+                    role: 'user',
+                    content: [
+                      {
+                        type: 'tool_result',
+                        tool_use_id: 'example-skill',
+                        content: 'Launching skill: example-review',
+                      },
+                      {
+                        type: 'text',
+                        text: skill.split('\n').slice(1).join('\n'),
+                      },
+                    ],
+                  },
+                  {
+                    role: 'user',
+                    content: [
+                      {
+                        type: 'tool_result',
+                        tool_use_id: 'example-tool',
+                        content: 'Example command output',
+                      },
+                      { type: 'text', text: 'Additional captured output' },
+                    ],
+                  },
+                ],
+              },
+            }
+      );
+      if (previewOnly)
+        event.payload!.conversation_preview!.messages![2].tool_call_ids = [
+          'example-tool',
+        ];
+      const el = await fixture<SessionChatView>(
+        html`<session-chat-view .events=${[event]}></session-chat-view>`
+      );
+      await el.updateComplete;
+      const prompts = el.shadowRoot!.querySelectorAll(
+        '.bubble[data-kind="user_prompt"]'
+      );
+      expect(prompts).to.have.length(1);
+      expect(prompts[0].textContent).to.contain('You');
+      const generated = [
+        ...el.shadowRoot!.querySelectorAll('.bubble[data-kind="tool_output"]'),
+      ];
+      expect(
+        generated.map((row) =>
+          row.querySelector('.bubble-role')!.textContent!.trim()
+        )
+      ).to.deep.equal(['Skill output', 'Tool output']);
+      expect(
+        generated.every((row) => !row.classList.contains('user'))
+      ).to.equal(true);
+      expect(generated[0].textContent).to.contain(
+        'Review the example document.'
+      );
+      expect(generated[1].textContent).to.contain('Additional captured output');
+    });
+  }
+
+  it('labels a pushed skill envelope as generated output', async () => {
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view
+        .activity=${[
+          activityItem({
+            activity_id: 'example-skill',
+            activity_type: 'transcript_message',
+            timestamp: '2026-08-06T10:00:09Z',
+            title: 'User message',
+            summary:
+              'Base directory for this skill: /workspace/skills/example\nRead the example document.',
+            metadata: { role: 'user' },
+          }),
+        ]}
+      ></session-chat-view>`
+    );
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('.bubble.user')).to.equal(null);
+    expect(
+      el.shadowRoot!.querySelector('.bubble-role')!.textContent
+    ).to.contain('Skill output');
+  });
+
   it('tool-result-only user message is not a You bubble', async () => {
     const el = await fixture<SessionChatView>(html`
       <session-chat-view

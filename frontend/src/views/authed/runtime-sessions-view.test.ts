@@ -198,9 +198,27 @@ describe('RuntimeSessionsView', () => {
     await waitUntil(() =>
       Boolean(element.shadowRoot!.querySelector('preloop-session-observer'))
     );
+    const searchList =
+      element.shadowRoot!.querySelector<HTMLElement>('.search-list')!;
+    expect(getComputedStyle(searchList).display).to.equal('none');
+    const observer = element.shadowRoot!.querySelector(
+      'preloop-session-observer'
+    )!;
+    await waitUntil(() =>
+      ['session-title', 'session-detail'].includes(
+        observer.shadowRoot!.activeElement?.id || ''
+      )
+    );
     expect(
-      element.shadowRoot!.querySelector('preloop-session-observer')
-    ).not.to.equal(null);
+      element
+        .shadowRoot!.querySelector('.sessions-page')!
+        .classList.contains('has-detail')
+    ).to.equal(true);
+    observer.dispatchEvent(
+      new CustomEvent('session-list-back', { bubbles: true, composed: true })
+    );
+    await element.updateComplete;
+    expect(getComputedStyle(searchList).display).not.to.equal('none');
   });
 
   it('keeps identity matches when content search is unavailable (#2424)', async () => {

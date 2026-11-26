@@ -1172,7 +1172,9 @@ export class SessionChatView extends LitElement {
         ? 'user'
         : item.kind === 'operator'
           ? 'operator'
-          : 'agent';
+          : item.kind === 'tool_output'
+            ? 'tool-output'
+            : 'agent';
     const displayText = item.text
       ? item.text
       : item.redacted
@@ -1192,11 +1194,13 @@ export class SessionChatView extends LitElement {
             ${
               item.kind === 'user_prompt'
                 ? 'You'
-                : item.note
-                  ? noteRoleLabel(item.note)
-                  : item.kind === 'operator'
-                    ? 'Operator'
-                    : 'Agent'
+                : item.kind === 'tool_output'
+                  ? item.originLabel || 'Tool output'
+                  : item.note
+                    ? noteRoleLabel(item.note)
+                    : item.kind === 'operator'
+                      ? 'Operator'
+                      : 'Agent'
             }
           </span>
           <span>${this.formatTime(item.timestamp)}</span>

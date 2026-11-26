@@ -2493,6 +2493,7 @@ export class RuntimeSessionsView extends LitElement {
     this.focusTurnId = null;
     this.focusArtifactId = null;
     this.syncUrl({ push: true });
+    void this.focusSelectedDetail();
   }
 
   private renderSearchResult(result: SessionSearchResult) {
@@ -3273,7 +3274,7 @@ export class RuntimeSessionsView extends LitElement {
   render() {
     return html`
       <div
-        class="sessions-page ${this.selectedSessionId && (!this.isSearching || this.searchResults?.results.some((result) => result.runtime_session_id === this.selectedSessionId)) ? 'has-detail' : ''}"
+        class="sessions-page ${this.selectedSessionId && (!this.isSearching || this.mergedSearchResults().some((result) => result.runtime_session_id === this.selectedSessionId)) ? 'has-detail' : ''}"
       >
         <view-header
           class="list-chrome"
