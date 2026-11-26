@@ -47,6 +47,9 @@ class ContentQuery(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    workstation_fingerprint: str | None = Field(
+        default=None, pattern=HEX_SHA256_PATTERN
+    )
     items: list[ContentPair] = Field(max_length=policy.MAX_QUERY_HASHES)
 
 
@@ -95,8 +98,9 @@ class ContentHook(BaseModel):
     status: HookStatus
     command: str | None = Field(default=None, max_length=policy.MAX_TEXT_BYTES)
     redactions: RedactionCounts = Field(default_factory=dict)
+    matcher_redactions: RedactionCounts = Field(default_factory=dict)
 
-    _bounded = field_validator("redactions")(_bounded_redactions)
+    _bounded = field_validator("redactions", "matcher_redactions")(_bounded_redactions)
 
 
 class ContentItem(ContentPair):
@@ -156,7 +160,28 @@ class StoredHook(BaseModel):
     status: HookStatus
     command: str | None = None
     redactions: dict[str, int] = Field(default_factory=dict)
+    matcher_redactions: dict[str, int] = Field(default_factory=dict)
     verified: bool = False
+
+
+class StoredMatcher(BaseModel):
+    """The matcher one command runs under."""
+
+    matcher: str | None = None
+    command_hash: str
+
+
+class StoredMatcherSet(BaseModel):
+    """One reported assignment of matchers to a hook's commands.
+
+    The content hash covers commands, not matchers. Every distinct
+    assignment a device reports for the hash is kept, newest last.
+    """
+
+    digest: str
+    matchers: list[StoredMatcher]
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
 
 
 class ExtensionContentRead(ContentPair):
@@ -164,6 +189,7 @@ class ExtensionContentRead(ContentPair):
 
     files: list[StoredFile]
     hooks: list[StoredHook]
+    matcher_sets: list[StoredMatcherSet] = Field(default_factory=list)
     withheld: WithheldReason | None = None
     verification: Verification
     redacted: bool

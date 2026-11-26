@@ -37658,6 +37658,14 @@ components:
               minimum: 1.0
           type: object
           title: Redactions
+        matcher_redactions:
+          patternProperties:
+            ^[a-z0-9][a-z0-9-]{0,63}$:
+              type: integer
+              maximum: 100000.0
+              minimum: 1.0
+          type: object
+          title: Matcher Redactions
       additionalProperties: false
       type: object
       required:
@@ -37754,6 +37762,12 @@ components:
       description: One extension content, named by kind and inventory hash.
     ContentQuery:
       properties:
+        workstation_fingerprint:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Workstation Fingerprint
         items:
           items:
             $ref: '#/components/schemas/ContentPair'
@@ -41789,6 +41803,11 @@ components:
             $ref: '#/components/schemas/StoredHook'
           type: array
           title: Hooks
+        matcher_sets:
+          items:
+            $ref: '#/components/schemas/StoredMatcherSet'
+          type: array
+          title: Matcher Sets
         withheld:
           anyOf:
           - type: string
@@ -60654,6 +60673,11 @@ components:
             type: integer
           type: object
           title: Redactions
+        matcher_redactions:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Matcher Redactions
         verified:
           type: boolean
           title: Verified
@@ -60664,6 +60688,52 @@ components:
       - status
       title: StoredHook
       description: A hook command as an approver reads it.
+    StoredMatcher:
+      properties:
+        matcher:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Matcher
+        command_hash:
+          type: string
+          title: Command Hash
+      type: object
+      required:
+      - command_hash
+      title: StoredMatcher
+      description: The matcher one command runs under.
+    StoredMatcherSet:
+      properties:
+        digest:
+          type: string
+          title: Digest
+        matchers:
+          items:
+            $ref: '#/components/schemas/StoredMatcher'
+          type: array
+          title: Matchers
+        first_seen_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: First Seen At
+        last_seen_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Seen At
+      type: object
+      required:
+      - digest
+      - matchers
+      title: StoredMatcherSet
+      description: 'One reported assignment of matchers to a hook''s commands.
+
+
+        The content hash covers commands, not matchers. Every distinct
+
+        assignment a device reports for the hash is kept, newest last.'
     StoredRowRedactionRequest:
       properties:
         dry_run:

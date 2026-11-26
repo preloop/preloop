@@ -698,3 +698,55 @@ func TestExtensionContentOneBadItemDoesNotBlockTheRest(t *testing.T) {
 		t.Fatalf("the refused item was not reported: %s", out.String())
 	}
 }
+
+// protects=a hook matcher passes through the redactor like every other text;
+// fails_when=a credential written into a matcher reaches a request body, or
+// the redaction is not recorded on the hook.
+func TestExtensionContentRedactsHookMatchers(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "fixture-person")
+	var matchers []map[string]any
+	var secrets []string
+	for _, planted := range redacttest.PlantedSecrets() {
+		matchers = append(matchers, map[string]any{"matcher": planted.Line, "hooks": []map[string]any{{"type": "command", "command": "echo ok"}}})
+		secrets = append(secrets, planted.Secret)
+	}
+	matchers = append(matchers, map[string]any{"matcher": "Bash", "hooks": []map[string]any{{"type": "command", "command": "echo plain"}}})
+	settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{"PreToolUse": matchers}})
+	writeInventoryFixture(t, home, ".claude/settings.json", string(settings))
+	deps := inventoryTestDependencies(t, home)
+	report := buildDiscoveryReport("synthetic-salt", "synthetic-device", home, []AgentConfig{{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}})
+	if err := addDiscoveryExtensions(&report, "synthetic-salt", home, deps); err != nil {
+		t.Fatal(err)
+	}
+	server := newContentServer(t)
+	runContent(t, server, home, report)
+	sent := server.all()
+	for i, secret := range secrets {
+		if bytes.Contains(sent, []byte(secret)) {
+			t.Errorf("planted secret %d (%s) in a matcher reached a request body", i, redacttest.PlantedSecrets()[i].Class)
+		}
+	}
+	hook := server.items()["hook"]
+	if hook == nil || len(hook.Hooks) != len(secrets)+1 {
+		t.Fatalf("hook item = %+v", hook)
+	}
+	redacted, plain := 0, 0
+	for _, entry := range hook.Hooks {
+		if len(entry.MatcherRedactions) > 0 {
+			redacted++
+			if !strings.Contains(entry.Matcher, "[REDACTED:") {
+				t.Errorf("matcher counted as redacted but not replaced: %q", entry.Matcher)
+			}
+		}
+		if entry.Matcher == "Bash" && len(entry.MatcherRedactions) == 0 && len(entry.Redactions) == 0 {
+			plain++
+		}
+	}
+	if redacted != len(secrets) || plain != 1 {
+		t.Fatalf("redacted matchers = %d of %d, plain = %d", redacted, len(secrets), plain)
+	}
+	// The query names the device, so a device-bound credential can be held to it.
+	if len(server.queries) != 1 || server.queries[0].WorkstationFingerprint != report.WorkstationFingerprint {
+		t.Fatalf("query did not carry the fingerprint: %+v", server.queries)
+	}
+}

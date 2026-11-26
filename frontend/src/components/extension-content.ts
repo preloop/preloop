@@ -189,6 +189,11 @@ export class ExtensionContentViewer extends LitElement {
         padding-left: 12px;
         margin: 0 0 12px;
       }
+      .matcher-sets,
+      .matcher-sets ul {
+        margin: 0 0 8px;
+        padding-left: 20px;
+      }
       .hook {
         border-top: 1px solid var(--console-hairline);
         padding-top: 8px;
@@ -503,6 +508,16 @@ export class ExtensionContentViewer extends LitElement {
             : nothing
         }
       </div>
+      ${
+        total(hook.matcher_redactions ?? {})
+          ? html`<p class="note redaction matcher-redaction">
+              <strong>The matcher was redacted on the device:</strong>
+              ${Object.keys(hook.matcher_redactions ?? {})
+                .sort()
+                .join(', ')}.
+            </p>`
+          : nothing
+      }
       ${total(hook.redactions) ? this.redactionNote(hook.redactions) : nothing}
       ${
         hook.status === 'stored' && hook.command !== null
@@ -516,6 +531,69 @@ export class ExtensionContentViewer extends LitElement {
                     : WITHHELD_FILE_TEXT.too_large
               }
             </p>`
+      }
+    </div>`;
+  }
+
+  /**
+   * What a pin on a hook hash does and does not cover.
+   *
+   * The hash is computed from the command strings. The matcher decides when
+   * a command runs and is not in the hash, so it can change, or differ
+   * between devices, while the hash and any pin stay the same. That is said
+   * outright, and every assignment reported for the hash is listed.
+   */
+  private matcherNote(content: ExtensionContent): TemplateResult {
+    const sets = content.matcher_sets ?? [];
+    const command = new Map(
+      content.hooks.map((hook) => [hook.command_hash, hook.command])
+    );
+    const describe = (matcher: string | null, hash: string): string => {
+      const text = command.get(hash) ?? '';
+      const first = text.split('\n')[0].slice(0, 60);
+      return `${matcher || 'every call'}: ${first || hash.slice(0, 19)}`;
+    };
+    return html`<div class="matchers">
+      <p class="note matcher-scope">
+        <strong
+          >A pin on this hash covers the commands, not the matchers.</strong
+        >
+        The content hash is computed from the command strings. A matcher decides
+        when a command runs and can change without the hash changing. Check the
+        matchers below each time you rely on this approval.
+      </p>
+      ${
+        sets.length > 1
+          ? html`<p class="note matcher-changed" role="note">
+                <strong
+                  >${sets.length} different matcher assignments were reported
+                  for these commands.</strong
+                >
+                The matchers changed, or differ between devices. Newest last:
+              </p>
+              <ul class="matcher-sets">
+                ${sets.map(
+                  (set) =>
+                    html`<li>
+                      <span class="meta"
+                        >Last reported
+                        ${set.last_seen_at?.slice(0, 16).replace('T', ' ') ?? 'unknown'}
+                        UTC</span
+                      >
+                      <ul>
+                        ${set.matchers.map(
+                          (entry) =>
+                            html`<li>
+                              <code
+                                >${describe(entry.matcher, entry.command_hash)}</code
+                              >
+                            </li>`
+                        )}
+                      </ul>
+                    </li>`
+                )}
+              </ul>`
+          : nothing
       }
     </div>`;
   }
@@ -707,6 +785,7 @@ export class ExtensionContentViewer extends LitElement {
             </p>`
           : nothing
       }
+      ${content.hooks.length ? this.matcherNote(content) : nothing}
       ${content.hooks.map((hook) => this.hook(hook))}
       ${content.files.length ? this.files(content) : nothing}
       <div class="actions">

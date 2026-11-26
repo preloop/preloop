@@ -187,6 +187,22 @@ def hook_hash(command_hashes: list[str]) -> str:
     return "sha256:" + _sha256_hex("\n".join(sorted(command_hashes)).encode())
 
 
+def matcher_set(hooks: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Describe which matcher each command of a hook runs under.
+
+    The hook content hash covers the command strings only, because that is
+    what the inventory hash covers. The matcher decides when a command runs
+    and is not in that hash, so it is recorded beside the content as a set
+    with its own digest. A pin on the content hash does not cover it.
+    """
+    pairs = sorted((hook.get("matcher") or "", hook["command_hash"]) for hook in hooks)
+    digest = _sha256_hex("\n".join(f"{m}\x00{h}" for m, h in pairs).encode("utf-8"))
+    return {
+        "digest": "sha256:" + digest,
+        "matchers": [{"matcher": m or None, "command_hash": h} for m, h in pairs],
+    }
+
+
 def _safe_path(path: str) -> bool:
     if not path or path.startswith("/") or "\\" in path or len(path.encode()) > 1024:
         return False
@@ -281,10 +297,18 @@ def verify_item(item: Mapping[str, Any]) -> VerifiedItem:
         record = _record(hook, hook.get("command"), digest, result)
         if "text" in record:
             record["command"] = record.pop("text")
-        record.update(matcher=hook.get("matcher"), command_hash=hook["command_hash"])
+        matcher_redactions = dict(hook.get("matcher_redactions") or {})
+        record.update(
+            matcher=hook.get("matcher"),
+            command_hash=hook["command_hash"],
+            matcher_redactions=matcher_redactions,
+        )
+        result.redaction_count += sum(matcher_redactions.values())
         redacted_texts += int(record["redactions_total"] > 0 and "command" in record)
         record.pop("redactions_total")
         result.document["hooks"].append(record)
+    if hooks:
+        result.document["matcher_sets"] = [matcher_set(hooks)]
     result.entry_count = len(files) + len(hooks)
     result.withheld_count = result.entry_count - result.stored_count
     result.redacted = result.redaction_count > 0

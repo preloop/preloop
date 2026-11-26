@@ -95,6 +95,10 @@ type contentHook struct {
 	Status      string         `json:"status"`
 	Command     *string        `json:"command,omitempty"`
 	Redactions  map[string]int `json:"redactions,omitempty"`
+	// MatcherRedactions counts what was replaced in the matcher. It is kept
+	// apart from Redactions so that a command sent unredacted can still be
+	// verified against its hash.
+	MatcherRedactions map[string]int `json:"matcher_redactions,omitempty"`
 }
 
 type contentItem struct {
@@ -204,6 +208,32 @@ func (c *contentCapture) redactInto(data []byte, name string, budget int, status
 		*counts = result.Counts
 	}
 	return len(result.Text)
+}
+
+// redactMatcher passes a hook matcher through the same redactor as every
+// other text. A matcher is authored text like a command is, and is shown to
+// an approver, so a credential placed in one must not be uploaded either.
+func (c *contentCapture) redactMatcher(matcher string) (string, map[string]int) {
+	if matcher == "" {
+		return "", nil
+	}
+	result, err := redact.Text(matcher, redact.Options{Home: c.home})
+	if err != nil {
+		c.err = err
+		return "", nil
+	}
+	text := result.Text
+	counts := result.Counts
+	if result.Withheld != "" {
+		text, counts = redact.Placeholder("private-key"), map[string]int{"private-key": 1}
+	}
+	if runes := []rune(text); len(runes) > 256 {
+		text = string(runes[:256])
+	}
+	if len(counts) == 0 {
+		counts = nil
+	}
+	return text, counts
 }
 
 // pluginTextSelected limits plugin text to what an approver reviews: the
@@ -416,11 +446,7 @@ func (s *extensionScan) captureHooks() {
 		}
 		for i, source := range sources {
 			entry := contentHook{CommandHash: hashes[i]}
-			if matcher := []rune(source.Matcher); len(matcher) > 256 {
-				entry.Matcher = string(matcher[:256])
-			} else {
-				entry.Matcher = source.Matcher
-			}
+			entry.Matcher, entry.MatcherRedactions = capture.redactMatcher(source.Matcher)
 			if len(source.Command) > contentFileLimit {
 				entry.Status = contentTooLarge
 			} else {
@@ -430,6 +456,9 @@ func (s *extensionScan) captureHooks() {
 				}
 			}
 			for _, count := range entry.Redactions {
+				item.redactions += count
+			}
+			for _, count := range entry.MatcherRedactions {
 				item.redactions += count
 			}
 			if entry.Status != contentStored {
@@ -444,7 +473,10 @@ func (s *extensionScan) captureHooks() {
 }
 
 type contentQueryRequest struct {
-	Items []contentPair `json:"items"`
+	// WorkstationFingerprint lets the server hold a device-bound credential
+	// to its own device for this question too.
+	WorkstationFingerprint string        `json:"workstation_fingerprint,omitempty"`
+	Items                  []contentPair `json:"items"`
 }
 
 type contentQueryResponse struct {
@@ -545,7 +577,7 @@ func sendExtensionContent(client *api.Client, w io.Writer, report discoveryRepor
 		pairs = pairs[:contentQueryLimit]
 	}
 	var query contentQueryResponse
-	if err := client.Post(contentMissingPath, contentQueryRequest{Items: pairs}, &query); err != nil {
+	if err := client.Post(contentMissingPath, contentQueryRequest{WorkstationFingerprint: report.WorkstationFingerprint, Items: pairs}, &query); err != nil {
 		var apiErr *api.APIError
 		if errors.As(err, &apiErr) && (apiErr.StatusCode == 404 || apiErr.StatusCode == 405) {
 			// A server from before this feature: there is nowhere to send

@@ -286,6 +286,82 @@ describe('extension-content-viewer', () => {
     ).to.contain('1 redacted');
   });
 
+  // protects=a matcher is never presented as covered by the hash or a pin,
+  // and a changed or differing matcher is visible; fails_when=the hook view
+  // is silent about what the pin covers or shows one matcher set only.
+  it('says a pin does not cover matchers and lists every reported assignment', async () => {
+    const hook = { ...skill, extension_kind: 'hook' as const };
+    const entry = (matcher: string | null) => ({
+      matcher,
+      command_hash: H1,
+      status: 'stored' as const,
+      command: 'preloop agents permission-hook',
+      redactions: {},
+      matcher_redactions: matcher?.includes('REDACTED')
+        ? { 'url-credentials': 1 }
+        : {},
+      verified: true,
+    });
+    const one = await mount(
+      {
+        [H2]: content(H2, {
+          extension_kind: 'hook',
+          hooks: [entry('Bash')],
+          matcher_sets: [
+            {
+              digest: H1,
+              matchers: [{ matcher: 'Bash', command_hash: H1 }],
+              first_seen_at: '2026-11-01T10:00:00+00:00',
+              last_seen_at: '2026-11-01T10:00:00+00:00',
+            },
+          ],
+        }),
+      },
+      { extension: hook }
+    );
+    expect(text(one.el)).to.contain(
+      'A pin on this hash covers the commands, not the matchers'
+    );
+    expect(one.el.shadowRoot!.querySelector('.matcher-changed')).to.equal(null);
+
+    const two = await mount(
+      {
+        [H2]: content(H2, {
+          extension_kind: 'hook',
+          hooks: [entry('[REDACTED:url-credentials]')],
+          matcher_sets: [
+            {
+              digest: H1,
+              matchers: [{ matcher: 'Bash', command_hash: H1 }],
+              first_seen_at: '2026-11-01T10:00:00+00:00',
+              last_seen_at: '2026-11-01T10:00:00+00:00',
+            },
+            {
+              digest: H2,
+              matchers: [{ matcher: null, command_hash: H1 }],
+              first_seen_at: '2026-11-20T09:30:00+00:00',
+              last_seen_at: '2026-11-20T09:30:00+00:00',
+            },
+          ],
+        }),
+      },
+      { extension: hook }
+    );
+    expect(text(two.el)).to.contain(
+      '2 different matcher assignments were reported'
+    );
+    const sets = Array.from(
+      two.el.shadowRoot!.querySelectorAll('.matcher-sets > li')
+    ).map((item) => item.textContent!.replace(/\s+/g, ' ').trim());
+    expect(sets).to.have.length(2);
+    expect(sets[0]).to.contain('Bash: preloop agents permission-hook');
+    expect(sets[1]).to.contain('every call: preloop agents permission-hook');
+    expect(sets[1]).to.contain('2026-11-20 09:30');
+    expect(
+      two.el.shadowRoot!.querySelector('.matcher-redaction')?.textContent
+    ).to.contain('url-credentials');
+  });
+
   it('shows a plugin as a file tree with a viewer and says why a file has no text', async () => {
     const plugin = { ...skill, extension_kind: 'plugin' as const };
     const { el } = await mount(

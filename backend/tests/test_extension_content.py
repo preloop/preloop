@@ -811,3 +811,131 @@ def test_upload_and_opt_out_take_the_account_lock(
         assert upload(client, [item]).status_code == 409
     finally:
         event.remove(db_engine, "before_cursor_execute", record)
+
+
+class _Authorizer:
+    """Stand-in for the device credential plugin: one key, one device."""
+
+    def __init__(self, bound_fingerprint: str) -> None:
+        self.bound = bound_fingerprint
+        self.calls: list[str | None] = []
+
+    def authorize_report(
+        self, db: Any, *, account_id: Any, current_user: Any, payload: Any
+    ) -> None:
+        """Refuse a payload that names another device, as the plugin does."""
+        from fastapi import HTTPException
+
+        self.calls.append(payload.workstation_fingerprint)
+        if payload.workstation_fingerprint != self.bound:
+            raise HTTPException(403, "Report device mismatch")
+
+
+def _bind_key(
+    app: FastAPI,
+    user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    authorizer: _Authorizer | None,
+) -> None:
+    """Authenticate as a device-bound reporting key with the given plugin."""
+    from types import SimpleNamespace
+
+    user._auth_api_key = SimpleNamespace(  # type: ignore[attr-defined]
+        id=uuid4(),
+        scopes=["report_discovery"],
+        context_data={"device_report": {"workstation_fingerprint": FINGERPRINT}},
+    )
+    app.dependency_overrides[get_current_active_user] = lambda: user
+    manager = SimpleNamespace(get_service=lambda name: authorizer)
+    monkeypatch.setattr(
+        "preloop.api.endpoints.extension_content.get_plugin_manager", lambda: manager
+    )
+
+
+def test_a_device_bound_key_cannot_upload_for_another_device(
+    client: TestClient,
+    app: FastAPI,
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """protects=the content routes enforce a credential's device binding the
+    way the report route does; fails_when=a key bound to device A stores, or
+    asks about, content under device B's fingerprint, or a bound key works
+    with no plugin to enforce it; no_claim=a stand-in authorizer."""
+    other = "b" * 64
+    item = default_skill()
+    pair = {k: item[k] for k in ("extension_kind", "content_hash")}
+    inventory(client, [item], fingerprint=other)
+    inventory(client, [item])
+    authorizer = _Authorizer(FINGERPRINT)
+    _bind_key(app, test_user, monkeypatch, authorizer)
+
+    refused = upload(client, [item], fingerprint=other)
+    assert refused.status_code == 403, refused.text
+    assert db_session.scalar(select(models.ExtensionContent.id)) is None
+    asked = client.post(
+        MISSING, json={"workstation_fingerprint": other, "items": [pair]}
+    )
+    assert asked.status_code == 403
+    # A bound key must say which device it speaks for.
+    assert client.post(MISSING, json={"items": [pair]}).status_code == 422
+
+    asked = client.post(
+        MISSING, json={"workstation_fingerprint": FINGERPRINT, "items": [pair]}
+    )
+    assert asked.status_code == 200 and asked.json()["missing"] == [pair]
+    assert upload(client, [item]).json()["stored"] == 1
+    assert authorizer.calls == [other, other, FINGERPRINT, FINGERPRINT]
+
+    _bind_key(app, test_user, monkeypatch, None)
+    assert upload(client, [item]).status_code == 503
+    assert client.post(MISSING, json={"items": [pair]}).status_code == 503
+
+
+def test_hook_matchers_are_tracked_beside_the_hash(client: TestClient) -> None:
+    """protects=a matcher is not in the hook hash, so it is never presented
+    as covered by it: every distinct matcher assignment reported for a hash is
+    kept and a hook is asked for again on every report; fails_when=a changed
+    or different matcher is invisible because the first upload won."""
+    narrow = hook_item([("Bash", "preloop hook pre-tool")])
+    broad = hook_item([(None, "preloop hook pre-tool")])
+    assert narrow["content_hash"] == broad["content_hash"]
+    pair = {k: narrow[k] for k in ("extension_kind", "content_hash")}
+    inventory(client, [narrow])
+    assert upload(client, [narrow]).json()["stored"] == 1
+    data = read(client, narrow).json()
+    assert [s["matchers"][0]["matcher"] for s in data["matcher_sets"]] == ["Bash"]
+
+    # Stored, and still asked for: only a new upload can show a changed matcher.
+    assert client.post(MISSING, json={"items": [pair]}).json()["missing"] == [pair]
+    assert upload(client, [narrow]).json() == {"stored": 0, "kept": 1, "rejected": []}
+    assert len(read(client, narrow).json()["matcher_sets"]) == 1
+
+    # The matcher is widened to every tool call; the hash does not move.
+    assert upload(client, [broad]).json()["stored"] == 1
+    data = read(client, narrow).json()
+    assert [s["matchers"][0]["matcher"] for s in data["matcher_sets"]] == ["Bash", None]
+    # The matcher shown beside the stored command follows the latest report.
+    assert data["hooks"][0]["matcher"] is None
+    assert all(s["digest"].startswith("sha256:") for s in data["matcher_sets"])
+    assert data["matcher_sets"][0]["digest"] != data["matcher_sets"][1]["digest"]
+    assert data["hooks"][0]["command"] == "preloop hook pre-tool"
+
+    # Seeing the first assignment again moves it to the end, without a copy.
+    assert upload(client, [narrow]).json()["kept"] == 1
+    data = read(client, narrow).json()
+    assert [s["matchers"][0]["matcher"] for s in data["matcher_sets"]] == [None, "Bash"]
+
+
+def test_matcher_redactions_are_counted(client: TestClient) -> None:
+    """protects=a redacted matcher is recorded as redacted."""
+    item = hook_item([("[REDACTED:url-credentials]", "bash lint")])
+    item["hooks"][0]["matcher_redactions"] = {"url-credentials": 1}
+    inventory(client, [item])
+    assert upload(client, [item]).json()["stored"] == 1
+    data = read(client, item).json()
+    assert data["hooks"][0]["matcher_redactions"] == {"url-credentials": 1}
+    assert data["redaction_count"] == 1 and data["redacted"] is True
+    # The command itself was not redacted, so it is still verified.
+    assert data["hooks"][0]["verified"] is True
