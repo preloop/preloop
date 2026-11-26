@@ -1,0 +1,10 @@
+Opening browser for authentication...
+If the browser doesn't open, please visit:
+http://127.0.0.1:8000/oauth/authorize?client_id=cli&redirect_uri=http%3A%2F%2F127.0.0.1%3A12345%2Fcallback&response_type=code&state=SYNTHETIC-STATE
+
+Waiting for authentication...
+Exchanging code for tokens...
+
+Successfully authenticated!
+Logged in as: Jane Doe (jane@example.com)
+API URL: http://127.0.0.1:8000

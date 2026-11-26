@@ -976,4 +976,16 @@ describe('ApiKeysView', () => {
     expect(scroller.classList.contains('table-scroll')).to.equal(true);
     expect(getComputedStyle(scroller).overflowX).to.equal('auto');
   });
+  it('points operators to agent pages for agent credentials', async () => {
+    const el = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    const hint = el.shadowRoot!.querySelector('[data-agent-keys-hint]')!;
+    expect(hint.textContent).to.contain(
+      "Agent keys live on each agent's page."
+    );
+    expect(hint.querySelector('a')!.getAttribute('href')).to.equal(
+      '/console/agents'
+    );
+  });
 });

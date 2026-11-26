@@ -1,0 +1,15 @@
+Complete login in your browser:
+  1. Open this URL, sign in, and choose Authorize CLI:
+
+     http://127.0.0.1:8000/oauth/authorize?client_id=cli&redirect_uri=http%3A%2F%2F127.0.0.1%3A12345%2Fcallback&response_type=code&state=SYNTHETIC-STATE
+
+  2. Return here after approving. Login will finish automatically.
+Waiting up to 5 minutes for browser approval. Keep this terminal open.
+Closed the browser tab? Reopen the URL above before the wait ends.
+Login is complete when this terminal says: Successfully authenticated!
+
+Exchanging code for tokens...
+
+Successfully authenticated!
+Logged in as: Jane Doe (jane@example.com)
+API URL: http://127.0.0.1:8000

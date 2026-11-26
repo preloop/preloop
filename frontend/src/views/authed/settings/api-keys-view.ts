@@ -976,7 +976,14 @@ export class ApiKeysView extends LitElement {
         </div>
       </view-header>
       <div class="column-layout narrow">
-        <div class="main-column">${renderContent()}</div>
+        <div class="main-column">
+          <p data-agent-keys-hint>
+            Agent keys live on each agent's page.
+            <a href="/console/agents">Choose an agent</a> to manage its
+            credentials.
+          </p>
+          ${renderContent()}
+        </div>
         <div class="side-column"></div>
       </div>
 

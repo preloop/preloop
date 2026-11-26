@@ -40,6 +40,9 @@ import '../../components/token-figures.ts';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
 import '../../components/agent-notes-tab';
+import '../../components/agent-credentials-card';
+import type { AgentCredentialsCard } from '../../components/agent-credentials-card';
+import type { ManagedAgentCredentialCreateResult } from '../../api';
 import type { AgentNotesTab } from '../../components/agent-notes-tab';
 import { NOTES_FIRST_PAGE } from '../../components/agent-notes-tab';
 import '../../components/talk-button.ts';
@@ -3887,6 +3890,16 @@ export class AgentDetailView extends LitElement {
     `;
   }
 
+  /** Shared action for setup panels that need a freshly created agent key. */
+  async openCreateCredential(): Promise<ManagedAgentCredentialCreateResult | null> {
+    await this.updateComplete;
+    return (
+      this.renderRoot
+        .querySelector<AgentCredentialsCard>('agent-credentials-card')
+        ?.openCreate() ?? null
+    );
+  }
+
   render() {
     if (this.loading) {
       return html`
@@ -3993,6 +4006,15 @@ export class AgentDetailView extends LitElement {
           </p>
           ${this.renderSessionConsent()} ${this.renderIdentityHistory()}
         </details>
+
+        ${
+          this.agent.is_shared
+            ? nothing
+            : html`<agent-credentials-card
+                .agentId=${this.agent.id}
+                .lifecycleState=${this.agent.lifecycle_state}
+              ></agent-credentials-card>`
+        }
 
         <!-- Sub-view Tab Navigation -->
         ${(() => {

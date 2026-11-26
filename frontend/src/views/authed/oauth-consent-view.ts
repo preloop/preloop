@@ -1,12 +1,13 @@
 import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
-import { LitElement, html, css, nothing } from 'lit';
+import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '../../router';
 import { fetchWithAuth } from '../../api';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/divider/divider.js';
+import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 
 @customElement('oauth-consent-view')
 export class OAuthConsentView extends LitElement {
@@ -29,25 +30,21 @@ export class OAuthConsentView extends LitElement {
       display: flex;
       justify-content: center;
       align-items: center;
-      height: 100%;
+      min-height: 100%;
+      box-sizing: border-box;
       width: 100%;
       padding: 1rem;
     }
 
     .container {
-      background: var(--sl-color-neutral-0);
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-large);
+      background: var(--console-surface);
+      border: var(--console-card-border);
+      border-radius: var(--console-card-radius);
       padding: 2.5rem;
       width: 100%;
       max-width: 480px;
-      box-shadow: var(--sl-shadow-large);
+      box-shadow: var(--console-card-shadow);
       text-align: center;
-    }
-
-    .dark-theme .container {
-      background: var(--sl-color-neutral-100);
-      border-color: var(--sl-color-neutral-300);
     }
 
     .header-icon {
@@ -57,16 +54,16 @@ export class OAuthConsentView extends LitElement {
     }
 
     h1 {
-      font-size: var(--sl-font-size-x-large);
+      font-size: var(--console-text-h1, 26px);
       margin: 0 0 0.5rem 0;
       color: var(--sl-color-neutral-900);
     }
 
     p {
-      color: var(--sl-color-neutral-600);
+      color: var(--console-meta-color);
       line-height: var(--sl-line-height-normal);
       margin-bottom: 1.5rem;
-      font-size: var(--sl-font-size-medium);
+      font-size: var(--console-text-body, 14px);
     }
 
     .actions {
@@ -82,12 +79,11 @@ export class OAuthConsentView extends LitElement {
 
     .manual-code-box {
       margin: 1.5rem 0;
-      padding: 1rem;
-      border-radius: var(--sl-border-radius-medium);
-      background: var(--sl-color-neutral-50);
-      border: 1px solid var(--sl-color-neutral-200);
+      padding: 1rem 0;
       font-family: var(--sl-font-mono);
-      font-size: var(--sl-font-size-large);
+      font-size: var(--console-stat-value, 22px);
+      font-weight: 600;
+      user-select: all;
       color: var(--sl-color-neutral-900);
       word-break: break-all;
     }
@@ -103,7 +99,7 @@ export class OAuthConsentView extends LitElement {
     }
   `;
 
-  connectedCallback() {
+  connectedCallback(): void {
     super.connectedCallback();
     const urlParams = new URLSearchParams(window.location.search);
     this.clientId = urlParams.get('client_id') || 'cli';
@@ -138,7 +134,8 @@ export class OAuthConsentView extends LitElement {
     }
   }
 
-  private async handleAuthorize() {
+  private async handleAuthorize(): Promise<void> {
+    if (this.loading) return;
     this.error = '';
     this.loading = true;
 
@@ -183,18 +180,17 @@ export class OAuthConsentView extends LitElement {
         window.location.href = resp.redirect_url;
       }
     } catch (e: any) {
-      console.error(e);
       this.error = e.message || 'Failed to authorize client.';
     } finally {
       this.loading = false;
     }
   }
 
-  private handleCancel() {
+  private handleCancel(): void {
     Router.go('/console');
   }
 
-  render() {
+  render(): TemplateResult {
     if (this.manualCode) {
       return html`
         <div class="container">
@@ -203,23 +199,37 @@ export class OAuthConsentView extends LitElement {
             class="header-icon"
             style="color: var(--sl-color-success-600);"
           ></sl-icon>
-          <h1>Authorization Successful</h1>
-          <p><strong>${this.clientName}</strong> is ready to continue.</p>
+          <h1>Finish login in your terminal</h1>
           <p>
-            Copy this one-time code and paste it back into your application.
+            Browser approval is complete. Your CLI is still waiting for this
+            code.
           </p>
-          <div class="manual-code-box">${this.manualCode}</div>
-          <div class="actions">
-            <sl-button
-              variant="primary"
-              size="large"
-              @click=${() => Router.go('/console/agents?cli=connected')}
-            >
-              Continue to your agents
-            </sl-button>
+          <p>
+            Copy the one-time code, then paste it at
+            <strong>Authorization code:</strong> in the terminal where you ran
+            <code>preloop login</code>.
+          </p>
+          <div class="manual-code-box" aria-label="One-time authorization code">
+            ${this.manualCode}
           </div>
-          <p style="font-size: var(--sl-font-size-small); margin-top: 1.5rem;">
-            You can also securely close this window.
+          <sl-copy-button
+            .value=${this.manualCode}
+            copy-label="Copy authorization code"
+            success-label="Code copied"
+            error-label="Select and copy the code above"
+            ><span slot="copy-icon">Copy authorization code</span
+            ><span slot="success-icon">Copied</span
+            ><span slot="error-icon"
+              >Select the code to copy</span
+            ></sl-copy-button
+          >
+          <p>
+            Finish this step before closing this tab. The code expires 5 minutes
+            after approval and can be used only once.
+          </p>
+          <p>
+            Wait for <strong>Successfully authenticated!</strong> in your
+            terminal. Then you can close this tab.
           </p>
         </div>
       `;
@@ -228,7 +238,9 @@ export class OAuthConsentView extends LitElement {
     return html`
       <div class="container">
         <sl-icon name="shield-lock" class="header-icon"></sl-icon>
-        <h1>Authorize access?</h1>
+        <h1>
+          ${this.clientId === 'cli' ? 'Authorize CLI login' : 'Authorize access?'}
+        </h1>
         <p>
           <strong>${this.clientName}</strong> wants to connect to your Preloop
           account.
@@ -254,6 +266,23 @@ export class OAuthConsentView extends LitElement {
           behalf, governed by your workspace policies.
         </p>
 
+        ${
+          this.clientId === 'cli'
+            ? html`<p>
+                Only approve if you started <code>preloop login</code>.
+                ${
+                  this.redirectUri === 'urn:ietf:wg:oauth:2.0:oob'
+                    ? html`Next, copy the one-time code shown here and paste it
+                      into your waiting terminal.`
+                    : html`After approval, login will finish automatically in
+                      your waiting terminal.`
+                }
+                The CLI will say
+                <strong>Successfully authenticated!</strong> when login is
+                complete.
+              </p>`
+            : nothing
+        }
         <div class="actions">
           <sl-button
             variant="primary"
@@ -261,7 +290,7 @@ export class OAuthConsentView extends LitElement {
             ?loading=${this.loading}
             @click=${this.handleAuthorize}
           >
-            Authorize Application
+            ${this.clientId === 'cli' ? 'Authorize CLI' : 'Authorize Application'}
           </sl-button>
           <sl-button
             variant="default"

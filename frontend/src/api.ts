@@ -2840,18 +2840,23 @@ export interface ManagedAgentCredentialCreateRequest {
   name: string;
   description?: string;
   scopes?: string[];
-  expires_in_days?: number;
+  expires_in_days?: number | null;
+}
+
+export interface ManagedAgentCredentialSummary {
+  id: string;
+  name: string;
+  scopes: string[];
+  key_prefix?: string | null;
+  status: string;
+  created_at: string;
+  last_used_at?: string | null;
+  expires_at?: string | null;
 }
 
 export interface ManagedAgentCredentialCreateResult {
   // The credential summary metadata (durable record).
-  credential: {
-    id: string;
-    name: string;
-    scopes: string[];
-    key_prefix?: string | null;
-    [key: string]: unknown;
-  };
+  credential: ManagedAgentCredentialSummary;
   // The presented token. Shown ONCE and cannot be recovered afterwards.
   token: string;
 }
@@ -2877,6 +2882,40 @@ export async function createManagedAgentCredential(
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
       extractErrorMessage(errorData, 'Failed to mint agent credential')
+    );
+  }
+  return response.json();
+}
+
+/** List metadata only; the full key is never returned by this endpoint. */
+export async function listManagedAgentCredentials(
+  agentId: string
+): Promise<ManagedAgentCredentialSummary[]> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/credentials`
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(body, 'Could not load agent credentials')
+    );
+  }
+  return response.json();
+}
+
+/** Revoke a durable agent credential and return its updated metadata. */
+export async function revokeManagedAgentCredential(
+  agentId: string,
+  credentialId: string
+): Promise<ManagedAgentCredentialSummary> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/credentials/${encodeURIComponent(credentialId)}`,
+    { method: 'DELETE' }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(body, 'Could not revoke agent credential')
     );
   }
   return response.json();
