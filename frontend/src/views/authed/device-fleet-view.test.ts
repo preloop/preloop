@@ -550,7 +550,7 @@ describe('Device fleet', () => {
         'td[data-label="People"] a[href="/console/settings/users/user-1"]'
       )
     ).to.exist;
-    expect(text).to.include('1 governed');
+    expect(text).to.include('1 reported onboarded');
     expect(text).to.include('1 not onboarded');
     expect(text).to.include('1 open');
     expect(view.shadowRoot.querySelector('[data-testid="stat-missing"]')).not.to
@@ -657,6 +657,71 @@ describe('Device fleet', () => {
     const alert = view.shadowRoot.querySelector('sl-alert[role="alert"]');
     expect(alert.textContent).to.include('Retry to refresh it');
     expect(alert.querySelector('sl-button')).to.exist;
+  });
+
+  it('shows current decommissioning beside the last onboarded report and names evidence', async () => {
+    history.replaceState(
+      {},
+      '',
+      '?device=' + encodeURIComponent(device.device_key)
+    );
+    api = mockApi({
+      capabilities: ['fleet_coverage'],
+      profile: { permissions: ['view_device_fleet'] },
+      routes: [
+        {
+          path: '/api/v1/fleet/device-fleet/detail',
+          body: {
+            device,
+            observations: [
+              { source_ref: 'observer-1', received_at: '2026-10-16T12:00:00Z' },
+            ],
+          },
+        },
+        {
+          path: '/api/v1/fleet/identities',
+          method: 'POST',
+          body: {
+            agents: [
+              {
+                id: 'agent-1',
+                name: 'Example agent',
+                lifecycle_state: 'decommissioned',
+              },
+            ],
+            observers: { 'observer-1': 'Workstation reporter' },
+          },
+        },
+      ],
+    });
+    const view = await mount();
+    const rows = view.shadowRoot.querySelector(
+      '[data-testid="device-governed"]'
+    );
+    expect(rows.textContent).to.include('Decommissioned');
+    expect(rows.textContent).to.include('Last reported: onboarded');
+    expect(rows.textContent).not.to.include('Governed');
+    const evidence = view.shadowRoot.querySelector(
+      'section[aria-label="Device evidence"]'
+    );
+    expect(evidence.textContent).to.include('Workstation reporter');
+    expect(evidence.querySelector('details code').textContent).to.equal(
+      'observer-1'
+    );
+  });
+
+  it('does not claim enrollment when the current registry cannot be read', async () => {
+    history.replaceState(
+      {},
+      '',
+      '?device=' + encodeURIComponent(device.device_key)
+    );
+    setup();
+    const view = await mount();
+    expect(
+      view.shadowRoot.querySelector('[data-testid="device-governed"]')
+        .textContent
+    ).to.include('Current enrollment unknown');
   });
 
   it('links people, runners and governed agents on the device page', async () => {

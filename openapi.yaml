@@ -6132,6 +6132,55 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/account/approval-readiness:
+    get:
+      tags:
+      - Account
+      summary: Get Native Approval Readiness
+      description: Preview native approval routing without creating or changing a
+        workflow.
+      operationId: get_native_approval_readiness_api_v1_account_approval_readiness_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Agent Id
+      - name: workflow_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Workflow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalReadiness'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/deletion-request:
     post:
       tags:
@@ -8783,6 +8832,44 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/approval-requests/{request_id}/readiness:
+    get:
+      tags:
+      - Approval Requests
+      - approval_requests
+      summary: Get Pending Approval Route
+      description: Read the request's current workflow, including a completed escalation.
+      operationId: get_pending_approval_route_api_v1_approval_requests__request_id__readiness_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Request Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalReadiness'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-bypasses/status:
     get:
       tags:
@@ -10702,6 +10789,41 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/fleet/identities:
+    post:
+      tags:
+      - Fleet
+      summary: Read Fleet Identities
+      description: Resolve names and current enrollment for account-owned device evidence.
+      operationId: read_fleet_identities_api_v1_fleet_identities_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FleetIdentityQuery'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetIdentities'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
       x-restricted-ci: deny
   /api/v1/retention/settings:
     get:
@@ -32541,6 +32663,60 @@ components:
       - id
       title: ApprovalFlowExecutionSummary
       description: The flow run the gated call belonged to.
+    ApprovalReadiness:
+      properties:
+        enforced:
+          type: boolean
+          title: Enforced
+          default: true
+        workflow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workflow Name
+        workflow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Workflow Id
+        recipients:
+          items:
+            type: string
+          type: array
+          title: Recipients
+        deciders:
+          items:
+            type: string
+          type: array
+          title: Deciders
+        destinations:
+          items:
+            type: string
+          type: array
+          title: Destinations
+        issues:
+          items:
+            type: string
+          type: array
+          title: Issues
+        timeout_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Timeout Seconds
+        ai_fallback:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ai Fallback
+        external:
+          type: boolean
+          title: External
+          default: false
+      type: object
+      title: ApprovalReadiness
+      description: Configured human route, independent of enforcement or notification
+        delivery.
     ApprovalRequestResponse:
       properties:
         tool_name:
@@ -41527,6 +41703,29 @@ components:
       - path
       title: FileSource
       description: Local marketplace catalog or directory.
+    FleetAgentIdentity:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        lifecycle_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lifecycle State
+      type: object
+      required:
+      - id
+      - name
+      - lifecycle_state
+      title: FleetAgentIdentity
+      description: Current registry state, separate from collector assertions.
     FleetCodeActivityResponse:
       properties:
         active_within_minutes:
@@ -41744,6 +41943,43 @@ components:
       title: FleetCodeFlow
       description: A flow with code activity in the window, placed on the map by the
         client.
+    FleetIdentities:
+      properties:
+        agents:
+          items:
+            $ref: '#/components/schemas/FleetAgentIdentity'
+          type: array
+          title: Agents
+        observers:
+          additionalProperties:
+            type: string
+          type: object
+          title: Observers
+      type: object
+      required:
+      - agents
+      - observers
+      title: FleetIdentities
+      description: Names and enrollment state, with no credential contents.
+    FleetIdentityQuery:
+      properties:
+        agent_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          maxItems: 1000
+          title: Agent Ids
+        observer_ids:
+          items:
+            type: string
+            format: uuid
+          type: array
+          maxItems: 1000
+          title: Observer Ids
+      type: object
+      title: FleetIdentityQuery
+      description: Only identifiers already present in the device projection are needed.
     FleetMapAction:
       properties:
         label:
@@ -53570,6 +53806,16 @@ components:
           - type: string
           - type: 'null'
           title: Server Label
+        server_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Server Name
+        first_seen_agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: First Seen Agent Name
         tool_name:
           type: string
           title: Tool Name

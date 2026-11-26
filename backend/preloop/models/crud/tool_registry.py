@@ -174,3 +174,38 @@ def find(
             table.tool_name == tool_name,
         )
     ).scalar_one_or_none()
+
+
+def display_names(
+    db: Session, *, account_id: UUID, entries: list[models.ToolRegistryEntry]
+) -> tuple[dict[UUID, str], dict[UUID, str]]:
+    """Batch names within the owning account without changing route identity."""
+    server_ids = {entry.mcp_server_id for entry in entries if entry.mcp_server_id}
+    agent_ids = {
+        entry.first_seen_agent_id for entry in entries if entry.first_seen_agent_id
+    }
+    servers = (
+        dict(
+            db.execute(
+                select(models.MCPServer.id, models.MCPServer.name).where(
+                    models.MCPServer.account_id == account_id,
+                    models.MCPServer.id.in_(server_ids),
+                )
+            ).all()
+        )
+        if server_ids
+        else {}
+    )
+    agents = (
+        dict(
+            db.execute(
+                select(models.ManagedAgent.id, models.ManagedAgent.display_name).where(
+                    models.ManagedAgent.account_id == account_id,
+                    models.ManagedAgent.id.in_(agent_ids),
+                )
+            ).all()
+        )
+        if agent_ids
+        else {}
+    )
+    return servers, agents

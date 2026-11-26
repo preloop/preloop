@@ -1,3 +1,4 @@
+import '../../components/approval-readiness';
 import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { replaceListFilters } from '../../utils/list-filter-url';
@@ -747,6 +748,7 @@ export class ToolsView extends LitElement {
       })) as ToolWithRules[];
       this.mcpServers = servers;
       this.approvalPolicies = policies;
+      this._openWorkflowDeepLink();
       this.hasDefaultAIModel = aiModels.some((model) => model.is_default);
       try {
         if (
@@ -1824,6 +1826,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     const tab = new URLSearchParams(window.location.search).get('tab');
     this.activeTab = isToolsTab(tab) ? tab : 'mcp';
     this._readFilterLocation();
+    this._openWorkflowDeepLink();
   };
 
   private _clearFilters() {
@@ -2138,6 +2141,11 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
               : ''
           }
         </div>
+        <approval-readiness
+          .enforced=${enforced}
+          .revision=${this.approvalPolicies}
+          .workflowId=${defaults.approval_workflow_id || ''}
+        ></approval-readiness>
         ${
           !enforced
             ? html`
@@ -2260,6 +2268,25 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         }
       </div>
     `;
+  }
+
+  private _openWorkflowDeepLink(): void {
+    if (this.toolsContextLoading) return;
+    const url = new URL(window.location.href);
+    const id = url.searchParams.get('edit_workflow');
+    if (!id) return;
+    url.searchParams.delete('edit_workflow');
+    window.history.replaceState(window.history.state, '', url);
+    const workflow = this.approvalPolicies.find((item) => item.id === id);
+    if (id === 'new' || workflow) this._openPolicyDialog(workflow || null);
+    else
+      this.error =
+        'The approval workflow is no longer available. Choose a workflow from the Workflows menu.';
+  }
+
+  /** Consume workflow links when the router reuses this mounted view. */
+  onAfterEnter(): void {
+    this._onFilterPopState();
   }
 
   private _renderWorkflowsMenu() {
