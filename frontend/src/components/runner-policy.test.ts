@@ -316,7 +316,11 @@ describe('runner requirement console', () => {
       'Stale inventory',
       'Inventory unknown',
     ].forEach((t) => expect(text).to.include(t));
-    const inventory = el.shadowRoot!.querySelector('td details')!;
+    const inventory =
+      el.shadowRoot!.querySelector<HTMLDetailsElement>('td details')!;
+    const runnerName = inventory.querySelector('small')!;
+    expect(runnerName.textContent).to.equal('Work laptop');
+    expect(runnerName.checkVisibility()).to.be.false;
     expect(inventory.hasAttribute('open')).to.be.false;
     const toggle = inventory.querySelector('summary')!;
     expect(toggle.textContent?.replace(/\s+/g, ' ')).to.include(
@@ -325,9 +329,43 @@ describe('runner requirement console', () => {
     expect(toggle.textContent).to.include('2 ungoverned');
     toggle.click();
     expect(inventory.hasAttribute('open')).to.be.true;
-    expect(inventory.textContent).to.include('Work laptop');
+    expect(runnerName.checkVisibility()).to.be.true;
     expect(el.shadowRoot!.querySelectorAll('tbody tr')).to.have.length(5);
   });
+  it('keeps a single harness visible and expanded inventories with their member on refresh', async () => {
+    const entry = {
+      harness: 'opencode',
+      governance: 'governed',
+      runner_name: 'Work laptop',
+    };
+    const one = { ...member('compliant', 'one'), harnesses: [entry] };
+    const two = {
+      ...member('compliant', 'two'),
+      harnesses: [entry, { ...entry, runner_name: 'Build host' }],
+    };
+    const other = { ...two, user_id: 'other', username: 'Other member' };
+    members = [one, two, other];
+    total = members.length;
+    const el = await roster();
+    const rows = () => Array.from(el.shadowRoot!.querySelectorAll('tbody tr'));
+    await waitUntil(() => rows().length === 3);
+    const firstInventory = rows()[0].lastElementChild!;
+    expect(firstInventory.querySelector('details')).not.to.exist;
+    const singleRunner = [...firstInventory.querySelectorAll('small')].find(
+      (node) => node.textContent === 'Work laptop'
+    )!;
+    expect(singleRunner.checkVisibility()).to.be.true;
+    rows()[1].querySelector('summary')!.click();
+    members = [other, one, two];
+    window.dispatchEvent(new Event('runner-policy-changed'));
+    await waitUntil(
+      () =>
+        !!rows()[0].querySelector('th')?.textContent?.includes('Other member')
+    );
+    expect(rows()[0].querySelector('details')?.open).to.be.false;
+    expect(rows()[2].querySelector('details')?.open).to.be.true;
+  });
+
   it('paginates beyond the first hundred members', async () => {
     members = Array.from({ length: 100 }, (_, i) =>
       member('compliant', `user-${i}`)
