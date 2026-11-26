@@ -1,6 +1,7 @@
 import { render } from 'lit';
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { resolveTimeRange } from '../../utils/time-range';
 
 import './api-usage-view';
 import type { ApiUsageView } from './api-usage-view';
@@ -364,10 +365,10 @@ describe('ApiUsageView', () => {
         url.includes('include_breakdown=true')
     );
     const params = new URL(initial!, window.location.origin).searchParams;
-    expect(
-      Date.parse(params.get('end_date')!) -
-        Date.parse(params.get('start_date')!)
-    ).to.equal(7 * 86400 * 1000);
+    const end = new Date(params.get('end_date')!);
+    expect(params.get('start_date')).to.equal(
+      resolveTimeRange('last-7', end).startDate
+    );
 
     const historyLength = history.length;
     select.dispatchEvent(

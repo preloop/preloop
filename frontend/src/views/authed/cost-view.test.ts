@@ -6,6 +6,7 @@ import './cost-view.ts';
 import { CostView, ceilToMinute, sortColumnsToList } from './cost-view';
 import { RepriceJobStatusElement } from '../../components/reprice-job-status';
 import { invalidateApiCaches } from '../../api';
+import { resolveTimeRange, type TimeRangeKey } from '../../utils/time-range';
 
 describe('CostView', () => {
   let fetchStub: sinon.SinonStub;
@@ -892,10 +893,12 @@ describe('CostView', () => {
         .map(({ args }) => new URL(String(args[0]), location.origin))
         .filter((url) => url.pathname === '/api/v1/cost/summary')
         .map((url) => url.searchParams);
-    const windowDays = (query: URLSearchParams) =>
-      (Date.parse(query.get('end_date')!) -
-        Date.parse(query.get('start_date')!)) /
-      (24 * 60 * 60 * 1000);
+    const expectWindow = (query: URLSearchParams, preset: TimeRangeKey) => {
+      const end = new Date(query.get('end_date')!);
+      expect(query.get('start_date')).to.equal(
+        resolveTimeRange(preset, end).startDate
+      );
+    };
     const element = await fixture<CostView>(html`<cost-view></cost-view>`);
     const select = element.shadowRoot!.querySelector('time-range-select')!;
     await waitUntil(
@@ -905,7 +908,7 @@ describe('CostView', () => {
           ?.getAttribute('panel') === 'models'
     );
     expect(select.value).to.equal('last-7');
-    expect(windowDays(summaryQueries()[0])).to.equal(7);
+    expectWindow(summaryQueries()[0], 'last-7');
     expect(localStorage.getItem('preloop.cost.dateRange')).to.equal('last-90');
 
     const historyLength = history.length;
@@ -914,7 +917,7 @@ describe('CostView', () => {
       new CustomEvent('range-change', { detail: { value: 'last-30' } })
     );
     await waitUntil(() => summaryQueries().length > initialReads);
-    expect(windowDays(summaryQueries()[initialReads])).to.equal(30);
+    expectWindow(summaryQueries()[initialReads], 'last-30');
     let params = new URLSearchParams(location.search);
     expect(params.get('range')).to.equal('last-30');
     expect(params.get('tab')).to.equal('models');
