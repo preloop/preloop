@@ -184,9 +184,6 @@ func manualApplyPlanFromPayload(value interface{}) (*manualApplyPlan, error) {
 	if err := json.Unmarshal(data, &plan); err != nil {
 		return nil, err
 	}
-	if len(plan.Files) == 0 {
-		return nil, errors.New("the pending setup carries no file instructions")
-	}
 	return &plan, nil
 }
 

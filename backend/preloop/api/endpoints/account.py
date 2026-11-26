@@ -3545,6 +3545,7 @@ def cancel_account_managed_agent_enrollment(
             detail="Only a setup that is waiting for local config can be cancelled",
         )
     created_resources = (enrollment.backup_metadata or {}).get("created_resources")
+    model_floor = enrollment.created_at - onboarding_cleanup.ONBOARDING_MODEL_WINDOW
     crud_managed_agent_enrollment.close_pending(
         db, enrollment=enrollment, status=ENROLLMENT_STATUS_CANCELLED
     )
@@ -3557,6 +3558,7 @@ def cancel_account_managed_agent_enrollment(
         account_id=account_id,
         agent_id=agent_id,
         created_resources=created_resources,
+        models_created_no_earlier_than=model_floor,
         reason=(payload.reason if payload and payload.reason else None)
         or "pending onboarding cancelled",
         audit_action=onboarding_cleanup.AUDIT_ACTION_CANCELLED,
@@ -3609,6 +3611,8 @@ def rollback_account_managed_agent_onboarding(
         account_id=account_id,
         agent_id=agent_id,
         created_resources=payload.created_resources.model_dump(),
+        models_created_no_earlier_than=datetime.now(UTC)
+        - onboarding_cleanup.ONBOARDING_MODEL_WINDOW,
         reason=payload.reason or "onboarding rolled back",
         audit_action=onboarding_cleanup.AUDIT_ACTION_ROLLED_BACK,
         actor_user_id=current_user.id,

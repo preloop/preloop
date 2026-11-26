@@ -2704,7 +2704,9 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	configReadOnly := !localPlan.Probe.Writable
 	local := localOffboardOutcome{Clean: true, Line: fmt.Sprintf("Restored config: %s", agent.ConfigPath)}
 	var localLeftovers []string
-	if localPlan.needsManualRemoval() && (state == nil || !state.OffboardArchived || offboardServerOnly) {
+	// Also on a retry after --server-only: the Preloop side is gone by then,
+	// but the file is offboarded only once it no longer points at Preloop.
+	if localPlan.needsManualRemoval() {
 		if offboardServerOnly {
 			fmt.Print(renderManualRemoval(resolveAgentDisplayName(agent), agent, localPlan, ""))
 			local = localOffboardOutcome{Line: fmt.Sprintf(

@@ -252,3 +252,33 @@ class TestRedactAgentConfig:
 
         assert redact_agent_config(once) == once
         assert data["env"]["ANTHROPIC_API_KEY"] == self.PROVIDER_KEY
+
+
+def test_agent_config_redacts_generic_token_and_key_names() -> None:
+    """Rows stored before the CLI sanitiser was fixed hold these in clear."""
+    from preloop.utils.redaction import redact_agent_config
+
+    stored = {
+        "env": {
+            "GITHUB_TOKEN": "ghp_" + "a1" * 18,
+            "NPM_TOKEN": "synthetic-npm-value",
+            "HF_TOKEN": "synthetic-hf-value",
+            "OPENAI_KEY": "synthetic-openai-value",
+            "UNRELATED": "ghp_" + "b2" * 18,
+            "SLACK": "xoxb-synthetic-000000000000",
+            "MAX_THINKING_TOKENS": "8000",
+            "ANTHROPIC_BASE_URL": "https://preloop.example.com/anthropic",
+            "bearer_token_env_var": "EXAMPLE_TOKEN",
+            "gateway_token_ok": True,
+        }
+    }
+
+    env = redact_agent_config(stored)["env"]
+
+    for key in ("GITHUB_TOKEN", "NPM_TOKEN", "HF_TOKEN", "OPENAI_KEY", "UNRELATED"):
+        assert env[key] == "<redacted>", key
+    assert "xoxb-" not in env["SLACK"]
+    assert env["MAX_THINKING_TOKENS"] == "8000"
+    assert env["ANTHROPIC_BASE_URL"] == "https://preloop.example.com/anthropic"
+    assert env["bearer_token_env_var"] == "EXAMPLE_TOKEN"
+    assert env["gateway_token_ok"] is True

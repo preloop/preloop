@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 from uuid import UUID
 
@@ -90,6 +90,18 @@ AGENT_KEPT = "kept"
 # strings (a prefix shown in the console, a placeholder) are left alone.
 _AGENT_KEY_PATTERN = re.compile(r"agt_[A-Za-z0-9_\-]{16,}")
 _MAX_IDS = 200
+# How long before the enrollment (or the rollback call) an onboarding may have
+# created its models. Anything older was not created by that onboarding.
+ONBOARDING_MODEL_WINDOW = timedelta(hours=1)
+
+
+def _naive_utc(moment: datetime) -> datetime:
+    """Return ``moment`` as naive UTC, the form ``created_at`` is stored in."""
+    if moment.tzinfo is None:
+        return moment
+    return moment.astimezone(UTC).replace(tzinfo=None)
+
+
 _EXPIRY_BATCH = 200
 
 
@@ -319,7 +331,12 @@ def remove_agent_registry_entry(
 
 
 def _remove_created_model(
-    db: Session, *, account_id: str, agent_id: str, model_id: str
+    db: Session,
+    *,
+    account_id: str,
+    agent_id: str,
+    model_id: str,
+    created_no_earlier_than: datetime,
 ) -> bool:
     """Delete one AI model the onboarding created, if nothing else uses it.
 
@@ -345,6 +362,15 @@ def _remove_created_model(
     tagged_agent = (model.meta_data or {}).get("managed_agent_id")
     if not tagged_agent or str(tagged_agent) != agent_id:
         return False
+    # The tag is editable through ``PUT /ai-models/{id}``, so it alone would
+    # let a caller mark an existing model and have it deleted here. The
+    # creation time is not editable: a model older than the onboarding was
+    # not created by it, whatever its tag says.
+    created_at = getattr(model, "created_at", None)
+    if created_at is None or _naive_utc(created_at) < _naive_utc(
+        created_no_earlier_than
+    ):
+        return False
     if crud_managed_agent_ai_model_binding.model_bound_to_other_agent(
         db, account_id=account_id, ai_model_id=model_id, agent_id=agent_id
     ):
@@ -358,7 +384,12 @@ def _remove_created_model(
 
 
 def _remove_created_models(
-    db: Session, *, account_id: str, agent_id: str, model_ids: tuple[str, ...]
+    db: Session,
+    *,
+    account_id: str,
+    agent_id: str,
+    model_ids: tuple[str, ...],
+    created_no_earlier_than: datetime,
 ) -> int:
     """Delete the removable models; one that fails is skipped, not fatal."""
     removed = 0
@@ -366,7 +397,11 @@ def _remove_created_models(
         try:
             with db.begin_nested():
                 if _remove_created_model(
-                    db, account_id=account_id, agent_id=agent_id, model_id=model_id
+                    db,
+                    account_id=account_id,
+                    agent_id=agent_id,
+                    model_id=model_id,
+                    created_no_earlier_than=created_no_earlier_than,
                 ):
                     removed += 1
         except Exception as error:
@@ -457,6 +492,7 @@ def cleanup_onboarding_resources(
     created_resources: Any,
     reason: str,
     audit_action: str,
+    models_created_no_earlier_than: datetime,
     actor_user_id: Optional[UUID] = None,
     audit_details: Optional[dict[str, Any]] = None,
     ip_address: Optional[str] = None,
@@ -478,6 +514,8 @@ def cleanup_onboarding_resources(
             any shape (see :func:`parse_created_resources`).
         reason: Recorded on revoked credentials and a decommissioned agent.
         audit_action: Audit log action name.
+        models_created_no_earlier_than: Models created before this moment are
+            never deleted: they predate the onboarding being undone.
         actor_user_id: The user who asked for the cleanup; ``None`` for the
             expiry sweep.
         audit_details: Extra audit details (for example the enrollment id).
@@ -527,6 +565,7 @@ def cleanup_onboarding_resources(
         account_id=account_key,
         agent_id=result.agent_id,
         model_ids=resources.ai_model_ids,
+        created_no_earlier_than=models_created_no_earlier_than,
     )
     result.agent = _settle_agent(
         db,
@@ -662,6 +701,7 @@ def _expire_one(
         db.rollback()
         return None
     created_resources = (enrollment.backup_metadata or {}).get("created_resources")
+    model_floor = _naive_utc(enrollment.created_at) - ONBOARDING_MODEL_WINDOW
     crud_managed_agent_enrollment.close_pending(
         db, enrollment=enrollment, status=ENROLLMENT_STATUS_EXPIRED
     )
@@ -672,6 +712,7 @@ def _expire_one(
         created_resources=created_resources,
         reason="pending onboarding expired",
         audit_action=AUDIT_ACTION_EXPIRED,
+        models_created_no_earlier_than=model_floor,
         audit_details={"enrollment_id": enrollment_id},
     )
     db.commit()

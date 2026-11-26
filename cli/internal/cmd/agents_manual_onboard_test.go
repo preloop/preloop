@@ -684,7 +684,7 @@ func TestCancelPendingSetupReportsServerAndLocalSeparately(t *testing.T) {
 	if err := cancelManualEnrollment(rig.client(), state, &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Cancelled the pending setup", "Preloop: removed 1 agent key(s)", "This machine: nothing was written"} {
+	for _, want := range []string{"Cancelled the pending setup", "Preloop: removed 1 agent key(s)", "This machine: " + home.settings + " does not point at Preloop; nothing to change."} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("cancel output misses %q:\n%s", want, out.String())
 		}
@@ -813,5 +813,137 @@ func TestResumeWithSkippedProbeDoesNotSayOnboarded(t *testing.T) {
 	}
 	if rig.probeCalls != 0 {
 		t.Fatal("skip must not probe")
+	}
+}
+
+// Only a side file is blocked: onboarding writes settings.json itself and
+// hands over the control file. Resume must still make the real request with
+// that settings file, and cancel must not leave it pointing at a dead key.
+func TestSideFileOnlySetupStillProbesAndCancelRestoresTheConfig(t *testing.T) {
+	rig := newManualRigServer(t)
+	home := newManualRigHome(t)
+	restore := stubWriteProbes(nil, nil)
+	defer restore()
+	controlPath := claudeControlConfigPath()
+	previousOpen, previousTemp := openForAppendProbe, createTempProbe
+	createTempProbe = func(dir string) error {
+		if filepath.Clean(dir) == filepath.Clean(filepath.Dir(controlPath)) {
+			return &os.PathError{Op: "open", Path: dir, Err: os.ErrPermission}
+		}
+		return previousTemp(dir)
+	}
+	defer func() { openForAppendProbe, createTempProbe = previousOpen, previousTemp }()
+
+	output, err := runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{})
+	var pending *manualApplyPendingError
+	if !errors.As(err, &pending) {
+		t.Fatalf("want a pending setup for the control file, got %v\n%s", err, output)
+	}
+	doc, _ := loadJSONDocument(home.settings)
+	if lookupNested(doc, "env", "ANTHROPIC_API_KEY") != syntheticAgentKey {
+		t.Fatalf("the writable settings file should have been written:\n%s", output)
+	}
+	state, _ := loadManualResumeState(home.agent)
+
+	var resumed bytes.Buffer
+	if err := resumeManualEnrollment(rig.client(), state, manualResumeOptions{}, &resumed); err != nil {
+		t.Fatalf("resume: %v\n%s", err, resumed.String())
+	}
+	if rig.probeCalls != 1 || !strings.Contains(resumed.String(), "Gateway validation: passed") {
+		t.Fatalf("a side-file-only setup must still make the real request:\n%s", resumed.String())
+	}
+}
+
+func TestCancelPutsBackAConfigOnboardingWrote(t *testing.T) {
+	rig := newManualRigServer(t)
+	home := newManualRigHome(t)
+	controlPath := claudeControlConfigPath()
+	previousTemp := createTempProbe
+	createTempProbe = func(dir string) error {
+		if filepath.Clean(dir) == filepath.Clean(filepath.Dir(controlPath)) {
+			return &os.PathError{Op: "open", Path: dir, Err: os.ErrPermission}
+		}
+		return previousTemp(dir)
+	}
+	defer func() { createTempProbe = previousTemp }()
+	if _, err := runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{}); err == nil {
+		t.Fatal("expected a pending setup")
+	}
+	state, _ := loadManualResumeState(home.agent)
+	createTempProbe = previousTemp
+
+	var out bytes.Buffer
+	if err := cancelManualEnrollment(rig.client(), state, &out); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := loadJSONDocument(home.settings)
+	if lookupNested(doc, "env", "ANTHROPIC_BASE_URL") != nil {
+		t.Fatalf("cancel left the config pointing at Preloop with a revoked key: %v", doc)
+	}
+	if lookupNested(doc, "env", "ANTHROPIC_API_KEY") != "sk-ant-api03-synthetic-upstream" || doc["theme"] != "dark" {
+		t.Fatalf("the user's own values must be back: %v", doc)
+	}
+	if !strings.Contains(out.String(), "removed the Preloop configuration from "+home.settings) {
+		t.Fatalf("cancel output:\n%s", out.String())
+	}
+}
+
+// ~/.preloop is read-only but the agent's files are writable: there is
+// nothing to hand over, so onboarding finishes with the real request.
+func TestReadOnlyStateWithWritableConfigOnboardsWithoutAManualStep(t *testing.T) {
+	rig := newManualRigServer(t)
+	home := newManualRigHome(t)
+	skipIfRootOrWindows(t)
+	stateDir := filepath.Join(home.home, ".preloop")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stateDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
+
+	output, err := runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{})
+	if err != nil {
+		t.Fatalf("onboarding should complete: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, "✓ Onboarded Claude Code") || rig.probeCalls != 1 {
+		t.Fatalf("output:\n%s", output)
+	}
+	if strings.Contains(output, "nothing to hand over") || len(rig.sent(http.MethodPost, "/onboarding-rollback")) != 0 {
+		t.Fatalf("must not abort and roll back:\n%s", output)
+	}
+	doc, _ := loadJSONDocument(home.settings)
+	if lookupNested(doc, "env", "ANTHROPIC_API_KEY") != syntheticAgentKey {
+		t.Fatal("the writable settings file should have been written")
+	}
+}
+
+// Agents whose hooks live in their own file: undoing a failed onboarding
+// must put that file back too, or it keeps calling a hook with a dead key.
+func TestRollbackSnapshotCoversSeparateHookFiles(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	config := filepath.Join(home, ".cursor", "mcp.json")
+	hooks := filepath.Join(home, ".cursor", "hooks.json")
+	mustWriteRecoveryFile(t, config, "{}\n")
+	mustWriteRecoveryFile(t, hooks, "{\"hooks\": {}}\n")
+	agent := AgentConfig{Name: "Cursor", ConfigPath: config}
+	credential, err := permissionHookCredentialPath(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restore := snapshotLocalFilesForRollback(agent)
+	mustWriteRecoveryFile(t, hooks, "{\"hooks\": {\"preToolUse\": [{\"command\": \"preloop agents permission-hook\"}]}}\n")
+	mustWriteRecoveryFile(t, credential, "{\"token\": \"synthetic\"}\n")
+	if err := restore(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(hooks)
+	if string(data) != "{\"hooks\": {}}\n" {
+		t.Fatalf("hook file not restored: %s", data)
+	}
+	if _, statErr := os.Stat(credential); !os.IsNotExist(statErr) {
+		t.Fatalf("the hook credential this run wrote must be removed: %v", statErr)
 	}
 }

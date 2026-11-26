@@ -105,6 +105,8 @@ func resumeManualEnrollment(
 	case enrollmentStatusPendingLocal:
 	case "expired", "cancelled":
 		removeManualResumeState(state.AgentName, state.ConfigPath)
+		// The key is gone; do not leave a configuration pointing at it.
+		cleanLocalAfterAbandonedSetup(state, output)
 		return pendingSetupGoneError(displayName, enrollment.Status)
 	case "validated", "applied":
 		removeManualResumeState(state.AgentName, state.ConfigPath)
@@ -122,9 +124,10 @@ func resumeManualEnrollment(
 	// from the console) is accepted only if the real request below proves it:
 	// first check quietly against the issued key, then against any key.
 	otherKey := false
-	effective, problems := checkManualChangeInPlace(plan, opts, state.TokenSHA256, io.Discard)
+	own := manualOwnConfig{Path: state.ConfigPath, Format: manualConfigFormat(agent)}
+	effective, problems := checkManualChangeInPlace(plan, opts, state.TokenSHA256, own, io.Discard)
 	if problems > 0 && state.TokenSHA256 != "" {
-		if _, lenient := checkManualChangeInPlace(plan, opts, "", io.Discard); lenient == 0 {
+		if _, lenient := checkManualChangeInPlace(plan, opts, "", own, io.Discard); lenient == 0 {
 			otherKey = true
 		}
 	}
@@ -132,7 +135,7 @@ func resumeManualEnrollment(
 	if otherKey {
 		checkSHA = ""
 	}
-	effective, problems = checkManualChangeInPlace(plan, opts, checkSHA, output)
+	effective, problems = checkManualChangeInPlace(plan, opts, checkSHA, own, output)
 	if otherKey {
 		printManualLine(output, "  The key in place is not the one this setup printed; it is accepted only if the real request below succeeds with it.")
 	}
@@ -240,10 +243,18 @@ func manualEffectiveLabel(plan *manualApplyPlan, opts manualResumeOptions) strin
 // checkManualChangeInPlace prints what it checked and every problem found.
 // It returns the effective configuration document and the number of
 // problems in the required change.
+// manualOwnConfig is the agent's main configuration file, which onboarding
+// wrote itself when only side files had to be handed over.
+type manualOwnConfig struct {
+	Path   string
+	Format string
+}
+
 func checkManualChangeInPlace(
 	plan *manualApplyPlan,
 	opts manualResumeOptions,
 	tokenSHA256 string,
+	own manualOwnConfig,
 	output io.Writer,
 ) (map[string]interface{}, int) {
 	var effective map[string]interface{}
@@ -259,8 +270,16 @@ func checkManualChangeInPlace(
 
 	switch {
 	case configFile == nil:
-		// Only side files were handed over; the main configuration was
-		// written by onboarding itself.
+		// Only side files (or nothing) were handed over; onboarding wrote
+		// the main configuration itself. It is still the configuration the
+		// real request must be made with: a setup is never reported as
+		// onboarded without that request.
+		effective = loadManualEffectiveDocument(manualFileChange{Format: own.Format}, own.Path)
+		if effective == nil {
+			printManualLine(output, "Checking %s", own.Path)
+			printManualLine(output, "  ✗ the configuration onboarding wrote can no longer be read")
+			problems++
+		}
 	case opts.FromEnv:
 		printManualLine(output, "Checking the environment of this shell")
 		envProblems := verifyManualEnv(plan.Env, os.Getenv, tokenSHA256)
@@ -482,7 +501,7 @@ func cancelManualEnrollment(client *api.Client, state *manualResumeState, output
 	printManualLine(output, "Cancelled the pending setup for %s.", displayName)
 	printManualLine(output, "  Preloop: removed %d agent key(s) and %d model(s) it created; agent %s.",
 		response.Removed.Credentials, response.Removed.AIModels, agentOutcome)
-	printManualLine(output, "  This machine: nothing was written to the agent's configuration by Preloop. If you already pasted the block, remove it; the key in it no longer works.")
+	cleanLocalAfterAbandonedSetup(state, output)
 	if state.BundleDir != "" {
 		printManualLine(output, "  Delete the saved instructions: %s", state.BundleDir)
 	}

@@ -1052,7 +1052,10 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	// failed onboarding also restores them: a configuration pointing at a
 	// key that was removed is worse than the one the user started with.
 	rollback.restoreLocal = snapshotLocalFilesForRollback(agent)
-	plan.ControlFileDeferred = manualDecision.Manual && !manualDecision.Report.writable(writeRoleControl)
+	// The Agent Control file is written together with an ownership record
+	// under ~/.preloop, so it is deferred when either cannot be written.
+	plan.ControlFileDeferred = manualDecision.Manual &&
+		(!manualDecision.Report.writable(writeRoleControl) || !manualDecision.Report.writable(writeRoleState))
 	plan, err = applyManagedAgentControlConfig(
 		plan,
 		baseURL,

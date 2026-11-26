@@ -178,6 +178,17 @@ func snapshotLocalFilesForRollback(agent AgentConfig) func() error {
 		mode    os.FileMode
 	}
 	paths := []string{agent.ConfigPath}
+	// Approval and usage hooks live in their own file for some agents, and
+	// the hook reads a credential file under ~/.preloop. Both would keep
+	// pointing at a revoked key if they were not put back.
+	if source := permissionSourceForAgent(agent); source != "" && !isExtensionHarness(agent) {
+		if hookPath, err := approvalHookConfigPath(source); err == nil && hookPath != "" {
+			paths = append(paths, hookPath)
+		}
+		if credentialPath, err := permissionHookCredentialPath(agent); err == nil && credentialPath != "" {
+			paths = append(paths, credentialPath)
+		}
+	}
 	if isClaudeCodeAgent(agent) {
 		paths = append(paths, claudeUserConfigPath(agent), claudeControlConfigPath())
 	} else if isCodexCLIAgent(agent) {
@@ -276,7 +287,15 @@ func decideManualMode(agent AgentConfig, opts managedEnrollmentOptions, output i
 	if !manualApplySupported(agent) {
 		return decision, &errConfigNotWritable{Agent: resolveAgentDisplayName(agent)}
 	}
-	if len(blocked) > 0 {
+	onlyState := len(blocked) > 0
+	for _, probe := range blocked {
+		if probe.Target.Role != writeRoleState {
+			onlyState = false
+		}
+	}
+	if onlyState {
+		printManualLine(output, "Onboarding continues without local Preloop state: the agent's own files are writable and will be written, but no backup or resume state can be kept on this machine.")
+	} else if len(blocked) > 0 {
 		printManualLine(output, "Onboarding continues in manual mode: Preloop prepares the agent and prints the exact change for you to make.")
 	} else {
 		printManualLine(output, "Manual mode requested: Preloop prepares the agent and prints the exact change for you to make.")
@@ -465,7 +484,7 @@ func buildManualApplyPlan(in *manualEnrollmentInputs) (manualApplyPlan, []string
 		plan.Limitations = append(plan.Limitations,
 			"Agent Control (remote steer and stop) is not enabled: its control file location is not writable.")
 	}
-	if supportsAgentControlChannel(agent) && report.writable(writeRoleControl) {
+	if supportsAgentControlChannel(agent) && report.writable(writeRoleControl) && stateWritable {
 		plan.Limitations = append(plan.Limitations, fmt.Sprintf(
 			"Manual setup does not install the Agent Control runtime plugin (remote steer and stop). After resume, run: preloop agents install-plugin %s",
 			shellQuoteAgentName(resolveAgentDisplayName(agent)),
@@ -477,9 +496,6 @@ func buildManualApplyPlan(in *manualEnrollmentInputs) (manualApplyPlan, []string
 	}
 	if in.Opts.Approvals && !approvalsInstalled && len(plan.Limitations) == 0 {
 		plan.Limitations = append(plan.Limitations, "Approval hooks were not installed.")
-	}
-	if len(plan.Files) == 0 {
-		return plan, notes, errors.New("manual mode found nothing to hand over")
 	}
 	return plan, notes, nil
 }
@@ -524,6 +540,10 @@ func addClaudeSideFiles(in *manualEnrollmentInputs, plan *manualApplyPlan, notes
 		plan.Files = append(plan.Files, change)
 	}
 
+	if report.writable(writeRoleControl) && !report.writable(writeRoleState) {
+		plan.Limitations = append(plan.Limitations,
+			"Agent Control (remote steer and stop) is not set up: its control file is tracked by an ownership record under ~/.preloop, which is not writable here.")
+	}
 	if !report.writable(writeRoleControl) {
 		probe := report.probeFor(writeRoleControl)
 		change := changeFromProbe(probe, "Agent Control file (remote steer and stop through `preloop claude`)", writeRoleControl, "json")
@@ -642,6 +662,23 @@ func runManualApplyEnrollment(in *manualEnrollmentInputs) error {
 		resumeCommand += " --resume-token " + resumeToken
 	}
 
+	if len(plan.Files) == 0 {
+		// Every agent file was writable and has been written; only Preloop's
+		// own state directory is not. There is nothing for the user to do, so
+		// make the real request now instead of waiting.
+		for _, note := range notes {
+			printManualLine(output, "  %s", note)
+		}
+		for _, limitation := range plan.Limitations {
+			printManualLine(output, "  Note: %s", limitation)
+		}
+		if !stateSaved {
+			printManualLine(output, "  Resume token (not a secret; keep it, ~/.preloop is not writable): %s", resumeToken)
+		}
+		return resumeManualEnrollment(in.Client, &resumeState, manualResumeOptions{
+			SkipLiveValidate: in.Opts.SkipLiveValidate || !in.Opts.LiveValidate,
+		}, output)
+	}
 	instructions := renderManualInstructions(displayName, plan, in.Decision.BundleDir, resumeCommand)
 	printManualLine(output, "")
 	fmt.Fprint(output, instructions) //nolint:errcheck

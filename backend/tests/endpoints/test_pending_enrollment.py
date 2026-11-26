@@ -1199,3 +1199,30 @@ def test_rollback_never_deletes_a_model_without_this_agents_onboarding_tag(
     db_session.expire_all()
     assert crud_ai_model.get(db_session, id=untagged_id) is not None
     assert crud_ai_model.get(db_session, id=elsewhere_id) is not None
+
+
+def test_rollback_never_deletes_a_model_older_than_the_onboarding(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """The tag is editable through the model API. A model that existed before
+    the onboarding must survive even when it carries this agent's tag."""
+    agent = _make_agent(db_session, test_user.account_id, test_user.id)
+    old = _model(
+        db_session, test_user.account_id, "Long standing model", agent_id=agent.id
+    )
+    old.created_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=3)
+    agent_id, old_id = agent.id, old.id
+    db_session.commit()
+
+    response = client.post(
+        f"/api/v1/agents/{agent_id}/onboarding-rollback",
+        json={
+            "created_resources": _resources(ai_model_ids=[str(old_id)]),
+            "reason": "example",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["removed"]["ai_models"] == 0
+    db_session.expire_all()
+    assert crud_ai_model.get(db_session, id=old_id) is not None

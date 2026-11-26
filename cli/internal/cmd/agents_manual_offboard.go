@@ -416,3 +416,40 @@ type localOffboardOutcome struct {
 	Clean bool
 	Line  string
 }
+
+// cleanLocalAfterAbandonedSetup deals with what a cancelled or expired manual
+// setup left on this machine. When only side files had to be handed over,
+// onboarding wrote the main configuration itself, and that file now points
+// at Preloop with a key that no longer works. It is put back when it can be
+// written; otherwise the exact removal is printed. The line says which.
+func cleanLocalAfterAbandonedSetup(state *manualResumeState, output io.Writer) {
+	agent := AgentConfig{
+		Name:               state.AgentName,
+		DisplayName:        state.DisplayName,
+		ConfigPath:         state.ConfigPath,
+		RuntimePrincipalID: state.RuntimePrincipalID,
+	}
+	local, _ := loadLocalEnrollmentState(agent)
+	plan := planLocalOffboard(agent, local, state.BaseURL)
+	switch {
+	case !plan.Readable:
+		printManualLine(output, "  This machine: %s could not be checked (%s). If it holds the Preloop block, remove it; the key in it no longer works.", agent.ConfigPath, plan.ReadProblem)
+	case !plan.StillManaged:
+		printManualLine(output, "  This machine: %s does not point at Preloop; nothing to change.", agent.ConfigPath)
+	case plan.Probe.Writable && plan.Desired != nil:
+		if err := writeAgentConfigDocument(agent, plan.Desired); err != nil {
+			printManualLine(output, "  This machine: could not remove the Preloop block from %s: %v. Remove it by hand; the key in it no longer works.", agent.ConfigPath, err)
+			return
+		}
+		_ = removeClaudeCodeManagedMCPServer(agent)
+		_ = removeApprovalHooks(agent, nil)
+		_ = removeManagedAgentRuntimeArtifacts(agent)
+		printManualLine(output, "  This machine: removed the Preloop configuration from %s.", agent.ConfigPath)
+	default:
+		printManualLine(output, "  This machine: %s still holds the Preloop block and cannot be written from here. The key in it no longer works; remove it:", agent.ConfigPath)
+		fmt.Fprint(output, renderManualRemoval(resolveAgentDisplayName(agent), agent, plan, "")) //nolint:errcheck
+	}
+	if local != nil {
+		_ = removeLocalEnrollmentState(agent)
+	}
+}

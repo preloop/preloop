@@ -209,6 +209,15 @@ _CONFIG_SECRET_VALUE = re.compile(
     rf"\bagt_[{_KEY_CHARS}]{{8,}}"
     rf"|\bsk-ant-[{_KEY_CHARS}]+"
     rf"|\bsk-[{_KEY_CHARS}]{{20,}}"
+    # Well-known provider and forge token prefixes, whatever key holds them.
+    rf"|\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{{20,}}"
+    rf"|\bgithub_pat_[{_KEY_CHARS}]{{20,}}"
+    rf"|\bglpat-[{_KEY_CHARS}]{{16,}}"
+    rf"|\bxox[abposr]-[{_KEY_CHARS}]{{10,}}"
+    rf"|\bhf_[A-Za-z0-9]{{20,}}"
+    rf"|\bnpm_[A-Za-z0-9]{{20,}}"
+    r"|\bAKIA[0-9A-Z]{16}\b"
+    r"|\bAIza[0-9A-Za-z_\-]{30,}"
     # A bearer token: at least 8 token characters with a digit among them, or
     # 20 and more. Prose such as "Bearer authentication" is left alone.
     r"|\bBearer\s+(?=[A-Za-z0-9._~+/=\-]*[0-9]|[A-Za-z0-9._~+/=\-]{20})"
@@ -223,9 +232,18 @@ def _is_config_secret_key(key: Any) -> bool:
     lowered = key.lower().strip()
     if lowered == "token":
         return True
-    if not any(part in lowered for part in _CONFIG_SENSITIVE_KEY_PARTS):
+    normalised = lowered.replace("-", "_")
+    # ``GITHUB_TOKEN``, ``NPM_TOKEN``, ``HF_TOKEN``: any ``*_token`` name,
+    # and the ``*_key`` names of provider credentials (``OPENAI_KEY``,
+    # ``private_key``). The CLI sanitiser treats ``_token`` the same way.
+    named_secret = (
+        normalised.endswith("_token")
+        or normalised.endswith("_key")
+        or any(part in lowered for part in _CONFIG_SENSITIVE_KEY_PARTS)
+    )
+    if not named_secret:
         return False
-    return _CONFIG_REFERENCE_KEY.search(lowered.replace("-", "_")) is None
+    return _CONFIG_REFERENCE_KEY.search(normalised) is None
 
 
 def _redact_config_string(value: str, *, under_secret_key: bool) -> str:

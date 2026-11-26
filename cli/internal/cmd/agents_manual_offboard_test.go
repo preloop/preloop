@@ -296,3 +296,30 @@ func TestOffboardCleanupOffersOnlyModelsCreatedForThisAgent(t *testing.T) {
 		t.Fatalf("the model onboarding created for this agent should still be offered: %+v", candidates)
 	}
 }
+
+// After --server-only the Preloop side is archived. A later plain offboard
+// must still refuse to say Offboarded while the file holds the block.
+func TestOffboardAfterServerOnlyStillRequiresTheBlockToBeRemoved(t *testing.T) {
+	rig, home := newOffboardRig(t)
+	agent := normalizeDiscoveredAgent(home.agent)
+	if err := saveLocalEnrollmentState(&localEnrollmentState{
+		AgentName:          agent.Name,
+		ConfigPath:         agent.ConfigPath,
+		RuntimePrincipalID: runtimePrincipalIDForAgent(agent),
+		OffboardArchived:   true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	home.lockSettings(t)
+	offboardServerOnly = false
+
+	out, err := runOffboardRig(t, home.agent)
+	var coded *exitCodeError
+	if !errors.As(err, &coded) || coded.ExitCode() != manualApplyExitCode {
+		t.Fatalf("want the manual removal stop, got %v\n%s", err, out)
+	}
+	if strings.Contains(out, "✓ Offboarded") || strings.Contains(out, "holds no Preloop configuration") {
+		t.Fatalf("must not claim the file is clean:\n%s", out)
+	}
+	_ = rig
+}

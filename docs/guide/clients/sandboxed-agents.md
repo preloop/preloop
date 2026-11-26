@@ -382,7 +382,7 @@ preloop agents onboard --cancel "Claude Code"
 ```text
 Cancelled the pending setup for Claude Code.
   Preloop: removed 1 agent key(s) and 1 model(s) it created; agent deleted.
-  This machine: nothing was written to the agent's configuration by Preloop. If you already pasted the block, remove it; the key in it no longer works.
+  This machine: /home/agent/.claude/settings.json does not point at Preloop; nothing to change.
 ```
 
 When `~/.preloop` is not writable, add `--resume-token <token>` so the CLI knows which setup to cancel.
