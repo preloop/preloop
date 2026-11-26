@@ -6,12 +6,38 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..models.approval_event import ApprovalEvent
+from preloop.models import models
 from .base import CRUDBase
 
 
-class CRUDApprovalEvent(CRUDBase[ApprovalEvent]):
+class CRUDApprovalEvent(CRUDBase[models.ApprovalEvent]):
     """CRUD operations for approval workflow timeline events."""
+
+    def request_ids_with_votes(
+        self, db: Session, *, account_id: UUID, request_ids: list[UUID]
+    ) -> set[UUID]:
+        """Find recorded human votes for a page without loading event details.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the requested approvals.
+            request_ids: Approval ids in the current page.
+
+        Returns:
+            Request ids with a recorded vote, including token-based votes.
+        """
+        if not request_ids:
+            return set()
+        return {
+            request_id
+            for (request_id,) in db.query(self.model.approval_request_id)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.approval_request_id.in_(request_ids),
+                self.model.event_type == "vote_received",
+            )
+            .distinct()
+        }
 
     def get_by_request(
         self,
@@ -19,7 +45,7 @@ class CRUDApprovalEvent(CRUDBase[ApprovalEvent]):
         *,
         approval_request_id: Union[str, UUID],
         account_id: Optional[str] = None,
-    ) -> list[ApprovalEvent]:
+    ) -> list[models.ApprovalEvent]:
         """Return the timeline events for one approval request, in order.
 
         Args:
@@ -49,7 +75,7 @@ class CRUDApprovalEvent(CRUDBase[ApprovalEvent]):
         comment: Optional[str] = None,
         actor_id: Optional[Union[str, UUID]] = None,
         commit: bool = True,
-    ) -> ApprovalEvent:
+    ) -> models.ApprovalEvent:
         """Append one event to an approval request's timeline.
 
         Sync counterpart of ``ApprovalService._record_event`` for the sync
@@ -79,7 +105,7 @@ class CRUDApprovalEvent(CRUDBase[ApprovalEvent]):
             "comment": comment,
             "actor_id": actor_id,
         }
-        event: Optional[ApprovalEvent] = None
+        event: Optional[models.ApprovalEvent] = None
         try:
             with db.begin_nested():
                 event = self.create(db, obj_in=payload, commit=False)
@@ -102,7 +128,7 @@ class CRUDApprovalEvent(CRUDBase[ApprovalEvent]):
         *,
         approval_request_id: Union[str, UUID],
         actor_id: Optional[Union[str, UUID]],
-    ) -> Optional[ApprovalEvent]:
+    ) -> Optional[models.ApprovalEvent]:
         """Return the viewed row the unique index would collide with."""
         query = db.query(self.model).filter(
             self.model.approval_request_id == approval_request_id,
@@ -151,4 +177,4 @@ class CRUDApprovalEvent(CRUDBase[ApprovalEvent]):
 
 
 # Create instance
-crud_approval_event = CRUDApprovalEvent(ApprovalEvent)
+crud_approval_event = CRUDApprovalEvent(models.ApprovalEvent)

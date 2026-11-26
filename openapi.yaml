@@ -32278,6 +32278,11 @@ components:
           type: boolean
           title: Decided By Ai
           default: false
+        human_decision_recorded:
+          type: boolean
+          title: Human Decision Recorded
+          description: A terminal human decision has a stored vote response or event
+          default: false
         ai_model:
           anyOf:
           - type: string
