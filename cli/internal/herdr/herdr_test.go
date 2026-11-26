@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -54,6 +55,9 @@ func TestSettingsIndependent(t *testing.T) {
 	}
 }
 func TestFocusFakeBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake herdr executable requires POSIX shell")
+	}
 	dir := t.TempDir()
 	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
 	t.Setenv("PATH", dir)

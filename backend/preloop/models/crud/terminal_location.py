@@ -17,13 +17,20 @@ def _instant(value: str) -> datetime:
 
 
 def reconcile(
-    db: Session, *, runner: models.FlowRunner, report: dict[str, Any]
+    db: Session,
+    *,
+    runner: models.FlowRunner,
+    report: dict[str, Any],
+    cached: bool = False,
+    affected: set[str] | None = None,
 ) -> dict[str, Any]:
     """Join exact native ids only through an enrolled device/principal link.
 
     Unknown device provenance stays unmanaged. Labels and hostname are never
     identity evidence. An ambiguous native id is also left unmanaged.
     """
+    if affected is None:
+        affected = set()
     fingerprint = runner.workstation_fingerprint
     agents = []
     seen: set[str] = set()
@@ -37,6 +44,9 @@ def reconcile(
         if identities[(pane["harness_kind"], pane["harness_session_id"])] > 1
     }
     for pane in report["agents"]:
+        if cached and pane.get("managed"):
+            agents.append(pane)
+            continue
         pane = {**pane, "managed": False, "runtime_session_id": None}
         kind = {"claude_code": "claude_code", "codex_cli": "codex"}.get(
             pane["harness_kind"]
@@ -93,7 +103,7 @@ def reconcile(
             seen.add(str(row.id))
             previous = row.terminal_location or {}
             if not previous or _instant(previous["observed_at"]) <= observed:
-                row.terminal_location = {
+                location = {
                     key: pane[key]
                     for key in (
                         "multiplexer",
@@ -113,10 +123,13 @@ def reconcile(
                     if pane["state"] == "closed"
                     else None,
                 }
-                db.add(row)
+                if location != previous:
+                    row.terminal_location = location
+                    db.add(row)
+                    affected.add(str(row.id))
             pane.update(managed=True, runtime_session_id=str(row.id))
         agents.append(pane)
-    if fingerprint:
+    if fingerprint and not cached:
         for row in (
             db.query(models.RuntimeSession)
             .filter(
@@ -135,21 +148,25 @@ def reconcile(
                 str(row.id) not in seen
                 and _instant(previous["observed_at"]) <= observed
             ):
-                row.terminal_location = previous | {
+                location = previous | {
                     "state": "closed",
                     "pane_closed_at": previous.get("pane_closed_at")
                     or report["observed_at"],
                     "observed_at": report["observed_at"],
                 }
-                db.add(row)
+                if location != previous:
+                    row.terminal_location = location
+                    db.add(row)
+                    affected.add(str(row.id))
     db.flush()
     return report | {"agents": agents}
 
 
-def clear_device_locations(db: Session, *, runner: models.FlowRunner) -> None:
+def clear_device_locations(db: Session, *, runner: models.FlowRunner) -> set[str]:
     """Observation disabled: forget locations without claiming panes closed."""
+    affected: set[str] = set()
     if not runner.workstation_fingerprint:
-        return
+        return affected
     for row in (
         db.query(models.RuntimeSession)
         .filter(
@@ -162,4 +179,6 @@ def clear_device_locations(db: Session, *, runner: models.FlowRunner) -> None:
     ):
         row.terminal_location = None
         db.add(row)
+        affected.add(str(row.id))
     db.flush()
+    return affected

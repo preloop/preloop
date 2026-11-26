@@ -28,11 +28,25 @@ func init() {
 		if e != nil {
 			return e
 		}
+		status := struct {
+			herdr.Settings
+			LastObserved *herdrObservationStatus `json:"last_observed,omitempty"`
+		}{Settings: s}
+		if cache, err := readHarnessInventoryCache(); err == nil && cache.Herdr != nil {
+			r := cache.Herdr
+			status.LastObserved = &herdrObservationStatus{Protocol: r.Protocol, Status: r.Status, ObservedAt: r.ObservedAt}
+		}
 		asJSON, _ := cmd.Flags().GetBool("json")
 		if asJSON {
-			return json.NewEncoder(cmd.OutOrStdout()).Encode(s)
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(status)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "observe: %t\nprompt: %t\n", s.Observe, s.Prompt)
+		if last := status.LastObserved; last != nil {
+			fmt.Fprintf(cmd.OutOrStdout(), "last observed protocol: %d\n", last.Protocol)
+			if last.Status != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "last observed status: %s\n", terminalSafe(last.Status))
+			}
+		}
 		return nil
 	}}
 	statusCmd.Flags().Bool("json", false, "print JSON")
@@ -94,10 +108,13 @@ func init() {
 		if e != nil {
 			return e
 		}
-		var row runtimeSessionRow
-		if e = client.Get(runtimeSessionsPath+"/"+id, &row); e != nil {
+		var response struct {
+			Session runtimeSessionRow `json:"session"`
+		}
+		if e = client.Get(runtimeSessionsPath+"/"+id, &response); e != nil {
 			return e
 		}
+		row := response.Session
 		if e = herdr.Focus(cmd.Context(), sessionKind(row), herdrNativeID(row)); e != nil {
 			return e
 		}
@@ -181,4 +198,11 @@ func herdrNativeID(row runtimeSessionRow) string {
 		}
 	}
 	return row.SessionSourceID
+}
+
+// herdrObservationStatus describes cached evidence, not current connectivity.
+type herdrObservationStatus struct {
+	Protocol   int    `json:"protocol"`
+	Status     string `json:"status,omitempty"`
+	ObservedAt string `json:"observed_at"`
 }

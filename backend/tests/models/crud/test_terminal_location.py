@@ -251,3 +251,122 @@ def test_pending_approvals_override_terminal_closure(
         account=data["runner"], items=[item], session_ids=[item.id]
     )
     assert item.is_active_now and item.pending_approval_count == 1
+
+
+def test_cached_observation_joins_late_session_without_new_freshness(
+    db_session: Session, terminal_data: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import MagicMock, patch
+    from preloop.services.herdr_inventory import reconcile_cached_herdr_inventory
+    from preloop.services import account_realtime
+
+    data = terminal_data
+    early = data["rows"][0]
+    identity = {
+        key: getattr(early, key)
+        for key in (
+            "account_id",
+            "session_source_type",
+            "session_source_id",
+            "runtime_principal_type",
+            "runtime_principal_id",
+            "started_at",
+            "last_activity_at",
+            "turn_state",
+        )
+    }
+    db_session.delete(early)
+    db_session.flush()
+    emitter = MagicMock()
+    monkeypatch.setattr(account_realtime, "emit_account_event", emitter)
+    record_herdr_inventory(db_session, data["runner"], data["report"])
+    assert not data["runner"].harness_inventory["herdr"]["agents"][0]["managed"]
+    late = models.RuntimeSession(**identity)
+    db_session.add(late)
+    db_session.flush()
+    emitter.reset_mock()
+    assert reconcile_cached_herdr_inventory(db_session, data["runner"])
+    assert datetime.fromisoformat(
+        late.terminal_location["observed_at"]
+    ) == datetime.fromisoformat(data["report"]["observed_at"])
+    assert late.last_activity_at == identity["last_activity_at"]
+    assert late.terminal_location["pane_closed_at"] is None
+    assert data["rows"][1].terminal_location["pane_closed_at"] is None
+    event = emitter.call_args.args[0]
+    assert event["account_id"] == str(data["runner"].account_id)
+    assert event["runtime_session_id"] == str(late.id)
+    assert event["type"] == "runtime_session_updated"
+    assert event["payload"] == {
+        "runtime_session_id": str(late.id),
+        "terminal_location_changed": True,
+    }
+    emitter.reset_mock()
+    with patch.object(db_session, "commit", wraps=db_session.commit) as commit:
+        assert not reconcile_cached_herdr_inventory(db_session, data["runner"])
+        commit.assert_not_called()
+    emitter.assert_not_called()
+
+
+def test_location_events_only_for_changed_sessions_after_commit(
+    db_session: Session, terminal_data: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from preloop.services import account_realtime
+
+    data = terminal_data
+    events: list[dict[str, Any]] = []
+
+    from sqlalchemy import event as sa_event
+
+    commits: list[bool] = []
+    emission_commit_counts: list[int] = []
+    sa_event.listen(db_session, "after_commit", lambda db: commits.append(True))
+
+    def receive(event: dict[str, Any]) -> None:
+        emission_commit_counts.append(len(commits))
+        events.append(event)
+
+    monkeypatch.setattr(account_realtime, "emit_account_event", receive)
+    record_herdr_inventory(db_session, data["runner"], data["report"])
+    expected = {str(row.id) for row in data["rows"][:16]}
+    assert {event["runtime_session_id"] for event in events} == expected
+    assert emission_commit_counts == [1] * 16
+    assert all(
+        event["account_id"] == str(data["runner"].account_id) for event in events
+    )
+    events.clear()
+    record_herdr_inventory(db_session, data["runner"], data["report"])
+    record_herdr_inventory(db_session, data["runner"], {"protocol": 22})
+    assert not events
+    record_herdr_inventory(db_session, data["runner"], dict(data["report"], agents=[]))
+    assert {event["runtime_session_id"] for event in events} == expected
+    events.clear()
+    record_herdr_inventory(
+        db_session,
+        data["runner"],
+        dict(data["report"], observe_enabled=False, protocol=0, agents=[]),
+    )
+    assert {event["runtime_session_id"] for event in events} == expected
+
+
+def test_cached_observation_never_selects_between_sessions_with_same_native_id(
+    db_session: Session, terminal_data: dict[str, Any]
+) -> None:
+    from preloop.services.herdr_inventory import reconcile_cached_herdr_inventory
+
+    data = terminal_data
+    original = data["rows"][0]
+    duplicate = models.RuntimeSession(
+        account_id=original.account_id,
+        session_source_type=original.session_source_type,
+        session_source_id="another-runtime-generation",
+        session_reference=data["report"]["agents"][0]["harness_session_id"],
+        runtime_principal_type=original.runtime_principal_type,
+        runtime_principal_id=original.runtime_principal_id,
+        started_at=original.started_at + timedelta(seconds=1),
+    )
+    db_session.add(duplicate)
+    db_session.flush()
+    record_herdr_inventory(db_session, data["runner"], data["report"])
+    assert not reconcile_cached_herdr_inventory(db_session, data["runner"])
+    assert original.terminal_location is duplicate.terminal_location is None
+    assert not data["runner"].harness_inventory["herdr"]["agents"][0]["managed"]
