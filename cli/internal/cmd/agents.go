@@ -1443,7 +1443,8 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		return runUnattendedEnrollment(cmd, args)
 	}
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	if !dryRun && !stdinIsTerminal() && !nonInteractiveAutoConfirm() {
+	// The model-route path does not implement --dry-run.
+	if (!dryRun || modelRouteRequested(cmd)) && !stdinIsTerminal() && !nonInteractiveAutoConfirm() {
 		return errors.New("onboarding requires a terminal; run 'preloop agents onboard' interactively or set PRELOOP_CONFIRM=1 to accept defaults unattended")
 	}
 	for _, flag := range []string{"enrollment-token-file", "apps", "target-user", "device-ref"} {

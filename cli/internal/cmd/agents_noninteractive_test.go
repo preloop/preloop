@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -85,7 +86,7 @@ func TestDiscoverNoninteractiveNeverOnboards(t *testing.T) {
 
 func TestOnboardNoninteractiveRequiresConfirm(t *testing.T) {
 	for _, kind := range []string{"closed", "null", "pipe"} {
-		for _, mode := range []string{"single", "batch", "all", "yes", "model-route"} {
+		for _, mode := range []string{"single", "batch", "all", "yes", "model-route", "model-route-dry-run"} {
 			t.Run(kind+"/"+mode, func(t *testing.T) {
 				home := setupDiscoveryHome(t)
 				t.Setenv("PRELOOP_CONFIRM", "")
@@ -93,14 +94,16 @@ func TestOnboardNoninteractiveRequiresConfirm(t *testing.T) {
 				command := &cobra.Command{}
 				command.Flags().Bool("all", mode == "all", "")
 				command.Flags().Bool("yes", mode == "yes", "")
-				command.Flags().Bool("dry-run", false, "")
-				command.Flags().String("model-route", "", "")
+				command.Flags().Bool("dry-run", mode == "model-route-dry-run", "")
+				registerClaudeDesktopRouteFlags(command)
 				args := []string{"Cursor"}
 				if mode == "batch" || mode == "all" {
 					args = nil
 				}
-				if mode == "model-route" {
-					_ = command.Flags().Set("model-route", "mcp-only")
+				if strings.HasPrefix(mode, "model-route") {
+					args = []string{"Claude Desktop"}
+					_ = command.Flags().Set("model-route", "direct")
+					_ = command.Flags().Set("out", filepath.Join(home, "route-artifacts"))
 				}
 				before := inventorySnapshot(t, home)
 				err := runAgentsEnroll(command, args)
