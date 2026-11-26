@@ -47,7 +47,10 @@ pool running a container does not transfer your agent login. The host-profile
 and interactive entries describe using your own bound agent login; choosing
 another agent still requires that agent's authorization. A subscription owner
 can enable hosted use with `preloop models flow-use <id> on`. Another user's
-flows remain ineligible (`subscription_flow_owner_required`); a caller without
+flows remain ineligible (`subscription_flow_owner_required`). An opted-in owner
+who is inactive or has left the flow's account receives
+`subscription_flow_owner_inactive`; restore their active account membership or
+select an API-key or built-in model. A caller without
 a bound agent login gets `bound_agent_login_required` for agent execution.
 API-key, built-in and own-server registrations have no subscription binding
 restriction.

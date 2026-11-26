@@ -169,13 +169,26 @@ def run_checks(
         for path, what in (
             (f"{API}/ci-identities/shared-flows/{flow}", "the flow's allowlist"),
             (f"{API}/ci-identities", "the identity list"),
-            (f"{API}/flows/{flow}", "the flow configuration"),
         ):
             status, body = request(token, "GET", path, None)
             check(
                 status in {401, 403} and projects[other] not in json.dumps(body),
                 f"{label}: cannot read {what} (HTTP {status})",
             )
+        status, body = request(token, "GET", f"{API}/flows/{flow}", None)
+        preflight_only = (
+            status == 200
+            and isinstance(body, dict)
+            and set(body) == {"id", "executor_eligibility"}
+            and body["id"] == flow
+            and isinstance(body["executor_eligibility"], dict)
+            and set(body["executor_eligibility"]) == {"eligible", "reason", "message"}
+        )
+        check(
+            (status in {401, 403} or preflight_only)
+            and projects[other] not in json.dumps(body),
+            f"{label}: flow read exposes at most executor preflight (HTTP {status})",
+        )
         status, _ = request(
             token,
             "POST",

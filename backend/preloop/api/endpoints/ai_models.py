@@ -435,11 +435,12 @@ def list_ai_models(
         *built_in,
         *filter_viewable(db, current_user, VISIBLE_AI_MODEL, [*own_models, *shared]),
     ]
-    from preloop.services.model_executor_eligibility import model_executor_eligibility
+    from preloop.services.model_executor_eligibility import model_executor_eligibilities
 
-    for row in visible:
-        if not isinstance(row, SharedResourceRead):
-            row.executor_eligibility = model_executor_eligibility(db, row, current_user)
+    registrations = [row for row in visible if not isinstance(row, SharedResourceRead)]
+    eligibility = model_executor_eligibilities(db, registrations, current_user)
+    for row in registrations:
+        row.executor_eligibility = eligibility[str(row.id)]
     priced = _apply_tariff_visibility(
         visible, is_admin=getattr(current_user, "is_superuser", False) is True
     )

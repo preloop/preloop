@@ -81,6 +81,52 @@ def owner_flow_use_enabled(db: Session, ai_model: models.AIModel) -> bool:
     return owner is not None and owner == str(opted_in)
 
 
+def subscription_flow_denial_reason(
+    db: Session,
+    flow: Any,
+    ai_model: models.AIModel,
+    *,
+    owner_user: Optional[models.User] = None,
+    subscription_owners: Optional[dict[str, Optional[str]]] = None,
+) -> Optional[str]:
+    """Classify the shared hosted subscription admission decision.
+
+    Args:
+        db: Database session.
+        flow: Flow account and creator identity.
+        ai_model: Selected subscription registration.
+        owner_user: Optional already-loaded flow creator.
+        subscription_owners: Optional request-local batch of model owner ids.
+
+    Returns:
+        A stable denial code, or None when owner, opt-in and account match.
+    """
+    flow_owner = getattr(flow, "created_by_user_id", None)
+    flow_account = getattr(flow, "account_id", None)
+    if flow_owner is None or flow_account is None:
+        return "subscription_flow_owner_required"
+    if str(ai_model.account_id) != str(flow_account):
+        return "subscription_flow_owner_required"
+    owner = (
+        subscription_owners.get(str(ai_model.id))
+        if subscription_owners is not None
+        else subscription_owner_user_id(db, ai_model)
+    )
+    if owner is None or owner != str(flow_owner):
+        return "subscription_flow_owner_required"
+    if str(getattr(ai_model, "owner_flow_use_user_id", None)) != owner:
+        return "subscription_flow_opt_in_required"
+    user = owner_user if owner_user is not None else crud_user.get(db, id=flow_owner)
+    if (
+        user is None
+        or str(user.id) != owner
+        or not user.is_active
+        or str(user.account_id) != str(flow_account)
+    ):
+        return "subscription_flow_owner_inactive"
+    return None
+
+
 def flow_may_use_subscription(
     db: Session,
     flow: Any,
@@ -88,36 +134,22 @@ def flow_may_use_subscription(
     *,
     owner_user: Optional[models.User] = None,
 ) -> bool:
-    """Whether a hosted execution of ``flow`` may use ``ai_model``.
+    """Apply owner opt-in, ownership and active account membership checks.
 
     Args:
-        db: Active database session.
-        flow: Flow row (or a duck-typed stand-in with ``account_id`` and
-            ``created_by_user_id``).
-        ai_model: Subscription-OAuth model row the execution selected.
-        owner_user: Optional caller-loaded user for batch gateway checks.
+        db: Database session.
+        flow: Flow account and creator identity.
+        ai_model: Selected subscription registration.
+        owner_user: Optional already-loaded flow creator for batch admission.
 
     Returns:
-        ``True`` when the flow's owner owns the subscription, opted in, and is
-        still an active member of the flow's account.
+        Whether a hosted execution of this flow may use the subscription.
     """
-    flow_owner = getattr(flow, "created_by_user_id", None)
-    flow_account = getattr(flow, "account_id", None)
-    if flow_owner is None or flow_account is None:
+    if getattr(ai_model, "owner_flow_use_user_id", None) is None:
         return False
-    if str(ai_model.account_id) != str(flow_account):
-        return False
-    opted_in = getattr(ai_model, "owner_flow_use_user_id", None)
-    if opted_in is None or str(opted_in) != str(flow_owner):
-        return False
-    if subscription_owner_user_id(db, ai_model) != str(flow_owner):
-        return False
-    user = owner_user if owner_user is not None else crud_user.get(db, id=flow_owner)
     return (
-        user is not None
-        and str(user.id) == str(flow_owner)
-        and bool(user.is_active)
-        and str(user.account_id) == str(flow_account)
+        subscription_flow_denial_reason(db, flow, ai_model, owner_user=owner_user)
+        is None
     )
 
 

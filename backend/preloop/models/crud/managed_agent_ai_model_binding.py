@@ -351,36 +351,112 @@ class CRUDManagedAgentAIModelBinding(CRUDBase[ManagedAgentAIModelBinding]):
             db.flush()
         return row
 
-    def agent_ids_for_user_model(
-        self, db: Session, *, account_id: Any, user_id: Any, model_id: Any
-    ) -> list[uuid.UUID]:
-        """Return the caller's active agents bound to this exact registration.
+    def list_for_user_models(
+        self, db: Session, *, account_id: Any, user_id: Any, model_ids: list[str]
+    ) -> list[ManagedAgentAIModelBinding]:
+        """Load active bindings on the caller's active agents in one query.
 
         Args:
             db: Database session.
             account_id: Calling account.
             user_id: Calling user.
-            model_id: Registration being read.
+            model_ids: Registrations already authorized for reading.
 
         Returns:
-            Agent ids used internally to evaluate gateway authorization.
+            Active binding rows, without loading models or credential secrets.
         """
         from preloop.models import models
 
-        return [
-            row[0]
-            for row in db.query(models.ManagedAgent.id)
-            .join(self.model, self.model.managed_agent_id == models.ManagedAgent.id)
+        if not model_ids:
+            return []
+        return (
+            db.query(self.model)
+            .join(
+                models.ManagedAgent,
+                self.model.managed_agent_id == models.ManagedAgent.id,
+            )
             .filter(
                 self.model.account_id == account_id,
-                self.model.ai_model_id == model_id,
+                self.model.ai_model_id.in_(model_ids),
                 self.model.status != "inactive",
                 models.ManagedAgent.account_id == account_id,
                 models.ManagedAgent.owner_user_id == user_id,
                 models.ManagedAgent.lifecycle_state == "active",
             )
             .all()
+        )
+
+    def subscription_owners_for_models(
+        self, db: Session, *, account_id: Any, ai_models: list[AIModel]
+    ) -> dict[str, set[str]]:
+        """Resolve owners for all requested credential lineages in one query.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the models.
+            ai_models: Subscription models to inspect.
+
+        Returns:
+            Model ids mapped to distinct owners; an empty string denotes an
+            ownerless agent. Siblings sharing a secret have the same owners.
+        """
+        from sqlalchemy import or_
+        from preloop.models import models
+
+        if not ai_models:
+            return {}
+        secret_ids = {
+            model.credentials_secret_id
+            for model in ai_models
+            if model.credentials_secret_id is not None
+        }
+        standalone_ids = [
+            model.id for model in ai_models if model.credentials_secret_id is None
         ]
+        rows = (
+            db.query(
+                AIModel.id,
+                AIModel.credentials_secret_id,
+                models.ManagedAgent.owner_user_id,
+            )
+            .join(self.model, self.model.ai_model_id == AIModel.id)
+            .join(
+                models.ManagedAgent,
+                models.ManagedAgent.id == self.model.managed_agent_id,
+            )
+            .filter(
+                AIModel.account_id == account_id,
+                self.model.account_id == account_id,
+                models.ManagedAgent.account_id == account_id,
+                self.model.status != "inactive",
+                models.ManagedAgent.lifecycle_state == "active",
+                or_(
+                    AIModel.credentials_secret_id.in_(secret_ids),
+                    AIModel.id.in_(standalone_ids),
+                ),
+            )
+            .distinct()
+            .all()
+        )
+        owners: dict[tuple[str, str], set[str]] = {}
+        for model_id, secret_id, owner_id in rows:
+            key = (
+                ("secret", str(secret_id))
+                if secret_id is not None
+                else ("model", str(model_id))
+            )
+            owners.setdefault(key, set()).add(
+                str(owner_id) if owner_id is not None else ""
+            )
+        return {
+            str(model.id): owners.get(
+                ("secret", str(model.credentials_secret_id))
+                if model.credentials_secret_id is not None
+                else ("model", str(model.id)),
+                set(),
+            )
+            for model in ai_models
+        }
 
     def subscription_owner_user_ids(
         self, db: Session, *, account_id: str, ai_model: AIModel
@@ -401,33 +477,9 @@ class CRUDManagedAgentAIModelBinding(CRUDBase[ManagedAgentAIModelBinding]):
             Distinct ``owner_user_id`` strings; ``""`` stands for an agent
             with no recorded owner so callers can treat it as ambiguous.
         """
-        from ..models.managed_agent import ManagedAgent
-
-        query = (
-            db.query(ManagedAgent.owner_user_id)
-            .join(
-                self.model,
-                self.model.managed_agent_id == ManagedAgent.id,
-            )
-            .join(AIModel, AIModel.id == self.model.ai_model_id)
-            .filter(
-                self.model.account_id == account_id,
-                ManagedAgent.account_id == account_id,
-                AIModel.account_id == account_id,
-                self.model.status != "inactive",
-                ManagedAgent.lifecycle_state == "active",
-            )
-        )
-        if ai_model.credentials_secret_id is not None:
-            query = query.filter(
-                AIModel.credentials_secret_id == ai_model.credentials_secret_id
-            )
-        else:
-            query = query.filter(AIModel.id == ai_model.id)
-        return {
-            str(owner_user_id) if owner_user_id is not None else ""
-            for (owner_user_id,) in query.distinct().all()
-        }
+        return self.subscription_owners_for_models(
+            db, account_id=account_id, ai_models=[ai_model]
+        )[str(ai_model.id)]
 
 
 crud_managed_agent_ai_model_binding = CRUDManagedAgentAIModelBinding(

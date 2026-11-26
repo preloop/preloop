@@ -128,3 +128,171 @@ def test_model_rest_reads_and_flow_warning(
     assert not after["config_warnings"]
     detail = client.get(f"/api/v1/ai-models/{model.id}").json()
     assert detail["executor_eligibility"]["hosted"]["eligible"] is (caller == "owner")
+
+
+@pytest.mark.parametrize("owner_state", ["inactive", "other_account"])
+def test_owner_remediation_when_opt_in_already_enabled(
+    db_session: Any, team: dict[str, Any], owner_state: str
+) -> None:
+    """An unavailable owner cannot be repaired by enabling an existing opt-in."""
+    from preloop.models.crud import crud_account
+    from preloop.services.model_executor_eligibility import hosted_model_eligibility
+    from preloop.services.subscription_flow_use import flow_may_use_subscription
+
+    _opt_in(db_session, team)
+    owner, model = team["owner"], team["model"]
+    flow = _flow(db_session, owner.account_id, owner.id, model)
+    if owner_state == "inactive":
+        owner.is_active = False
+    else:
+        account = crud_account.create(
+            db_session, obj_in={"organization_name": "Another organization"}
+        )
+        owner.account_id = account.id
+    db_session.flush()
+    decision = hosted_model_eligibility(db_session, model, flow)
+    assert not decision.eligible
+    assert decision.reason == "subscription_flow_owner_inactive"
+    assert "active member" in decision.message
+    assert not flow_may_use_subscription(db_session, flow, model)
+
+
+def test_catalog_eligibility_query_count_is_bounded(
+    db_session: Any, team: dict[str, Any]
+) -> None:
+    """Additional models, credential lineages and agent slots add no queries."""
+    from sqlalchemy import event
+
+    from preloop.models.crud import crud_ai_model, crud_managed_agent_ai_model_binding
+    from preloop.services.model_executor_eligibility import model_executor_eligibilities
+    from tests.services.test_subscription_owner_flow_use import _agent
+
+    owner = team["owner"]
+    catalog = [team["model"]]
+    for index in range(6):
+        agent = _agent(db_session, owner.account_id, owner.id, f"catalog-{index}")
+        model = crud_ai_model.create_with_account(
+            db_session,
+            account_id=owner.account_id,
+            obj_in={
+                "name": f"Subscription {index}",
+                "provider_name": "openai-codex",
+                "model_identifier": f"model-{index}",
+                "credential_type": "oauth_openai_codex",
+                "credential_payload": {
+                    "access": "placeholder",
+                    "refresh": "placeholder",
+                },
+            },
+        )
+        catalog.append(model)
+        crud_managed_agent_ai_model_binding.replace_for_agent(
+            db_session,
+            account_id=str(owner.account_id),
+            agent_id=str(agent.id),
+            bindings=[
+                {
+                    "config_key": slot,
+                    "gateway_alias": f"alias-{index}-{slot}",
+                    "ai_model_id": str(model.id),
+                }
+                for slot in ("primary", "second-slot")
+            ],
+        )
+    # Match the endpoint's eager-loaded catalog before counting admission reads.
+    catalog = crud_ai_model.get_selectable_for_account(
+        db_session, account_id=owner.account_id
+    )
+    _ = owner.id, owner.account_id, owner.is_active
+    queries: list[str] = []
+
+    def count_query(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        queries.append(statement)
+
+    connection = db_session.connection()
+    event.listen(connection, "before_cursor_execute", count_query)
+    try:
+        model_executor_eligibilities(db_session, catalog[:1], owner)
+        single_count = len(queries)
+        queries.clear()
+        decisions = model_executor_eligibilities(db_session, catalog, owner)
+        assert len(queries) == single_count <= 2
+        assert all(row["interactive_agent"].eligible for row in decisions.values())
+        assert all(
+            row["hosted"].reason == "subscription_flow_opt_in_required"
+            for row in decisions.values()
+        )
+    finally:
+        event.remove(connection, "before_cursor_execute", count_query)
+
+
+@pytest.mark.parametrize(
+    "other_binding", ["none", "other_owner", "ownerless", "inactive", "retired"]
+)
+def test_batch_ownership_matches_gateway_across_credential_siblings(
+    db_session: Any, team: dict[str, Any], other_binding: str
+) -> None:
+    """Hidden sibling owners affect hosted admission, but not exact agent bindings."""
+    from preloop.models.crud import crud_ai_model, crud_managed_agent_ai_model_binding
+    from preloop.services.model_executor_eligibility import (
+        hosted_model_eligibility,
+        model_executor_eligibilities,
+    )
+    from tests.services.test_subscription_owner_flow_use import _agent
+
+    owner, model = team["owner"], team["model"]
+    _opt_in(db_session, team)
+    sibling = crud_ai_model.create_with_account(
+        db_session,
+        account_id=owner.account_id,
+        obj_in={
+            "name": "Sibling subscription",
+            "provider_name": "openai-codex",
+            "model_identifier": "sibling-model",
+            "credentials_secret_id": model.credentials_secret_id,
+            "meta_data": {"gateway": {"enabled": True, "model_alias": "sibling-model"}},
+        },
+    )
+    crud_ai_model.set_owner_flow_use(db_session, db_obj=sibling, user_id=owner.id)
+    if other_binding != "none":
+        other = _agent(db_session, owner.account_id, team["employee"].id, "other-agent")
+        if other_binding == "ownerless":
+            other.owner_user_id = None
+        if other_binding == "retired":
+            other.lifecycle_state = "retired"
+        crud_managed_agent_ai_model_binding.replace_for_agent(
+            db_session,
+            account_id=str(owner.account_id),
+            agent_id=str(other.id),
+            bindings=[
+                {
+                    "config_key": "primary",
+                    "gateway_alias": "sibling-model",
+                    "ai_model_id": sibling.id,
+                    "status": "inactive"
+                    if other_binding == "inactive"
+                    else "gateway_ready",
+                }
+            ],
+        )
+    flow = _flow(db_session, owner.account_id, owner.id, model)
+    # Only the original model is visible; its credential's other owners still count.
+    read = model_executor_eligibilities(db_session, [model], owner)[str(model.id)]
+    expected = other_binding in {"none", "inactive", "retired"}
+    assert read["hosted"].eligible is expected
+    assert read["hosted"] == hosted_model_eligibility(db_session, model, flow)
+    context = _flow_context(db_session, owner, flow, _execution(db_session, flow))
+    assert (
+        str(model.id) in compute_authorized_model_ids(db_session, context, [model])
+    ) is expected
+    assert read["interactive_agent"].eligible
+    assert not model_executor_eligibility(db_session, sibling, owner)[
+        "interactive_agent"
+    ].eligible
