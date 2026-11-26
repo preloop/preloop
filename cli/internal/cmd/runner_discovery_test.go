@@ -90,7 +90,7 @@ func TestRunnerDiscoveryWorkerOptOutAndOffline(t *testing.T) {
 			if offline {
 				return errors.New("offline")
 			}
-			*p = runnerDiscoveryPolicy{Enabled: enabled, Salt: "test-salt"}
+			*p = runnerDiscoveryPolicy{Enabled: enabled, Salt: testDiscoverySalt}
 			return nil
 		},
 		report: func(salt string) error { reports++; return nil },
@@ -336,7 +336,7 @@ func TestRunnerDiscoveryHonorsExtensionDetailOptOut(t *testing.T) {
 						continue
 					}
 					found = true
-					if mode == "default" && (ext.Details == nil || ext.Details.Description != "Review changes carefully") {
+					if mode == "default" && (ext.Details == nil || (ext.Details.Description != "Review changes carefully" && !ext.Details.DescriptionWithheld)) {
 						t.Fatal("missing default details")
 					}
 					if mode != "default" && ext.Details != nil {
@@ -364,5 +364,32 @@ func TestRunnerDiscoveryEnvironmentOptOut(t *testing.T) {
 				t.Fatal("missing disabled status")
 			}
 		})
+	}
+}
+
+func TestRunnerDiscoveryRetryCapRetainsJitter(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	attempts := []time.Time{}
+	for _, fraction := range []float64{0, 1} {
+		s := newRunnerDiscoverySchedule(now, runnerDiscoveryState{Failures: 10}, func() float64 { return fraction })
+		s.completed(now, 24*time.Hour, errors.New("offline"))
+		attempts = append(attempts, s.NextAttempt)
+	}
+	if attempts[0].Equal(attempts[1]) {
+		t.Fatal("fleet retries synchronize at the backoff cap")
+	}
+}
+
+func TestRunnerDiscoveryRejectsMissingSalt(t *testing.T) {
+	t.Setenv(discoveryReportEnv, "")
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	w := runnerDiscoveryWorker{
+		schedule:    newRunnerDiscoverySchedule(now, runnerDiscoveryState{}, func() float64 { return 0 }),
+		fetchPolicy: func(p *runnerDiscoveryPolicy) error { *p = runnerDiscoveryPolicy{Enabled: true}; return nil },
+		report:      func(string) error { t.Fatal("collected without an account privacy salt"); return nil },
+	}
+	w.tick(now.Add(time.Hour), config.RunnerDiscoveryConfig{}, nil)
+	if w.schedule.Failures != 1 {
+		t.Fatal("missing salt should retry without collection")
 	}
 }

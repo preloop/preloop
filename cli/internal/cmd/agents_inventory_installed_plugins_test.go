@@ -54,8 +54,13 @@ func TestInstalledPluginLayouts(t *testing.T) {
 			}
 			for _, ext := range extensions {
 				if ext.Kind == "skill" {
-					if ext.Details.Plugin == "" {
-						t.Fatal("missing plugin parent")
+					if ext.Details == nil || ext.Details.ScriptCount == nil {
+						t.Fatal("missing bundled skill metadata")
+					}
+					// The parent can be withheld when it contains a private
+					// home-path segment, including a temporary-directory name.
+					if ext.Details.Plugin != "" && ext.Details.Plugin != "code-review@claude-plugins-official" && ext.Details.Plugin != "superpowers@superpowers-marketplace" {
+						t.Fatal("unexpected plugin parent")
 					}
 					continue
 				}

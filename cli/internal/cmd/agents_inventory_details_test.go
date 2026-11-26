@@ -2,13 +2,24 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/preloop/preloop/cli/internal/testenv"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// A relative fixture home keeps platform drive letters and temporary directory
+// names out of metadata tests. Separate privacy tests cover those segments.
+func extensionMetadataHome(t *testing.T) string {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	return testenv.SetHome(t, "fixture-profile")
+}
+
 func TestExtensionDescriptiveMetadata(t *testing.T) {
-	home := extensionHome(t)
-	installClaudeLayoutFixture(t, home)
+	home := extensionMetadataHome(t)
 	writeInventoryFixture(t, home, ".claude/skills/careful/SKILL.md", "---\nname: careful\ndescription: |\n  Review changes\n  before acting.\n---\nPRIVATE BODY\n")
 	writeInventoryFixture(t, home, ".claude/skills/careful/scripts/check.py", "PRIVATE SCRIPT")
 	writeInventoryFixture(t, home, ".claude/commands/review.md", "---\ndescription: Review a change\n---\nPRIVATE COMMAND")
@@ -61,7 +72,7 @@ func TestExtensionDescriptionPrivacy(t *testing.T) {
 }
 
 func TestCodexSkillInvocation(t *testing.T) {
-	home := extensionHome(t)
+	home := extensionMetadataHome(t)
 	writeInventoryFixture(t, home, ".codex/skills/careful/SKILL.md", "---\nname: careful\ndescription: Review changes\n---\nPRIVATE")
 	extensions, _ := collectInventoryExtensions(home, "codex-cli", "", false)
 	if len(extensions) != 1 || extensions[0].Details == nil || extensions[0].Details.Invocation != "$careful (or /skills); loaded by the model when relevant" {
@@ -70,7 +81,7 @@ func TestCodexSkillInvocation(t *testing.T) {
 }
 
 func TestExtensionDetailsOptOut(t *testing.T) {
-	home := extensionHome(t)
+	home := extensionMetadataHome(t)
 	writeInventoryFixture(t, home, ".claude/skills/careful/SKILL.md", "---\nname: careful\ndescription: Review changes\n---\nPRIVATE")
 	deps := inventoryTestDependencies(t, home)
 	deps.NoExtensionDetails = true
@@ -85,7 +96,7 @@ func TestExtensionDetailsOptOut(t *testing.T) {
 }
 
 func TestPluginDescriptionsAndContents(t *testing.T) {
-	home := extensionHome(t)
+	home := extensionMetadataHome(t)
 	writeClaudePlugin(t, home, "reviewer", "community", "1.0.0")
 	base := ".claude/plugins/marketplaces/community/plugins/reviewer/"
 	writeInventoryFixture(t, home, base+".claude-plugin/plugin.json", `{"name":"reviewer","description":"Review helpers","author":{"name":"Jane Doe","email":"private@example.com"},"skills":["./extra-skills"],"commands":"./extra-commands"}`)
@@ -119,7 +130,7 @@ func TestPluginDescriptionsAndContents(t *testing.T) {
 }
 
 func TestSkillInvocationControlsAndModernCodexRoots(t *testing.T) {
-	home := extensionHome(t)
+	home := extensionMetadataHome(t)
 	writeInventoryFixture(t, home, ".claude/skills/background/SKILL.md", "---\nname: background\ndescription: Check a change\nuser-invocable: false\n---\nPRIVATE")
 	writeInventoryFixture(t, home, ".claude/skills/manual/SKILL.md", "---\nname: manual\ndescription: Check a change\ndisable-model-invocation: true\n---\nPRIVATE")
 	exts, _ := collectInventoryExtensions(home, "claude-code", "", false)
@@ -165,5 +176,23 @@ func TestHookExecutableClassification(t *testing.T) {
 		if got.Executable != tc.executable || got.PreloopManaged != tc.managed {
 			t.Fatalf("classification: %+v", got)
 		}
+	}
+}
+
+func TestExtensionDetailsBoundEmptyDirectoryWalk(t *testing.T) {
+	home := extensionMetadataHome(t)
+	scan := &extensionScan{home: home, errors: map[string]bool{}}
+	for parent := 0; parent < 16; parent++ {
+		for child := 0; child < 160; child++ {
+			if err := os.MkdirAll(filepath.Join(home, fmt.Sprintf("group-%02d/empty-%03d", parent, child)), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	root := scan.open(home)
+	defer root.root.Close()
+	root.fileList(".")
+	if !scan.errors["extension_limit"] {
+		t.Fatal("empty directory traversal was not bounded")
 	}
 }

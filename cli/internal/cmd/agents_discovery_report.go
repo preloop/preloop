@@ -1,17 +1,10 @@
 package cmd
 
-// Opt-in discovery reporting for `preloop agents discover --report`.
-//
-// Nothing here runs unless the user passes --report or sets
-// PRELOOP_DISCOVERY_REPORT=1. When it does run, the report carries only:
-//   - a workstation fingerprint: HMAC-SHA256 of the machine id, keyed with
-//     the account's discovery salt from the server (the raw id never leaves);
-//   - per agent: its kind, an HMAC of its home-relative config path under the
-//     same salt, the number of MCP servers, and whether it is enrolled;
-//   - the CLI version and the OS family.
-//
-// Never sent: user names, hostnames, clear paths, prompts, keys, env vars,
-// MCP server names, URLs or args.
+// Discovery reporting for manual commands and resident runners. Both use the
+// same read-only collector and privacy controls. Workstation and profile
+// identities are account-salted hashes; the inventory DTOs keep application
+// configuration and credentials out of reports. The reporting guide documents
+// the extension data classes and their opt-outs.
 
 import (
 	"crypto/hmac"

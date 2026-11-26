@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -80,9 +81,10 @@ func (s *runnerDiscoverySchedule) completed(now time.Time, interval time.Duratio
 	s.Result = "failed; retry scheduled"
 	// Persist only a fixed result, never an API response or local path.
 	delay := time.Minute * time.Duration(1<<min(s.Failures-1, 6))
-	delay = time.Duration(float64(delay) * (1 + 0.2*s.random()))
-	if delay > time.Hour {
-		delay = time.Hour
+	if delay >= time.Hour {
+		delay = time.Duration(float64(time.Hour) * (0.8 + 0.2*s.random()))
+	} else {
+		delay = time.Duration(float64(delay) * (1 + 0.2*s.random()))
 	}
 	s.NextAttempt = now.Add(delay)
 }
@@ -192,7 +194,11 @@ func (w *runnerDiscoveryWorker) tick(now time.Time, cfg config.RunnerDiscoveryCo
 	}
 	interval := runnerDiscoveryInterval(cfg.Interval, w.policy.IntervalSeconds)
 	if !now.Before(w.nextPolicy) {
-		if err := w.fetchPolicy(&w.policy); err != nil {
+		err := w.fetchPolicy(&w.policy)
+		if err == nil && w.policy.Enabled && len(w.policy.Salt) < 32 {
+			err = errors.New("discovery privacy salt unavailable")
+		}
+		if err != nil {
 			s.completed(now, interval, err)
 			w.nextPolicy = s.NextAttempt
 			w.policy.Enabled = false

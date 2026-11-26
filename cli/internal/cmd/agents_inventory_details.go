@@ -89,13 +89,19 @@ func (s *extensionScan) detailText(value string) (string, bool) {
 
 func (r *extensionRoot) fileList(base string) []string {
 	files := []string{}
+	visited := 0
 	var walk func(string, int)
 	walk = func(path string, depth int) {
-		if depth > 16 || len(files) >= 1000 {
+		if depth > 16 || len(files) >= 1000 || visited >= 2000 {
 			r.scan.fail("extension_limit")
 			return
 		}
 		for _, entry := range r.dirs(path) {
+			if visited >= 2000 {
+				r.scan.fail("extension_limit")
+				return
+			}
+			visited++
 			name := filepath.Join(path, entry.Name())
 			info, err := r.stat(name)
 			if err != nil {
@@ -259,6 +265,10 @@ func (r *extensionRoot) componentRoots(manifest map[string]json.RawMessage, fiel
 		_ = json.Unmarshal(raw, &paths)
 	}
 	for _, path := range paths {
+		if len(roots) >= inventoryExtensionDirectoryLimit {
+			r.scan.fail("extension_limit")
+			break
+		}
 		if !filepath.IsLocal(path) || strings.Contains(path, "\\") {
 			r.scan.fail("extension_unsafe_path")
 			continue
@@ -383,6 +393,10 @@ func (r *extensionRoot) pluginDetails(path string, manifest map[string]json.RawM
 		}
 	}
 	details.Bundles.MCPServers = len(serverNames)
+	if details.Bundles.Hooks > 10000 || details.Bundles.MCPServers > 10000 {
+		r.scan.fail("extension_limit")
+		details.Bundles = nil
+	}
 	ext.Details = details
 	if r.scan.localDisplay {
 		body, _ := json.MarshalIndent(manifest, "", "  ")
