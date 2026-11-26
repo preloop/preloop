@@ -15,6 +15,8 @@ import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
 import { userHref } from '../../utils/user-href';
 import {
   deviceLabel,
+  refreshFleetIdentities,
+  enrollmentChip,
   fleetFindingTitle,
   fleetAccess,
   fleetHref,
@@ -664,6 +666,14 @@ export class DeviceFleetView extends LitElement {
           : null,
       ]);
       if (controller.signal.aborted) return;
+      await refreshFleetIdentities(
+        device ? [device] : page?.items || [],
+        page?.unassigned_agents || [],
+        controller.signal
+      ).catch(() => {
+        /* Historical evidence remains readable if current state is unavailable. */
+      });
+      if (controller.signal.aborted) return;
       this.page = page;
       this.device = device;
       this.rules = rules?.items || [];
@@ -915,7 +925,7 @@ export class DeviceFleetView extends LitElement {
       </div>`;
     return html`<div class="strip" role="region" aria-label="Fleet summary">
       ${stat(counts.devices, counts.devices === 1 ? 'Device' : 'Devices', 'stat-devices')}
-      ${stat(counts.governed, 'Governed agents', 'stat-governed')}
+      ${stat(counts.governed, 'Reported onboarded', 'stat-governed')}
       ${stat(counts.ungoverned, 'Ungoverned agents', 'stat-ungoverned')}
       ${stat(counts.runnersOffline, 'Runners offline', 'stat-runners-offline')}
       ${stat(counts.openFindings, 'Open findings', 'stat-findings')}
@@ -935,7 +945,7 @@ export class DeviceFleetView extends LitElement {
     if (!device.agents_onboarded && !device.agents_not_onboarded)
       return html`<span class="meta">None reported</span>`;
     return html`<div class="inline">
-      <span>${device.agents_onboarded} governed</span>
+      <span>${device.agents_onboarded} reported onboarded</span>
       ${
         device.agents_not_onboarded
           ? html`<sl-badge class="chip" variant="warning" pill
@@ -1045,8 +1055,8 @@ export class DeviceFleetView extends LitElement {
             @change=${(e: Event) => (this.governance = (e.target as HTMLSelectElement).value)}
           >
             <option value="">Any agents</option>
-            <option value="governed">With governed agents</option>
-            <option value="ungoverned">With ungoverned agents</option>
+            <option value="governed">With reported onboarded agents</option>
+            <option value="ungoverned">With reported ungoverned agents</option>
             <option value="none">No agents reported</option>
           </select>
         </label>
@@ -1311,14 +1321,19 @@ export class DeviceFleetView extends LitElement {
         }
         <span class="meta"
           >${agent.kind}${agent.version ? ` ${agent.version}` : ''} · last seen
-          ${this.timestamp(agent.last_seen_at)}</span
+          ${this.timestamp(agent.last_seen_at)}
+          ${agent.managed_agent_id ? html` · Last reported: ${agent.status}` : nothing}</span
         >
       </div>
       ${
         agent.managed_agent_id
-          ? html`<sl-badge class="chip" variant="success" pill
-              >Governed</sl-badge
-            >`
+          ? agent.lifecycle_state === 'active'
+            ? html`<sl-badge class="chip" variant="success" pill
+                >Enrolled</sl-badge
+              >`
+            : html`<sl-badge class="chip" variant="neutral" pill
+                >${enrollmentChip(agent).label}</sl-badge
+              >`
           : html`<span class="inline">
               <sl-badge class="chip" variant="warning" pill
                 >Not onboarded</sl-badge
@@ -1434,7 +1449,7 @@ export class DeviceFleetView extends LitElement {
               }
               ${
                 governed.length
-                  ? html`<p class="subhead">Governed</p>
+                  ? html`<p class="subhead">Linked agents</p>
                       <ul class="rows" data-testid="device-governed">
                         ${governed.map((agent) => this.renderAgentRow(agent))}
                       </ul>`
@@ -1518,6 +1533,20 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
               </p>`
         }
       </sl-card>
+      <section aria-label="Device evidence">
+        <h3>Device evidence</h3>
+        ${device.sources.map(
+          (source) =>
+            html`<div class="meta">
+              Observed by ${source.observer_name || 'Unknown observer'}
+              <details>
+                <summary>Observer ID</summary>
+                <code>${source.source_ref || 'Unavailable'}</code>
+              </details>
+              ${source.received_at ? html`Received ${this.timestamp(String(source.received_at))}` : nothing}
+            </div>`
+        )}
+      </section>
       <details>
         <summary>Raw evidence (${device.sources.length} sources)</summary>
         <pre>${JSON.stringify(device.sources, null, 2)}</pre>

@@ -599,19 +599,25 @@ DENY if:
             ${Math.round(this._aiConfidenceThreshold * 100)}%
           </label>
           <sl-range
+            aria-label="AI confidence threshold"
             .value=${this._aiConfidenceThreshold * 100}
             @sl-input=${(e: any) =>
-              (this._aiConfidenceThreshold =
-                (parseFloat(e.target.value) || 80) / 100)}
+              (this._aiConfidenceThreshold = Number(e.target.value) / 100)}
             min="0"
             max="100"
             step="5"
           ></sl-range>
           <div class="threshold-display">
-            <span>0% (always escalate)</span>
-            <span>100% (very confident)</span>
+            <span>0% (any confidence)</span>
+            <span>100% (only full confidence)</span>
           </div>
         </div>
+
+        <p class="threshold-explanation">
+          At or above ${Math.round(this._aiConfidenceThreshold * 100)}%, the
+          AI's approve or deny decision is applied. Below this threshold, or
+          when the AI is uncertain, Preloop uses the selected fallback below.
+        </p>
 
         <div class="form-field">
           <label class="form-label">When Uncertain</label>

@@ -30,6 +30,8 @@ class RegistryEntryResponse(BaseModel):
     tool_source: str
     mcp_server_id: UUID | None
     server_label: str | None
+    server_name: str | None = None
+    first_seen_agent_name: str | None = None
     tool_name: str
     state: Literal["pending", "approved", "denied"]
     first_seen_at: datetime
@@ -58,11 +60,20 @@ def list_registry(
     db: Session = Depends(get_db_session),
 ) -> list[RegistryEntryResponse]:
     """List only the current account's observed execution routes."""
+    entries = tool_registry.list_entries(
+        db, account_id=account.id, state=state, page=page, page_size=page_size
+    )
+    servers, agents = tool_registry.display_names(
+        db, account_id=account.id, entries=entries
+    )
     return [
-        RegistryEntryResponse.model_validate(entry)
-        for entry in tool_registry.list_entries(
-            db, account_id=account.id, state=state, page=page, page_size=page_size
+        RegistryEntryResponse.model_validate(entry).model_copy(
+            update={
+                "server_name": servers.get(entry.mcp_server_id),
+                "first_seen_agent_name": agents.get(entry.first_seen_agent_id),
+            }
         )
+        for entry in entries
     ]
 
 

@@ -16,6 +16,7 @@ export interface FleetAgent {
   kind: string;
   status: string;
   managed_agent_id: string | null;
+  lifecycle_state?: string | null;
   owner_user_id?: string | null;
   name?: string | null;
   version?: string | null;
@@ -445,4 +446,74 @@ export function osLabel(os: string | null): string {
     win32: 'Windows',
   };
   return known[os.toLowerCase()] || os;
+}
+
+/** Read the present registry without treating an old report as enrollment. */
+export async function refreshFleetIdentities(
+  devices: DeviceFleetDevice[],
+  unassigned: FleetAgent[],
+  signal?: AbortSignal
+): Promise<void> {
+  const agents = [...devices.flatMap((d) => d.agents), ...unassigned];
+  const sources = devices.flatMap((d) => d.sources || []);
+  const agentIds = [
+    ...new Set(agents.map((a) => a.managed_agent_id).filter(Boolean)),
+  ];
+  const observerIds = [
+    ...new Set(
+      sources.map((s) => s.source_ref).filter((id) => typeof id === 'string')
+    ),
+  ];
+  const identities = new Map<
+    string,
+    { name: string | null; lifecycle_state: string | null }
+  >();
+  const observers: Record<string, string> = {};
+  for (
+    let offset = 0;
+    offset < Math.max(agentIds.length, observerIds.length);
+    offset += 1000
+  ) {
+    const response = await fetchWithAuth(
+      `${REST_API_PREFIX}/fleet/identities`,
+      {
+        method: 'POST',
+        signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_ids: agentIds.slice(offset, offset + 1000),
+          observer_ids: observerIds.slice(offset, offset + 1000),
+        }),
+      }
+    );
+    if (!response.ok)
+      throw new Error('Current enrollment could not be loaded.');
+    const data = await response.json();
+    for (const agent of data.agents || []) identities.set(agent.id, agent);
+    Object.assign(observers, data.observers || {});
+  }
+  for (const agent of agents) {
+    if (!agent.managed_agent_id) continue;
+    const current = identities.get(agent.managed_agent_id);
+    agent.lifecycle_state = current?.lifecycle_state ?? null;
+    agent.name = current?.name || agent.name;
+  }
+  for (const source of sources)
+    source.observer_name = observers[String(source.source_ref)] || null;
+}
+
+export function enrollmentChip(agent: FleetAgent): {
+  label: string;
+  variant: 'success' | 'neutral';
+} {
+  switch (agent.lifecycle_state) {
+    case 'active':
+      return { label: 'Enrolled', variant: 'success' };
+    case 'decommissioned':
+      return { label: 'Decommissioned', variant: 'neutral' };
+    case 'suspended':
+      return { label: 'Paused', variant: 'neutral' };
+    default:
+      return { label: 'Current enrollment unknown', variant: 'neutral' };
+  }
 }

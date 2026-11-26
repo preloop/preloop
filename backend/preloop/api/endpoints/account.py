@@ -182,6 +182,9 @@ from preloop.utils.redaction import redact_dict
 from preloop.schemas.gateway_usage import GatewayUsageBreakdown
 from preloop.api.heavy_routes import heavy_route
 
+from preloop.schemas.approval_readiness import ApprovalReadiness
+from preloop.services.approval_readiness import describe_readiness, native_workflow
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -5265,3 +5268,51 @@ def acknowledge_weekly_exception(
     ):
         raise HTTPException(status_code=404, detail="Delivered exception not found")
     return {"acknowledged": True}
+
+
+@router.get("/account/approval-readiness", response_model=ApprovalReadiness)
+@require_permission("view_policies")
+def get_native_approval_readiness(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    agent_id: UUID | None = None,
+    workflow_id: UUID | None = None,
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ApprovalReadiness:
+    """Preview native approval routing without creating or changing a workflow."""
+    agent = None
+    if agent_id:
+        agent = crud_managed_agent.get_for_account(
+            db, account_id=str(account.id), agent_id=str(agent_id)
+        )
+        from preloop.plugins.account_hooks import filter_viewable, VISIBLE_MANAGED_AGENT
+
+        if agent is None or not filter_viewable(
+            db, current_user, VISIBLE_MANAGED_AGENT, [agent]
+        ):
+            raise HTTPException(404, "Agent not found")
+    result = describe_readiness(
+        db,
+        account=account,
+        workflow=native_workflow(
+            db, account=account, agent_id=agent_id, workflow_id=workflow_id
+        ),
+        agent_id=agent_id,
+        owner_id=agent.owner_user_id if agent else None,
+    )
+    defaults = get_account_governance_defaults(account.meta_data or {})
+    config = (
+        get_subject_governance(
+            account.meta_data or {},
+            subject_type=SUBJECT_TYPE_MANAGED_AGENTS,
+            subject_id=str(agent_id),
+        )
+        if agent_id
+        else {}
+    )
+    result.enforced = (
+        config.get("native_tool_approvals")
+        or defaults.get("native_tool_approvals")
+        or "enforce"
+    ) != "off"
+    return result
