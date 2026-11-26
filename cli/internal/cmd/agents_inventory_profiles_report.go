@@ -56,7 +56,7 @@ type inventoryReportEvidence struct {
 
 func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEnvelope, ended time.Time) discoveryReportRequest {
 	report := discoveryReportRequest{WorkstationFingerprint: workstationFingerprint(salt, machineID), OS: discoveryOSFamily(), Candidates: []discoveryReportCandidate{}}
-	evidence := inventoryReportEvidence{SchemaVersion: 3, ObservationID: observationID, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: ended, ScanScope: []string{"user_config"}, Completeness: scan.Completeness, Errors: []string{}, Profiles: scan.Profiles, Applications: []inventoryReportApplication{}}
+	evidence := inventoryReportEvidence{SchemaVersion: 4, ObservationID: observationID, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: ended, ScanScope: []string{"user_config"}, Completeness: scan.Completeness, Errors: []string{}, Profiles: scan.Profiles, Applications: []inventoryReportApplication{}}
 	evidence.ExtensionErrors = inventoryExtensionErrors(scan)
 	evidence.ExtensionCompleteness = "complete"
 	if len(evidence.ExtensionErrors) > 0 {
@@ -141,7 +141,9 @@ func sendAllUsersInventory(w io.Writer, deviceRefs ...string) error {
 	id[6] = (id[6] & 15) | 64
 	id[8] = (id[8] & 63) | 128
 	observationID := fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
-	scan := collectAllUsersInventory(inventoryProbes, inventoryProfiles, salt, workstationFingerprint(salt, strings.TrimSpace(machineID)))
+	deps := inventoryProbes
+	deps.NoExtensionDetails = inventoryNoExtensionDetails
+	scan := collectAllUsersInventory(deps, inventoryProfiles, salt, workstationFingerprint(salt, strings.TrimSpace(machineID)))
 	report := buildAllUsersReport(salt, machineID, observationID, scan, inventoryProbes.Now().UTC())
 	appendManagedConfigurationEvidence(&report, salt, inventoryProbes.GOOS, readManagedInventoryConfig)
 	report.Evidence.EndedAt = inventoryProbes.Now().UTC()

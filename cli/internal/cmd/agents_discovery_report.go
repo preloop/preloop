@@ -78,6 +78,7 @@ type discoveryReportResponse struct {
 	Created        int  `json:"created"`
 	Updated        int  `json:"updated"`
 	LegacyEvidence bool `json:"-"`
+	DetailsOmitted bool `json:"-"`
 }
 
 // discoveryReportingRequested reports whether the user opted in, by flag or
@@ -192,6 +193,7 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	home, _ := os.UserHomeDir()
 	report := buildDiscoveryReport(salt, machineID, home, agents)
 	deps := inventoryProbes
+	deps.NoExtensionDetails = inventoryNoExtensionDetails
 	deps.ExtensionProjects = projects
 	if err := addDiscoveryExtensions(&report, salt, home, deps); err != nil {
 		return err
@@ -200,7 +202,13 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	if err := postInventoryReport(client, report, &resp); err != nil {
 		return fmt.Errorf("failed to send discovery report: %w", err)
 	}
-	disclosure := "inventory metadata, extension identifiers and hashes"
+	disclosure := "inventory metadata, extension identifiers, descriptions and hashes"
+	if resp.DetailsOmitted || inventoryNoExtensionDetails {
+		disclosure = "inventory metadata, extension identifiers and hashes"
+	}
+	if resp.DetailsOmitted && !resp.LegacyEvidence {
+		fmt.Fprintln(w, "Server accepted inventory without extension details; update the server to receive descriptions.")
+	}
 	if resp.LegacyEvidence {
 		fmt.Fprintln(w, legacyInventoryNotice)
 		disclosure = "inventory metadata"

@@ -37,11 +37,17 @@ type inventoryExtension struct {
 	IDHashed       bool   `json:"id_hashed"`
 	// PolicyID is the identifier an inventory report stores. Listings keep
 	// the clear name in ID and do not print this field.
-	PolicyID string `json:"-"`
+	PolicyID string                     `json:"-"`
+	Details  *inventoryExtensionDetails `json:"details,omitempty"`
+	Local    *extensionLocalDetail      `json:"-"`
+	Bundled  []inventoryExtension       `json:"-"`
 }
 
 type extensionScan struct {
 	home, salt   string
+	agent        string
+	hookDetails  map[string][]extensionHookMatcher
+	hookLocal    map[string][]string
 	localDisplay bool
 	extensions   []inventoryExtension
 	errors       map[string]bool
@@ -292,7 +298,8 @@ func (r *extensionRoot) localFiles(base, scope, project string, skills bool) {
 			}
 			hash, status = singleFileHash(r.root, path)
 		}
-		r.scan.add(inventoryExtension{Kind: kind, ID: id, SourceKind: "local", Scope: scope, ProjectRefHash: project, ContentHash: hash, HashStatus: status})
+		details, local := r.markdownDetails(path, id, skills, "")
+		r.scan.add(inventoryExtension{Details: details, Local: local, Kind: kind, ID: id, SourceKind: "local", Scope: scope, ProjectRefHash: project, ContentHash: hash, HashStatus: status})
 	}
 }
 
@@ -323,8 +330,11 @@ func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string) {
 			continue
 		}
 		hashes := []string{}
+		matchers := []extensionHookMatcher{}
+		commands := []string{}
 		for _, group := range groups {
 			var obj struct {
+				Matcher string `json:"matcher"`
 				Command string `json:"command"`
 				Hooks   []struct {
 					Command string `json:"command"`
@@ -334,13 +344,23 @@ func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string) {
 				r.scan.fail("extension_malformed")
 				continue
 			}
+			matcher, hidden := r.scan.detailText(obj.Matcher)
+			item := extensionHookMatcher{Matcher: matcher, MatcherWithheld: hidden, Commands: []extensionHookCommand{}}
 			if obj.Command != "" {
+				item.Commands = append(item.Commands, r.scan.hookCommand(obj.Command))
+				commands = append(commands, obj.Command)
 				hashes = append(hashes, extensionHash([]byte(obj.Command)))
 			}
 			for _, hook := range obj.Hooks {
 				if hook.Command != "" {
+					item.Commands = append(item.Commands, r.scan.hookCommand(hook.Command))
+					commands = append(commands, hook.Command)
 					hashes = append(hashes, extensionHash([]byte(hook.Command)))
 				}
+			}
+			item.Count = len(item.Commands)
+			if item.Count > 0 {
+				matchers = append(matchers, item)
 			}
 		}
 		if len(hashes) == 0 {
@@ -353,6 +373,8 @@ func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string) {
 		key := scope + "\x00" + project + "\x00" + event
 		if r.scan.hookHashes == nil {
 			r.scan.hookHashes = map[string][]string{}
+			r.scan.hookDetails = map[string][]extensionHookMatcher{}
+			r.scan.hookLocal = map[string][]string{}
 		}
 		hashes = append(r.scan.hookHashes[key], hashes...)
 		if len(hashes) > 10000 {
@@ -360,8 +382,14 @@ func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string) {
 			continue
 		}
 		r.scan.hookHashes[key] = hashes
+		r.scan.hookDetails[key] = append(r.scan.hookDetails[key], matchers...)
+		var local *extensionLocalDetail
+		if r.scan.localDisplay {
+			r.scan.hookLocal[key] = append(r.scan.hookLocal[key], commands...)
+			local = &extensionLocalDetail{Commands: r.scan.hookLocal[key]}
+		}
 		sort.Strings(hashes)
-		r.scan.add(inventoryExtension{Kind: "hook", ID: event, SourceKind: "local", Scope: scope, ProjectRefHash: project, Event: event, Count: len(hashes), ContentHash: extensionHash([]byte(strings.Join(hashes, "\n"))), HashStatus: contentHashOK})
+		r.scan.add(inventoryExtension{Details: &inventoryExtensionDetails{Invocation: "Runs on " + event, HookMatchers: r.scan.hookDetails[key]}, Local: local, Kind: "hook", ID: event, SourceKind: "local", Scope: scope, ProjectRefHash: project, Event: event, Count: len(hashes), ContentHash: extensionHash([]byte(strings.Join(hashes, "\n"))), HashStatus: contentHashOK})
 	}
 }
 
@@ -482,6 +510,7 @@ func (r *extensionRoot) plugin(id, marketplace string, record map[string]json.Ra
 				ext.Version = version
 			}
 			ext.ContentHash, ext.HashStatus = treeHash(r.root, path)
+			r.pluginDetails(path, manifest, &ext)
 		}
 	}
 	if ext.HashStatus == "" {
@@ -508,7 +537,7 @@ func collectDisplayExtensions(home, agent, salt string, profileOnly bool, projec
 }
 
 func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool, explicitProjects ...string) ([]inventoryExtension, []string) {
-	scan := &extensionScan{home: home, salt: salt, localDisplay: localDisplay, extensions: []inventoryExtension{}, errors: map[string]bool{}}
+	scan := &extensionScan{home: home, salt: salt, agent: agent, localDisplay: localDisplay, extensions: []inventoryExtension{}, errors: map[string]bool{}}
 	if agent != "claude-code" && agent != "codex-cli" {
 		return scan.extensions, nil
 	}
@@ -640,6 +669,15 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool,
 				raw, _ := json.Marshal(hooks)
 				root.hooks(raw, "user", "")
 			}
+		}
+	}
+	for _, plugin := range append([]inventoryExtension{}, scan.extensions...) {
+		for _, bundled := range plugin.Bundled {
+			bundled.Scope = plugin.Scope
+			bundled.ProjectRefHash = plugin.ProjectRefHash
+			bundled.Enabled = plugin.Enabled
+			bundled.SourceKind = plugin.SourceKind
+			scan.add(bundled)
 		}
 	}
 	sort.Slice(scan.extensions, func(i, j int) bool {

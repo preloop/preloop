@@ -504,10 +504,10 @@ func TestInventoryExtensionsCheckVersionAndContentEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	hash := "sha256:" + strings.Repeat("ab", 32)
-	path = writePolicyFile(t, []map[string]any{policyEntry("claude_code", "skill", reportExtensionID(t, skillHome, "deploy-notes"), "approved", map[string]any{"content_hashes": []string{hash}})})
+	path = writePolicyFile(t, []map[string]any{policyEntry("claude_code", "skill", "deploy-notes", "approved", map[string]any{"content_hashes": []string{hash}})})
 	stdout, _, err = runExtensions(t, "check", "--policy-file", path, "--json", "--agent", "claude-code")
 	finding = findExtensionFinding(decodeExtensionCheck(t, stdout), "deploy-notes")
-	if ProcessExitCode(err) != 0 || finding.State != "unknown" || finding.Reason != "content_unverified" {
+	if ProcessExitCode(err) != 2 || finding.State != "unknown" || finding.Reason != "content_unverified" {
 		t.Fatalf("content exit=%d state=%s reason=%s", ProcessExitCode(err), finding.State, finding.Reason)
 	}
 }

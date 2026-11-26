@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from uuid import UUID
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -75,6 +77,7 @@ class DiscoveredExtension(Base):
     content_hash_status: Mapped[str] = mapped_column(String(16), server_default="ok")
     event: Mapped[str | None] = mapped_column(String(32))
     hook_count: Mapped[int | None]
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     id_hashed: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     present: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

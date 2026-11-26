@@ -24,7 +24,7 @@ func TestExtensionInventoryPrivacyAndClaudeLayouts(t *testing.T) {
 	secret := "planted-secret-must-stay-on-device"
 	writeClaudePluginRecord(t, home, "reviewer", `{"name":"reviewer","marketplace":"claude-plugins-official","version":"1.0.0","installPath":".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer","token":"`+secret+`"}`)
 	writeInventoryFixture(t, home, ".claude/plugins/known_marketplaces.json", `{"claude-plugins-official":{"source":{"source":"git","url":"https://example.com/private-repository?token=`+secret+`"}}}`)
-	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer/.claude-plugin/plugin.json", `{"version":"1.4.0","description":"`+secret+`","env":{"TOKEN":"`+secret+`"}}`)
+	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer/.claude-plugin/plugin.json", `{"version":"1.4.0","description":"Review installed extensions","env":{"TOKEN":"`+secret+`"}}`)
 	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer/skills/bundled/SKILL.md", secret)
 	writeInventoryFixture(t, home, ".claude/skills/fixture-person-notes/SKILL.md", secret)
 	writeInventoryFixture(t, home, ".claude/commands/summarize.md", secret)
@@ -38,12 +38,14 @@ func TestExtensionInventoryPrivacyAndClaudeLayouts(t *testing.T) {
 			app = item
 		}
 	}
-	if len(app.Extensions) != 4 || app.Completeness != "complete" {
+	if len(app.Extensions) != 5 || app.Completeness != "complete" {
 		t.Fatalf("extensions=%+v completeness=%s", app.Extensions, app.Completeness)
 	}
 	found := map[string]inventoryExtension{}
 	for _, ext := range app.Extensions {
-		found[ext.Kind] = ext
+		if ext.Details == nil || ext.Details.Plugin == "" {
+			found[ext.Kind] = ext
+		}
 	}
 	if found["plugin"].Version != "1.4.0" || found["plugin"].SourceKind != "official_marketplace" || found["plugin"].Enabled != "true" || found["plugin"].IDHashed {
 		t.Fatalf("plugin %+v", found["plugin"])
@@ -62,7 +64,7 @@ func TestExtensionInventoryPrivacyAndClaudeLayouts(t *testing.T) {
 		Inventory inventoryEnvelope
 		Report    discoveryReportRequest
 	}{scan, report})
-	for _, needle := range []string{secret, home, "fixture-person", "https://example.com", "echo ", "exit 0", "bundled"} {
+	for _, needle := range []string{secret, home, "fixture-person", "https://example.com", "echo ", "exit 0"} {
 		if bytes.Contains(raw, []byte(needle)) {
 			t.Errorf("private value escaped: %q", needle)
 		}
@@ -329,7 +331,7 @@ func TestExtensionReportReasonsAndOlderServer(t *testing.T) {
 			fmt.Fprint(w, `{"detail":[{"loc":["body","evidence","extension_errors"],"type":"extra_forbidden"}]}`)
 			return
 		}
-		if len(received.Evidence.ExtensionErrors) != 0 || received.Evidence.SchemaVersion != 3 {
+		if len(received.Evidence.ExtensionErrors) != 0 || received.Evidence.SchemaVersion != 4 {
 			t.Error("fallback lost inventory or retained unsupported reasons")
 		}
 		fmt.Fprint(w, `{"received":1}`)

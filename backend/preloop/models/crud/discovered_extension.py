@@ -69,7 +69,6 @@ class CRUDDiscoveredExtension:
                     observation.workstation_fingerprint == workstation_fingerprint,
                     observation.evidence.contains(
                         {
-                            "schema_version": 3,
                             "applications": [
                                 {
                                     "agent_kind": agent_kind,
@@ -138,6 +137,11 @@ class CRUDDiscoveredExtension:
                         "id_hashed",
                     ):
                         setattr(row, field, getattr(extension, field))
+                    row.details = (
+                        extension.details.model_dump(mode="json")
+                        if extension.details is not None
+                        else None
+                    )
                     row.hook_count = extension.count
                     row.present = True
                     row.last_seen_at = received
@@ -306,6 +310,16 @@ class CRUDDiscoveredExtension:
             buckets = self._content_hashes(
                 db, account_id=account_id, keys=[tuple(r[:3]) for r in page]
             )
+            # The newest matching observation supplies descriptive metadata;
+            # device rows retain each device's exact metadata independently.
+            detail_rows = db.execute(
+                select(*columns, model.details)
+                .outerjoin(approval, approval_join())
+                .where(*filters, tuple_(*columns).in_([tuple(r[:3]) for r in page]))
+                .distinct(*columns)
+                .order_by(*columns, model.last_seen_at.desc(), model.id.desc())
+            )
+            details = {tuple(r[:3]): r[3] for r in detail_rows}
             items = []
             for r in page:
                 pinned = (
@@ -315,6 +329,7 @@ class CRUDDiscoveredExtension:
                 )
                 items.append(
                     dict(
+                        details=details.get(tuple(r[:3])),
                         agent_kind=r[0],
                         extension_kind=r[1],
                         extension_id=r[2],
