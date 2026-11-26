@@ -313,7 +313,7 @@ variant_wrong_owner() {
 }
 JSON
   run "$svc" 'id -u; stat -c "%u %a %n" ~/.claude ~/.claude/settings.json'
-  run "$svc" "preloop agents onboard 'Claude Code' --yes"
+  run_tty "$svc" '' "preloop agents onboard 'Claude Code' --yes"
   expect_status 3
   expect "permission denied (owned by uid 0, running as uid 10001)"
   refute "✓ Onboarded"
@@ -341,7 +341,7 @@ JSON
 variant_no_login() {
   local svc=agent-no-login
   begin no-login "read-only settings and no Claude login anywhere"
-  run "$svc" "preloop agents onboard 'Claude Code' --yes"
+  run_tty "$svc" '' "preloop agents onboard 'Claude Code' --yes"
   expect_status 3
   host "cp <complete result from the sandbox> state/no-login/claude/settings.json"
   compose exec -T "$svc" bash -c 'cat "$(ls -d ~/.preloop/manual-setup/* | grep -v -- -offboard | head -1)/settings.json"' > "$OUT/.no-login.json"

@@ -137,7 +137,9 @@ func TestRunAgentsInstallPluginClaudeCodeBuildsSourceBeforeGlobalInstall(t *test
 	t.Setenv("PRELOOP_TEST_CLAUDE_PLUGIN_ENTRY", entry)
 	t.Setenv("PRELOOP_TEST_CLAUDE_PLUGIN_DIST", dist)
 	npmPath := filepath.Join(npmDir, "npm")
+	t.Setenv("PRELOOP_TEST_NPM_PREFIX", t.TempDir())
 	npmScript := `#!/bin/sh
+if [ "$*" = "prefix -g" ]; then printf '%s\n' "$PRELOOP_TEST_NPM_PREFIX"; exit 0; fi
 printf '%s\n' "$*" >> "$PRELOOP_TEST_NPM_INVOCATIONS"
 if [ "$1" = "run" ] && [ "$2" = "build" ]; then
   /bin/mkdir -p "$PRELOOP_TEST_CLAUDE_PLUGIN_DIST"

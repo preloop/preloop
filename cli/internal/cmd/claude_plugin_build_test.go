@@ -18,10 +18,11 @@ func writeFakeNpm(t *testing.T, dir, message string, exitCode int) string {
 	t.Helper()
 	path := filepath.Join(dir, "npm")
 	code := strconv.Itoa(exitCode)
-	body := "#!/bin/sh\necho \"" + message + "\"\nexit " + code + "\n"
+	t.Setenv("PRELOOP_TEST_NPM_PREFIX", t.TempDir())
+	body := "#!/bin/sh\nif [ \"$*\" = 'prefix -g' ]; then printf '%s\\n' \"$PRELOOP_TEST_NPM_PREFIX\"; exit 0; fi\necho \"" + message + "\"\nexit " + code + "\n"
 	if runtime.GOOS == "windows" {
 		path += ".bat"
-		body = "@echo off\r\necho " + message + "\r\nexit /b " + code + "\r\n"
+		body = "@echo off\r\nif \"%*\" == \"prefix -g\" (\r\necho %PRELOOP_TEST_NPM_PREFIX%\r\nexit /b 0\r\n)\r\necho " + message + "\r\nexit /b " + code + "\r\n"
 	}
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)

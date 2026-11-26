@@ -28,6 +28,12 @@ PRELOOP_DISCOVERY_REPORT=1 preloop agents discover --json --no-onboard-prompt
 Without one of them nothing about the scan leaves the machine. With `--json`
 the report confirmation goes to stderr so stdout stays valid JSON.
 
+With closed or non-terminal stdin, discovery never offers or performs onboarding,
+including with `--report`, `--yes` or `PRELOOP_CONFIRM=1`. Text output explains
+that onboarding was skipped and directs you to run `preloop agents onboard`
+from a terminal. JSON and inventory output retain their machine-readable format.
+Use `--no-onboard-prompt` to suppress onboarding in an interactive terminal too.
+
 ## Device-scoped token for scheduled runs
 
 Reporting needs the `report_discovery` permission. Owner and admin roles have
@@ -530,7 +536,10 @@ is not `approved` returns 422, a missing approval or a pin of another approval
 content_hash, version, note, pinned_by_user_id, pinned_by, pinned_at}]`.
 
 In the console, the Agents page's **Extensions** tab lists distinct extensions
-with device counts and versions seen. Device detail shows per-profile inventory,
+with device counts and versions seen. A managed agent's detail page has an
+**Extensions** section with the same list filtered to that agent's kind (for
+example `claude_code`) across the account, not to one device, and the count in
+its heading. Device detail shows per-profile inventory,
 source/project hash prefixes, scope and enabled state. Both views filter by
 effective state (including **Content changed** and **Content unverified**) and
 source. A pinned approval shows **Pinned (n)**; **Content hashes** expands the

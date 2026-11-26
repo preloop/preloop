@@ -130,6 +130,7 @@ import { consoleDialogStyles } from '../../styles/console-dialog';
 import '../../components/capability-extension';
 import '../../components/desktop-view';
 import '../../components/desktop-enable';
+import '../../components/extension-inventory';
 import { hasPermission } from '../../permissions';
 import {
   type DesktopEndpoint,
@@ -186,6 +187,12 @@ export class AgentDetailView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
   @property({ type: String })
   agentId = '';
+
+  @state()
+  private extensionsOpened = false;
+
+  @state()
+  private extensionCount: { count: number; more: boolean } | null = null;
 
   @state()
   private agent: ManagedAgentSummary | null = null;
@@ -848,6 +855,8 @@ export class AgentDetailView extends LitElement {
       this.associatedFlowsLoaded = false;
       this.associatedFlowsError = null;
       this.associatedFlows = [];
+      this.extensionCount = null;
+      this.extensionsOpened = false;
       this.loading = true;
       void this.loadData();
     }
@@ -3986,6 +3995,52 @@ export class AgentDetailView extends LitElement {
     `;
   }
 
+  /**
+   * Render extensions reported for this agent's kind.
+   *
+   * The managed agent is not linked to a reporting device, so rows are
+   * scoped to the agent kind across the account, and the caption says so.
+   *
+   * Returns:
+   *   TemplateResult | typeof nothing: The section, or nothing without a kind.
+   */
+  private renderExtensions(): TemplateResult | typeof nothing {
+    const kind =
+      this.agent?.agent_kind || this.agent?.session_source_type || '';
+    if (!kind) return nothing;
+    const count = this.extensionCount;
+    return html`<details
+      class="agent-settings"
+      data-testid="agent-extensions"
+      @toggle=${(event: Event) => {
+        if ((event.currentTarget as HTMLDetailsElement).open)
+          this.extensionsOpened = true;
+      }}
+    >
+      <summary>
+        Extensions${count ? ` (${count.count}${count.more ? '+' : ''})` : ''}
+      </summary>
+      <p data-testid="agent-extensions-caption">
+        Extensions reported for ${kind} agents in this account.
+        <a href="/console/agents">Open the account inventory</a> (Agents page,
+        Extensions tab).
+      </p>
+      ${
+        this.extensionsOpened
+          ? html`<extension-inventory
+              .agentKind=${kind}
+              emptyText=${`No device has reported extensions for ${kind} agents. Run preloop agents discover --report --project . on the device.`}
+              @extensions-loaded=${(
+                event: CustomEvent<{ count: number; more: boolean }>
+              ) => {
+                this.extensionCount = event.detail;
+              }}
+            ></extension-inventory>`
+          : nothing
+      }
+    </details>`;
+  }
+
   render() {
     if (this.loading) {
       return html`
@@ -4093,7 +4148,7 @@ export class AgentDetailView extends LitElement {
           </p>
           ${this.renderSessionConsent()} ${this.renderIdentityHistory()}
         </details>
-        ${this.renderManualSetup('entry')}
+        ${this.renderManualSetup('entry')} ${this.renderExtensions()}
 
         <!-- Sub-view Tab Navigation -->
         ${(() => {

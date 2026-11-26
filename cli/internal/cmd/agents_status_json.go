@@ -304,11 +304,14 @@ func safeStatusValidationJSON(raw map[string]interface{}) map[string]interface{}
 	}
 	if status := allowDiscoveryEnum(
 		statusString(raw["control_plugin_install_status"]),
-		"plugin_target_not_found", "runtime_plugin_installer_not_found",
+		"plugin_target_not_found", "runtime_plugin_installer_not_found", "npm_prefix_unwritable",
 		"plugin_source_build_failed", "install_attempted", "installed_and_verified",
 		"installed_not_verified", "managed_sidecar_started", "failed", "registration_failed",
 	); status != "" {
 		out["control_plugin_install_status"] = status
+		if status == "npm_prefix_unwritable" {
+			out["control_plugin_install_remediation"] = npmGlobalPrefixRemediation
+		}
 	}
 	if status := allowDiscoveryEnum(
 		statusString(raw["control_plugin_verification"]),

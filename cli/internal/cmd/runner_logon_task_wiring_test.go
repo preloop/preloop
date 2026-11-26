@@ -192,7 +192,7 @@ func TestWriteWindowsScheduledTaskPolicyErrorIsActionable(t *testing.T) {
 	tty := true
 	if err := performRunnerSetup(runnerSetupRequest{
 		Out:       &out,
-		In:        strings.NewReader("y\n"),
+		In:        strings.NewReader("y\n\n"),
 		Policy:    &runnerPolicy{Requirement: "optional"},
 		TTY:       &tty,
 		Installed: func() bool { return false },

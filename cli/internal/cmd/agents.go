@@ -336,6 +336,10 @@ to the full gateway path (/openai/v1/chat/completions, /openai/v1/responses, or
 /anthropic/v1/messages). Business and Enterprise seats need the admin BYOK
 policy. See docs/guide/clients/vscode-copilot.md.
 
+With non-terminal or closed stdin, onboarding is always skipped, including
+with --yes or PRELOOP_CONFIRM. Run preloop agents onboard from a terminal
+to onboard interactively.
+
 When the post-scan onboarding prompts run, an error onboarding one agent does
 not stop the remaining agents; a per-agent summary (onboarded / partial /
 failed) is printed at the end. A missing agent binary downgrades that agent to
@@ -359,6 +363,9 @@ var agentsEnrollCmd = &cobra.Command{
 	Long: `Create or locate the managed agent identity in Preloop, create a durable
 credential for it, back up the local config, and add a managed Preloop MCP server
 entry to the selected agent configuration.
+
+Unattended acceptance of prompt defaults requires PRELOOP_CONFIRM=1.
+The separate --unattended enrollment-token flow does not use prompt defaults.
 
 This is the mutating companion to 'preloop agents discover'. Use --dry-run to
 preview the planned config and account changes without writing anything.
@@ -1068,6 +1075,11 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 		return enc.Encode(safeDiscoveryJSON(discovered))
 	}
 
+	if !stdinIsTerminal() {
+		fmt.Println("Onboarding skipped: stdin is not a terminal; run 'preloop agents onboard' from a terminal to onboard interactively.")
+		noOnboardPrompt = true
+	}
+
 	if len(discovered) == 0 {
 		fmt.Println("No AI agents found on this machine.")
 		fmt.Println(agentDiscoverySearchLabel())
@@ -1430,7 +1442,7 @@ func promptForTextInput(reader *bufio.Reader, writer io.Writer, prompt string) (
 		return "", err
 	}
 	input, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
+	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(input), nil
@@ -1457,6 +1469,16 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	if isUnattendedEnrollmentCommand(cmd) {
 		return runUnattendedEnrollment(cmd, args)
 	}
+	// Resuming or cancelling a manual setup asks nothing, so it also runs
+	// without a terminal (a container exec, a script).
+	if handled, err := runManualSetupSubcommand(cmd, args); handled {
+		return err
+	}
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	// The model-route path does not implement --dry-run.
+	if (!dryRun || modelRouteRequested(cmd)) && !stdinIsTerminal() && !nonInteractiveAutoConfirm() {
+		return errors.New("onboarding requires a terminal; run 'preloop agents onboard' interactively or set PRELOOP_CONFIRM=1 to accept defaults unattended")
+	}
 	for _, flag := range []string{"enrollment-token-file", "apps", "target-user", "device-ref"} {
 		if cmd.Flags().Changed(flag) {
 			return fmt.Errorf("--%s requires --unattended", flag)
@@ -1468,14 +1490,11 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	if modelRouteRequested(cmd) {
 		return runClaudeDesktopModelRouteCmd(cmd, args)
 	}
-	if handled, err := runManualSetupSubcommand(cmd, args); handled {
-		return err
-	}
-	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	forceManual, _ := cmd.Flags().GetBool("manual")
 	manualOutputDir, _ := cmd.Flags().GetString("manual-output")
 	noCredentialImport, _ := cmd.Flags().GetBool("no-credential-import")
-	autoApprove := isAutoApprove(cmd)
+	autoApprove := isAutoApprove(cmd) || dryRun
+	input := bufio.NewReader(os.Stdin)
 	liveValidate, _ := cmd.Flags().GetBool("live-validate")
 	skipLiveValidate, _ := cmd.Flags().GetBool("skip-live-validate")
 	tagsInput, _ := cmd.Flags().GetStringSlice("tags")
@@ -1520,7 +1539,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		ManualOutputDir:     strings.TrimSpace(manualOutputDir),
 		Tags:                tags,
 		SkipConfirmation:    false,
-		Input:               os.Stdin,
+		Input:               input,
 		Output:              os.Stdout,
 	}
 
@@ -1549,6 +1568,15 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
+		if dryRun {
+			for _, candidate := range candidates {
+				if err := executeManagedEnrollment(candidate, opts); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
 		// Live validation is deferred to a single parallel post-onboarding
 		// phase whenever we are touching multiple agents in one invocation
 		// (both the explicit ``--all`` path and the implicit "no args, multiple
@@ -1566,7 +1594,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 					names = append(names, resolveAgentDisplayName(a))
 				}
 				confirmed, err := confirmActionDefaultYes(
-					bufio.NewReader(os.Stdin),
+					input,
 					os.Stdout,
 					fmt.Sprintf("Onboard agents %s into managed Preloop access now? (Y/n): ", strings.Join(names, ", ")),
 				)
@@ -1582,7 +1610,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			// explanation. --all keeps onboarding everything.
 			verified, unverified, reasons := partitionCandidatesByModelRouting(client, candidates)
 			enrolled, failures := onboardCandidatesBestEffort(
-				os.Stdin,
+				input,
 				os.Stdout,
 				verified,
 				opts,
@@ -1592,7 +1620,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			if len(unverified) > 0 {
 				printModelRoutingTierExplanation(os.Stdout, unverified, reasons, true)
 				secondTier, secondFailures := onboardCandidatesBestEffort(
-					os.Stdin,
+					input,
 					os.Stdout,
 					unverified,
 					opts,
@@ -1624,7 +1652,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 
 		// askApprovals=false: executeManagedEnrollment prompts for the
 		// approvals hook itself when this path runs interactively.
-		outcomes, err := promptToOnboardCandidatesTiered(os.Stdin, os.Stdout, client, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
+		outcomes, err := promptToOnboardCandidatesTiered(input, os.Stdout, client, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
 			agentOpts := opts
 			agentOpts.SkipConfirmation = autoApprove
 			agentOpts.DeferLiveValidate = deferLiveValidate
@@ -2242,6 +2270,9 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 	}
 	agentForInstall := AgentConfig{Name: agentName}
 	if agentControlPluginInstallerCommand(agentForInstall) == "npm" {
+		if err := preflightNpmGlobalInstall(executable, agentControlPluginPackageName(agentForInstall)); err != nil {
+			return err
+		}
 		// npm install -g <source folder> links the folder as-is, so prepare an
 		// unbuilt sidecar checkout before installing it. This keeps the
 		// standalone command aligned with the onboarding installer.
