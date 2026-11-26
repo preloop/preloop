@@ -930,6 +930,7 @@ func init() {
 	agentsDiscoverCmd.Flags().BoolP("force", "f", false, "alias for --yes")
 	agentsDiscoverCmd.Flags().Bool("skip-live-validate", false, "do not run a direct gateway route/accounting probe after onboarding")
 	agentsDiscoverCmd.Flags().String("device-ref", "", "opaque administrative device reference to hash for opt-in discovery reporting")
+	agentsDiscoverCmd.Flags().BoolVar(&inventoryNoExtensionDetails, "no-extension-details", false, "omit authored extension descriptions and descriptive metadata from inventory")
 	agentsDiscoverCmd.Flags().Bool("report", false, "opt in: send salted hashes of what was found to Preloop (also PRELOOP_DISCOVERY_REPORT=1); see docs/guide/agent-discovery-reporting.md")
 	_ = agentsDiscoverCmd.Flags().MarkDeprecated("add", "use 'preloop agents onboard [agent]'")
 	agentsEnrollCmd.Flags().Bool("unattended", false, "enroll explicitly selected apps using single-use provisioning authority")
