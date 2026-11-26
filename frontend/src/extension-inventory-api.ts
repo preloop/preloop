@@ -135,6 +135,12 @@ export async function fetchExtensionPolicyText(): Promise<string> {
   return `${JSON.stringify(policy, null, 2)}\n`;
 }
 
+/** Count account-wide identities without reading rows or approval decisions. */
+export async function getExtensionCount(): Promise<number> {
+  return (await request<{ count: number }>('/discovery-extensions/count'))
+    .count;
+}
+
 export async function getExtensions(
   filters: ExtensionFilters = {}
 ): Promise<ExtensionPage> {

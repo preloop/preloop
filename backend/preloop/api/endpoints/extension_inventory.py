@@ -35,6 +35,20 @@ from preloop.utils.permissions import ensure_permission_in_oss, require_permissi
 router = APIRouter()
 
 
+@router.get("/agents/discovery-extensions/count")
+@require_permission("view_agents")
+def count_extensions(
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> dict[str, int]:
+    """Return the account inventory count for the Agents page entry point."""
+    ensure_permission_in_oss(db, current_user, "view_agents")
+    return {
+        "count": crud_discovered_extension.count_for_account(db, account_id=account.id)
+    }
+
+
 @router.get("/agents/discovery-extensions", response_model=DiscoveredExtensionList)
 @require_permission("view_agents")
 def list_extensions(

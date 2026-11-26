@@ -3923,8 +3923,9 @@ export class AgentDetailView extends LitElement {
       </summary>
       <p data-testid="agent-extensions-caption">
         Extensions reported for ${kind} agents in this account.
-        <a href="/console/agents">Open the account inventory</a> (Agents page,
-        Extensions tab).
+        <a href="/console/agents?section=extensions"
+          >Open the account inventory</a
+        >.
       </p>
       ${
         this.extensionsOpened
