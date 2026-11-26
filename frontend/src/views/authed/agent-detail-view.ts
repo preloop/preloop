@@ -185,6 +185,9 @@ export class AgentDetailView extends LitElement {
   agentId = '';
 
   @state()
+  private extensionsOpened = false;
+
+  @state()
   private extensionCount: { count: number; more: boolean } | null = null;
 
   @state()
@@ -830,6 +833,7 @@ export class AgentDetailView extends LitElement {
       this.associatedFlowsError = null;
       this.associatedFlows = [];
       this.extensionCount = null;
+      this.extensionsOpened = false;
       this.loading = true;
       void this.loadData();
     }
@@ -3906,7 +3910,14 @@ export class AgentDetailView extends LitElement {
       this.agent?.agent_kind || this.agent?.session_source_type || '';
     if (!kind) return nothing;
     const count = this.extensionCount;
-    return html`<details class="agent-settings" data-testid="agent-extensions">
+    return html`<details
+      class="agent-settings"
+      data-testid="agent-extensions"
+      @toggle=${(event: Event) => {
+        if ((event.currentTarget as HTMLDetailsElement).open)
+          this.extensionsOpened = true;
+      }}
+    >
       <summary>
         Extensions${count ? ` (${count.count}${count.more ? '+' : ''})` : ''}
       </summary>
@@ -3915,15 +3926,19 @@ export class AgentDetailView extends LitElement {
         <a href="/console/agents">Open the account inventory</a> (Agents page,
         Extensions tab).
       </p>
-      <extension-inventory
-        .agentKind=${kind}
-        emptyText=${`No device has reported extensions for ${kind} agents.`}
-        @extensions-loaded=${(
-          event: CustomEvent<{ count: number; more: boolean }>
-        ) => {
-          this.extensionCount = event.detail;
-        }}
-      ></extension-inventory>
+      ${
+        this.extensionsOpened
+          ? html`<extension-inventory
+              .agentKind=${kind}
+              emptyText=${`No device has reported extensions for ${kind} agents.`}
+              @extensions-loaded=${(
+                event: CustomEvent<{ count: number; more: boolean }>
+              ) => {
+                this.extensionCount = event.detail;
+              }}
+            ></extension-inventory>`
+          : nothing
+      }
     </details>`;
   }
 
