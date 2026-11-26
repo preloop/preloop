@@ -490,7 +490,8 @@ describe('AgentDetailView', () => {
     element.onBeforeEnter({ params: { agentId: 'agent-1' } });
     await fixture(element);
     await waitUntil(
-      () => !!element.shadowRoot?.querySelector('[data-testid="agent-extensions"]')
+      () =>
+        !!element.shadowRoot?.querySelector('[data-testid="agent-extensions"]')
     );
     const section = element.shadowRoot!.querySelector(
       '[data-testid="agent-extensions"]'

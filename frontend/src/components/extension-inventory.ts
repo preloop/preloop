@@ -697,8 +697,9 @@ export class ExtensionInventory extends LitElement {
             </div>`
           : this.page && !this.loading
             ? html`<p class="empty">
-                ${this.emptyText ||
-                'No extensions reported for this selection.'}
+                ${
+                  this.emptyText || 'No extensions reported for this selection.'
+                }
               </p>`
             : nothing
       }

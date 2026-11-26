@@ -3902,7 +3902,7 @@ export class AgentDetailView extends LitElement {
    */
   private renderExtensions(): TemplateResult | typeof nothing {
     const kind =
-      this.agent?.agent_kind || this.agent?.session_source_type || "";
+      this.agent?.agent_kind || this.agent?.session_source_type || '';
     if (!kind) return nothing;
     const count = this.extensionCount;
     return html`<details class="agent-settings" data-testid="agent-extensions">
