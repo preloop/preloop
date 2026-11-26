@@ -160,6 +160,9 @@ const sampleMountInfo = `22 1 0:21 / / rw,relatime - overlay overlay rw,lowerdir
 `
 
 func TestMountForPathPicksLongestMountPoint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the mount table is read from /proc/self/mountinfo, which is Linux only")
+	}
 	mounts := parseMountInfo(sampleMountInfo)
 	got := mountForPath(mounts, "/home/agent/.claude/settings.json")
 	if got == nil || got.MountPoint != "/home/agent/.claude/settings.json" || !got.ReadOnly {
@@ -255,6 +258,9 @@ func TestDiscoverClaudeCodeHonoursClaudeConfigDir(t *testing.T) {
 // ownership check first. The reason must still mention the read-only mount,
 // or the user fixes the owner and is refused again.
 func TestProbeReasonNamesReadOnlyMountBehindAPermissionError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the mount table is read from /proc/self/mountinfo, which is Linux only")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
