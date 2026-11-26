@@ -3578,6 +3578,7 @@ async def list_account_runtime_sessions(
             "artifact kind such as transcript, screenshot, document or audio"
         ),
     ),
+    workspace_id: Optional[str] = Query(None, min_length=1, max_length=256),
     owner_user_id: Optional[UUID] = Query(
         None,
         description=(
@@ -3617,6 +3618,7 @@ async def list_account_runtime_sessions(
             flow_execution_id=str(flow_execution_id) if flow_execution_id else None,
             active_within_minutes=active_within_minutes,
             has_artifacts=has_artifacts,
+            workspace_id=workspace_id,
             owner_user_id=str(owner_user_id) if owner_user_id else None,
         )
     )

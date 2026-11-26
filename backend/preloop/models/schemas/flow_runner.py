@@ -21,6 +21,9 @@ from preloop.models.models.flow_runner import (
 )
 
 
+from preloop.models.schemas.terminal_location import HerdrInventory
+
+
 class HostExecProfileAdvertisement(BaseModel):
     """Name and capability flags a runner advertises. No executable path."""
 
@@ -108,6 +111,8 @@ class HarnessInventory(BaseModel):
     entries: List[HarnessInventoryEntry] = Field(
         default_factory=list, max_length=MAX_HARNESS_INVENTORY_ENTRIES
     )
+
+    herdr: Optional[HerdrInventory] = None
 
     @field_validator("entries", mode="before")
     @classmethod

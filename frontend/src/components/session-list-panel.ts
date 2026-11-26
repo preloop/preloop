@@ -1,5 +1,5 @@
 import { formatRelativeTime, parseUTCDate } from '../utils/date';
-import { agentStateChip } from '../utils/agent-status';
+import { terminalSessionChip } from '../utils/terminal-location';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -131,6 +131,17 @@ export class SessionListPanel extends LitElement {
         display: flex;
         gap: var(--sl-spacing-small);
         justify-content: space-between;
+      }
+
+      .title-row sl-badge {
+        max-width: 60%;
+        min-width: 0;
+      }
+
+      .title-row sl-badge::part(base) {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       .title,
@@ -407,13 +418,7 @@ export class SessionListPanel extends LitElement {
    * from the row's server `turn_state`; recency alone is not "working".
    */
   private getChip(session: ObservedSession) {
-    const raw = (session.raw ?? {}) as Record<string, unknown>;
-    return agentStateChip({
-      turn_state: typeof raw.turn_state === 'string' ? raw.turn_state : null,
-      ended_at:
-        session.endedAt || (session.status === 'ended' ? 'ended' : null),
-      last_activity_at: session.lastActivityAt,
-    });
+    return terminalSessionChip(session);
   }
 
   private getLabel(session: ObservedSession): string {
@@ -569,6 +574,7 @@ export class SessionListPanel extends LitElement {
                   <sl-badge
                     class="chip"
                     variant=${this.getVariant(session)}
+                    title=${this.getChip(session).title}
                     pill
                   >
                     ${this.getLabel(session)}

@@ -500,6 +500,7 @@ const TALK_SECRET_HOME_DIRS = [
   ".claude",
   ".codex",
   ".copilot",
+  ".cursor",
   path.join(".config", "gcloud"),
   path.join(".config", "rclone"),
   path.join(".config", "gh"),

@@ -36,6 +36,9 @@ def run_runner_session_sweep_once() -> int:
     """
     db = next(get_db_session())
     try:
+        from preloop.services.herdr_commands import expire_commands
+
+        expire_commands(db)
         ended = sweep_runner_sessions(db)
         reconciled = reconcile_ended_session_notes(db)
         if reconciled:
