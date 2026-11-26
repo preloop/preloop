@@ -121,6 +121,12 @@ unpinned hash). Only complete
 app scans prove absence; older reports cannot replace newer inventory. Extension
 files, commands and source URLs remain on the device. See the
 [discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions).
+Latest extension coverage exposes each device's collector version and fixed
+failure codes; the console recommends project scans for unscanned roots and an
+upgrade only for a known old collector. Older reports keep unknown reasons.
+Claude subagent lifecycle hooks use the same parent-plus-child source identity
+as gateway requests. They retain explicit roles and close or resume turns
+without ending the conversation; list and detail headers link that lineage.
 Unmatched MCP tool calls read account policy defaults. With approve-once enabled,
 the account-owned `tool_registry_entry` records a decision per proxy server UUID
 or direct-hook server label and exposed tool name. CRUD serializes first sightings

@@ -186,7 +186,13 @@ export type AgentPhase =
 export type AgentChipVariant = 'success' | 'warning' | 'neutral';
 
 export interface AgentStateChip {
-  label: 'Working' | 'Needs approval' | 'Your turn' | 'Idle' | 'Ended';
+  label:
+    | 'Working'
+    | 'Needs approval'
+    | 'Your turn'
+    | 'Turn finished'
+    | 'Idle'
+    | 'Ended';
   variant: AgentChipVariant;
 }
 
@@ -428,6 +434,7 @@ export function deriveAgentStatus(input: AgentStatusInput): AgentStatus {
 export const STALE_WORKING_MS = 10 * 60 * 1000;
 
 export interface AgentStateSource {
+  parent_session_id?: string | null;
   turn_state?: string | null;
   ended_at?: string | null;
   last_activity_at?: string | null;
@@ -451,7 +458,10 @@ export function agentStateChip(
   if (source.ended_at || source.turn_state === 'ended') return CHIPS.ended;
   const state = source.turn_state;
   if (state === 'waiting_for_approval') return CHIPS.waiting_for_approval;
-  if (state === 'your_turn') return CHIPS.your_turn;
+  if (state === 'your_turn')
+    return source.parent_session_id
+      ? { label: 'Turn finished', variant: 'neutral' }
+      : CHIPS.your_turn;
   if (state === 'working') {
     const seen = [source.last_activity_at, source.last_request_at]
       .map((value) => (value ? parseUTCDate(value).getTime() : NaN))

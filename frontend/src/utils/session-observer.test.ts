@@ -214,3 +214,21 @@ describe('session-observer subject hygiene', () => {
     expect(session.title).to.equal('Claude Code');
   });
 });
+
+describe('subagent facts', () => {
+  it('keeps explicit lineage and role, without inferring roles from titles', () => {
+    const child = normalizeObservedSession({
+      id: 'child',
+      parent_session_id: 'parent',
+      subagent_role: 'reviewer',
+      alias: 'review-1',
+    });
+    expect(child.parentSessionId).to.equal('parent');
+    expect(child.subagentRole).to.equal('reviewer');
+    expect(child.spawnLabel).to.equal('review-1');
+    expect(
+      normalizeObservedSession({ id: 'unknown', title: 'Security reviewer' })
+        .subagentRole
+    ).to.equal(null);
+  });
+});

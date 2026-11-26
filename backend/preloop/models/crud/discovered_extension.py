@@ -158,10 +158,10 @@ class CRUDDiscoveredExtension:
                         row.last_observation_id = observation_id
             db.flush()
 
-    def completeness(
+    def coverage(
         self, db: Session, *, account_id: UUID, fingerprint: str | None = None
-    ) -> Literal["complete", "partial", "unknown"]:
-        """Describe the latest report per device without claiming unseen scope."""
+    ) -> list[dict[str, Any]]:
+        """Return coverage facts from each device's latest account-local report."""
         model = models.DiscoveryObservation
         query = select(model.id, model.workstation_fingerprint).where(
             model.account_id == account_id
@@ -178,27 +178,58 @@ class CRUDDiscoveredExtension:
             .subquery()
         )
         # First select one id per device through the ordered index. Only then
-        # extract the scalar coverage fields; never transfer extension payloads.
-        rows = list(
-            db.execute(
-                select(
-                    model.evidence["schema_version"].as_integer(),
-                    func.coalesce(
-                        model.evidence["extension_completeness"].as_string(),
-                        model.evidence["scope_completeness"]["user_config"].as_string(),
-                        model.evidence["completeness"].as_string(),
-                    ),
-                    model.evidence["scan_scope"].contains(["user_config"]),
-                ).join(latest, latest.c.id == model.id)
-            )
+        # extract bounded coverage metadata; never transfer extension payloads.
+        rows = db.execute(
+            select(
+                model.workstation_fingerprint,
+                model.evidence["collector_version"].as_string(),
+                model.evidence["schema_version"].as_integer(),
+                func.coalesce(
+                    model.evidence["extension_completeness"].as_string(),
+                    model.evidence["scope_completeness"]["user_config"].as_string(),
+                    model.evidence["completeness"].as_string(),
+                ),
+                model.evidence["scan_scope"].contains(["user_config"]),
+                model.evidence["extension_errors"],
+                model.evidence["errors"],
+            ).join(latest, latest.c.id == model.id)
         )
-        if not rows or any((version or 1) < 3 for version, _, _ in rows):
-            return "unknown"
-        if any(not user_scope for _, _, user_scope in rows):
+        result = []
+        for device, collector, version, state, user_scope, errors, generic in rows:
+            completeness = (
+                "unknown"
+                if (version or 1) < 3 or not user_scope
+                else "complete"
+                if state == "complete"
+                else "partial"
+            )
+            result.append(
+                {
+                    "fingerprint": device,
+                    "collector_version": collector,
+                    "completeness": completeness,
+                    "reasons": errors or generic or [],
+                }
+            )
+        return result
+
+    def completeness(
+        self, db: Session, *, account_id: UUID, fingerprint: str | None = None
+    ) -> Literal["complete", "partial", "unknown"]:
+        """Describe the latest report per device without claiming unseen scope."""
+        rows = self.coverage(db, account_id=account_id, fingerprint=fingerprint)
+        return self.coverage_completeness(rows)
+
+    @staticmethod
+    def coverage_completeness(
+        rows: list[dict[str, Any]],
+    ) -> Literal["complete", "partial", "unknown"]:
+        """Combine coverage, preserving unknown scope across devices."""
+        if not rows or any(row["completeness"] == "unknown" for row in rows):
             return "unknown"
         return (
             "complete"
-            if all(state == "complete" for _, state, _ in rows)
+            if all(row["completeness"] == "complete" for row in rows)
             else "partial"
         )
 

@@ -1,3 +1,4 @@
+import { approvalDecisionCause } from '../../utils/approvals';
 import { hasExternalDecision } from '../../actions/approval-actions';
 import { REST_API_PREFIX } from '../../api-path';
 import { formatCount, formatCountExact } from '../../utils/count-format';
@@ -97,7 +98,7 @@ interface ApprovalStats {
   avgResponseTimeMinutes: number;
   /** Percentage of HUMAN decisions that were approvals. Excludes bypassed/AI. */
   approvalRate: number;
-  /** Requests auto-approved by a time-boxed bypass, with no human review. */
+  /** Requests auto-approved by a recorded setting or policy, with no human review. */
   autoApprovedByBypass: number;
 }
 
@@ -2109,13 +2110,17 @@ export class ApprovalsView extends AuthedElement {
               </sl-badge>
               <repository-chip .toolArgs=${request.tool_args}></repository-chip>
               ${
-                request.auto_approved_reason
+                ['approved', 'declined'].includes(request.status)
                   ? html`<sl-tooltip
-                      content="Auto-approved by a time-boxed bypass. No person reviewed this call."
+                      content=${approvalDecisionCause(request).description}
                     >
-                      <sl-badge pill class="chip" variant="warning">
-                        <sl-icon name="exclamation-triangle"></sl-icon>
-                        Not reviewed
+                      <sl-badge
+                        pill
+                        class="tag-chip"
+                        variant="neutral"
+                        data-decision-cause
+                      >
+                        ${approvalDecisionCause(request).label}
                       </sl-badge>
                     </sl-tooltip>`
                   : ''

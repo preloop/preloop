@@ -106,17 +106,68 @@ describe('extension inventory', () => {
     }
   }
 
-  it('explains unknown coverage and gives reporting and upgrade commands', async () => {
+  it('does not infer an old collector from unknown coverage', async () => {
     const element = await mount({
       page: { items: [], next_cursor: null, completeness: 'unknown' },
     });
+    const text = element.shadowRoot!.textContent!;
+    expect(text).to.contain('unknown');
+    expect(text).not.to.contain('preloop update');
+  });
+
+  it('shows project coverage and the repository scan command for a current collector', async () => {
+    const element = await mount({
+      page: {
+        items: [],
+        next_cursor: null,
+        completeness: 'partial',
+        coverage: [
+          {
+            fingerprint: 'a'.repeat(64),
+            collector_version: '1.1.0-rc.1',
+            completeness: 'partial',
+            reasons: ['extension_project_unscanned'],
+          },
+        ],
+      },
+    });
     const text = element.shadowRoot!.textContent!.replace(/\s+/g, ' ');
-    expect(text).to.contain('preloop agents discover --report');
-    expect(text).to.contain('preloop update');
-    expect(text).to.contain('newer than 1.0.2');
-    expect(text).to.contain('no device has reported');
-    expect(text).to.contain('older collector');
-    expect(text).to.contain('cannot distinguish');
+    expect(text).to.contain('extension_project_unscanned');
+    expect(text).to.contain('preloop agents discover --report --project .');
+    expect(text).to.contain('repository');
+    expect(text).not.to.contain('preloop update');
+  });
+
+  it('recommends upgrading only a collector at or below the supported floor', async () => {
+    for (const [version, upgrade] of [
+      ['1.0.2', true],
+      ['v1.0.2', true],
+      ['1.0.1', true],
+      ['1.0.10', false],
+      ['1.1.0-rc.1', false],
+      [null, false],
+      ['dev', false],
+    ] as const) {
+      const element = await mount({
+        page: {
+          items: [],
+          next_cursor: null,
+          completeness: 'unknown',
+          coverage: [
+            {
+              fingerprint: 'b'.repeat(64),
+              collector_version: version,
+              completeness: 'unknown',
+              reasons: [],
+            },
+          ],
+        },
+      });
+      expect(
+        element.shadowRoot!.textContent!.includes('preloop update'),
+        String(version)
+      ).to.equal(upgrade);
+    }
   });
 
   for (const device of [false, true]) {

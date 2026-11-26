@@ -194,3 +194,52 @@ export function approvalStatusLabel(status: string): string {
       return status;
   }
 }
+
+/** Attribute decisions only to affirmative evidence stored on the request. */
+export function approvalDecisionCause(request: ApprovalRequest): {
+  label: string;
+  decider: string | null;
+  description: string;
+} {
+  const causes: Record<string, { label: string; decider: string }> = {
+    native_tool_approvals_off: {
+      label: 'Native approvals off',
+      decider: 'the native tool approvals setting (Off)',
+    },
+    bypass: { label: 'Time-boxed bypass', decider: 'a time-boxed bypass' },
+    flow_approval_policy: {
+      label: 'Policy rule',
+      decider: "the flow's approval policy",
+    },
+  };
+  if (request.auto_approved_reason) {
+    const cause = causes[request.auto_approved_reason];
+    return cause
+      ? {
+          ...cause,
+          description: `Auto-approved by ${cause.decider}. No person reviewed this call.`,
+        }
+      : {
+          label: 'Automatic decision',
+          decider: 'an automatic decision',
+          description: `Recorded reason: ${request.auto_approved_reason}. No person reviewed this call.`,
+        };
+  }
+  if (request.decided_by_ai)
+    return {
+      label: 'AI decision',
+      decider: 'an AI reviewer',
+      description: 'Decided by an AI reviewer. No person reviewed this call.',
+    };
+  if (request.decided_by_human)
+    return {
+      label: 'Person',
+      decider: 'a person',
+      description: 'A person reviewed this call.',
+    };
+  return {
+    label: 'Decision source unknown',
+    decider: null,
+    description: 'This record does not identify who made the decision.',
+  };
+}

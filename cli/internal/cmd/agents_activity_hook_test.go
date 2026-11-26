@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -127,5 +128,27 @@ func TestTranscriptShowsInterruptReadsOnlyTheTail(t *testing.T) {
 	}
 	if transcriptShowsInterrupt(filepath.Join(dir, "missing.jsonl")) {
 		t.Fatal("a missing transcript is not an interrupt")
+	}
+}
+
+func TestSubagentHooksUseGatewayChildIdentity(t *testing.T) {
+	for _, event := range []string{"SubagentStart", "SubagentStop"} {
+		raw := []byte(fmt.Sprintf(`{"hook_event_name":%q,"session_id":"conversation","agent_id":"child","agent_type":"reviewer","last_assistant_message":"must not leave device"}`, event))
+		req, ok := buildSessionEventRequest("claude_code", raw)
+		if !ok || req.SessionID != "conversation:child" || req.SubagentRole != "reviewer" || req.HookEventName != event {
+			t.Fatalf("incorrect child lifecycle: %+v", req)
+		}
+		body, _ := json.Marshal(req)
+		if strings.Contains(string(body), "must not leave device") {
+			t.Fatal("hook content escaped")
+		}
+	}
+	for _, raw := range []string{
+		`{"hook_event_name":"SubagentStop","session_id":"conversation"}`,
+		`{"hook_event_name":"SubagentStop","session_id":"conversation","agent_id":"invalid/id"}`,
+	} {
+		if _, ok := buildSessionEventRequest("claude_code", []byte(raw)); ok {
+			t.Fatal("missing child identity could change parent state")
+		}
 	}
 }

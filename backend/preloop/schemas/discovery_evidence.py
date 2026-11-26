@@ -106,6 +106,20 @@ class DiscoveryEvidence(SafeEvidenceModel):
 
     schema_version: Literal[1, 2, 3] = 1
     extension_completeness: Literal["complete", "partial", "failed"] | None = None
+    extension_errors: list[
+        Literal[
+            "extension_file_limit",
+            "extension_hook_unbound",
+            "extension_limit",
+            "extension_malformed",
+            "extension_project_unscanned",
+            "extension_symlink",
+            "extension_unreadable",
+            "extension_unsafe_path",
+            "extension_unsupported_scope",
+            "extension_unsupported_version",
+        ]
+    ] = Field(default_factory=list, max_length=10)
     profiles: list[ObservedProfile] = Field(default_factory=list, max_length=64)
     observation_id: UUID
     collector_version: str | None = Field(default=None, pattern=VERSION_PATTERN)
@@ -139,6 +153,8 @@ class DiscoveryEvidence(SafeEvidenceModel):
     ) -> dict[str, Any]:
         """Preserve v1 canonical bytes for immutable observation replay hashes."""
         data: dict[str, Any] = handler(self)
+        if not self.extension_errors:
+            data.pop("extension_errors", None)
         if not self.scope_completeness:
             data.pop("scope_completeness", None)
         if self.schema_version == 1:
@@ -197,6 +213,10 @@ class DiscoveryEvidence(SafeEvidenceModel):
                 profile.completeness != "complete" for profile in self.profiles
             ):
                 raise ValueError("Complete collection cannot include partial profiles")
+        if self.extension_errors and (
+            self.schema_version < 3 or self.extension_completeness != "partial"
+        ):
+            raise ValueError("Extension errors require partial v3 extension coverage")
         if self.schema_version < 3 and self.extension_completeness is not None:
             raise ValueError("Extension completeness requires schema version 3")
         if self.extension_completeness == "complete" and (

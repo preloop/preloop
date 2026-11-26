@@ -302,3 +302,43 @@ func TestInventoryReportMissingEvidenceService(t *testing.T) {
 		})
 	}
 }
+
+func TestExtensionReportReasonsAndOlderServer(t *testing.T) {
+	scan := inventoryEnvelope{ProbeResults: []inventoryProbeResult{
+		{Kind: "extensions", ErrorCode: "extension_project_unscanned"},
+		{Kind: "extensions", ErrorCode: "extension_project_unscanned"},
+		{Kind: "extensions", ErrorCode: "/private/example"},
+		{Kind: "runtime", ErrorCode: "extension_unreadable"},
+	}}
+	report := buildAllUsersReport("salt", "machine", "observation", scan, time.Now())
+	if got := strings.Join(report.Evidence.ExtensionErrors, ","); got != "extension_project_unscanned" {
+		t.Fatalf("unsafe or missing reasons: %s", got)
+	}
+	if len(downgradeInventoryReport(report).Evidence.ExtensionErrors) != 0 {
+		t.Fatal("reasons survived legacy downgrade")
+	}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var received discoveryReportRequest
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			w.WriteHeader(422)
+			fmt.Fprint(w, `{"detail":[{"loc":["body","evidence","extension_errors"],"type":"extra_forbidden"}]}`)
+			return
+		}
+		if len(received.Evidence.ExtensionErrors) != 0 || received.Evidence.SchemaVersion != 3 {
+			t.Error("fallback lost inventory or retained unsupported reasons")
+		}
+		fmt.Fprint(w, `{"received":1}`)
+	}))
+	defer server.Close()
+	if err := postInventoryReport(api.NewClientWithToken(server.URL, "synthetic-token"), report, &discoveryReportResponse{}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(report.Evidence.ExtensionErrors) != 1 {
+		t.Fatal("fallback mutated source or retried incorrectly")
+	}
+}
