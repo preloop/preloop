@@ -27,7 +27,9 @@ def encode_cursor(values: list[str]) -> str:
     return base64.urlsafe_b64encode(json.dumps(values).encode()).decode()
 
 
-def decode_cursor(cursor: str | None, size: int) -> list[str] | None:
+def decode_cursor(
+    cursor: str | None, size: int, *, max_value_length: int = 128
+) -> list[str] | None:
     """Reject malformed cursors before querying storage."""
     if cursor is None:
         return None
@@ -36,7 +38,7 @@ def decode_cursor(cursor: str | None, size: int) -> list[str] | None:
         if (
             not isinstance(values, list)
             or len(values) != size
-            or any(not isinstance(v, str) or len(v) > 128 for v in values)
+            or any(not isinstance(v, str) or len(v) > max_value_length for v in values)
         ):
             raise ValueError("Invalid cursor")
         return values

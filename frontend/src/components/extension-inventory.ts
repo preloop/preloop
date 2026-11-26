@@ -1237,7 +1237,7 @@ export class ExtensionInventory extends LitElement {
     const agent =
       row.agent_kind === 'claude_code'
         ? 'claude-code'
-        : row.agent_kind === 'codex_cli'
+        : row.agent_kind === 'codex' || row.agent_kind === 'codex_cli'
           ? 'codex-cli'
           : row.agent_kind;
     const command = `preloop agents extensions show ${row.extension_kind} ${quote(row.extension_id)} --agent ${quote(agent)}`;

@@ -288,19 +288,27 @@ class CRUDDiscoveredExtension:
                 filters.append(column == value)
         if q and q.strip():
             term = q.strip()
-            filters.append(
-                or_(
-                    model.extension_id.icontains(term, autoescape=True),
-                    model.details["name"].as_string().icontains(term, autoescape=True),
-                    model.details["description"]
-                    .as_string()
-                    .icontains(term, autoescape=True),
-                )
+            matches = or_(
+                model.extension_id.icontains(term, autoescape=True),
+                model.details["name"].as_string().icontains(term, autoescape=True),
+                model.details["description"]
+                .as_string()
+                .icontains(term, autoescape=True),
             )
+            if group:
+                # Search selects extension keys. Every observation for those
+                # keys still contributes to counts and the worst effective state.
+                columns = (model.agent_kind, model.extension_kind, model.extension_id)
+                matching_keys = select(*columns).where(
+                    model.account_id == account_id, model.present == present, matches
+                )
+                filters.append(tuple_(*columns).in_(matching_keys))
+            else:
+                filters.append(matches)
         display_name = func.coalesce(
             func.nullif(model.details["name"].as_string(), ""), model.extension_id
         )
-        key = decode_cursor(cursor, 4 if group else 3)
+        key = decode_cursor(cursor, 4 if group else 3, max_value_length=300)
         if group:
             columns = (model.agent_kind, model.extension_kind, model.extension_id)
             # Pick the same latest matching observation for both display and
