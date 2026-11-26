@@ -15,6 +15,7 @@ from tests.ci_workflow import load_ci_jobs, step_script
 PICKER = Path(__file__).resolve().parents[2] / ".github/scripts/pick-runners.sh"
 LOCAL = ["self-hosted", "Linux", "X64", "preloop-ci-local"]
 GENERAL = ["self-hosted", "Linux", "X64", "preloop-ci-general"]
+AWS = ["self-hosted", "Linux", "X64", "preloop-ci-aws"]
 
 HOSTED_JOBS = (
     "test-backend-coverage",
@@ -536,3 +537,109 @@ def test_leaf_workflows_accept_the_picked_runner() -> None:
         text = (root / f".github/workflows/{workflow}.yml").read_text()
         assert "fromJSON(inputs.runner || '\"ubuntu-24.04\"')" in text, workflow
         assert "default: '\"ubuntu-24.04\"'" in text, workflow
+
+
+@pytest.mark.parametrize(
+    ("general", "local", "aws", "shards", "expected"),
+    [
+        # The aws pool takes a set that fits on its idle runners.
+        (0, 0, 2, "2", "aws"),
+        (0, 0, 2, "1", "aws"),
+        (0, 0, 2, "3", "hosted"),
+        # Local and general come first when either can take the whole set.
+        (0, 3, 3, "2", "local"),
+        (3, 0, 3, "3", "general"),
+        # Never split across classes.
+        (0, 1, 1, "2", "hosted"),
+    ],
+)
+def test_aws_pool_takes_whole_backend_sets_when_enabled(
+    tmp_path: Path, general: int, local: int, aws: int, shards: str, expected: str
+) -> None:
+    """With CI_AWS_RUNNERS=true idle aws runners are the third class."""
+    runners = (
+        [_runner(GENERAL)] * general
+        + [_runner(LOCAL, name="deb1")] * local
+        + [_runner(AWS, name="ci-aws-i-1")] * aws
+    )
+    outputs = _pick(
+        tmp_path, "late", runners, BACKEND_SHARDS=shards, AWS_RUNNERS="true"
+    )
+    want = {"hosted": HOSTED, "general": GENERAL, "local": LOCAL, "aws": AWS}
+    assert json.loads(outputs["backend_runner"]) == want[expected]
+    assert outputs["runner_class"] == expected
+    assert outputs["aws_idle"] == str(aws)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"AWS_RUNNERS": "false"},
+        {"AWS_RUNNERS": "true", "TRUSTED_SOURCE": "false"},
+        {"AWS_RUNNERS": "true", "RUN_ATTEMPT": "2"},
+        {"AWS_RUNNERS": "true", "RUNNER_READ_TOKEN": ""},
+    ],
+)
+def test_aws_pool_is_off_by_default_and_never_for_forks_or_reruns(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    """The variable defaults off; forks, Dependabot and reruns stay hosted."""
+    runners = [_runner(AWS, name="ci-aws-i-1")] * 4
+    late = _pick(tmp_path, "late", runners, BACKEND_SHARDS="1", **env)
+    early = _pick(tmp_path, "early", runners, **env)
+    assert json.loads(late["backend_runner"]) == HOSTED
+    for key in ("changes_runner", "lint_runner", "cli_fast_runner"):
+        assert json.loads(early[key]) == HOSTED, key
+    assert late["aws_idle"] == early["aws_idle"] == "0"
+
+
+@pytest.mark.parametrize(
+    ("local", "aws", "changes", "lint", "cli_fast"),
+    [
+        # One job per aws VM: the changes VM is gone before stage 2.
+        (0, 1, AWS, HOSTED, HOSTED),
+        (0, 2, AWS, AWS, HOSTED),
+        (0, 3, AWS, AWS, AWS),
+        # A local slot is reused by stage 2; aws fills the remainder.
+        (1, 1, LOCAL, LOCAL, AWS),
+        (2, 2, LOCAL, LOCAL, LOCAL),
+    ],
+)
+def test_light_jobs_use_aws_after_local_and_never_reuse_a_vm(
+    tmp_path: Path,
+    local: int,
+    aws: int,
+    changes: object,
+    lint: object,
+    cli_fast: object,
+) -> None:
+    """Light jobs prefer local slots, then idle aws runners, then hosted."""
+    runners = [_runner(LOCAL, name="deb1")] * local + [
+        _runner(AWS, name="ci-aws-i-1")
+    ] * aws
+    outputs = _pick(tmp_path, "early", runners, AWS_RUNNERS="true")
+    assert json.loads(outputs["changes_runner"]) == changes
+    assert json.loads(outputs["lint_runner"]) == lint
+    assert json.loads(outputs["cli_fast_runner"]) == cli_fast
+
+
+def test_leaves_never_take_aws_runners(tmp_path: Path) -> None:
+    """Fuzz and browser-fixture stay on local slots or hosted."""
+    outputs = _pick(
+        tmp_path,
+        "late",
+        [_runner(AWS, name="ci-aws-i-1")] * 4,
+        BACKEND_SHARDS="7",
+        LEAF_FUZZ="true",
+        LEAF_BROWSER_FIXTURE="true",
+        AWS_RUNNERS="true",
+    )
+    assert json.loads(outputs["fuzz_runner"]) == HOSTED
+    assert json.loads(outputs["browser_fixture_runner"]) == HOSTED
+
+
+def test_both_pickers_pass_the_aws_variable() -> None:
+    """CI_AWS_RUNNERS reaches both picker steps."""
+    for job in ("pick-light", "pick-runner"):
+        assert _pick_step(job)["env"]["AWS_RUNNERS"] == "${{ vars.CI_AWS_RUNNERS }}"

@@ -1062,6 +1062,12 @@ class TestRuntimeSessions:
         assert user.metadata_["role"] == "user"
         assert user.metadata_["source"] == "usage_ingest:cursor"
         assert user.metadata_["external_id"] == "stop:gen-1:0"
+        assert [
+            item.summary
+            for item in sorted(
+                activities, key=lambda item: item.metadata_["message_index"]
+            )
+        ] == [message["text"] for message in stop["transcript"]]
 
         # Replaying the same record is deduplicated and stores nothing twice.
         replay = client.post(INGEST_URL, json=_payload([stop])).json()

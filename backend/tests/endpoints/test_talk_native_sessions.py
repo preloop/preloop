@@ -361,3 +361,98 @@ def test_stale_unknown_session_does_not_queue_forever(
         )
     assert response.status_code == 409, response.text
     assert "confirm" in response.json()["detail"]["message"]
+
+
+def _pending_note(db: Session, user: models.User, agent: Any, session: Any) -> Any:
+    note = crud_agent_control_command.create_note(
+        db,
+        account_id=user.account_id,
+        managed_agent_id=agent.id,
+        runtime_session_id=session.id,
+        note_id=str(uuid4()),
+        body="Earlier example",
+        envelope={},
+        author_display="Jane Doe",
+        author_auth_method="session",
+        created_by_user_id=user.id,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    db.commit()
+    return note
+
+
+def test_failed_prompt_delivery_keeps_pending_notes(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    agent, session = native_session(client, db_session, test_user)
+    note = _pending_note(db_session, test_user, agent, session)
+    with (
+        patch(
+            "preloop.api.endpoints.agent_control.agent_control_manager.send_to_agent",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "preloop.api.endpoints.agent_control._publish_command",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    ):
+        response = client.post(
+            f"/api/v1/agents/{agent.id}/control/prompts",
+            json={"message": "Resume", "target_session_id": str(session.id)},
+        )
+    assert response.status_code == 503, response.text
+    db_session.refresh(note)
+    assert note.status == "pending"
+
+
+def test_prompt_note_does_not_need_a_live_binding(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    agent, session = native_session(client, db_session, test_user)
+    agent.runtime_session_id = None
+    session.turn_state = "working"
+    db_session.commit()
+    response = client.post(
+        f"/api/v1/agents/{agent.id}/control/prompts",
+        json={"message": "Example follow-up", "target_session_id": str(session.id)},
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["note_id"]
+    assert body["command_envelope"]["runtime_session_id"] == str(session.id)
+
+
+def test_non_native_terminal_session_is_refused(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    agent, _ = native_session(client, db_session, test_user)
+    agent.agent_kind = agent.session_source_type = "hermes"
+    db_session.commit()
+    result = register_session_start(
+        db_session,
+        account_id=test_user.account_id,
+        principal_type="hermes",
+        principal_id=agent.session_source_id,
+        principal_name="Example agent",
+        external_session_id="example-terminal",
+        cwd="/tmp/example",
+        control_owned=False,
+    )
+    session = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=result.runtime_session_id,
+    )
+    with patch(
+        "preloop.api.endpoints.agent_control.agent_control_manager.send_to_agent",
+        new_callable=AsyncMock,
+    ) as send:
+        response = client.post(
+            f"/api/v1/agents/{agent.id}/control/prompts",
+            json={"message": "Example", "target_session_id": str(session.id)},
+        )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "terminal_session"
+    send.assert_not_called()

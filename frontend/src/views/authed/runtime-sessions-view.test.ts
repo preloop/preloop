@@ -29,9 +29,12 @@ const SESSION_OPTIONS = {
   limits: { max_concurrent: 2, active: 0, idle_timeout_seconds: 1800 },
 };
 
+type FetchInput = RequestInfo | URL;
+
 describe('RuntimeSessionsView', () => {
   let fetchStub: sinon.SinonStub;
   let wsStub: sinon.SinonStub;
+  let includeTitleMatches = false;
 
   const SEARCH_URL = '/api/v1/runtime-sessions/search';
 
@@ -161,14 +164,88 @@ describe('RuntimeSessionsView', () => {
     return text;
   }
 
+  it('keeps unindexed identity matches above content matches (#2424)', async () => {
+    includeTitleMatches = true;
+    const element = await renderedSearch();
+    const queryCall = fetchStub.getCalls().find((call) => {
+      const url = new URL(String(call.args[0]), location.origin);
+      return (
+        url.pathname === '/api/v1/runtime-sessions' &&
+        call.args[1]?.method === 'POST' &&
+        JSON.parse(String(call.args[1]?.body)).query === 'rollout plan'
+      );
+    });
+    expect(queryCall).not.to.equal(undefined);
+    expect(String(queryCall!.args[0])).not.to.contain('query=');
+    const headings = [
+      ...element.shadowRoot!.querySelectorAll('[data-search-kind]'),
+    ];
+    expect(
+      headings.map((row) => row.getAttribute('data-search-kind'))
+    ).to.deep.equal(['title', 'title', 'content']);
+  });
+
+  it('opens an identity-only search hit in the phone detail pane', async () => {
+    await setViewport({ width: 390, height: 844 });
+    includeTitleMatches = true;
+    const element = await renderedSearch();
+    const row = element.shadowRoot!.querySelector(
+      '[data-search-kind="title"]'
+    )!;
+    const link = row.closest('sl-card')!.querySelector('a')!;
+    (link as HTMLElement).click();
+    await element.updateComplete;
+    await waitUntil(() =>
+      Boolean(element.shadowRoot!.querySelector('preloop-session-observer'))
+    );
+    const searchList =
+      element.shadowRoot!.querySelector<HTMLElement>('.search-list')!;
+    expect(getComputedStyle(searchList).display).to.equal('none');
+    const observer = element.shadowRoot!.querySelector(
+      'preloop-session-observer'
+    )!;
+    await waitUntil(() =>
+      ['session-title', 'session-detail'].includes(
+        observer.shadowRoot!.activeElement?.id || ''
+      )
+    );
+    expect(
+      element
+        .shadowRoot!.querySelector('.sessions-page')!
+        .classList.contains('has-detail')
+    ).to.equal(true);
+    observer.dispatchEvent(
+      new CustomEvent('session-list-back', { bubbles: true, composed: true })
+    );
+    await element.updateComplete;
+    expect(getComputedStyle(searchList).display).not.to.equal('none');
+  });
+
+  it('keeps identity matches when content search is unavailable (#2424)', async () => {
+    includeTitleMatches = true;
+    fetchStub.withArgs(SEARCH_URL).resolves(
+      new Response(JSON.stringify({ detail: 'Content search unavailable' }), {
+        status: 503,
+      })
+    );
+    const element = await renderedSearch();
+    expect(
+      element.shadowRoot!.querySelectorAll('[data-search-kind="title"]')
+    ).to.have.length(2);
+    expect(element.shadowRoot!.textContent).to.contain(
+      'Search is unavailable right now'
+    );
+  });
+
   beforeEach(async () => {
     await setViewport({ width: 1440, height: 1000 });
+    includeTitleMatches = false;
     wsStub = sinon.stub(unifiedWebSocketManager, 'send').returns(true);
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
     fetchStub = sinon.stub(window, 'fetch');
-    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+    fetchStub.callsFake(async (input: FetchInput, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
 
       if (url === SEARCH_URL) {
@@ -264,6 +341,10 @@ describe('RuntimeSessionsView', () => {
             },
           ],
         };
+        if (Boolean(init?.method === 'POST') && !includeTitleMatches) {
+          page.items = [];
+          page.total = 0;
+        }
         if (hasArtifacts) {
           // The server filter, mirrored: only rows holding that kind.
           page.items = page.items.filter((item: any) => {
@@ -1350,8 +1431,8 @@ describe('RuntimeSessionsView', () => {
       expect(
         (searchBody.filters as Record<string, unknown> | undefined) || {}
       ).to.not.have.property('source_kind');
-      // The list endpoint never sees the query.
-      expect(listCalls().length).to.equal(listsBefore);
+      // Identity search uses the same query alongside the content corpus.
+      expect(listCalls().length).to.equal(listsBefore + 1);
       expect(
         listCalls().filter((url) => url.includes('query='))
       ).to.have.length(0);
@@ -2462,7 +2543,7 @@ describe('RuntimeSessionsView', () => {
         '[data-testid="search-empty"]'
       );
       expect(empty).to.not.equal(null);
-      expect(empty!.textContent).to.contain('No session content matched');
+      expect(empty!.textContent).to.contain('No sessions matched');
     });
 
     it('renders an error state when the search fails', async () => {

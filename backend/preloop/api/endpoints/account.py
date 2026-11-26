@@ -17,6 +17,7 @@ from preloop.services.built_in_models import (
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Body,
     Depends,
     HTTPException,
     Path,
@@ -3588,6 +3589,95 @@ async def list_account_runtime_sessions(
     )
 
 
+@router.post("/runtime-sessions", response_model=AccountRuntimeSessionListResponse)
+@require_permission("view_runtime_sessions")
+def search_account_runtime_session_identity(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    background_tasks: BackgroundTasks,
+    query: Annotated[str, Body(embed=True, min_length=1, max_length=500)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+    session_source_type: Optional[str] = Query(None),
+    status: str = Query("all", pattern="^(all|active|ended)$"),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    agent: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Managed agent id or display name; only that agent's sessions",
+    ),
+    agent_kind: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "Agent kind (claude_code, codex, cursor, hermes, ...); sessions of "
+            "managed agents of that kind or recorded from that source"
+        ),
+    ),
+    alias: Optional[str] = Query(None, min_length=1, max_length=64),
+    parent_session_id: Optional[UUID] = Query(
+        None, description="Only sessions this session spawned"
+    ),
+    flow_execution_id: Optional[UUID] = Query(
+        None, description="Only sessions linked to this flow execution"
+    ),
+    active_within_minutes: Optional[int] = Query(
+        None,
+        ge=1,
+        le=1440,
+        description="Only open sessions with activity in the last N minutes",
+    ),
+    has_artifacts: Optional[str] = Query(
+        None,
+        description=(
+            "Only sessions holding an available artifact: 'any', or an "
+            "artifact kind such as transcript, screenshot, document or audio"
+        ),
+    ),
+    owner_user_id: Optional[UUID] = Query(
+        None,
+        description=(
+            "Only sessions of managed agents this user owns; a user who owns "
+            "no agent matches no session"
+        ),
+    ),
+) -> AccountRuntimeSessionListResponse:
+    """Search session identity without placing the query in access-log URLs."""
+    if has_artifacts is not None and has_artifacts != "any":
+        if has_artifacts not in ARTIFACT_KINDS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "has_artifacts must be 'any' or one of: "
+                    + ", ".join(sorted(ARTIFACT_KINDS))
+                ),
+            )
+    # FastAPI dispatches this synchronous database handler on its worker pool.
+    return RuntimeSessionExplorerService(db).list_account_sessions(
+        account=account,
+        query=query,
+        session_source_type=session_source_type,
+        status=status,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        offset=offset,
+        background_tasks=background_tasks,
+        agent=agent,
+        agent_kind=agent_kind,
+        alias=alias,
+        parent_session_id=str(parent_session_id) if parent_session_id else None,
+        flow_execution_id=str(flow_execution_id) if flow_execution_id else None,
+        active_within_minutes=active_within_minutes,
+        has_artifacts=has_artifacts,
+        owner_user_id=str(owner_user_id) if owner_user_id else None,
+    )
+
+
 @router.get(
     "/runtime-sessions/{runtime_session_id}",
     response_model=AccountRuntimeSessionDetailResponse,
@@ -3657,9 +3747,21 @@ async def get_account_session_activity_timeline(
         ge=1,
         le=100,
         description=(
-            "Most recent model interactions merged into the timeline. The "
-            "console asks for the latest 50 when a session opens."
+            "Prompt turns when page_by_turn is true; otherwise recent model "
+            "interactions. The console requests 20 turns per page."
         ),
+    ),
+    page_by_turn: bool = Query(False, description="Page complete prompt turns."),
+    before: Optional[str] = Query(
+        None, max_length=64, description="Previous page's next_before cursor."
+    ),
+    after: Optional[str] = Query(
+        None, max_length=64, description="Previous page's next_after cursor."
+    ),
+    around: Optional[str] = Query(
+        None,
+        max_length=64,
+        description="Activity, usage or note id to center in the page.",
     ),
     operator_note_id: Optional[str] = Query(
         None,
@@ -3683,6 +3785,10 @@ async def get_account_session_activity_timeline(
             runtime_session_id=runtime_session_id,
             interaction_limit=limit,
             operator_note_id=operator_note_id,
+            page_by_turn=page_by_turn,
+            before=before,
+            after=after,
+            around=around,
         )
     )
 
@@ -3950,6 +4056,9 @@ async def get_account_runtime_session_gateway_events(
             "long session does not carry the whole conversation (#1689)."
         ),
     ),
+    around: str | None = Query(
+        None, max_length=64, description="Center on an activity, usage or note id."
+    ),
     before: str | None = Query(
         None,
         description=(
@@ -3999,6 +4108,19 @@ async def get_account_runtime_session_gateway_events(
         page_limit = (
             min(tail, 200) if tail else min(limit, 5000 if metadata_only else 100)
         )
+        page_offset = offset
+        if around and before is None:
+            try:
+                page_offset = crud_runtime_session_activity.gateway_offset_around(
+                    db,
+                    account_id=account.id,
+                    runtime_session_id=runtime_session_id,
+                    target=around,
+                    limit=page_limit,
+                    start_date=cutoff,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
         rows = crud_runtime_session_activity.list_model_gateway_calls_for_session(
             db,
             start_date=cutoff,
@@ -4006,7 +4128,7 @@ async def get_account_runtime_session_gateway_events(
             runtime_session_id=runtime_session_id,
             tail=tail,
             limit=limit,
-            offset=offset,
+            offset=page_offset,
             metadata_only=metadata_only,
             before=cursor,
             extra=1 if cursor is not None else 0,
@@ -4035,14 +4157,14 @@ async def get_account_runtime_session_gateway_events(
             has_more = cursor_has_more
             next_offset = None
         else:
-            next_offset = offset + len(events)
+            next_offset = page_offset + len(events)
             has_more = next_offset < total
         return {
             "source": "database",
             "logs": events,
             "pagination": {
                 "limit": page_limit,
-                "offset": offset if cursor is None else None,
+                "offset": page_offset if cursor is None else None,
                 "next_offset": next_offset if has_more else None,
                 # The oldest event on this page; pass it as `before`.
                 "next_cursor": str(rows[-1].id) if has_more and rows else None,

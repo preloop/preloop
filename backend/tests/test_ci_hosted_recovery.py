@@ -130,6 +130,8 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> None:
         ({"labels": sorted(recovery.GENERAL_LABELS | {"gce-tests-only"})}, [], False),
         # A shard queued on the local pool falls back to hosted the same way.
         ({"labels": sorted(recovery.LOCAL_LABELS)}, [], True),
+        # And so does one queued on the ephemeral aws pool.
+        ({"labels": sorted(recovery.AWS_LABELS)}, [], True),
         ({"labels": ["self-hosted", "Linux", "X64"]}, [], False),
     ],
 )
@@ -143,6 +145,62 @@ def test_recovery_requires_queue_pressure_or_lost_runner(
             now - timedelta(seconds=changes.pop("age_seconds"))
         ).isoformat()
     assert recovery.needs_recovery([job(**changes)], runners, now) is expected
+
+
+def aws_job(run_tests: str | None, **extra: Any) -> dict:
+    """A completed aws shard whose runner is gone, as it always is afterwards."""
+    steps = [{"name": "Install dependencies", "conclusion": "success"}]
+    if run_tests is not None:
+        steps.append({"name": "Run tests", "conclusion": run_tests})
+    return job(
+        labels=sorted(recovery.AWS_LABELS),
+        status="completed",
+        conclusion="failure",
+        runner_id=10,
+        steps=steps,
+        **extra,
+    )
+
+
+OFFLINE = [{"id": 10, "status": "offline"}]
+
+
+def test_aws_test_failure_is_not_mistaken_for_lost_capacity() -> None:
+    """An ephemeral runner is always offline after its job; that is no evidence."""
+    failed = aws_job("failure")
+    assert (
+        recovery.needs_recovery([failed], OFFLINE, datetime.now(timezone.utc)) is False
+    )
+    assert recovery.unrelated_failure([failed], OFFLINE) is True
+    assert recovery.needs_recovery([failed], [], datetime.now(timezone.utc)) is False
+
+
+@pytest.mark.parametrize("run_tests", [None, "cancelled", "skipped"])
+def test_aws_shard_lost_before_tests_concluded_is_recovered(
+    run_tests: str | None,
+) -> None:
+    """A Spot loss mid-run leaves the test step unconcluded: retry hosted once."""
+    lost = aws_job(run_tests)
+    assert recovery.needs_recovery([lost], OFFLINE, datetime.now(timezone.utc)) is True
+    assert recovery.unrelated_failure([lost], OFFLINE) is False
+
+
+def test_aws_shard_in_progress_on_a_vanished_runner_is_recovered() -> None:
+    running = job(
+        labels=sorted(recovery.AWS_LABELS), status="in_progress", runner_id=10
+    )
+    assert (
+        recovery.needs_recovery([running], OFFLINE, datetime.now(timezone.utc)) is True
+    )
+
+
+def test_general_pool_offline_failure_rule_is_unchanged() -> None:
+    """Persistent runners keep the existing offline-means-lost inference."""
+    general = job(status="completed", conclusion="failure", runner_id=10)
+    general["steps"] = [{"name": "Run tests", "conclusion": "failure"}]
+    assert (
+        recovery.needs_recovery([general], OFFLINE, datetime.now(timezone.utc)) is True
+    )
 
 
 @pytest.mark.parametrize(

@@ -182,6 +182,7 @@ const TURN_JUMP_KINDS = new Set([
   'gateway_interaction',
   'tool_call',
   'transcript_message',
+  'operator_note',
 ]);
 
 @customElement('runtime-sessions-view')
@@ -261,6 +262,10 @@ export class RuntimeSessionsView extends LitElement {
   // the list endpoint about identifier columns.
   @state()
   private searchResults: SessionSearchResponse | null = null;
+
+  @state()
+  private titleMatches: RuntimeSessionSummary[] = [];
+  private titleMatchHasMore = false;
 
   @state()
   private searchLoading = false;
@@ -1138,9 +1143,6 @@ export class RuntimeSessionsView extends LitElement {
     if (endDate) {
       params.endDate = endDate;
     }
-    // The query no longer reaches the list endpoint at all: a typed query is
-    // a question about content, and the list filter only ever matched four
-    // identifier columns.
     // A product option is an agent kind, not a source type: a live Cursor
     // or Copilot CLI session is recorded as `desktop_agent` with that kind,
     // so the kind filter is the one that finds it.
@@ -1164,7 +1166,7 @@ export class RuntimeSessionsView extends LitElement {
   }
 
   /**
-   * Run one ranked content search for the current query and filters.
+   * Merge identity matches with ranked content for the current query.
    *
    * Sequenced like the list load: a slow earlier search must never overwrite
    * the answer to what the operator is typing now.
@@ -1180,15 +1182,37 @@ export class RuntimeSessionsView extends LitElement {
     this.searchLoading = true;
     this.searchError = null;
     try {
-      const results = await searchRuntimeSessions({
-        query,
-        startDate: this.rangeStartIso() ?? undefined,
-        endDate: this.rangeEndIso() ?? undefined,
-        limit: SEARCH_RESULT_LIMIT,
-        maxSnippetsPerSession: SNIPPETS_PER_SESSION,
-      });
+      const [titles, results] = await Promise.allSettled([
+        getAccountRuntimeSessions({
+          ...this.buildListParams(),
+          query,
+          offset: 0,
+          limit: SEARCH_RESULT_LIMIT,
+        }),
+        searchRuntimeSessions({
+          query,
+          startDate: this.rangeStartIso() ?? undefined,
+          endDate: this.rangeEndIso() ?? undefined,
+          limit: SEARCH_RESULT_LIMIT,
+          maxSnippetsPerSession: SNIPPETS_PER_SESSION,
+        }),
+      ]);
       if (seq !== this.searchSequence) return;
-      this.searchResults = results;
+      this.titleMatches =
+        titles.status === 'fulfilled' ? (titles.value.items ?? []) : [];
+      this.titleMatchHasMore =
+        titles.status === 'fulfilled' &&
+        (titles.value.has_more ??
+          (titles.value.total != null &&
+            titles.value.total > this.titleMatches.length));
+      this.searchResults =
+        results.status === 'fulfilled' ? results.value : null;
+      const errors = [titles, results]
+        .filter((result) => result.status === 'rejected')
+        .map((result) =>
+          result.status === 'rejected' ? String(result.reason) : ''
+        );
+      this.searchError = errors.length ? errors.join('; ') : null;
     } catch (error) {
       if (seq !== this.searchSequence) return;
       console.error('Failed to search session content:', error);
@@ -1207,6 +1231,7 @@ export class RuntimeSessionsView extends LitElement {
   private clearSearchResults(): void {
     // A newer sequence number also abandons any search still in flight.
     this.searchSequence += 1;
+    this.titleMatches = [];
     this.searchResults = null;
     this.searchError = null;
     this.searchLoading = false;
@@ -1979,13 +2004,19 @@ export class RuntimeSessionsView extends LitElement {
    */
   private get sessionCountLabel(): string {
     if (this.isSearching) {
-      if (this.searchLoading || !this.searchResults) {
+      if (
+        this.searchLoading ||
+        (!this.searchResults && !this.titleMatches.length)
+      ) {
         return '';
       }
-      const matched = this.searchResults.total;
-      return `${this.formatNumber(matched)} matching session${
-        matched === 1 ? '' : 's'
-      }`;
+      const matched = this.mergedSearchResults().length;
+      const partial =
+        this.titleMatchHasMore ||
+        Boolean(this.searchError) ||
+        (this.searchResults?.total ?? 0) >
+          (this.searchResults?.results.length ?? 0);
+      return `${this.formatNumber(matched)} matching session${matched === 1 ? '' : 's'}${partial ? ' shown' : ''}`;
     }
     if (this.loading || !this.sessions) {
       return '';
@@ -2430,16 +2461,82 @@ export class RuntimeSessionsView extends LitElement {
     );
   }
 
+  private mergedSearchResults(): SessionSearchResult[] {
+    const content = this.searchResults?.results ?? [];
+    const seen = new Set(this.titleMatches.map((row) => row.id));
+    return [
+      ...this.titleMatches.map(
+        (row) =>
+          content.find((hit) => hit.runtime_session_id === row.id) ?? {
+            runtime_session_id: row.id,
+            session_source_type: row.session_source_type,
+            session_source_id: row.session_source_id,
+            session_reference: row.session_reference,
+            title: row.title || row.alias || row.runtime_principal_name,
+            started_at: row.started_at,
+            last_activity_at: row.last_activity_at,
+            score: 0,
+            best_chunk_rank: 0,
+            matched_chunk_count: 0,
+            first_match_at: null,
+            last_match_at: null,
+            snippets: [],
+          }
+      ),
+      ...content.filter((hit) => !seen.has(hit.runtime_session_id)),
+    ];
+  }
+
+  private identityHref(result: SessionSearchResult): string {
+    const url = new URL(location.href);
+    url.searchParams.set('sessionId', result.runtime_session_id);
+    url.searchParams.delete('turn');
+    url.searchParams.delete('artifact');
+    return `${url.pathname}${url.search}`;
+  }
+
+  private openIdentity(event: MouseEvent, result: SessionSearchResult): void {
+    if (
+      event.button ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    )
+      return;
+    event.preventDefault();
+    this.selectedSessionId = result.runtime_session_id;
+    this.focusTurnId = null;
+    this.focusArtifactId = null;
+    this.syncUrl({ push: true });
+    void this.focusSelectedDetail();
+  }
+
   private renderSearchResult(result: SessionSearchResult) {
     return html`
       <sl-card data-testid=${`search-result-${result.runtime_session_id}`}>
         <div class="search-result-header">
-          <div class="session-item-title">
+          <a
+            class="session-item-title"
+            href=${this.identityHref(result)}
+            @click=${(event: MouseEvent) => this.openIdentity(event, result)}
+          >
             ${this.searchResultTitle(result)}
-          </div>
+          </a>
           <div class="search-result-meta">
-            ${result.matched_chunk_count}
-            match${result.matched_chunk_count === 1 ? '' : 'es'} ·
+            ${
+              this.titleMatches.some(
+                (row) => row.id === result.runtime_session_id
+              )
+                ? html`<span data-search-kind="title">Title</span> · `
+                : nothing
+            }
+            ${
+              result.matched_chunk_count
+                ? html`${result.matched_chunk_count}
+                  match${result.matched_chunk_count === 1 ? '' : 'es'} ·`
+                : nothing
+            }
             <span
               title=${this.formatDateTime(
                 result.last_match_at ?? result.started_at
@@ -2455,6 +2552,7 @@ export class RuntimeSessionsView extends LitElement {
           </div>
         </div>
         <div class="snippet-list">
+          ${result.snippets.length ? html`<span class="muted" data-search-kind="content">Content</span>` : nothing}
           ${result.snippets.map(
             (snippet) => html`
               <a
@@ -2532,39 +2630,39 @@ export class RuntimeSessionsView extends LitElement {
       `;
     }
 
-    if (this.searchError) {
-      return html`
-        <sl-alert variant="danger" open data-testid="search-error">
-          <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-          <span title=${this.searchError}
-            >Search is unavailable right now. Try again in a moment.</span
-          >
-          <sl-button
-            size="small"
-            variant="text"
-            data-testid="search-retry"
-            @click=${() => void this.loadSearchResults()}
-            >Retry</sl-button
-          >
-        </sl-alert>
-      `;
-    }
+    const error = this.searchError
+      ? html`
+          <sl-alert variant="danger" open data-testid="search-error">
+            <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+            <span title=${this.searchError}
+              >Search is unavailable right now. Try again in a moment.</span
+            >
+            <sl-button
+              size="small"
+              variant="text"
+              data-testid="search-retry"
+              @click=${() => void this.loadSearchResults()}
+              >Retry</sl-button
+            >
+          </sl-alert>
+        `
+      : nothing;
 
-    const results = this.searchResults?.results ?? [];
+    const results = this.mergedSearchResults();
+    if (this.searchError && !results.length) return error;
     if (results.length === 0) {
       return html`
         <sl-card>
           <div class="empty-state" data-testid="search-empty">
             <sl-icon name="search"></sl-icon>
-            <div>
-              No session content matched that query in the selected range.
-            </div>
+            <div>No sessions matched that query in the selected range.</div>
           </div>
         </sl-card>
       `;
     }
 
     return html`
+      ${error}
       <div class="search-results">
         ${results.map((result) => this.renderSearchResult(result))}
       </div>
@@ -2581,9 +2679,12 @@ export class RuntimeSessionsView extends LitElement {
    */
   private searchResultSessions(): Array<Record<string, unknown>> {
     const listedById = new Map(
-      (this.sessions?.items ?? []).map((row) => [row.id, row])
+      [...(this.sessions?.items ?? []), ...this.titleMatches].map((row) => [
+        row.id,
+        row,
+      ])
     );
-    return (this.searchResults?.results ?? []).map((result) => {
+    return this.mergedSearchResults().map((result) => {
       const listed = listedById.get(result.runtime_session_id);
       if (listed) {
         return listed as unknown as Record<string, unknown>;
@@ -3189,7 +3290,7 @@ export class RuntimeSessionsView extends LitElement {
   render() {
     return html`
       <div
-        class="sessions-page ${this.selectedSessionId && (!this.isSearching || this.searchResults?.results.some((result) => result.runtime_session_id === this.selectedSessionId)) ? 'has-detail' : ''}"
+        class="sessions-page ${this.selectedSessionId && (!this.isSearching || this.mergedSearchResults().some((result) => result.runtime_session_id === this.selectedSessionId)) ? 'has-detail' : ''}"
       >
         <view-header
           class="list-chrome"
@@ -3400,7 +3501,7 @@ export class RuntimeSessionsView extends LitElement {
                           </section>
                           ${
                             this.selectedSessionId &&
-                            (this.searchResults?.results ?? []).some(
+                            this.mergedSearchResults().some(
                               (result) =>
                                 result.runtime_session_id ===
                                 this.selectedSessionId
