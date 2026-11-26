@@ -4999,10 +4999,15 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 		if err := preflightNpmGlobalInstall(installerPath, agentControlPluginPackageName(agent)); err != nil {
 			result["control_plugin_install_status"] = "npm_prefix_unwritable"
 			result["control_plugin_install_error"] = err.Error()
+			result["control_plugin_install_remediation"] = npmGlobalPrefixRemediation
 			result["control_plugin_installed"] = false
 			result["control_plugin_verified"] = false
 			if writer != nil {
 				fmt.Fprintf(writer, "  Agent Control plugin installation skipped: %s\n", err)
+			}
+			result = mergeStringMaps(result, ensureManagedAgentControlSidecar(agent, writer))
+			if result["control_plugin_verified"] != true {
+				result["control_plugin_verification"] = fmt.Sprintf("%s; managed sidecar: %v", err, result["control_plugin_verification"])
 			}
 			return result
 		}

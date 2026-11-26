@@ -1459,7 +1459,8 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		return runClaudeDesktopModelRouteCmd(cmd, args)
 	}
 	noCredentialImport, _ := cmd.Flags().GetBool("no-credential-import")
-	autoApprove := isAutoApprove(cmd)
+	autoApprove := isAutoApprove(cmd) || dryRun
+	input := bufio.NewReader(os.Stdin)
 	liveValidate, _ := cmd.Flags().GetBool("live-validate")
 	skipLiveValidate, _ := cmd.Flags().GetBool("skip-live-validate")
 	tagsInput, _ := cmd.Flags().GetStringSlice("tags")
@@ -1502,7 +1503,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		PinModelFamiliesSet: pinModelFamiliesSet,
 		Tags:                tags,
 		SkipConfirmation:    false,
-		Input:               os.Stdin,
+		Input:               input,
 		Output:              os.Stdout,
 	}
 
@@ -1531,6 +1532,15 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
+		if dryRun {
+			for _, candidate := range candidates {
+				if err := executeManagedEnrollment(candidate, opts); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
 		// Live validation is deferred to a single parallel post-onboarding
 		// phase whenever we are touching multiple agents in one invocation
 		// (both the explicit ``--all`` path and the implicit "no args, multiple
@@ -1548,7 +1558,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 					names = append(names, resolveAgentDisplayName(a))
 				}
 				confirmed, err := confirmActionDefaultYes(
-					bufio.NewReader(os.Stdin),
+					input,
 					os.Stdout,
 					fmt.Sprintf("Onboard agents %s into managed Preloop access now? (Y/n): ", strings.Join(names, ", ")),
 				)
@@ -1564,7 +1574,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			// explanation. --all keeps onboarding everything.
 			verified, unverified, reasons := partitionCandidatesByModelRouting(client, candidates)
 			enrolled, failures := onboardCandidatesBestEffort(
-				os.Stdin,
+				input,
 				os.Stdout,
 				verified,
 				opts,
@@ -1574,7 +1584,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			if len(unverified) > 0 {
 				printModelRoutingTierExplanation(os.Stdout, unverified, reasons, true)
 				secondTier, secondFailures := onboardCandidatesBestEffort(
-					os.Stdin,
+					input,
 					os.Stdout,
 					unverified,
 					opts,
@@ -1604,7 +1614,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 
 		// askApprovals=false: executeManagedEnrollment prompts for the
 		// approvals hook itself when this path runs interactively.
-		outcomes, err := promptToOnboardCandidatesTiered(os.Stdin, os.Stdout, client, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
+		outcomes, err := promptToOnboardCandidatesTiered(input, os.Stdout, client, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
 			agentOpts := opts
 			agentOpts.SkipConfirmation = autoApprove
 			agentOpts.DeferLiveValidate = deferLiveValidate

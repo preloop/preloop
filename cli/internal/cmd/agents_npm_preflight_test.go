@@ -88,3 +88,51 @@ func TestNpmPluginPreflightSkipsInstall(t *testing.T) {
 		t.Fatal("missing diagnostic")
 	}
 }
+
+func TestNpmPrefixFailureSurvivesSafeStatus(t *testing.T) {
+	result := safeStatusValidationJSON(map[string]interface{}{
+		"control_plugin_install_status": "npm_prefix_unwritable",
+		"control_plugin_install_error":  "/synthetic/private/npm-prefix",
+	})
+	if result["control_plugin_install_status"] != "npm_prefix_unwritable" {
+		t.Fatalf("prefix failure was dropped: %v", result)
+	}
+	if result["control_plugin_install_error"] != nil {
+		t.Fatal("safe status leaked a local path")
+	}
+	if result["control_plugin_install_remediation"] == nil {
+		t.Fatal("safe status omitted remediation")
+	}
+}
+
+func TestClaudeNpmPrefixFailureKeepsActionableReadinessAndFallback(t *testing.T) {
+	skipNoShebangOnWindows(t, "npm executable fixture")
+	home := setupDiscoveryHome(t)
+	prefix := filepath.Join(home, "npm")
+	if err := os.Mkdir(prefix, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(prefix, 0700)
+	if err := probeNpmInstallDirectory(prefix); err == nil {
+		t.Skip("user bypasses directory permissions")
+	}
+	bin := t.TempDir()
+	writeExecutableForTest(t, filepath.Join(bin, "npm"), "#!/bin/sh\nif [ \"$*\" = 'prefix -g' ]; then printf '%s\\n' \"$TEST_NPM_PREFIX\"; else exit 99; fi\n")
+	t.Setenv("PATH", bin)
+	t.Setenv("TEST_NPM_PREFIX", prefix)
+	previous, previousVersion := lookupAgentControlNode, readAgentControlNodeVersion
+	lookupAgentControlNode = func(string) (string, error) { return "/synthetic/node", nil }
+	readAgentControlNodeVersion = func(string) (string, error) { return "v22.0.0", nil }
+	t.Cleanup(func() { lookupAgentControlNode, readAgentControlNodeVersion = previous, previousVersion })
+	agent := AgentConfig{Name: "Claude Code"}
+	result := installAgentControlRuntimePlugin(agent, &bytes.Buffer{})
+	err := managedRuntimeControlReadinessError(agent, result)
+	if err == nil {
+		t.Fatal("incomplete setup reported ready")
+	}
+	for _, want := range []string{"not writable", "user-level Node", "npm prefix you own", "python3 is required"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("missing prefix cause, remediation or fallback attempt %q: %v", want, err)
+		}
+	}
+}

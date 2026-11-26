@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const npmGlobalPrefixRemediation = "Use a user-level Node installation, or configure an npm prefix you own (`npm config set prefix <user-owned-directory>`) and add its bin directory to PATH (the prefix itself on Windows), then retry onboarding"
+
 // preflightNpmGlobalInstall checks the directories npm will write before a
 // global plugin install. Keep npm's configured layout so the sidecar loader
 // and service resolve the same executable after installation.
@@ -31,7 +33,7 @@ func preflightNpmGlobalInstall(npmPath, packageName string) error {
 	packagePath := filepath.Join(root, filepath.FromSlash(packageName))
 	for _, path := range []string{bin, root, filepath.Dir(packagePath), packagePath} {
 		if err := probeNpmInstallDirectory(path); err != nil {
-			return fmt.Errorf("npm global prefix %q is not writable at %q: %w. Use a user-level Node installation, or configure an npm prefix you own (`npm config set prefix <user-owned-directory>`) and add its bin directory to PATH (the prefix itself on Windows), then retry onboarding", prefix, path, err)
+			return fmt.Errorf("npm global prefix %q is not writable at %q: %w. %s", prefix, path, err, npmGlobalPrefixRemediation)
 		}
 	}
 	return nil

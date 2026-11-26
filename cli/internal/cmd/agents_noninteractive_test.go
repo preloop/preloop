@@ -165,3 +165,67 @@ func TestOnboardNoninteractiveExplicitConfirm(t *testing.T) {
 		})
 	}
 }
+
+func TestOnboardNoninteractiveDryRunDoesNotPrompt(t *testing.T) {
+	for _, kind := range []string{"closed", "null", "pipe"} {
+		for _, mode := range []string{"single", "batch", "all"} {
+			t.Run(kind+"/"+mode, func(t *testing.T) {
+				home := setupDiscoveryHome(t)
+				runtimeExecutableProbe = func(string) (string, error) { return "/fixture/cursor", nil }
+				t.Setenv("PRELOOP_CONFIRM", "")
+				noninteractiveStdin(t, kind)
+				server, rec := newDiscoveryServer(t)
+				useDiscoveryServer(t, server.URL)
+				command := &cobra.Command{}
+				command.Flags().Bool("dry-run", true, "")
+				command.Flags().Bool("all", mode == "all", "")
+				args := []string{"Cursor"}
+				if mode != "single" {
+					args = nil
+				}
+				before := inventorySnapshot(t, home)
+				output := captureStdout(t, func() error { return runAgentsEnroll(command, args) })
+				if !strings.Contains(output, "Dry run only") || strings.Contains(output, "(Y/n)") || strings.Contains(output, "Agent name [") {
+					t.Fatalf("dry run did not preview without prompts: %s", output)
+				}
+				if !reflect.DeepEqual(before, inventorySnapshot(t, home)) {
+					t.Fatal("dry run changed fixture home")
+				}
+				for _, path := range rec.paths {
+					if strings.Contains(path, "enroll") || strings.Contains(path, "credentials") {
+						t.Fatalf("dry run attempted a mutation: %s", path)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestOnboardBatchPreservesPastedAnswers(t *testing.T) {
+	home := setupDiscoveryHome(t)
+	runtimeExecutableProbe = func(string) (string, error) { return "/fixture/cursor", nil }
+	t.Setenv("PRELOOP_CONFIRM", "")
+	server, _ := newDiscoveryServer(t)
+	useDiscoveryServer(t, server.URL)
+	previousTerminal := stdinIsTerminal
+	stdinIsTerminal = func() bool { return true }
+	t.Cleanup(func() { stdinIsTerminal = previousTerminal })
+	previousStdin := os.Stdin
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Candidate Yes, default name, then decline applying the plan.
+	_, _ = writer.WriteString("y\n\nn\n")
+	_ = writer.Close()
+	os.Stdin = reader
+	t.Cleanup(func() { os.Stdin = previousStdin; _ = reader.Close() })
+	before := inventorySnapshot(t, home)
+	output := captureStdout(t, func() error { return runAgentsEnroll(&cobra.Command{}, nil) })
+	if !strings.Contains(output, "Aborted without applying onboarding") {
+		t.Fatal("lost the pasted apply-plan answer")
+	}
+	if !reflect.DeepEqual(before, inventorySnapshot(t, home)) {
+		t.Fatal("declined batch enrollment changed home")
+	}
+}

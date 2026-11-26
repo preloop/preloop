@@ -323,7 +323,8 @@ always skips onboarding, even with `--yes` or `PRELOOP_CONFIRM=1`.
 run `preloop agents onboard` interactively. Accepting defaults without a terminal
 requires `PRELOOP_CONFIRM=1 preloop agents onboard`; `--yes` alone is insufficient.
 The separate `--unattended` enrollment-token flow retains its explicit authority.
-EOF never accepts a prompt default.
+EOF never accepts a prompt default. For a non-interactive preview, use
+`preloop agents onboard --dry-run`; it prints plans without onboarding prompts.
 
 The shell installer performs its read-only scan and skips login and onboarding
 when stdin is closed or piped, including `curl ... | sh`, unless
@@ -336,7 +337,9 @@ installation, or set an npm prefix you own with
 `npm config set prefix <user-owned-directory>` and add its `bin` directory to
 PATH (the prefix itself on Windows). Retry onboarding after fixing the prefix.
 The CLI keeps npm's configured installation layout so the plugin loader and
-service can find the same executable.
+service can find the same executable. The existing managed-sidecar fallback
+remains available if the npm preflight fails. JSON status includes the prefix
+failure code and generic repair guidance without exposing local paths.
 
 Discovery JSON intentionally uses an allowlist: the array retains registered app
 `name` values and adds stable `app_id` and `mcp_server_count` fields. Raw
