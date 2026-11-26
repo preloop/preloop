@@ -216,7 +216,7 @@ func TestPerformRunnerSetupYesThenInstalledSkips(t *testing.T) {
 	var first bytes.Buffer
 	if err := performRunnerSetup(runnerSetupRequest{
 		Out:      &first,
-		In:       strings.NewReader("y\n"),
+		In:       strings.NewReader("y\n\n"),
 		Policy:   &runnerPolicy{Requirement: "optional"},
 		Instance: "https://preloop.example.com",
 		TTY:      &tty,
@@ -262,7 +262,7 @@ func TestPerformRunnerSetupRequiredAsksConsentOnly(t *testing.T) {
 	var out bytes.Buffer
 	err := performRunnerSetup(runnerSetupRequest{
 		Out: &out,
-		In:  strings.NewReader(""),
+		In:  strings.NewReader("\n"),
 		Policy: &runnerPolicy{
 			Requirement:          "required",
 			CanDecide:            boolPtr(false),
@@ -332,7 +332,7 @@ func TestPerformRunnerSetupInstallErrorDoesNotFail(t *testing.T) {
 	var out bytes.Buffer
 	err := performRunnerSetup(runnerSetupRequest{
 		Out:       &out,
-		In:        strings.NewReader("y\n"),
+		In:        strings.NewReader("y\n\n"),
 		Policy:    &runnerPolicy{Requirement: "optional"},
 		TTY:       &tty,
 		Installed: func() bool { return false },
@@ -388,7 +388,7 @@ func TestPerformRunnerSetupPrintsHarnessesWhenPresent(t *testing.T) {
 	var out bytes.Buffer
 	err := performRunnerSetup(runnerSetupRequest{
 		Out:       &out,
-		In:        strings.NewReader("y\n"),
+		In:        strings.NewReader("y\n\n"),
 		Policy:    &runnerPolicy{Requirement: "optional"},
 		Instance:  server.URL,
 		TTY:       &tty,
@@ -426,7 +426,7 @@ func TestPerformRunnerSetupPrintsOnlineWithoutInventory(t *testing.T) {
 	var out bytes.Buffer
 	err := performRunnerSetup(runnerSetupRequest{
 		Out:       &out,
-		In:        strings.NewReader("y\n"),
+		In:        strings.NewReader("y\n\n"),
 		Policy:    &runnerPolicy{Requirement: "optional"},
 		TTY:       &tty,
 		Installed: func() bool { return false },
@@ -619,7 +619,7 @@ func TestPerformRunnerSetupStartFailureSkipsOnlineWait(t *testing.T) {
 	var out bytes.Buffer
 	err := performRunnerSetup(runnerSetupRequest{
 		Out:       &out,
-		In:        strings.NewReader("y\n"),
+		In:        strings.NewReader("y\n\n"),
 		Policy:    &runnerPolicy{Requirement: "optional"},
 		TTY:       &tty,
 		Installed: func() bool { return false },
@@ -712,7 +712,7 @@ func TestRunRunnerSetupFetchesRequiredPolicy(t *testing.T) {
 
 	var out bytes.Buffer
 	runnerSetupCmd.SetOut(&out)
-	runnerSetupCmd.SetIn(strings.NewReader(""))
+	runnerSetupCmd.SetIn(strings.NewReader("\n"))
 	t.Cleanup(func() {
 		runnerSetupCmd.SetOut(nil)
 		runnerSetupCmd.SetIn(nil)

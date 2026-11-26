@@ -28,6 +28,12 @@ PRELOOP_DISCOVERY_REPORT=1 preloop agents discover --json --no-onboard-prompt
 Without one of them nothing about the scan leaves the machine. With `--json`
 the report confirmation goes to stderr so stdout stays valid JSON.
 
+With closed or non-terminal stdin, discovery never offers or performs onboarding,
+including with `--report`, `--yes` or `PRELOOP_CONFIRM=1`. Text output explains
+that onboarding was skipped and directs you to run `preloop agents onboard`
+from a terminal. JSON and inventory output retain their machine-readable format.
+Use `--no-onboard-prompt` to suppress onboarding in an interactive terminal too.
+
 ## Device-scoped token for scheduled runs
 
 Reporting needs the `report_discovery` permission. Owner and admin roles have
