@@ -1,7 +1,7 @@
 """Pydantic schemas for AIModel."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import (
@@ -241,6 +241,23 @@ def validate_credential_payload(
         raise ValueError(
             f"invalid credential_payload for {credential_type}: " + "; ".join(problems)
         )
+    expires = payload.get("expires")
+    # Claude imports require a current native login. Do not consume its
+    # single-use refresh grant merely to establish whether a stale local
+    # bundle is usable. Stored gateway grants still refresh normally.
+    if (
+        credential_type == ANTHROPIC_CLAUDE_CODE_OAUTH_TYPE
+        and expires is not None
+        and expires <= int(datetime.now(timezone.utc).timestamp() * 1000)
+    ):
+        login = (
+            "claude auth login --claudeai"
+            if credential_type == ANTHROPIC_CLAUDE_CODE_OAUTH_TYPE
+            else "codex login"
+        )
+        raise ValueError(
+            f"Subscription login has expired. Run `{login}`, then rerun the command."
+        )
 
 
 class AIModelBase(BaseModel):
@@ -312,6 +329,8 @@ class AIModelCreate(AIModelBase):
             "Reuse an existing SecretReference instead of minting a new one. Used to "
             "create several models that share a single provider key. The secret must "
             "already belong to the caller's account."
+            " A matching subscription credential_payload may repair a terminally "
+            "failed shared secret in place; a healthy shared secret is preserved."
         ),
     )
 
@@ -333,7 +352,12 @@ class AIModelCreate(AIModelBase):
             )
         )
         if self.credentials_secret_id is not None and (
-            self.api_key or has_inline_payload or has_external
+            self.api_key
+            or has_external
+            or (
+                has_inline_payload
+                and self.credential_type not in _OAUTH_REQUIRED_PAYLOAD_KEYS
+            )
         ):
             raise ValueError(
                 "credentials_secret_id cannot be combined with new credential material"
@@ -386,6 +410,8 @@ class AIModelUpdate(BaseModel):
             "Repoint this model at an existing SecretReference instead of minting a "
             "new one. Used to keep several models on one provider key or OAuth "
             "lineage. The secret must already belong to the caller's account."
+            " A matching subscription credential_payload may repair a terminally "
+            "failed shared secret in place; a healthy shared secret is preserved."
         ),
     )
     is_default: Optional[bool] = None
@@ -428,7 +454,12 @@ class AIModelUpdate(BaseModel):
             )
         )
         if self.credentials_secret_id is not None and (
-            self.api_key or has_inline_payload or has_external
+            self.api_key
+            or has_external
+            or (
+                has_inline_payload
+                and self.credential_type not in _OAUTH_REQUIRED_PAYLOAD_KEYS
+            )
         ):
             raise ValueError(
                 "credentials_secret_id cannot be combined with new credential material"

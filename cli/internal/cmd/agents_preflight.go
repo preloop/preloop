@@ -23,6 +23,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 // agentSupportLevel retains legacy compatibility values for internal routing
@@ -139,18 +140,26 @@ func detectClaudeCodeAuthState() (agentAuthState, string) {
 	if err != nil {
 		return agentAuthStateUnknown, "could not resolve home directory"
 	}
+	if resolveClaudePrimaryAPIKey() != "" {
+		return agentAuthStateReady, "API key configured in ~/.claude.json"
+	}
 	credentialsPath := filepath.Join(home, ".claude", ".credentials.json")
 	if data, readErr := os.ReadFile(credentialsPath); readErr == nil {
+		if credential := parseClaudeOAuthCredentialBlob(string(data), 0); credential != nil {
+			if credential.ExpiresAtMS > 0 && oauthPayloadEpochMillis(credential.ExpiresAtMS) <= time.Now().UnixMilli() {
+				return agentAuthStateNotLoggedIn, claudeSubscriptionLoginRepair
+			}
+			if credential.RefreshToken != "" && credential.ExpiresAtMS == 0 {
+				return agentAuthStateUnknown, "subscription expiry is unknown; " + claudeSubscriptionLoginRepair
+			}
+		}
 		if extractClaudeTokenFromCredentialBlob(string(data)) != "" {
 			return agentAuthStateReady, "credential file present (~/.claude/.credentials.json)"
 		}
 		return agentAuthStateNotLoggedIn, "credential file exists but holds no usable token"
 	}
-	if resolveClaudePrimaryAPIKey() != "" {
-		return agentAuthStateReady, "API key configured in ~/.claude.json"
-	}
 	if claudeKeychainPresenceProbe() {
-		return agentAuthStateReady, "OS keychain entry present (service: \"Claude Code-credentials\")"
+		return agentAuthStateUnknown, "OS keychain entry present (service: \"Claude Code-credentials\"); subscription validity has not been checked"
 	}
 	return agentAuthStateNotLoggedIn, "no credential file, keychain entry, or API key found"
 }

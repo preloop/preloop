@@ -116,10 +116,10 @@ func TestDetectAgentAuthStateMatrix(t *testing.T) {
 			expectedState: agentAuthStateReady,
 		},
 		{
-			name:          "claude code with keychain entry only is ready",
+			name:          "claude code with keychain entry only is unverified",
 			agent:         AgentConfig{Name: "Claude Code"},
 			claudeProbe:   true,
-			expectedState: agentAuthStateReady,
+			expectedState: agentAuthStateUnknown,
 		},
 		{
 			name:          "claude code with no artifacts is not logged in",

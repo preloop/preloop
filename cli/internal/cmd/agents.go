@@ -2630,6 +2630,9 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		return fmt.Errorf("offboard partially completed; enrollment retry state retained: %w", err)
 	}
 	if state == nil || !state.OffboardArchived {
+		if err := preflightClaudeOffboardStore(client, agent, detail); err != nil {
+			return err
+		}
 		var recoveryErr error
 		recovery, recoveryErr = restoreSubscriptionLoginOnOffboard(client, agent, detail, os.Stdout)
 		if recoveryErr != nil {
@@ -4844,7 +4847,13 @@ func recoverManagedGatewayAfterLiveValidationFailure(
 	writer io.Writer,
 ) error {
 	if isClaudeCodeAgent(agent) {
-		return restoreClaudeGatewayEnvFromOriginal(agent, originalBytes, writer)
+		if err := restoreClaudeGatewayEnvFromOriginal(agent, originalBytes, nil); err != nil {
+			return err
+		}
+		if writer != nil {
+			fmt.Fprintln(writer, "  Model routing was restored to the previous settings after failed gateway validation; enrollment is retained.") //nolint:errcheck
+		}
+		return nil
 	}
 	if isCodexCLIAgent(agent) {
 		return restoreCodexGatewaySelectionFromOriginal(agent, originalBytes, writer)
@@ -6825,11 +6834,12 @@ func (a genericManagedMCPAdapter) ValidateManagedConfig(doc map[string]interface
 			if token, _ := env["ANTHROPIC_AUTH_TOKEN"].(string); strings.TrimSpace(token) != "" {
 				result["gateway_token_ok"] = true
 			}
-			if custom, _ := env["ANTHROPIC_CUSTOM_MODEL_OPTION"].(string); strings.TrimSpace(custom) != "" {
-				result["gateway_provider_ok"] = true
-			}
+			// Unpinned Claude uses built-in model selectors and has no custom
+			// model menu entry. The provider is configured by URL and auth.
+			result["gateway_provider_ok"] = result["gateway_base_url_ok"] == true && result["gateway_token_ok"] == true
 			for _, key := range []string{
 				"ANTHROPIC_DEFAULT_OPUS_MODEL",
+				"ANTHROPIC_DEFAULT_FABLE_MODEL",
 				"ANTHROPIC_DEFAULT_SONNET_MODEL",
 				"ANTHROPIC_DEFAULT_HAIKU_MODEL",
 			} {

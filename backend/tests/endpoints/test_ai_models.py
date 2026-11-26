@@ -331,9 +331,12 @@ def test_ai_model_schema_rejects_secret_reuse_with_new_credentials(extra):
             **extra,
         )
 
-    assert "credentials_secret_id cannot be combined with new credential material" in (
-        str(error.value)
+    expected = (
+        "invalid credential_payload"
+        if extra.get("credential_type") == "oauth_openai_codex"
+        else "credentials_secret_id cannot be combined with new credential material"
     )
+    assert expected in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -355,9 +358,12 @@ def test_ai_model_update_schema_rejects_secret_repoint_with_new_credentials(extr
             **extra,
         )
 
-    assert "credentials_secret_id cannot be combined with new credential material" in (
-        str(error.value)
+    expected = (
+        "invalid credential_payload"
+        if extra.get("credential_type") == "oauth_openai_codex"
+        else "credentials_secret_id cannot be combined with new credential material"
     )
+    assert expected in str(error.value)
 
 
 @pytest.mark.asyncio

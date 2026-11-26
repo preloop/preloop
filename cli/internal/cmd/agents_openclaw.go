@@ -550,14 +550,6 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	// gateway back to unpinned (or vice versa).
 	pinModelFamilies := resolveEnrollmentPinModelFamilies(agent, opts)
 
-	// Pre-onboarding readiness: when the agent itself is not logged in,
-	// onboarding still proceeds (the MCP/model config is written), but say so
-	// once up front so a later live-validation failure reads as "log the
-	// agent in", not as a Preloop bug.
-	if !opts.DryRun {
-		printAgentAuthPreflightNotice(output, agent)
-	}
-
 	syncAgent := prepareAgentForRemoteServerSync(agent, baseURL)
 
 	// Resolve upstream ambiguity interactively before building the plan
@@ -607,6 +599,13 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 
+	if err := preflightClaudeSubscriptionLogin(agent, opts, gatewayHints.SelectedAIModel); err != nil {
+		return err
+	}
+	if !opts.DryRun && !(isClaudeCodeAgent(agent) && gatewayHints.SelectedAIModel != nil) {
+		printAgentAuthPreflightNotice(output, agent)
+	}
+
 	plan, err := buildManagedMCPEnrollmentPlan(
 		agent,
 		baseURL,
@@ -626,6 +625,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			return upstreamErr
 		}
 		upstream = enrollmentSelectedUpstream(
+			agent,
 			upstream,
 			gatewayHints.PreferredModelAlias,
 			gatewayHints.SelectedAIModel,
@@ -1213,6 +1213,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		if liveOutcome != nil && len(liveOutcome.ValidationResult) > 0 {
 			validationResult = liveOutcome.ValidationResult
 		}
+		if err == nil && liveOutcome != nil && !liveOutcome.Attempted && !liveOutcome.Passed {
+			err = fmt.Errorf("gateway validation not run: %v", validationResult["live_validation_skip_reason"])
+		}
 		liveValidationGatewayVerified = liveValidationStatusGatewayVerified(validationResult)
 		liveValidationKeepsGatewayConfig = liveValidationStatusKeepsGatewayConfig(validationResult)
 		modelAlias := strings.TrimSpace(plan.ManagedModelAlias)
@@ -1245,7 +1248,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			liveValidationErr = err
 		}
 	}
-	if liveValidationErr != nil && liveValidationKeepsGatewayConfig {
+	if liveValidationErr != nil && validationResult["live_validation_status"] == "credential_repair_required" {
+		fmt.Fprintf(output, "  Repair: %s\n", subscriptionReconnectCommand(agent)) //nolint:errcheck
+	} else if liveValidationErr != nil && liveValidationKeepsGatewayConfig {
 		// A 429 (or a billing refusal) proves the durable credential
 		// authenticated at the gateway and the request reached the upstream
 		// provider — the wiring works, the provider just declined to serve this
@@ -1305,11 +1310,15 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 	dedupeManagedAgentControlSidecar(agent, pluginInstallResult)
 
-	fmt.Println(onboardingCompletionHeadline(
+	completionHeadline := onboardingCompletionHeadline(
 		resolveAgentDisplayName(agent),
 		liveValidationErr,
 		liveValidationRolledBack,
-	))
+	)
+	if deferredForParallelRun {
+		completionHeadline = fmt.Sprintf("Configured %s; gateway validation pending", resolveAgentDisplayName(agent))
+	}
+	fmt.Println(completionHeadline)
 	fmt.Printf("  Managed agent: %s (%s)\n", managedAgent.ID, runtimePrincipalIDForAgent(agent))
 	if len(serverSync.Added) > 0 {
 		fmt.Printf(
@@ -1398,6 +1407,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 	if liveValidationErr != nil {
+		if validationResult["live_validation_status"] == "credential_repair_required" {
+			return fmt.Errorf("onboarding incomplete: %w; repair: %s", liveValidationErr, subscriptionReconnectCommand(agent))
+		}
 		// Live validation failed but the managed gateway configuration was
 		// kept in place (upstream throttle / billing refusal / transient
 		// 5xx that survived the retry budget), so ``preloop agents validate
@@ -1447,7 +1459,7 @@ func onboardingCompletionHeadline(
 			agentName,
 		)
 	default:
-		return fmt.Sprintf("⚠ Onboarded %s with degraded validation", agentName)
+		return fmt.Sprintf("✗ Onboarding incomplete for %s: gateway validation failed", agentName)
 	}
 }
 
@@ -2565,7 +2577,7 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 			}
 		}
 		apiKey = ""
-		notes = append(notes, claudeCodeOAuthGatewayWarningNote())
+		notes = append(notes, "Claude Code uses subscription billing. If the gateway rejects the subscription login, run `preloop agents reconnect \"Claude Code\" --from-local` from a working local login.")
 		notes = append(
 			notes,
 			"Claude Code will display \"API billing\" for the gateway token after onboarding; model calls still use your Anthropic subscription and appear at $0 spend in the Preloop Console.",
@@ -2736,7 +2748,7 @@ func serverHasReusableGatewayCredential(
 	// A Codex enrollment that already holds a live same-type secret must not
 	// upload another copy. A secret in error is not reusable: the sync path
 	// uploads the local bundle onto that same secret instead.
-	if isCodexCLIAgent(agent) && !codexServerSecretIsReusable(target, upstream) {
+	if (isCodexCLIAgent(agent) || isClaudeCodeAgent(agent)) && !codexServerSecretIsReusable(target, upstream) {
 		return false
 	}
 	return true
@@ -2748,7 +2760,8 @@ func oauthCredentialStatusIsError(model *aiModelResponse) bool {
 	if model == nil {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(model.CredentialsStatus), "error")
+	status := strings.TrimSpace(model.CredentialsStatus)
+	return strings.EqualFold(status, "error") || strings.EqualFold(status, "revoked")
 }
 
 // codexServerSecretIsReusable reports whether a stored Codex credential can
@@ -3497,7 +3510,7 @@ func resolveClaudeCredentialFileOAuthCredential() (*claudeOAuthCredential, strin
 	}
 	credential := parseClaudeOAuthCredentialBlob(
 		string(data),
-		time.Now().UTC().Add(time.Hour).UnixMilli(),
+		0,
 	)
 	if credential == nil {
 		return nil, ""
@@ -3510,7 +3523,7 @@ func resolveClaudeKeychainOAuthCredential() (*claudeOAuthCredential, string) {
 	if raw := readClaudeKeychainCredentialBlob(); raw != "" {
 		if credential := parseClaudeOAuthCredentialBlob(
 			raw,
-			time.Now().UTC().Add(time.Hour).UnixMilli(),
+			0,
 		); credential != nil {
 			credential.Source = claudeOAuthSourceKeychain
 			return credential, "Resolved Claude Code OAuth credentials from OS Keychain (service: \"Claude Code-credentials\")."
@@ -7495,7 +7508,7 @@ func allowsSynthesizedEmptyConfig(agent AgentConfig) bool {
 		return true
 	}
 	switch strings.ToLower(strings.TrimSpace(agent.Name)) {
-	case "opencode", "openclaw", "copilot cli", "devin", "cursor":
+	case "opencode", "openclaw", "copilot cli", "devin", "cursor", "claude code":
 		return true
 	case "hermes":
 		return true
