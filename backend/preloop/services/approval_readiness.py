@@ -19,6 +19,7 @@ from preloop.services.subject_governance import (
 )
 from preloop.utils.email import email_is_configured
 from preloop.services.push_notifications import get_apns_service, is_fcm_configured
+from preloop.services.push_proxy import is_push_proxy_configured
 
 
 def native_workflow(
@@ -129,13 +130,13 @@ def describe_readiness(
         if prefs and prefs.enable_email and user.email and email_configured:
             destinations.add("Email")
         if prefs and prefs.enable_mobile_push and prefs.notify_when_needed:
-            ios = (
-                bool(prefs.get_device_tokens(platform="ios"))
-                and get_apns_service() is not None
+            apns_available = get_apns_service() is not None
+            use_proxy = not apns_available and is_push_proxy_configured()
+            ios = bool(prefs.get_device_tokens(platform="ios")) and (
+                apns_available or use_proxy
             )
-            android = (
-                bool(prefs.get_device_tokens(platform="android"))
-                and is_fcm_configured()
+            android = bool(prefs.get_device_tokens(platform="android")) and (
+                is_fcm_configured() or use_proxy
             )
             if ios or android:
                 destinations.add("Mobile push")

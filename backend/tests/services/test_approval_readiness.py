@@ -45,6 +45,9 @@ def context(monkeypatch: pytest.MonkeyPatch) -> tuple:
         readiness.notification_preferences, "get_by_user", lambda *a: None
     )
     monkeypatch.setattr(readiness, "email_is_configured", lambda: True)
+    monkeypatch.setattr(readiness, "get_apns_service", lambda: None)
+    monkeypatch.setattr(readiness, "is_fcm_configured", lambda: False)
+    monkeypatch.setattr(readiness, "is_push_proxy_configured", lambda: False)
     return MagicMock(), account, user, workflow
 
 
@@ -202,6 +205,27 @@ def test_push_requires_enabled_preference_token_and_provider(
     assert not readiness.describe_readiness(
         db, account=account, workflow=workflow
     ).destinations
+
+
+@pytest.mark.parametrize("platform", ["ios", "android"])
+def test_push_proxy_is_a_configured_destination(
+    context: tuple, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """A proxy can deliver to registered devices without native push credentials."""
+    db, account, _, workflow = context
+    prefs = models.NotificationPreferences(
+        enable_email=False,
+        enable_mobile_push=True,
+        notify_when_needed=True,
+        mobile_device_tokens=[{"platform": platform, "token": "synthetic-token"}],
+    )
+    monkeypatch.setattr(
+        readiness.notification_preferences, "get_by_user", lambda *a: prefs
+    )
+    monkeypatch.setattr(readiness, "is_push_proxy_configured", lambda: True)
+    result = readiness.describe_readiness(db, account=account, workflow=workflow)
+    assert result.destinations == ["Mobile push"]
+    assert not result.issues
 
 
 def test_team_recipients_are_deduplicated_and_account_scoped(
