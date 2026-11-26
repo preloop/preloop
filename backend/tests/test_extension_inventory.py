@@ -117,6 +117,21 @@ def store(
     )
 
 
+def test_count_distinct_present_account_extensions(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Count identities once across devices, excluding foreign and absent rows."""
+    db, account = db_session, test_user.account_id
+    store(db, account, report([extension(), extension(id="second")]))
+    other_device = report()
+    other_device["workstation_fingerprint"] = "c" * 64
+    store(db, account, other_device)
+    assert crud_discovered_extension.count_for_account(db, account_id=account) == 2
+    assert crud_discovered_extension.count_for_account(db, account_id=uuid4()) == 0
+    store(db, account, report([], at=NOW + timedelta(minutes=1)))
+    assert crud_discovered_extension.count_for_account(db, account_id=account) == 1
+
+
 def test_upsert_reconciliation_and_profile_isolation(
     db_session: Session, test_user: models.User
 ) -> None:
@@ -226,6 +241,7 @@ def test_http_ingest_approval_and_aggregate(client: TestClient) -> None:
     response = client.post(REPORTS, json=payload)
     assert response.status_code == 202, response.text
     assert client.post(REPORTS, json=payload).json()["created"] == 0
+    assert client.get(EXTENSIONS + "/count").json() == {"count": 1}
     page = client.get(EXTENSIONS).json()
     assert page["items"][0]["approval_state"] == "unknown"
     response = client.put(
@@ -276,6 +292,12 @@ def test_http_permissions(
     )
     client.app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
     assert client.get(EXTENSIONS).status_code == 200
+    assert client.get(EXTENSIONS + "/count").status_code == 200
+    monkeypatch.setattr(
+        "preloop.utils.permissions.user_holds_permission",
+        lambda db, user, permission: False,
+    )
+    assert client.get(EXTENSIONS + "/count").status_code == 403
     assert client.put(APPROVAL, json={"approval_state": "approved"}).status_code == 403
 
 
@@ -829,11 +851,15 @@ def test_coverage_uses_latest_device_reasons_and_is_account_scoped(
             "reasons": ["extension_project_unscanned"],
         }
     ]
-    assert (
-        crud_discovered_extension.coverage(db_session, account_id=test_user.account_id)
-        == expected
+    stored = crud_discovered_extension.coverage(
+        db_session, account_id=test_user.account_id
     )
-    assert client.get(EXTENSIONS).json()["coverage"] == expected
+    # The report time lets the inventory tell a fresh report from a stale one.
+    assert [row.pop("reported_at") for row in stored] == [NOW]
+    assert stored == expected
+    api = client.get(EXTENSIONS).json()["coverage"]
+    assert all(row.pop("reported_at") for row in api)
+    assert api == expected
     assert crud_discovered_extension.coverage(db_session, account_id=uuid4()) == []
     assert (
         crud_discovered_extension.coverage(
@@ -849,6 +875,10 @@ def test_coverage_uses_latest_device_reasons_and_is_account_scoped(
     )
     assert coverage[0]["completeness"] == "complete"
     assert coverage[0]["reasons"] == []
+    # The stale-report guidance reads the latest report's end time.
+    assert coverage[0]["reported_at"] == NOW + timedelta(minutes=1)
+    reported = client.get(EXTENSIONS).json()["coverage"][0]["reported_at"]
+    assert datetime.fromisoformat(reported) == NOW + timedelta(minutes=1)
 
 
 def test_extension_reason_codes_preserve_legacy_bytes_and_reject_paths() -> None:
