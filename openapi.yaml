@@ -2265,6 +2265,37 @@ paths:
             type: string
           - type: 'null'
           title: Group
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 300
+          - type: 'null'
+          title: Q
+      - name: extension_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - plugin
+            - skill
+            - hook
+            - command
+            type: string
+          - type: 'null'
+          title: Extension Kind
+      - name: extension_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^[^\x00-\x1f\x7f/\\]{1,128}$
+          - type: 'null'
+          title: Extension Id
       - name: limit
         in: query
         required: false

@@ -213,7 +213,7 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 		fmt.Fprintln(w, legacyInventoryNotice)
 		disclosure = "inventory metadata"
 	}
-	fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent %s; no file contents or credentials.\n", resp.Received, resp.Created, disclosure) //nolint:errcheck
+	fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent %s; no file bodies, hook arguments or credential files.\n", resp.Received, resp.Created, disclosure) //nolint:errcheck
 	return nil
 }
 

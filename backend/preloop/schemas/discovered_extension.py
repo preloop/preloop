@@ -12,8 +12,8 @@ from pydantic import (
     Field,
     SerializerFunctionWrapHandler,
     field_validator,
-    model_validator,
     model_serializer,
+    model_validator,
 )
 
 ExtensionKind = Literal["plugin", "skill", "hook", "command"]
@@ -157,7 +157,7 @@ class ExtensionMetadata(BaseModel):
         self, handler: SerializerFunctionWrapHandler
     ) -> dict[str, Any]:
         """Keep historical v3 replay bytes stable when details are absent."""
-        data = handler(self)
+        data: dict[str, Any] = handler(self)
         if self.details is None:
             data.pop("details", None)
         return data
@@ -183,6 +183,20 @@ class ExtensionMetadata(BaseModel):
             raise ValueError("Hooks require event and count")
         if self.kind != "hook" and (self.event is not None or self.count is not None):
             raise ValueError("Only hooks have event and count")
+        if self.details is not None:
+            details = self.details
+            if self.kind != "skill" and details.script_count is not None:
+                raise ValueError("Only skills have script counts")
+            if self.kind != "plugin" and (
+                details.bundles is not None or details.author
+            ):
+                raise ValueError("Only plugins have author and bundle counts")
+            if details.hook_matchers:
+                if (
+                    self.kind != "hook"
+                    or sum(item.count for item in details.hook_matchers) != self.count
+                ):
+                    raise ValueError("Hook matcher counts must match the event count")
         return self
 
 

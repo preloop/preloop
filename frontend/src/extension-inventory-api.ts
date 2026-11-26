@@ -29,7 +29,30 @@ export type ExtensionSource =
   | 'local'
   | 'builtin'
   | 'unknown';
+export interface ExtensionDetails {
+  name?: string;
+  description?: string;
+  description_withheld?: boolean;
+  invocation?: string;
+  script_count?: number | null;
+  plugin?: string;
+  author?: string;
+  bundles?: {
+    skills: number;
+    commands: number;
+    hooks: number;
+    mcp_servers: number;
+    agents: number;
+  } | null;
+  hook_matchers?: Array<{
+    matcher?: string;
+    matcher_withheld?: boolean;
+    count: number;
+    commands: Array<{ executable: string; preloop_managed: boolean }>;
+  }>;
+}
 export interface ExtensionKey {
+  details?: ExtensionDetails | null;
   agent_kind: string;
   extension_kind: 'plugin' | 'skill' | 'hook' | 'command';
   extension_id: string;
@@ -78,6 +101,9 @@ export interface ExtensionPage {
   completeness: 'complete' | 'partial' | 'unknown';
 }
 export interface ExtensionFilters {
+  q?: string;
+  extension_kind?: ExtensionKey['extension_kind'];
+  extension_id?: string;
   fingerprint?: string;
   agent_kind?: string;
   state?: ExtensionEffectiveState;
@@ -260,4 +286,19 @@ export async function setExtensionApproval(
         : {}),
     }),
   });
+}
+
+/** Read device observations for exactly one extension, without aggregation. */
+export async function getExtensionDevices(
+  row: ExtensionKey,
+  cursor?: string
+): Promise<ExtensionPage> {
+  const params = new URLSearchParams({
+    limit: '200',
+    agent_kind: row.agent_kind,
+    extension_kind: row.extension_kind,
+    extension_id: row.extension_id,
+  });
+  if (cursor) params.set('cursor', cursor);
+  return request<ExtensionPage>(`/discovery-extensions?${params}`);
 }

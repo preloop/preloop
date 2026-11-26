@@ -305,7 +305,7 @@ func (r *extensionRoot) localFiles(base, scope, project string, skills bool) {
 
 var extensionEventPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,31}$`)
 
-func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string) {
+func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string, files ...string) {
 	if raw == nil {
 		return
 	}
@@ -386,7 +386,12 @@ func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string) {
 		var local *extensionLocalDetail
 		if r.scan.localDisplay {
 			r.scan.hookLocal[key] = append(r.scan.hookLocal[key], commands...)
-			local = &extensionLocalDetail{Commands: r.scan.hookLocal[key]}
+			local = &extensionLocalDetail{Commands: r.scan.hookLocal[key], Files: files}
+			for _, old := range r.scan.extensions {
+				if old.Kind == "hook" && old.Event == event && old.Scope == scope && old.ProjectRefHash == project && old.Local != nil {
+					local.Files = uniqueSorted(append(local.Files, old.Local.Files...))
+				}
+			}
 		}
 		sort.Strings(hashes)
 		r.scan.add(inventoryExtension{Details: &inventoryExtensionDetails{Invocation: "Runs on " + event, HookMatchers: r.scan.hookDetails[key]}, Local: local, Kind: "hook", ID: event, SourceKind: "local", Scope: scope, ProjectRefHash: project, Event: event, Count: len(hashes), ContentHash: extensionHash([]byte(strings.Join(hashes, "\n"))), HashStatus: contentHashOK})
@@ -404,10 +409,10 @@ func (r *extensionRoot) hookDirectory(base, scope, project string) {
 		if !entry.IsDir() && filepath.Ext(path) == ".json" {
 			doc := r.document(path)
 			if hooks, ok := doc["hooks"]; ok {
-				r.hooks(hooks, scope, project)
+				r.hooks(hooks, scope, project, path)
 			} else if doc != nil {
 				data, _ := json.Marshal(doc)
-				r.hooks(data, scope, project)
+				r.hooks(data, scope, project, path)
 			}
 		} else {
 			r.scan.fail("extension_hook_unbound")
@@ -558,7 +563,7 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool,
 		}
 		root.localFiles(filepath.Join(".claude", "skills"), "user", "", true)
 		root.localFiles(filepath.Join(".claude", "commands"), "user", "", false)
-		root.hooks(settings["hooks"], "user", "")
+		root.hooks(settings["hooks"], "user", "", ".claude/settings.json")
 		root.hookDirectory(filepath.Join(".claude", "hooks"), "user", "")
 		if !profileOnly {
 			doc := root.document(".claude.json")
@@ -646,7 +651,8 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool,
 				}
 				project.localFiles(filepath.Join(".claude", "skills"), "project", hash, true)
 				project.localFiles(filepath.Join(".claude", "commands"), "project", hash, false)
-				project.hooks(settings["hooks"], "project", hash)
+				project.hooks(settings["hooks"], "project", hash, ".claude/settings.json")
+				project.hooks(localSettings["hooks"], "project", hash, ".claude/settings.local.json")
 				project.hookDirectory(filepath.Join(".claude", "hooks"), "project", hash)
 				project.root.Close()
 			}
@@ -654,12 +660,26 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool,
 	} else {
 		root.codexPlugins()
 		root.localFiles(filepath.Join(".codex", "skills"), "user", "", true)
+		root.localFiles(filepath.Join(".agents", "skills"), "user", "", true)
+		if !profileOnly {
+			for _, path := range explicitProjects {
+				project := scan.open(path)
+				if project == nil {
+					scan.fail("extension_unreadable")
+					continue
+				}
+				hash := scan.projectHash(path)
+				project.localFiles(filepath.Join(".codex", "skills"), "project", hash, true)
+				project.localFiles(filepath.Join(".agents", "skills"), "project", hash, true)
+				project.root.Close()
+			}
+		}
 		doc := root.document(filepath.Join(".codex", "hooks.json"))
 		if hooks, ok := doc["hooks"]; ok {
-			root.hooks(hooks, "user", "")
+			root.hooks(hooks, "user", "", ".codex/hooks.json")
 		} else if doc != nil {
 			data, _ := json.Marshal(doc)
-			root.hooks(data, "user", "")
+			root.hooks(data, "user", "", ".codex/hooks.json")
 		}
 		if data := root.read(filepath.Join(".codex", "config.toml")); data != nil {
 			var doc map[string]any
@@ -667,7 +687,7 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool,
 				scan.fail("extension_malformed")
 			} else if hooks, ok := doc["hooks"]; ok {
 				raw, _ := json.Marshal(hooks)
-				root.hooks(raw, "user", "")
+				root.hooks(raw, "user", "", ".codex/config.toml")
 			}
 		}
 	}
