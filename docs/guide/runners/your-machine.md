@@ -70,7 +70,9 @@ runner:
 ```
 
 `preloop runner status` shows discovery's last attempt, last success and result.
-The setting is reread every minute. Account administrators can also disable
+The setting is reread every minute. The shared device privacy setting
+`discovery.no_extension_details: true` omits extension descriptions from both
+manual and automatic reports. Account administrators can also disable
 automatic reporting or set an interval from one hour through seven days. See
 [discovery reporting](../agent-discovery-reporting.md#automatic-runner-reports)
 for the payload, account controls and permission boundary.

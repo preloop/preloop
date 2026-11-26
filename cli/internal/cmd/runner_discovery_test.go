@@ -79,6 +79,7 @@ func TestRunnerDiscoveryIntervalBounds(t *testing.T) {
 }
 
 func TestRunnerDiscoveryWorkerOptOutAndOffline(t *testing.T) {
+	t.Setenv(discoveryReportEnv, "")
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := newRunnerDiscoverySchedule(now, runnerDiscoveryState{}, func() float64 { return 0 })
 	calls, reports := 0, 0
@@ -300,5 +301,68 @@ func TestRunnerDiscoveryReportPreservesEnrollmentHash(t *testing.T) {
 	want := configPathHash(testDiscoverySalt, home, filepath.Join(home, ".cursor", "mcp.json"))
 	if report.Candidates[0].ConfigPathHash != want {
 		t.Fatal("runner discovery does not match enrollment's hash")
+	}
+}
+
+func TestRunnerDiscoveryHonorsExtensionDetailOptOut(t *testing.T) {
+	for _, mode := range []string{"default", "device", "flag"} {
+		t.Run(mode, func(t *testing.T) {
+			resetInventoryCommand(t)
+			home := setupDiscoveryHome(t)
+			agentSpecs = append(agentSpecs, agentSpec{Name: "Claude Code", ConfigPaths: []string{".claude/settings.json"}, BootstrapConfigPath: ".claude/settings.json"})
+			writeInventoryFixture(t, home, ".claude/settings.json", `{}`)
+			writeInventoryFixture(t, home, ".claude/skills/review/SKILL.md", "---\nname: review\ndescription: Review changes carefully\n---\nLocal instructions\n")
+			if mode == "device" {
+				writeInventoryFixture(t, home, ".preloop/config.yaml", "discovery:\n  no_extension_details: true\n")
+			}
+			if mode == "flag" {
+				if err := agentsDiscoverCmd.Flags().Set("no-extension-details", "true"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			inventoryProbes = inventoryTestDependencies(t, home)
+			before := inventorySnapshot(t, home)
+			report, _, err := collectDiscoveryInventoryReport(testDiscoverySalt, "fixture-device", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, candidate := range report.Candidates {
+				if candidate.Extensions == nil {
+					continue
+				}
+				for _, ext := range *candidate.Extensions {
+					if ext.Kind != "skill" {
+						continue
+					}
+					found = true
+					if mode == "default" && (ext.Details == nil || ext.Details.Description != "Review changes carefully") {
+						t.Fatal("missing default details")
+					}
+					if mode != "default" && ext.Details != nil {
+						t.Fatal("extension details survived opt-out")
+					}
+				}
+			}
+			if !found {
+				t.Fatal("missing extension fixture")
+			}
+			if !reflect.DeepEqual(before, inventorySnapshot(t, home)) {
+				t.Fatal("privacy controls changed application files")
+			}
+		})
+	}
+}
+
+func TestRunnerDiscoveryEnvironmentOptOut(t *testing.T) {
+	for _, value := range []string{"0", "false", "no", "off"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv(discoveryReportEnv, value)
+			worker := runnerDiscoveryWorker{schedule: newRunnerDiscoverySchedule(time.Now(), runnerDiscoveryState{}, func() float64 { return 0 }), fetchPolicy: func(*runnerDiscoveryPolicy) error { t.Fatal("opt-out contacted server"); return nil }}
+			worker.tick(time.Now().Add(time.Hour), config.RunnerDiscoveryConfig{}, nil)
+			if worker.schedule.Result != "disabled on device" {
+				t.Fatal("missing disabled status")
+			}
+		})
 	}
 }

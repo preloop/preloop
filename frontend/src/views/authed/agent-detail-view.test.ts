@@ -483,6 +483,39 @@ describe('AgentDetailView', () => {
     expect((element as any).selectedSessionId).to.equal(null);
   });
 
+  it('shows extensions reported for this agent kind with the stated scope', async () => {
+    const element = document.createElement(
+      'agent-detail-view'
+    ) as AgentDetailView;
+    element.onBeforeEnter({ params: { agentId: 'agent-1' } });
+    await fixture(element);
+    await waitUntil(
+      () =>
+        !!element.shadowRoot?.querySelector('[data-testid="agent-extensions"]')
+    );
+    const section = element.shadowRoot!.querySelector(
+      '[data-testid="agent-extensions"]'
+    )!;
+    expect(
+      section.querySelector('[data-testid="agent-extensions-caption"]')!
+        .textContent
+    ).to.contain('Extensions reported for claude_code agents in this account');
+    const inventory = section.querySelector('extension-inventory') as any;
+    expect(inventory.agentKind).to.equal('claude_code');
+    inventory.dispatchEvent(
+      new CustomEvent('extensions-loaded', {
+        detail: { count: 63, more: false },
+      })
+    );
+    await element.updateComplete;
+    expect(section.querySelector('summary')!.textContent).to.contain(
+      'Extensions (63)'
+    );
+    window.history.replaceState(null, '', '/console/agents/agent-2');
+    element.onBeforeEnter({ params: { agentId: 'agent-2' } });
+    expect((element as any).extensionCount).to.equal(null);
+  });
+
   it('distinguishes never-run, failed and unsupported checks without claiming they are disabled', async () => {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`

@@ -1,10 +1,20 @@
 """Bounded extension metadata and account approval API contracts."""
 
+import re
+import unicodedata
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_validator,
+    model_serializer,
+)
 
 ExtensionKind = Literal["plugin", "skill", "hook", "command"]
 ApprovalState = Literal["approved", "unapproved", "unknown"]
@@ -25,8 +35,103 @@ IDENTIFIER_PATTERN = r"^[^\x00-\x1f\x7f/\\]{1,128}$"
 VERSION_CONSTRAINT_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9.+_\-]*(?:\.\*)?$"
 
 
+DetailText = Annotated[str, Field(max_length=300)]
+
+
+class ExtensionHookCommand(BaseModel):
+    """Executable classification without arguments or source paths."""
+
+    model_config = ConfigDict(extra="forbid")
+    executable: str = Field(pattern=r"^[A-Za-z0-9_.+\-]{1,128}$")
+    preloop_managed: bool
+
+
+class ExtensionHookMatcher(BaseModel):
+    """One matcher and the commands bound to it."""
+
+    model_config = ConfigDict(extra="forbid")
+    matcher: DetailText = ""
+    matcher_withheld: bool = False
+    count: int = Field(ge=1, le=10000)
+    commands: list[ExtensionHookCommand] = Field(max_length=10000)
+
+    @model_validator(mode="after")
+    def consistent_count(self) -> "ExtensionHookMatcher":
+        """Require one classification per command and withhold private matchers."""
+        if self.count != len(self.commands) or (self.matcher_withheld and self.matcher):
+            raise ValueError("Inconsistent hook matcher")
+        validate_detail_text(self.matcher)
+        return self
+
+
+class ExtensionBundleCounts(BaseModel):
+    """Observed components within an installed plugin."""
+
+    model_config = ConfigDict(extra="forbid")
+    skills: int = Field(ge=0, le=10000)
+    commands: int = Field(ge=0, le=10000)
+    hooks: int = Field(ge=0, le=10000)
+    mcp_servers: int = Field(ge=0, le=10000)
+    agents: int = Field(ge=0, le=10000)
+
+
+def validate_detail_text(value: str) -> str:
+    """Reject paths, URLs, controls and noncanonical authored whitespace."""
+    if any(unicodedata.category(char) in {"Cc", "Cf"} for char in value):
+        raise ValueError("Control characters are not allowed")
+    if " ".join(value.split()) != value:
+        raise ValueError("Text must have normalized whitespace")
+    if re.search(
+        r"(?i)([a-z][a-z0-9+.-]*://|www\.|[a-z]:[\\/]|(^|[\s(\"'])[/\\~]|[\w.-]+/[^\s]+)",
+        value,
+    ):
+        raise ValueError("Paths and URLs are not allowed")
+    return value
+
+
+class ExtensionDetails(BaseModel):
+    """Bounded descriptive metadata; bodies and command strings are forbidden."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: DetailText = ""
+    description: DetailText = ""
+    description_withheld: bool = False
+    invocation: DetailText = ""
+    script_count: int | None = Field(default=None, ge=0, le=10000)
+    plugin: DetailText = ""
+    author: DetailText = ""
+    bundles: ExtensionBundleCounts | None = None
+    hook_matchers: list[ExtensionHookMatcher] = Field(
+        default_factory=list, max_length=10000
+    )
+
+    @field_validator("name", "description", "plugin", "author")
+    @classmethod
+    def safe_text(cls, value: str) -> str:
+        """Apply the authored-text boundary independently of the collector."""
+        return validate_detail_text(value)
+
+    @field_validator("invocation")
+    @classmethod
+    def safe_invocation(cls, value: str) -> str:
+        """Allow only the documented generated invocation grammar."""
+        if value and not re.fullmatch(
+            r"(?:(?:/[A-Za-z0-9_:.-]+|\$[A-Za-z0-9_:.-]+ \(or /skills\))(?:; loaded by the model when relevant)?|loaded by the model when relevant|Runs on [A-Za-z][A-Za-z0-9_-]{0,31})",
+            value,
+        ):
+            raise ValueError("Invalid invocation")
+        return value
+
+    @model_validator(mode="after")
+    def withheld_description(self) -> "ExtensionDetails":
+        """A withheld description never accompanies authored text."""
+        if self.description_withheld and self.description:
+            raise ValueError("Withheld descriptions must be empty")
+        return self
+
+
 class ExtensionMetadata(BaseModel):
-    """Only identifiers, version, classification and final hashes leave a device."""
+    """Identifiers, hashes and optional bounded descriptive metadata."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -45,6 +150,17 @@ class ExtensionMetadata(BaseModel):
     event: str | None = Field(default=None, pattern=r"^[A-Za-z][A-Za-z0-9_\-]{0,31}$")
     count: int | None = Field(default=None, ge=1, le=10000)
     id_hashed: bool = False
+    details: ExtensionDetails | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_optional_details(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """Keep historical v3 replay bytes stable when details are absent."""
+        data = handler(self)
+        if self.details is None:
+            data.pop("details", None)
+        return data
 
     @field_validator("id")
     @classmethod
@@ -142,6 +258,7 @@ class ExtensionApprovalSummary(ExtensionApprovalFields):
 class DiscoveredExtensionSummary(BaseModel):
     """Device inventory joined to its account-wide decision."""
 
+    details: ExtensionDetails | None = None
     fingerprint: str
     profile_ref: str
     agent_kind: str
@@ -178,6 +295,7 @@ class ExtensionAggregate(BaseModel):
     agent_kind: str
     extension_kind: ExtensionKind
     extension_id: str
+    details: ExtensionDetails | None = None
     device_count: int
     versions: list[str]
     source_kinds: list[SourceKind]
@@ -196,6 +314,7 @@ class ExtensionCoverage(BaseModel):
     collector_version: str | None = None
     completeness: Literal["complete", "partial", "unknown"]
     reasons: list[str] = Field(default_factory=list)
+    reported_at: datetime | None = None
 
 
 class DiscoveredExtensionList(BaseModel):

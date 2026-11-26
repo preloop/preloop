@@ -137,6 +137,7 @@ func init() {
 		"force", false,
 		"with --delete, halt executions the runner still holds instead of refusing",
 	)
+	runnerFgCmd.Flags().BoolVar(&inventoryNoExtensionDetails, "no-extension-details", false, "omit extension descriptions from discovery reports")
 	runnerFgCmd.Flags().StringSlice("labels", nil, "labels used to match runner pools")
 	runnerFgCmd.Flags().String("name", "", "runner display name (default: hostname)")
 	runnerFgCmd.Flags().String("device-ref", "", "stable device reference shared with discovery (hashed before reporting)")

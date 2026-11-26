@@ -104,7 +104,7 @@ class ObservedProfile(SafeEvidenceModel):
 class DiscoveryEvidence(SafeEvidenceModel):
     """Versioned bounded observation, including empty and failed scans."""
 
-    schema_version: Literal[1, 2, 3] = 1
+    schema_version: Literal[1, 2, 3, 4] = 1
     extension_completeness: Literal["complete", "partial", "failed"] | None = None
     extension_errors: list[
         Literal[
@@ -200,7 +200,7 @@ class DiscoveryEvidence(SafeEvidenceModel):
             self.profiles or any(app.profile_ref for app in self.applications)
         ):
             raise ValueError("Profile metadata requires schema version 2")
-        if self.schema_version == 2 or (self.schema_version == 3 and self.profiles):
+        if self.schema_version == 2 or (self.schema_version >= 3 and self.profiles):
             if any(
                 app.profile_ref not in refs
                 and not (
@@ -232,6 +232,10 @@ class DiscoveryEvidence(SafeEvidenceModel):
                 "Complete extensions cannot include failed or partial extension scope"
             )
         for app in self.applications:
+            if self.schema_version < 4 and any(
+                ext.details is not None for ext in (app.extensions or [])
+            ):
+                raise ValueError("Extension details require schema version 4")
             if self.schema_version < 3 and (
                 app.extensions is not None or app.completeness is not None
             ):
@@ -244,7 +248,7 @@ class DiscoveryEvidence(SafeEvidenceModel):
                         "Managed configuration does not collect extensions"
                     )
                 continue
-            if self.schema_version == 3:
+            if self.schema_version >= 3:
                 if app.extensions is None or app.completeness is None:
                     raise ValueError(
                         "Version 3 requires extensions and app completeness"

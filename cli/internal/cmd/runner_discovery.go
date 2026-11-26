@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/api"
@@ -36,6 +37,14 @@ func newRunnerDiscoverySchedule(now time.Time, saved runnerDiscoveryState, rando
 		s.NextAttempt = startup
 	}
 	return s
+}
+
+func runnerDiscoveryEnvironmentDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(discoveryReportEnv))) {
+	case "0", "false", "no", "off":
+		return true
+	}
+	return false
 }
 
 func runnerDiscoveryInterval(local string, policy int) time.Duration {
@@ -177,7 +186,7 @@ func (w *runnerDiscoveryWorker) tick(now time.Time, cfg config.RunnerDiscoveryCo
 		s.Result = "configuration unavailable; collection skipped"
 		return
 	}
-	if cfg.Enabled != nil && !*cfg.Enabled {
+	if (cfg.Enabled != nil && !*cfg.Enabled) || runnerDiscoveryEnvironmentDisabled() {
 		s.Result = "disabled on device"
 		return
 	}
@@ -263,7 +272,7 @@ func printRunnerDiscoveryStatus(out io.Writer) {
 	state := readRunnerDiscoveryState()
 	result := state.Result
 	cfg, err := config.Load()
-	if err == nil && cfg.Runner.Discovery.Enabled != nil && !*cfg.Runner.Discovery.Enabled {
+	if runnerDiscoveryEnvironmentDisabled() || (err == nil && cfg.Runner.Discovery.Enabled != nil && !*cfg.Runner.Discovery.Enabled) {
 		result = "disabled on device"
 	}
 	if result == "" {

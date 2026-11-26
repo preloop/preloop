@@ -50,7 +50,18 @@ runner:
     interval: 24h
 ```
 
-Set `enabled: false` to stop automatic discovery on that device. The runner reads
+Extension description opt-out applies to manual and automatic reports alike:
+
+```yaml
+discovery:
+  no_extension_details: true
+```
+
+The equivalent foreground flag is `preloop runner fg --no-extension-details`.
+
+Set `enabled: false` to stop automatic discovery on that device. An explicit
+`PRELOOP_DISCOVERY_REPORT=0` (also `false`, `no` or `off`) in the service environment
+also opts out. The runner reads
 this setting every minute. Intervals are bounded to one hour through seven days;
 an invalid duration uses 24 hours. `preloop runner status` shows the last attempt,
 last successful report, result, and the opt-out instruction, even while offline.
@@ -587,7 +598,10 @@ is not `approved` returns 422, a missing approval or a pin of another approval
 content_hash, version, note, pinned_by_user_id, pinned_by, pinned_at}]`.
 
 In the console, the Agents page's **Extensions** tab lists distinct extensions
-with device counts and versions seen. Device detail shows per-profile inventory,
+with device counts and versions seen. A managed agent's detail page has an
+**Extensions** section with the same list filtered to that agent's kind (for
+example `claude_code`) across the account, not to one device, and the count in
+its heading. Device detail shows per-profile inventory,
 source/project hash prefixes, scope and enabled state. Both views filter by
 effective state (including **Content changed** and **Content unverified**) and
 source. A pinned approval shows **Pinned (n)**; **Content hashes** expands the

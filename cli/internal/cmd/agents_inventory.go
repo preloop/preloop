@@ -14,10 +14,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/version"
 )
 
-const inventoryDetectorVersion = "3"
+const inventoryDetectorVersion = "4"
 
 type inventoryProbeResult struct {
 	AppID      string `json:"app_id"`
@@ -70,17 +71,18 @@ type inventoryEnvelope struct {
 // credential resolver, auth/keychain probe, network client, writer, or process
 // runner. Runtime lookup resolves paths; it never executes the result.
 type inventoryProbeDependencies struct {
-	Home              func() (string, error)
-	Stat              func(string) (os.FileInfo, error)
-	ReadFile          func(string) ([]byte, error)
-	LookPath          func(string) (string, error)
-	Glob              func(string) ([]string, error)
-	Now               func() time.Time
-	ConfigPaths       func(agentSpec) []string
-	ExtensionProjects []string
-	ExtensionSalt     string
-	ProfileOnly       bool
-	GOOS              string
+	Home               func() (string, error)
+	Stat               func(string) (os.FileInfo, error)
+	ReadFile           func(string) ([]byte, error)
+	LookPath           func(string) (string, error)
+	Glob               func(string) ([]string, error)
+	Now                func() time.Time
+	ConfigPaths        func(agentSpec) []string
+	ExtensionProjects  []string
+	ExtensionSalt      string
+	ProfileOnly        bool
+	NoExtensionDetails bool
+	GOOS               string
 }
 
 var inventoryProbes = inventoryProbeDependencies{
@@ -125,14 +127,31 @@ func runAgentsInventory(cmd *cobra.Command) error {
 	if allUsers {
 		return runAllUsersInventory(cmd.OutOrStdout(), false)
 	}
-	deps := inventoryProbes
-	deps.ExtensionProjects = projects
+	deps, err := discoveryInventoryProbes(projects)
+	if err != nil {
+		return err
+	}
 	return enc.Encode(collectAgentInventory(deps))
+}
+
+var inventoryNoExtensionDetails bool
+
+// discoveryInventoryProbes applies command and device opt-outs once, before
+// either current-user or all-users collection. Scheduled reports use it too.
+func discoveryInventoryProbes(projects []string) (inventoryProbeDependencies, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return inventoryProbeDependencies{}, errors.New("could not load discovery privacy settings")
+	}
+	deps := inventoryProbes
+	deps.NoExtensionDetails = inventoryNoExtensionDetails || cfg.Discovery.NoExtensionDetails
+	deps.ExtensionProjects = projects
+	return deps, nil
 }
 
 func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 	result := inventoryEnvelope{
-		Schema: "preloop.inventory.v3", ObservedAt: deps.Now().UTC(),
+		Schema: "preloop.inventory.v4", ObservedAt: deps.Now().UTC(),
 		Completeness: "complete", ProbeResults: []inventoryProbeResult{}, Apps: []inventoryApp{},
 	}
 	result.Collector.Version = version.Version
@@ -228,6 +247,11 @@ func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 		}
 		extensionErrors := []string{}
 		app.Extensions, extensionErrors = collectInventoryExtensions(home, id, deps.ExtensionSalt, deps.ProfileOnly, deps.ExtensionProjects...)
+		if deps.NoExtensionDetails {
+			for i := range app.Extensions {
+				app.Extensions[i].Details = nil
+			}
+		}
 		for _, code := range extensionErrors {
 			app.Completeness = "partial"
 			addProbe("extensions", "error", code)

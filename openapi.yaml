@@ -39600,6 +39600,10 @@ components:
       description: Keyset-paginated device rows or account aggregates.
     DiscoveredExtensionSummary:
       properties:
+        details:
+          anyOf:
+          - $ref: '#/components/schemas/ExtensionDetails'
+          - type: 'null'
         fingerprint:
           type: string
           title: Fingerprint
@@ -39731,6 +39735,7 @@ components:
           - 1
           - 2
           - 3
+          - 4
           title: Schema Version
           default: 1
         extension_completeness:
@@ -41102,6 +41107,10 @@ components:
         extension_id:
           type: string
           title: Extension Id
+        details:
+          anyOf:
+          - $ref: '#/components/schemas/ExtensionDetails'
+          - type: 'null'
         device_count:
           type: integer
           title: Device Count
@@ -41334,6 +41343,43 @@ components:
       - opened_at
       title: ExtensionAttentionItem
       description: Console attention contribution with a local destination.
+    ExtensionBundleCounts:
+      properties:
+        skills:
+          type: integer
+          maximum: 10000.0
+          minimum: 0.0
+          title: Skills
+        commands:
+          type: integer
+          maximum: 10000.0
+          minimum: 0.0
+          title: Commands
+        hooks:
+          type: integer
+          maximum: 10000.0
+          minimum: 0.0
+          title: Hooks
+        mcp_servers:
+          type: integer
+          maximum: 10000.0
+          minimum: 0.0
+          title: Mcp Servers
+        agents:
+          type: integer
+          maximum: 10000.0
+          minimum: 0.0
+          title: Agents
+      additionalProperties: false
+      type: object
+      required:
+      - skills
+      - commands
+      - hooks
+      - mcp_servers
+      - agents
+      title: ExtensionBundleCounts
+      description: Observed components within an installed plugin.
     ExtensionCoverage:
       properties:
         fingerprint:
@@ -41356,12 +41402,115 @@ components:
             type: string
           type: array
           title: Reasons
+        reported_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Reported At
       type: object
       required:
       - fingerprint
       - completeness
       title: ExtensionCoverage
       description: Latest safe coverage metadata reported by one device.
+    ExtensionDetails:
+      properties:
+        name:
+          type: string
+          maxLength: 300
+          title: Name
+          default: ''
+        description:
+          type: string
+          maxLength: 300
+          title: Description
+          default: ''
+        description_withheld:
+          type: boolean
+          title: Description Withheld
+          default: false
+        invocation:
+          type: string
+          maxLength: 300
+          title: Invocation
+          default: ''
+        script_count:
+          anyOf:
+          - type: integer
+            maximum: 10000.0
+            minimum: 0.0
+          - type: 'null'
+          title: Script Count
+        plugin:
+          type: string
+          maxLength: 300
+          title: Plugin
+          default: ''
+        author:
+          type: string
+          maxLength: 300
+          title: Author
+          default: ''
+        bundles:
+          anyOf:
+          - $ref: '#/components/schemas/ExtensionBundleCounts'
+          - type: 'null'
+        hook_matchers:
+          items:
+            $ref: '#/components/schemas/ExtensionHookMatcher'
+          type: array
+          maxItems: 10000
+          title: Hook Matchers
+      additionalProperties: false
+      type: object
+      title: ExtensionDetails
+      description: Bounded descriptive metadata; bodies and command strings are forbidden.
+    ExtensionHookCommand:
+      properties:
+        executable:
+          type: string
+          pattern: ^[A-Za-z0-9_.+\-]{1,128}$
+          title: Executable
+        preloop_managed:
+          type: boolean
+          title: Preloop Managed
+      additionalProperties: false
+      type: object
+      required:
+      - executable
+      - preloop_managed
+      title: ExtensionHookCommand
+      description: Executable classification without arguments or source paths.
+    ExtensionHookMatcher:
+      properties:
+        matcher:
+          type: string
+          maxLength: 300
+          title: Matcher
+          default: ''
+        matcher_withheld:
+          type: boolean
+          title: Matcher Withheld
+          default: false
+        count:
+          type: integer
+          maximum: 10000.0
+          minimum: 1.0
+          title: Count
+        commands:
+          items:
+            $ref: '#/components/schemas/ExtensionHookCommand'
+          type: array
+          maxItems: 10000
+          title: Commands
+      additionalProperties: false
+      type: object
+      required:
+      - count
+      - commands
+      title: ExtensionHookMatcher
+      description: One matcher and the commands bound to it.
     ExtensionMetadata:
       properties:
         kind:
@@ -41449,6 +41598,10 @@ components:
           type: boolean
           title: Id Hashed
           default: false
+        details:
+          anyOf:
+          - $ref: '#/components/schemas/ExtensionDetails'
+          - type: 'null'
       additionalProperties: false
       type: object
       required:
@@ -41457,8 +41610,7 @@ components:
       - source_kind
       - scope
       title: ExtensionMetadata
-      description: Only identifiers, version, classification and final hashes leave
-        a device.
+      description: Identifiers, hashes and optional bounded descriptive metadata.
     ExtensionPinCreate:
       properties:
         content_hash:

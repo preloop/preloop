@@ -1,11 +1,15 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import './extension-inventory';
-import type { ExtensionInventory } from './extension-inventory';
+import {
+  EXTENSION_REASONS,
+  type ExtensionInventory,
+} from './extension-inventory';
 import type {
   ExtensionPage,
   InstalledExtension,
   ExtensionFilters,
   ExtensionApprovalState,
+  ExtensionCoverage,
 } from '../extension-inventory-api';
 
 const installed: InstalledExtension = {
@@ -47,6 +51,10 @@ const aggregatePage = (): ExtensionPage => ({
   completeness: 'complete',
 });
 
+const textOf = (element: ExtensionInventory): string =>
+  element.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+const recent = (): string => new Date(Date.now() - 5 * 60000).toISOString();
+
 async function mount(
   options: {
     device?: boolean;
@@ -82,14 +90,14 @@ describe('extension inventory', () => {
             collector_version: '1.1.0',
             completeness: 'unknown',
             reasons: [],
+            reported_at: recent(),
           },
         ],
       },
     });
-    const text = element.shadowRoot!.textContent!.replace(/\s+/g, ' ');
-    expect(text).to.contain('No specific incompleteness reason was reported');
-    expect(text).not.to.contain('reported collection failures');
-    expect(text).to.contain('preloop version');
+    const text = textOf(element);
+    expect(text).to.contain('This device did not report a reason.');
+    expect(element.shadowRoot!.querySelector('.reason')).to.equal(null);
   });
   // protects=AC10 only account managers get enforcement; fails_when=readers
   // or device views gain editing controls; no_claim=fixture permission loader.
@@ -113,12 +121,29 @@ describe('extension inventory', () => {
         page.items[0].version_constraint = '2.*';
         const element = await mount({ device, manage, page });
         const root = element.shadowRoot!;
-        expect(root.textContent!.replace(/\s+/g, ' ')).to.contain(
-          'Unapproved does not disable or block an extension.'
+        // The standing caveats live beside the Approval heading, not above
+        // the table.
+        const how = {
+          textContent: root
+            .querySelector('th.approval-heading details.how')!
+            .textContent!.replace(/\s+/g, ' '),
+          hasAttribute: (name: string): boolean =>
+            root
+              .querySelector('th.approval-heading details.how')!
+              .hasAttribute(name),
+        };
+        expect(how.textContent).to.contain('does not disable or block');
+        expect(how.textContent).to.contain('does not check versions');
+        expect(how.textContent).to.contain(
+          'does not show what an agent loaded'
         );
-        expect(root.textContent!.replace(/\s+/g, ' ')).to.contain(
-          'Name approval is not a version-compliance verdict'
+        expect(how.textContent).to.contain('whole account');
+        expect(how.hasAttribute('open')).to.equal(false);
+        expect(root.querySelector('.summary-text')!.textContent).not.to.contain(
+          'block'
         );
+        // Narrow screens hide the table heading; a copy stays reachable there.
+        expect(root.querySelector('.how-narrow details.how')).to.exist;
         expect(
           root.querySelector('td[data-label="Approval"]')!.textContent
         ).to.contain('2.*');
@@ -131,9 +156,8 @@ describe('extension inventory', () => {
     const element = await mount({
       page: { items: [], next_cursor: null, completeness: 'unknown' },
     });
-    const text = element.shadowRoot!.textContent!;
-    expect(text).to.contain('unknown');
-    expect(text).not.to.contain('preloop update');
+    expect(textOf(element)).to.contain('Coverage unknown');
+    expect(textOf(element)).not.to.contain('preloop update');
   });
 
   it('shows project coverage and the repository scan command for a current collector', async () => {
@@ -148,15 +172,21 @@ describe('extension inventory', () => {
             collector_version: '1.1.0-rc.1',
             completeness: 'partial',
             reasons: ['extension_project_unscanned'],
+            reported_at: recent(),
           },
         ],
       },
     });
-    const text = element.shadowRoot!.textContent!.replace(/\s+/g, ' ');
-    expect(text).to.contain('extension_project_unscanned');
-    expect(text).to.contain('preloop agents discover --report --project .');
-    expect(text).to.contain('repository');
-    expect(text).not.to.contain('preloop update');
+    const reason = element.shadowRoot!.querySelector(
+      '.reason[data-code="extension_project_unscanned"]'
+    )!;
+    expect(reason.querySelector('.code')!.textContent).to.equal(
+      'extension_project_unscanned'
+    );
+    expect(reason.querySelector('.command code')!.textContent).to.equal(
+      'preloop agents discover --report --project .'
+    );
+    expect(textOf(element)).not.to.contain('preloop update');
   });
 
   it('recommends upgrading only a collector at or below the supported floor', async () => {
@@ -180,12 +210,19 @@ describe('extension inventory', () => {
               collector_version: version,
               completeness: 'unknown',
               reasons: [],
+              reported_at: recent(),
             },
           ],
         },
       });
       expect(
-        element.shadowRoot!.textContent!.includes('preloop update'),
+        !!element.shadowRoot!.querySelector(
+          '.reason[data-code="collector_too_old"]'
+        ),
+        String(version)
+      ).to.equal(upgrade);
+      expect(
+        textOf(element).includes('preloop update'),
         String(version)
       ).to.equal(upgrade);
     }
@@ -217,7 +254,8 @@ describe('extension inventory', () => {
       element.fingerprint = 'd'.repeat(64);
       await waitUntil(() => calls.length >= 2);
       await element.updateComplete;
-      expect(accessCalls).to.equal(2);
+      // Permissions are read once per mount, not on every refresh.
+      expect(accessCalls).to.equal(1);
       expect(calls.map((filters) => filters.fingerprint)).to.deep.equal([
         device ? installed.fingerprint : undefined,
         'd'.repeat(64),
@@ -226,7 +264,7 @@ describe('extension inventory', () => {
       element.fingerprint = '';
       await waitUntil(() => calls.length >= 3);
       await element.updateComplete;
-      expect(accessCalls).to.equal(3);
+      expect(accessCalls).to.equal(1);
       expect(calls.map((filters) => filters.fingerprint)).to.deep.equal([
         device ? installed.fingerprint : undefined,
         'd'.repeat(64),
@@ -241,7 +279,9 @@ describe('extension inventory', () => {
     const element = await mount({ device: true });
     const root = element.shadowRoot!;
     expect(
-      [...root.querySelectorAll('th')].map((th) => th.textContent)
+      [...root.querySelectorAll('th')].map((th) =>
+        th.firstChild?.textContent?.trim()
+      )
     ).to.deep.equal([
       'Agent',
       'Kind',
@@ -261,7 +301,9 @@ describe('extension inventory', () => {
     );
     expect(root.querySelector('tbody')?.textContent).to.contain('Project');
     expect(root.querySelector('tbody sl-select')).to.equal(null);
-    expect(root.textContent).to.contain('do not prove an agent loaded or ran');
+    expect(
+      root.querySelector('details.how')!.textContent!.replace(/\s+/g, ' ')
+    ).to.contain('does not show what an agent loaded or ran');
   });
 
   // protects=account decisions; fails_when=select does not persist and reload;
@@ -300,9 +342,9 @@ describe('extension inventory', () => {
     const element = await mount({
       page: { items: [], next_cursor: null, completeness: 'partial' },
     });
-    expect(element.shadowRoot?.textContent).to.contain(
-      'Collection is incomplete'
-    );
+    expect(
+      element.shadowRoot?.querySelector('.coverage-badge')?.textContent
+    ).to.equal('Scan partial');
     expect(element.shadowRoot?.textContent).to.contain(
       'No extensions reported'
     );
@@ -382,5 +424,258 @@ describe('extension inventory', () => {
       () => !!element.shadowRoot?.querySelector('[role="alert"]')
     );
     expect(select.value).to.equal('unknown');
+  });
+});
+
+describe('extension inventory notices', () => {
+  // The fixed codes the collector sends (agents_inventory_extensions_report.go).
+  const collectorCodes = [
+    'extension_file_limit',
+    'extension_hook_unbound',
+    'extension_limit',
+    'extension_malformed',
+    'extension_project_unscanned',
+    'extension_symlink',
+    'extension_unreadable',
+    'extension_unsafe_path',
+    'extension_unsupported_scope',
+    'extension_unsupported_version',
+  ];
+  const device = (
+    over: Partial<ExtensionCoverage> = {}
+  ): ExtensionCoverage => ({
+    fingerprint: 'e'.repeat(64),
+    collector_version: '1.1.0-rc.3',
+    completeness: 'complete',
+    reasons: [],
+    reported_at: recent(),
+    ...over,
+  });
+  const withCoverage = (
+    completeness: ExtensionPage['completeness'],
+    coverage: ExtensionCoverage[]
+  ): ExtensionPage => ({ ...aggregatePage(), completeness, coverage });
+
+  it('maps every collector reason code to its own sentence and step', () => {
+    expect(Object.keys(EXTENSION_REASONS).sort()).to.deep.equal(collectorCodes);
+    const steps = new Set<string>();
+    for (const code of collectorCodes) {
+      const reason = EXTENSION_REASONS[code];
+      expect(reason.text, code).to.match(/\.$/);
+      expect(reason.text, code).not.to.contain('extension_');
+      expect(reason.text + reason.step, code).not.to.contain('\u2014');
+      steps.add(reason.step + (reason.command ?? ''));
+    }
+    expect(steps.size).to.be.greaterThan(5);
+  });
+
+  it('renders each reported code as plain text with the code in small type', async () => {
+    const element = await mount({
+      page: withCoverage('partial', [
+        device({ completeness: 'partial', reasons: collectorCodes }),
+      ]),
+    });
+    for (const code of collectorCodes) {
+      const item = element.shadowRoot!.querySelector(
+        `.reason[data-code="${code}"]`
+      )!;
+      expect(item, code).to.exist;
+      expect(item.querySelector('p')!.textContent).to.equal(
+        EXTENSION_REASONS[code].text
+      );
+      expect(item.querySelector('.code')!.textContent).to.equal(code);
+    }
+  });
+
+  it('shows an unknown code verbatim with a support step', async () => {
+    const element = await mount({
+      page: withCoverage('partial', [
+        device({ completeness: 'partial', reasons: ['extension_new_thing'] }),
+      ]),
+    });
+    const item = element.shadowRoot!.querySelector(
+      '.reason[data-code="extension_new_thing"]'
+    )!;
+    expect(item.textContent).to.contain('Contact support');
+  });
+
+  for (const [completeness, badge, variant] of [
+    ['complete', 'Complete', 'success'],
+    ['partial', 'Scan partial', 'warning'],
+    ['unknown', 'Coverage unknown', 'neutral'],
+  ] as const) {
+    it(`shows a ${badge} badge with the device and collector, collapsed`, async () => {
+      const element = await mount({
+        page: withCoverage(completeness, [device({ completeness })]),
+      });
+      const root = element.shadowRoot!;
+      const badgeEl = root.querySelector('.coverage-badge')!;
+      expect(badgeEl.textContent).to.equal(badge);
+      expect(badgeEl.getAttribute('variant')).to.equal(variant);
+      expect(
+        root
+          .querySelector('.coverage summary')!
+          .textContent!.replace(/\s+/g, ' ')
+      ).to.contain('Device eeeeeeee · Collector 1.1.0-rc.3');
+      expect(root.querySelector('details.coverage')!.hasAttribute('open')).to.be
+        .false;
+      // The table is the first thing after the summary and filters.
+      expect(root.querySelector('table')).to.exist;
+    });
+  }
+
+  it('summarizes counts by kind, devices and last report time', async () => {
+    const page = withCoverage('complete', [device()]);
+    page.items = [
+      ...page.items,
+      { ...page.items[0], extension_kind: 'skill', extension_id: 'a' },
+      { ...page.items[0], extension_kind: 'skill', extension_id: 'b' },
+    ];
+    const element = await mount({ page });
+    const text = element
+      .shadowRoot!.querySelector('.summary-text')!
+      .textContent!.replace(/\s+/g, ' ');
+    expect(text).to.contain('3 extensions (2 skills, 1 plugin)');
+    expect(text).to.contain('1 device reporting');
+    expect(text).to.contain('Last report 5m ago');
+  });
+
+  it('does not tell a fresh, current device to sign in or report', async () => {
+    const element = await mount({
+      page: withCoverage('partial', [
+        device({
+          completeness: 'partial',
+          reasons: ['extension_hook_unbound', 'extension_malformed'],
+        }),
+      ]),
+    });
+    const text = textOf(element);
+    expect(text).not.to.contain('preloop auth login');
+    expect(text).not.to.contain('Reload this page');
+    expect(text).not.to.contain('preloop update');
+  });
+
+  for (const [name, over] of [
+    [
+      'stale',
+      { reported_at: new Date(Date.now() - 3 * 86400000).toISOString() },
+    ],
+    ['never timed', { reported_at: null }],
+  ] as const) {
+    it(`tells a ${name} device to sign in and report, one command per line`, async () => {
+      const element = await mount({
+        page: withCoverage('complete', [device(over)]),
+      });
+      const commands = [
+        ...element.shadowRoot!.querySelectorAll('.device .command code'),
+      ].map((code) => code.textContent);
+      expect(commands).to.deep.equal([
+        `preloop auth login --url ${window.location.origin}`,
+        'preloop agents discover --report --project .',
+      ]);
+    });
+  }
+
+  it('shows the sign-in and report steps in the empty state', async () => {
+    const element = await mount({
+      page: {
+        items: [],
+        next_cursor: null,
+        completeness: 'unknown',
+        coverage: [],
+      },
+    });
+    const empty = element.shadowRoot!.querySelector('.empty-state')!;
+    expect(empty.textContent).to.contain('No extensions reported yet.');
+    expect(
+      [...empty.querySelectorAll('.command code')].map((c) => c.textContent)
+    ).to.deep.equal([
+      `preloop auth login --url ${window.location.origin}`,
+      'preloop agents discover --report --project .',
+    ]);
+  });
+
+  it('keeps commands out of sentences and copies them', async () => {
+    const copied: string[] = [];
+    const element = await mount({
+      page: withCoverage('partial', [
+        device({ completeness: 'partial', reasons: ['extension_unreadable'] }),
+      ]),
+    });
+    element.copier = async (text) => {
+      copied.push(text);
+    };
+    const root = element.shadowRoot!;
+    for (const p of root.querySelectorAll('p'))
+      expect(p.querySelector('code'), p.textContent!).to.equal(null);
+    (root.querySelector('.command sl-button.copy') as HTMLElement).click();
+    await waitUntil(() => copied.length === 1);
+    expect(copied).to.deep.equal(['preloop agents extensions --project .']);
+  });
+
+  it('explains Unapproved where it is set, with a link to Enforcement', async () => {
+    const page = aggregatePage();
+    const element = await mount({
+      manage: true,
+      page,
+      updater: async (_row, state) => {
+        page.items[0].approval_state = state;
+      },
+    });
+    const root = element.shadowRoot!;
+    expect(root.querySelector('.unapproved-hint')).to.equal(null);
+    const select = root.querySelector('tbody sl-select') as HTMLElement & {
+      value: string;
+    };
+    select.value = 'unapproved';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(() => root.querySelector('.unapproved-hint'));
+    const hint = root.querySelector('.unapproved-hint')!;
+    expect(hint.textContent).to.contain('does not disable or block');
+    expect(hint.querySelector('a')!.getAttribute('href')).to.equal(
+      '#extension-enforcement'
+    );
+    expect(root.querySelector('#extension-enforcement')).to.exist;
+  });
+
+  it('shows a table skeleton while the first page loads', async () => {
+    let release!: (page: ExtensionPage) => void;
+    const element = await fixture<ExtensionInventory>(
+      html`<extension-inventory
+        .loader=${() => new Promise<ExtensionPage>((r) => (release = r))}
+        .accessLoader=${async () => ({ view: true, manage: false })}
+      ></extension-inventory>`
+    );
+    await waitUntil(() => element.shadowRoot!.querySelector('.skeleton'));
+    expect(element.shadowRoot!.querySelector('table')).to.equal(null);
+    release(aggregatePage());
+    await waitUntil(() => element.shadowRoot!.querySelector('table'));
+    expect(element.shadowRoot!.querySelector('.skeleton')).to.equal(null);
+  });
+
+  it('keeps rows visible while an approval refresh loads', async () => {
+    const page = aggregatePage();
+    let hold: Promise<void> | null = null;
+    let release!: () => void;
+    const element = await mount({
+      manage: true,
+      loader: async () => {
+        if (hold) await hold;
+        return page;
+      },
+      updater: async () => {
+        hold = new Promise((r) => (release = r));
+      },
+    });
+    const select = element.shadowRoot!.querySelector(
+      'tbody sl-select'
+    ) as HTMLElement & { value: string };
+    select.value = 'approved';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(() => hold !== null);
+    await element.updateComplete;
+    expect(element.shadowRoot!.querySelector('table')).to.exist;
+    expect(element.shadowRoot!.querySelector('.skeleton')).to.equal(null);
+    release();
   });
 });

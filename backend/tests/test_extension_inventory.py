@@ -829,11 +829,15 @@ def test_coverage_uses_latest_device_reasons_and_is_account_scoped(
             "reasons": ["extension_project_unscanned"],
         }
     ]
-    assert (
-        crud_discovered_extension.coverage(db_session, account_id=test_user.account_id)
-        == expected
+    stored = crud_discovered_extension.coverage(
+        db_session, account_id=test_user.account_id
     )
-    assert client.get(EXTENSIONS).json()["coverage"] == expected
+    # The report time lets the inventory tell a fresh report from a stale one.
+    assert all(row.pop("reported_at") is not None for row in stored)
+    assert stored == expected
+    api = client.get(EXTENSIONS).json()["coverage"]
+    assert all(row.pop("reported_at") for row in api)
+    assert api == expected
     assert crud_discovered_extension.coverage(db_session, account_id=uuid4()) == []
     assert (
         crud_discovered_extension.coverage(
@@ -867,3 +871,60 @@ def test_extension_reason_codes_preserve_legacy_bytes_and_reject_paths() -> None
                 "extension_errors": ["extension_project_unscanned"],
             }
         )
+
+
+def test_extension_details_v4_round_trip(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Store v4 metadata and expose it on both list shapes, preserving v3."""
+    details = {
+        "description": "Review changes",
+        "author": "Jane Doe",
+        "bundles": {
+            "skills": 1,
+            "commands": 0,
+            "hooks": 0,
+            "mcp_servers": 0,
+            "agents": 0,
+        },
+    }
+    payload = report([extension(details=details)])
+    payload["evidence"]["schema_version"] = 4
+    store(db_session, test_user.account_id, payload)
+    for group in (None, "extension"):
+        rows, _ = crud_discovered_extension.list_for_account(
+            db_session, account_id=test_user.account_id, group=group
+        )
+        assert rows[0]["details"]["description"] == "Review changes"
+    old = report(at=NOW - timedelta(minutes=1))
+    store(db_session, test_user.account_id, old)
+    rows, _ = crud_discovered_extension.list_for_account(
+        db_session, account_id=test_user.account_id
+    )
+    assert rows[0]["details"]["description"] == "Review changes"
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"description": "x" * 301},
+        {"description": "line\nbreak"},
+        {"description": "https://example.com"},
+        {"body": "private"},
+        {
+            "hook_matchers": [
+                {
+                    "matcher": "Bash",
+                    "count": 1,
+                    "commands": [{"executable": "/bin/bash", "preloop_managed": False}],
+                }
+            ]
+        },
+    ],
+)
+def test_extension_details_reject_unsafe_fields(details: dict[str, Any]) -> None:
+    """Reject content, paths, URLs and unnormalized text at ingestion."""
+    payload = report([extension(details=details)])
+    payload["evidence"]["schema_version"] = 4
+    with pytest.raises(ValidationError):
+        DiscoveryReportRequest.model_validate(payload)

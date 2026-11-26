@@ -56,7 +56,7 @@ type inventoryReportEvidence struct {
 
 func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEnvelope, ended time.Time) discoveryReportRequest {
 	report := discoveryReportRequest{WorkstationFingerprint: workstationFingerprint(salt, machineID), OS: discoveryOSFamily(), Candidates: []discoveryReportCandidate{}}
-	evidence := inventoryReportEvidence{SchemaVersion: 3, ObservationID: observationID, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: ended, ScanScope: []string{"user_config"}, Completeness: scan.Completeness, Errors: []string{}, Profiles: scan.Profiles, Applications: []inventoryReportApplication{}}
+	evidence := inventoryReportEvidence{SchemaVersion: 4, ObservationID: observationID, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: ended, ScanScope: []string{"user_config"}, Completeness: scan.Completeness, Errors: []string{}, Profiles: scan.Profiles, Applications: []inventoryReportApplication{}}
 	evidence.ExtensionErrors = inventoryExtensionErrors(scan)
 	evidence.ExtensionCompleteness = "complete"
 	if len(evidence.ExtensionErrors) > 0 {
@@ -164,8 +164,10 @@ func collectDiscoveryInventoryReport(salt, deviceRef string, allUsers bool, proj
 	id[6] = (id[6] & 15) | 64
 	id[8] = (id[8] & 63) | 128
 	observationID := fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
-	deps := inventoryProbes
-	deps.ExtensionProjects = projects
+	deps, err := discoveryInventoryProbes(projects)
+	if err != nil {
+		return discoveryReportRequest{}, inventoryEnvelope{}, err
+	}
 	var scan inventoryEnvelope
 	if allUsers {
 		scan = collectAllUsersInventory(deps, inventoryProfiles, salt, workstationFingerprint(salt, machineID))

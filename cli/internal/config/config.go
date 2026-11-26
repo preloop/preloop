@@ -51,10 +51,11 @@ const (
 // accounts in the file they are the top-level keys, exactly as before
 // profiles existed.
 type Config struct {
-	AccessToken  string       `mapstructure:"access_token"`
-	RefreshToken string       `mapstructure:"refresh_token"`
-	APIURL       string       `mapstructure:"api_url"`
-	Runner       RunnerConfig `mapstructure:"runner"`
+	Discovery    DiscoveryConfig `mapstructure:"discovery"`
+	AccessToken  string          `mapstructure:"access_token"`
+	RefreshToken string          `mapstructure:"refresh_token"`
+	APIURL       string          `mapstructure:"api_url"`
+	Runner       RunnerConfig    `mapstructure:"runner"`
 
 	// Profile is the selected profile name; empty means DefaultProfile.
 	Profile string `mapstructure:"-"`
@@ -67,6 +68,11 @@ type Config struct {
 	// AccountMissing is true when Account was asked for (flag or
 	// environment) but the profile holds no tokens for it.
 	AccountMissing bool `mapstructure:"-"`
+}
+
+// DiscoveryConfig applies device privacy controls to every discovery collector.
+type DiscoveryConfig struct {
+	NoExtensionDetails bool `mapstructure:"no_extension_details"`
 }
 
 // RunnerConfig holds the `runner:` block of ~/.preloop/config.yaml.
