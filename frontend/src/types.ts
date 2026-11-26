@@ -657,7 +657,9 @@ export interface RuntimeSessionSummary {
   /** Working directory the agent's hook last reported (a label, not trusted). */
   cwd?: string | null;
   activity_status: 'active_now' | 'idle' | 'ended' | string;
-  total_requests: number;
+  total_requests: number | null;
+  usage_source?: string;
+  cost_is_known?: boolean;
   successful_requests: number;
   failed_requests: number;
   token_usage: GatewayTokenUsage;
@@ -1299,6 +1301,11 @@ export interface RuntimeSessionArtifactListResponse {
 }
 
 export interface RuntimeSessionActivityListResponse {
+  has_more?: boolean;
+  next_before?: string | null;
+  has_newer?: boolean;
+  next_after?: string | null;
+  partial_turn?: boolean;
   items: RuntimeSessionActivityItem[];
 }
 

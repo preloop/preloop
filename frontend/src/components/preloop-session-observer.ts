@@ -377,6 +377,51 @@ export class PreloopSessionObserver extends LitElement {
   private loadedEventPages: Record<string, EventPageState> = {};
 
   @state()
+  private loadedActivityPages: Record<
+    string,
+    {
+      hasMore: boolean;
+      nextBefore: string | null;
+      hasNewer: boolean;
+      nextAfter: string | null;
+    }
+  > = {};
+
+  private rememberActivityPage(
+    sessionId: string,
+    page: {
+      has_more?: boolean;
+      next_before?: string | null;
+      has_newer?: boolean;
+      next_after?: string | null;
+    },
+    direction?: 'older' | 'newer'
+  ): void {
+    const previous = this.loadedActivityPages[sessionId];
+    this.loadedActivityPages = {
+      ...this.loadedActivityPages,
+      [sessionId]: {
+        hasMore:
+          direction === 'newer'
+            ? (previous?.hasMore ?? false)
+            : (page.has_more ?? false),
+        nextBefore:
+          direction === 'newer'
+            ? (previous?.nextBefore ?? null)
+            : (page.next_before ?? null),
+        hasNewer:
+          direction === 'older'
+            ? (previous?.hasNewer ?? false)
+            : (page.has_newer ?? false),
+        nextAfter:
+          direction === 'older'
+            ? (previous?.nextAfter ?? null)
+            : (page.next_after ?? null),
+      },
+    };
+  }
+
+  @state()
   private loadedActivity: Record<string, RuntimeSessionActivityItem[]> = {};
   /** Latest activity re-read; an older answer that lands late is dropped. */
   private activityReadSeq = 0;
@@ -1280,13 +1325,14 @@ export class PreloopSessionObserver extends LitElement {
 
   /** Re-read one loaded session's activity timeline in place. */
   private async refreshActivity(sessionId: string): Promise<void> {
-    if (!this.loadedActivity[sessionId]) return;
+    if (!this.loadedActivity[sessionId] || this.loadingSessionId === sessionId)
+      return;
     const seq = ++this.activityReadSeq;
     try {
       const activity = await getAccountRuntimeSessionActivityTimeline(
         sessionId,
         {
-          operatorNoteId: this.focusTurnId,
+          around: this.focusTurnId,
         }
       );
       // The selection may have moved while the read was in flight, or a
@@ -1298,6 +1344,7 @@ export class PreloopSessionObserver extends LitElement {
         ...this.loadedActivity,
         [sessionId]: activity.items || [],
       };
+      this.rememberActivityPage(sessionId, activity);
     } catch (error) {
       // The scheduled scope refresh still runs; a failed read here only
       // means the row shows up a little later.
@@ -1614,6 +1661,8 @@ export class PreloopSessionObserver extends LitElement {
     }
     this.pinnedSessionError = null;
     if (options.userInitiated) {
+      this.focusTurnId = null;
+      this.focusArtifactId = null;
       ++this.pinnedSessionRequest;
       this.pinnedSessionPending = null;
       this.selectedSessionId = sessionId;
@@ -1654,29 +1703,39 @@ export class PreloopSessionObserver extends LitElement {
     // an operator checks on a live session is whether it is blocked, and
     // waiting for the event page first would make that answer arrive late.
     void this.loadApprovalsForSession(sessionId);
-    // A timeline that cannot load is not worth an error on a replay that
-    // otherwise renders, with one exception: a session whose whole activity
-    // predates the plan's analytics window. That is the plan speaking, and
-    // it is the only thing this catch keeps.
+    // A search landing must report an unavailable target; an unfocused
+    // replay can still render gateway events when the activity read fails.
     const focusRequested = this.focusTurnId;
+    if (focusRequested) this.followLive = false;
+    const readSeq = ++this.activityReadSeq;
     try {
       const [events, activity] = await Promise.all([
         getRuntimeSessionGatewayEvents(sessionId, {
           limit: TURN_PAGE_SIZE,
           offset: 0,
+          around: focusRequested,
           historyWindow: TURN_HISTORY_WINDOW,
           // Every call replays the whole conversation; the page carries each
           // message once (1.7 MB -> about 150 KB on a long session, #1586).
           history: 'delta',
         }),
         getAccountRuntimeSessionActivityTimeline(sessionId, {
-          operatorNoteId: focusRequested,
-        }).catch((error: unknown) =>
-          isHistoryUnavailable(error)
-            ? error
-            : { items: [] as RuntimeSessionActivityItem[] }
-        ),
+          around: focusRequested,
+        }).catch((error: unknown) => {
+          if (isHistoryUnavailable(error)) return error;
+          if (focusRequested) throw error;
+          return { items: [] as RuntimeSessionActivityItem[], has_more: false };
+        }),
       ]);
+      if (
+        readSeq !== this.activityReadSeq ||
+        this.activeSessionId !== sessionId
+      )
+        return;
+      if (focusRequested !== this.focusTurnId) {
+        void this.selectSession(sessionId, { force: true });
+        return;
+      }
       if (isHistoryUnavailable(activity)) {
         // Say what the server said instead of drawing an empty replay.
         this.error = activity.message;
@@ -1708,19 +1767,21 @@ export class PreloopSessionObserver extends LitElement {
         ...this.loadedActivity,
         [sessionId]: activity.items || [],
       };
-      // A different note was linked while this read was in flight.
-      if (this.focusTurnId && this.focusTurnId !== focusRequested) {
-        void this.refreshActivity(sessionId);
-      }
+      this.rememberActivityPage(sessionId, activity);
       void this.loadArtifacts(sessionId);
     } catch (error) {
+      if (
+        readSeq !== this.activityReadSeq ||
+        this.activeSessionId !== sessionId
+      )
+        return;
       console.error('Failed to load selected session:', error);
       this.error =
         error instanceof Error
           ? error.message
           : 'Failed to load session replay';
     } finally {
-      this.loadingSessionId = null;
+      if (readSeq === this.activityReadSeq) this.loadingSessionId = null;
     }
   }
 
@@ -1743,12 +1804,76 @@ export class PreloopSessionObserver extends LitElement {
     return this.sortEventsDescending(Array.from(byId.values()));
   }
 
+  /** Extend the focused window without losing its older continuation. */
+  private async loadNewerActivity(sessionId: string): Promise<void> {
+    const page = this.loadedActivityPages[sessionId];
+    if (
+      !page?.hasNewer ||
+      !page.nextAfter ||
+      this.loadingMoreEventsForSessionId
+    )
+      return;
+    this.loadingMoreEventsForSessionId = sessionId;
+    const seq = this.activityReadSeq;
+    try {
+      const activity = await getAccountRuntimeSessionActivityTimeline(
+        sessionId,
+        {
+          after: page.nextAfter,
+        }
+      );
+      if (seq !== this.activityReadSeq || this.activeSessionId !== sessionId)
+        return;
+      this.mergeActivity(sessionId, activity.items);
+      this.rememberActivityPage(sessionId, activity, 'newer');
+    } catch (error) {
+      console.error('Failed to load newer session activity:', error);
+      this.error =
+        error instanceof Error
+          ? error.message
+          : 'Failed to load newer activity';
+    } finally {
+      this.loadingMoreEventsForSessionId = null;
+    }
+  }
+
+  private mergeActivity(
+    sessionId: string,
+    items: RuntimeSessionActivityItem[]
+  ): void {
+    this.loadedActivity = {
+      ...this.loadedActivity,
+      [sessionId]: [
+        ...new Map(
+          [...(this.loadedActivity[sessionId] ?? []), ...items].map((row) => [
+            row.activity_id || `${row.activity_type}:${row.timestamp}`,
+            row,
+          ])
+        ).values(),
+      ],
+    };
+  }
+
   private async loadMoreEvents(sessionId: string): Promise<void> {
     if (this.loadingMoreEventsForSessionId === sessionId) return;
     const page = this.loadedEventPages[sessionId];
-    if (!page?.hasMore || page.nextOffset === null) return;
+    const activityPage = this.loadedActivityPages[sessionId];
+    if ((!page?.hasMore || page.nextOffset === null) && !activityPage?.hasMore)
+      return;
     this.loadingMoreEventsForSessionId = sessionId;
+    const seq = this.activityReadSeq;
     try {
+      if (activityPage?.hasMore && activityPage.nextBefore) {
+        const activity = await getAccountRuntimeSessionActivityTimeline(
+          sessionId,
+          { before: activityPage.nextBefore }
+        );
+        if (seq !== this.activityReadSeq || this.activeSessionId !== sessionId)
+          return;
+        this.mergeActivity(sessionId, activity.items);
+        this.rememberActivityPage(sessionId, activity, 'older');
+      }
+      if (!page?.hasMore || page.nextOffset === null) return;
       const events = await getRuntimeSessionGatewayEvents(sessionId, {
         limit: TURN_PAGE_SIZE,
         offset: page.nextOffset,
@@ -2747,21 +2872,12 @@ export class PreloopSessionObserver extends LitElement {
     if (
       changed.has('focusTurnId') &&
       this.focusTurnId &&
-      this.replayMode === 'conversation'
-    ) {
-      // The conversation view has no per turn anchor and the transcript does,
-      // so a link to a turn lands where that turn can actually be shown.
-      this.setReplayMode('timeline');
-    }
-    if (
-      changed.has('focusTurnId') &&
-      this.focusTurnId &&
       this.activeSessionId &&
       this.loadedActivity[this.activeSessionId]
     ) {
       // Another note linked in a session already on screen: the activity
       // read only carries an older note when it is named, so read again.
-      void this.refreshActivity(this.activeSessionId);
+      void this.selectSession(this.activeSessionId, { force: true });
     }
   }
 
@@ -2881,6 +2997,7 @@ export class PreloopSessionObserver extends LitElement {
         @session-live-reload=${() => void this.reloadActiveSession()}
         .events=${this.activeEvents}
         .activity=${this.activeActivity}
+        .focusTurnId=${this.focusTurnId}
         .pendingApprovals=${this.activePendingApprovals}
         .sessionEnded=${this.isSessionEnded(this.activeSession)}
         .connected=${this.realtimeConnected}
@@ -2895,7 +3012,7 @@ export class PreloopSessionObserver extends LitElement {
           this.activeSessionId !== null &&
           this.loadingSessionId === this.activeSessionId
         }
-        .hasMoreEvents=${this.activeEventPage?.hasMore ?? false}
+        .hasMoreEvents=${(this.activeEventPage?.hasMore ?? false) || (this.activeSessionId ? (this.loadedActivityPages[this.activeSessionId]?.hasMore ?? false) : false)}
         .loadingMoreEvents=${
           this.loadingMoreEventsForSessionId === this.activeSessionId
         }
@@ -3021,7 +3138,8 @@ export class PreloopSessionObserver extends LitElement {
     if (!this.enabledFeatures.liveDesktop || !this.desktopEndpoint) {
       return nothing;
     }
-    if (!session || !this.isSessionLive(session)) return nothing;
+    // An online desktop remains usable between conversation turns.
+    if (!session || this.isSessionEnded(session)) return nothing;
     return html`
       <sl-button
         class="live-desktop"
@@ -3062,8 +3180,13 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   private isSessionLive(session: ObservedSession | null): boolean {
-    if (!session) return true;
+    if (!session) return false;
     if (session.status === 'ended' || session.endedAt) return false;
+    if (
+      agentStateChip((session.raw ?? {}) as Record<string, unknown>).label ===
+      'Idle'
+    )
+      return false;
     return session.status === 'active_now';
   }
 
@@ -3077,6 +3200,7 @@ export class PreloopSessionObserver extends LitElement {
     const raw = session.raw;
     if (!raw || typeof raw !== 'object') return false;
     const row = raw as Record<string, unknown>;
+    if (row.usage_source === 'none') return false;
     return (
       row.token_usage != null ||
       typeof row.estimated_cost === 'number' ||
@@ -3187,10 +3311,14 @@ export class PreloopSessionObserver extends LitElement {
                   ${formatCount(session.tokenUsage.total_tokens)}
                 </dd>
               </div>
-              <div>
-                <dt>Cost est.</dt>
-                <dd>${formatCost(session.estimatedCost)}</dd>
-              </div>
+              ${
+                (session.raw as Record<string, unknown>).cost_is_known !== false
+                  ? html`<div>
+                      <dt>Cost est.</dt>
+                      <dd>${formatCost(session.estimatedCost)}</dd>
+                    </div>`
+                  : nothing
+              }
             </dl>`
           : nothing
       }
@@ -3238,6 +3366,17 @@ export class PreloopSessionObserver extends LitElement {
           </div>
         </div>
         <div class="mode-row">
+          ${
+            session && this.loadedActivityPages[session.id]?.hasNewer
+              ? html`<sl-button
+                  size="small"
+                  data-load-newer-activity
+                  ?loading=${this.loadingMoreEventsForSessionId === session.id}
+                  @click=${() => void this.loadNewerActivity(session.id)}
+                  >Load newer activity</sl-button
+                >`
+              : nothing
+          }
           ${
             this.enabledFeatures.liveFollow && live
               ? html`
@@ -3633,7 +3772,7 @@ export class PreloopSessionObserver extends LitElement {
           .interactionSummaries=${this.loadedInteractionSummaries}
           .loadingInteractionSummaries=${this.loadingInteractionSummaries}
           .summarizeVisibleContent=${this.summarizeVisibleContent}
-          .hasMoreEvents=${this.activeEventPage?.hasMore ?? false}
+          .hasMoreEvents=${(this.activeEventPage?.hasMore ?? false) || (this.activeSessionId ? (this.loadedActivityPages[this.activeSessionId]?.hasMore ?? false) : false)}
           .loadingMoreEvents=${
             this.loadingMoreEventsForSessionId === this.activeSessionId
           }
@@ -3863,7 +4002,8 @@ export class PreloopSessionObserver extends LitElement {
         ${
           this.desktopPanelOpen &&
           this.desktopEndpoint &&
-          this.isSessionLive(this.activeSession)
+          this.activeSession &&
+          !this.isSessionEnded(this.activeSession)
             ? html`<div class="desktop-split">
                 ${content} ${this.renderDesktopPanel()}
               </div>`

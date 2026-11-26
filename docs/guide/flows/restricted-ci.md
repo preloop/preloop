@@ -3062,3 +3062,81 @@ Bodies, credentials, provider response text and arbitrary URLs are excluded.
 Only credentials that resolve to a stored account can be attributed to that
 account's audit trail. Unknown or missing credentials cannot safely be assigned
 to an account from a caller-supplied account or session ID.
+
+
+## Re-finalize a saved review without another model run
+
+An account owner or administrator can recover an intact saved answer after a
+control plane finalization failure. Use a personal credential: CI identities,
+agent credentials and flow execution credentials cannot call this operation.
+The execution page offers **Re-finalize saved answer** only after the server's
+preview confirms that the person and execution qualify. It shows the selected
+answer, review checks and expected posting decision before application.
+
+The API defaults to a dry run:
+
+```http
+POST /api/v1/flows/executions/22222222-3333-4444-8555-666666666666/refinalize
+Content-Type: application/json
+
+{"dry_run": true}
+```
+
+The response includes `eligible`, `selected_source`, `selected_result`,
+`selected_result_sha256`, `previous_result_sha256`, `expected_flow_revision`,
+`gates`, `publication` and `digest`. Each gate reports `passed` and a refusal
+`reason` when needed. `publication.would_publish` reports whether normal
+posting would proceed; a moved pull request reports `head_moved` or `base_moved`.
+Preview records no audit event and changes no execution or publication row.
+It may read the pull request through the connected provider.
+
+To apply, repeat the request with `dry_run: false` and `expected_digest` set to
+the preview's `digest`. A missing or stale digest returns 412; a failed gate
+returns 409 and names the gate. The digest binds the entire stored result,
+selected answer, flow configuration, admitted revision and checked evidence.
+It is distinct from the ordinary result digest: private transport members must
+also be covered. The stored execution's `flow_revision` must be known and equal
+the current flow revision. Editing the schema, prompt or posting configuration
+requires a new execution, even if the edit was later reverted.
+
+The CLI prints the same preview as JSON:
+
+```sh
+preloop flow review-posting refinalize "$EXECUTION_ID"
+preloop flow review-posting refinalize "$EXECUTION_ID" --apply --expected-digest "$PREVIEW_DIGEST"
+```
+
+Qualifying executions have a controller-recorded captured answer and a normal
+exit, an unchanged flow, and a recoverable control plane failure such as
+`model_transient` from a log heuristic or `result_selection_failed`. A recorded
+finalization, storage, log shipping or completion delivery failure can also
+qualify under `execution_error` or `orchestration_error`. An otherwise succeeded
+execution with an unusable transport as its result can qualify. The native
+transport requires the execution's controller-recorded native capture decision;
+a model-written envelope is not authority to recover a run. The selected
+answer must pass the same schema, binding, inspection and integrity checks as
+live finalization, and the flow's evidence requirement (at least captured).
+Clipped or unknown bound reads are refused during recovery.
+
+Stopped, cancelled and timed out runs never qualify. Neither do recorded review
+gate rejections, `result_schema_invalid` after repairs, absent answers, missing
+capture provenance, incomplete evidence, changed or unknown flow revisions, or
+an execution already succeeded with a valid result. A gate whose required facts
+are unavailable is refused by name. Flows requiring an agent-posted review
+receipt are outside this recovery operation.
+
+Application changes the stored result, validation and terminal outcome and
+records what it replaced in the audit log and execution's `refinalization`
+field. The console shows when and by whom it was re-finalized. Original run
+usage, cost, token counts and start/end timestamps remain unchanged. No model or container
+runs and there is no second bill. Repeating an applied operation returns
+`already_refinalized` and changes nothing.
+
+Posting retains its existing rules: automatic/manual mode, project scope,
+identity admission, enabled flow, open pull request and one review per execution.
+A recovered execution also retains its stored base SHA and flow/result checks
+on every publication attempt, including the periodic pass. A moved pull request
+can leave a successfully re-finalized execution unposted. Manual posting and
+old executions outside automatic recovery still require the ordinary publish
+operation; re-finalization does not override that decision. Posting failures do
+not undo a completed re-finalization.

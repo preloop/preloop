@@ -57,6 +57,58 @@ function previewEvent(
 }
 
 describe('SessionReplayPanel', () => {
+  it('labels pushed tool roles without calling them user messages', async () => {
+    const element = await fixture<SessionReplayPanel>(
+      html`<session-replay-panel></session-replay-panel>`
+    );
+    expect(
+      (element as any).getActivityTurnLabel({
+        source: 'transcript',
+        role: 'tool',
+      })
+    ).to.equal('Tool result');
+    expect(
+      (element as any).getActivityTurnLabel({
+        source: 'transcript',
+        role: 'tool_use',
+      })
+    ).to.equal('Tool call');
+  });
+
+  it('renders pushed transcript messages in the selected newest-first order', async () => {
+    const activity = [2, 0, 1].map((index) => ({
+      activity_id: `pushed-${index}`,
+      activity_type: 'transcript_message',
+      timestamp: '2026-11-25T10:00:00Z',
+      title: 'Message',
+      summary: `Example ${index}`,
+      metadata: {
+        role: index === 0 ? 'user' : 'assistant',
+        external_id: 'batch',
+        message_index: index,
+      },
+    })) as RuntimeSessionActivityItem[];
+    const element = await fixture<SessionReplayPanel>(
+      html` <session-replay-panel
+        replayMode="timeline"
+        .session=${SESSION}
+        .activity=${activity}
+        .focusEventId=${'pushed-1'}
+      ></session-replay-panel>`
+    );
+    await waitUntil(() =>
+      Boolean(element.shadowRoot!.querySelector('.jump-highlight'))
+    );
+    expect(
+      [...element.shadowRoot!.querySelectorAll('[data-activity-id]')].map(
+        (row) => row.getAttribute('data-activity-id')
+      )
+    ).to.deep.equal(['pushed-2', 'pushed-1', 'pushed-0']);
+    expect(
+      element.shadowRoot!.querySelector('.jump-highlight')!.textContent
+    ).to.contain('Example 1');
+  });
+
   it('names both optimization scope sliders distinctly', async () => {
     const element = await fixture<SessionReplayPanel>(html`
       <session-replay-panel

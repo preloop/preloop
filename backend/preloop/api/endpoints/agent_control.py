@@ -472,14 +472,8 @@ def _touch_presence(
         control_reachable_session_ids=reachable_session_ids,
         commit=False,
     )
-    crud_runtime_session.touch_activity(
-        db,
-        account_id=context.account_id,
-        runtime_session_id=context.runtime_session_id,
-        observed_at=observed_at,
-        min_update_interval=HEARTBEAT_TOUCH_INTERVAL,
-        commit=False,
-    )
+    # Connectivity is agent presence, not a turn in the conversation. Actual
+    # activity writers advance the session using the record's timestamp.
     if commit:
         control_connection.commit(db)
 

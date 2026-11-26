@@ -4900,6 +4900,188 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+    post:
+      tags:
+      - Account
+      summary: Search Account Runtime Session Identity
+      description: Search session identity without placing the query in access-log
+        URLs.
+      operationId: search_account_runtime_session_identity_api_v1_runtime_sessions_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: session_source_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Source Type
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^(all|active|ended)$
+          default: all
+          title: Status
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: agent
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 255
+          - type: 'null'
+          description: Managed agent id or display name; only that agent's sessions
+          title: Agent
+        description: Managed agent id or display name; only that agent's sessions
+      - name: agent_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 64
+          - type: 'null'
+          description: Agent kind (claude_code, codex, cursor, hermes, ...); sessions
+            of managed agents of that kind or recorded from that source
+          title: Agent Kind
+        description: Agent kind (claude_code, codex, cursor, hermes, ...); sessions
+          of managed agents of that kind or recorded from that source
+      - name: alias
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 64
+          - type: 'null'
+          title: Alias
+      - name: parent_session_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions this session spawned
+          title: Parent Session Id
+        description: Only sessions this session spawned
+      - name: flow_execution_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions linked to this flow execution
+          title: Flow Execution Id
+        description: Only sessions linked to this flow execution
+      - name: active_within_minutes
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 1440
+            minimum: 1
+          - type: 'null'
+          description: Only open sessions with activity in the last N minutes
+          title: Active Within Minutes
+        description: Only open sessions with activity in the last N minutes
+      - name: has_artifacts
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Only sessions holding an available artifact: ''any'', or an
+            artifact kind such as transcript, screenshot, document or audio'
+          title: Has Artifacts
+        description: 'Only sessions holding an available artifact: ''any'', or an
+          artifact kind such as transcript, screenshot, document or audio'
+      - name: owner_user_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions of managed agents this user owns; a user who
+            owns no agent matches no session
+          title: Owner User Id
+        description: Only sessions of managed agents this user owns; a user who owns
+          no agent matches no session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Body_search_account_runtime_session_identity_api_v1_runtime_sessions_post'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountRuntimeSessionListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}:
     get:
       tags:
@@ -5111,12 +5293,54 @@ paths:
           type: integer
           maximum: 100
           minimum: 1
-          description: Most recent model interactions merged into the timeline. The
-            console asks for the latest 50 when a session opens.
+          description: Prompt turns when page_by_turn is true; otherwise recent model
+            interactions. The console requests 20 turns per page.
           default: 100
           title: Limit
-        description: Most recent model interactions merged into the timeline. The
-          console asks for the latest 50 when a session opens.
+        description: Prompt turns when page_by_turn is true; otherwise recent model
+          interactions. The console requests 20 turns per page.
+      - name: page_by_turn
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Page complete prompt turns.
+          default: false
+          title: Page By Turn
+        description: Page complete prompt turns.
+      - name: before
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          description: Previous page's next_before cursor.
+          title: Before
+        description: Previous page's next_before cursor.
+      - name: after
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          description: Previous page's next_after cursor.
+          title: After
+        description: Previous page's next_after cursor.
+      - name: around
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          description: Activity, usage or note id to center in the page.
+          title: Around
+        description: Activity, usage or note id to center in the page.
       - name: operator_note_id
         in: query
         required: false
@@ -5397,6 +5621,17 @@ paths:
         description: With `history=delta`, each event keeps at most its last N messages
           and tool entries, so the oldest event on a page of a long session does not
           carry the whole conversation (#1689).
+      - name: around
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          description: Center on an activity, usage or note id.
+          title: Around
+        description: Center on an activity, usage or note id.
       - name: before
         in: query
         required: false
@@ -19859,6 +20094,66 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: execution:result-export:read
+  /api/v1/flows/executions/{execution_id}/refinalize:
+    post:
+      tags:
+      - Flows
+      summary: Refinalize Flow Execution
+      description: 'Preview or re-finalize a saved review as a human owner or administrator.
+
+
+        Runs no inference. Apply requires expected_digest from a qualifying preview.
+
+        Gates and publication authorization are recomputed; the original usage is
+
+        preserved. A repeated apply returns already_refinalized without writing.'
+      operationId: refinalize_flow_execution_api_v1_flows_executions__execution_id__refinalize_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefinalizeRequest'
+              default:
+                dry_run: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Refinalize Flow Execution Api V1 Flows Executions  Execution
+                  Id  Refinalize Post
+        '403':
+          description: A human account owner or administrator is required.
+        '404':
+          description: Execution not found in this account.
+        '409':
+          description: Stored finalization gate failed; detail.gates names it.
+        '412':
+          description: Missing or stale preview digest; preview again.
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/flows/executions/{execution_id}/platform-review:
     post:
       tags:
@@ -34839,6 +35134,17 @@ components:
       - username
       - password
       title: Body_login_form_api_v1_auth_token_post
+    Body_search_account_runtime_session_identity_api_v1_runtime_sessions_post:
+      properties:
+        query:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Query
+      type: object
+      required:
+      - query
+      title: Body_search_account_runtime_session_identity_api_v1_runtime_sessions_post
     Body_transcribe_audio_api_v1_audio_transcriptions_post:
       properties:
         audio:
@@ -42944,6 +43250,14 @@ components:
           title: Estimated Cost
           description: Estimated cost in USD for this execution
           default: 0.0
+        refinalization:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Refinalization
+          description: 'Controller audit mark: when and by whom this stored review
+            was re-finalized.'
         pull_request:
           anyOf:
           - $ref: '#/components/schemas/ExecutionPullRequest'
@@ -52909,6 +53223,22 @@ components:
       - recovery_codes
       title: RecoveryCodes
       description: New recovery codes, shown once and never returned by status.
+    RefinalizeRequest:
+      properties:
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: true
+        expected_digest:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Expected Digest
+      additionalProperties: false
+      type: object
+      title: RefinalizeRequest
+      description: A dry run by default; application requires the exact preview digest.
     RefreshRequest:
       properties:
         refresh_token:
@@ -55081,6 +55411,28 @@ components:
       description: One activity item in a runtime session timeline.
     RuntimeSessionActivityListResponse:
       properties:
+        has_more:
+          type: boolean
+          title: Has More
+          default: false
+        next_before:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next Before
+        has_newer:
+          type: boolean
+          title: Has Newer
+          default: false
+        next_after:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Next After
+        partial_turn:
+          type: boolean
+          title: Partial Turn
+          default: false
         items:
           items:
             $ref: '#/components/schemas/RuntimeSessionActivityItem'
@@ -56296,9 +56648,19 @@ components:
           - type: 'null'
           title: Turn Interrupted
         total_requests:
-          type: integer
+          anyOf:
+          - type: integer
+          - type: 'null'
           title: Total Requests
           default: 0
+        usage_source:
+          type: string
+          title: Usage Source
+          default: gateway
+        cost_is_known:
+          type: boolean
+          title: Cost Is Known
+          default: true
         successful_requests:
           type: integer
           title: Successful Requests
