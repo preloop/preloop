@@ -401,8 +401,27 @@ export async function getFleetDeviceCredentials(
   );
   return Array.isArray(result.items) ? result.items : [];
 }
-export function fleetFindingTitle(rule: string): string {
-  return rule === 'traffic_without_runner'
+/** Name the installed extension and the evaluator's reason when available. */
+export function fleetFindingTitle(finding: FleetFinding): string {
+  if (finding.rule === 'unapproved_extension') {
+    const text = (value: unknown): string =>
+      typeof value === 'string' ? value.trim() : '';
+    const name = text(finding.evidence?.extension_id);
+    const kind = text(finding.evidence?.kind);
+    const reason = text(finding.evidence?.reason).replace(/_/g, ' ');
+    const identity = name && kind ? `${name} (${kind})` : name || kind;
+    const title = [
+      identity,
+      reason ? reason.charAt(0).toUpperCase() + reason.slice(1) : '',
+    ]
+      .filter(Boolean)
+      .join(': ');
+    return (
+      title || finding.title || 'An installed agent extension needs approval.'
+    );
+  }
+  if (finding.title) return finding.title;
+  return finding.rule === 'traffic_without_runner'
     ? 'Agent traffic continued while no runner of this user was online.'
     : 'Discovered agents have not been onboarded.';
 }
