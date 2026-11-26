@@ -626,6 +626,12 @@ export class TalkComposer extends LitElement {
   }
 
   updated(changed: PropertyValues<this>): void {
+    if (
+      (changed.has('agent') || changed.has('sessionId')) &&
+      this.startsNewSession &&
+      ['claude_code', 'codex'].includes(this.agent?.agent_kind ?? '')
+    )
+      void this.loadDirectories();
     if (changed.has('sessionIdle')) this.checkStaleNotes();
     if (!changed.has('sessionId')) return;
     void this.loadSessionControl();
@@ -1117,6 +1123,18 @@ export class TalkComposer extends LitElement {
     });
   }
 
+  private get startingSession(): boolean {
+    return (
+      this.startsNewSession &&
+      this.pending.some(
+        (item) =>
+          item.startNewSession &&
+          !item.targetSessionId &&
+          (item.state === 'sending' || item.state === 'sent')
+      )
+    );
+  }
+
   private async send(): Promise<void> {
     const text = this.message.trim();
     if (this.sendMessage) {
@@ -1138,7 +1156,7 @@ export class TalkComposer extends LitElement {
       }
       return;
     }
-    if (!text || !this.agent) return;
+    if (!text || !this.agent || this.startingSession) return;
     if (!getAgentControlState(this.agent).enabled) return;
     // A turn typed into an ended session would go nowhere the operator can
     // see. Keep the text and ask where it should go instead.
@@ -1278,7 +1296,7 @@ export class TalkComposer extends LitElement {
     try {
       // A session still driven by its local TUI ignores injected turns, so
       // claim it first. Already-remote sessions skip the extra round trip.
-      if (this.controlMode === 'local') {
+      if (this.controlMode === 'local' && !startNewSession) {
         await this.takeOverSession(targetSessionId, startNewSession);
       }
       const response =
@@ -1313,9 +1331,11 @@ export class TalkComposer extends LitElement {
               metadata,
             });
       this.statusMessage =
-        response.status === 'queued' || response.published
-          ? 'Queued for delivery'
-          : 'Delivered';
+        startNewSession && !response.target_session_id
+          ? 'Starting session…'
+          : response.status === 'queued' || response.published
+            ? 'Queued for delivery'
+            : 'Delivered';
       this.recognitionStartedAt = null;
       const commandId =
         typeof response.command_id === 'string'
@@ -1640,7 +1660,7 @@ export class TalkComposer extends LitElement {
           variant="primary"
           data-testid="composer-send"
           ?loading=${this.sending}
-          ?disabled=${!enabled || !this.message.trim()}
+          ?disabled=${!enabled || this.startingSession || !this.message.trim()}
           @click=${() => void this.send()}
         >
           Send

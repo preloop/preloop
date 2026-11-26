@@ -69,6 +69,9 @@ def test_sdk_owned_session_resolves_command_mode(client, db_session, test_user):
     native = f"sdk-{uuid.uuid4()}"
     _online(db_session, agent, [native])
     session = _terminal_session(db_session, test_user, agent, native)
+    crud_runtime_session.record_start_directory(
+        db_session, session=session, cwd="/tmp/example", control_owned=True
+    )
 
     decision = _resolve(db_session, test_user, session)
 
@@ -76,7 +79,7 @@ def test_sdk_owned_session_resolves_command_mode(client, db_session, test_user):
     assert decision.delivery == "turn"
 
 
-def test_launcher_session_resolves_command_mode(client, db_session, test_user):
+def test_unowned_launcher_session_resolves_note_mode(client, db_session, test_user):
     """A launcher session in local mode is reported as reachable too."""
     agent, _ = _setup_controllable_agent(
         client, db_session, test_user, session_source_id="route-launcher"
@@ -85,10 +88,10 @@ def test_launcher_session_resolves_command_mode(client, db_session, test_user):
     _online(db_session, agent, ["sdk-owned-1", launcher])
     session = _terminal_session(db_session, test_user, agent, launcher)
 
-    assert _resolve(db_session, test_user, session).mode == "command"
+    assert _resolve(db_session, test_user, session).mode == "note"
 
 
-def test_plugin_without_reachable_list_keeps_command_mode(
+def test_plugin_without_ownership_evidence_uses_note_mode(
     client, db_session, test_user
 ):
     agent, _ = _setup_controllable_agent(
@@ -97,7 +100,7 @@ def test_plugin_without_reachable_list_keeps_command_mode(
     _online(db_session, agent, None)
     session = _terminal_session(db_session, test_user, agent, f"tui-{uuid.uuid4()}")
 
-    assert _resolve(db_session, test_user, session).mode == "command"
+    assert _resolve(db_session, test_user, session).mode == "note"
 
 
 def test_agent_own_control_session_is_reachable(client, db_session, test_user):

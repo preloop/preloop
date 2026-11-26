@@ -662,6 +662,11 @@ def session_reachable_by_control(agent: Any, session: Any) -> bool:
     Returns:
         True when a command can reach this session.
     """
+    if (
+        getattr(session, "control_owned", None) is False
+        and getattr(session, "ended_at", None) is None
+    ):
+        return False
     if session.session_source_type in {"claude_code", "codex"} and (
         getattr(session, "control_owned", False) is True
         or getattr(session, "ended_at", None) is not None
@@ -838,10 +843,48 @@ def resolve_session_control_mode(
     if session.session_source_type == RUNNER_SESSION_SOURCE_TYPE:
         return _runner_session_control_mode(db, account_id=account_id, session=session)
     agent = session_managed_agent(db, account_id=account_id, session=session)
+    if (
+        session.session_source_type in {"claude_code", "codex"}
+        and session.ended_at is None
+    ):
+        owned = getattr(session, "control_owned", None)
+        if owned is False:
+            return SessionControlMode(
+                "note", TERMINAL_SESSION_REASON_CODE, TERMINAL_SESSION_REASON, agent
+            )
+        if owned is None:
+            last = getattr(session, "last_activity_at", None) or getattr(
+                session, "started_at", None
+            )
+            if isinstance(last, datetime):
+                last = last if last.tzinfo else last.replace(tzinfo=UTC)
+            if (
+                isinstance(last, datetime)
+                and (now or datetime.now(UTC)) - last
+                <= crud_runtime_session.ACTIVE_WINDOW
+            ):
+                return SessionControlMode(
+                    "note",
+                    TERMINAL_SESSION_REASON_CODE
+                    if agent is not None
+                    else "not_managed",
+                    TERMINAL_SESSION_REASON
+                    if agent is not None
+                    else "This session receives notes at its next tool or model call",
+                    agent,
+                )
+            return SessionControlMode(
+                "note",
+                "session_owner_unknown",
+                "Cannot confirm that this older session is still open. Resume it locally from its original directory, then retry.",
+                agent,
+            )
     if agent is None:
         return SessionControlMode(
             "note",
-            "not_managed",
+            "session_unavailable"
+            if session.session_source_type in {"claude_code", "codex"}
+            else "not_managed",
             "this session is governed through hooks or the gateway, not run by "
             "an Agent Control agent; a line is a note read at its next tool or "
             "model call",
@@ -905,5 +948,14 @@ def resolve_session_control_mode(
     ):
         return SessionControlMode(
             "note", "turn_in_progress", "Delivers at the agent's next step", agent
+        )
+    if session.session_source_type in {"claude_code", "codex"} and not getattr(
+        session, "start_directory", None
+    ):
+        return SessionControlMode(
+            "note",
+            "session_directory_unknown",
+            "The original working directory was not recorded. Resume locally from that directory to register it, then retry.",
+            agent,
         )
     return SessionControlMode("command", None, None, agent)

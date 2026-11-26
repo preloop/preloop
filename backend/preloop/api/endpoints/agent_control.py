@@ -761,6 +761,7 @@ async def _redeliver_pending_commands(
 _COMMAND_ACK_NAMES = {
     "ack",
     "command_ack",
+    "command_session",
     "command_result",
     "command_error",
     "command_progress",
@@ -1599,6 +1600,50 @@ def _bind_command_session(
     source_id = session_source_id_for(
         connection.managed_agent_session_source_id, native
     )
+    payload = command.envelope.get("payload", {})
+    if payload.get("start_new_session") or payload.get("session_mode") == "new":
+        existing = crud_runtime_session.get_by_source(
+            db,
+            account_id=account_id,
+            session_source_type=source_type,
+            session_source_id=source_id,
+        )
+        if (
+            existing is not None
+            and isinstance(existing.started_at, datetime)
+            and isinstance(command.created_at, datetime)
+        ):
+            started = (
+                existing.started_at.replace(tzinfo=UTC)
+                if existing.started_at.tzinfo is None
+                else existing.started_at
+            )
+            created = (
+                command.created_at.replace(tzinfo=UTC)
+                if command.created_at.tzinfo is None
+                else command.created_at
+            )
+            first_created = getattr(existing, "created_at", None)
+            if isinstance(first_created, datetime):
+                first_created = (
+                    first_created
+                    if first_created.tzinfo
+                    else first_created.replace(tzinfo=UTC)
+                )
+                started = min(started, first_created)
+            if started < created:
+                reason = "Harness reported a pre-existing session for a new conversation; start a new session"
+                crud_agent_control_command.mark_terminal_result(
+                    db,
+                    account_id=connection.account_id,
+                    managed_agent_id=connection.managed_agent_id,
+                    command_id=command_id,
+                    result_payload={"status": "failed", "error": reason},
+                    failed=True,
+                    error=reason,
+                    commit=False,
+                )
+                return
     now = datetime.now(UTC)
     session = crud_runtime_session.resolve_control_session(
         db,
@@ -1977,8 +2022,7 @@ def _existing_session_identity(
     return {
         "session_source_id": native_session_id(target_session),
         "session_reference": target_session.session_reference,
-        "working_directory": getattr(target_session, "start_directory", None)
-        or target_session.cwd,
+        "working_directory": getattr(target_session, "start_directory", None),
     }
 
 
@@ -2182,7 +2226,9 @@ async def _route_managed_agent_prompt(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This harness supports text messages to active sessions only",
         )
-    if not _agent_has_control_config(db, account_id=str(agent.account_id), agent=agent):
+    if request.target_session_id is None and not _agent_has_control_config(
+        db, account_id=str(agent.account_id), agent=agent
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Managed agent does not have an Agent Control plugin configured",
@@ -2216,7 +2262,11 @@ async def _route_managed_agent_prompt(
             db, account_id=str(current_user.account_id), session=target_session
         )
         if decision.mode == "note":
-            if decision.reason_code not in {"terminal_session", "turn_in_progress"}:
+            if decision.reason_code not in {
+                "terminal_session",
+                "turn_in_progress",
+                "not_managed",
+            }:
                 raise HTTPException(
                     409,
                     {
@@ -2496,6 +2546,12 @@ def get_managed_agent_command_status(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Command not found"
         ) from None
+    crud_agent_control_command.expire_stale(
+        db,
+        now=datetime.now(UTC),
+        account_id=current_user.account_id,
+        managed_agent_id=agent_uuid,
+    )
     record = crud_agent_control_command.get_for_consumer(
         db,
         account_id=current_user.account_id,
