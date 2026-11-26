@@ -103,13 +103,38 @@ def current_trusted_run(api: GitHub, run: dict) -> bool:
 
 
 def self_hosted_backend(job: dict) -> bool:
-    """Select only the CI matrix's backend jobs on general or local slots."""
+    """Select only the CI matrix's backend jobs on general, local or aws runners."""
     labels = set(job.get("labels") or [])
     return bool(
         BACKEND_JOB.fullmatch(job.get("name", ""))
         and any(c <= labels for c in (GENERAL_LABELS, LOCAL_LABELS, AWS_LABELS))
         and "gce-tests-only" not in labels
     )
+
+
+def ephemeral(job: dict) -> bool:
+    """An aws runner serves one job and is then destroyed, so it is offline."""
+    return AWS_LABELS <= set(job.get("labels") or [])
+
+
+def tests_concluded(job: dict) -> bool:
+    """Whether the test step itself finished (passed or failed)."""
+    return any(
+        step.get("name") == "Run tests"
+        and step.get("conclusion") in {"success", "failure"}
+        for step in job.get("steps") or []
+    )
+
+
+def offline_is_loss_evidence(job: dict) -> bool:
+    """Whether an offline assigned runner can mean lost capacity for this job.
+
+    An aws runner is always offline once its job completes, so for that class
+    only a completed job whose tests never concluded (lost mid-run) counts.
+    """
+    if not ephemeral(job) or job.get("status") == "in_progress":
+        return True
+    return not tests_concluded(job)
 
 
 def needs_recovery(jobs: list[dict], runners: list[dict] | None, now: datetime) -> bool:
@@ -141,6 +166,7 @@ def needs_recovery(jobs: list[dict], runners: list[dict] | None, now: datetime) 
                 job.get("status") == "in_progress"
                 or job.get("conclusion") in {"failure", "timed_out"}
             )
+            and offline_is_loss_evidence(job)
         ):
             return True
     return False
@@ -205,6 +231,7 @@ def unrelated_failure(jobs: list[dict], runners: list[dict] | None) -> bool:
             and online is not None
             and job.get("runner_id")
             and job["runner_id"] not in online
+            and offline_is_loss_evidence(job)
         ):
             return True
     return False

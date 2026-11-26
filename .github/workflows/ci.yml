@@ -63,8 +63,10 @@ jobs:
   # Light-job runners
   # ==========================================================================
   # One inventory snapshot for the first two stages. Idle preloop-ci-local
-  # slots take Detect changed paths, Lint & Format and CLI Fast; everything
-  # else, every failure, untrusted sources and reruns use ubuntu-24.04.
+  # slots take Detect changed paths, Lint & Format and CLI Fast, then idle
+  # preloop-ci-aws runners when CI_AWS_RUNNERS=true (one job per aws VM);
+  # everything else, every failure, untrusted sources and reruns use
+  # ubuntu-24.04.
   # Consumers fall back to hosted when this job produced no output.
   pick-light:
     permissions:
@@ -164,8 +166,9 @@ jobs:
   # not gate the picker that decides whether self-hosted capacity is available.
   # Every backend shard runs on one runner class: all shards go to idle
   # general CI runners when there is one per shard, else to idle
-  # preloop-ci-local slots when there is one per shard, otherwise all run
-  # hosted. Local slots left over go to the browser-fixture and fuzz
+  # preloop-ci-local slots when there is one per shard, else to idle
+  # preloop-ci-aws runners when there is one per shard and CI_AWS_RUNNERS=true,
+  # otherwise all run hosted. Local slots left over go to the browser-fixture and fuzz
   # leaves; .github/scripts/pick-runners.sh holds the rules. Mixing the slower self-hosted VMs with hosted shards made one
   # straggler set the wall clock. Missing inventory, absent credentials,
   # forks and disabled routing select hosted.
