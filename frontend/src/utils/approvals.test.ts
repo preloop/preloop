@@ -127,6 +127,14 @@ describe('partitionApprovalRequests', () => {
 });
 
 describe('decisionOutcome', () => {
+  it('preserves the recorded decision cause from the response', () => {
+    const cause = {
+      human_decision_recorded: true,
+      auto_approved_reason: null,
+      decided_by_ai: false,
+    };
+    expect(decisionOutcome('approved', cause)).to.include(cause);
+  });
   it('follows the server when a vote leaves the request pending', () => {
     expect(
       decisionOutcome('approved', {

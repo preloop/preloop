@@ -144,6 +144,64 @@ describe('ApprovalsView', () => {
     return JSON.parse(String((call.args[1] as RequestInit).body));
   }
 
+  it('shows the recorded person cause immediately after a local approval', async () => {
+    const request = baseRequest();
+    const element = await renderList([request]);
+    fetchStub.callsFake(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ...request,
+            status: 'approved',
+            human_decision_recorded: true,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+    );
+    await (element as any).handleRowApprove(request);
+    (element as any).statusFilter = 'all';
+    (element as any).applyFilters();
+    await element.updateComplete;
+    expect(
+      element
+        .shadowRoot!.querySelector('[data-decision-cause]')
+        ?.textContent?.trim()
+    ).to.equal('Person');
+  });
+
+  for (const [cause, label] of [
+    [{ human_decision_recorded: true }, 'Person'],
+    [{ decided_by_ai: true }, 'AI decision'],
+    [{ auto_approved_reason: 'bypass' }, 'Time-boxed bypass'],
+  ] as const) {
+    it(`refreshes ${label} evidence after a websocket decision`, async () => {
+      const request = baseRequest();
+      const element = await renderList([request]);
+      fetchStub.callsFake(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ...request,
+              ...cause,
+              status: 'approved',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+      );
+      (element as any).statusFilter = 'all';
+      (element as any).handleWebSocketMessage({
+        type: 'approval_approved',
+        approval_request_id: request.id,
+      });
+      await waitUntil(
+        () =>
+          element
+            .shadowRoot!.querySelector('[data-decision-cause]')
+            ?.textContent?.trim() === label
+      );
+    });
+  }
+
   beforeEach(() => {
     batchOutcomes = {};
     localStorage.setItem('accessToken', 'test-access-token');

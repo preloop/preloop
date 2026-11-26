@@ -924,8 +924,27 @@ export class ApprovalsView extends AuthedElement {
         ];
         this.applyFilters();
         this.calculateStats();
+        if (status === 'approved' || status === 'declined') {
+          void this.refreshDecisionCause(message.approval_request_id);
+        }
       }
       this.refreshStatsSoon();
+    }
+  }
+
+  /** Status broadcasts omit attribution, so retrieve its recorded evidence. */
+  private async refreshDecisionCause(requestId: string): Promise<void> {
+    try {
+      const response = await fetchWithAuth(
+        `${REST_API_PREFIX}/approval-requests/${encodeURIComponent(requestId)}`
+      );
+      if (!response.ok) return;
+      const updated = await response.json();
+      if (this.isConnected && updated?.id === requestId) {
+        this.applyResolution(requestId, updated);
+      }
+    } catch (error) {
+      console.error('Failed to refresh approval attribution:', error);
     }
   }
 
@@ -1589,6 +1608,7 @@ export class ApprovalsView extends AuthedElement {
           status: expectedStatus,
           resolved_at: resolvedAt,
         });
+        void this.refreshDecisionCause(item.id);
         continue;
       }
       if (result?.status === 'expired') {

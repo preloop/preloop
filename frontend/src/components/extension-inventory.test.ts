@@ -70,6 +70,27 @@ async function mount(
 }
 
 describe('extension inventory', () => {
+  it('does not invent reported failures when device reasons are absent', async () => {
+    const element = await mount({
+      page: {
+        items: [],
+        next_cursor: null,
+        completeness: 'unknown',
+        coverage: [
+          {
+            fingerprint: 'a'.repeat(64),
+            collector_version: '1.1.0',
+            completeness: 'unknown',
+            reasons: [],
+          },
+        ],
+      },
+    });
+    const text = element.shadowRoot!.textContent!.replace(/\s+/g, ' ');
+    expect(text).to.contain('No specific incompleteness reason was reported');
+    expect(text).not.to.contain('reported collection failures');
+    expect(text).to.contain('preloop version');
+  });
   // protects=AC10 only account managers get enforcement; fails_when=readers
   // or device views gain editing controls; no_claim=fixture permission loader.
   it('offers account enforcement only to managers', async () => {
