@@ -220,7 +220,7 @@ _CONFIG_SECRET_VALUE = re.compile(
     r"|\bAIza[0-9A-Za-z_\-]{30,}"
     # The password of a URL with credentials (``postgres://user:pass@host``).
     # Only the password part is replaced; scheme, user and host stay.
-    r"|(?<=://)(?P<url_user>[^/\s:@]+):[^/\s@]+(?=@)"
+    r"|(?<=://)(?P<url_user>[^/\s:@]*):[^/\s@]+(?=@)"
     # A bearer token: at least 8 token characters with a digit among them, or
     # 20 and more. Prose such as "Bearer authentication" is left alone.
     r"|\bBearer\s+(?=[A-Za-z0-9._~+/=\-]*[0-9]|[A-Za-z0-9._~+/=\-]{20})"

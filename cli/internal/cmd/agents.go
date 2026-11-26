@@ -2861,18 +2861,20 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		}
 	}
 
-	if state != nil {
-		if err := removeLocalEnrollmentState(agent); err != nil {
-			return partial(err)
-		}
-	}
 	// Whatever path led here, the file decides: "Offboarded" is printed only
 	// when it no longer points at Preloop.
-	if final := planLocalOffboard(agent, nil, baseURL); final.Readable && final.StillManaged {
+	if final := planLocalOffboard(agent, nil, baseURL); final.Readable && final.StillManaged && local.Clean {
 		local = localOffboardOutcome{Line: fmt.Sprintf(
 			"This machine: NOT changed. %s still holds the Preloop block; its key no longer works. Run this command again to remove it.",
 			agent.ConfigPath,
 		)}
+	}
+	// The local state carries the backup. It is kept until the file is
+	// clean, so a later run can still restore the user's own values.
+	if state != nil && local.Clean {
+		if err := removeLocalEnrollmentState(agent); err != nil {
+			return partial(err)
+		}
 	}
 	if local.Clean {
 		fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
@@ -7433,7 +7435,7 @@ var secretValuePattern = regexp.MustCompile(`(agt_[A-Za-z0-9_-]{16,}|sk-[A-Za-z0
 
 // urlPasswordPattern matches the password of a URL that carries credentials
 // (postgres://user:pass@host). Only the password is replaced.
-var urlPasswordPattern = regexp.MustCompile(`(://[^/\s:@]+):[^/\s@]+@`)
+var urlPasswordPattern = regexp.MustCompile(`(://[^/\s:@]*):[^/\s@]+@`)
 
 func redactSecretLookingValue(value string) string {
 	if secretValuePattern.MatchString(value) {

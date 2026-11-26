@@ -351,3 +351,48 @@ func TestOffboardRetryAfterServerOnlyCleansAFileThatBecameWritable(t *testing.T)
 		t.Fatalf("output:\n%s", out)
 	}
 }
+
+// End to end: --server-only with a locked file and a real backup, then the
+// mount is fixed and plain offboard is run. The backup must still be known
+// and the user's own values put back.
+func TestServerOnlyKeepsTheBackupForTheLaterLocalRestore(t *testing.T) {
+	rig, home := newOffboardRig(t)
+	agent := normalizeDiscoveredAgent(home.agent)
+	backup := filepath.Join(home.home, ".preloop", "agents", "backups", "synthetic", "settings.json")
+	mustWriteRecoveryFile(t, backup, manualRigOriginalSettings)
+	if err := saveLocalEnrollmentState(&localEnrollmentState{
+		AgentName:          agent.Name,
+		ConfigPath:         agent.ConfigPath,
+		RuntimePrincipalID: runtimePrincipalIDForAgent(agent),
+		ConfigExisted:      true,
+		BackupPath:         backup,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	offboardNoLoginRestore = true
+	home.lockSettings(t)
+	offboardServerOnly = true
+	if out, err := runOffboardRig(t, home.agent); err == nil {
+		t.Fatalf("--server-only over a locked file is not a success:\n%s", out)
+	}
+	if archiveCalls(rig) != 1 {
+		t.Fatal("the Preloop side should be archived")
+	}
+	if _, err := loadLocalEnrollmentState(agent); err != nil {
+		t.Fatalf("the state with the backup must be kept until the file is clean: %v", err)
+	}
+
+	home.unlockSettings(t)
+	offboardServerOnly = false
+	out, err := runOffboardRig(t, home.agent)
+	if err != nil {
+		t.Fatalf("retry: %v\n%s", err, out)
+	}
+	data, _ := os.ReadFile(home.settings)
+	if string(data) != manualRigOriginalSettings {
+		t.Fatalf("the backup was not restored:\n%s", data)
+	}
+	if !strings.Contains(out, "✓ Offboarded Claude Code") || strings.Contains(out, "no backup was found") {
+		t.Fatalf("output:\n%s", out)
+	}
+}

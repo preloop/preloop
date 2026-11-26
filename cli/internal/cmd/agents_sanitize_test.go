@@ -23,6 +23,7 @@ func TestSanitizeConfigSnapshotRedactsEnvStyleSecrets(t *testing.T) {
 			"MAX_THINKING_TOKENS":           "8000",
 			"UNRELATED":                     syntheticAgentKey,
 			"DATABASE_URL":                  "postgres://jane:synthetic-db-pass@db.example.com/app",
+			"REDIS_URL":                     "redis://:synthetic-db-pass@cache.example.com/0",
 		},
 		"experimental_bearer_token": "synthetic-codex",
 		"mcpServers": map[string]interface{}{
@@ -49,6 +50,7 @@ func TestSanitizeConfigSnapshotRedactsEnvStyleSecrets(t *testing.T) {
 		`"MAX_THINKING_TOKENS":"8000"`,
 		`"theme":"dark"`,
 		`"DATABASE_URL":"postgres://jane:<redacted>@db.example.com/app"`,
+		`"REDIS_URL":"redis://:<redacted>@cache.example.com/0"`,
 	} {
 		if !strings.Contains(text, kept) {
 			t.Fatalf("snapshot lost a non-secret %s: %s", kept, text)

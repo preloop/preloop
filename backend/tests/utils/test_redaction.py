@@ -304,3 +304,19 @@ def test_agent_config_redacts_the_password_of_a_credential_url() -> None:
     assert redacted["env"]["DOCS"] == "https://example.com/guide"
     assert redacted["env"]["PORT"] == "host.example.com:5432"
     assert "synthetic-pass" not in redacted["args"][1]
+
+
+def test_agent_config_redacts_a_credential_url_without_a_user() -> None:
+    from preloop.utils.redaction import redact_agent_config
+
+    redacted = redact_agent_config(
+        {
+            "env": {
+                "REDIS_URL": "redis://:synthetic-pass@cache.example.com/0",
+                "AMQP_URL": "amqp://:synthetic-pass@queue.example.com",
+            }
+        }
+    )
+
+    assert redacted["env"]["REDIS_URL"] == "redis://:<redacted>@cache.example.com/0"
+    assert redacted["env"]["AMQP_URL"] == "amqp://:<redacted>@queue.example.com"
