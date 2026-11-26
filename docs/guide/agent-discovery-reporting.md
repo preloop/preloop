@@ -297,6 +297,14 @@ V3 reports distinguish extension collection coverage from runtime probes through
 complete extension inventory partial. Unreadable profiles, bounded scans and
 failed extension probes still report incomplete coverage.
 
+Reports preserve fixed extension failure codes in `extension_errors`. The
+console uses the latest device report's collector version and reasons to explain
+incomplete coverage. For `extension_project_unscanned`, run
+`preloop agents discover --report --project .` from each affected repository.
+Upgrade advice appears only when the reported collector is older than the
+supported extension collector version. Older reports that omitted specific
+reasons remain unknown; missing reasons do not imply an outdated collector.
+
 `preloop agents discover --inventory` emits `preloop.inventory.v3`, including
 installed extensions for Claude Code and Codex CLI. `--report` sends the same
 metadata on each candidate, bound to the matching app's hashed config context.

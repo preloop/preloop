@@ -41,6 +41,14 @@ Dedicated `gateway` processes install plugin request dependencies and run `on_ga
 *   **Managed Agent Onboarding:** External agents such as OpenClaw can be enrolled so local model traffic is rewritten onto this gateway while local MCP configuration is narrowed to Preloop-managed proxy access.
 
 ## Runtime Session Identity
+
+Claude subagent lifecycle hooks use the same parent-plus-child source identity
+as gateway requests. They retain explicit roles and close or resume turns
+without ending the conversation. `SubagentStop` finishes the child's current
+turn without setting `ended_at`; `SubagentStart` opens its next turn. The console
+list and detail header link parent and child sessions and show a finished child
+turn as `Turn finished`. Missing historical roles and turn ends remain unknown.
+
 *   **Purpose:** Provide a shared identity layer for browsing, auditing, and searching managed runtime sessions across both flows and onboarded external agents.
 *   **Current Implementation:** A new additive `RuntimeSession` layer now uses flows as the first session source, bridged through `runtime_session_id`, `flow_execution_id`, runtime-principal metadata, and optional `agent_session_reference`.
 *   **Session search corpus:** Writes land next to each source row. A session title or summary persisted by the plugin title hook, usage-import metadata, or a gateway auto-summary writes one `session_summary` chunk. Content capture gates stored text; `SESSION_SEARCH_INDEX_ENABLED` stops new writes without a restart. Clearing a title still drops its stale chunk so the corpus cannot keep answering with text the session no longer carries.
