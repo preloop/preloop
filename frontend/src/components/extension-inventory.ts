@@ -7,8 +7,9 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
 import './extension-enforcement';
+import './extension-content';
 import { tableScrollStyles } from '../styles/table-scroll';
-import { formatRelativeTime } from '../utils/date';
+import { formatRelativeTime, parseUTCDate } from '../utils/date';
 import { fleetHref } from '../device-fleet-api';
 import { downloadText } from '../utils/records-format';
 import {
@@ -31,6 +32,13 @@ import {
   type ExtensionSource,
   type InstalledExtension,
 } from '../extension-inventory-api';
+import {
+  canManageExtensionContent,
+  getExtensionContent,
+  getExtensionContentSettings,
+  updateExtensionContentSettings,
+  type ExtensionContentSettings,
+} from '../extension-content-api';
 
 // Exclusive lower bound: this release has no extension collector.
 export const EXTENSION_COLLECTOR_VERSION_FLOOR = '1.0.2';
@@ -50,8 +58,8 @@ export function collectorTooOld(version: string | null): boolean {
   return true;
 }
 
-/** A report older than this is stale: the device should report again. */
-export const EXTENSION_REPORT_STALE_MS = 24 * 60 * 60 * 1000;
+/** Seven-day maximum runner interval plus one day of grace. */
+export const EXTENSION_REPORT_STALE_MS = 8 * 24 * 60 * 60 * 1000;
 
 export interface ReasonText {
   /** What happened, in plain words. */
@@ -129,13 +137,15 @@ export function reasonText(code: string): ReasonText {
   );
 }
 
-/** True when the device never reported a time or reported over a day ago. */
+/** Missing timestamps are unknown; healthy multi-day schedules stay current. */
 export function reportStale(
   device: ExtensionCoverage,
   now = Date.now()
 ): boolean {
-  if (!device.reported_at) return true;
-  return now - Date.parse(device.reported_at) > EXTENSION_REPORT_STALE_MS;
+  if (!device.reported_at) return false;
+  return (
+    now - parseUTCDate(device.reported_at).getTime() > EXTENSION_REPORT_STALE_MS
+  );
 }
 
 const sources: ExtensionSource[] = [
@@ -190,7 +200,17 @@ export class ExtensionInventory extends LitElement {
     window.confirm(message);
   @property({ attribute: false }) copier = (text: string): Promise<void> =>
     navigator.clipboard.writeText(text);
+  @property({ attribute: false }) contentSettingsLoader =
+    getExtensionContentSettings;
+  @property({ attribute: false }) contentSettingsSaver =
+    updateExtensionContentSettings;
+  @property({ attribute: false }) contentAccessLoader =
+    canManageExtensionContent;
+  @property({ attribute: false }) contentLoader = getExtensionContent;
   @state() private expanded = '';
+  /** The content hash being read in the expanded row. Set by a click. */
+  @state() private reading = '';
+  @state() private contentNotice: ExtensionContentSettings | null = null;
   /** Row whose approval this user just set to Unapproved. */
   @state() private unapprovedHint = '';
   @state() private copied = '';
@@ -334,6 +354,28 @@ export class ExtensionInventory extends LitElement {
         flex-wrap: wrap;
         gap: 8px;
         align-items: center;
+      }
+      .content-notice {
+        border: 1px solid var(--console-hairline);
+        border-radius: var(--sl-border-radius-large);
+        padding: 12px;
+        margin-bottom: 16px;
+        max-width: 960px;
+      }
+      .content-notice p {
+        margin: 0 0 8px;
+      }
+      .content-notice-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        align-items: center;
+      }
+      .content-notice a {
+        color: var(--console-link-color);
+      }
+      .content-reader {
+        margin: 4px 0;
       }
       .summary {
         display: flex;
@@ -499,6 +541,10 @@ export class ExtensionInventory extends LitElement {
       this.canView = access.view;
       this.canManage = access.manage;
       if (!access.view) return;
+      // The account-wide list carries the one-time notice; a single device's
+      // or agent's panel does not repeat it.
+      if (!append && !this.fingerprint && !this.agentKind)
+        void this.loadContentNotice();
       const filters: ExtensionFilters = {
         q: this.search || undefined,
         fingerprint: this.fingerprint || undefined,
@@ -614,6 +660,7 @@ export class ExtensionInventory extends LitElement {
     row: InstalledExtension | ExtensionAggregate
   ): Promise<void> {
     const key = detailKey(row);
+    this.reading = '';
     if (this.expanded === key) {
       this.expanded = '';
       this.expandedRow = null;
@@ -834,6 +881,12 @@ export class ExtensionInventory extends LitElement {
       </p>
       ${this.command(`preloop auth login --url ${window.location.origin}`)}
       ${this.command('preloop agents discover --report --project .')}
+      <p>
+        The report sends extension names and hashes and, unless it is turned
+        off, the text of each extension with credentials redacted on the device,
+        so an approver can read it. Add
+        <code>--no-extension-content</code> to keep the text on the device.
+      </p>
       <p>Reload this page after reporting.</p>
     </div>`;
   }
@@ -954,7 +1007,7 @@ export class ExtensionInventory extends LitElement {
       ${
         stale || (device.completeness === 'unknown' && !old)
           ? html`<p>
-                ${stale ? 'This device has not reported in the last day.' : 'Report again to establish coverage.'}
+                ${stale ? 'This device has not reported in eight days (the longest schedule plus one day of grace).' : 'Report again to establish coverage.'}
               </p>
               ${this.reportSteps()}`
           : nothing
@@ -1071,12 +1124,110 @@ export class ExtensionInventory extends LitElement {
     }
   }
 
-  /** Extension point for a future content viewer keyed by the reported hash. */
+  /**
+   * The content behind one reported hash, read on request.
+   *
+   * Reading is an audited action on the server, so nothing loads when a row
+   * expands: the viewer is mounted only after the reader asks for one hash.
+   */
   protected renderExtensionContentViewer(
-    _row: InstalledExtension | ExtensionAggregate,
-    _contentHash: string | null
+    row: InstalledExtension | ExtensionAggregate,
+    contentHash: string | null
   ): TemplateResult | typeof nothing {
-    return nothing;
+    if (!contentHash || !this.canManage) return nothing;
+    const reading = this.reading === contentHash;
+    return html`<div class="content-reader">
+      <code title=${contentHash}>${shortHash(contentHash)}</code>
+      <sl-button
+        size="small"
+        variant="text"
+        class="read-content"
+        aria-pressed=${reading ? 'true' : 'false'}
+        @click=${() => {
+          this.reading = reading ? '' : contentHash;
+        }}
+        >${reading ? 'Hide content' : 'Read content'}</sl-button
+      >
+      ${
+        reading
+          ? html`<extension-content-viewer
+              .extension=${row}
+              .contentHash=${contentHash}
+              .pinnedHashes=${this.pins.map((pin) => pin.content_hash)}
+              .canManage=${this.canManage}
+              .busy=${!!this.busy}
+              .loader=${this.contentLoader}
+              @approve-content=${(
+                event: CustomEvent<{ contentHash: string }>
+              ) => this.approveContent(row, event.detail.contentHash)}
+            ></extension-content-viewer>`
+          : nothing
+      }
+    </div>`;
+  }
+
+  /** Approve the exact content on screen: the pin is the hash being read. */
+  private approveContent(row: ExtensionKey, contentHash: string): void {
+    void this.act(row, () =>
+      row.approval_state === 'approved'
+        ? this.pinAdder(row, contentHash).then(() => undefined)
+        : this.updater(row, 'approved', contentHash)
+    );
+  }
+
+  private async loadContentNotice(): Promise<void> {
+    try {
+      const [settings, admin] = await Promise.all([
+        this.contentSettingsLoader(),
+        this.contentAccessLoader(),
+      ]);
+      this.contentNotice = admin && settings.notice_pending ? settings : null;
+    } catch {
+      this.contentNotice = null;
+    }
+  }
+
+  private async acknowledgeContentNotice(): Promise<void> {
+    this.contentNotice = null;
+    try {
+      await this.contentSettingsSaver({ acknowledge_notice: true });
+    } catch {
+      // The banner returns on the next visit; nothing else depends on it.
+    }
+  }
+
+  /** One-time notice to administrators about the new data class. */
+  private contentBanner(): TemplateResult | typeof nothing {
+    const notice = this.contentNotice;
+    if (!notice) return nothing;
+    return html`<div class="content-notice" role="status">
+      <p>
+        <strong>Extension content is now collected for review.</strong>
+        Devices that report with a current CLI also upload the text of skills,
+        commands, hook commands and plugin files, redacted on the device, so an
+        approver can read what they approve. Inventory reported before this
+        release is unchanged and has no content. The account setting
+        <strong>Collect extension content for review</strong> is
+        ${notice.collect_enabled ? 'on' : 'off'}.
+      </p>
+      <div class="content-notice-actions">
+        <a href="/console/settings/account#extension-content"
+          >Open the setting</a
+        >
+        <a
+          href="https://docs.preloop.ai/guide/agent-discovery-reporting/#extension-content"
+          target="_blank"
+          rel="noopener"
+          >What is collected</a
+        >
+        <sl-button
+          size="small"
+          class="dismiss-content-notice"
+          @click=${() => this.acknowledgeContentNotice()}
+          >Dismiss</sl-button
+        >
+      </div>
+    </div>`;
   }
 
   private detailsRow(
@@ -1088,7 +1239,7 @@ export class ExtensionInventory extends LitElement {
     const agent =
       row.agent_kind === 'claude_code'
         ? 'claude-code'
-        : row.agent_kind === 'codex_cli'
+        : row.agent_kind === 'codex' || row.agent_kind === 'codex_cli'
           ? 'codex-cli'
           : row.agent_kind;
     const command = `preloop agents extensions show ${row.extension_kind} ${quote(row.extension_id)} --agent ${quote(agent)}`;
@@ -1147,16 +1298,24 @@ export class ExtensionInventory extends LitElement {
         }
         ${this.deviceError ? html`<p role="status">${this.deviceError}</p>` : nothing}
         ${this.deviceCursor ? html`<sl-button size="small" @click=${() => this.loadDetailDevices(row, true)}>More devices</sl-button>` : nothing}
+        ${
+          hashes.some((hash) => hash) && this.canManage
+            ? html`<p>
+                Read the content a device uploaded for a hash. Each read is
+                recorded in the audit log.
+              </p>`
+            : nothing
+        }
+        ${hashes.map((hash) => this.renderExtensionContentViewer(row, hash))}
         <p>
-          Read the full content locally on a device that reported this
-          extension:
+          Or read the full, unredacted content locally on a device that reported
+          this extension:
         </p>
         ${this.command(command)}
         <p class="meta">
           For project extensions, run from that repository and append --project
           .
         </p>
-        ${hashes.map((hash) => this.renderExtensionContentViewer(row, hash))}
       </td>
     </tr>`;
   }
@@ -1209,7 +1368,7 @@ export class ExtensionInventory extends LitElement {
   render(): TemplateResult | typeof nothing {
     if (!this.loading && !this.canView && !this.error) return nothing;
     return html`
-      ${this.summary()}
+      ${this.contentBanner()} ${this.summary()}
       <div class="filters">
         <label class="search"
           >Search name or description

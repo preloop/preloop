@@ -107,7 +107,7 @@ func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEn
 		hash := hmacHex(salt, "preloop-profile-app:v2:"+app.ProfileRef+":"+app.AppID)
 
 		evidence.Applications = append(evidence.Applications, inventoryReportApplication{Extensions: &app.Extensions, Completeness: app.Completeness, AgentKind: kind, ConfigPathHash: hash, ProfileRef: app.ProfileRef, Installed: "unknown", Configured: inventoryConfiguredState(app), Controls: inventoryReportControls(app.Controls)})
-		report.Candidates = append(report.Candidates, discoveryReportCandidate{Extensions: &app.Extensions, AgentKind: kind, ConfigPathHash: hash, MCPServerCount: app.MCPCounts.Servers, Enrolled: app.MCPRoutes.Managed > 0})
+		report.Candidates = append(report.Candidates, discoveryReportCandidate{Extensions: &app.Extensions, AgentKind: kind, ConfigPathHash: hash, MCPServerCount: app.MCPCounts.Servers, Enrolled: app.enrolled})
 
 	}
 	report.Evidence = &evidence
@@ -132,8 +132,8 @@ func sendAllUsersInventory(w io.Writer, deviceRefs ...string) error {
 	if err != nil {
 		return err
 	}
-	var response discoveryReportResponse
-	if err = postInventoryReport(client, report, &response); err != nil {
+	response, _, err := sendInventoryReportWithContent(client, os.Stderr, report, salt, true, nil)
+	if err != nil {
 		return fmt.Errorf("failed to send profile inventory: %w", err)
 	}
 	if response.LegacyEvidence {

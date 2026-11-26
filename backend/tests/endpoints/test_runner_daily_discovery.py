@@ -56,6 +56,7 @@ def runner_api(monkeypatch: pytest.MonkeyPatch) -> tuple:
     )
     app = FastAPI()
     app.include_router(agent_discovery.router, prefix="/api/v1")
+    app.include_router(agent_discovery.runner_router, prefix="/api/v1")
     app.dependency_overrides[get_db_session] = lambda: Mock()
     return TestClient(app), runner, account
 
@@ -177,6 +178,7 @@ def test_runner_reports_preserve_first_seen_and_evaluate_findings(
     monkeypatch.setattr(agent_discovery, "evaluate_fleet_findings", evaluate)
     app = FastAPI()
     app.include_router(agent_discovery.router, prefix="/api/v1")
+    app.include_router(agent_discovery.runner_router, prefix="/api/v1")
     app.dependency_overrides[get_db_session] = lambda: db_session
     client = TestClient(app)
     url = f"/api/v1/runners/{runner.id}/discovery-reports"
@@ -230,3 +232,140 @@ def test_account_policy_persists_without_replacing_other_settings(
     assert saved.meta_data["unrelated"] == {"enabled": True}
     assert agent_discovery._runner_discovery_policy(saved).enabled is False
     assert agent_discovery._runner_discovery_policy(saved).interval_seconds == 3600
+
+
+def test_runner_content_routes_are_device_bound(
+    runner_api: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A runner can upload its content but has no content read authority."""
+    from preloop.api.endpoints import extension_content
+
+    client, runner, account = runner_api
+    client.app.include_router(extension_content.router, prefix="/api/v1")
+    client.app.include_router(extension_content.runner_router, prefix="/api/v1")
+    headers = {"Authorization": "Bearer synthetic-runner-token"}
+    store = Mock(return_value={"stored": 0, "kept": 0, "rejected": []})
+    monkeypatch.setattr(
+        extension_content, "store_collected_content", store, raising=False
+    )
+    payload = {
+        "workstation_fingerprint": "a" * 64,
+        "redaction_rules": "fixture",
+        "items": [
+            {
+                "extension_kind": "skill",
+                "content_hash": "sha256:" + "a" * 64,
+                "withheld": "excluded",
+            }
+        ],
+    }
+    path = f"/api/v1/runners/{runner.id}/extension-content"
+    assert client.post(path, headers=headers, json=payload).status_code == 200
+    assert store.call_count == 1
+    payload["workstation_fingerprint"] = "c" * 64
+    assert client.post(path, headers=headers, json=payload).status_code == 403
+    assert (
+        client.post(
+            path.replace(str(runner.id), str(uuid4())), headers=headers, json=payload
+        ).status_code
+        == 401
+    )
+    assert client.get(
+        "/api/v1/agents/extension-content/skill/sha256:" + "a" * 64, headers=headers
+    ).status_code in (401, 403)
+    account.meta_data = {"runner_discovery": {"enabled": False}}
+    payload["workstation_fingerprint"] = "a" * 64
+    assert client.post(path, headers=headers, json=payload).status_code == 403
+    assert store.call_count == 1
+
+
+def test_runner_missing_content_query_only_uses_its_reported_hashes(
+    runner_api: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hash negotiation cannot reveal another device's content presence."""
+    from preloop.api.endpoints import extension_content
+
+    client, runner, _ = runner_api
+    client.app.include_router(extension_content.router, prefix="/api/v1")
+    client.app.include_router(extension_content.runner_router, prefix="/api/v1")
+    headers = {"Authorization": "Bearer synthetic-runner-token"}
+    own_hash, other_hash = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+    reported = Mock(return_value={("skill", own_hash)})
+    query = Mock(return_value={"collect": True, "missing": [], "retention_days": 90})
+    monkeypatch.setattr(
+        extension_content.crud_extension_content, "reported_pairs", reported
+    )
+    monkeypatch.setattr(
+        extension_content, "query_collected_content", query, raising=False
+    )
+    response = client.post(
+        f"/api/v1/runners/{runner.id}/extension-content/missing",
+        headers=headers,
+        json={
+            "items": [
+                {"extension_kind": "skill", "content_hash": value}
+                for value in (own_hash, other_hash)
+            ]
+        },
+    )
+    assert response.status_code == 200
+    assert (
+        reported.call_args.kwargs["workstation_fingerprint"]
+        == runner.workstation_fingerprint
+    )
+    assert [item.content_hash for item in query.call_args.args[0].items] == [own_hash]
+
+
+def test_production_app_accepts_runner_credentials(
+    runner_api: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Production routing must not apply user authentication to runner routes."""
+    from preloop.api.app import create_app
+    from preloop.api.endpoints import extension_content
+
+    _, runner, _ = runner_api
+    app = create_app()
+    app.dependency_overrides[get_db_session] = lambda: Mock()
+    monkeypatch.setattr(
+        agent_discovery,
+        "record_discovery_report",
+        Mock(return_value={"received": 0, "created": 0, "updated": 0}),
+    )
+    monkeypatch.setattr(
+        extension_content.crud_extension_content,
+        "reported_pairs",
+        Mock(return_value=set()),
+    )
+    monkeypatch.setattr(
+        extension_content,
+        "query_collected_content",
+        Mock(return_value={"collect": True, "missing": [], "retention_days": 90}),
+    )
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer synthetic-runner-token"}
+    base = f"/api/v1/runners/{runner.id}"
+    assert client.get(base + "/discovery-policy", headers=headers).status_code == 200
+    assert (
+        client.post(
+            base + "/discovery-reports",
+            headers=headers,
+            json={"workstation_fingerprint": "a" * 64, "candidates": []},
+        ).status_code
+        == 202
+    )
+    assert (
+        client.post(
+            base + "/extension-content/missing", headers=headers, json={"items": []}
+        ).status_code
+        == 200
+    )
+    schema = app.openapi()
+    for path, method in (
+        ("discovery-policy", "get"),
+        ("discovery-reports", "post"),
+        ("extension-content/missing", "post"),
+        ("extension-content", "post"),
+    ):
+        assert schema["paths"]["/api/v1/runners/{runner_id}/" + path][method].get(
+            "security"
+        ) == [{"runnerToken": []}]

@@ -462,3 +462,11 @@ last attempt, result and last success. No extra report token is required. Report
 never enroll agents or modify application files; installation and enrollment stay
 separate MDM actions. See the [automatic reporting contract](../guide/agent-discovery-reporting.md#automatic-runner-reports)
 for retries, disclosure and privacy controls.
+
+
+Automatic reports also follow the extension content privacy controls:
+`discovery.extension_content: false` or `PRELOOP_NO_EXTENSION_CONTENT=1` turns
+content off on the device. Per-extension marker files and exclusion patterns
+apply across scanned profiles. The account setting **Collect extension content
+for review** is enforced before collection and again on upload. The first
+content upload prints its disclosure in the service log; it never prompts.

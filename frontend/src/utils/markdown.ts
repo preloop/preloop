@@ -16,6 +16,123 @@ export function renderMarkdown(source: string | null | undefined): string {
   return DOMPurify.sanitize(typeof parsed === 'string' ? parsed : '');
 }
 
+const UNTRUSTED_TAGS = [
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'p',
+  'br',
+  'hr',
+  'blockquote',
+  'ul',
+  'ol',
+  'li',
+  'pre',
+  'code',
+  'strong',
+  'em',
+  'del',
+  'a',
+  'table',
+  'thead',
+  'tbody',
+  'tr',
+  'th',
+  'td',
+];
+
+/**
+ * Markdown written by a third party, for example an extension author.
+ *
+ * Stricter than {@link renderMarkdown}. The text is attacker-controlled and
+ * is read by someone with approval rights, so the output is reduced to an
+ * allowlist of structural tags:
+ *
+ * - no images, media, frames, forms, styles or SVG, so opening a document
+ *   cannot fetch a remote URL or restyle the console;
+ * - no attributes except `href` on links, and only http, https and mailto
+ *   targets, so there are no event handlers, ids, classes or script URLs;
+ * - links open in a new tab without an opener or referrer.
+ *
+ * DOMPurify removes anything outside the allowlist, raw HTML in the
+ * Markdown included.
+ */
+export function renderUntrustedMarkdown(
+  source: string | null | undefined
+): string {
+  return renderUntrustedMarkdownChecked(source).html;
+}
+
+/** Attributes `marked` itself writes and the allowlist drops: no text lost. */
+const BENIGN_DROPPED_ATTRIBUTES = new Set(['class', 'align', 'start']);
+
+/**
+ * Render third-party Markdown and count what the rendering left out.
+ *
+ * `omitted` counts every node and attribute the sanitiser removed that could
+ * carry text a reader does not see: HTML comments, raw HTML elements, images
+ * with their alt text, link titles. An agent that loads the file reads all of
+ * it, so a viewer must not present the rendered form as the whole file when
+ * this is above zero.
+ */
+export function renderUntrustedMarkdownChecked(
+  source: string | null | undefined
+): { html: string; omitted: number } {
+  const text = source || '';
+  if (!text.trim()) return { html: '', omitted: 0 };
+  const parsed = marked.parse(text, { async: false, gfm: true, breaks: false });
+  const fragment = DOMPurify.sanitize(
+    typeof parsed === 'string' ? parsed : '',
+    {
+      ALLOWED_TAGS: UNTRUSTED_TAGS,
+      ALLOWED_ATTR: ['href'],
+      ALLOWED_URI_REGEXP: /^(?:https?:|mailto:)/i,
+      ALLOW_DATA_ATTR: false,
+      ALLOW_ARIA_ATTR: false,
+      RETURN_DOM_FRAGMENT: true,
+    }
+  );
+  let omitted = 0;
+  for (const entry of DOMPurify.removed as Array<{
+    element?: Node;
+    attribute?: Attr | null;
+  }>) {
+    if (entry.attribute) {
+      if (!BENIGN_DROPPED_ATTRIBUTES.has(entry.attribute.name.toLowerCase()))
+        omitted++;
+    } else if (entry.element) {
+      const element = entry.element as Element;
+      // A task-list checkbox is the one element `marked` writes that the
+      // allowlist drops; it has no text of its own.
+      const checkbox =
+        element.nodeName === 'INPUT' &&
+        element.getAttribute?.('type') === 'checkbox' &&
+        !element.getAttribute?.('value');
+      // The sanitiser reports its own document wrapper as removed.
+      const wrapper =
+        ['BODY', 'HTML', 'HEAD'].includes(element.nodeName) &&
+        !(element.attributes?.length > 0);
+      if (!checkbox && !wrapper) omitted++;
+    }
+  }
+  const holder = document.createElement('div');
+  holder.appendChild(fragment);
+  for (const link of Array.from(holder.querySelectorAll('a'))) {
+    if (!link.getAttribute('href')) {
+      // The target was not http, https or mailto: the reader would not see it.
+      omitted++;
+      link.replaceWith(...Array.from(link.childNodes));
+      continue;
+    }
+    link.setAttribute('target', '_blank');
+    link.setAttribute('rel', 'noopener noreferrer nofollow');
+  }
+  return { html: holder.innerHTML, omitted };
+}
+
 /**
  * Prose styling for a rendered body.
  *

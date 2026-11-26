@@ -5,6 +5,7 @@ package cmd
 // identities are account-salted hashes; the inventory DTOs keep application
 // configuration and credentials out of reports. The reporting guide documents
 // the extension data classes and their opt-outs.
+// Redacted extension text follows in a separate, opt-out content pass.
 
 import (
 	"crypto/hmac"
@@ -180,8 +181,8 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	if err != nil {
 		return err
 	}
-	var resp discoveryReportResponse
-	if err := postInventoryReport(client, report, &resp); err != nil {
+	resp, content, err := sendInventoryReportWithContent(client, w, report, salt, false, projects)
+	if err != nil {
 		return fmt.Errorf("failed to send discovery report: %w", err)
 	}
 	disclosure := "inventory metadata, extension identifiers, descriptions and hashes"
@@ -195,6 +196,10 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	if resp.LegacyEvidence {
 		fmt.Fprintln(w, legacyInventoryNotice)
 		disclosure = "inventory metadata"
+	}
+	if content.Uploaded > 0 {
+		fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent %s, and the redacted text of %d extension(s) for review; credentials found in that text were replaced before upload.\n", resp.Received, resp.Created, disclosure, content.Uploaded) //nolint:errcheck
+		return nil
 	}
 	fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent %s; no file bodies, hook arguments or credential files.\n", resp.Received, resp.Created, disclosure) //nolint:errcheck
 	return nil

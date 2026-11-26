@@ -209,14 +209,11 @@ func TestRunnerDiscoveryMeasuredCost(t *testing.T) {
 	if measurementHome == "" {
 		t.Fatal("measurement requires an explicit home")
 	}
-	t.Setenv("HOME", measurementHome)
-	t.Setenv("USERPROFILE", measurementHome)
+	oldProbes := inventoryProbes
+	inventoryProbes.Home = func() (string, error) { return measurementHome, nil }
+	t.Cleanup(func() { inventoryProbes = oldProbes })
 	started := time.Now()
 	report, scan, err := collectDiscoveryInventoryReport("measurement-salt", "measurement-device", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := json.Marshal(report)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,25 +222,40 @@ func TestRunnerDiscoveryMeasuredCost(t *testing.T) {
 		extensions += len(app.Extensions)
 	}
 	collectionTime := time.Since(started)
-	sent := 0
+	sent, uploads := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Error(err)
 		}
-		sent = len(data)
-		w.WriteHeader(202)
-		_, _ = w.Write([]byte(`{"received":0}`))
+		sent += len(data)
+		switch r.URL.Path {
+		case discoveryReportPath:
+			w.WriteHeader(202)
+			_, _ = w.Write([]byte(`{"received":0}`))
+		case contentMissingPath:
+			var query contentQueryRequest
+			_ = json.Unmarshal(data, &query)
+			if os.Getenv("PRELOOP_DISCOVERY_MEASUREMENT_CACHED") == "1" {
+				query.Items = nil
+			}
+			_ = json.NewEncoder(w).Encode(contentQueryResponse{Collect: true, Missing: query.Items, RetentionDays: 90})
+		case contentUploadPath:
+			var upload contentUploadRequest
+			_ = json.Unmarshal(data, &upload)
+			uploads += len(upload.Items)
+			_ = json.NewEncoder(w).Encode(contentUploadResponse{Stored: len(upload.Items)})
+		default:
+			t.Error("unexpected measurement route")
+			w.WriteHeader(404)
+		}
 	}))
 	defer server.Close()
-	var response discoveryReportResponse
-	if err := postInventoryReport(api.NewClientWithToken(server.URL, "measurement-token"), report, &response); err != nil {
-		t.Fatal(err)
+	_, content, err := sendInventoryReportWithContent(api.NewClientWithToken(server.URL, "measurement-token"), io.Discard, report, "measurement-salt", false, nil)
+	if err != nil || content.Failed {
+		t.Fatalf("measurement report failed: %v", err)
 	}
-	if sent != len(raw) {
-		t.Fatalf("payload size %d differs from local receipt %d", len(raw), sent)
-	}
-	t.Logf("collection_wall=%s total_wall=%s extensions=%d candidates=%d bytes_sent_to_loopback=%d", collectionTime, time.Since(started), extensions, len(report.Candidates), sent)
+	t.Logf("collection_wall=%s total_wall=%s extensions=%d candidates=%d content_uploads=%d bytes_sent_to_loopback=%d", collectionTime, time.Since(started), extensions, len(report.Candidates), uploads, sent)
 }
 
 func TestRunnerDiscoveryAllUsersUsesProfileCoverage(t *testing.T) {
@@ -391,5 +403,36 @@ func TestRunnerDiscoveryRejectsMissingSalt(t *testing.T) {
 	w.tick(now.Add(time.Hour), config.RunnerDiscoveryConfig{}, nil)
 	if w.schedule.Failures != 1 {
 		t.Fatal("missing salt should retry without collection")
+	}
+}
+
+func TestRunnerDiscoveryRecognizesEnrollmentWithoutMCP(t *testing.T) {
+	resetInventoryCommand(t)
+	home := setupDiscoveryHome(t)
+	writeInventoryFixture(t, home, ".cursor/mcp.json", `{}`)
+	path := filepath.Join(home, ".cursor", "mcp.json")
+	statePath, err := localEnrollmentStatePath("Cursor", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(map[string]any{"agent_name": "Cursor", "config_path": path, "runtime_principal_id": "fixture-principal", "enrollment_id": "fixture-enrollment"})
+	if err := os.MkdirAll(filepath.Dir(statePath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	inventoryProbes = inventoryTestDependencies(t, home)
+	for _, allUsers := range []bool{false, true} {
+		oldProfiles := inventoryProfiles
+		inventoryProfiles.Profiles = func() ([]inventoryProfile, bool, error) { return []inventoryProfile{{Home: home}}, false, nil }
+		report, _, err := collectDiscoveryInventoryReport(testDiscoverySalt, "fixture-device", allUsers)
+		inventoryProfiles = oldProfiles
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Candidates) != 1 || !report.Candidates[0].Enrolled || report.Candidates[0].MCPServerCount != 0 {
+			t.Fatal("onboarded agent without MCP was reported as not onboarded")
+		}
 	}
 }

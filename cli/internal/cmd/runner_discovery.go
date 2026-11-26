@@ -107,10 +107,18 @@ type runnerDiscoveryClient struct {
 }
 
 func (c runnerDiscoveryClient) Post(path string, body interface{}, result interface{}) error {
-	if path != discoveryReportPath {
+	suffix := ""
+	switch path {
+	case discoveryReportPath:
+		suffix = "discovery-reports"
+	case contentMissingPath:
+		suffix = "extension-content/missing"
+	case contentUploadPath:
+		suffix = "extension-content"
+	default:
 		return fmt.Errorf("unsupported runner discovery route")
 	}
-	return c.client.Post(api.RESTPrefix+"/runners/"+c.runnerID+"/discovery-reports", body, result)
+	return c.client.Post(api.RESTPrefix+"/runners/"+c.runnerID+"/"+suffix, body, result)
 }
 
 func runnerDiscoveryStatePath() (string, error) {
@@ -160,7 +168,8 @@ func saveRunnerDiscoveryState(state runnerDiscoveryState) error {
 }
 
 func runRunnerDiscoveryReport(client runnerDiscoveryClient, salt, deviceRef string) error {
-	report, _, err := collectDiscoveryInventoryReport(salt, deviceRef, inventoryProfiles.Elevated())
+	allUsers := inventoryProfiles.Elevated()
+	report, _, err := collectDiscoveryInventoryReport(salt, deviceRef, allUsers)
 	if err != nil {
 		return err
 	}
@@ -168,8 +177,11 @@ func runRunnerDiscoveryReport(client runnerDiscoveryClient, salt, deviceRef stri
 	// server still has the old fingerprint, this attempt fails closed and the
 	// retry follows the heartbeat, without using an operator login.
 	runnerFingerprint.Store(report.WorkstationFingerprint)
-	var response discoveryReportResponse
-	return postInventoryReport(client, report, &response)
+	_, content, err := sendInventoryReportWithContent(client, os.Stderr, report, salt, allUsers, nil)
+	if err == nil && content.Failed {
+		return errors.New("extension content incomplete; retry scheduled")
+	}
+	return err
 }
 
 // runnerDiscoveryWorker separates the clock and I/O so tests can advance days

@@ -277,3 +277,11 @@ within seconds and ends that harness's live sessions with `stopped_on_host`.
 For all harnesses at once, set `"sessions": {"enabled": false}` in
 `~/.preloop/runner.json`. Removing the runner with `preloop runner disable`
 also ends them.
+
+
+Automatic reports also follow the extension content privacy controls:
+`discovery.extension_content: false` or `PRELOOP_NO_EXTENSION_CONTENT=1` turns
+content off on the device. Per-extension marker files and exclusion patterns
+apply across scanned profiles. The account setting **Collect extension content
+for review** is enforced before collection and again on upload. The first
+content upload prints its disclosure in the service log; it never prompts.

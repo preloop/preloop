@@ -36,6 +36,7 @@ type inventoryMCPCounts struct {
 type inventoryApp struct {
 	// configPath is local correlation data and never appears in inventory JSON.
 	configPath    string
+	enrolled      bool
 	Extensions    []inventoryExtension `json:"extensions"`
 	Completeness  string               `json:"completeness"`
 	AppID         string               `json:"app_id"`
@@ -245,6 +246,7 @@ func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 		} else if app.MCPRoutes.Completeness == "complete" && app.MCPRoutes.Unknown == 0 {
 			inventorySetConfigured(app.Controls, "managed_mcp", "false")
 		}
+		app.enrolled = inventoryEnrollmentObserved(home, spec.Name, app.configPath)
 		extensionErrors := []string{}
 		app.Extensions, extensionErrors = collectInventoryExtensions(home, id, deps.ExtensionSalt, deps.ProfileOnly, deps.ExtensionProjects...)
 		if deps.NoExtensionDetails {

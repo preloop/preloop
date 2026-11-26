@@ -59,6 +59,7 @@ from preloop.services.runner_service import hash_runner_token
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+runner_router = APIRouter()
 
 REPORT_PERMISSION = "report_discovery"
 
@@ -337,7 +338,7 @@ def _runner_report_context(
     return runner, account, user
 
 
-@router.get(
+@runner_router.get(
     "/runners/{runner_id}/discovery-policy", response_model=RunnerDiscoveryConfiguration
 )
 def get_runner_discovery_configuration(
@@ -358,7 +359,7 @@ def get_runner_discovery_configuration(
     return RunnerDiscoveryConfiguration(**policy.model_dump(), salt=salt)
 
 
-@router.post(
+@runner_router.post(
     "/runners/{runner_id}/discovery-reports",
     response_model=DiscoveryReportResponse,
     status_code=202,

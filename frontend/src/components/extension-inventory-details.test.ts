@@ -88,6 +88,21 @@ describe('extension descriptive metadata', () => {
     );
     expect(root.querySelector('.copy-command')).to.exist;
   });
+  it('uses the supported Codex CLI identifier in the local command', async () => {
+    const element = await fixture<ExtensionInventory>(
+      html`<extension-inventory
+        .loader=${async () => ({ ...page, items: [{ ...page.items[0], agent_kind: 'codex' }] })}
+        .accessLoader=${async () => ({ view: true, manage: false })}
+        .pinLoader=${async () => []}
+      ></extension-inventory>`
+    );
+    await waitUntil(() => !!element.shadowRoot?.querySelector('table'));
+    (
+      element.shadowRoot!.querySelector('.toggle-details') as HTMLElement
+    ).click();
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).to.contain("--agent 'codex-cli'");
+  });
   it('sends text search to the API and displays withheld descriptions explicitly', async () => {
     const queries: unknown[] = [];
     const element = await fixture<ExtensionInventory>(

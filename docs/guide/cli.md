@@ -94,6 +94,7 @@ preloop agents discover --json           # machine-readable, no prompts
 preloop agents discover --inventory      # offline known-app inventory JSON
 preloop agents discover --inventory --all-users # elevated, offline local-profile inventory
 preloop agents discover --report --all-users    # elevated, opt-in local-profile report
+preloop agents discover --report --no-extension-content   # report without uploading extension text
 preloop agents discover --no-onboard-prompt
 preloop agents onboard <agent>           # onboard one agent ("enroll" is an alias)
 preloop agents onboard --all -y          # everything discovered, no prompts

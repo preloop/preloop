@@ -1042,3 +1042,25 @@ def test_extension_sort_uses_display_name_across_pages(client: TestClient) -> No
                 break
             params["cursor"] = page["next_cursor"]
         assert seen == ["plugin", "z-directory", "a-directory"]
+
+
+def test_extension_search_has_usable_trigram_indexes(db_session: Session) -> None:
+    """The database can use indexed substring search across all three fields."""
+    from sqlalchemy import text
+
+    db_session.execute(text("SET LOCAL enable_seqscan = off"))
+    plan = (
+        db_session.execute(
+            text("""
+        EXPLAIN SELECT id FROM discovered_extension
+        WHERE extension_id ILIKE '%fixture%'
+           OR CAST(details->>'name' AS VARCHAR) ILIKE '%fixture%'
+           OR CAST(details->>'description' AS VARCHAR) ILIKE '%fixture%'
+    """)
+        )
+        .scalars()
+        .all()
+    )
+    output = "\n".join(plan)
+    for field in ("id", "name", "description"):
+        assert f"ix_discovered_extension_{field}_search" in output
