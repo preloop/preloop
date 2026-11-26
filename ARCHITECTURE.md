@@ -121,9 +121,7 @@ unpinned hash). Only complete
 app scans prove absence; older reports cannot replace newer inventory. Extension
 files, commands and source URLs remain on the device. See the
 [discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions).
-The guide covers per-device collector versions, incomplete coverage reasons and
-matching actions. [Runtime session identity](docs/architecture/gateway.md#runtime-session-identity)
-describes subagent lineage, explicit roles and resumable turn lifecycle hooks.
+It also covers collector versions and coverage gaps; [session identity](docs/architecture/gateway.md#runtime-session-identity) covers subagent lineage.
 Unmatched MCP tool calls read account policy defaults. With approve-once enabled,
 the account-owned `tool_registry_entry` records a decision per proxy server UUID
 or direct-hook server label and exposed tool name. CRUD serializes first sightings
