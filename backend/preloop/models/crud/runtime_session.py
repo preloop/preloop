@@ -734,6 +734,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 runtime_principal_type=runtime_principal_type,
                 runtime_principal_id=runtime_principal_id,
                 runtime_principal_name=runtime_principal_name,
+                # PostgreSQL now() is the transaction start, which can predate
+                # the command that caused this session. Keep actual creation
+                # time immutable when a resume later refreshes started_at.
+                created_at=datetime.now(UTC),
                 started_at=started_at or last_activity_at,
                 last_activity_at=last_activity_at,
                 ended_at=ended_at,

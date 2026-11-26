@@ -254,7 +254,6 @@ def _origin_runtime_session_id(
             account_id=identity.account_id,
             external_session_id=session_id,
             actor_user_id=identity.runner_join_actor,
-            control_owned=payload.control_owned,
         )
         if hosted is not None:
             return OriginSession(str(hosted.id), hosted_runner=True)
@@ -1330,6 +1329,7 @@ def _register_session_start(
             first_prompt=payload.first_prompt,
             alias=payload.alias,
             actor_user_id=identity.runner_join_actor,
+            control_owned=payload.control_owned,
         )
         if result is not None and is_prompt_event(payload.hook_event_name):
             try:

@@ -130,6 +130,10 @@ def test_session_owned_through_principal_resolves_its_agent(
     )
     _online(db_session, agent)
     session = _hook_session(db_session, test_user, principal=agent)
+    crud_runtime_session.record_start_directory(
+        db_session, session=session, cwd="/tmp/example", control_owned=True
+    )
+    db_session.commit()
 
     body = _mode(client, session.id)
 

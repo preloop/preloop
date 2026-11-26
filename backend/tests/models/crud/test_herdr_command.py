@@ -290,6 +290,7 @@ def test_sidecar_resume_precedes_herdr(
     data["agent"].runtime_session_id = data["session"].id
     data["agent"].control_last_heartbeat_at = datetime.now(UTC)
     data["session"].control_owned = True
+    data["session"].start_directory = "/tmp/example"
     monkeypatch.setattr(
         "preloop.services.agent_control_dispatch.agent_has_control_config",
         lambda *args, **kwargs: True,
@@ -670,3 +671,71 @@ async def test_absent_herdr_preserves_plugin_requirement(
     assert "plugin configured" in error.value.detail
     consent.assert_not_awaited()
     assert db_session.query(models.AgentControlCommand).count() == 0
+
+
+@pytest.mark.parametrize("owned", [False, None])
+def test_raw_terminal_ownership_still_reaches_herdr(
+    db_session: Session, prompt_data: dict[str, Any], owned: bool | None
+) -> None:
+    data = prompt_data
+    data["session"].control_owned = owned
+    decision = resolve_session_control_mode(
+        db_session, account_id=str(data["runner"].account_id), session=data["session"]
+    )
+    assert decision.mode == "command" and decision.herdr_target
+    data["session"].terminal_location = data["session"].terminal_location | {
+        "state": "blocked"
+    }
+    decision = resolve_session_control_mode(
+        db_session, account_id=str(data["runner"].account_id), session=data["session"]
+    )
+    assert decision.mode == "note" and decision.reason_code == "agent_blocked"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["session_owner_unknown", "session_directory_unknown", "session_unavailable"],
+)
+def test_control_response_accepts_native_resume_refusal_reasons(
+    db_session: Session,
+    prompt_data: dict[str, Any],
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+) -> None:
+    """GET/control serializes real resolver refusals rather than raising a 500."""
+    from preloop.api.endpoints import agent_control
+    from preloop.services import agent_control_dispatch
+
+    data = prompt_data
+    session, agent = data["session"], data["agent"]
+    session.terminal_location = None
+    if reason == "session_owner_unknown":
+        session.control_owned = None
+        session.started_at = session.last_activity_at = datetime.now(UTC).replace(
+            tzinfo=None
+        ) - timedelta(days=1)
+    elif reason == "session_directory_unknown":
+        session.control_owned = True
+        session.start_directory = None
+        agent.runtime_session_id = session.id
+        agent.control_last_heartbeat_at = datetime.now(UTC)
+        monkeypatch.setattr(
+            agent_control_dispatch,
+            "agent_has_control_config",
+            lambda *args, **kwargs: True,
+        )
+    else:
+        session.ended_at = datetime.now(UTC).replace(tzinfo=None)
+        monkeypatch.setattr(
+            agent_control_dispatch,
+            "session_managed_agent",
+            lambda *args, **kwargs: None,
+        )
+    db_session.flush()
+    response = agent_control.get_runtime_session_control_mode(
+        runtime_session_id=str(session.id), current_user=test_user, db=db_session
+    )
+    assert response.mode == "note" and response.reason_code == reason
+    assert response.model_dump(mode="json")["reason_code"] == reason
+    assert response.reason

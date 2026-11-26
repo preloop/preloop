@@ -133,3 +133,36 @@ describe('Agent Control API', () => {
     });
   }
 });
+
+describe('Talk target preservation', () => {
+  it('does not retry a rejected session target as an untargeted legacy message', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    const fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.onFirstCall().resolves(
+      new Response(JSON.stringify({ detail: 'Unsupported target' }), {
+        status: 422,
+      })
+    );
+    fetchStub.onSecondCall().resolves(
+      new Response(JSON.stringify({ command_id: 'wrong-command' }), {
+        status: 202,
+      })
+    );
+    let error: unknown;
+    try {
+      try {
+        await sendAgentControlCommand('agent-1', {
+          message: 'Example',
+          target_session_id: 'session-example',
+        });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).to.be.instanceOf(Error);
+      expect(fetchStub.calledOnce).to.equal(true);
+    } finally {
+      fetchStub.restore();
+      localStorage.removeItem('accessToken');
+    }
+  });
+});

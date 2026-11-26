@@ -167,6 +167,9 @@ class RuntimeSessionControlResponse(BaseModel):
             "turn_in_progress",
             "agent_blocked",
             "herdr_unavailable",
+            "session_owner_unknown",
+            "session_directory_unknown",
+            "session_unavailable",
             # Command mode (#1509): the runner hosting a remote session is
             # asleep or offline; a turn is held until it reconnects.
             "runner_away",

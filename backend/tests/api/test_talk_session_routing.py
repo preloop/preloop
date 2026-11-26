@@ -157,6 +157,7 @@ def test_idle_sidecar_session_resumes_after_reconnect() -> None:
         ended_at=None,
         turn_state="your_turn",
         control_owned=True,
+        start_directory="/tmp/example",
         session_source_type="claude_code",
         session_source_id="example-host:native-123",
         session_reference=None,
@@ -194,6 +195,7 @@ def test_busy_sidecar_session_delivers_note_at_boundary() -> None:
         ended_at=None,
         turn_state="working",
         control_owned=True,
+        start_directory="/tmp/example",
         session_source_type="claude_code",
         session_source_id="example-host:native-123",
         session_reference=None,
@@ -306,3 +308,33 @@ def test_expired_command_error_does_not_write_into_session() -> None:
         commands.get_by_command_id.return_value = command
         agent_control._persist_agent_control_result(MagicMock(), context, inbound)
     activity.log_agent_control_result.assert_not_called()
+
+
+def test_terminal_hook_overrides_stale_sidecar_reachability() -> None:
+    """A person resuming locally must not get a second writer from Talk."""
+    agent = SimpleNamespace(
+        runtime_session_id=uuid4(),
+        session_source_type="claude_code",
+        session_source_id="example-host",
+        control_reachable_session_ids=["native-example"],
+    )
+    session = SimpleNamespace(
+        id=uuid4(),
+        session_source_type="claude_code",
+        session_source_id="example-host:native-example",
+        session_reference=None,
+        control_owned=False,
+        ended_at=None,
+    )
+    assert dispatch.session_reachable_by_control(agent, session) is False
+
+
+def test_native_start_acknowledges_before_binding() -> None:
+    """Startup can beat the server's socket-delivery status update."""
+    context = SimpleNamespace(account_id=uuid4(), managed_agent_id=uuid4())
+    inbound = SimpleNamespace(
+        name="command_session", payload={"command_id": "starting-example"}
+    )
+    with patch.object(agent_control, "crud_agent_control_command") as commands:
+        agent_control._handle_command_ack(MagicMock(), context, inbound, commit=False)
+    commands.mark_acked.assert_called_once()

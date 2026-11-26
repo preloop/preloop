@@ -752,3 +752,15 @@ test("an expired prompt never starts a harness turn", async () => {
     assert.deepEqual(state.texts, []);
   } finally { sidecar.stop(); }
 });
+
+
+test("a new conversation does not take over an unrelated local terminal", async () => {
+  const { sidecar } = makeSidecar();
+  sidecar.launcher.mode = "local";
+  let takeovers = 0;
+  sidecar.takeOver = async () => { takeovers++; return "local-session"; };
+  try {
+    await sidecar.dispatch({ type: "command", name: "send_message", message_id: "new-example", payload: { text: "Example", start_new_session: true } });
+    assert.equal(takeovers, 0);
+  } finally { sidecar.stop(); }
+});

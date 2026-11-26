@@ -252,13 +252,10 @@ def _create_note(
                 raise HTTPException(
                     409, {"code": decision.reason_code, "message": decision.reason}
                 )
-            terminal_open = (
-                getattr(session, "ended_at", None) is None
-                and getattr(session, "control_owned", None) is not True
-            )
-            if not terminal_open and decision.reason_code not in {
+            if decision.reason_code not in {
                 "terminal_session",
                 "turn_in_progress",
+                "not_managed",
             }:
                 raise HTTPException(
                     409,

@@ -182,3 +182,30 @@ def test_alias_rest_ambiguity_and_target_exclusivity(client, db_session, account
         },
     )
     assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize("owned", [True, False])
+def test_session_start_forwards_process_ownership(owned: bool) -> None:
+    """Terminal resumes must replace stale sidecar ownership metadata."""
+    identity = endpoint.PermissionIdentity(
+        account_id="00000000-0000-0000-0000-000000000001",
+        user_id=None,
+        api_key_id=None,
+        managed_agent_id=None,
+        runtime_session_id=None,
+        managed_agent_name="Agent",
+        runtime_principal_type="claude_code",
+        runtime_principal_id="example-host",
+    )
+    payload = endpoint.AgentSessionStartRequest(
+        session_id="example-native", control_owned=owned
+    )
+    with (
+        patch.object(endpoint, "get_session_factory"),
+        patch(
+            "preloop.services.agent_session_lineage.register_session_start",
+            return_value=None,
+        ) as register,
+    ):
+        endpoint._register_session_start(identity, payload)
+    assert register.call_args.kwargs["control_owned"] is owned

@@ -480,7 +480,7 @@ export class PreloopClaudeSidecar {
       return "interrupted";
     }
 
-    if (this.launcher.mode === "local") {
+    if (this.launcher.mode === "local" && payload.start_new_session !== true) {
       await this.takeOver(targetSessionId ?? resumeSessionId);
     }
 

@@ -242,3 +242,122 @@ def test_new_command_binds_hook_session_among_other_live_sessions(
     )
     assert bound.start_directory == "/tmp/second-example"
     assert bound.control_owned is True
+
+
+def test_polling_a_queued_expired_command_is_terminal(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """An offline sidecar is not needed to expire a queued prompt."""
+    from tests.endpoints.test_agent_control_persistence import _persist_command
+
+    agent, _ = native_session(client, db_session, test_user)
+    record = _persist_command(
+        db_session,
+        test_user,
+        agent,
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    response = client.get(
+        f"/api/v1/agents/{agent.id}/control/commands/{record.command_id}"
+    )
+    assert response.status_code == 200
+    assert response.json()["delivery_state"] == "expired"
+    assert response.json()["terminal"] is True
+
+
+@pytest.mark.parametrize("reopened", [False, True])
+def test_new_command_rejects_a_preexisting_native_identity(
+    client: TestClient, db_session: Session, test_user: models.User, reopened: bool
+) -> None:
+    """Even an erroneous sidecar startup frame cannot reassign old history."""
+    from types import SimpleNamespace
+    from preloop.api.endpoints import agent_control
+    from preloop.schemas.agent_control import AgentControlInboundEnvelope
+
+    agent, existing = native_session(client, db_session, test_user)
+    with patch.object(
+        agent_control.agent_control_manager,
+        "send_to_agent",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        response = client.post(
+            f"/api/v1/agents/{agent.id}/control/prompts",
+            json={"message": "Separate example", "start_new_session": True},
+        )
+    command_id = response.json()["command_id"]
+    if reopened:
+        existing.created_at = datetime.now(UTC) - timedelta(days=1)
+        existing.started_at = datetime.now(UTC)
+        db_session.commit()
+    crud_agent_control_command.mark_delivered(
+        db_session,
+        account_id=test_user.account_id,
+        managed_agent_id=agent.id,
+        command_id=command_id,
+        delivered_at=datetime.now(UTC),
+    )
+    context = SimpleNamespace(
+        account_id=test_user.account_id,
+        managed_agent_id=agent.id,
+        managed_agent_session_source_type="claude_code",
+        managed_agent_session_source_id=agent.session_source_id,
+    )
+    inbound = AgentControlInboundEnvelope(
+        type="event",
+        name="command_session",
+        payload={"command_id": command_id, "native_session_id": "example-native"},
+    )
+    with patch.object(agent_control, "emit_account_event"):
+        agent_control._bind_command_session(db_session, context, inbound)
+    command = crud_agent_control_command.get_by_command_id(
+        db_session, account_id=test_user.account_id, command_id=command_id
+    )
+    assert command.runtime_session_id is None
+    assert command.status == "failed"
+
+
+@pytest.mark.parametrize("endpoint", ["note", "prompt"])
+def test_resume_refuses_unknown_start_directory(
+    client: TestClient, db_session: Session, test_user: models.User, endpoint: str
+) -> None:
+    """A last-seen cwd cannot substitute for the original launch directory."""
+    agent, session = native_session(client, db_session, test_user)
+    session.start_directory = None
+    session.cwd = "/tmp/changed-directory"
+    db_session.commit()
+    if endpoint == "note":
+        response = client.post(
+            "/api/v1/operator-notes",
+            json={"text": "Continue", "runtime_session_id": str(session.id)},
+        )
+    else:
+        response = client.post(
+            f"/api/v1/agents/{agent.id}/control/prompts",
+            json={"message": "Continue", "target_session_id": str(session.id)},
+        )
+    assert response.status_code == 409, response.text
+    assert "original working directory" in response.json()["detail"]["message"]
+
+
+@pytest.mark.parametrize("endpoint", ["note", "prompt"])
+def test_stale_unknown_session_does_not_queue_forever(
+    client: TestClient, db_session: Session, test_user: models.User, endpoint: str
+) -> None:
+    """Legacy sessions with no owner evidence must not strand new messages."""
+    agent, session = native_session(client, db_session, test_user)
+    session.control_owned = None
+    session.last_activity_at = datetime.now(UTC) - timedelta(days=1)
+    db_session.commit()
+    if endpoint == "note":
+        response = client.post(
+            "/api/v1/operator-notes",
+            json={"text": "Continue", "runtime_session_id": str(session.id)},
+        )
+    else:
+        response = client.post(
+            f"/api/v1/agents/{agent.id}/control/prompts",
+            json={"message": "Continue", "target_session_id": str(session.id)},
+        )
+    assert response.status_code == 409, response.text
+    assert "confirm" in response.json()["detail"]["message"]

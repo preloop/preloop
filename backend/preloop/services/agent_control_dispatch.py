@@ -663,6 +663,11 @@ def session_reachable_by_control(agent: Any, session: Any) -> bool:
     Returns:
         True when a command can reach this session.
     """
+    if (
+        getattr(session, "control_owned", None) is False
+        and getattr(session, "ended_at", None) is None
+    ):
+        return False
     if session.session_source_type in {"claude_code", "codex"} and (
         getattr(session, "control_owned", False) is True
         or getattr(session, "ended_at", None) is not None
@@ -839,10 +844,53 @@ def resolve_session_control_mode(
     if session.session_source_type == RUNNER_SESSION_SOURCE_TYPE:
         return _runner_session_control_mode(db, account_id=account_id, session=session)
     agent = session_managed_agent(db, account_id=account_id, session=session)
+    ownership_unavailable = None
+    if (
+        session.session_source_type in {"claude_code", "codex"}
+        and session.ended_at is None
+    ):
+        owned = getattr(session, "control_owned", None)
+        if owned is False:
+            ownership_unavailable = SessionControlMode(
+                "note", TERMINAL_SESSION_REASON_CODE, TERMINAL_SESSION_REASON, agent
+            )
+        elif owned is None:
+            last = getattr(session, "last_activity_at", None) or getattr(
+                session, "started_at", None
+            )
+            if isinstance(last, datetime):
+                last = last if last.tzinfo else last.replace(tzinfo=UTC)
+            if (
+                isinstance(last, datetime)
+                and (now or datetime.now(UTC)) - last
+                <= crud_runtime_session.ACTIVE_WINDOW
+            ):
+                ownership_unavailable = SessionControlMode(
+                    "note",
+                    TERMINAL_SESSION_REASON_CODE
+                    if agent is not None
+                    else "not_managed",
+                    TERMINAL_SESSION_REASON
+                    if agent is not None
+                    else "This session receives notes at its next tool or model call",
+                    agent,
+                )
+            else:
+                ownership_unavailable = SessionControlMode(
+                    "note",
+                    "session_owner_unknown",
+                    "Cannot confirm that this older session is still open. Resume it locally from its original directory, then retry.",
+                    agent,
+                )
+    location = getattr(session, "terminal_location", None) or {}
+    if ownership_unavailable is not None and location.get("multiplexer") != "herdr":
+        return ownership_unavailable
     if agent is None:
         return SessionControlMode(
             "note",
-            "not_managed",
+            "session_unavailable"
+            if session.session_source_type in {"claude_code", "codex"}
+            else "not_managed",
             "this session is governed through hooks or the gateway, not run by "
             "an Agent Control agent; a line is a note read at its next tool or "
             "model call",
@@ -872,7 +920,9 @@ def resolve_session_control_mode(
             f"{name} is {agent.lifecycle_state}, so it cannot take commands",
             agent,
         )
-    if not agent_has_control_config(db, account_id=account_id, agent=agent):
+    if ownership_unavailable is not None:
+        unavailable = ownership_unavailable
+    elif not agent_has_control_config(db, account_id=account_id, agent=agent):
         unavailable = SessionControlMode(
             "note",
             "no_control_plugin",
@@ -898,6 +948,15 @@ def resolve_session_control_mode(
             "note",
             TERMINAL_SESSION_REASON_CODE,
             TERMINAL_SESSION_REASON,
+            agent,
+        )
+    elif session.session_source_type in {"claude_code", "codex"} and not getattr(
+        session, "start_directory", None
+    ):
+        unavailable = SessionControlMode(
+            "note",
+            "session_directory_unknown",
+            "The original working directory was not recorded. Resume locally from that directory to register it, then retry.",
             agent,
         )
     else:

@@ -55501,6 +55501,9 @@ components:
             - turn_in_progress
             - agent_blocked
             - herdr_unavailable
+            - session_owner_unknown
+            - session_directory_unknown
+            - session_unavailable
             - runner_away
           - type: 'null'
           title: Reason Code
