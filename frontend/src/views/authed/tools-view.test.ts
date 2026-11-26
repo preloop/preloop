@@ -219,6 +219,21 @@ describe('ToolsView (approvals + conditions)', () => {
     invalidateApiCaches();
   });
 
+  it('opens the workflow editor from an approval readiness fix link', async () => {
+    const previous = location.href;
+    history.replaceState({}, '', '/console/tools?tab=mcp&edit_workflow=new');
+    try {
+      const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+      await waitUntil(() => (el as any).showPolicyDialog === true);
+      expect((el as any).editingPolicy).to.equal(null);
+      expect(new URL(location.href).searchParams.has('edit_workflow')).to.equal(
+        false
+      );
+    } finally {
+      history.replaceState({}, '', previous);
+    }
+  });
+
   it('refreshes unhealthy server state and shows a failed scan diagnostic', async () => {
     const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
     await waitUntil(() => !(el as any).loading);

@@ -15,6 +15,29 @@ its exact session rollout using bounded reads, never transcript content or a
 shared model configuration. MCP approvals retain authenticated runtime session
 links and show an unknown turn model when no authoritative model is reported.
 
+## Native approval readiness
+
+The Tools native-mode control and agent page read `/account/approval-readiness`
+before a run. This read follows the native workflow resolver's agent pin,
+account pin, default and first-existing fallback without creating a workflow.
+CRUD reads expand team recipients, current active membership, role permissions,
+notification preferences and configured delivery channels. Missing destinations
+are separate from the ability to decide in the console. Readiness does not
+confirm delivery or operator presence and never changes enforcement.
+
+Pending native requests read their stored workflow, including any AI escalation,
+and display the request's `expires_at`. The preview window uses the same
+account-capped resolver as request creation; a client or specific rule can choose
+a different window. The AI evaluator applies approve/deny decisions when
+`confidence >= threshold`; lower confidence and uncertain decisions use the
+configured fallback. Zero is a valid threshold.
+
+Tool registry names are resolved in batches within the account while route IDs
+remain unchanged. Device views separately read current agent lifecycle and
+reporter names through `/fleet/identities`; last-reported onboarded counts stay
+labelled as observations. A failed or missing identity read says current enrollment
+is unknown. Decommissioned agents retain their report history.
+
 ## Tool Configuration and Approval Workflow
 
 Preloop includes comprehensive infrastructure for managing tool configurations and implementing human-in-the-loop approval workflows for sensitive tool operations.

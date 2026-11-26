@@ -1,3 +1,4 @@
+import '../../components/approval-readiness';
 import { hasExternalDecision } from '../../actions/approval-actions';
 import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
@@ -1652,6 +1653,19 @@ export class ApprovalView extends AuthedElement {
             : ''
         }
         ${this.renderFactStrip(request, source, isPending, countdown)}
+        ${
+          isPending &&
+          !this.publicOnly &&
+          request.managed_agent_id &&
+          !isQuestion &&
+          request.tool_name !== 'desktop_control'
+            ? html`<approval-readiness
+                .requestId=${request.id}
+                .workflowId=${request.approval_workflow_id || ''}
+                .expiresAt=${request.expires_at || ''}
+              ></approval-readiness>`
+            : nothing
+        }
         ${this.renderPublicationDestinations(request)}
 
         <!-- A short command reads first; a file diff can run to thousands

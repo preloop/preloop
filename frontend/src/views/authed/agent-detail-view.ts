@@ -1,3 +1,4 @@
+import '../../components/approval-readiness';
 import { REST_API_PREFIX } from '../../api-path';
 import { formatRelativeTime } from '../../utils/date';
 import { formatCount, formatCountExact } from '../../utils/count-format';
@@ -3968,6 +3969,15 @@ export class AgentDetailView extends LitElement {
       <div class="page" style="padding-top: 0;">
         ${this.renderSummaryStrip(aggregate)} ${this.renderDesktopEnable()}
         ${
+          this.activeTab !== 'tools' && this.agent.lifecycle_state === 'active'
+            ? html`
+                <approval-readiness
+                  .agentId=${this.agentId}
+                ></approval-readiness>
+              `
+            : nothing
+        }
+        ${
           this.agent.agent_kind === 'cursor'
             ? html`
                 <p data-cursor-runner-route>
@@ -4249,6 +4259,11 @@ export class AgentDetailView extends LitElement {
                               </sl-select>
                             </div>
                           </div>
+                          <approval-readiness
+                            .agentId=${this.agentId}
+                            .workflowId=${this.governance.approval_workflow_id || ''}
+                            .enforced=${this.effectiveNativeToolApprovals() !== 'off'}
+                          ></approval-readiness>
                           ${
                             this.effectiveNativeToolApprovals() === 'off'
                               ? html`
