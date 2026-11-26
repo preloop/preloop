@@ -6,6 +6,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { promisify } from "node:util";
 
 import type { ControlConfig } from "./config.js";
@@ -483,4 +484,34 @@ export class WorkspaceManager {
       return true;
     }
   }
+}
+
+
+/** Resolve a Talk directory inside the host owner's configured workspace. */
+export async function resolveWorkingDirectory(config: ControlConfig, directory?: string): Promise<string | undefined> {
+  if (!directory) return undefined;
+  if (!path.isAbsolute(directory)) throw new WorkspaceError("Working directory must be absolute");
+  const root = await fs.realpath(config.workspace_root ?? os.homedir());
+  const resolved = await fs.realpath(directory);
+  const configPath = config.runner_config_path ?? path.join(os.homedir(), ".preloop", "runner.json");
+  let runner: { authorized_directories?: { path?: string; mode?: string; harnesses?: string[] | string }[] } | undefined;
+  try {
+    runner = JSON.parse(await fs.readFile(configPath, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new WorkspaceError("Cannot read authorized directories");
+    if (config.runner_config_path) throw new WorkspaceError("Authorized directory configuration is missing");
+  }
+  if (runner) {
+    const entry = runner.authorized_directories?.find(item => item.path === resolved);
+    if (!entry || entry.mode !== "write") throw new WorkspaceError("Working directory is not authorized and writable; use preloop runner dirs add <path>");
+    if (Array.isArray(entry.harnesses) && entry.harnesses.length && !entry.harnesses.includes("codex")) throw new WorkspaceError("Working directory is not authorized for this harness");
+    if (!(await fs.stat(resolved)).isDirectory()) throw new WorkspaceError("Working directory is not a directory");
+    return resolved;
+  }
+  const relative = path.relative(root, resolved);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new WorkspaceError("Working directory is outside the authorized workspace_root");
+  }
+  if (!(await fs.stat(resolved)).isDirectory()) throw new WorkspaceError("Working directory is not a directory");
+  return resolved;
 }

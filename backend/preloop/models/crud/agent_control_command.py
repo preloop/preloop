@@ -830,6 +830,34 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             else None
         )
 
+    def cancel_pending_session_notes(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        user_id: Any,
+    ) -> int:
+        """A resumed prompt supersedes pending notes; delivered notes stay read."""
+        rows = (
+            db.query(AgentControlCommand)
+            .filter(
+                AgentControlCommand.account_id == account_id,
+                AgentControlCommand.runtime_session_id == runtime_session_id,
+                AgentControlCommand.kind == "note",
+                AgentControlCommand.status == "pending",
+            )
+            .with_for_update()
+            .all()
+        )
+        for row in rows:
+            row.status = "cancelled"
+            row.cancelled_at = datetime.now(timezone.utc)
+            row.cancelled_by_user_id = user_id
+            row.last_error = "Superseded by a prompt resuming this session"
+        db.flush()
+        return len(rows)
+
     def cancel_note(
         self,
         db: Session,

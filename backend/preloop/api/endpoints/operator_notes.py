@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from functools import partial
+
+import anyio
 from typing import Any, Optional, Tuple
 from uuid import UUID
 
@@ -71,6 +74,18 @@ NOTE_RATE_LIMIT_PER_HOUR = operator_notes.NOTE_RATE_LIMIT_PER_HOUR
 
 def _to_response(note: Any) -> OperatorNoteResponse:
     """Serialise one stored note, including where and how it landed."""
+    if getattr(note, "kind", None) == "command":
+        return OperatorNoteResponse(
+            note_id=note.command_id,
+            command_id=note.command_id,
+            state=operator_notes.note_state(note),
+            text=(note.envelope or {}).get("payload", {}).get("text", ""),
+            managed_agent_id=note.managed_agent_id,
+            runtime_session_id=note.runtime_session_id,
+            author=OperatorNoteAuthor(user_id=note.created_by_user_id),
+            created_at=note.created_at,
+            expires_at=note.expires_at,
+        )
     return OperatorNoteResponse(
         note_id=note.command_id,
         state=operator_notes.note_state(note),
@@ -161,12 +176,46 @@ def _author_auth_method(db: Session, request: Request) -> str:
     return operator_notes.classify_author_auth_method(db, token=token)
 
 
+def _resume_note_target(
+    db: Session,
+    *,
+    current_user: models.User,
+    payload: OperatorNoteCreate,
+    agent_id: Any,
+    session_id: Any,
+) -> Any:
+    """Run the same consent-checked prompt path from the sync note handler."""
+    from preloop.api.endpoints.agent_control import _route_managed_agent_prompt
+    from preloop.schemas.agent_control import AgentControlSendMessageRequest
+
+    response = anyio.from_thread.run(
+        partial(
+            _route_managed_agent_prompt,
+            agent_id=str(agent_id),
+            request=AgentControlSendMessageRequest(
+                message=payload.text,
+                target_session_id=session_id,
+                metadata={"source": payload.source},
+            ),
+            current_user=current_user,
+            db=db,
+        )
+    )
+    return crud_agent_control_command.get_for_consumer(
+        db,
+        account_id=current_user.account_id,
+        managed_agent_id=agent_id,
+        command_id=response.command_id,
+    )
+
+
 def _create_note(
     db: Session,
     *,
     request: Request,
     current_user: models.User,
     payload: OperatorNoteCreate,
+    route_session: bool = True,
 ) -> Any:
     """Persist one note, audited before the author is told it worked."""
     ensure_permission_in_oss(db, current_user, CONTROL_PERMISSION)
@@ -174,6 +223,47 @@ def _create_note(
     managed_agent_id, runtime_session_id = _resolve_target(
         db, account_id=account_id, payload=payload
     )
+
+    if route_session and runtime_session_id is not None:
+        from preloop.services.agent_control_dispatch import (
+            resolve_session_control_mode,
+            resume_command,
+        )
+
+        session = crud_runtime_session.get_account_session(
+            db, account_id=account_id, runtime_session_id=runtime_session_id
+        )
+        if session is not None and session.session_source_type in {
+            "claude_code",
+            "codex",
+        }:
+            decision = resolve_session_control_mode(
+                db, account_id=account_id, session=session
+            )
+            if decision.mode == "command" and decision.agent is not None:
+                return _resume_note_target(
+                    db,
+                    current_user=current_user,
+                    payload=payload,
+                    agent_id=decision.agent.id,
+                    session_id=runtime_session_id,
+                )
+            terminal_open = (
+                getattr(session, "ended_at", None) is None
+                and getattr(session, "control_owned", None) is not True
+            )
+            if not terminal_open and decision.reason_code not in {
+                "terminal_session",
+                "turn_in_progress",
+            }:
+                raise HTTPException(
+                    409,
+                    {
+                        "code": "session_unavailable",
+                        "message": decision.reason,
+                        "resume_command": resume_command(session),
+                    },
+                )
 
     now = datetime.now(timezone.utc)
     recent = crud_agent_control_command.count_recent_notes_by_author(

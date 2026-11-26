@@ -81,6 +81,7 @@ type sessionHookEvent struct {
 }
 
 type sessionStartRequest struct {
+	ControlOwned    bool   `json:"control_owned"`
 	SessionID       string `json:"session_id"`
 	Source          string `json:"source,omitempty"`
 	Cwd             string `json:"cwd,omitempty"`
@@ -292,6 +293,7 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 	registered := false
 	if needsRegistration {
 		req := sessionStartRequest{
+			ControlOwned:    os.Getenv("PRELOOP_CONTROL_OWNED") == "1",
 			SessionID:       externalID,
 			Source:          source,
 			Cwd:             strings.TrimSpace(event.Cwd),

@@ -61,6 +61,7 @@ export type CodexClientFactory = (config: ControlConfig) => CodexClient;
 
 export type TurnOutcome = {
   reply_text: string;
+  working_directory?: string;
   session_id: string;
   usage?: CodexUsage | null;
   /** Set when the in-flight run was aborted by interrupt. */
@@ -98,6 +99,7 @@ export function clientOptionsFor(
 ): { codexPathOverride?: string; apiKey?: string; baseUrl?: string; env?: Record<string, string>; config?: Record<string, unknown> } {
   if (config.codex_employee_scoped) return employeeClientOptionsFor(config);
   return {
+    env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")), PRELOOP_CONTROL_OWNED: "1" },
     ...(config.codex_path ? { codexPathOverride: config.codex_path } : {}),
     ...(config.codex_gateway_api_key ? { apiKey: config.codex_gateway_api_key } : {}),
     ...(config.codex_gateway_base_url ? { baseUrl: config.codex_gateway_base_url } : {}),
@@ -384,6 +386,7 @@ export class SessionManager {
       await session.registrar.register(session.thread.id ?? undefined, session.cwd);
       return {
         reply_text: turn.finalResponse ?? "",
+        working_directory: session.cwd,
         session_id: session.thread.id ?? session.key,
         usage: turn.usage ?? null,
       };

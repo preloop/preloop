@@ -23349,6 +23349,46 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/{agent_id}/control/directories:
+    get:
+      tags:
+      - Agent Control
+      summary: Get Agent Directories
+      description: Offer this account's recent directories; the host validates authorization.
+      operationId: get_agent_directories_api_v1_agents__agent_id__control_directories_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                title: Response Get Agent Directories Api V1 Agents  Agent Id  Control
+                  Directories Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/control/commands:
     post:
       tags:
@@ -30311,6 +30351,16 @@ components:
         command_id:
           type: string
           title: Command Id
+        note_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note Id
+        delivery_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Delivery Message
         managed_agent_id:
           type: string
           format: uuid
@@ -30385,6 +30435,12 @@ components:
       description: Result of routing an operator command to a managed agent.
     AgentControlCommandStatusResponse:
       properties:
+        runtime_session_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Runtime Session Id
         command_id:
           type: string
           title: Command Id
@@ -30502,6 +30558,12 @@ components:
           type: string
           format: date-time
           title: Timestamp
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
         payload:
           additionalProperties: true
           type: object
@@ -30539,6 +30601,12 @@ components:
           type: boolean
           title: Start New Session
           default: false
+        working_directory:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Working Directory
         consent_request_id:
           anyOf:
           - type: string
@@ -30622,6 +30690,12 @@ components:
           type: boolean
           title: Start New Session
           default: false
+        working_directory:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Working Directory
         consent_request_id:
           anyOf:
           - type: string
@@ -31046,6 +31120,11 @@ components:
           - type: 'null'
           title: Source
           description: Agent adapter, e.g. 'claude_code'
+        control_owned:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Control Owned
         cwd:
           anyOf:
           - type: string
@@ -50556,6 +50635,11 @@ components:
         note_id:
           type: string
           title: Note Id
+        command_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Command Id
         state:
           type: string
           enum:
@@ -55281,6 +55365,7 @@ components:
             - no_control_plugin
             - control_offline
             - terminal_session
+            - turn_in_progress
             - runner_away
           - type: 'null'
           title: Reason Code
@@ -56294,6 +56379,11 @@ components:
           title: Agent Kind
           description: Agent kind of that managed agent (claude_code, codex, hermes,
             ...), or null when the session has no managed agent
+        start_directory:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Start Directory
         cwd:
           anyOf:
           - type: string
@@ -56319,6 +56409,20 @@ components:
           title: Artifact Counts
           description: Available artifacts on this session by kind (screenshot, transcript,
             ...); evicted and expired artifacts are not counted
+        harness_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Harness Session Id
+          description: Native identity suitable for the harness's resume command.
+          readOnly: true
+        resume_command:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resume Command
+          description: Shell-quoted command that reopens the conversation's project.
+          readOnly: true
       type: object
       required:
       - id
@@ -56326,6 +56430,8 @@ components:
       - session_source_id
       - started_at
       - token_usage
+      - harness_session_id
+      - resume_command
       title: RuntimeSessionSummary
       description: Aggregated runtime session summary for explorer views.
     RuntimeSessionSummaryInsight:

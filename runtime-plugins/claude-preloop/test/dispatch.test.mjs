@@ -398,3 +398,12 @@ test("presence lists sdk-owned and launcher sessions as reachable", async () => 
   ]);
   sidecar.stop();
 });
+
+
+test("an expired prompt never starts a harness turn", async () => {
+  const { sidecar, state } = makeSidecar();
+  try {
+    await assert.rejects(sidecar.dispatch({ type: "command", name: "send_message", message_id: "expired-example", expires_at: "2000-01-01T00:00:00Z", payload: { text: "Example" } }), /expired/);
+    assert.deepEqual(state.texts, []);
+  } finally { sidecar.stop(); }
+});

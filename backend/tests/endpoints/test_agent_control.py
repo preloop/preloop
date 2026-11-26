@@ -1023,6 +1023,8 @@ def test_agent_control_existing_session_envelope_includes_native_ids(
         started_at=datetime.now(UTC),
         last_activity_at=datetime.now(UTC),
     )
+    managed_agent.control_last_heartbeat_at = datetime.now(UTC)
+    managed_agent.control_reachable_session_ids = ["ses_native_abc123"]
     db_session.commit()
 
     mock_nats = MagicMock()

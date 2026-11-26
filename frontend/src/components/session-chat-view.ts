@@ -1529,9 +1529,13 @@ ${
           <span class="bubble-role">You</span>
           <span>${this.formatTime(message.at)}</span>
           ${
-            message.state === 'sending'
-              ? html`<sl-badge variant="neutral" pill>Sending</sl-badge>`
-              : nothing
+            message.state === 'sent' &&
+            message.startNewSession &&
+            !message.targetSessionId
+              ? html`<sl-badge variant="neutral" pill>Starting</sl-badge>`
+              : message.state === 'sending'
+                ? html`<sl-badge variant="neutral" pill>Sending</sl-badge>`
+                : nothing
           }
           ${
             message.state === 'failed'
@@ -1544,7 +1548,7 @@ ${
                   variant="neutral"
                   pill
                   data-testid="pending-note-state"
-                  >Waiting for the agent</sl-badge
+                  >Delivers at the agent’s next step</sl-badge
                 >`
               : nothing
           }

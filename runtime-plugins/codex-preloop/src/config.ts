@@ -31,6 +31,7 @@ export type ControlConfig = {
   runtime_principal_name?: string;
   /** Default cwd for sessions started remotely. Defaults to the home dir. */
   workspace_root?: string;
+  runner_config_path?: string;
   /** How many persistent checkouts to keep. Oldest clean dirs are removed. */
   workspace_repositories_max?: number;
   /** Timeout for git fetch and clone, in milliseconds. Defaults to 120000. */

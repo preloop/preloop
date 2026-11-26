@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import shlex
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 from preloop.schemas.resource_share import SharedResourceRead
 
@@ -439,6 +440,33 @@ class RuntimeSessionSummary(BaseModel):
             "or null when the session has no managed agent"
         ),
     )
+    start_directory: Optional[str] = None
+
+    @computed_field
+    @property
+    def harness_session_id(self) -> Optional[str]:
+        """Native identity suitable for the harness's resume command."""
+        if self.session_source_type not in {"claude_code", "codex"}:
+            return None
+        if self.session_reference == "Agent Control new session":
+            return None
+        if ":" not in self.session_source_id:
+            return None
+        return self.session_source_id.split(":", 1)[1]
+
+    @computed_field
+    @property
+    def resume_command(self) -> Optional[str]:
+        """Shell-quoted command that reopens the conversation's project."""
+        if not self.start_directory or not self.harness_session_id:
+            return None
+        harness = (
+            "claude --resume"
+            if self.session_source_type == "claude_code"
+            else "codex resume"
+        )
+        return f"cd {shlex.quote(self.start_directory)} && {harness} {shlex.quote(self.harness_session_id)}"
+
     cwd: Optional[str] = Field(
         None,
         description=(

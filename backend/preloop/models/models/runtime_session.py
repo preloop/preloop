@@ -100,6 +100,10 @@ class RuntimeSession(Base):
     #: started in the same second can be told apart. NULL until a hook that
     #: sends ``cwd`` makes a permission check for the session.
     cwd: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    #: Immutable launch directory, separate from hook-observed current cwd.
+    start_directory: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    #: The harness was launched by Agent Control, rather than a local terminal.
+    control_owned: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     #: Desktop endpoint the agent process runs next to, as named by the
     #: adapter from ``PRELOOP_DESKTOP_ENDPOINT_ID`` (#1568). Either the host's
     #: ``endpoint_id`` or the endpoint row id. Not trusted: the desktop link

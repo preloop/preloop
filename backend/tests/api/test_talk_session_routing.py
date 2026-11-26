@@ -117,11 +117,11 @@ def test_native_start_binds_only_its_command() -> None:
         patch.object(agent_control, "emit_account_event"),
     ):
         commands.get_by_command_id.return_value = command
-        sessions.upsert_by_source.return_value = SimpleNamespace(id=session_id)
+        sessions.resolve_control_session.return_value = SimpleNamespace(id=session_id)
         activity.command_message.return_value = None
         agent_control._bind_command_session(MagicMock(), context, inbound)
         assert (
-            sessions.upsert_by_source.call_args.kwargs["session_source_id"]
+            sessions.resolve_control_session.call_args.kwargs["session_source_id"]
             == "example-host:native-123"
         )
         assert (
@@ -136,3 +136,173 @@ def test_native_start_binds_only_its_command() -> None:
             commands.get_by_command_id.call_args.kwargs["managed_agent_id"]
             == context.managed_agent_id
         )
+
+
+def test_idle_sidecar_session_resumes_after_reconnect() -> None:
+    """An idle session remains resumable when the sidecar's map was lost."""
+    agent = SimpleNamespace(
+        id=uuid4(),
+        account_id=uuid4(),
+        lifecycle_state="active",
+        agent_kind="claude_code",
+        display_name="Agent",
+        runtime_session_id=uuid4(),
+        session_source_type="claude_code",
+        session_source_id="example-host",
+        control_reachable_session_ids=[],
+        control_last_heartbeat_at=None,
+    )
+    session = SimpleNamespace(
+        id=uuid4(),
+        ended_at=None,
+        turn_state="your_turn",
+        control_owned=True,
+        session_source_type="claude_code",
+        session_source_id="example-host:native-123",
+        session_reference=None,
+    )
+    with (
+        patch.object(dispatch, "session_managed_agent", return_value=agent),
+        patch.object(dispatch, "agent_has_control_config", return_value=True),
+        patch(
+            "preloop.services.agent_control_presence.control_heartbeat_is_fresh",
+            return_value=True,
+        ),
+    ):
+        result = dispatch.resolve_session_control_mode(
+            MagicMock(), account_id=str(agent.account_id), session=session
+        )
+    assert result.mode == "command"
+
+
+def test_busy_sidecar_session_delivers_note_at_boundary() -> None:
+    """Routing is based on the turn, not the console control used to send."""
+    agent = SimpleNamespace(
+        id=uuid4(),
+        account_id=uuid4(),
+        lifecycle_state="active",
+        agent_kind="claude_code",
+        display_name="Agent",
+        runtime_session_id=uuid4(),
+        session_source_type="claude_code",
+        session_source_id="example-host",
+        control_reachable_session_ids=["native-123"],
+        control_last_heartbeat_at=None,
+    )
+    session = SimpleNamespace(
+        id=uuid4(),
+        ended_at=None,
+        turn_state="working",
+        control_owned=True,
+        session_source_type="claude_code",
+        session_source_id="example-host:native-123",
+        session_reference=None,
+    )
+    with (
+        patch.object(dispatch, "session_managed_agent", return_value=agent),
+        patch.object(dispatch, "agent_has_control_config", return_value=True),
+        patch(
+            "preloop.services.agent_control_presence.control_heartbeat_is_fresh",
+            return_value=True,
+        ),
+    ):
+        result = dispatch.resolve_session_control_mode(
+            MagicMock(), account_id=str(agent.account_id), session=session
+        )
+    assert result.mode == "note"
+    assert "next step" in result.reason
+
+
+def test_start_directory_is_write_once() -> None:
+    """Changing cwd during the turn must not change the resume directory."""
+    from preloop.models.crud import crud_runtime_session
+
+    session = SimpleNamespace(start_directory=None, cwd=None, control_owned=None)
+    db = MagicMock()
+    crud_runtime_session.record_start_directory(db, session=session, cwd="/tmp/project")
+    session.cwd = "/tmp/elsewhere"
+    crud_runtime_session.record_start_directory(
+        db, session=session, cwd="/tmp/elsewhere"
+    )
+    assert session.start_directory == "/tmp/project"
+
+
+def test_idle_note_endpoint_routes_as_a_resume() -> None:
+    """An idle session cannot leave a follow-up waiting for a future hook."""
+    from starlette.requests import Request
+    from preloop.api.endpoints import operator_notes as endpoint
+    from preloop.schemas.operator_notes import OperatorNoteCreate
+
+    session_id = uuid4()
+    agent = SimpleNamespace(id=uuid4())
+    user = SimpleNamespace(id=uuid4(), account_id=uuid4())
+    command = SimpleNamespace(kind="command", command_id="resume-command")
+    with (
+        patch.object(endpoint, "ensure_permission_in_oss"),
+        patch.object(endpoint, "_resolve_target", return_value=(agent.id, session_id)),
+        patch.object(endpoint, "crud_runtime_session") as sessions,
+        patch.object(
+            dispatch,
+            "resolve_session_control_mode",
+            return_value=dispatch.SessionControlMode("command", None, None, agent),
+        ),
+        patch.object(
+            endpoint, "_resume_note_target", create=True, return_value=command
+        ) as resume,
+        patch.object(endpoint, "crud_agent_control_command") as commands,
+    ):
+        sessions.get_account_session.return_value = SimpleNamespace(
+            session_source_type="claude_code"
+        )
+        result = endpoint._create_note(
+            MagicMock(),
+            request=Request({"type": "http", "headers": []}),
+            current_user=user,
+            payload=OperatorNoteCreate(
+                text="Continue the example", runtime_session_id=session_id
+            ),
+        )
+    assert result is command
+    resume.assert_called_once()
+    commands.create_note.assert_not_called()
+
+
+def test_resume_command_quotes_start_directory() -> None:
+    """Commands are copyable even when a project contains spaces or quotes."""
+    from preloop.schemas.gateway_usage import RuntimeSessionSummary
+
+    session = RuntimeSessionSummary.model_construct(
+        session_source_type="codex",
+        session_source_id="example-host:native-123",
+        session_reference=None,
+        start_directory="/tmp/example's project",
+        cwd="/tmp/other",
+    )
+    assert session.harness_session_id == "native-123"
+    assert (
+        session.resume_command
+        == "cd '/tmp/example'\"'\"'s project' && codex resume native-123"
+    )
+
+
+def test_expired_command_error_does_not_write_into_session() -> None:
+    """A late timeout frame cannot add output to an expired command."""
+    command = SimpleNamespace(
+        kind="command",
+        status="expired",
+        runtime_session_id=uuid4(),
+        consuming_account_id=None,
+    )
+    context = SimpleNamespace(account_id=uuid4(), managed_agent_id=uuid4())
+    inbound = SimpleNamespace(
+        type="status",
+        name="command_error",
+        payload={"command_id": "expired-example", "error": "late failure"},
+    )
+    with (
+        patch.object(agent_control, "crud_agent_control_command") as commands,
+        patch.object(agent_control, "crud_runtime_session_activity") as activity,
+    ):
+        commands.get_by_command_id.return_value = command
+        agent_control._persist_agent_control_result(MagicMock(), context, inbound)
+    activity.log_agent_control_result.assert_not_called()

@@ -624,6 +624,7 @@ export class SessionManager {
       options.abortController = abortController;
     }
     const env: Record<string, string | undefined> = { ...process.env };
+    env.PRELOOP_CONTROL_OWNED = "1";
     delete env.PRELOOP_FLOW_EXECUTION_ID;
     if (executionId) {
       env.PRELOOP_FLOW_EXECUTION_ID = executionId;
@@ -748,7 +749,7 @@ export class SessionManager {
       ? (this.findBySessionId(targetSessionId) ??
         this.sessions.get(targetSessionId))
       : this.mostRecentSession();
-    const sessionId = session?.sessionId ?? session?.key;
+    const sessionId = session?.sessionId;
     if (session) {
       try {
         await session.interrupt();

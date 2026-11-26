@@ -10,6 +10,7 @@ endpoint does not own a second copy of the delivery contract.
 from __future__ import annotations
 
 import logging
+import shlex
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -286,6 +287,7 @@ async def persist_and_deliver_command(
     now = datetime.now(UTC)
     command_ttl_seconds = int(settings.agent_control_command_ttl_seconds)
     command_expires_at = expires_at or (now + timedelta(seconds=command_ttl_seconds))
+    envelope = envelope.model_copy(update={"expires_at": command_expires_at})
     crud_agent_control_command.create_command(
         db,
         account_id=agent.account_id,
@@ -616,6 +618,24 @@ def _is_command_history_session(agent: Any, session: Any) -> bool:
     )
 
 
+def resume_command(session: Any) -> Optional[str]:
+    """Exact shell command when the launch directory and harness id are known."""
+    directory = getattr(session, "start_directory", None)
+    native = native_session_id(session)
+    if (
+        not directory
+        or not native
+        or session.session_source_type not in {"claude_code", "codex"}
+    ):
+        return None
+    harness = (
+        "claude --resume"
+        if session.session_source_type == "claude_code"
+        else "codex resume"
+    )
+    return f"cd {shlex.quote(directory)} && {harness} {shlex.quote(native)}"
+
+
 def native_session_id(session: Any) -> Optional[str]:
     """Return the harness identity without the durable principal prefix."""
     source = str(session.session_source_id or "")
@@ -642,6 +662,11 @@ def session_reachable_by_control(agent: Any, session: Any) -> bool:
     Returns:
         True when a command can reach this session.
     """
+    if session.session_source_type in {"claude_code", "codex"} and (
+        getattr(session, "control_owned", False) is True
+        or getattr(session, "ended_at", None) is not None
+    ):
+        return native_session_id(session) is not None
     reachable = getattr(agent, "control_reachable_session_ids", None)
     if reachable is None:
         # The plugin predates the list; keep the earlier behaviour.
@@ -803,7 +828,10 @@ def resolve_session_control_mode(
         control_heartbeat_is_fresh,
     )
 
-    if session.ended_at is not None:
+    if session.ended_at is not None and session.session_source_type not in {
+        "claude_code",
+        "codex",
+    }:
         return SessionControlMode(
             "note", "session_ended", "the session has ended; nothing can be sent"
         )
@@ -817,6 +845,14 @@ def resolve_session_control_mode(
             "this session is governed through hooks or the gateway, not run by "
             "an Agent Control agent; a line is a note read at its next tool or "
             "model call",
+        )
+    if (
+        session.session_source_type in {"claude_code", "codex"}
+        and session.ended_at is None
+        and getattr(session, "turn_state", None) in {"working", "waiting_for_approval"}
+    ):
+        return SessionControlMode(
+            "note", "turn_in_progress", "Delivers at the agent's next step", agent
         )
     kind = str(agent.agent_kind or agent.session_source_type or "").lower()
     name = agent.display_name or kind or "the agent"
@@ -862,5 +898,12 @@ def resolve_session_control_mode(
             TERMINAL_SESSION_REASON_CODE,
             TERMINAL_SESSION_REASON,
             agent,
+        )
+    if (
+        getattr(session, "turn_state", None) in {"working", "waiting_for_approval"}
+        and session.ended_at is None
+    ):
+        return SessionControlMode(
+            "note", "turn_in_progress", "Delivers at the agent's next step", agent
         )
     return SessionControlMode("command", None, None, agent)
