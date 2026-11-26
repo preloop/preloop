@@ -159,6 +159,26 @@ describe('PreloopFlowForm presets', () => {
     expect(payload.is_enabled).to.equal(false);
   });
 
+  it('requires a tracker after switching away from a schedule in an account without trackers', async () => {
+    const element = await mount();
+    (element as any).trackers = [];
+    await (element as any).applyPresetSelection(DAILY_REVIEW.id);
+    await (element as any).applyPresetSelection(PR_REVIEWER.id);
+
+    expect((element as any).triggerType).to.equal('tracker');
+    expect(element.flow.schedule_config).to.equal(undefined);
+    expect(element.shadowRoot!.querySelector('schedule-config-editor')).to.not
+      .exist;
+
+    const submitted = sandbox.spy();
+    element.addEventListener('flow-submit', submitted);
+    await (element as any).handleFormSubmit(new Event('submit'));
+    expect(submitted.called).to.equal(false);
+    expect(element.shadowRoot!.textContent).to.include(
+      'Choose a tracker for this trigger.'
+    );
+  });
+
   it('keeps the saved webhook settings when a preset flow is reopened and edited', async () => {
     const element = await mount({
       id: 'reviewer-flow',
