@@ -68,16 +68,17 @@ type inventoryEnvelope struct {
 // credential resolver, auth/keychain probe, network client, writer, or process
 // runner. Runtime lookup resolves paths; it never executes the result.
 type inventoryProbeDependencies struct {
-	Home          func() (string, error)
-	Stat          func(string) (os.FileInfo, error)
-	ReadFile      func(string) ([]byte, error)
-	LookPath      func(string) (string, error)
-	Glob          func(string) ([]string, error)
-	Now           func() time.Time
-	ConfigPaths   func(agentSpec) []string
-	ExtensionSalt string
-	ProfileOnly   bool
-	GOOS          string
+	Home              func() (string, error)
+	Stat              func(string) (os.FileInfo, error)
+	ReadFile          func(string) ([]byte, error)
+	LookPath          func(string) (string, error)
+	Glob              func(string) ([]string, error)
+	Now               func() time.Time
+	ConfigPaths       func(agentSpec) []string
+	ExtensionProjects []string
+	ExtensionSalt     string
+	ProfileOnly       bool
+	GOOS              string
 }
 
 var inventoryProbes = inventoryProbeDependencies{
@@ -112,13 +113,19 @@ func runAgentsInventory(cmd *cobra.Command) error {
 	if err := validateInventoryFlags(cmd); err != nil {
 		return err
 	}
+	projects, err := extensionProjects(cmd)
+	if err != nil {
+		return err
+	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
 	allUsers, _ := cmd.Flags().GetBool("all-users")
 	if allUsers {
 		return runAllUsersInventory(cmd.OutOrStdout(), false)
 	}
-	return enc.Encode(collectAgentInventory(inventoryProbes))
+	deps := inventoryProbes
+	deps.ExtensionProjects = projects
+	return enc.Encode(collectAgentInventory(deps))
 }
 
 func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
@@ -212,7 +219,7 @@ func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 			inventorySetConfigured(app.Controls, "managed_mcp", "false")
 		}
 		extensionErrors := []string{}
-		app.Extensions, extensionErrors = collectInventoryExtensions(home, id, deps.ExtensionSalt, deps.ProfileOnly)
+		app.Extensions, extensionErrors = collectInventoryExtensions(home, id, deps.ExtensionSalt, deps.ProfileOnly, deps.ExtensionProjects...)
 		for _, code := range extensionErrors {
 			app.Completeness = "partial"
 			addProbe("extensions", "error", code)

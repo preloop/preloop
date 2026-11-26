@@ -45,7 +45,7 @@ class CRUDBundleRevision:
                 *scope, model.policy_revision_hash == manifest.policy_revision_hash
             )
         )
-        metadata = manifest.model_dump(mode="json", by_alias=True)
+        metadata = manifest.model_dump(mode="json", by_alias=True, exclude_none=True)
         if existing is not None:
             if existing.retired_at is not None:
                 raise ValueError("Bundle revision is retired")

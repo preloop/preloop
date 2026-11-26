@@ -57,6 +57,8 @@ TERMINAL_OAUTH_REFRESH_CODES = frozenset(
         "refresh_token_reused",
         "refresh_token_expired",
         "invalid_refresh_token",
+        "revoked",
+        "token_revoked",
     }
 )
 # Hashes identify consumed tokens without retaining plaintext token history.
@@ -334,6 +336,7 @@ class SecretService:
         secret_value: str,
         existing_secret_id: Optional[UUID] = None,
         meta_data: Optional[dict] = None,
+        preserve_healthy_oauth: bool = False,
     ) -> SecretReference:
         """Create or update a locally encrypted secret reference."""
         encrypted_value = encrypt_value(secret_value)
@@ -344,7 +347,13 @@ class SecretService:
                 db, secret_id=existing_secret_id, account_id=account_id
             )
             if secret_ref:
+                if preserve_healthy_oauth and not self.oauth_repair_required(
+                    secret_ref
+                ):
+                    return secret_ref
                 history = self._validate_oauth_replacement(secret_ref, secret_value)
+                if self._older_healthy_oauth_import(secret_ref, secret_value):
+                    return secret_ref
                 secret_ref.name = name
                 secret_ref.backend_type = LOCAL_ENCRYPTED_BACKEND
                 secret_ref.secret_kind = secret_kind
@@ -362,6 +371,10 @@ class SecretService:
                 db.commit()
                 db.refresh(secret_ref)
                 return secret_ref
+            if preserve_healthy_oauth:
+                raise ValueError(
+                    "Shared subscription credential could not be locked for repair"
+                )
 
         secret_ref = crud_secret_reference.create(
             db,
@@ -379,6 +392,50 @@ class SecretService:
             },
         )
         return secret_ref
+
+    @staticmethod
+    def _older_healthy_oauth_import(secret_ref: SecretReference, value: str) -> bool:
+        """Keep a healthy stored grant ahead of an older local reconnect or sync."""
+        if secret_ref.status != "active" or not secret_ref.encrypted_value:
+            return False
+        try:
+            incoming = json.loads(value)
+            current = json.loads(decrypt_value(secret_ref.encrypted_value))
+            return (
+                isinstance(incoming, dict)
+                and isinstance(current, dict)
+                and incoming.get("type") in PRINCIPAL_BOUND_OAUTH_CREDENTIAL_TYPES
+                and incoming.get("type") == current.get("type")
+                and bool(current.get("refresh"))
+                and int(incoming.get("expires") or 0)
+                <= int(current.get("expires") or 0)
+            )
+        except (ValueError, TypeError):
+            return False
+
+    @staticmethod
+    def oauth_repair_required(secret_ref: SecretReference) -> bool:
+        """Identify a subscription lineage the provider has permanently rejected."""
+        metadata = secret_ref.meta_data or {}
+        return secret_ref.status == "revoked" or (
+            secret_ref.status == "error"
+            and metadata.get("last_refresh_code") in TERMINAL_OAUTH_REFRESH_CODES
+        )
+
+    @staticmethod
+    def subscription_repair_message(credential_type: str) -> str:
+        """Give older clients an actionable repair without requiring an upgrade."""
+        agent = (
+            "Claude Code"
+            if credential_type == ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE
+            else "Codex CLI"
+        )
+        return (
+            "The shared subscription credential is no longer valid. "
+            f'Run `preloop agents reconnect "{agent}" --from-local` '
+            "from a working local login, then retry onboarding. "
+            "The existing enrollment is preserved."
+        )
 
     @staticmethod
     def _consumed_refresh_hashes(secret_ref: SecretReference) -> list[str]:
@@ -420,14 +477,9 @@ class SecretService:
         if not refresh:
             return history
         fingerprint = self._refresh_token_fingerprint(refresh)
-        metadata = secret_ref.meta_data or {}
         # Existing installations have no token history yet. A terminal failure
         # still proves that the currently stored refresh token cannot be reused.
-        if (
-            secret_ref.status == "error"
-            and metadata.get("last_refresh_code") in TERMINAL_OAUTH_REFRESH_CODES
-            and secret_ref.encrypted_value
-        ):
+        if self.oauth_repair_required(secret_ref) and secret_ref.encrypted_value:
             try:
                 current = json.loads(decrypt_value(secret_ref.encrypted_value))
             except (TypeError, ValueError):
@@ -483,12 +535,12 @@ class SecretService:
         """Do not repeatedly submit a grant the provider already rejected."""
         metadata = secret_ref.meta_data or {}
         code = metadata.get("last_refresh_code")
-        if secret_ref.status == "error" and code in TERMINAL_OAUTH_REFRESH_CODES:
+        if SecretService.oauth_repair_required(secret_ref):
             raise CredentialRefreshError(
                 "Subscription authorization must be reconnected",
                 provider=provider,
                 status_code=metadata.get("last_refresh_status_code"),
-                code=code,
+                code=code or "revoked",
             )
 
     def create_external_secret_reference(

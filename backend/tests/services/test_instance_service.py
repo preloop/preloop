@@ -366,6 +366,24 @@ class TestInstallCompletedMarker:
 
 
 class TestIsNewerVersion:
+    @pytest.mark.parametrize(
+        ("candidate", "current", "expected"),
+        [
+            ("1.0.2", "1.1.0-rc.1", False),
+            ("1.1.0-rc.1", "1.0.2", True),
+            ("1.1.0", "1.1.0-rc.1", True),
+            ("1.1.0-rc.1", "1.1.0", False),
+            ("1.1.0-rc.10", "1.1.0-rc.2", True),
+            ("1.1.0rc1", "1.1.0-rc.1", False),
+            ("1.1.0+build.2", "1.1.0", False),
+        ],
+    )
+    def test_release_candidate_ordering(
+        self, candidate: str, current: str, expected: bool
+    ) -> None:
+        """RCs upgrade to stable without suggesting a downgrade or false update."""
+        assert instance_service.is_newer_version(candidate, current) is expected
+
     def test_strictly_newer(self):
         assert instance_service.is_newer_version("1.0.0", "0.11.1") is True
         assert instance_service.is_newer_version("0.11.2", "0.11.1") is True

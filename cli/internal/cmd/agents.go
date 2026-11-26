@@ -843,6 +843,9 @@ type localEnrollmentState struct {
 	// CodexOAuthSyncModelIDs caches one model row id per distinct Codex
 	// OAuth secret for this enrollment, so a marker check is one request.
 	CodexOAuthSyncModelIDs []string `json:"codex_oauth_sync_model_ids,omitempty"`
+	// ClaudeOAuthCredentialSource identifies the local store selected during
+	// enrollment or sync, without retaining any credential contents.
+	ClaudeOAuthCredentialSource string `json:"claude_oauth_credential_source,omitempty"`
 	// ClaudeOAuthSyncedLocalExpiresMS is the Claude Code login's expiresAt
 	// (epoch milliseconds) at the last sync in either direction. A later
 	// local expiry means Claude Code rotated its login and the hooks push it.
@@ -912,6 +915,7 @@ func init() {
 
 	agentsDiscoverCmd.Flags().Bool("add", false, "deprecated: use 'preloop agents onboard <agent>' instead")
 	agentsDiscoverCmd.Flags().Bool("json", false, "output safe discovery summaries as JSON (read-only, no prompts)")
+	agentsDiscoverCmd.Flags().StringArray("project", nil, "include a Claude project root in --inventory or --report (repeatable; use . for the current directory)")
 	agentsDiscoverCmd.Flags().Bool("all-users", false, "scan bounded local profiles with elevated rights; requires --inventory or --report")
 	agentsDiscoverCmd.Flags().Bool("inventory", false, "output offline known-app inventory JSON (no auth, network, prompts, or writes)")
 	agentsDiscoverCmd.Flags().Bool("no-onboard-prompt", false, "do not prompt to onboard discovered agents")
@@ -965,6 +969,10 @@ func init() {
 
 // runAgentsDiscover scans for AI agents on the machine.
 func runAgentsDiscover(cmd *cobra.Command, args []string) error {
+	projects, projectErr := extensionProjects(cmd)
+	if projectErr != nil {
+		return projectErr
+	}
 	if isOfflineInventoryCommand(cmd) {
 		return runAgentsInventory(cmd)
 	}
@@ -990,6 +998,9 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 	report, _ := cmd.Flags().GetBool("report")
 	deviceRef, _ := cmd.Flags().GetString("device-ref")
 
+	if len(projects) > 0 && !discoveryReportingRequested(report) {
+		return errors.New("--project requires --inventory or --report")
+	}
 	if addServers {
 		return fmt.Errorf("discover is now read-only; use 'preloop agents onboard <agent>'")
 	}
@@ -1017,7 +1028,7 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 		if asJSON {
 			reportOut = os.Stderr
 		}
-		if err := sendDiscoveryReport(client, discovered, reportOut, deviceRef); err != nil {
+		if err := sendDiscoveryReport(client, discovered, reportOut, deviceRef, projects...); err != nil {
 			return err
 		}
 	}
@@ -2619,6 +2630,9 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		return fmt.Errorf("offboard partially completed; enrollment retry state retained: %w", err)
 	}
 	if state == nil || !state.OffboardArchived {
+		if err := preflightClaudeOffboardStore(client, agent, detail); err != nil {
+			return err
+		}
 		var recoveryErr error
 		recovery, recoveryErr = restoreSubscriptionLoginOnOffboard(client, agent, detail, os.Stdout)
 		if recoveryErr != nil {
@@ -4820,7 +4834,8 @@ func restoreClaudeGatewayEnvFromOriginal(
 	if writer != nil {
 		fmt.Fprintf(
 			writer,
-			"  Note: Restored Claude Code's local Anthropic auth/model settings because Preloop gateway live validation failed. MCP remains onboarded; set ANTHROPIC_API_KEY and rerun onboarding to use stable API billing.\n",
+			"  Note: Restored Claude Code's local Anthropic auth/model settings because Preloop gateway live validation failed. MCP remains onboarded. %s\n",
+			claudeSubscriptionRecoveryAdvice(),
 		) //nolint:errcheck
 	}
 	return nil
@@ -4832,7 +4847,13 @@ func recoverManagedGatewayAfterLiveValidationFailure(
 	writer io.Writer,
 ) error {
 	if isClaudeCodeAgent(agent) {
-		return restoreClaudeGatewayEnvFromOriginal(agent, originalBytes, writer)
+		if err := restoreClaudeGatewayEnvFromOriginal(agent, originalBytes, nil); err != nil {
+			return err
+		}
+		if writer != nil {
+			fmt.Fprintln(writer, "  Model routing was restored to the previous settings after failed gateway validation; enrollment is retained.") //nolint:errcheck
+		}
+		return nil
 	}
 	if isCodexCLIAgent(agent) {
 		return restoreCodexGatewaySelectionFromOriginal(agent, originalBytes, writer)
@@ -6147,18 +6168,19 @@ func createLocalEnrollmentBackup(agent AgentConfig, configExisted bool, original
 					discoveredConfig = plan.SanitizedDiscovered
 				}
 				return &localEnrollmentState{
-					AgentName:           agent.Name,
-					DisplayName:         resolveAgentDisplayName(agent),
-					RuntimePrincipalID:  runtimePrincipalIDForAgent(agent),
-					ConfigPath:          agent.ConfigPath,
-					ConfigExisted:       existingState.ConfigExisted,
-					BackupPath:          existingState.BackupPath,
-					ManagedServerName:   plan.ManagedServerName,
-					ManagedServerURL:    plan.ManagedServerURL,
-					ManagedControlWSURL: plan.ManagedControlWSURL,
-					AppliedAt:           time.Now().UTC(),
-					DiscoveredConfig:    discoveredConfig,
-					ManagedConfig:       plan.SanitizedManaged,
+					AgentName:                   agent.Name,
+					DisplayName:                 resolveAgentDisplayName(agent),
+					RuntimePrincipalID:          runtimePrincipalIDForAgent(agent),
+					ConfigPath:                  agent.ConfigPath,
+					ConfigExisted:               existingState.ConfigExisted,
+					BackupPath:                  existingState.BackupPath,
+					ManagedServerName:           plan.ManagedServerName,
+					ManagedServerURL:            plan.ManagedServerURL,
+					ManagedControlWSURL:         plan.ManagedControlWSURL,
+					AppliedAt:                   time.Now().UTC(),
+					DiscoveredConfig:            discoveredConfig,
+					ManagedConfig:               plan.SanitizedManaged,
+					ClaudeOAuthCredentialSource: existingState.ClaudeOAuthCredentialSource,
 				}, nil
 			}
 		}
@@ -6812,11 +6834,12 @@ func (a genericManagedMCPAdapter) ValidateManagedConfig(doc map[string]interface
 			if token, _ := env["ANTHROPIC_AUTH_TOKEN"].(string); strings.TrimSpace(token) != "" {
 				result["gateway_token_ok"] = true
 			}
-			if custom, _ := env["ANTHROPIC_CUSTOM_MODEL_OPTION"].(string); strings.TrimSpace(custom) != "" {
-				result["gateway_provider_ok"] = true
-			}
+			// Unpinned Claude uses built-in model selectors and has no custom
+			// model menu entry. The provider is configured by URL and auth.
+			result["gateway_provider_ok"] = result["gateway_base_url_ok"] == true && result["gateway_token_ok"] == true
 			for _, key := range []string{
 				"ANTHROPIC_DEFAULT_OPUS_MODEL",
+				"ANTHROPIC_DEFAULT_FABLE_MODEL",
 				"ANTHROPIC_DEFAULT_SONNET_MODEL",
 				"ANTHROPIC_DEFAULT_HAIKU_MODEL",
 			} {

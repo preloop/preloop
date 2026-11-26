@@ -98,13 +98,23 @@ func restoreSubscriptionLoginOnOffboard(client *api.Client, agent AgentConfig, d
 		return fail("cannot resolve bound credential types")
 	}
 	applicable := []string{}
+	identities := map[string]bool{}
 	for _, model := range models {
 		if !bound[model.ID] {
 			continue
 		}
 		delete(bound, model.ID)
 		if strings.TrimSpace(model.CredentialType) == wantType {
-			applicable = append(applicable, model.ID)
+			identity := "secret:" + strings.TrimSpace(model.CredentialsSecretID)
+			if strings.TrimSpace(model.CredentialsSecretID) == "" {
+				// Older servers may omit the identity. Never assume two such
+				// rows share a login merely because their provider matches.
+				identity = "model:" + model.ID
+			}
+			if !identities[identity] {
+				identities[identity] = true
+				applicable = append(applicable, model.ID)
+			}
 		}
 	}
 	if len(bound) != 0 {
@@ -113,10 +123,10 @@ func restoreSubscriptionLoginOnOffboard(client *api.Client, agent AgentConfig, d
 	if len(applicable) == 0 {
 		return subscriptionRestoreNotApplicable, nil
 	}
-	// A single local login cannot safely represent multiple bound subscriptions.
-	// Reject before exports or writes rather than silently restore only one.
+	// Family aliases sharing a secret need exactly one export and write.
+	// Distinct or unverified identities cannot safely replace one local login.
 	if len(applicable) > 1 {
-		return fail("multiple subscription bindings are unsupported for one local login")
+		return fail(fmt.Sprintf("bound models use distinct or unverified subscription credentials; keep this enrollment and recover each subscription separately, or run `preloop agents reconnect %s` to sign in and consolidate this enrollment onto one subscription before retrying offboard", shellQuoteAgentName(resolveAgentDisplayName(agent))))
 	}
 	var bundle exportedModelCredential
 	if err := client.Post(api.RESTPrefix+"/ai-models/"+url.PathEscape(applicable[0])+"/credentials/export", nil, &bundle); err != nil {
@@ -135,7 +145,11 @@ func restoreSubscriptionLoginOnOffboard(client *api.Client, agent AgentConfig, d
 	var destination string
 	var err error
 	if wantType == anthropicClaudeCodeOAuthCredentialType {
-		destination, err = writeClaudeSubscriptionCredential(bundle)
+		source := ""
+		if state, loadErr := loadLocalEnrollmentState(agent); loadErr == nil {
+			source = state.ClaudeOAuthCredentialSource
+		}
+		destination, err = writeClaudeSubscriptionCredentialToSource(bundle, source)
 	} else {
 		destination, err = writeCodexSubscriptionCredential(bundle)
 	}
@@ -244,6 +258,12 @@ func writeOffboardCredentialFile(path string, data []byte) error {
 // unrelated fields. An existing macOS keychain is the active store; its read or
 // write failure cannot be replaced by a successful fallback file write.
 func writeClaudeSubscriptionCredential(bundle exportedModelCredential) (string, error) {
+	return writeClaudeSubscriptionCredentialToSource(bundle, "")
+}
+
+// writeClaudeSubscriptionCredentialToSource honors the enrolled store. Unknown
+// enrollments retain active-Keychain semantics and fail closed on read errors.
+func writeClaudeSubscriptionCredentialToSource(bundle exportedModelCredential, source string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -252,9 +272,15 @@ func writeClaudeSubscriptionCredential(bundle exportedModelCredential) (string, 
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
-	blob, err := readClaudeOffboardKeychain()
-	if err != nil {
-		return "", err
+	blob := ""
+	if source != claudeOAuthSourceFile {
+		blob, err = readClaudeOffboardKeychain()
+		if err != nil {
+			return "", err
+		}
+		if source == claudeOAuthSourceKeychain && strings.TrimSpace(blob) == "" {
+			return "", errors.New("enrolled Claude Code keychain login is unavailable")
+		}
 	}
 	existing := []byte(blob)
 	if blob == "" {
@@ -272,6 +298,15 @@ func writeClaudeSubscriptionCredential(bundle exportedModelCredential) (string, 
 	container, ok := asObjectMap(document["claudeAiOauth"])
 	if !ok {
 		container = map[string]interface{}{}
+	}
+	// Do not rewrite an identical local login merely to change JSON formatting.
+	if lookupString(container, "accessToken") == strings.TrimSpace(bundle.Access) &&
+		(bundle.Refresh == "" || lookupString(container, "refreshToken") == strings.TrimSpace(bundle.Refresh)) &&
+		(bundle.Expires <= 0 || coerceEpochMillis(container["expiresAt"]) == bundle.Expires) {
+		if blob != "" {
+			return "the macOS Keychain", nil
+		}
+		return path, nil
 	}
 	container["accessToken"] = strings.TrimSpace(bundle.Access)
 	if refresh := strings.TrimSpace(bundle.Refresh); refresh != "" {

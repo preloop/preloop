@@ -46,7 +46,7 @@ preloop login --url http://localhost:3000    # your self-hosted instance
 preloop agents discover
 ```
 
-`preloop agents discover` finds local agent configs and reports what each adapter supports. `preloop agents onboard` configures them: calls routed through the managed MCP entry reach the **MCP Firewall**, supported model routes use the **Gateway**. To talk to a running agent, install the runtime plugin with `preloop agents install-plugin` (or `preloop claude` for Claude Code). Full walkthrough: [onboard local agents](https://docs.preloop.ai/quickstart-cli/).
+`preloop agents discover` finds local agent configs and reports what each adapter supports. `preloop agents onboard` configures them: calls routed through the managed MCP entry reach the **MCP Firewall**, supported model routes use the **Gateway**. To talk to a running agent, install the runtime plugin with `preloop agents install-plugin` (or `preloop claude` for Claude Code). Full walkthrough: [onboard local agents](https://docs.preloop.ai/quickstart-cli/). For a rejected Claude subscription login, see [subscription recovery](docs/guide/clients/subscription-recovery.md).
 
 <p align="center">
   <img alt="Preloop onboarding local agents into the control plane" src="frontend/public/assets/screenshots/quickstart/dark/agents-onboarding.webp" style="width: 100%; max-width: 1135px; border-radius: 12px;" />
@@ -246,3 +246,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Maintainers: follow the [protected-branc
 Release assets carry signed Sigstore build provenance and checksums ([verification](./docs/release-verification.md)). The [release SBOM audit gate](./docs/release-sbom-audit.md) checks both architectures of every release image and the tag's security workflows. Windows CLI notes: [windows-cli.md](./docs/windows-cli.md), [code signing policy](./docs/code-signing-policy.md). Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
 Flows can also open [interactive hosted conversations](docs/guide/flows/interactive-conversations.md) in the console using OpenCode or DeepSeek Harness, with live follow-ups and checkpoint-based resume.
+
+For Claude Code fleet administrators, [extension restrictions](docs/operations/mdm-recipes.md#extension-restrictions)
+export reviewed account plugin denials and marketplace policy as a managed-settings
+drop-in. Preview and registration do not prove installation; vendor admin-console
+delivery for Preloop-routed agents remains unverified.

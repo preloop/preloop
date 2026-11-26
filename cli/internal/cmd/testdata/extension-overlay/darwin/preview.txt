@@ -1,0 +1,27 @@
+Claude Code extension restrictions (darwin)
+
+Reviewed delivery target: /Library/Application Support/ClaudeCode/managed-settings.d/50-preloop-extensions.json
+Delivery: endpoint_file (informational)
+Minimum supported Claude Code version: 2.1.332 (conservative supported floor, not introduction version).
+Older clients, or clients without managed-settings.d support, may ignore the file. No runtime version detection.
+
+Export and registration do not prove installation. Never overwrite an existing managed source.
+Deploy the hook bundle first when allowManagedHooksOnly is emitted.
+No allow-list-only mode for plugins exists in Claude Code. Restrictions stop loading and do not delete files on disk.
+A higher-precedence managed source (server-managed settings, MDM plist, registry) supersedes the file.
+Name denials do not enforce content pins or version constraints.
+
+Vendor admin-console delivery is unverified for agents routed through Preloop (non-default ANTHROPIC_BASE_URL). Prefer the endpoint file.
+To paste JSON: Organization settings > Claude Code > Managed settings.
+This client-side channel can be bypassed on unmanaged devices, caches for up to 24 hours, and is not delivered to cloud-provider sessions.
+Use endpoint delivery for Preloop routes, personal plans and API keys.
+
+Omitted:
+enabledPlugins (hash:1234): not a marketplace plugin id
+
+Settings:
+{
+  "enabledPlugins": {
+    "unapproved@example": false
+  }
+}

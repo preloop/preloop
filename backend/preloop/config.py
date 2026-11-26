@@ -10,6 +10,8 @@ from typing import List, Literal
 from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from preloop import normalize_release_version
+
 logger = logging.getLogger(__name__)
 
 # Public JWT signing-key strings shipped as helm/docs/compose defaults.
@@ -139,7 +141,7 @@ def _load_release_version(
     Falls back to the VERSION file for Docker and local dev.
     """
     try:
-        return version("preloop")
+        return normalize_release_version(version("preloop"))
     except PackageNotFoundError:
         pass
 

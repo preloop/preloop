@@ -314,6 +314,98 @@ func claudeFableUpstreamForTest(payload map[string]interface{}) *managedGatewayU
 	return upstream
 }
 
+// A new family must repair a failed shared Claude login before attaching it.
+// Merely detecting fresh local credentials does not replace the server secret.
+func TestClaudeFamilyRepairsFailedSharedCredential(t *testing.T) {
+	for _, existingTarget := range []bool{false, true} {
+		for _, rejectRepair := range []bool{false, true} {
+			name := fmt.Sprintf("existing_target=%t/rejected=%t", existingTarget, rejectRepair)
+			t.Run(name, func(t *testing.T) {
+				sibling := claudeManagedOAuthSiblingForTest(
+					"sibling-sonnet", "claude-sonnet-4-5",
+					"anthropic/claude-sonnet-4-5", "secret-failed",
+				)
+				sibling.CredentialsStatus = "error"
+				models := []aiModelResponse{sibling}
+				if existingTarget {
+					target := claudeManagedOAuthSiblingForTest(
+						"target-fable", "claude-fable-5-1", "anthropic/claude-fable-5-1", "secret-older",
+					)
+					target.CredentialsStatus = "error"
+					models = append(models, target)
+				}
+				payload := map[string]interface{}{
+					"access": "synthetic-access", "refresh": "synthetic-refresh",
+					"expires": time.Now().Add(time.Hour).UnixMilli(),
+				}
+				var repaired, attached bool
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodGet && r.URL.Path == "/api/v1/ai-models" {
+						_ = json.NewEncoder(w).Encode(models)
+						return
+					}
+					var body map[string]interface{}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("decode model write: %v", err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					if r.Method == http.MethodPut && r.URL.Path == "/api/v1/ai-models/sibling-sonnet" {
+						uploaded, ok := body["credential_payload"].(map[string]interface{})
+						if !ok || !equalJSONMap(uploaded, payload) ||
+							body["credential_type"] != anthropicClaudeCodeOAuthCredentialType {
+							t.Errorf("repair must upload the fresh Claude bundle: %#v", body)
+						}
+						if _, ok := body["credentials_secret_id"]; ok {
+							t.Error("repair must update the existing secret in place")
+						}
+						if rejectRepair {
+							w.WriteHeader(http.StatusConflict)
+							_, _ = w.Write([]byte(`{"detail":"refresh token already consumed"}`))
+							return
+						}
+						repaired = true
+						_ = json.NewEncoder(w).Encode(sibling)
+						return
+					}
+					wantMethod, wantPath := http.MethodPost, "/api/v1/ai-models"
+					if existingTarget {
+						wantMethod, wantPath = http.MethodPut, "/api/v1/ai-models/target-fable"
+					}
+					if r.Method != wantMethod || r.URL.Path != wantPath {
+						t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					}
+					if !repaired {
+						t.Error("must repair the failed secret before attaching a family")
+					}
+					if body["credentials_secret_id"] != "secret-failed" {
+						t.Errorf("family must share the repaired secret: %#v", body)
+					}
+					if _, ok := body["credential_payload"]; ok {
+						t.Error("family must not create a second credential lineage")
+					}
+					attached = true
+					_ = json.NewEncoder(w).Encode(sibling)
+				}))
+				defer server.Close()
+				_, _, err := syncManagedGatewayAIModel(
+					api.NewClientWithToken(server.URL, "synthetic-token"),
+					&managedAgentSummary{ID: "agent-1"}, AgentConfig{Name: "Claude Code"},
+					claudeFableUpstreamForTest(payload), server.URL+"/anthropic",
+				)
+				if rejectRepair {
+					if err == nil || attached {
+						t.Fatalf("rejected repair: err=%v attached=%t", err, attached)
+					}
+				} else if err != nil || !repaired || !attached {
+					t.Fatalf("repair and attach: err=%v repaired=%t attached=%t",
+						err, repaired, attached)
+				}
+			})
+		}
+	}
+}
+
 func newClaudeFamilyLineageServer(
 	t *testing.T,
 	models []aiModelResponse,

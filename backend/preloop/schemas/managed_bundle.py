@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from preloop.schemas.discovery_evidence import (
     AGENT_KIND_PATTERN,
@@ -23,11 +23,24 @@ class BundleManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     manifest_schema: Literal["preloop.managed-hook-bundle.v1"] = Field(alias="schema")
-    app_id: Literal["claude-code"]
+    app_id: Literal["claude-code", "claude-code-extensions"]
     platform: Literal["darwin", "linux", "windows"]
     policy_revision_hash: Digest
-    artifact: Literal["managed-settings.json"]
-    keys: list[Literal["hooks.PreToolUse"]] = Field(min_length=1, max_length=1)
+    artifact: Literal["managed-settings.json", "50-preloop-extensions.json"]
+    delivery: Literal["endpoint_file", "vendor_console"] | None = None
+    keys: list[
+        Literal[
+            "hooks.PreToolUse",
+            "enabledPlugins",
+            "strictKnownMarketplaces",
+            "blockedMarketplaces",
+            "extraKnownMarketplaces",
+            "allowManagedHooksOnly",
+            "strictPluginOnlyCustomization",
+            "disableSkillShellExecution",
+            "disableSideloadFlags",
+        ]
+    ] = Field(min_length=1, max_length=8)
     target_locations: MetadataList
     managed_source: MetadataText
     documented_semantics: MetadataText
@@ -35,6 +48,24 @@ class BundleManifest(BaseModel):
     prerequisites: MetadataList
     omitted_capabilities: MetadataList
     references: MetadataList
+
+    @model_validator(mode="after")
+    def validate_application(self) -> "BundleManifest":
+        """Keep hook and extension bundle contracts distinct."""
+        if self.app_id == "claude-code":
+            if self.artifact != "managed-settings.json" or self.keys != [
+                "hooks.PreToolUse"
+            ]:
+                raise ValueError("Hook bundles must contain only hooks.PreToolUse")
+        elif (
+            self.artifact != "50-preloop-extensions.json"
+            or "hooks.PreToolUse" in self.keys
+            or self.delivery is None
+        ):
+            raise ValueError(
+                "Extension bundles require their drop-in artifact, extension keys and delivery"
+            )
+        return self
 
 
 class ControlExpectationInput(BaseModel):
