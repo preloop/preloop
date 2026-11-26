@@ -555,6 +555,38 @@ describe('extension inventory notices', () => {
     expect(text).not.to.contain('preloop update');
   });
 
+  it('does not label an older server with an omitted report time as stale', async () => {
+    const legacy = device();
+    delete legacy.reported_at;
+    const element = await mount({ page: withCoverage('complete', [legacy]) });
+    expect(textOf(element)).not.to.contain('has not reported in the last day');
+    expect(element.shadowRoot!.querySelector('.device .command')).to.equal(
+      null
+    );
+  });
+
+  it('labels account-wide coverage and offers report steps for an empty agent kind', async () => {
+    const element = await mount({
+      page: { ...withCoverage('complete', [device()]), items: [] },
+    });
+    element.agentKind = 'claude_code';
+    element.emptyText =
+      'No device has reported extensions for claude_code agents.';
+    await element.updateComplete;
+    await element.refresh();
+    await element.updateComplete;
+    expect(textOf(element)).to.contain('Account coverage (all agent kinds)');
+    expect(textOf(element)).to.contain(
+      '1 device reporting across all agent kinds'
+    );
+    expect(textOf(element)).to.contain(
+      'No device has reported extensions for claude_code agents.'
+    );
+    expect(textOf(element)).to.contain(
+      'preloop agents discover --report --project .'
+    );
+  });
+
   for (const [name, over] of [
     [
       'stale',

@@ -155,6 +155,46 @@ describe('AgentsView', () => {
     expect(element.shadowRoot!.querySelector('extension-inventory')).to.exist;
   });
 
+  it('retains an open inventory on token rotation but clears it on identity change and sign-out', async () => {
+    const token = (sub: string, account: string, exp: number): string =>
+      `header.${btoa(JSON.stringify({ sub, account_id: account, exp }))}.signature`;
+    localStorage.setItem('accessToken', token('jane', 'account-a', 1));
+    const element = await fixture<AgentsView>(
+      html`<agents-view></agents-view>`
+    );
+    await waitForAgents(element);
+    (
+      element.shadowRoot!.querySelector('.extensions-entry') as HTMLElement
+    ).click();
+    await element.updateComplete;
+    const inventory = element.shadowRoot!.querySelector('extension-inventory');
+    localStorage.setItem('accessToken', token('jane', 'account-a', 2));
+    invalidateApiCaches();
+    await element.updateComplete;
+    expect((element as any).extensionsOpen).to.equal(true);
+    expect(element.shadowRoot!.querySelector('extension-inventory')).to.equal(
+      inventory
+    );
+    localStorage.setItem('accessToken', token('jane', 'account-b', 3));
+    invalidateApiCaches();
+    await element.updateComplete;
+    expect((element as any).extensionsOpen).to.equal(false);
+    expect(element.shadowRoot!.querySelector('extension-inventory')).to.equal(
+      null
+    );
+    (
+      element.shadowRoot!.querySelector('.extensions-entry') as HTMLElement
+    ).click();
+    await element.updateComplete;
+    localStorage.removeItem('accessToken');
+    invalidateApiCaches();
+    await element.updateComplete;
+    expect((element as any).extensionsOpen).to.equal(false);
+    expect(element.shadowRoot!.querySelector('extension-inventory')).to.equal(
+      null
+    );
+  });
+
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
