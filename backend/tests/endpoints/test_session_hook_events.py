@@ -152,14 +152,38 @@ def test_stop_writes_turn_end_once_within_two_seconds(
 
 
 def test_subagent_stop_is_marked(client: Any, db_session: Session, token: str) -> None:
-    started = _start(client, token)
+    """Native child lifecycle events never finish the parent turn."""
+    parent = _start(client, token)
+    for event in ("SubagentStart", "SubagentStop"):
+        response = client.post(
+            EVENT_URL,
+            json={
+                "session_id": "ext-1:child",
+                "hook_event_name": event,
+                "source": "claude_code",
+                "subagent_role": "reviewer",
+            },
+            headers=_auth(token),
+        )
+        assert response.status_code == 204, response.text
+    db_session.expire_all()
+    child = (
+        db_session.query(RuntimeSession)
+        .filter(RuntimeSession.parent_session_id == parent["runtime_session_id"])
+        .one()
+    )
+    rows = _rows(db_session, child.id, "turn_end")
+    assert rows[0].metadata_["subagent"] is True
+    assert child.subagent_role == "reviewer"
+    assert child.turn_state == "your_turn"
+    assert child.ended_at is None
+    assert _rows(db_session, parent["runtime_session_id"], "turn_end") == []
     client.post(
         EVENT_URL,
         json={"session_id": "ext-1", "hook_event_name": "SubagentStop"},
         headers=_auth(token),
     )
-    rows = _rows(db_session, started["runtime_session_id"], "turn_end")
-    assert rows[0].metadata_["subagent"] is True
+    assert _rows(db_session, parent["runtime_session_id"], "turn_end") == []
 
 
 def test_unknown_session_is_204_and_writes_nothing(
@@ -285,6 +309,7 @@ def test_request_schemas_carry_no_prompt_field_for_events() -> None:
         "duration_ms",
         "notification_type",
         "interrupted",
+        "subagent_role",
     }
     for banned in (
         "prompt",
@@ -302,6 +327,7 @@ def test_request_schemas_carry_no_prompt_field_for_events() -> None:
     assert names == {
         "Stop",
         "SubagentStop",
+        "SubagentStart",
         "SessionEnd",
         "stop",
         "sessionEnd",

@@ -440,20 +440,39 @@ def get_approval_request_stats(
     )
 
 
-def _for_caller(row: Any, current_user: User) -> ApprovalRequestResponse:
+def _for_caller(
+    row: Any, current_user: User, *, has_vote_event: bool = False
+) -> ApprovalRequestResponse:
     """Serialize an approval request with the caller's own vote attached.
 
     Args:
         row: The approval request row (attribution already attached).
         current_user: The user the response is for.
+        has_vote_event: Whether CRUD found a recorded vote for this request.
 
     Returns:
         The response with ``my_decision`` set from the caller's vote, if any.
     """
     item = ApprovalRequestResponse.model_validate(row)
+    votes = getattr(row, "responses", None) or []
+    item.human_decision_recorded = (
+        item.status in {"approved", "declined"}
+        and not item.decided_by_ai
+        and item.auto_approved_reason is None
+        and (
+            has_vote_event
+            or any(
+                isinstance(vote, dict)
+                and isinstance(vote.get("user_id"), str)
+                and bool(vote.get("user_id"))
+                and vote.get("decision") in {"approved", "declined"}
+                for vote in votes
+            )
+        )
+    )
     user_id = str(current_user.id)
     decision = None
-    for vote in getattr(row, "responses", None) or []:
+    for vote in votes:
         if isinstance(vote, dict) and vote.get("user_id") == user_id:
             if vote.get("decision") in ("approved", "declined"):
                 decision = vote["decision"]
@@ -497,7 +516,14 @@ def get_approval_request(
     # page with four bare ids (the "Agent: AI agent" report), then convert
     # while the request session is still open so serialization cannot hit a
     # detached instance.
-    return _for_caller(attributed(db, approval_request), current_user)
+    voted_ids = crud_approval_event.request_ids_with_votes(
+        db, account_id=current_user.account_id, request_ids=[approval_request.id]
+    )
+    return _for_caller(
+        attributed(db, approval_request),
+        current_user,
+        has_vote_event=approval_request.id in voted_ids,
+    )
 
 
 @router.get("/{request_id}/original-args")
@@ -726,8 +752,11 @@ def list_approval_requests(
     # One batched pass for the page, not four lookups per row, then convert
     # every row while the request session is still open.
     responses = []
+    voted_ids = crud_approval_event.request_ids_with_votes(
+        db, account_id=current_user.account_id, request_ids=[row.id for row in rows]
+    )
     for row in attach_attribution(db, rows):
-        item = _for_caller(row, current_user)
+        item = _for_caller(row, current_user, has_vote_event=row.id in voted_ids)
         if crud_approval_request.is_stale_pending(
             row, now=now, halt_cutoff=halt_cutoff
         ):

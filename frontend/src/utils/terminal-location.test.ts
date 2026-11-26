@@ -74,6 +74,15 @@ describe('terminal session metadata', () => {
     ).to.equal('Idle');
   });
 
+  it('keeps the subagent turn-finished chip when no adapter is present', () => {
+    const child = session({
+      terminal_location: null,
+      turn_state: 'your_turn',
+      parent_session_id: 'session-parent',
+    });
+    expect(terminalSessionChip(child).label).to.equal('Turn finished');
+  });
+
   it('does not change baseline chips or activity when no adapter is present', () => {
     const row = session({ terminal_location: null, pending_approval_count: 1 });
     expect(terminalSessionChip(row).label).to.equal('Idle');

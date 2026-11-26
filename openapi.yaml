@@ -31359,6 +31359,7 @@ components:
           enum:
           - Stop
           - SubagentStop
+          - SubagentStart
           - SessionEnd
           - stop
           - sessionEnd
@@ -31373,6 +31374,13 @@ components:
           - type: 'null'
           title: Source
           description: Agent adapter, e.g. 'claude_code'
+        subagent_role:
+          anyOf:
+          - type: string
+            maxLength: 64
+            pattern: ^[A-Za-z0-9_.-]+$
+          - type: 'null'
+          title: Subagent Role
         tool_use_id:
           anyOf:
           - type: string
@@ -32670,6 +32678,11 @@ components:
         decided_by_ai:
           type: boolean
           title: Decided By Ai
+          default: false
+        human_decision_recorded:
+          type: boolean
+          title: Human Decision Recorded
+          description: A terminal human decision has a stored vote response or event
           default: false
         ai_model:
           anyOf:
@@ -39410,6 +39423,11 @@ components:
               $ref: '#/components/schemas/ExtensionAggregate'
             type: array
           title: Items
+        coverage:
+          items:
+            $ref: '#/components/schemas/ExtensionCoverage'
+          type: array
+          title: Coverage
         completeness:
           type: string
           enum:
@@ -39573,6 +39591,23 @@ components:
             - failed
           - type: 'null'
           title: Extension Completeness
+        extension_errors:
+          items:
+            type: string
+            enum:
+            - extension_file_limit
+            - extension_hook_unbound
+            - extension_limit
+            - extension_malformed
+            - extension_project_unscanned
+            - extension_symlink
+            - extension_unreadable
+            - extension_unsafe_path
+            - extension_unsupported_scope
+            - extension_unsupported_version
+          type: array
+          maxItems: 10
+          title: Extension Errors
         profiles:
           items:
             $ref: '#/components/schemas/ObservedProfile'
@@ -41148,6 +41183,34 @@ components:
       - opened_at
       title: ExtensionAttentionItem
       description: Console attention contribution with a local destination.
+    ExtensionCoverage:
+      properties:
+        fingerprint:
+          type: string
+          title: Fingerprint
+        collector_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Collector Version
+        completeness:
+          type: string
+          enum:
+          - complete
+          - partial
+          - unknown
+          title: Completeness
+        reasons:
+          items:
+            type: string
+          type: array
+          title: Reasons
+      type: object
+      required:
+      - fingerprint
+      - completeness
+      title: ExtensionCoverage
+      description: Latest safe coverage metadata reported by one device.
     ExtensionMetadata:
       properties:
         kind:
@@ -56724,6 +56787,11 @@ components:
           - type: string
           - type: 'null'
           title: Parent Session Id
+        subagent_role:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Subagent Role
         runtime_principal_type:
           anyOf:
           - type: string
@@ -62310,7 +62378,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

@@ -1391,6 +1391,27 @@ describe('ApprovalView', () => {
       expect(subtitle.textContent).to.not.contain('Review');
     });
 
+    it('names the standing native setting without a bypass id', async () => {
+      fetchStub = createFetchStub({
+        request: pendingRequest({
+          status: 'approved',
+          auto_approved_reason: 'native_tool_approvals_off',
+          auto_approval_bypass_id: null,
+        }),
+        history: [],
+      });
+      const element = await fixture<ApprovalView>(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      expect(
+        element.shadowRoot!.querySelector('.resolved-info h3')!.textContent
+      ).to.contain('the native tool approvals setting (Off)');
+      expect(element.shadowRoot!.textContent).not.to.contain(
+        'a time-boxed bypass'
+      );
+    });
+
     it("names the flow's approval policy", async () => {
       fetchStub = createFetchStub({
         request: pendingRequest({

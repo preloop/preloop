@@ -31,6 +31,21 @@ import {
 // Exclusive lower bound: this release has no extension collector.
 export const EXTENSION_COLLECTOR_VERSION_FLOOR = '1.0.2';
 
+/** Unknown and development versions are not evidence that an upgrade is needed. */
+export function collectorTooOld(version: string | null): boolean {
+  const match =
+    /^v?(\d+)\.(\d+)\.(\d+)(?:-[a-zA-Z][\w.-]*)?(?:\+[\w.-]+)?$/.exec(
+      version || ''
+    );
+  if (!match) return false;
+  const floor = EXTENSION_COLLECTOR_VERSION_FLOOR.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const difference = Number(match[i + 1]) - floor[i];
+    if (difference) return difference < 0;
+  }
+  return true;
+}
+
 const sources: ExtensionSource[] = [
   'official_marketplace',
   'third_party_marketplace',
@@ -534,22 +549,63 @@ export class ExtensionInventory extends LitElement {
                   ${
                     this.page.completeness === 'partial'
                       ? 'Collection is incomplete. Previously observed extensions are retained; other installed extensions may be missing.'
-                      : 'Extension coverage is unknown: no device has reported, an older collector reported without extensions, or the report did not cover user configuration. This inventory cannot distinguish these cases.'
+                      : 'Extension coverage is unknown. The available reports do not establish complete extension coverage.'
                   }
                 </p>
-                <p>
-                  On the device to scan, use a Preloop CLI newer than
-                  ${EXTENSION_COLLECTOR_VERSION_FLOOR} with extension
-                  collection. Upgrade with <code>preloop update</code> and check
-                  <code>preloop version</code>. If no newer release is
-                  available, extension reporting requires a later collector
-                  release.
-                </p>
+                ${(this.page.coverage ?? [])
+                  .filter((device) => device.completeness !== 'complete')
+                  .map(
+                    (device) => html`
+                      <p>
+                        Device ${device.fingerprint.slice(0, 8)} · Collector
+                        ${device.collector_version || 'unknown'}.
+                        ${device.reasons.length ? html`Reported reasons: ${device.reasons.join(', ')}.` : 'No specific incompleteness reason was reported.'}
+                        ${
+                          device.reasons.includes('extension_project_unscanned')
+                            ? html`
+                                Project roots have not been scanned. From each
+                                affected repository, run
+                                <code
+                                  >preloop agents discover --report --project
+                                  .</code
+                                >.
+                              `
+                            : device.reasons.length
+                              ? html`Check the local scan output with
+                                  <code
+                                    >preloop agents extensions --project .</code
+                                  >
+                                  from the repository, address the reported
+                                  collection failures, then run
+                                  <code
+                                    >preloop agents discover --report --project
+                                    .</code
+                                  >.`
+                              : html`Check <code>preloop version</code> on this
+                                  device and report again to establish its
+                                  extension coverage.`
+                        }
+                        ${
+                          collectorTooOld(device.collector_version)
+                            ? html`
+                                This collector is too old. Extension collection
+                                requires a Preloop CLI newer than
+                                ${EXTENSION_COLLECTOR_VERSION_FLOOR}. Run
+                                <code>preloop update</code>, then check
+                                <code>preloop version</code> and report again.
+                              `
+                            : nothing
+                        }
+                      </p>
+                    `
+                  )}
+                ${!this.page.coverage?.length ? html`<p>No device coverage details are available. On the device, check <code>preloop version</code> and <code>preloop agents extensions --project .</code> from the repository.</p>` : nothing}
                 <p>
                   Sign in to this instance with
                   <code>preloop auth login --url ${window.location.origin}</code
-                  >, then run <code>preloop agents discover --report</code> to
-                  send the inventory. Reload this page after reporting.
+                  >, then report with
+                  <code>preloop agents discover --report --project .</code>
+                  from the repository. Reload this page after reporting.
                 </p>
               </div>
             `

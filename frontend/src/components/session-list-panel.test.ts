@@ -495,3 +495,27 @@ describe('session-list-panel design (#2431)', () => {
     });
   }
 });
+
+describe('subagent session identity', () => {
+  it('links the parent and shows a reported role and finished turn', async () => {
+    const el = await renderPanel([
+      makeSession({
+        id: 'child',
+        parentSessionId: 'parent',
+        subagentRole: 'reviewer',
+        raw: { turn_state: 'your_turn', parent_session_id: 'parent' },
+      }),
+      makeSession({ id: 'parent', title: 'Design review' }),
+    ]);
+    expect(el.shadowRoot!.textContent).to.contain('Subagent · reviewer');
+    expect(el.shadowRoot!.textContent).to.contain('Turn finished');
+    const link = el.shadowRoot!.querySelector<HTMLAnchorElement>(
+      '[data-parent-session]'
+    )!;
+    expect(link.textContent).to.contain('Design review');
+    expect(link.href).to.contain('sessionId=parent');
+    expect(el.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.contain(
+      '1 child in this list'
+    );
+  });
+});

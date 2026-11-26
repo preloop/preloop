@@ -808,3 +808,62 @@ def test_export_policy_file_shape(
     )
     assert "synthetic-pin-note" not in response.text
     assert "other-only" not in response.text
+
+
+def test_coverage_uses_latest_device_reasons_and_is_account_scoped(
+    db_session: Session, test_user: models.User, client: TestClient
+) -> None:
+    """Current collector failures survive the report and inventory API."""
+    payload = report(completeness="partial")
+    payload["evidence"].update(
+        collector_version="1.1.0-rc.1",
+        extension_completeness="partial",
+        extension_errors=["extension_project_unscanned"],
+    )
+    store(db_session, test_user.account_id, payload)
+    expected = [
+        {
+            "fingerprint": "a" * 64,
+            "collector_version": "1.1.0-rc.1",
+            "completeness": "partial",
+            "reasons": ["extension_project_unscanned"],
+        }
+    ]
+    assert (
+        crud_discovered_extension.coverage(db_session, account_id=test_user.account_id)
+        == expected
+    )
+    assert client.get(EXTENSIONS).json()["coverage"] == expected
+    assert crud_discovered_extension.coverage(db_session, account_id=uuid4()) == []
+    assert (
+        crud_discovered_extension.coverage(
+            db_session, account_id=test_user.account_id, fingerprint="c" * 64
+        )
+        == []
+    )
+    newer = report(at=NOW + timedelta(minutes=1))
+    newer["evidence"]["collector_version"] = "1.1.0-rc.1"
+    store(db_session, test_user.account_id, newer, now=NOW + timedelta(minutes=1))
+    coverage = crud_discovered_extension.coverage(
+        db_session, account_id=test_user.account_id
+    )
+    assert coverage[0]["completeness"] == "complete"
+    assert coverage[0]["reasons"] == []
+
+
+def test_extension_reason_codes_preserve_legacy_bytes_and_reject_paths() -> None:
+    """The additive reason field is omitted for old reports and allowlisted."""
+    payload = report(completeness="partial")["evidence"]
+    original = DiscoveryEvidence.model_validate(payload).model_dump(mode="json")
+    assert "extension_errors" not in original
+    for errors in [["/private/example"], ["extension_project_unscanned"] * 11]:
+        with pytest.raises(ValidationError):
+            DiscoveryEvidence.model_validate({**payload, "extension_errors": errors})
+    with pytest.raises(ValidationError):
+        DiscoveryEvidence.model_validate(
+            {
+                **payload,
+                "extension_completeness": "complete",
+                "extension_errors": ["extension_project_unscanned"],
+            }
+        )

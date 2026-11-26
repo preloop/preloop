@@ -46,9 +46,11 @@ def _conftest_ignores(directory: Path) -> tuple[list[str], list[str]]:
             target, value = node.target.id, node.value
         if target not in {"collect_ignore", "collect_ignore_glob"}:
             continue
+        if value is None:
+            continue
         if isinstance(node, ast.Assign):
             handled_targets.add(id(node.targets[0]))
-        else:
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
             handled_targets.add(id(node.target))
         try:
             entries = ast.literal_eval(value)
@@ -67,17 +69,17 @@ def _conftest_ignores(directory: Path) -> tuple[list[str], list[str]]:
             destination.extend(entries)
         else:
             destination[:] = entries
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name == "pytest_ignore_collect":
+    for walked in ast.walk(tree):
+        if isinstance(walked, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if walked.name == "pytest_ignore_collect":
                 raise ValueError(
                     f"Dynamic pytest ignore hook is unsupported: {conftest}"
                 )
         if (
-            isinstance(node, ast.Name)
-            and isinstance(node.ctx, ast.Store)
-            and node.id in {"collect_ignore", "collect_ignore_glob"}
-            and id(node) not in handled_targets
+            isinstance(walked, ast.Name)
+            and isinstance(walked.ctx, ast.Store)
+            and walked.id in {"collect_ignore", "collect_ignore_glob"}
+            and id(walked) not in handled_targets
         ):
             raise ValueError(f"Dynamic pytest ignore is unsupported: {conftest}")
     return ignored, globs

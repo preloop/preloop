@@ -287,3 +287,125 @@ def test_turn_end_keeps_a_pending_approval_until_it_resolves(
     db_session.refresh(runtime)
     # The turn already ended, so the session goes to the operator.
     assert runtime.turn_state == "your_turn"
+
+
+def test_subagent_stop_finishes_a_resumable_turn(
+    db_session: Session, runtime: models.RuntimeSession, emitted: list
+) -> None:
+    """A child finishes its turn without ending its reusable conversation."""
+    _prompt(db_session, runtime)
+    row = _event(db_session, runtime, "SubagentStop")
+    db_session.refresh(runtime)
+    assert row.activity_type == "turn_end"
+    assert row.metadata_["subagent"] is True
+    assert runtime.turn_state == "your_turn"
+    assert runtime.turn_ended_at is not None
+    assert runtime.ended_at is None
+    assert emitted[-1]["payload"]["turn_state"] == "your_turn"
+    _event(db_session, runtime, "PostToolUse", tool_name="Read")
+    db_session.refresh(runtime)
+    assert runtime.turn_state == "your_turn"
+    # Separate the next prompt from the hook deduplication window.
+    session_hook_events.crud_runtime_session_activity.log_hook_turn_event(
+        db_session,
+        account_id=runtime.account_id,
+        runtime_session_id=runtime.id,
+        activity_type="user_prompt",
+        dedupe_seconds=0,
+    )
+    db_session.refresh(runtime)
+    assert runtime.turn_state == "working"
+    assert runtime.turn_ended_at is None
+    assert runtime.ended_at is None
+
+
+def test_child_hooks_target_child_preserve_role_and_resume(
+    db_session: Session,
+    runtime: models.RuntimeSession,
+    emitted: list,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gateway's composite child identity is also used by native hooks."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from preloop.api.endpoints import agent_permission
+    from preloop.models.crud import crud_runtime_session
+    from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
+
+    parent = runtime
+    parent.session_source_id = "laptop:conversation"
+    parent.turn_state = "working"
+    child = crud_runtime_session.create(
+        db_session,
+        obj_in={
+            "account_id": parent.account_id,
+            "session_source_type": "claude_code",
+            "session_source_id": "laptop:conversation:child",
+            "runtime_principal_type": "claude_code",
+            "runtime_principal_id": "laptop",
+            "parent_session_id": parent.id,
+            "started_at": datetime.now(UTC),
+            "last_activity_at": datetime.now(UTC),
+        },
+    )
+    monkeypatch.setattr(
+        agent_permission, "get_session_factory", lambda: lambda: nullcontext(db_session)
+    )
+    identity = SimpleNamespace(
+        account_id=parent.account_id,
+        runtime_principal_type="claude_code",
+        runtime_principal_id="laptop",
+        runner_join_actor=None,
+        api_key_id=None,
+        user_id=None,
+        managed_agent_id=None,
+    )
+
+    def send(event: str, session_id: str = "conversation:child") -> bool:
+        """Send the same payload as the native lifecycle collector."""
+        return agent_permission._record_session_event(
+            identity,
+            agent_permission.AgentSessionEventRequest(
+                session_id=session_id,
+                source="claude_code",
+                hook_event_name=event,
+                subagent_role="reviewer",
+            ),
+        )
+
+    assert send("SubagentStop")
+    db_session.refresh(child)
+    db_session.refresh(parent)
+    assert parent.turn_state == "working"
+    assert child.turn_state == "your_turn"
+    assert child.subagent_role == "reviewer"
+    assert child.ended_at is None
+    row = crud_runtime_session.get_account_session_summary(
+        db_session, account_id=parent.account_id, runtime_session_id=child.id
+    )
+    assert row["subagent_role"] == "reviewer"
+    assert row["is_active_now"] is False
+    assert (
+        RuntimeSessionExplorerService._summary_row_to_schema(row).subagent_role
+        == "reviewer"
+    )
+    assert not send("SubagentStop", "conversation")
+    assert not send("SubagentStop", "unknown:child")
+    assert send("SubagentStart")
+    db_session.refresh(child)
+    assert child.turn_state == "working"
+    assert child.turn_ended_at is None
+    assert child.ended_at is None
+
+    assert send("SubagentStart", "conversation:new-child")
+    new_child = crud_runtime_session.get_by_source(
+        db_session,
+        account_id=parent.account_id,
+        session_source_type="claude_code",
+        session_source_id="laptop:conversation:new-child",
+    )
+    assert new_child.parent_session_id == parent.id
+    assert new_child.subagent_role == "reviewer"
+    assert new_child.turn_state == "working"
+    assert not send("SubagentStart", "unknown:new-child")

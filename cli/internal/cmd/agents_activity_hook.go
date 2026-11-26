@@ -38,6 +38,8 @@ var activityHookEvents = []struct{ event, matcher string }{
 	{"PostToolUse", "*"},
 	{"PostToolUseFailure", "*"},
 	{"Notification", ""},
+	{"SubagentStop", ""},
+	{"SubagentStart", ""},
 }
 
 func activityHookEventNames() []string {
@@ -68,6 +70,8 @@ func init() {
 }
 
 type activityHookInput struct {
+	AgentID          string          `json:"agent_id"`
+	AgentType        string          `json:"agent_type"`
 	HookEventName    string          `json:"hook_event_name"`
 	ToolName         string          `json:"tool_name"`
 	ToolUseID        string          `json:"tool_use_id"`
@@ -78,6 +82,7 @@ type activityHookInput struct {
 }
 
 type sessionEventRequest struct {
+	SubagentRole     string `json:"subagent_role,omitempty"`
 	SessionID        string `json:"session_id"`
 	HookEventName    string `json:"hook_event_name"`
 	Source           string `json:"source,omitempty"`
@@ -103,6 +108,18 @@ func buildSessionEventRequest(source string, raw []byte) (sessionEventRequest, b
 	}
 	req := sessionEventRequest{SessionID: sessionID, HookEventName: in.HookEventName, Source: source}
 	switch in.HookEventName {
+	case "SubagentStart", "SubagentStop":
+		agentID := strings.TrimSpace(in.AgentID)
+		if source != permissionSourceClaudeCode || !sessionFileIDPattern.MatchString(agentID) || len(sessionID)+len(agentID)+1 > 200 {
+			return sessionEventRequest{}, false
+		}
+		// The gateway keys Claude children by parent session id and agent id.
+		req.SessionID = sessionID + ":" + agentID
+		role := strings.TrimSpace(in.AgentType)
+		if len(role) <= 64 && !strings.ContainsAny(role, ":\\") && sessionFileIDPattern.MatchString(role) {
+			req.SubagentRole = role
+		}
+
 	case "PostToolUse", "PostToolUseFailure":
 		req.ToolUseID = truncateUTF8(strings.TrimSpace(in.ToolUseID), 200)
 		req.ToolName = truncateUTF8(strings.TrimSpace(in.ToolName), 100)

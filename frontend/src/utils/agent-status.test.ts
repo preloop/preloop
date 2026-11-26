@@ -280,3 +280,26 @@ describe('live session progress', () => {
     expect(fmtElapsedCompact(158)).to.equal(formatElapsedCompact(158_000));
   });
 });
+
+describe('finished child turns', () => {
+  it('distinguishes a finished turn, a resumed turn and an ended child', () => {
+    expect(
+      agentStateChip({ parent_session_id: 'parent', turn_state: 'your_turn' })
+        .label
+    ).to.equal('Turn finished');
+    expect(
+      agentStateChip({ parent_session_id: 'parent', turn_state: 'working' })
+        .label
+    ).to.equal('Working');
+    expect(
+      agentStateChip({
+        parent_session_id: 'parent',
+        turn_state: 'your_turn',
+        ended_at: '2026-11-26T10:00:00Z',
+      }).label
+    ).to.equal('Ended');
+    expect(agentStateChip({ turn_state: 'your_turn' }).label).to.equal(
+      'Your turn'
+    );
+  });
+});

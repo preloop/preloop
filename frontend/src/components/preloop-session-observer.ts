@@ -3301,6 +3301,23 @@ export class PreloopSessionObserver extends LitElement {
         </span>
       </div>
       ${
+        session.parentSessionId
+          ? html`<div class="session-identity" data-session-lineage>
+              <span
+                >Subagent${session.subagentRole || session.spawnLabel ? html` · ${session.subagentRole || session.spawnLabel}` : nothing}</span
+              >
+              <a
+                data-parent-session
+                href=${`/console/runtime-sessions?sessionId=${encodeURIComponent(session.parentSessionId)}`}
+              >
+                Parent:
+                ${this.observedSessions.find((row) => row.id === session.parentSessionId)?.title || session.parentSessionId.slice(0, 8)}
+              </a>
+            </div>`
+          : nothing
+      }
+      ${this.observedSessions.filter((row) => row.parentSessionId === session.id).map((child) => html`<div class="session-identity"><a href=${`/console/runtime-sessions?sessionId=${encodeURIComponent(child.id)}`}>Child: ${child.title}</a>${child.subagentRole || child.spawnLabel || nothing}</div>`)}
+      ${
         this.sessionRowHasLedger(session)
           ? html`<dl class="session-facts">
               <div>

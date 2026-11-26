@@ -46,6 +46,7 @@ function ownSessionChip(session: ObservedSession) {
     ended_at:
       session.endedAt ||
       (session.status === 'ended' && !paneClosed(location) ? 'ended' : null),
+    parent_session_id: session.parentSessionId,
     last_activity_at: session.lastActivityAt,
   });
 }

@@ -93,6 +93,8 @@ class RuntimeSession(Base):
     )
     alias: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     # Internal uniqueness key: parent id, otherwise the registering principal.
+    subagent_role: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     alias_namespace: Mapped[Optional[str]] = mapped_column(String(320), nullable=True)
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     #: Working directory the agent's hook last reported for this session.
