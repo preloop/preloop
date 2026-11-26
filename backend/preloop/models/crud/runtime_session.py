@@ -988,6 +988,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         status: str = "all",
         limit: int = 20,
         offset: int = 0,
+        sort: str = "last_activity",
         principals: Optional[list[tuple[str, str]]] = None,
         source_types: Optional[list[str]] = None,
         alias: Optional[str] = None,
@@ -1011,6 +1012,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
 
         ``has_artifacts`` keeps sessions holding at least one available
         artifact: ``any`` for any kind, otherwise that artifact kind.
+
+        ``sort`` orders all matches descending before paging, with session id
+        breaking ties. Cost and requests use the same period and attribution
+        as the returned usage figures.
         """
         session_query = db.query(self.model).filter(self.model.account_id == account_id)
 
@@ -1074,17 +1079,21 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                     self.model.runtime_principal_name.ilike(normalized_query),
                 )
             )
-        use_model_page = bool(ai_model_id) and self._model_page_is_bounded(
-            principals=principals,
-            source_types=source_types,
-            alias=alias,
-            parent_session_id=parent_session_id,
-            flow_execution_id=flow_execution_id,
-            has_artifacts=has_artifacts,
-            active_within=active_within,
-            min_requests=min_requests,
-            runtime_principal_type=runtime_principal_type,
-            runtime_principal_id=runtime_principal_id,
+        use_model_page = (
+            sort == "last_activity"
+            and bool(ai_model_id)
+            and self._model_page_is_bounded(
+                principals=principals,
+                source_types=source_types,
+                alias=alias,
+                parent_session_id=parent_session_id,
+                flow_execution_id=flow_execution_id,
+                has_artifacts=has_artifacts,
+                active_within=active_within,
+                min_requests=min_requests,
+                runtime_principal_type=runtime_principal_type,
+                runtime_principal_id=runtime_principal_id,
+            )
         )
         model_page_ids: Optional[List[Any]] = None
         has_more = False
@@ -1222,9 +1231,46 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "end_date": end_date,
             "ai_model_id": ai_model_id,
         }
+        if sort == "started":
+            page_ids = [
+                row.id
+                for row in session_query.with_entities(self.model.id)
+                .order_by(self.model.started_at.desc(), self.model.id.desc())
+                .limit(limit)
+                .offset(offset)
+                .all()
+            ]
+        elif sort in {"cost", "requests"}:
+            # Rank the full filtered set before paging; reuse the attribution
+            # query so legacy flow usage and internal traffic match the figures.
+            ranking_links = self._account_usage_links(
+                db, metrics_only=True, **link_filters
+            )
+            ranking_usage = aliased(ApiUsage, ranking_links)
+            ranking_metric = (
+                func.coalesce(func.sum(ranking_usage.estimated_cost), 0)
+                if sort == "cost"
+                else func.count(ranking_usage.id)
+            )
+            page_ids = [
+                row.id
+                for row in session_query.outerjoin(
+                    ranking_links, ranking_links.c.session_id == self.model.id
+                )
+                .with_entities(self.model.id)
+                .group_by(self.model.id)
+                .order_by(ranking_metric.desc(), self.model.id.desc())
+                .limit(limit)
+                .offset(offset)
+                .all()
+            ]
         ranking_filters = link_filters
         bounded_ranking = False
-        if not use_model_page and total <= _RANKING_SMALL_SESSION_LIMIT:
+        if (
+            sort == "last_activity"
+            and not use_model_page
+            and total <= _RANKING_SMALL_SESSION_LIMIT
+        ):
             # The count already bounds this list. Probe only eligible sessions'
             # usage, including their legacy flow links, rather than repeatedly
             # grouping the account's history for a page that may never fill.
@@ -1280,6 +1326,18 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 db, session_ids=page_ids, **link_filters
             )
             session_usage = aliased(ApiUsage, usage_links)
+            order = {
+                "started": self.model.started_at,
+                "cost": func.coalesce(func.sum(session_usage.estimated_cost), 0),
+                "requests": func.count(session_usage.id),
+            }.get(
+                sort,
+                func.coalesce(
+                    func.max(session_usage.timestamp),
+                    self.model.last_activity_at,
+                    self.model.started_at,
+                ),
+            )
             rows = (
                 self._account_sessions_query(
                     session_query=session_query.filter(self.model.id.in_(page_ids)),
@@ -1289,11 +1347,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                     parent_session_id_available=self._parent_session_id_available(db),
                 )
                 .order_by(
-                    func.coalesce(
-                        func.max(session_usage.timestamp),
-                        self.model.last_activity_at,
-                        self.model.started_at,
-                    ).desc(),
+                    order.desc(),
                     self.model.id.desc(),
                 )
                 .all()
@@ -1628,6 +1682,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         ai_model_id: Optional[str],
         session_ids: Optional[Sequence[Any]] = None,
         narrow: bool = False,
+        metrics_only: bool = False,
     ) -> Any:
         """Map account usage to sessions using disjoint, equality-join branches.
 
@@ -1645,15 +1700,16 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             ai_model_id: Restrict usage to one model, if set.
             session_ids: Restrict both the direct and legacy attribution
                 branches to these sessions.
-            narrow: Select only the timestamp column, which is all the page
-                ranking reads.
+            narrow: Select only the timestamp column for activity ranking.
+            metrics_only: Select only request id and cost for metric ranking.
         """
         # Keep the UNION narrow even if the planner materializes a branch.
         # Request/response metadata is only inspected by the exclusion filter.
-        # ``narrow`` keeps only the timestamp, which is all the page ranking
-        # reads.
+        # Timestamp and metric rankings select only their required columns.
         usage_columns = (
-            [ApiUsage.timestamp.label("timestamp")]
+            [ApiUsage.id, ApiUsage.estimated_cost]
+            if metrics_only
+            else [ApiUsage.timestamp.label("timestamp")]
             if narrow
             else [
                 ApiUsage.id,

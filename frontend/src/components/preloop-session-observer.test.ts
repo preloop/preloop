@@ -1,5 +1,6 @@
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { setViewport, sendKeys } from '@web/test-runner-commands';
 import {
   ConnectionState,
   unifiedWebSocketManager,
@@ -43,7 +44,8 @@ describe('PreloopSessionObserver', () => {
   /** Pending approvals the stubbed list endpoint returns. */
   const PENDING_APPROVALS: Array<Record<string, unknown>> = [];
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await setViewport({ width: 1440, height: 1000 });
     PENDING_APPROVALS.length = 0;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -543,6 +545,36 @@ describe('PreloopSessionObserver', () => {
     expect(modelCalls()).to.have.length(1);
   });
 
+  it('keeps both panes visible for full-layout callers without phone routing', async () => {
+    await setViewport({ width: 390, height: 844 });
+    try {
+      const el = await fixture<PreloopSessionObserver>(html`
+        <preloop-session-observer
+          layout="full"
+          scope="managed_agent"
+          .scopeId=${'example-agent'}
+          .sessions=${[session]}
+          .selectedSessionId=${session.id}
+        ></preloop-session-observer>
+      `);
+      await waitUntil(() =>
+        Boolean(el.shadowRoot!.querySelector('#session-title'))
+      );
+      expect(
+        getComputedStyle(el.shadowRoot!.querySelector<HTMLElement>('.sidebar')!)
+          .display
+      ).to.not.equal('none');
+      expect(
+        getComputedStyle(el.shadowRoot!.querySelector<HTMLElement>('.content')!)
+          .display
+      ).to.not.equal('none');
+      expect(el.shadowRoot!.querySelector('.back-to-list')).to.equal(null);
+      expect(el.shadowRoot!.querySelector('.skip-detail')).to.exist;
+    } finally {
+      await setViewport({ width: 1280, height: 800 });
+    }
+  });
+
   it('renders normalized sessions and keeps optimizations opt-in', async () => {
     const el = (await fixture(
       html`<preloop-session-observer
@@ -638,6 +670,50 @@ describe('PreloopSessionObserver', () => {
     expect(
       embedded.shadowRoot!.querySelector('.observer')!.getAttribute('style')
     ).to.contain('min-height: 520px');
+  });
+
+  it('uses only semantic chip colors for every header state', async () => {
+    const el = await fixture<PreloopSessionObserver>(html`
+      <preloop-session-observer
+        .sessions=${[session]}
+      ></preloop-session-observer>
+    `);
+    await waitUntil(() =>
+      Boolean(el.shadowRoot!.querySelector('.session-heading .chip'))
+    );
+    for (const [state, label, variant] of [
+      ['working', 'Working', 'success'],
+      ['waiting_for_approval', 'Needs approval', 'warning'],
+      ['your_turn', 'Your turn', 'neutral'],
+      ['idle', 'Idle', 'neutral'],
+      ['ended', 'Ended', 'neutral'],
+      ['unknown', 'Idle', 'neutral'],
+    ]) {
+      el.sessions = [
+        {
+          ...session,
+          turn_state: state,
+          last_activity_at: new Date().toISOString(),
+        },
+      ];
+      await el.updateComplete;
+      const chip = el.shadowRoot!.querySelector('.session-heading .chip')!;
+      expect(chip.textContent?.trim()).to.equal(label);
+      expect(chip.getAttribute('variant')).to.equal(variant);
+      expect(chip.hasAttribute('pill')).to.be.true;
+    }
+  });
+
+  it('uses compact header tokens with the exact count available on hover', async () => {
+    const el = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        .sessions=${[session]}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot!.querySelector('.session-facts dd'));
+    const tokens = el.shadowRoot!.querySelector('.session-facts dd')!;
+    expect(tokens.textContent?.trim()).to.equal('1.3K');
+    expect(tokens.getAttribute('title')).to.equal('1,300');
   });
 
   it('scrolls a long session list inside the bounded panel', async () => {

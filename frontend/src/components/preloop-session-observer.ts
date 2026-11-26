@@ -1,6 +1,11 @@
+import { formatCount, formatCountExact } from '../utils/count-format';
 import { randomUuid } from '../utils/random-uuid';
-import { parseUTCDate } from '../utils/date';
-import { LitElement, css, html, nothing } from 'lit';
+import {
+  formatRelativeTime,
+  formatAbsoluteTime,
+  parseUTCDate,
+} from '../utils/date';
+import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -74,7 +79,7 @@ import type {
   SessionObserverScope,
   SessionReplayMode,
 } from '../utils/session-observer';
-import { turnInfoFromSession } from '../utils/agent-status';
+import { agentStateChip, turnInfoFromSession } from '../utils/agent-status';
 import {
   formatCost,
   formatNumber,
@@ -92,6 +97,8 @@ import './runner-session-controls';
 import type { RunnerSessionControls } from './runner-session-controls';
 import './talk-button';
 import './session-list-panel';
+import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
+import consoleStyles from '../styles/console-styles.css?inline';
 import './session-replay-panel';
 import './session-request-timeline';
 import { runtimeFromSourceType } from '../utils/session-turns';
@@ -250,6 +257,18 @@ export class PreloopSessionObserver extends LitElement {
 
   @property({ type: String })
   layout: 'full' | 'embedded' = 'embedded';
+
+  /** Preserve API ranking when the host owns sorting and pagination. */
+  @property({ type: Boolean })
+  serverOrdered = false;
+
+  /** Let a host with list/detail routes choose a single pane on phones. */
+  @property({ type: Boolean })
+  mobileListDetail = false;
+
+  /** The page's URL selects the detail pane on a narrow viewport. */
+  @property({ type: Boolean })
+  mobileDetail = false;
 
   @property({ type: String })
   defaultReplayMode: SessionReplayMode = 'timeline';
@@ -635,6 +654,7 @@ export class PreloopSessionObserver extends LitElement {
   private refreshTimer: number | null = null;
 
   static styles = [
+    unsafeCSS(consoleStyles),
     consoleDialogStyles,
     reducedMotionStyles,
     css`
@@ -760,6 +780,62 @@ export class PreloopSessionObserver extends LitElement {
         text-overflow: ellipsis;
       }
 
+      .session-heading h2 {
+        margin: 0;
+        font-size: var(--console-text-card-title);
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      .session-identity,
+      .session-facts {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+        font-size: var(--console-text-meta);
+        color: var(--console-meta-color);
+      }
+      .session-identity {
+        margin-top: var(--sl-spacing-x-small);
+      }
+      .session-facts {
+        border-block: 1px solid var(--console-hairline);
+        margin: var(--sl-spacing-small) 0 0;
+        padding-block: var(--sl-spacing-small);
+        justify-content: flex-start;
+      }
+      .session-facts div {
+        display: flex;
+        gap: var(--sl-spacing-x-small);
+      }
+      .session-facts dd {
+        margin: 0;
+        color: var(--sl-color-neutral-900);
+        font-variant-numeric: tabular-nums;
+      }
+      .session-id {
+        display: inline-flex;
+        align-items: center;
+      }
+      .skip-detail {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+      }
+      .skip-detail:focus {
+        position: relative;
+        width: auto;
+        height: auto;
+        clip-path: none;
+        padding: var(--sl-spacing-small);
+        display: block;
+      }
+      .back-to-list {
+        display: none;
+      }
+
       .sidebar,
       .content {
         min-height: 0;
@@ -798,8 +874,12 @@ export class PreloopSessionObserver extends LitElement {
 
       /* Phone: 44px tap targets for Stop and End session (DESIGN.md D24). */
       @media (max-width: 720px) {
-        .mode-row sl-button.destructive {
+        .mode-row sl-button {
           --sl-input-height-small: 44px;
+        }
+        .session-id sl-copy-button::part(button) {
+          min-height: 44px;
+          min-width: 44px;
         }
       }
 
@@ -931,7 +1011,26 @@ export class PreloopSessionObserver extends LitElement {
 
       @media (max-width: 950px) {
         .observer.with-sidebar {
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .observer.mobile-list-detail:not(.mobile-detail) > .content,
+        .observer.mobile-list-detail:not(.mobile-detail) > .desktop-split,
+        .observer.mobile-list-detail.mobile-detail > .sidebar {
+          display: none;
+        }
+        .observer.full-layout {
+          height: auto !important;
+          min-height: 0;
+        }
+        .mobile-list-detail .back-to-list {
+          display: inline-flex;
+          align-self: flex-start;
+          min-height: 44px;
+          align-items: center;
+        }
+        .full-layout .sidebar,
+        .full-layout .content {
+          overflow: visible;
         }
       }
     `,
@@ -1008,7 +1107,11 @@ export class PreloopSessionObserver extends LitElement {
       this.observedSessions = [];
       this.activeSessionId = null;
     }
-    if (changed.has('sessions') || changed.has('scopeId')) {
+    if (
+      changed.has('sessions') ||
+      changed.has('scopeId') ||
+      changed.has('serverOrdered')
+    ) {
       this.applySessions(this.sessions || []);
     } else if (
       changed.has('selectedSessionId') &&
@@ -1336,7 +1439,11 @@ export class PreloopSessionObserver extends LitElement {
     const pinned = this.observedSessions.find(
       (session) => session.id === this.selectedSessionId
     );
-    if (rows !== null) this.observedSessions = normalizeObservedSessions(rows);
+    if (rows !== null) {
+      this.observedSessions = normalizeObservedSessions(rows, {
+        preserveOrder: this.serverOrdered,
+      });
+    }
     if (
       pinned &&
       !this.observedSessions.some((session) => session.id === pinned.id)
@@ -1448,7 +1555,8 @@ export class PreloopSessionObserver extends LitElement {
   // because an instant swap read as the list simply vanishing. Reduced-motion
   // users get the immediate swap they asked for.
   private collapseSidebar(): void {
-    if (this.sidebarCollapsed || this.hideSidebar) return;
+    if (this.layout === 'full' || this.sidebarCollapsed || this.hideSidebar)
+      return;
     this.clearSidebarAnimationTimer();
     if (this.prefersReducedMotion()) {
       this.sidebarAnimating = null;
@@ -1491,7 +1599,16 @@ export class PreloopSessionObserver extends LitElement {
     if (sessionId === this.activeSessionId && !options.force) {
       // Re-clicking the already-active session still expresses "inspect this"
       // intent, so it may collapse the list even though nothing reloads.
-      if (options.userInitiated) this.collapseSidebar();
+      if (options.userInitiated) {
+        this.collapseSidebar();
+        this.dispatchEvent(
+          new CustomEvent('session-selected', {
+            detail: { sessionId, userInitiated: true },
+            bubbles: true,
+            composed: true,
+          })
+        );
+      }
       return;
     }
     this.pinnedSessionError = null;
@@ -1521,7 +1638,7 @@ export class PreloopSessionObserver extends LitElement {
     this.landedArtifactId = null;
     this.dispatchEvent(
       new CustomEvent('session-selected', {
-        detail: { sessionId },
+        detail: { sessionId, userInitiated: !!options.userInitiated },
         bubbles: true,
         composed: true,
       })
@@ -3000,6 +3117,85 @@ export class PreloopSessionObserver extends LitElement {
     }).find((action) => action.id === 'end-session');
   }
 
+  private listHref(): string {
+    const url = new URL(window.location.href);
+    for (const key of ['sessionId', 'turn', 'artifact'])
+      url.searchParams.delete(key);
+    return `${url.pathname}${url.search}`;
+  }
+
+  /** Focus the named detail after a list or search navigation. */
+  public async focusDetail(): Promise<void> {
+    await this.updateComplete;
+    const heading =
+      this.renderRoot.querySelector<HTMLElement>('#session-title');
+    const target =
+      heading ?? this.renderRoot.querySelector<HTMLElement>('#session-detail');
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: 'start' });
+  }
+
+  private renderSessionHeader(): ReturnType<typeof html> | typeof nothing {
+    const session = this.activeSession;
+    if (!session) return nothing;
+    const raw = (session.raw ?? {}) as Record<string, unknown>;
+    const chip = agentStateChip({
+      turn_state: typeof raw.turn_state === 'string' ? raw.turn_state : null,
+      ended_at:
+        session.endedAt || (session.status === 'ended' ? 'ended' : null),
+      last_activity_at: session.lastActivityAt,
+    });
+    return html`<header class="session-heading">
+      <h2 id="session-title" tabindex="-1">${session.title}</h2>
+      <div class="session-identity">
+        <span data-session-owner
+          >${
+            session.flowHref
+              ? html`Flow
+                  <a href=${session.flowHref}
+                    >${session.flowName || 'Open flow'}</a
+                  >`
+              : session.agentHref
+                ? html`Agent
+                    <a href=${session.agentHref}
+                      >${session.agentName || 'Open agent'}</a
+                    >`
+                : html`Agent
+                  ${session.agentName || session.runtimePrincipalName || session.subtitle || 'Unknown'}`
+          }</span
+        >
+        ${session.startedAt ? html`<time datetime=${session.startedAt} title=${formatAbsoluteTime(session.startedAt)}>Started ${formatRelativeTime(session.startedAt)}</time>` : nothing}
+        <sl-badge class="chip" variant=${chip.variant} pill
+          >${chip.label}</sl-badge
+        >
+        <span class="session-id"
+          ><span title=${session.id}>${session.id.slice(0, 8)}</span>
+          <sl-copy-button
+            value=${session.id}
+            copy-label="Copy session ID"
+            success-label="Session ID copied"
+          ></sl-copy-button>
+        </span>
+      </div>
+      ${
+        this.sessionRowHasLedger(session)
+          ? html`<dl class="session-facts">
+              <div>
+                <dt>Tokens</dt>
+                <dd title=${formatCountExact(session.tokenUsage.total_tokens)}>
+                  ${formatCount(session.tokenUsage.total_tokens)}
+                </dd>
+              </div>
+              <div>
+                <dt>Cost est.</dt>
+                <dd>${formatCost(session.estimatedCost)}</dd>
+              </div>
+            </dl>`
+          : nothing
+      }
+    </header>`;
+  }
+
   private renderToolbar() {
     const session = this.activeSession;
     const live = this.isSessionLive(session);
@@ -3032,33 +3228,6 @@ export class PreloopSessionObserver extends LitElement {
                   >
                     <span class="live-dot"></span>
                     ${this.followLive ? 'Following live' : 'Paused'}
-                  </span>`
-                : nothing
-            }
-            ${
-              session && this.sessionRowHasLedger(session)
-                ? html`
-                    <span class="meta">
-                      ${formatNumber(session.tokenUsage.total_tokens)} tokens ·
-                      ${formatCost(session.estimatedCost)}
-                    </span>
-                  `
-                : nothing
-            }
-            ${
-              session && (session.agentHref || session.flowHref)
-                ? html`<span class="meta" data-session-owner>
-                    ${
-                      session.flowHref
-                        ? html`Flow
-                            <a href=${session.flowHref}
-                              >${session.flowName || 'Open flow'}</a
-                            >`
-                        : html`Agent
-                            <a href=${session.agentHref!}
-                              >${session.agentName || 'Open agent'}</a
-                            >`
-                    }
                   </span>`
                 : nothing
             }
@@ -3247,6 +3416,10 @@ export class PreloopSessionObserver extends LitElement {
     const content = html`
       <div
         class="content"
+        id="session-detail"
+        role="region"
+        aria-label="Session detail"
+        tabindex="-1"
         @wheel=${() => {
           this.recordingLastUserScroll = Date.now();
         }}
@@ -3282,7 +3455,33 @@ export class PreloopSessionObserver extends LitElement {
         @artifact-scrub=${(event: CustomEvent<{ artifactId: string }>) =>
           void this.scrollToArtifact(event.detail.artifactId)}
       >
-        ${this.renderToolbar()}
+        ${
+          this.mobileListDetail
+            ? html`<a
+                class="back-to-list"
+                href=${this.listHref()}
+                @click=${(event: MouseEvent) => {
+                  if (
+                    event.button !== 0 ||
+                    event.metaKey ||
+                    event.ctrlKey ||
+                    event.shiftKey ||
+                    event.altKey
+                  )
+                    return;
+                  event.preventDefault();
+                  this.dispatchEvent(
+                    new CustomEvent('session-list-back', {
+                      bubbles: true,
+                      composed: true,
+                    })
+                  );
+                }}
+                >← Back to sessions</a
+              >`
+            : nothing
+        }
+        ${this.renderSessionHeader()} ${this.renderToolbar()}
         ${this.pinnedSessionError ? html`<p role="alert">${this.pinnedSessionError}</p>` : nothing}
         ${this.pinnedSessionPending ? html`<p role="status">Loading selected session…</p>` : nothing}
         ${
@@ -3545,8 +3744,27 @@ export class PreloopSessionObserver extends LitElement {
         ? 'observer sidebar-collapsed'
         : `observer with-sidebar${animClosed ? ' sidebar-anim-closed' : ''}`;
     return html`
+      ${
+        this.activeSession && (!this.mobileListDetail || this.mobileDetail)
+          ? html`<a
+              class="skip-detail"
+              href="#session-detail"
+              @click=${(event: Event) => {
+                event.preventDefault();
+                this.dispatchEvent(
+                  new CustomEvent('session-detail-requested', {
+                    bubbles: true,
+                    composed: true,
+                  })
+                );
+                void this.focusDetail();
+              }}
+              >Skip to session detail</a
+            >`
+          : nothing
+      }
       <div
-        class=${observerClass}
+        class=${`${observerClass}${this.layout === 'full' ? ' full-layout' : ''}${this.mobileListDetail ? ' mobile-list-detail' : ''}${this.mobileDetail ? ' mobile-detail' : ''}`}
         style=${
           this.layout === 'full'
             ? // A window-high master/detail panel: the list and the session
@@ -3626,12 +3844,15 @@ export class PreloopSessionObserver extends LitElement {
                       .emptyText=${
                         this.observedSessions.length === 0 ? this.emptyText : ''
                       }
-                      @session-selected=${(event: CustomEvent) =>
+                      @session-selected=${(event: CustomEvent) => {
+                        event.stopPropagation();
                         this.openFromList(
                           event.detail.sessionId,
                           event.detail.artifactKind ?? null
-                        )}
+                        );
+                      }}
                     ></session-list-panel>
+                    <slot name="list-footer"></slot>
                   </div>
                 `
         }

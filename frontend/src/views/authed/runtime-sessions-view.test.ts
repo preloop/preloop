@@ -1,7 +1,7 @@
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
-import { setViewport } from '@web/test-runner-commands';
+import { setViewport, sendKeys } from '@web/test-runner-commands';
 import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
 
 import './runtime-sessions-view';
@@ -161,7 +161,8 @@ describe('RuntimeSessionsView', () => {
     return text;
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await setViewport({ width: 1440, height: 1000 });
     wsStub = sinon.stub(unifiedWebSocketManager, 'send').returns(true);
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -1020,48 +1021,53 @@ describe('RuntimeSessionsView', () => {
     }
   });
 
-  it('keeps the filters on one row in the 1440 content column (#1689)', async () => {
+  it('keeps filter widths and positions stable when Clear filters appears', async () => {
     await loadShoelaceTokens();
-    await setViewport({ width: 1440, height: 900 });
-    try {
-      // 1440 minus the console sidebar and page padding.
-      const wrapper = (await fixture(
-        html`<div style="width: 1150px">
-          <runtime-sessions-view></runtime-sessions-view>
-        </div>`
-      )) as HTMLElement;
-      const element = wrapper.querySelector(
-        'runtime-sessions-view'
-      ) as RuntimeSessionsView;
-      await waitUntil(
-        () => !(element as any).loading,
-        'Runtime sessions view did not finish loading'
-      );
-      await element.updateComplete;
-      const toolbar = element.shadowRoot!.querySelector('list-toolbar') as any;
-      await toolbar.updateComplete;
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-      // Nothing to clear on the default view, so no Clear filters button:
-      // in the real 1440 layout it wrapped onto a second row.
-      expect(toolbar.querySelector('.filter-actions')).to.equal(null);
-      const controls = [
-        toolbar.shadowRoot!.querySelector('sl-input.search-input'),
-        ...Array.from(toolbar.querySelectorAll('sl-select')),
-      ] as HTMLElement[];
-      expect(controls.length).to.equal(5);
-      const bottoms = controls.map((node) =>
-        Math.round(node.getBoundingClientRect().bottom)
-      );
-      for (const bottom of bottoms) {
-        expect(Math.abs(bottom - bottoms[0])).to.be.at.most(2);
-      }
-      // A filter that differs from the default brings the button back.
-      (element as any).status = 'active';
-      await element.updateComplete;
-      expect(toolbar.querySelector('.filter-actions')).to.not.equal(null);
-    } finally {
-      await setViewport({ width: 1280, height: 800 });
-    }
+    const wrapper = await fixture<HTMLElement>(
+      html`<div style="width: 1150px">
+        <runtime-sessions-view></runtime-sessions-view>
+      </div>`
+    );
+    const element = wrapper.querySelector<RuntimeSessionsView>(
+      'runtime-sessions-view'
+    )!;
+    await waitUntil(() => !(element as any).loading);
+    await element.updateComplete;
+    const toolbar = element.shadowRoot!.querySelector('list-toolbar') as any;
+    await toolbar.updateComplete;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const controls = [
+      toolbar.shadowRoot!.querySelector('sl-input.search-input'),
+      ...Array.from(toolbar.querySelectorAll('sl-select')),
+    ] as HTMLElement[];
+    expect(controls).to.have.length(6);
+    expect(
+      controls.slice(1).map((control) => control.getAttribute('label'))
+    ).to.deep.equal([
+      'Source type',
+      'Status',
+      'Date range',
+      'Has artifacts',
+      'Sort',
+    ]);
+    const before = controls.map((node) =>
+      node.getBoundingClientRect().toJSON()
+    );
+    expect(
+      getComputedStyle(toolbar.querySelector('.filter-actions')).visibility
+    ).to.equal('hidden');
+    (element as any).status = 'active';
+    await element.updateComplete;
+    expect(
+      getComputedStyle(toolbar.querySelector('.filter-actions')).visibility
+    ).to.equal('visible');
+    controls.forEach((node, index) => {
+      const after = node.getBoundingClientRect();
+      expect(after.x).to.equal(before[index].x);
+      expect(after.y).to.equal(before[index].y);
+      expect(after.width).to.equal(before[index].width);
+      expect(after.width).to.be.at.least(150);
+    });
   });
 
   describe('artifact counts on the list (#1084)', () => {
@@ -1247,7 +1253,7 @@ describe('RuntimeSessionsView', () => {
 
       const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
       expect(toolbar).to.not.equal(null);
-      const count = toolbar.querySelector('[slot="count"]')!;
+      const count = toolbar.querySelector('.session-count')!;
       expect(count.textContent!.trim()).to.equal('2 sessions');
       const liveRegion = toolbar.shadowRoot!.querySelector('.results-count')!;
       expect(liveRegion.getAttribute('aria-live')).to.equal('polite');
@@ -1434,9 +1440,7 @@ describe('RuntimeSessionsView', () => {
       const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
       await (toolbar as any).updateComplete;
       const input = toolbar.shadowRoot!.querySelector('sl-input.search-input')!;
-      expect(input.getAttribute('placeholder')).to.equal(
-        'Search prompts, responses, tool calls, and artifacts'
-      );
+      expect(input.getAttribute('placeholder')).to.equal('Search sessions');
       expect(input.getAttribute('label')).to.equal('Search session content');
     });
 
@@ -1994,14 +1998,14 @@ describe('RuntimeSessionsView', () => {
       ) as HTMLElement & { updateComplete: Promise<unknown> };
       await observer.updateComplete;
       await waitUntil(() => {
-        const meta = observer.shadowRoot?.querySelector('.toolbar .meta');
-        return Boolean(meta && meta.textContent?.includes('tokens'));
+        const meta = observer.shadowRoot?.querySelector('.session-facts');
+        return Boolean(meta && meta.textContent?.includes('Tokens'));
       }, 'Observer toolbar never showed session ledger numbers');
 
-      const meta = observer.shadowRoot!.querySelector('.toolbar .meta')!;
+      const meta = observer.shadowRoot!.querySelector('.session-facts')!;
       const text = (meta.textContent || '').replace(/\s+/g, ' ').trim();
       expect(text).to.not.equal('0 tokens · $0.00');
-      expect(text).to.contain('700 tokens');
+      expect(text).to.contain('Tokens 700');
       expect(text).to.contain('$0.11');
     });
 
@@ -2530,7 +2534,7 @@ describe('RuntimeSessionsView', () => {
     function countLabel(element: RuntimeSessionsView): string {
       return element
         .shadowRoot!.querySelector('list-toolbar')!
-        .querySelector('[slot="count"]')!
+        .querySelector('.session-count')!
         .textContent!.trim();
     }
 
@@ -2559,7 +2563,7 @@ describe('RuntimeSessionsView', () => {
         .find((url) => url.startsWith('/api/v1/runtime-sessions?'));
       expect(firstUrl).to.contain(`limit=${SESSION_PAGE_SIZE}`);
       expect(SESSION_PAGE_SIZE).to.equal(20);
-      expect(countLabel(element)).to.equal('Showing 20 of 50');
+      expect(countLabel(element)).to.equal('20 of 50 sessions');
       expect(loadMoreButton(element)).to.not.equal(null);
 
       loadMoreButton(element)!.click();
@@ -2568,7 +2572,7 @@ describe('RuntimeSessionsView', () => {
         'Second page did not append'
       );
       await element.updateComplete;
-      expect(countLabel(element)).to.equal('Showing 40 of 50');
+      expect(countLabel(element)).to.equal('40 of 50 sessions');
 
       loadMoreButton(element)!.click();
       await waitUntil(
@@ -2626,9 +2630,20 @@ describe('RuntimeSessionsView', () => {
         'preloop-session-observer'
       ) as HTMLElement & { sessions: Array<{ id: string }> };
       expect(observer.sessions[0].id).to.equal(linked);
+      await waitUntil(() =>
+        observer.shadowRoot?.querySelector('sl-copy-button')
+      );
+      expect(
+        (observer.shadowRoot!.querySelector('sl-copy-button') as any).value
+      ).to.equal(linked);
+      expect(
+        observer
+          .shadowRoot!.querySelector('#session-title')!
+          .textContent?.trim()
+      ).to.not.equal('');
       // The page and its count stay what the server said.
       expect((element as any).sessions.items).to.have.length(SESSION_PAGE_SIZE);
-      expect(countLabel(element)).to.equal('Showing 20 of 50');
+      expect(countLabel(element)).to.equal('20 of 50 sessions');
 
       // A live refresh must not swap the pinned link for the newest session.
       await (element as any).loadSessions(true);
@@ -2820,6 +2835,322 @@ describe('RuntimeSessionsView', () => {
       const button = loadMoreButton(element);
       expect(button).to.not.equal(null);
       expect(button!.hasAttribute('loading')).to.equal(false);
+    });
+  });
+  describe('sessions layout and accessibility (#2427–#2431)', () => {
+    async function layoutView(): Promise<RuntimeSessionsView> {
+      const element = await fixture<RuntimeSessionsView>(
+        html`<runtime-sessions-view></runtime-sessions-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      await (
+        element.shadowRoot!.querySelector('preloop-session-observer') as any
+      )?.updateComplete;
+      return element;
+    }
+
+    function observerOf(element: RuntimeSessionsView): any {
+      return element.shadowRoot!.querySelector('preloop-session-observer');
+    }
+
+    function rowsOf(element: RuntimeSessionsView): HTMLAnchorElement[] {
+      return Array.from(
+        observerOf(element)
+          .shadowRoot.querySelector('session-list-panel')
+          .shadowRoot.querySelectorAll('a.session-select')
+      );
+    }
+
+    it('opens a phone selection immediately, returns to the list and restores browser history', async () => {
+      await loadShoelaceTokens();
+      await setViewport({ width: 390, height: 844 });
+      const element = await layoutView();
+      const observer = observerOf(element);
+      const content = observer.shadowRoot.querySelector(
+        '.content'
+      ) as HTMLElement;
+      const sidebar = observer.shadowRoot.querySelector(
+        '.sidebar'
+      ) as HTMLElement;
+      expect((element as any).selectedSessionId).to.equal(null);
+      expect(getComputedStyle(content).display).to.equal('none');
+      rowsOf(element)[0].focus();
+      await sendKeys({ press: 'ArrowDown' });
+      await sendKeys({ press: 'Enter' });
+      await waitUntil(
+        () => (element as any).selectedSessionId === 'runtime-session-2'
+      );
+      await element.updateComplete;
+      await observer.updateComplete;
+      expect(getComputedStyle(sidebar).display).to.equal('none');
+      expect(getComputedStyle(content).display).to.not.equal('none');
+      expect(observer.shadowRoot.activeElement?.id).to.equal('session-title');
+      expect(
+        element
+          .shadowRoot!.querySelector('.sessions-page')!
+          .getBoundingClientRect().width
+      ).to.be.at.most(390);
+      expect(new URLSearchParams(location.search).get('sessionId')).to.equal(
+        'runtime-session-2'
+      );
+      observer.shadowRoot.querySelector('.back-to-list').click();
+      await element.updateComplete;
+      await observer.updateComplete;
+      expect(getComputedStyle(content).display).to.equal('none');
+      expect(getComputedStyle(sidebar).display).to.not.equal('none');
+      expect(rowsOf(element)[1].tabIndex).to.equal(0);
+      window.history.back();
+      await waitUntil(
+        () => (element as any).selectedSessionId === 'runtime-session-2'
+      );
+      await element.updateComplete;
+      await observer.updateComplete;
+      expect(getComputedStyle(content).display).to.not.equal('none');
+    });
+
+    it('opens a phone deep link with its identity and copyable full id', async () => {
+      await setViewport({ width: 390, height: 844 });
+      history.replaceState(
+        {},
+        '',
+        '/console/runtime-sessions?sessionId=runtime-session-2'
+      );
+      const element = await layoutView();
+      const observer = observerOf(element);
+      await waitUntil(() =>
+        observer.shadowRoot.querySelector('#session-title')
+      );
+      expect(
+        observer.shadowRoot.querySelector('#session-title').textContent.trim()
+      ).to.not.equal('');
+      expect(
+        observer.shadowRoot.querySelector('sl-copy-button').value
+      ).to.equal('runtime-session-2');
+      const time = observer.shadowRoot.querySelector('.session-identity time');
+      expect(time.textContent).to.contain('ago');
+      expect(time.title).to.not.equal('');
+      expect(observer.shadowRoot.querySelector('.session-heading .chip')).to
+        .exist;
+      expect(
+        getComputedStyle(observer.shadowRoot.querySelector('.sidebar')).display
+      ).to.equal('none');
+    });
+
+    it('takes a phone search hit to detail and back to the same results', async () => {
+      await setViewport({ width: 390, height: 844 });
+      const element = await renderedSearch();
+      const searchList =
+        element.shadowRoot!.querySelector<HTMLElement>('.search-list')!;
+      expect(getComputedStyle(searchList).display).to.not.equal('none');
+      element.shadowRoot!.querySelector<HTMLAnchorElement>('.snippet')!.click();
+      await element.updateComplete;
+      const observer = observerOf(element);
+      await observer.updateComplete;
+      expect(getComputedStyle(searchList).display).to.equal('none');
+      expect(
+        getComputedStyle(observer.shadowRoot.querySelector('.content')).display
+      ).to.not.equal('none');
+      observer.shadowRoot.querySelector('.back-to-list').click();
+      await element.updateComplete;
+      expect(getComputedStyle(searchList).display).to.not.equal('none');
+      expect((element as any).searchQuery).to.equal('rollout plan');
+      expect(element.shadowRoot!.querySelectorAll('.snippet')).to.have.length(
+        2
+      );
+    });
+
+    it('skips the list to its named detail and focuses search with slash', async () => {
+      const element = await layoutView();
+      const observer = observerOf(element);
+      await waitUntil(() => observer.shadowRoot.querySelector('.skip-detail'));
+      observer.shadowRoot.querySelector('.skip-detail').focus();
+      await sendKeys({ press: 'Enter' });
+      expect(observer.shadowRoot.activeElement?.id).to.equal('session-title');
+      await sendKeys({ press: '/' });
+      const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
+      const input = toolbar.shadowRoot!.querySelector('sl-input') as any;
+      expect(toolbar.shadowRoot!.activeElement).to.equal(input);
+      await sendKeys({ type: '/' });
+      expect(input.value).to.equal('/');
+    });
+
+    it('focuses the detail when Enter activates the already selected row', async () => {
+      const element = await layoutView();
+      const observer = observerOf(element);
+      await waitUntil(() => observer.activeSessionId === 'runtime-session-1');
+      rowsOf(element)[0].focus();
+      await sendKeys({ press: 'Enter' });
+      await waitUntil(
+        () => observer.shadowRoot.activeElement?.id === 'session-title'
+      );
+      expect((element as any).selectedSessionId).to.equal('runtime-session-1');
+    });
+
+    it('does not page stale rows while a replacement list is pending', async () => {
+      const element = await layoutView();
+      const original = (element as any).sessions;
+      (element as any).sessions = { ...original, total: 50 };
+      let finish!: (response: Response) => void;
+      fetchStub.callsFake(
+        () =>
+          new Promise<Response>((resolve) => {
+            finish = resolve;
+          })
+      );
+      const before = fetchStub.callCount;
+      const replacement = (element as any).loadSessions(true);
+      await element.updateComplete;
+      const button = element.shadowRoot!.querySelector(
+        '[data-testid="load-more-sessions"]'
+      ) as any;
+      expect(button.disabled).to.be.true;
+      const page = (element as any).loadMoreSessions();
+      expect(fetchStub.callCount - before).to.equal(1);
+      finish(
+        new Response(JSON.stringify(original), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+      await replacement;
+      await page;
+      expect((element as any).sessions.items).to.deep.equal(original.items);
+    });
+
+    it('renders cost order from the API across replacement and appended pages', async () => {
+      const element = await layoutView();
+      const response = (element as any).sessions;
+      const [recent, older] = response.items;
+      const third = {
+        ...recent,
+        id: 'third-session',
+        last_activity_at: '2027-01-01T00:00:00Z',
+      };
+      fetchStub
+        .withArgs(
+          sinon.match(
+            (input: unknown) =>
+              String(input).startsWith('/api/v1/runtime-sessions?') &&
+              String(input).includes('sort=cost')
+          )
+        )
+        .callsFake(async (input: RequestInfo | URL) => {
+          const offset = Number(
+            new URL(String(input), location.origin).searchParams.get('offset')
+          );
+          return new Response(
+            JSON.stringify({
+              ...response,
+              total: 3,
+              has_more: offset === 0,
+              items: offset ? [third] : [older, recent],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        });
+      const select = element.shadowRoot!.querySelector(
+        'sl-select[label="Sort"]'
+      ) as any;
+      select.value = 'cost';
+      select.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+      const ids = () =>
+        rowsOf(element).map((row) =>
+          new URL(row.href).searchParams.get('sessionId')
+        );
+      await waitUntil(() => ids()[0] === older.id);
+      expect(ids()).to.deep.equal([older.id, recent.id]);
+      await (element as any).loadMoreSessions();
+      await element.updateComplete;
+      await waitUntil(() => rowsOf(element).length === 3);
+      expect(ids()).to.deep.equal([older.id, recent.id, 'third-session']);
+    });
+
+    it('hides free-account list notices on phone detail and restores them on Back', async () => {
+      await setViewport({ width: 390, height: 844 });
+      const element = await layoutView();
+      (element as any).isPremium = false;
+      (element as any).newSessionError = 'Session could not start';
+      (element as any).error = 'List refresh failed';
+      await element.updateComplete;
+      rowsOf(element)[0].click();
+      await element.updateComplete;
+      const notices = Array.from(
+        element.shadowRoot!.querySelectorAll<HTMLElement>(
+          '.titles-upsell-hint, .new-session-error, sl-alert[variant="danger"]'
+        )
+      );
+      expect(notices).to.have.length(3);
+      for (const notice of notices)
+        expect(getComputedStyle(notice).display).to.equal('none');
+      const observer = observerOf(element);
+      await observer.updateComplete;
+      observer.shadowRoot.querySelector('.back-to-list').click();
+      await element.updateComplete;
+      for (const notice of notices)
+        expect(getComputedStyle(notice).display).to.not.equal('none');
+    });
+
+    it('keeps Clear filters outside the live count region', async () => {
+      const element = await layoutView();
+      (element as any).status = 'active';
+      await element.updateComplete;
+      const toolbar = element.shadowRoot!.querySelector('list-toolbar')!;
+      const actions = toolbar.querySelector<HTMLElement>('.filter-actions')!;
+      expect(actions.assignedSlot).to.exist;
+      expect(actions.assignedSlot!.closest('[aria-live]')).to.equal(null);
+      const count = toolbar.querySelector<HTMLElement>('.session-count')!;
+      expect(
+        count.assignedSlot!.closest('[aria-live]')?.getAttribute('aria-live')
+      ).to.equal('polite');
+    });
+
+    it('sorts via the API, persists the choice and starts at the first page', async () => {
+      const element = await layoutView();
+      const select = element.shadowRoot!.querySelector(
+        'sl-select[label="Sort"]'
+      ) as any;
+      select.value = 'cost';
+      select.dispatchEvent(new CustomEvent('sl-change', { bubbles: true }));
+      await waitUntil(() =>
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('sort=cost'))
+      );
+      const request = fetchStub
+        .getCalls()
+        .find((call) => String(call.args[0]).includes('sort=cost'))!;
+      const params = new URL(String(request.args[0]), location.origin)
+        .searchParams;
+      expect(params.get('offset')).to.equal(null);
+      expect(new URLSearchParams(location.search).get('sort')).to.equal('cost');
+      await waitUntil(() => !(element as any).listLoadInFlight);
+      (element as any).sessions = { ...(element as any).sessions, total: 372 };
+      await element.updateComplete;
+      expect(
+        element.shadowRoot!.querySelector('.session-count')!.textContent
+      ).to.equal('2 of 372 sessions');
+      const observer = observerOf(element);
+      const slot = observer.shadowRoot.querySelector(
+        '.sidebar slot[name="list-footer"]'
+      ) as HTMLSlotElement;
+      expect(
+        slot
+          .assignedElements()[0]
+          .querySelector('[data-testid="load-more-sessions"]')
+      ).to.exist;
+      (element as any).sessions = {
+        ...(element as any).sessions,
+        total: null,
+        has_more: true,
+      };
+      await element.updateComplete;
+      expect(
+        element.shadowRoot!.querySelector('.session-count')!.textContent
+      ).to.equal('2 sessions loaded');
+      expect(
+        element.shadowRoot!.querySelector('[data-testid="load-more-sessions"]')
+      ).to.exist;
     });
   });
 });

@@ -708,3 +708,91 @@ def test_candidate_growth_falls_back_without_truncating_sessions(
     ]
     assert rankings
     assert all("api_usage.runtime_session_id IN (" not in sql for sql in rankings)
+
+
+@pytest.mark.parametrize(
+    ("sort", "expected"),
+    [
+        ("started", ["empty", "legacy", "direct"]),
+        ("cost", ["legacy", "direct", "empty"]),
+        ("requests", ["direct", "legacy", "empty"]),
+    ],
+)
+def test_sort_applies_before_paging_with_filtered_totals(
+    db_session: Session,
+    session_listing_data: dict[str, Any],
+    sort: str,
+    expected: list[str],
+) -> None:
+    """Sort every eligible session, including legacy usage and empty sessions."""
+    data = session_listing_data
+    for name, hours in (("direct", 10), ("legacy", 5), ("empty", 1)):
+        data["sessions"][name].started_at = data["now"] - timedelta(hours=hours)
+    data["usage"]("direct")
+    data["usage"]("direct")
+    expensive = data["usage"](
+        None, flow_execution_id=UUID(data["sessions"]["legacy"].session_source_id)
+    )
+    expensive.estimated_cost = 10
+    db_session.flush()
+    actual = []
+    for offset in range(3):
+        result = crud_runtime_session.list_account_sessions(
+            db_session,
+            account_id=str(data["account"].id),
+            start_date=data["now"] - timedelta(days=1),
+            end_date=data["now"],
+            sort=sort,
+            limit=1,
+            offset=offset,
+        )
+        assert result["total"] == 3
+        assert result["has_more"] is (offset < 2)
+        actual.extend(item["id"] for item in result["items"])
+    assert actual == [str(data["sessions"][name].id) for name in expected]
+
+
+@pytest.mark.parametrize("sort", ["cost", "requests"])
+def test_metric_ranking_uses_only_metric_columns(
+    db_session: Session,
+    session_listing_data: dict[str, Any],
+    sort: str,
+) -> None:
+    """Keep full-account ranking unions independent of the display projection."""
+    statements: list[str] = []
+
+    def capture(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(db_session.connection(), "before_cursor_execute", capture)
+    try:
+        crud_runtime_session.list_account_sessions(
+            db_session,
+            account_id=str(session_listing_data["account"].id),
+            sort=sort,
+            limit=1,
+        )
+    finally:
+        event.remove(db_session.connection(), "before_cursor_execute", capture)
+    rankings = [
+        sql
+        for sql in statements
+        if "GROUP BY runtime_session.id ORDER BY" in sql
+        and "session_usage_links" in sql
+    ]
+    assert len(rankings) == 1
+    assert "estimated_cost" in rankings[0]
+    for display_column in (
+        "model_alias",
+        "provider_name",
+        "prompt_tokens",
+        "cache_read_tokens",
+    ):
+        assert display_column not in rankings[0]

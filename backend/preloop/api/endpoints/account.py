@@ -3504,6 +3504,9 @@ async def list_account_runtime_sessions(
     end_date: Optional[datetime] = Query(None),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    sort: Literal["last_activity", "started", "cost", "requests"] = Query(
+        "last_activity", description="Descending order across all matching sessions"
+    ),
     agent: Optional[str] = Query(
         None,
         min_length=1,
@@ -3546,7 +3549,7 @@ async def list_account_runtime_sessions(
             "no agent matches no session"
         ),
     ),
-):
+) -> AccountRuntimeSessionListResponse:
     """List runtime sessions for the current account."""
     if has_artifacts is not None and has_artifacts != "any":
         if has_artifacts not in ARTIFACT_KINDS:
@@ -3569,6 +3572,7 @@ async def list_account_runtime_sessions(
             end_date=end_date,
             limit=limit,
             offset=offset,
+            sort=sort,
             background_tasks=background_tasks,
             agent=agent,
             agent_kind=agent_kind,
