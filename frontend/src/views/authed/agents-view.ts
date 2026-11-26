@@ -1,3 +1,4 @@
+import { getExtensionCount } from '../../extension-inventory-api';
 import { REST_API_PREFIX } from '../../api-path';
 import { readTableUrlState } from '../../table/table-url-state';
 import '../../components/copilot-activity-panel.ts';
@@ -47,6 +48,7 @@ import '../../components/list-selection.ts';
 import '../../components/talk-button.ts';
 import '../../components/confirm-dialog.ts';
 import '../../components/discovered-agents-panel.ts';
+import '../../components/extension-inventory';
 import { totalTokensOf } from '../../components/token-figures';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
@@ -1220,9 +1222,66 @@ export class AgentsView extends LitElement {
     ],
   ];
 
+  @state() private extensionCount: number | null = null;
+  @state() private extensionCountUnavailable = false;
+  @state() private extensionsOpen = false;
+  @state() private extensionsMounted = false;
+  private extensionCountGeneration = 0;
+  private extensionSessionIdentity: string | null = null;
+
+  /** Compare login identity for UI retention only; the API authorizes every read. */
+  private currentExtensionSession(): string | null {
+    const token = localStorage.getItem('accessToken');
+    if (!token) return null;
+    try {
+      const payload = JSON.parse(
+        atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))
+      );
+      if (typeof payload.sub === 'string')
+        return JSON.stringify([payload.sub, payload.account_id ?? null]);
+    } catch {
+      // Opaque test or legacy credentials are retained only while unchanged.
+    }
+    return token;
+  }
+
+  private async loadExtensionCount(): Promise<void> {
+    const generation = ++this.extensionCountGeneration;
+    this.extensionCount = null;
+    this.extensionCountUnavailable = false;
+    try {
+      const count = await getExtensionCount();
+      if (generation === this.extensionCountGeneration)
+        this.extensionCount = count;
+    } catch {
+      if (generation === this.extensionCountGeneration)
+        this.extensionCountUnavailable = true;
+      // Keep the entry usable when an older server has no count endpoint.
+    }
+  }
+
+  private openExtensions(): void {
+    this.extensionsMounted = true;
+    this.extensionsOpen = true;
+  }
+
   connectedCallback(): void {
     super.connectedCallback();
+    this.extensionSessionIdentity = this.currentExtensionSession();
+    void this.loadExtensionCount();
+    if (
+      new URLSearchParams(window.location.search).get('section') ===
+      'extensions'
+    )
+      this.openExtensions();
     this.unsubscribeCacheReset = onApiCachesInvalidated(() => {
+      const identity = this.currentExtensionSession();
+      if (identity !== this.extensionSessionIdentity) {
+        this.extensionsMounted = false;
+        this.extensionsOpen = false;
+        this.extensionSessionIdentity = identity;
+      }
+      void this.loadExtensionCount();
       const generation = ++this.agentsLoadGeneration;
       this.subscriptionEstimates.clear();
       this.agents = null;
@@ -5041,6 +5100,18 @@ export class AgentsView extends LitElement {
             </div>
           </view-header>
 
+          <sl-dialog
+            label="Extensions"
+            class="extensions-dialog"
+            style="--width: min(1400px, 96vw);"
+            ?open=${this.extensionsOpen}
+            @sl-after-hide=${(event: Event) => {
+              if (event.target === event.currentTarget)
+                this.extensionsOpen = false;
+            }}
+          >
+            ${this.extensionsMounted ? html`<extension-inventory></extension-inventory>` : nothing}
+          </sl-dialog>
           <list-toolbar
             .search=${this.searchQuery}
             searchPlaceholder="Search name, tags:env=prod, owner:username"
@@ -5051,6 +5122,11 @@ export class AgentsView extends LitElement {
             @search-change=${this.handleSearchChange}
             @view-change=${this.handleViewChange}
           >
+            <sl-button class="extensions-entry" @click=${this.openExtensions}>
+              <sl-icon slot="prefix" name="puzzle"></sl-icon>
+              Extensions
+              (${this.extensionCountUnavailable ? 'count unavailable' : (this.extensionCount ?? '…')})
+            </sl-button>
             <sl-dropdown stay-open-on-select>
               <sl-button slot="trigger" caret variant="default">
                 Agent kinds
@@ -5146,7 +5222,9 @@ export class AgentsView extends LitElement {
           this.effectiveView === 'canvas'
             ? nothing
             : html`<div class="content-bounds ${this.pageBoxClass}">
-                <discovered-agents-panel></discovered-agents-panel>
+                <discovered-agents-panel
+                  hideExtensions
+                ></discovered-agents-panel>
                 ${
                   this.featureFlags.copilot_seat_activity === true
                     ? html`<copilot-activity-panel

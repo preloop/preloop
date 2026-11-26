@@ -120,6 +120,22 @@ describe('discovered-agents-panel', () => {
     expect(el.shadowRoot!.querySelector('extension-inventory')).to.exist;
   });
 
+  // protects=no reload on tab switch; fails_when=leaving Extensions unmounts
+  // the inventory so returning refetches it; no_claim=element identity only.
+  it('keeps the inventory mounted when switching tabs', async () => {
+    const el = await mount([]);
+    const tabs = el.shadowRoot!.querySelector('sl-tab-group')!;
+    const show = async (name: string): Promise<void> => {
+      tabs.dispatchEvent(new CustomEvent('sl-tab-show', { detail: { name } }));
+      await el.updateComplete;
+    };
+    await show('extensions');
+    const first = el.shadowRoot!.querySelector('extension-inventory');
+    await show('agents');
+    await show('extensions');
+    expect(el.shadowRoot!.querySelector('extension-inventory')).to.equal(first);
+  });
+
   it('builds onboard commands and short labels', () => {
     expect(onboardCommandFor(candidate({ agent_kind: 'codex' }))).to.equal(
       'preloop agents onboard codex'

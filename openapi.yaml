@@ -2198,6 +2198,33 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/discovery-extensions/count:
+    get:
+      tags:
+      - Agent discovery
+      summary: Count Extensions
+      description: Return the account inventory count for the Agents page entry point.
+      operationId: count_extensions_api_v1_agents_discovery_extensions_count_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: integer
+                type: object
+                title: Response Count Extensions Api V1 Agents Discovery Extensions
+                  Count Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/discovery-extensions:
     get:
       tags:
@@ -41381,6 +41408,12 @@ components:
             type: string
           type: array
           title: Reasons
+        reported_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Reported At
       type: object
       required:
       - fingerprint
