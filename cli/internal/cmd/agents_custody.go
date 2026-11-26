@@ -18,6 +18,7 @@ type credentialCustody struct {
 	RequiredImport       bool
 	SubscriptionTransfer bool
 	SubscriptionLineage  bool
+	ClaudeCodeGateway    bool
 }
 
 func gatewayCredentialCustody(upstream *managedGatewayUpstream) credentialCustody {
@@ -26,7 +27,7 @@ func gatewayCredentialCustody(upstream *managedGatewayUpstream) credentialCustod
 		return c
 	}
 	if upstream.SourceAgent == "account-ai-model" {
-		return credentialCustody{Kind: "existing credential reference", Source: "Preloop account", Destination: "existing account model binding", SubscriptionLineage: isOAuthCredentialType(upstream.CredentialType)}
+		return credentialCustody{Kind: "existing credential reference", Source: "Preloop account", Destination: "existing account model binding", SubscriptionLineage: isOAuthCredentialType(upstream.CredentialType), ClaudeCodeGateway: upstream.CredentialType == anthropicClaudeCodeOAuthCredentialType}
 	}
 	if upstream.APIKey == "" && len(upstream.CredentialPayload) == 0 {
 		if upstream.UsesAmbientAuth {
@@ -37,6 +38,7 @@ func gatewayCredentialCustody(upstream *managedGatewayUpstream) credentialCustod
 		return c
 	}
 	c = credentialCustody{Kind: "API key", Source: "local agent configuration, environment or credential store", Destination: "Preloop account model credential", RequiredImport: true}
+	c.ClaudeCodeGateway = upstream.SourceAgent == "claude_code" || upstream.CredentialType == anthropicClaudeCodeOAuthCredentialType
 	if len(upstream.CredentialPayload) > 0 {
 		c.Kind = "provider credential bundle"
 	}
@@ -90,6 +92,13 @@ func printCredentialCustody(output io.Writer, custody []credentialCustody) {
 	fmt.Fprintln(output, "    Apply issues a durable agent credential stored in local managed configuration; offboard revokes it.") //nolint:errcheck
 	for _, c := range custody {
 		fmt.Fprintf(output, "    %s: %s -> %s; import required: %t\n", c.Kind, c.Source, c.Destination, c.RequiredImport) //nolint:errcheck
+		if c.ClaudeCodeGateway {
+			fmt.Fprintln(output, "    Claude Code gateway disclosure (observed with v2.1.332): the banner says 'API Usage Billing' and, with a local login, warns that both claude.ai and ANTHROPIC_API_KEY are set. The API key here authenticates to Preloop.") //nolint:errcheck
+			if c.SubscriptionLineage {
+				fmt.Fprintln(output, "    Your subscription usage still pays for model calls through this subscription-backed gateway route.") //nolint:errcheck
+			}
+			fmt.Fprintln(output, "    With a custom ANTHROPIC_BASE_URL, /status reports that remote managed settings and organization policy are not fetched. claude.ai connectors are disabled under custom authentication. Team and Enterprise users: review this loss of cloud-delivered controls and connectors with your administrator before confirming enrollment.") //nolint:errcheck
+		}
 		if c.SubscriptionLineage {
 			fmt.Fprintln(output, "    Preloop holds and rotates the live subscription refresh-token lineage. A config backup alone cannot restore subscription login. Offboard must write back the latest live lineage before cleanup; recovery failure stops cleanup. Run preloop agents offboard for the enrolled app while credential recovery is available.") //nolint:errcheck
 		}

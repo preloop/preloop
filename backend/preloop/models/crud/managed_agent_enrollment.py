@@ -5,11 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Optional
 
-from sqlalchemy import func
+from sqlalchemy import String, cast, func
 from sqlalchemy.orm import Session
 
-from ..models.managed_agent_enrollment import ManagedAgentEnrollment
+from preloop.models import models
+
 from .base import CRUDBase
+
+ManagedAgentEnrollment = models.ManagedAgentEnrollment
 
 # Statuses of an enrollment that once reached a validated state. A restored
 # enrollment was validated before the operator rolled the config back.
@@ -22,6 +25,57 @@ def _utc_now() -> datetime:
 
 class CRUDManagedAgentEnrollment(CRUDBase[ManagedAgentEnrollment]):
     """CRUD helpers for managed-agent enrollment records."""
+
+    def gateway_verified_enrollments(
+        self, db: Session, *, account_id: str, enrollment_ids: list[str]
+    ) -> set[str]:
+        """Find enrollments with successful gateway traffic since application.
+
+        Only server-recorded model requests authenticated by an agent-bound key
+        count. Client telemetry, validation claims, sibling agents and traffic
+        predating the current configuration cannot establish this evidence.
+
+        Args:
+            db: Active database session.
+            account_id: Owning account.
+            enrollment_ids: Current enrollments on the requested console page.
+
+        Returns:
+            Enrollment ids whose route has carried a successful request.
+        """
+        if not enrollment_ids:
+            return set()
+        usage = models.ApiUsage
+        key = models.ApiKey
+        success = (
+            db.query(usage.id)
+            .join(key, key.id == usage.api_key_id)
+            .filter(
+                usage.account_id == account_id,
+                key.account_id == account_id,
+                key.context_data.op("->>")("managed_agent_id")
+                == cast(self.model.managed_agent_id, String),
+                usage.action_type == "model_gateway",
+                usage.status_code >= 200,
+                usage.status_code < 300,
+                usage.timestamp
+                >= func.coalesce(self.model.last_applied_at, self.model.created_at),
+            )
+            .correlate(self.model)
+            .exists()
+        )
+        rows = (
+            db.query(self.model.id)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.id.in_(enrollment_ids),
+                self.model.last_restored_at.is_(None),
+                self.model.status != "restored",
+                success,
+            )
+            .all()
+        )
+        return {str(row[0]) for row in rows}
 
     def list_latest_for_fleet_map(
         self,

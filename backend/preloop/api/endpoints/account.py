@@ -57,6 +57,7 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.models.db.session import get_db_session
+from preloop.models.crud.billing import billing
 from preloop.models.models.account import Account
 from preloop.models.models.attention_dismissal import AttentionDismissal
 from preloop.models.models.user import User as UserModel
@@ -361,6 +362,8 @@ def _live_validation_disables_gateway(validation: dict) -> bool:
 
 def _managed_agent_onboarding_flags(
     latest_enrollment: Optional[dict],
+    *,
+    gateway_traffic_verified: bool = False,
 ) -> tuple[bool, bool, str]:
     if not latest_enrollment:
         return False, False, "incomplete"
@@ -378,6 +381,8 @@ def _managed_agent_onboarding_flags(
     )
     if _live_validation_disables_gateway(validation):
         model_gateway_configured = False
+    if gateway_traffic_verified:
+        model_gateway_configured = True
 
     if mcp_proxy_configured and model_gateway_configured:
         return True, True, "fully_onboarded"
@@ -884,6 +889,15 @@ def _enrich_managed_agent_summaries(
         else []
     )
 
+    verified_enrollments = crud_managed_agent_enrollment.gateway_verified_enrollments(
+        db,
+        account_id=account_id,
+        enrollment_ids=[
+            str(latest["id"])
+            for latest, _ in enrollment_summaries.values()
+            if latest is not None
+        ],
+    )
     unresolved_model_summaries: list[tuple[dict, str, str]] = []
     for summary in summaries:
         agent_id = str(summary["id"])
@@ -894,7 +908,13 @@ def _enrich_managed_agent_summaries(
             summary["mcp_proxy_configured"],
             summary["model_gateway_configured"],
             summary["onboarding_state"],
-        ) = _managed_agent_onboarding_flags(latest_enrollment_summary)
+        ) = _managed_agent_onboarding_flags(
+            latest_enrollment_summary,
+            gateway_traffic_verified=bool(
+                latest_enrollment_summary
+                and str(latest_enrollment_summary["id"]) in verified_enrollments
+            ),
+        )
         (
             summary["live_validation_supported"],
             summary["live_validation_passed"],
@@ -2553,8 +2573,10 @@ async def create_account_managed_agent_credential(
     await run_db_off_loop(
         lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
     )
+    # Match decommission and membership issuance lock order before reading state.
+    billing.lock_account(db, str(account.id))
     agent = crud_managed_agent.get_for_account(
-        db, account_id=str(account.id), agent_id=agent_id
+        db, account_id=str(account.id), agent_id=agent_id, for_update=True
     )
     if agent is None:
         raise HTTPException(
@@ -3042,6 +3064,8 @@ async def update_account_managed_agent(
     await run_db_off_loop(
         lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
     )
+    # Match credential issuance and the CRUD lifecycle transition lock order.
+    billing.lock_account(db, str(account.id))
     # Locked for the whole handler: ``lifecycle_state`` is read here and the
     # credential restore/revoke decision below is made from that read, so a
     # concurrent operator action (a resume racing a decommission) must not
@@ -3134,8 +3158,18 @@ async def update_account_managed_agent(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
+    revoked_managed_credentials = 0
     if should_revoke_runtime_access:
         revoke_timestamp = datetime.now(UTC)
+        revoked_managed_credentials = (
+            crud_managed_agent_credential.revoke_all_for_agent(
+                db,
+                account_id=str(account.id),
+                agent_id=str(agent.id),
+                reason=update.reason or "agent decommissioned",
+                revoked_at=revoke_timestamp,
+            )
+        )
         # Revoke only this agent's keys (plus legacy keys with no agent
         # binding). Several registry entries can share one runtime principal,
         # and a principal-wide sweep would also kill sibling agents' durable
@@ -3207,6 +3241,7 @@ async def update_account_managed_agent(
                     "session_source_type": updated.session_source_type,
                     "session_source_id": updated.session_source_id,
                     "lifecycle_action": update.lifecycle_action,
+                    "revoked_count": revoked_managed_credentials,
                     "previous_lifecycle_state": prior_lifecycle_state,
                     "lifecycle_state": updated.lifecycle_state,
                     "previous_lifecycle_reason": previous_lifecycle_reason,
