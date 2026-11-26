@@ -328,7 +328,30 @@ preloop agents refresh                  # Rewrite managed model sections from th
 preloop agents sync                     # Alias for agents refresh
 ```
 
-`preloop agents discover` is the starting point for agent onboarding. In interactive terminals it can prompt to onboard newly discovered agents one by one. Use `--no-onboard-prompt` to keep discovery read-only in scripts/CI, or `--yes` to auto-onboard all new candidates. `preloop agents enroll openclaw` remains the explicit mutating command.
+`preloop agents discover` can offer onboarding in an interactive terminal.
+With closed or non-terminal stdin, including SSH jobs, pipes and CI, discovery
+always skips onboarding, even with `--yes` or `PRELOOP_CONFIRM=1`.
+`--no-onboard-prompt` also suppresses onboarding in a terminal. To onboard,
+run `preloop agents onboard` interactively. Accepting defaults without a terminal
+requires `PRELOOP_CONFIRM=1 preloop agents onboard`; `--yes` alone is insufficient.
+The separate `--unattended` enrollment-token flow retains its explicit authority.
+EOF never accepts a prompt default. For a non-interactive preview, use
+`preloop agents onboard --dry-run`; it prints plans without onboarding prompts.
+
+The shell installer performs its read-only scan and skips login and onboarding
+when stdin is closed or piped, including `curl ... | sh`, unless
+`PRELOOP_CONFIRM` explicitly enables unattended setup. The PowerShell installer
+also skips interactive setup when console input is redirected or closed.
+
+Before installing an Agent Control plugin with npm, the CLI checks whether the
+configured global prefix is writable. If it is not, use a user-level Node
+installation, or set an npm prefix you own with
+`npm config set prefix <user-owned-directory>` and add its `bin` directory to
+PATH (the prefix itself on Windows). Retry onboarding after fixing the prefix.
+The CLI keeps npm's configured installation layout so the plugin loader and
+service can find the same executable. The existing managed-sidecar fallback
+remains available if the npm preflight fails. JSON status includes the prefix
+failure code and generic repair guidance without exposing local paths.
 
 Discovery JSON intentionally uses an allowlist: the array retains registered app
 `name` values and adds stable `app_id` and `mcp_server_count` fields. Raw
@@ -389,7 +412,7 @@ partial, even when MCP onboarding succeeded.
 
 Managed OpenClaw and Hermes onboarding creates a durable managed credential, backs up the local config, adds or replaces the local MCP config with a managed `preloop` entry, writes a `preloop.control.control_ws_url` contract plus the standalone runtime plugin package name (`preloop-hermes-plugin` or `@preloop-ai/openclaw-plugin`), and may also import existing MCP servers plus rewrite supported model settings to Preloop's OpenAI-compatible gateway. Use `--dry-run` to preview changes first. `preloop agents onboard --all -y` also ensures every discovered OpenClaw/Hermes runtime plugin available to the CLI is installed and verified, including agents that were already onboarded locally.
 
-Re-running `preloop agents onboard` (or `preloop agents discover`) without an agent name covers every discovered agent, not only new ones. Already-onboarded agents are labelled current or outdated (MCP config drift, missing or stale Agent Control plugin) and you are asked per agent whether to update and re-test them; `-y` re-onboards all of them. The summary lists every agent, including agents Preloop recorded as enrolled from this host that discovery no longer finds.
+Re-running `preloop agents onboard` (or `preloop agents discover`) without an agent name covers every discovered agent, not only new ones. Already-onboarded agents are labelled current or outdated (MCP config drift, missing or stale Agent Control plugin) and you are asked per agent whether to update and re-test them; `-y` re-onboards all of them in a terminal. Without a terminal, use explicit `PRELOOP_CONFIRM=1` with `onboard`. The summary lists every agent, including agents Preloop recorded as enrolled from this host that discovery no longer finds.
 
 `install-runtime hermes` and `install-runtime openclaw` use their official
 publisher installers to obtain the current runtime and its dependencies. They
