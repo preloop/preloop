@@ -117,7 +117,9 @@ describe('PreloopFlowForm execution timeout', () => {
     await (element as any).applyPresetSelection(preset.id);
     await element.updateComplete;
     expect(input(element).value).to.equal('5400');
-    expect((await submit(element)).timeout_seconds).to.equal(5400);
+    const saved = await submit(element);
+    expect(saved.trigger_event_source).to.equal('webhook');
+    expect(saved.timeout_seconds).to.equal(5400);
   });
 
   for (const value of [

@@ -4156,11 +4156,10 @@ export class PreloopFlowForm extends LitElement {
       preset.trigger_event_source === 'schedule' ||
       Boolean(preset.schedule_config) ||
       triggerEventTypes?.includes('schedule');
-    this.triggerType = scheduled
-      ? 'schedule'
-      : triggerEventTypes?.length
-        ? 'tracker'
-        : 'webhook';
+    const webhook =
+      preset.trigger_event_source === 'webhook' ||
+      !triggerEventTypes?.some((type) => type !== 'webhook');
+    this.triggerType = scheduled ? 'schedule' : webhook ? 'webhook' : 'tracker';
     this.flow = {
       name: preset.name,
       description: preset.description,
