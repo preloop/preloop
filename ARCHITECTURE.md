@@ -121,17 +121,7 @@ content hashes. CRUD owns reconciliation, approval joins and the single
 unpinned hash). Only complete
 app scans prove absence; older reports cannot replace newer inventory. The
 inventory record carries no extension file, command or source URL. See the
-[discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions).
-
-Extension content for review is a separate, on-by-default upload that follows a
-current-user report. The collector redacts text on the device (the vendored
-gitleaks default rules in `cli/internal/redact` plus local rules), asks the
-server which reported hashes it lacks and uploads only those. `extension_content`
-stores one Fernet-encrypted document per account, kind and inventory hash; the
-server recomputes the hash from the uploaded manifest and verifies unredacted
-text against its digest. Reads need `manage_agents` and are audited. The account
-setting, the device flag and per-extension exclusions turn it off; see the
-[content contract](docs/guide/agent-discovery-reporting.md#extension-content).
+[discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions). Extension content for review is a separate, on-by-default upload after a report: redacted on the device (`cli/internal/redact`), verified against the inventory hash and stored encrypted per account in `extension_content` ([content contract](docs/guide/agent-discovery-reporting.md#extension-content)).
 It also covers collector versions and coverage gaps; [session identity](docs/architecture/gateway.md#runtime-session-identity) covers subagent lineage.
 Unmatched MCP tool calls read account policy defaults. With approve-once enabled,
 the account-owned `tool_registry_entry` records a decision per proxy server UUID
