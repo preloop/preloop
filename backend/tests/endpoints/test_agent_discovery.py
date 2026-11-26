@@ -338,8 +338,20 @@ def test_purge_sweeper_pass_uses_the_crud_purge(monkeypatch):
         "purge_all_expired",
         lambda db: calls.append("observations purged") or 2,
     )
-    assert purge.run_discovery_candidate_purge_once() == 5
-    assert calls == ["purged", "observations purged", "committed", "closed"]
+    monkeypatch.setattr(
+        purge.crud_extension_content,
+        "purge",
+        lambda db: calls.append("contents purged") or 4,
+    )
+    assert purge.run_discovery_candidate_purge_once() == 9
+    # Content goes after the inventory it belongs to, in the same transaction.
+    assert calls == [
+        "purged",
+        "observations purged",
+        "contents purged",
+        "committed",
+        "closed",
+    ]
 
 
 @pytest.fixture

@@ -66,6 +66,10 @@ DEVICE_KEY_ALLOWED_PATHS: frozenset[str] = frozenset(
     {
         "/api/v1/agents/discovery-salt",
         "/api/v1/agents/discovery-reports",
+        # Extension content for review: the collector asks which hashes the
+        # account lacks, then uploads those. Reading content is not here.
+        "/api/v1/agents/extension-content/missing",
+        "/api/v1/agents/extension-content",
     }
 )
 

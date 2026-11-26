@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Extension content for review. After `preloop agents discover --report` the
+  CLI uploads the redacted text behind each reported extension hash (skill and
+  command files, hook commands with their matcher, plugin manifests and the
+  text of their skills, commands and hooks), and the console's Extensions tab
+  shows it with a diff against the pinned hash. On by default. Turn it off for
+  the account (Settings > Account > Collect extension content for review), for
+  a device (`--no-extension-content`) or for one extension
+  (`.preloop-no-content`). Credentials are redacted on the device with the
+  gitleaks 8.30.1 rule set and additional rules; redaction reduces the chance
+  that a secret is stored and is not a guarantee. This changes the discovery
+  reporting privacy contract: see `docs/guide/agent-discovery-reporting.md`.
+
 ## [1.1.0-rc.3] - 2026-11-26
 
 ## [1.1.0-rc.2] - 2026-11-26

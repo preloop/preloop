@@ -12,6 +12,10 @@ package cmd
 //
 // Never sent: user names, hostnames, clear paths, prompts, keys, env vars,
 // MCP server names, URLs or args.
+//
+// After the report, and unless it is turned off, the redacted text of the
+// reported extensions is uploaded for review. That is a separate request with
+// its own contract; see agents_extension_content.go.
 
 import (
 	"crypto/hmac"
@@ -212,6 +216,16 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	if resp.LegacyEvidence {
 		fmt.Fprintln(w, legacyInventoryNotice)
 		disclosure = "inventory metadata"
+	}
+	content := contentOutcome{}
+	if !resp.LegacyEvidence {
+		// Only after the report: the server takes content for hashes this
+		// device has reported, and tells the collector which ones it lacks.
+		content = sendExtensionContent(client, w, report, salt, home, projects)
+	}
+	if content.Uploaded > 0 {
+		fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent %s, and the redacted text of %d extension(s) for review; credentials found in that text were replaced before upload.\n", resp.Received, resp.Created, disclosure, content.Uploaded) //nolint:errcheck
+		return nil
 	}
 	fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent %s; no file bodies, hook arguments or credential files.\n", resp.Received, resp.Created, disclosure) //nolint:errcheck
 	return nil
