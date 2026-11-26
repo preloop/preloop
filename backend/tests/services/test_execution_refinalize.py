@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import event
 from preloop.models import crud, models
 from preloop.models.crud.base import CRUDBase
 from preloop.services import execution_refinalize as recovery
@@ -447,3 +448,115 @@ async def test_existing_publication_decision_is_reported(
     assert applied["outcome"] == "refinalized"
     assert applied["publication"]["review"] == "skipped"
     assert not world.github.reviews
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verdict", ["approve", "changes_requested"])
+async def test_native_schema_verdict_confirms_completion(
+    world: SimpleNamespace, verdict: str
+) -> None:
+    schema = deepcopy(world.flow.result_schema)
+    schema["properties"]["verdict"]["enum"].append(verdict)
+    CRUDBase(models.Flow).update(
+        world.db, db_obj=world.flow, obj_in={"result_schema": schema}
+    )
+    execution = saved(world)
+    document = {**deepcopy(RESULT), "verdict": verdict}
+    CRUDBase(models.FlowExecution).update(
+        world.db,
+        db_obj=execution,
+        obj_in={"result": {NATIVE_CANDIDATES_KEY: {"native": document}}},
+    )
+    preview = await call(world, execution)
+    assert preview["eligible"], preview["gates"]
+    result = await call(
+        world, execution, dry_run=False, expected_digest=preview["digest"]
+    )
+    assert result["outcome"] == "refinalized"
+    assert execution.result == document
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["in_progress", "error", "timeout"])
+async def test_native_schema_cannot_confirm_incomplete_answer(
+    world: SimpleNamespace, status: str
+) -> None:
+    schema = deepcopy(world.flow.result_schema)
+    schema["properties"]["status"] = {"type": "string"}
+    CRUDBase(models.Flow).update(
+        world.db, db_obj=world.flow, obj_in={"result_schema": schema}
+    )
+    execution = saved(world)
+    CRUDBase(models.FlowExecution).update(
+        world.db,
+        db_obj=execution,
+        obj_in={
+            "result": {
+                NATIVE_CANDIDATES_KEY: {
+                    "native": {**deepcopy(RESULT), "verdict": "pass", "status": status}
+                }
+            }
+        },
+    )
+    preview = await call(world, execution)
+    assert not preview["eligible"]
+    assert not preview["gates"]["integrity"]["passed"]
+    assert not world.github.writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("document", [["not", "an", "object"], "text", 12, True])
+@pytest.mark.parametrize("source", ["stored", "native", "file", "succeeded"])
+async def test_non_object_answers_are_refused(
+    world: SimpleNamespace, document: Any, source: str
+) -> None:
+    execution = saved(world)
+    result = (
+        {NATIVE_CANDIDATES_KEY: {source: document}}
+        if source in {"native", "file"}
+        else document
+    )
+    CRUDBase(models.FlowExecution).update(
+        world.db,
+        db_obj=execution,
+        obj_in={
+            "result": result,
+            **({"status": "SUCCEEDED"} if source == "succeeded" else {}),
+        },
+    )
+    preview = await call(world, execution)
+    assert not preview["eligible"]
+    assert not preview["gates"]["schema"]["passed"]
+    with pytest.raises(recovery.RefinalizeRefusedError):
+        await call(world, execution, dry_run=False, expected_digest=preview["digest"])
+    assert not world.github.writes
+
+
+@pytest.mark.asyncio
+async def test_preview_does_not_read_workspace_archive(world: SimpleNamespace) -> None:
+    execution = saved(world)
+    CRUDBase(models.FlowExecution).update(
+        world.db, db_obj=execution, obj_in={"workspace_snapshot": b"saved archive"}
+    )
+    statements: list[str] = []
+
+    def capture(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            statements.append(statement)
+
+    connection = world.db.connection()
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        preview = await call(world, execution)
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+    assert preview["publication"]["would_publish"]
+    assert statements
+    assert not any("workspace_snapshot" in sql for sql in statements)

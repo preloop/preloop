@@ -499,6 +499,27 @@ def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optiona
     return None
 
 
+def _result_completion_confirmation(
+    artifact: Any, *, native_valid: bool
+) -> Optional[str]:
+    """Apply explicit confirmation and the schema-valid native fallback.
+
+    Native schemas define the verdict shape. A completed request-changes
+    review needs no additional status field or printed success marker.
+    Explicit failures and incomplete statuses never receive this fallback.
+    """
+    confirmation = _result_artifact_confirmation(artifact)
+    if (
+        confirmation is None
+        and native_valid
+        and isinstance(artifact, dict)
+        and str(artifact.get("status", "")).strip().lower()
+        not in RESULT_ARTIFACT_INCOMPLETE_STATUSES
+    ):
+        return "success"
+    return confirmation
+
+
 def _artifact_failure_signal(artifact: Optional[Dict[str, Any]]) -> tuple[str, Any]:
     """Name the field that classified an artifact as an explicit failure.
 
@@ -9639,9 +9660,6 @@ class FlowExecutionOrchestrator:
                     result_artifact = await self._capture_result_artifact(
                         agent_executor, session_reference
                     )
-                    artifact_confirmation = _result_artifact_confirmation(
-                        result_artifact
-                    )
                     validation = getattr(self, "_result_schema_validation", None)
                     native_valid = (
                         getattr(self, "_native_result_effective", False) is True
@@ -9649,17 +9667,9 @@ class FlowExecutionOrchestrator:
                         and isinstance(validation, dict)
                         and validation.get("valid") is True
                     )
-                    if (
-                        artifact_confirmation is None
-                        and native_valid
-                        and isinstance(result_artifact, dict)
-                        and str(result_artifact.get("status", "")).strip().lower()
-                        not in RESULT_ARTIFACT_INCOMPLETE_STATUSES
-                    ):
-                        # Native schemas define the verdict shape. Requiring
-                        # an additional status field or printed marker defeats
-                        # that contract; request-changes is also a completed review.
-                        artifact_confirmation = "success"
+                    artifact_confirmation = _result_completion_confirmation(
+                        result_artifact, native_valid=native_valid
+                    )
 
                     # Positive-confirmation contract (fail-closed):
                     # Exit code 0 is NEVER sufficient for success — agent CLIs

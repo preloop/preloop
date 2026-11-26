@@ -10,7 +10,10 @@ from preloop.models.crud.execution_tool_evidence import inspection_summary
 from preloop.services import platform_review as publication
 from preloop.services import review_integrity
 from preloop.services.execution_tool_evidence import digest
-from preloop.services.flow_orchestrator import _result_artifact_confirmation
+from preloop.services.flow_orchestrator import (
+    _result_artifact_confirmation,
+    _result_completion_confirmation,
+)
 from preloop.services.flow_result_schema import (
     flow_result_schema,
     validate_result_document,
@@ -218,7 +221,11 @@ def preview_stored(
             outcome=integrity,
         ),
         "confirmation": _gate(
-            _result_artifact_confirmation(selected.document) == "success",
+            _result_completion_confirmation(
+                selected.document,
+                native_valid=native and bool(validation and validation["valid"]),
+            )
+            == "success",
             "answer_not_complete",
         ),
         "evidence_settled": _gate(
