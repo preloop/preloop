@@ -230,6 +230,8 @@ def update_connection(
     if "enabled" in changes and changes["enabled"] is None:
         raise HTTPException(422, "Enabled must be a boolean")
     connection = crud_chat.connections.update(db, db_obj=connection, obj_in=changes)
+    if not connection.enabled:
+        crud_chat.close_bindings(db, connection.id)
     return public_connection(db, connection, current_user)
 
 
@@ -279,6 +281,12 @@ def unlink_identity(
     crud_chat.invalidate_codes(db, connection.id, current_user.id)
     identity = crud_chat.identity(db, connection.id, user_id=current_user.id)
     if identity:
+        crud_chat.close_bindings(
+            db,
+            connection.id,
+            external_user_id=identity.external_user_id,
+            owner_user_id=current_user.id,
+        )
         crud_chat.identities.delete(db, id=identity.id)
 
 
@@ -385,16 +393,32 @@ def ingest(
             mention = f"<@{bot_id}>"
             if bot_id and text.startswith(mention):
                 text = text[len(mention) :].strip()
+        plain_text = text if not text.startswith("/") else None
         if connection.provider in {"slack", "teams"}:
             verb = text.split(maxsplit=1)[0] if text else ""
-            if verb in {"link", "note", "message", "approve", "deny", "ask", "help"}:
-                text = "/" + text
+            if text.strip() in {"end", "status"}:
+                text = "/" + text.strip()
+            elif (verb == "link" and len(text.split()) == 2) or verb in {
+                "note",
+                "message",
+                "approve",
+                "deny",
+                "ask",
+                "help",
+            }:
+                text = "/" + text.strip()
         payload = {
             "text": text,
             "private": event.is_private,
             "channel_id": event.channel_id,
             "thread_id": event.thread_id,
         }
+        if (
+            connection.provider in {"slack", "teams"}
+            and plain_text is not None
+            and not text.startswith("/link")
+        ):
+            payload["plain_text"] = plain_text
         if connection.provider == "teams":
             payload["service_url"] = event.service_url
             payload["provider_conversation_id"] = event.provider_conversation_id

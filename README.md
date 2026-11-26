@@ -146,7 +146,7 @@ the server preserves them and returns a warning.
 - **Session search:** keyword search by default, semantic as an opt-in, every search audited. [Saved searches](docs/guide/session-saved-searches.md).
 - **DORA exports:** the AI-agent slice of the ICT inventory and incident record. [Guide](docs/guide/dora-agent-slice.md).
 - **OTLP export:** off by default; emits OpenTelemetry GenAI spans. [Guide](docs/guide/observability-otlp.md).
-- **Chat:** Slack, Mattermost, Discord, and Microsoft Teams (own bot, personal chat) for questions, opted-in flow runs with answers returned to chat, approval votes and operator notes. [Chat connections](docs/chat-connections.md).
+- **Chat:** Slack, Mattermost, Discord, and Microsoft Teams (own bot, personal chat) for questions, opted-in flow runs and interactive conversations with answers returned to chat, approval votes and operator notes. [Chat connections](docs/chat-connections.md).
 - **Event-driven employees:** managed agents doing bounded tasks from tracker and error events. [Guide](docs/guide/virtual-employees.md).
 - **Remote sessions and deployment:** [remote sessions](docs/guide/runners/remote-sessions.md), [SSH and GCP agent deployment](docs/operations/agent-deployment.md), [environments and recovery](docs/guide/flows/environments-and-recovery.md).
 - **Runtime plugins:** [Pi and DeepSeek Harness](runtime-plugins/harness-preloop/README.md), [Nanobot](runtime-plugins/nanobot-preloop/README.md), [OpenClaw](https://docs.preloop.ai/integrations/openclaw/), [Hermes](docs/guide/hermes.md), [runtime adapters](https://docs.preloop.ai/integrations/agent-control-runtime-adapters/).
@@ -245,7 +245,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Maintainers: follow the [protected-branc
 
 Release assets carry signed Sigstore build provenance and checksums ([verification](./docs/release-verification.md)). The [release SBOM audit gate](./docs/release-sbom-audit.md) checks both architectures of every release image and the tag's security workflows. Windows CLI notes: [windows-cli.md](./docs/windows-cli.md), [code signing policy](./docs/code-signing-policy.md). Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
-Flows can also open [interactive hosted conversations](docs/guide/flows/interactive-conversations.md) in the console using OpenCode or DeepSeek Harness, with live follow-ups and checkpoint-based resume.
+Flows can also open [interactive hosted conversations](docs/guide/flows/interactive-conversations.md) in the console or through Slack, Mattermost, Discord and Microsoft Teams using OpenCode or DeepSeek Harness, with live follow-ups and checkpoint-based resume.
 
 For Claude Code fleet administrators, [extension restrictions](docs/operations/mdm-recipes.md#extension-restrictions)
 export reviewed account plugin denials and marketplace policy as a managed-settings

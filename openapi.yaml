@@ -37113,6 +37113,10 @@ components:
           type: string
           title: Flow Name
           default: Flow conversation
+        origin:
+          type: string
+          title: Origin
+          default: console
         turns:
           type: integer
           title: Turns
@@ -37175,6 +37179,16 @@ components:
           type: string
           format: uuid
           title: Request Id
+        origin:
+          type: string
+          enum:
+          - console
+          - slack
+          - mattermost
+          - discord
+          - teams
+          title: Origin
+          default: console
       type: object
       required:
       - request_id

@@ -33,6 +33,7 @@ from preloop.services.chat_worker import process_one, enqueue_approval_notificat
 from preloop.utils.encryption import encrypt_value, decrypt_value
 from tests.services import test_chat_backend as base
 from tests.services import test_chat_flows as flows
+from tests.services import test_chat_conversations as interactive
 from tests.services.test_teams_provider import (
     APP,
     TENANT,
@@ -48,6 +49,7 @@ fixture_db = base.fixture_db
 real_app = base.real_app
 chat_flow = flows.chat_flow
 dispatch = flows.dispatch
+interactive_flow = interactive.flow
 
 
 @pytest.fixture
@@ -169,7 +171,10 @@ async def test_question_and_dedupe(
     assert (await ingress(real_app, f, "What is the budget?")).status_code == 200
     assert await process_one(f.db, real_app)
     answer.assert_awaited_once_with("What is the budget?")
-    assert delivery.call_args.args[2] == "The configured budget is 100 units."
+    assert (
+        delivery.call_args.args[2]
+        == "Read-only account assistant: The configured budget is 100 units."
+    )
     assert not await process_one(f.db, real_app)
 
 
@@ -568,3 +573,84 @@ async def test_ingress_constant_failure(teams_db: Any, real_app: Any) -> None:
     assert response.status_code == 401
     assert response.json() == {"detail": "Invalid provider request"}
     assert crud_chat.work.get_multi(f.db, connection_id=f.connection.id) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interactive_flow", ["opencode", "deepseek"], indirect=True)
+async def test_interactive_personal_chat(
+    teams_db: Any,
+    real_app: Any,
+    interactive_flow: models.Flow,
+    delivery: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Signed personal activities share the lifecycle and retain transport facts."""
+    from preloop.models.crud import flow_conversation as conversations
+    from tests.services.test_chat_conversations import drain, watch
+
+    f = teams_db
+    event_number = 0
+
+    async def send(text: str) -> None:
+        nonlocal event_number
+        event_number += 1
+        response = await ingress(real_app, f, text, activity_id=f"turn-{event_number}")
+        assert response.status_code == 200
+        await drain(f, real_app)
+
+    await send("ask docs Remember amber")
+    assert (
+        "Conversation with Repository questions starting" in delivery.call_args.args[2]
+    )
+    binding = crud_chat.conversation_binding(f.db, f.connection.id, f"dm:{USER}")
+    assert binding is not None
+    conversation = conversations.get(f.db, binding.conversation_id, f.account.id)
+    assert conversation.origin == "teams"
+    assert conversation.flow_id == interactive_flow.id
+    assert conversations.messages(f.db, conversation.id)[0].text == "Remember amber"
+    assert (
+        delivery.call_args.kwargs["conversation_id"] == activity()["conversation"]["id"]
+    )
+    assert delivery.call_args.kwargs["service_url"] == SERVICE
+
+    conversations.runtime_turn(
+        f.db, conversation, turn=1, answer="Amber.", finished=True, error=False
+    )
+    watch(f)
+    await drain(f, real_app)
+    assert delivery.call_args.args[2].startswith("Amber.\n\n")
+    # Observer outbox rows must use the saved provider address, never the
+    # unrelated UUID of the hosted flow conversation.
+    assert (
+        delivery.call_args.kwargs["conversation_id"] == activity()["conversation"]["id"]
+    )
+    assert delivery.call_args.kwargs["service_url"] == SERVICE
+
+    monkeypatch.setattr(ChatBroker, "answer", AsyncMock(side_effect=AssertionError))
+    for turn, text in enumerate(("help me understand", "ask me later"), start=2):
+        await send(text)
+        assert conversations.messages(f.db, conversation.id)[-1].text == text
+        assert "Message sent to Repository questions" in delivery.call_args.args[2]
+        conversations.runtime_turn(
+            f.db, conversation, turn=turn, answer="Answer.", finished=True, error=False
+        )
+        watch(f)
+        await drain(f, real_app)
+
+    await send("status")
+    assert "Repository questions: waiting. Turns 3/30." in delivery.call_args.args[2]
+    conversations.save(
+        f.db,
+        conversation,
+        state="stopped",
+        idle_deadline=None,
+        notice="The container stopped. Send a message to resume this conversation.",
+    )
+    watch(f)
+    await drain(f, real_app)
+    assert "Send a message to resume" in delivery.call_args.args[2]
+    await send("end")
+    assert "Conversation ended." in delivery.call_args.args[2]
+    assert crud_chat.conversation_binding(f.db, f.connection.id, f"dm:{USER}") is None
+    await send("status")
+    assert "No active flow conversation" in delivery.call_args.args[2]

@@ -12,6 +12,7 @@ export interface FlowConversation {
   notice: string;
   can_write: boolean;
   flow_name?: string;
+  origin?: string;
   turns: number;
   max_turns: number;
   idle_deadline: string | null;
@@ -279,5 +280,17 @@ export function conversationEvents(
 /** The system line for a conversation whose first turn had no typed text. */
 export function conversationIntro(conversation: FlowConversation): string {
   const first = conversation.messages[0];
-  return first && first.turn === 1 && !first.text ? INITIAL_PROMPT_LINE : '';
+  const origins: Record<string, string> = {
+    slack: 'Slack',
+    mattermost: 'Mattermost',
+    discord: 'Discord',
+    teams: 'Microsoft Teams',
+  };
+  const origin = origins[conversation.origin || ''];
+  return [
+    origin ? `Started in ${origin}.` : '',
+    first && first.turn === 1 && !first.text ? INITIAL_PROMPT_LINE : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
