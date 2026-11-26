@@ -126,6 +126,33 @@ containers, networks, images and build cache that no job is using. Chromium's
 system libraries are preinstalled, because the slot user has no sudo and
 `playwright install --with-deps` needs root.
 
+
+## AWS Spot pool (`preloop-ci-aws`)
+
+Ephemeral repository-level runners on AWS Spot VMs (2 vCPU,
+8 GiB), labelled `self-hosted`, `Linux`, `X64` and `preloop-ci-aws`. Each VM
+registers with a just-in-time configuration, runs exactly one job as an
+unprivileged user without cloud credentials and is destroyed. Every queued job
+that asks for all four labels launches a VM. In working hours (Mon-Fri
+08:00-20:00 Europe/Madrid) two idle runners are kept ready, so a job that finds
+one starts without waiting for a boot. Outside those hours the pool is empty
+and a job waits for a VM to boot.
+
+The pool is **off** by default. The repository variable `CI_AWS_RUNNERS=true`
+turns it on for trusted sources on their first attempt; forks, Dependabot and
+reruns stay hosted like for the local pool. When on:
+
+- light jobs take a local slot first, then an idle aws runner, then hosted. An
+  aws VM is never reused, so Lint & Format and CLI Fast cannot take the VM
+  that Detect changed paths used;
+- a backend set goes to the general pool, else local, else aws when there is
+  one idle aws runner per group, else hosted. One class per run, as before;
+- fuzz, browser-fixture and docs leaves never use aws runners;
+- backend shards queued on the pool are watched by hosted recovery.
+
+The security boundary is the same as for the local pool: a fork PR can name
+`preloop-ci-aws` in its own `runs-on`, so fork-workflow approval must stay on.
+Turn the variable on only after the infrastructure canary passes.
 ## Hosted control jobs
 
 The runner pickers and the final CI aggregator always run on GitHub-hosted
