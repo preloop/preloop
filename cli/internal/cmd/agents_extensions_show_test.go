@@ -1,11 +1,34 @@
 package cmd
 
 import (
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestExtensionsShowEscapesTerminalControls(t *testing.T) {
+	home := extensionHome(t)
+	control := "\x1b]52;c;c3ludGhldGlj\a\u009b2J\r"
+	writeInventoryFixture(t, home, ".claude/skills/careful/SKILL.md", "Readable\n\ttext "+control)
+	command, _ := json.Marshal("bash example.sh " + control)
+	writeInventoryFixture(t, home, ".claude/settings.json", `{"hooks":{"PreToolUse":[{"command":`+string(command)+`}]}}`)
+	for _, pair := range [][2]string{{"skill", "careful"}, {"hook", "PreToolUse"}} {
+		stdout, _, err := runExtensions(t, "show", pair[0], pair[1], "--agent", "claude-code")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, unsafe := range []string{"\x1b", "\a", "\u009b", "\r"} {
+			if strings.Contains(stdout, unsafe) {
+				t.Fatalf("terminal control was not escaped: %q", unsafe)
+			}
+		}
+		if !strings.Contains(stdout, `\u001b]52;c;c3ludGhldGlj\u0007\u009b2J\u000d`) {
+			t.Fatalf("escaped content missing: %q", stdout)
+		}
+	}
+}
 
 func TestExtensionsShowLocalOnly(t *testing.T) {
 	home := extensionHome(t)

@@ -48,7 +48,7 @@ def list_extensions(
     extension_kind: ExtensionKind | None = None,
     extension_id: str | None = Query(default=None, pattern=IDENTIFIER_PATTERN),
     limit: int = Query(default=50, ge=1, le=500),
-    cursor: str | None = Query(default=None, max_length=1024),
+    cursor: str | None = Query(default=None, max_length=8192),
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> DiscoveredExtensionList:
