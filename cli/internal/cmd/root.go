@@ -57,6 +57,14 @@ suppressed too, as they depend on the check-in response.`,
 			return
 		}
 
+		// Scripted discovery must not write telemetry, update caches or settings.
+		if cmd == agentsDiscoverCmd && !stdinIsTerminal() {
+			config.SetConfigFile(cfgFile)
+			config.Select(FlagProfile, FlagAccount)
+			silenceUsageForRuntimeErrors(cmd)
+			return
+		}
+
 		initializeCommandSelection(cmd)
 
 		// Count top-level command-category usage locally (names only, never
