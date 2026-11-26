@@ -18,6 +18,7 @@ CANCEL_SECONDS = 120
 BACKEND_JOB = re.compile(r"Backend Tests \(\d+/\d+\)\Z")
 GENERAL_LABELS = {"self-hosted", "Linux", "X64", "preloop-ci-general"}
 LOCAL_LABELS = {"self-hosted", "Linux", "X64", "preloop-ci-local"}
+AWS_LABELS = {"self-hosted", "Linux", "X64", "preloop-ci-aws"}
 
 
 class ApiError(RuntimeError):
@@ -106,7 +107,7 @@ def self_hosted_backend(job: dict) -> bool:
     labels = set(job.get("labels") or [])
     return bool(
         BACKEND_JOB.fullmatch(job.get("name", ""))
-        and (GENERAL_LABELS <= labels or LOCAL_LABELS <= labels)
+        and any(c <= labels for c in (GENERAL_LABELS, LOCAL_LABELS, AWS_LABELS))
         and "gce-tests-only" not in labels
     )
 

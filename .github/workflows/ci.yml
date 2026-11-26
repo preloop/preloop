@@ -87,6 +87,7 @@ jobs:
         env:
           RUNNER_READ_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
           LOCAL_RUNNERS: ${{ vars.CI_LOCAL_RUNNERS }}
+          AWS_RUNNERS: ${{ vars.CI_AWS_RUNNERS }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           REPO: ${{ github.repository }}
           TRUSTED_SOURCE: ${{ github.event_name == 'push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
@@ -173,7 +174,8 @@ jobs:
   # .github/self-hosted-runners.md for automatic hosted recovery and its limits.
   # CI_RUNNER_READ_TOKEN needs repository administration:read.
   # CI_SELF_HOSTED_TESTS=true opts into general-pool routing;
-  # CI_LOCAL_RUNNERS=false turns the local pool off.
+  # CI_LOCAL_RUNNERS=false turns the local pool off; CI_AWS_RUNNERS=true turns
+  # the ephemeral preloop-ci-aws pool on (off by default).
   # preloop-ci-general is an explicit readiness label; never apply it to the
   # gce-tests-only execution pool.
   #
@@ -215,6 +217,7 @@ jobs:
           BACKEND_REQUIRED: ${{ needs.changes.outputs.backend }}
           BACKEND_SHARDS: ${{ needs.changes.outputs.backend_jobs }}
           LOCAL_RUNNERS: ${{ vars.CI_LOCAL_RUNNERS }}
+          AWS_RUNNERS: ${{ vars.CI_AWS_RUNNERS }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           LEAF_FUZZ: ${{ needs.changes.outputs.fuzz }}
           LEAF_BROWSER_FIXTURE: ${{ needs.changes.outputs.browser_fixture }}

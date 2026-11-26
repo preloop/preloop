@@ -130,6 +130,8 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> None:
         ({"labels": sorted(recovery.GENERAL_LABELS | {"gce-tests-only"})}, [], False),
         # A shard queued on the local pool falls back to hosted the same way.
         ({"labels": sorted(recovery.LOCAL_LABELS)}, [], True),
+        # And so does one queued on the ephemeral aws pool.
+        ({"labels": sorted(recovery.AWS_LABELS)}, [], True),
         ({"labels": ["self-hosted", "Linux", "X64"]}, [], False),
     ],
 )
