@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Preloop API
   description: REST API for Preloop issue tracking management
-  version: 1.1.0-rc.1
+  version: 1.1.0-rc.3
 paths:
   /api/v1/overview/bootstrap:
     get:
@@ -62378,6 +62378,7 @@ components:
           - type: number
             minimum: 0.0
           - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
