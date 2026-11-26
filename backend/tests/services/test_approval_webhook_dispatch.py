@@ -229,6 +229,24 @@ def test_summary_sentence_is_kept(monkeypatch):
     assert _call(monkeypatch, _completion(text)) == text
 
 
+def test_fallback_summary_puts_values_before_null_arguments() -> None:
+    summary = approval_summary.fallback_approval_summary(
+        "list_sessions",
+        {"cwd": None, "active_only": False, "alias": None, "limit": 0},
+    )
+    assert (
+        summary
+        == "Allow list_sessions with active_only=False, limit=0 (null: cwd, alias)?"
+    )
+
+
+def test_fallback_summary_keeps_explicit_null_when_no_other_arguments() -> None:
+    summary = approval_summary.fallback_approval_summary(
+        "update_record", {"owner": None}
+    )
+    assert summary == "Allow update_record with owner=null?"
+
+
 def test_fallback_summary_redacts_and_skips_markers():
     summary = approval_summary.fallback_approval_summary(
         "deploy", {"env": "prod", "api_key": "sk-123", "_preloop_marker": 1}
