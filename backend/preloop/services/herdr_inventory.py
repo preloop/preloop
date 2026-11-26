@@ -84,7 +84,7 @@ def reconcile_cached_herdr_inventory(db: Session, runner: models.FlowRunner) -> 
     snapshot. Cached metadata never closes panes, updates already joined rows,
     or adds a commit when nothing became managed.
     """
-    inventory = runner.harness_inventory or {}
+    inventory = getattr(runner, "harness_inventory", None) or {}
     report = inventory.get("herdr")
     if (
         not report
