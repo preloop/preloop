@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -20,7 +21,7 @@ func TestExtensionsShowLocalOnly(t *testing.T) {
 		{"hook", "PreToolUse", "bash /private/check.sh --token PRIVATE", "settings.json"},
 	} {
 		stdout, _, err := runExtensions(t, "show", tc.kind, tc.id, "--agent", "claude-code")
-		if err != nil || !strings.HasPrefix(stdout, "Local only: nothing is sent to Preloop.\n") || !strings.Contains(stdout, tc.want) || !strings.Contains(stdout, tc.file) {
+		if err != nil || !strings.HasPrefix(stdout, "Local only: nothing is sent to Preloop.\n") || !strings.Contains(stdout, tc.want) || !strings.Contains(stdout, filepath.FromSlash(tc.file)) {
 			t.Fatalf("show result: %q %v", stdout, err)
 		}
 	}

@@ -54,8 +54,15 @@ func TestInstalledPluginLayouts(t *testing.T) {
 			}
 			for _, ext := range extensions {
 				if ext.Kind == "skill" {
-					if ext.Details.Plugin == "" {
-						t.Fatal("missing plugin parent")
+					parent := "superpowers@superpowers-marketplace"
+					if strings.HasPrefix(ext.ID, "code-review:") {
+						parent = "code-review@claude-plugins-official"
+					}
+					// The inherited privacy filter can withhold a parent when a
+					// Windows drive letter or short temp-path segment matches it.
+					want, _ := (&extensionScan{home: home}).detailText(parent)
+					if ext.Details.Plugin != want {
+						t.Fatalf("plugin parent = %q, want %q", ext.Details.Plugin, want)
 					}
 					continue
 				}

@@ -31,7 +31,10 @@ async function mount(
     filters.push(f);
     return {
       items: items.filter(
-        (r) => !f.agent_kind || r.agent_kind === f.agent_kind
+        (r) =>
+          (!f.agent_kind || r.agent_kind === f.agent_kind) &&
+          (!f.state || r.approval_state === f.state) &&
+          (!f.q || r.extension_id.includes(f.q))
       ),
       next_cursor: null,
       completeness: 'complete',
@@ -97,11 +100,37 @@ describe('extension inventory scoped to an agent kind', () => {
     ).not.to.contain('preloop');
   });
 
+  it('says a filter emptied the table instead of the custom empty text', async () => {
+    const { element } = await mount();
+    const select = element.shadowRoot!.querySelector(
+      'sl-select[label="Approval state"]'
+    ) as HTMLElement & { value: string };
+    select.value = 'approved';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(() => element.shadowRoot!.querySelector('.empty'));
+    const text = element.shadowRoot!.querySelector('.empty')!.textContent!;
+    expect(text).to.contain('No extensions reported for this selection.');
+    expect(text).not.to.contain('No device has reported');
+  });
+
   it('shows the given empty state when nothing was reported', async () => {
     const { element } = await mount({ items: [] });
     expect(element.shadowRoot!.querySelector('.empty')!.textContent).to.contain(
       'No device has reported extensions for claude_code agents.'
     );
+  });
+
+  it('distinguishes an empty search from an inventory with no reports', async () => {
+    const { element } = await mount();
+    const input = element.shadowRoot!.querySelector(
+      'input[type="search"]'
+    ) as HTMLInputElement;
+    input.value = 'missing description';
+    input.dispatchEvent(new Event('input'));
+    await waitUntil(() => element.shadowRoot!.querySelector('.empty'));
+    const text = element.shadowRoot!.querySelector('.empty')!.textContent!;
+    expect(text).to.contain('No extensions reported for this selection.');
+    expect(text).not.to.contain('No device has reported');
   });
 
   it('hides approval controls without the manage permission', async () => {

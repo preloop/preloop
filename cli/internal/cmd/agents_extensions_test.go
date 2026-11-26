@@ -500,11 +500,12 @@ func TestInventoryExtensionsCheckVersionAndContentEdges(t *testing.T) {
 	// An empty directory now hashes as a real tree. A file the process cannot
 	// read is what leaves the skill with no content hash.
 	skillFile := writeInventoryFixture(t, skillHome, ".claude/skills/deploy-notes/SKILL.md", "fixture")
+	skillID := reportExtensionID(t, skillHome, "deploy-notes")
 	if err := os.Chmod(skillFile, 0); err != nil {
 		t.Fatal(err)
 	}
 	hash := "sha256:" + strings.Repeat("ab", 32)
-	path = writePolicyFile(t, []map[string]any{policyEntry("claude_code", "skill", "deploy-notes", "approved", map[string]any{"content_hashes": []string{hash}})})
+	path = writePolicyFile(t, []map[string]any{policyEntry("claude_code", "skill", skillID, "approved", map[string]any{"content_hashes": []string{hash}})})
 	stdout, _, err = runExtensions(t, "check", "--policy-file", path, "--json", "--agent", "claude-code")
 	finding = findExtensionFinding(decodeExtensionCheck(t, stdout), "deploy-notes")
 	if ProcessExitCode(err) != 2 || finding.State != "unknown" || finding.Reason != "content_unverified" {

@@ -16,7 +16,14 @@ func TestExtensionDescriptiveMetadata(t *testing.T) {
 	writeInventoryFixture(t, home, ".claude/skills/careful/scripts/check.py", "PRIVATE SCRIPT")
 	writeInventoryFixture(t, home, ".claude/commands/review.md", "---\ndescription: Review a change\n---\nPRIVATE COMMAND")
 	writeInventoryFixture(t, home, ".claude/settings.json", `{"hooks":{"PreToolUse":[{"matcher":"Bash|Edit","hooks":[{"type":"command","command":"/opt/bin/preloop agents permission-hook --token PRIVATE"},{"type":"command","command":"python3 /private/check.py --secret PRIVATE"}]}]}}`)
-	extensions, _ := collectInventoryExtensions(home, "claude-code", "salt", false)
+	extensions, _ := collectDisplayExtensions(home, "claude-code", "salt", false)
+	privacy := &extensionScan{home: home}
+	wantDescription, withheld := privacy.detailText("Review changes before acting.")
+	wantMatcher, matcherWithheld := privacy.detailText("Bash|Edit")
+	wantInvocation := "loaded by the model when relevant"
+	if _, hidden := privacy.detailText("careful"); !hidden {
+		wantInvocation = "/careful; " + wantInvocation
+	}
 	raw, _ := json.Marshal(extensions)
 	for _, secret := range []string{"PRIVATE", "/opt/bin", "/private/check.py"} {
 		if strings.Contains(string(raw), secret) {
@@ -27,7 +34,7 @@ func TestExtensionDescriptiveMetadata(t *testing.T) {
 	for _, ext := range extensions {
 		if ext.ID == "careful" {
 			found["skill"] = true
-			if ext.Details == nil || ext.Details.Description != "Review changes before acting." || ext.Details.Invocation != "/careful; loaded by the model when relevant" || ext.Details.ScriptCount == nil || *ext.Details.ScriptCount != 1 {
+			if ext.Details == nil || ext.Details.Description != wantDescription || ext.Details.DescriptionWithheld != withheld || ext.Details.Invocation != wantInvocation || ext.Details.ScriptCount == nil || *ext.Details.ScriptCount != 1 {
 				t.Fatalf("skill: %+v", ext.Details)
 			}
 		}
@@ -40,7 +47,11 @@ func TestExtensionDescriptiveMetadata(t *testing.T) {
 		if ext.Kind == "hook" {
 			found["hook"] = true
 			groups := ext.Details.HookMatchers
-			if len(groups) != 1 || groups[0].Matcher != "Bash|Edit" || groups[0].Count != 2 || groups[0].Commands[0].Executable != "preloop" || !groups[0].Commands[0].PreloopManaged || groups[0].Commands[1].Executable != "python3" {
+			python := "python3"
+			if _, hidden := privacy.detailText(python); hidden {
+				python = "unknown"
+			}
+			if len(groups) != 1 || groups[0].Matcher != wantMatcher || groups[0].MatcherWithheld != matcherWithheld || groups[0].Count != 2 || groups[0].Commands[0].Executable != "preloop" || !groups[0].Commands[0].PreloopManaged || groups[0].Commands[1].Executable != python {
 				t.Fatalf("hooks: %+v", groups)
 			}
 		}
@@ -61,13 +72,25 @@ func TestExtensionDescriptionPrivacy(t *testing.T) {
 	if withheld || len([]rune(clean)) != 300 || !strings.HasPrefix(clean, "hello world ") {
 		t.Fatalf("normalization: %q %v", clean, withheld)
 	}
+	// Drive letters and short temporary-directory segments are part of the
+	// existing identifier privacy contract, even when they match ordinary prose.
+	for _, home := range []string{`C:\Users\jane`, "/var/folders/example/T/jane"} {
+		scan.home = home
+		if value, hidden := scan.detailText("Check the change"); value != "" || !hidden {
+			t.Fatalf("home segment was not withheld: %q", home)
+		}
+	}
 }
 
 func TestCodexSkillInvocation(t *testing.T) {
 	home := extensionHome(t)
 	writeInventoryFixture(t, home, ".codex/skills/careful/SKILL.md", "---\nname: careful\ndescription: Review changes\n---\nPRIVATE")
 	extensions, _ := collectInventoryExtensions(home, "codex-cli", "", false)
-	if len(extensions) != 1 || extensions[0].Details == nil || extensions[0].Details.Invocation != "$careful (or /skills); loaded by the model when relevant" {
+	want := "loaded by the model when relevant"
+	if _, hidden := (&extensionScan{home: home}).detailText("careful"); !hidden {
+		want = "$careful (or /skills); " + want
+	}
+	if len(extensions) != 1 || extensions[0].Details == nil || extensions[0].Details.Invocation != want {
 		t.Fatalf("unexpected invocation: %+v", extensions)
 	}
 }
@@ -110,7 +133,10 @@ func TestPluginDescriptionsAndContents(t *testing.T) {
 		}
 	}
 	d := plugin.Details
-	if d == nil || d.Description != "Review helpers" || d.Author != "Jane Doe" || *d.Bundles != (extensionBundleCounts{Skills: 2, Commands: 1, Hooks: 1, MCPServers: 2, Agents: 1}) {
+	privacy := &extensionScan{home: home}
+	description, withheld := privacy.detailText("Review helpers")
+	author, _ := privacy.detailText("Jane Doe")
+	if d == nil || d.Description != description || d.DescriptionWithheld != withheld || d.Author != author || *d.Bundles != (extensionBundleCounts{Skills: 2, Commands: 1, Hooks: 1, MCPServers: 2, Agents: 1}) {
 		t.Fatalf("plugin: %+v", d)
 	}
 	raw, _ := json.Marshal(exts)
@@ -125,7 +151,7 @@ func TestSkillInvocationControlsAndModernCodexRoots(t *testing.T) {
 	home := extensionHome(t)
 	writeInventoryFixture(t, home, ".claude/skills/background/SKILL.md", "---\nname: background\ndescription: Check a change\nuser-invocable: false\n---\nPRIVATE")
 	writeInventoryFixture(t, home, ".claude/skills/manual/SKILL.md", "---\nname: manual\ndescription: Check a change\ndisable-model-invocation: true\n---\nPRIVATE")
-	exts, _ := collectInventoryExtensions(home, "claude-code", "", false)
+	exts, _ := collectDisplayExtensions(home, "claude-code", "", false)
 	for _, ext := range exts {
 		if ext.ID == "background" && ext.Details.Invocation != "loaded by the model when relevant" {
 			t.Fatalf("background: %+v", ext.Details)
@@ -138,12 +164,16 @@ func TestSkillInvocationControlsAndModernCodexRoots(t *testing.T) {
 	writeInventoryFixture(t, home, ".agents/skills/careful/SKILL.md", "---\nname: careful\ndescription: Review changes\n---\nPRIVATE")
 	writeInventoryFixture(t, home, ".agents/skills/careful/agents/openai.yaml", "policy:\n  allow_implicit_invocation: false\n")
 	writeInventoryFixture(t, project, ".agents/skills/project-check/SKILL.md", "---\nname: project-check\ndescription: Review changes\n---\nPRIVATE")
-	exts, _ = collectInventoryExtensions(home, "codex-cli", "salt", false, project)
+	exts, _ = collectDisplayExtensions(home, "codex-cli", "salt", false, project)
 	if len(exts) != 2 {
 		t.Fatalf("extensions: %+v", exts)
 	}
 	for _, ext := range exts {
-		if ext.ID == "careful" && ext.Details.Invocation != "$careful (or /skills)" {
+		want := "$careful (or /skills)"
+		if _, hidden := (&extensionScan{home: home}).detailText("careful"); hidden {
+			want = ""
+		}
+		if ext.ID == "careful" && ext.Details.Invocation != want {
 			t.Fatalf("explicit Codex: %+v", ext.Details)
 		}
 		if ext.ID == "project-check" && (ext.Scope != "project" || ext.ProjectRefHash == "") {

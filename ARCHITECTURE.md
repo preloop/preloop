@@ -112,11 +112,9 @@ See [security architecture](docs/architecture/security.md) and the
 edition extension.
 
 Installed agent extension inventory uses a bounded, metadata-only v4 discovery
-contract. A typed, nullable JSONB `details` object carries bounded descriptions,
-invocation, hook classifications and plugin component counts; file bodies and
-command arguments remain local. V4 downgrades to v3, then v2, on explicit
-schema-version rejection. `discovered_extension` stores presence per account,
-device, profile and agent; `extension_approval` stores account-wide decisions independently of
+contract. Nullable JSONB `details` carries bounded descriptions and invocation.
+`discovered_extension` stores presence per account, device, profile and agent;
+`extension_approval` stores account-wide decisions independently of
 inventory retention, and `extension_approval_pin` pins a decision to reviewed
 content hashes. CRUD owns reconciliation, approval joins and the single
 `effective_state` derivation (`content_changed` when a pinned approval meets an
