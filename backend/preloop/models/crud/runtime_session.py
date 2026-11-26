@@ -1826,6 +1826,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.session_source_id,
                 self.model.session_reference,
                 self.model.alias,
+                self.model.subagent_role,
                 parent_session_id_column,
                 self.model.runtime_principal_type,
                 self.model.runtime_principal_id,
@@ -1879,6 +1880,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.session_source_id,
                 self.model.session_reference,
                 self.model.alias,
+                self.model.subagent_role,
                 # PostgreSQL rejects a bound NULL constant in GROUP BY.
                 *([parent_session_id_column] if parent_session_id_available else []),
                 self.model.runtime_principal_type,
@@ -2238,6 +2240,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.session_source_id,
                 self.model.session_reference,
                 self.model.alias,
+                self.model.subagent_role,
                 parent_session_id_column,
                 self.model.runtime_principal_type,
                 self.model.runtime_principal_id,
@@ -2294,6 +2297,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.session_source_id,
                 self.model.session_reference,
                 self.model.alias,
+                self.model.subagent_role,
                 # PostgreSQL rejects a bound NULL constant in GROUP BY.
                 *([parent_session_id_column] if parent_session_id_available else []),
                 self.model.runtime_principal_type,
@@ -2456,6 +2460,12 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             activity_status = "ended"
             is_active_now = False
         elif (
+            row.parent_session_id is not None
+            and getattr(row, "turn_state", None) == "your_turn"
+        ):
+            activity_status = "idle"
+            is_active_now = False
+        elif (
             last_observed_at is not None
             and (now - last_observed_at) <= CRUDRuntimeSession.ACTIVE_WINDOW
         ):
@@ -2472,6 +2482,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "session_source_id": row.session_source_id,
             "session_reference": row.session_reference,
             "alias": row.alias,
+            "subagent_role": getattr(row, "subagent_role", None),
             "parent_session_id": (
                 str(row.parent_session_id)
                 if row.parent_session_id is not None

@@ -24,7 +24,11 @@ func addDiscoveryExtensions(report *discoveryReportRequest, salt, home string, d
 	evidence := &inventoryReportEvidence{SchemaVersion: 3, ObservationID: fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]), CollectorVersion: report.CLIVersion, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: deps.Now().UTC(), ScanScope: []string{"user_config"}, Completeness: "complete", Errors: []string{}, Profiles: []inventoryProfileResult{{ProfileRef: ref, Completeness: "complete"}}, Applications: []inventoryReportApplication{}}
 	// Extension coverage follows the supported collectors, independently of
 	// unrelated application/runtime probes and missing discovery candidates.
+	evidence.ExtensionErrors = inventoryExtensionErrors(scan)
 	evidence.ExtensionCompleteness = "complete"
+	if len(evidence.ExtensionErrors) > 0 {
+		evidence.ExtensionCompleteness = "partial"
+	}
 	reportedKinds := map[string]bool{}
 	for _, candidate := range report.Candidates {
 		reportedKinds[candidate.AgentKind] = true
@@ -91,10 +95,20 @@ func postInventoryReport(client *api.Client, report discoveryReportRequest, resp
 		return err
 	}
 	rejectedSchema := false
+	rejectedReasons := false
 	for _, detail := range validation.Detail {
+		if len(detail.Loc) == 3 && detail.Loc[0] == "body" && detail.Loc[1] == "evidence" && detail.Loc[2] == "extension_errors" && detail.Type == "extra_forbidden" {
+			rejectedReasons = true
+		}
 		if len(detail.Loc) == 3 && detail.Loc[0] == "body" && detail.Loc[1] == "evidence" && detail.Loc[2] == "schema_version" && detail.Type == "literal_error" {
 			rejectedSchema = true
 		}
+	}
+	if !rejectedSchema && rejectedReasons {
+		evidence := *report.Evidence
+		evidence.ExtensionErrors = nil
+		report.Evidence = &evidence
+		return inventoryReportError(client.Post(discoveryReportPath, report, response))
 	}
 	if !rejectedSchema {
 		return err
@@ -131,6 +145,7 @@ func downgradeInventoryReport(report discoveryReportRequest) discoveryReportRequ
 	evidence.SchemaVersion = 2
 	evidence.ScopeCompleteness = nil
 	evidence.ExtensionCompleteness = ""
+	evidence.ExtensionErrors = nil
 	evidence.Applications = append([]inventoryReportApplication{}, evidence.Applications...)
 	report.Candidates = append([]discoveryReportCandidate{}, report.Candidates...)
 	legacyApps := []inventoryReportApplication{}
@@ -155,4 +170,23 @@ func downgradeInventoryReport(report discoveryReportRequest) discoveryReportRequ
 	report.Evidence = &evidence
 	evidence.DetectorVersion = "2"
 	return report
+}
+
+// Preserve only fixed extension failure codes, never probe text or paths.
+func inventoryExtensionErrors(scan inventoryEnvelope) []string {
+	var codes []string
+	seen := map[string]bool{}
+	for _, probe := range scan.ProbeResults {
+		if probe.Kind != "extensions" {
+			continue
+		}
+		switch probe.ErrorCode {
+		case "extension_file_limit", "extension_hook_unbound", "extension_limit", "extension_malformed", "extension_project_unscanned", "extension_symlink", "extension_unreadable", "extension_unsafe_path", "extension_unsupported_scope", "extension_unsupported_version":
+			if !seen[probe.ErrorCode] {
+				codes = append(codes, probe.ErrorCode)
+				seen[probe.ErrorCode] = true
+			}
+		}
+	}
+	return codes
 }

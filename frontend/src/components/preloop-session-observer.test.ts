@@ -704,6 +704,47 @@ describe('PreloopSessionObserver', () => {
     }
   });
 
+  it('shows subagent lineage and finished turns, including an off-page parent', async () => {
+    const child = {
+      ...session,
+      parent_session_id: 'parent-example',
+      subagent_role: 'reviewer',
+      turn_state: 'your_turn',
+      turn_ended_at: '2026-03-09T20:00:00Z',
+    };
+    const el = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        .sessions=${[child]}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() =>
+      Boolean(el.shadowRoot!.querySelector('[data-parent-session]'))
+    );
+    expect(
+      el.shadowRoot!.querySelector('[data-session-lineage]')!.textContent
+    ).to.contain('Subagent · reviewer');
+    expect(
+      el
+        .shadowRoot!.querySelector('[data-parent-session]')!
+        .getAttribute('href')
+    ).to.contain('sessionId=parent-example');
+    expect(
+      el.shadowRoot!.querySelector('.session-heading .chip')!.textContent
+    ).to.contain('Turn finished');
+    el.sessions = [
+      {
+        ...child,
+        turn_state: 'working',
+        turn_ended_at: null,
+        last_activity_at: new Date().toISOString(),
+      },
+    ];
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelector('.session-heading .chip')!.textContent
+    ).to.contain('Working');
+  });
+
   it('uses compact header tokens with the exact count available on hover', async () => {
     const el = await fixture<PreloopSessionObserver>(
       html`<preloop-session-observer

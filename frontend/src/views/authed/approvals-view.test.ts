@@ -104,6 +104,41 @@ describe('ApprovalsView', () => {
     return element;
   }
 
+  it('labels decisions from recorded causes without inferring a person', async () => {
+    const requests = [
+      { auto_approved_reason: 'native_tool_approvals_off' },
+      { auto_approved_reason: 'bypass' },
+      { auto_approved_reason: 'flow_approval_policy' },
+      { decided_by_ai: true },
+      { decided_by_human: true },
+      {},
+      { auto_approved_reason: 'future_reason' },
+    ].map((cause, i) =>
+      baseRequest({
+        id: `cause-${i}`,
+        status: 'approved',
+        auto_approval_bypass_id: null,
+        ...cause,
+      })
+    );
+    const element = await renderList(requests);
+    (element as any).statusFilter = 'all';
+    (element as any).applyFilters();
+    await element.updateComplete;
+    const labels = Array.from(
+      element.shadowRoot!.querySelectorAll('[data-decision-cause]')
+    ).map((el) => el.textContent!.trim());
+    expect(labels).to.deep.equal([
+      'Native approvals off',
+      'Time-boxed bypass',
+      'Policy rule',
+      'AI decision',
+      'Person',
+      'Decision source unknown',
+      'Automatic decision',
+    ]);
+  });
+
   function bodyOf(call: sinon.SinonSpyCall) {
     return JSON.parse(String((call.args[1] as RequestInit).body));
   }

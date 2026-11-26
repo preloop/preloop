@@ -36,6 +36,7 @@ type inventoryReportApplication struct {
 	Completeness   string                   `json:"completeness,omitempty"`
 }
 type inventoryReportEvidence struct {
+	ExtensionErrors       []string                     `json:"extension_errors,omitempty"`
 	ScopeCompleteness     map[string]string            `json:"scope_completeness,omitempty"`
 	ExtensionCompleteness string                       `json:"extension_completeness,omitempty"`
 	SchemaVersion         int                          `json:"schema_version"`
@@ -56,7 +57,11 @@ type inventoryReportEvidence struct {
 func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEnvelope, ended time.Time) discoveryReportRequest {
 	report := discoveryReportRequest{WorkstationFingerprint: workstationFingerprint(salt, machineID), OS: discoveryOSFamily(), Candidates: []discoveryReportCandidate{}}
 	evidence := inventoryReportEvidence{SchemaVersion: 3, ObservationID: observationID, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: ended, ScanScope: []string{"user_config"}, Completeness: scan.Completeness, Errors: []string{}, Profiles: scan.Profiles, Applications: []inventoryReportApplication{}}
+	evidence.ExtensionErrors = inventoryExtensionErrors(scan)
 	evidence.ExtensionCompleteness = "complete"
+	if len(evidence.ExtensionErrors) > 0 {
+		evidence.ExtensionCompleteness = "partial"
+	}
 	if scan.Scope.ErrorCode != "" || scan.Completeness == "failed" {
 		evidence.ExtensionCompleteness = "partial"
 	}

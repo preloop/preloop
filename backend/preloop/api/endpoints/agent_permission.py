@@ -12,6 +12,7 @@ import re
 import shlex
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
@@ -1414,6 +1415,7 @@ class AgentSessionEventRequest(BaseModel):
     hook_event_name: Literal[
         "Stop",
         "SubagentStop",
+        "SubagentStart",
         "SessionEnd",
         "stop",
         "sessionEnd",
@@ -1423,6 +1425,9 @@ class AgentSessionEventRequest(BaseModel):
     ]
     source: Optional[str] = Field(
         None, max_length=64, description="Agent adapter, e.g. 'claude_code'"
+    )
+    subagent_role: Optional[str] = Field(
+        None, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$"
     )
     tool_use_id: Optional[str] = Field(None, max_length=200)
     tool_name: Optional[str] = Field(None, max_length=100)
@@ -1474,7 +1479,42 @@ def _record_session_event(
                 or session.runtime_principal_id not in {principal_id, qualified}
             ):
                 return False
+        if session is None and payload.hook_event_name == "SubagentStart":
+            parent_external, separator, child_id = external.rpartition(":")
+            if not separator or not child_id:
+                return False
+            parent = crud_runtime_session.get_by_source(
+                db,
+                account_id=identity.account_id,
+                session_source_type=principal_type,
+                session_source_id=session_source_id_for(principal_id, parent_external),
+            )
+            if (
+                parent is None
+                or parent.runtime_principal_type != principal_type
+                or parent.runtime_principal_id
+                not in {
+                    principal_id,
+                    session_source_id_for(principal_id, parent_external),
+                }
+            ):
+                return False
+            session = crud_runtime_session.upsert_by_source(
+                db,
+                account_id=identity.account_id,
+                session_source_type=principal_type,
+                session_source_id=session_source_id_for(principal_id, external),
+                runtime_principal_type=principal_type,
+                runtime_principal_id=principal_id,
+                parent_session_id=parent.id,
+                started_at=datetime.now(timezone.utc),
+            )
         if session is None:
+            return False
+        if (
+            payload.hook_event_name in {"SubagentStop", "SubagentStart"}
+            and session.parent_session_id is None
+        ):
             return False
         record_session_event(
             db,
@@ -1493,6 +1533,7 @@ def _record_session_event(
                     "duration_ms",
                     "notification_type",
                     "interrupted",
+                    "subagent_role",
                 },
                 exclude_none=True,
             ),

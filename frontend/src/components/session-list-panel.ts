@@ -75,6 +75,14 @@ export class SessionListPanel extends LitElement {
 
       /* Compact rows (#1585): three single lines per session, so a page of
          20 fits in about two viewports instead of 50 tall cards in 30. */
+      .session-lineage {
+        padding: 0 var(--sl-spacing-small) var(--sl-spacing-small);
+        overflow-wrap: anywhere;
+      }
+      .session-lineage a {
+        color: var(--console-link-color);
+      }
+
       .list {
         display: flex;
         flex-direction: column;
@@ -412,6 +420,7 @@ export class SessionListPanel extends LitElement {
       turn_state: typeof raw.turn_state === 'string' ? raw.turn_state : null,
       ended_at:
         session.endedAt || (session.status === 'ended' ? 'ended' : null),
+      parent_session_id: session.parentSessionId,
       last_activity_at: session.lastActivityAt,
     });
   }
@@ -604,6 +613,28 @@ export class SessionListPanel extends LitElement {
                 ${this.renderWasteBadge(session)}
                 ${this.renderNoteIndicator(session)}
               </a>
+              ${
+                session.parentSessionId
+                  ? html` <div class="meta session-lineage">
+                      Subagent${session.subagentRole || session.spawnLabel ? html` · ${session.subagentRole || session.spawnLabel}` : nothing}
+                      · Parent
+                      <a
+                        data-parent-session
+                        href=${this.sessionHref(session.parentSessionId)}
+                        >${this.sessions.find((row) => row.id === session.parentSessionId)?.title || session.parentSessionId.slice(0, 8)}</a
+                      >
+                    </div>`
+                  : nothing
+              }
+              ${
+                this.sessions.some((row) => row.parentSessionId === session.id)
+                  ? html` <div class="meta session-lineage">
+                      ${this.sessions.filter((row) => row.parentSessionId === session.id).length}
+                      child${this.sessions.filter((row) => row.parentSessionId === session.id).length === 1 ? '' : 'ren'}
+                      in this list
+                    </div>`
+                  : nothing
+              }
               ${this.renderArtifactCell(session)}
             </div>
           `

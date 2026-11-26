@@ -1212,6 +1212,7 @@ class RuntimeSessionExplorerService:
             # for the many sessions whose harness never names a parent.
             alias=row.get("alias"),
             parent_session_id=row.get("parent_session_id"),
+            subagent_role=row.get("subagent_role"),
             runtime_principal_type=row["runtime_principal_type"],
             runtime_principal_id=row["runtime_principal_id"],
             runtime_principal_name=row["runtime_principal_name"],
