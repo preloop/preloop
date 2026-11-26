@@ -2,6 +2,8 @@ import { expect, fixture, html } from '@open-wc/testing';
 
 import './session-list-panel.ts';
 import type { SessionListPanel } from './session-list-panel.ts';
+import { loadShoelaceTokens } from '../utils/test-shoelace-theme';
+import { setViewport } from '@web/test-runner-commands';
 import type { ObservedSession } from '../utils/session-observer';
 
 function makeSession(overrides: Partial<ObservedSession>): ObservedSession {
@@ -141,8 +143,47 @@ describe('session-list-panel figures', () => {
     // Cost follows the tokens in the same line, not the other way round.
     const row = el.shadowRoot?.querySelector('.metric-row') as HTMLElement;
     const rowText = (row.textContent || '').replace(/\s+/g, ' ');
-    expect(rowText.trim().endsWith('$0.42')).to.be.true;
+    expect(rowText.trim().endsWith('$0.42 est.')).to.be.true;
     expect(getComputedStyle(row).flexWrap).to.equal('nowrap');
+  });
+});
+
+describe('imported session figures (#2425)', () => {
+  it('omits an unmeasured request count and labels the known estimate', async () => {
+    const el = await renderPanel([
+      makeSession({
+        totalRequests: 0,
+        estimatedCost: 0.42,
+        tokenUsage: {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          total_tokens: 120,
+        },
+        raw: {
+          total_requests: null,
+          usage_source: 'imported',
+          cost_is_known: true,
+        },
+      }),
+    ]);
+    const row = el.shadowRoot!.querySelector('.metric-row')!;
+    expect(row.textContent).not.to.contain('requests');
+    expect(row.textContent).to.contain('$0.42 est.');
+    expect(row.querySelector('token-figures')).to.exist;
+  });
+  it('omits missing cost instead of displaying zero', async () => {
+    const el = await renderPanel([
+      makeSession({
+        totalRequests: 0,
+        estimatedCost: 0,
+        raw: {
+          total_requests: null,
+          usage_source: 'imported',
+          cost_is_known: false,
+        },
+      }),
+    ]);
+    expect(el.shadowRoot!.querySelector('.metric.cost')).not.to.exist;
   });
 });
 
@@ -153,7 +194,7 @@ describe('session-list-panel empty figures', () => {
     ]);
     const row = el.shadowRoot?.querySelector('.metric-row') as HTMLElement;
     const rowText = (row.textContent || '').replace(/\s+/g, ' ').trim();
-    expect(rowText).to.equal('0 requests · $0.00');
+    expect(rowText).to.equal('0 requests · $0.00 est.');
     expect(row.querySelector('token-figures')).to.not.exist;
   });
 });
@@ -251,7 +292,7 @@ describe('session-list-panel artifact cell (#1084)', () => {
     expect(el.shadowRoot?.querySelector('.artifact-row')).to.equal(null);
   });
 
-  it('folds kinds into header groups and keeps the icons outside the select button', async () => {
+  it('folds kinds into header groups and keeps the icons outside the select link', async () => {
     const el = await renderPanel([
       makeSession({
         artifactCounts: { recording: 1, screencast: 2, screenshot: 1 },
@@ -262,10 +303,10 @@ describe('session-list-panel artifact cell (#1084)', () => {
     ).map((node) => node.getAttribute('data-kind'));
     expect(buttons).to.deep.equal(['other', 'screenshot']);
 
-    // Selection is a real button and the icons are its siblings, not its
+    // Selection is a real link and the icons are its siblings, not its
     // children, so a screen reader reaches both.
     const select = el.shadowRoot!.querySelector(
-      '.session-card > button.session-select'
+      '.session-card > a.session-select'
     ) as HTMLButtonElement;
     expect(select).to.exist;
     expect(select.querySelector('.artifact-kind')).to.equal(null);
@@ -318,4 +359,139 @@ describe('session-list-panel compact rows (#1585)', () => {
     const card = el.shadowRoot!.querySelector('.session-card') as HTMLElement;
     expect(card.getBoundingClientRect().height).to.be.lessThan(80);
   });
+});
+
+describe('session-list-panel navigation', () => {
+  it('uses one tab stop and arrow keys without selecting until Enter', async () => {
+    const el = await renderPanel([
+      makeSession({ id: 'first' }),
+      makeSession({ id: 'second', artifactCounts: { screenshot: 1 } }),
+      makeSession({ id: 'third' }),
+    ]);
+    const links = Array.from(
+      el.shadowRoot!.querySelectorAll<HTMLAnchorElement>('a.session-select')
+    );
+    expect(links).to.have.length(3);
+    expect(links.map((link) => link.tabIndex)).to.deep.equal([0, -1, -1]);
+    let selected = '';
+    el.addEventListener('session-selected', (event) => {
+      selected = (event as CustomEvent).detail.sessionId;
+    });
+    links[0].focus();
+    links[0].dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+    await el.updateComplete;
+    expect(el.shadowRoot!.activeElement).to.equal(links[1]);
+    expect(selected).to.equal('');
+    expect(links.map((link) => link.tabIndex)).to.deep.equal([-1, 0, -1]);
+    expect(
+      el
+        .shadowRoot!.querySelector('button.artifact-kind')!
+        .getAttribute('tabindex')
+    ).to.equal('0');
+    links[1].click();
+    expect(selected).to.equal('second');
+    links[1].dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'End',
+        bubbles: true,
+        cancelable: true,
+      })
+    );
+    await el.updateComplete;
+    expect(el.shadowRoot!.activeElement).to.equal(links[2]);
+    el.sessions = [makeSession({ id: 'first' })];
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelector('a.session-select')!.getAttribute('tabindex')
+    ).to.equal('0');
+  });
+
+  it('keeps modified clicks native and links to the selected identity', async () => {
+    const el = await renderPanel([makeSession({ id: 'session-example' })]);
+    const link =
+      el.shadowRoot!.querySelector<HTMLAnchorElement>('a.session-select')!;
+    expect(link).to.exist;
+    expect(new URL(link.href).searchParams.get('sessionId')).to.equal(
+      'session-example'
+    );
+    let selections = 0;
+    el.addEventListener('session-selected', () => selections++);
+    for (const init of [
+      { metaKey: true },
+      { ctrlKey: true },
+      { shiftKey: true },
+      { button: 1 },
+    ]) {
+      const click = new MouseEvent('click', {
+        ...init,
+        bubbles: true,
+        cancelable: true,
+      });
+      // Observe the component's decision before preventing browser navigation.
+      let prevented = true;
+      link.addEventListener(
+        'click',
+        (event) => {
+          prevented = event.defaultPrevented;
+          event.preventDefault();
+        },
+        { once: true }
+      );
+      link.dispatchEvent(click);
+      expect(prevented).to.be.false;
+    }
+    expect(selections).to.equal(0);
+  });
+});
+
+describe('session-list-panel design (#2431)', () => {
+  for (const width of [1440, 390]) {
+    it(`uses hairlines and a selection rule at ${width}px`, async () => {
+      await loadShoelaceTokens();
+      await setViewport({ width, height: 844 });
+      const el = await renderPanel([
+        makeSession({
+          id: 'first',
+          lastActivityAt: '2026-01-01T12:00:00Z',
+          totalRequests: 12400,
+        }),
+        makeSession({ id: 'second' }),
+      ]);
+      el.style.setProperty('--console-hairline', 'var(--sl-color-neutral-200)');
+      el.activeSessionId = 'first';
+      await el.updateComplete;
+      const row = el.shadowRoot!.querySelector<HTMLElement>(
+        '.session-card.active'
+      )!;
+      const style = getComputedStyle(row);
+      expect(style.backgroundColor).to.equal('rgba(0, 0, 0, 0)');
+      expect(style.borderLeftWidth).to.equal('3px');
+      expect(style.borderBottomWidth).to.equal('1px');
+      expect(style.borderTopWidth).to.equal('0px');
+      expect(style.boxShadow).to.equal('none');
+      const title = row.querySelector<HTMLElement>('.title')!;
+      const cost = row.querySelector<HTMLElement>('.metric.cost')!;
+      expect(getComputedStyle(cost).color).to.equal(
+        getComputedStyle(title).color
+      );
+      expect(cost.textContent).to.contain('est.');
+      expect(row.querySelector('.metric')!.textContent).to.contain(
+        '12.4K requests'
+      );
+      expect(row.querySelector('.metric')!.getAttribute('title')).to.equal(
+        '12,400 requests'
+      );
+      expect(row.querySelector('.meta')!.textContent).to.contain('ago');
+      expect(row.querySelector('.meta')!.getAttribute('title')).to.contain(
+        'Last activity'
+      );
+      expect(row.getBoundingClientRect().right).to.be.at.most(width);
+    });
+  }
 });

@@ -161,7 +161,7 @@ func TestNoCredentialImportUsesExplicitAccountModel(t *testing.T) {
 	for _, preferred := range []string{"openai/example-model", ""} {
 		t.Run("preferred="+preferred, func(t *testing.T) {
 			selected := &aiModelResponse{ProviderName: "openai", ModelIdentifier: "example-model", HasAPIKey: true}
-			upstream := enrollmentSelectedUpstream(&managedGatewayUpstream{APIKey: "synthetic-secret"}, "openai/example-model", selected, managedEnrollmentOptions{NoCredentialImport: true, PreferredModel: preferred})
+			upstream := enrollmentSelectedUpstream(AgentConfig{Name: "Claude Code"}, &managedGatewayUpstream{APIKey: "synthetic-secret"}, "openai/example-model", selected, managedEnrollmentOptions{NoCredentialImport: true, PreferredModel: preferred})
 			if upstream.APIKey != "" || upstream.SourceAgent != "account-ai-model" {
 				t.Fatalf("local credential preserved: %+v", upstream)
 			}

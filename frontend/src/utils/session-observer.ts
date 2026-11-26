@@ -358,7 +358,8 @@ function artifactCountsFrom(value: unknown): Record<string, number> {
 export function normalizeObservedSessions(
   sessions: Array<
     RuntimeSessionSummary | GatewayUsageBySession | Record<string, unknown>
-  >
+  >,
+  { preserveOrder = false }: { preserveOrder?: boolean } = {}
 ): ObservedSession[] {
   const byId = new Map<string, ObservedSession>();
   for (const row of sessions || []) {
@@ -403,7 +404,9 @@ export function normalizeObservedSessions(
       existing.artifactCounts = session.artifactCounts;
     }
   }
-  return Array.from(byId.values()).sort((left, right) => {
+  const rows = Array.from(byId.values());
+  if (preserveOrder) return rows;
+  return rows.sort((left, right) => {
     const leftTime = new Date(
       left.lastActivityAt || left.startedAt || 0
     ).getTime();

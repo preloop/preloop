@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from preloop.services.rate_limit import (
     OAUTH_AUTHORIZE,
     OAUTH_REGISTER,
+    OAUTH_REVOKE,
     OAUTH_TOKEN,
     limit_by_ip,
 )
@@ -825,7 +826,7 @@ def _revoke_cli_jwt(token: str) -> Optional[JSONResponse]:
     return JSONResponse({"status": "revoked"})
 
 
-@router.post("/oauth/revoke")
+@router.post("/oauth/revoke", dependencies=[Depends(limit_by_ip(OAUTH_REVOKE))])
 async def revoke_token(token: str = Form(...)):
     """Revoke an access or refresh token.
 

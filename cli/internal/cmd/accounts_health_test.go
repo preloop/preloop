@@ -76,6 +76,17 @@ func TestAccountsHealthRefusedForNonOperators(t *testing.T) {
 	}
 }
 
+func TestAccountsHealthLegacyServer(t *testing.T) {
+	var seen string
+	server := healthTestServer(t, http.StatusNotFound, `{"detail":"Not Found"}`, &seen)
+	defer server.Close()
+	setupHealthEnv(t, server.URL)
+	_, err := runRoot(t, "--profile", "work", "accounts", "health", "00000000-0000-0000-0000-00000000000a")
+	if err == nil || !strings.Contains(err.Error(), "upgrade the server") {
+		t.Fatalf("expected compatibility guidance, got %v", err)
+	}
+}
+
 func TestAccountsHealthSendsUntilAndCapsTheWindow(t *testing.T) {
 	var seen string
 	server := healthTestServer(t, http.StatusOK, `{"account_id":"a","hollow_successes":{}}`, &seen)

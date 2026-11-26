@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.models.crud import crud_chat
 from preloop.models.db.session import get_session_factory
-from preloop.services.chat_assistant import ChatBroker
+from preloop.services.chat_assistant import ChatBroker, ChatReadDeferredError
 from preloop.services.chat_providers import (
     ChatProviderError,
     ChatProviderRetryError,
@@ -32,6 +32,32 @@ from preloop.api.auth.permissions import has_permission
 
 logger = logging.getLogger(__name__)
 
+STORED_RESPONSE_REVALIDATION_LIMIT = 12
+
+
+def defer_stored_response(db: Session, row: models.ChatWork) -> None:
+    """Bound safe read retries and retain exhausted answers for inspection."""
+    failures = row.payload.get("revalidation_failures", 0) + 1
+    exhausted = failures >= STORED_RESPONSE_REVALIDATION_LIMIT
+    delay = min(300, 30 * 2 ** min(failures - 1, 4))
+    crud_chat.transition(
+        db,
+        row,
+        "failed" if exhausted else "reply_ready",
+        attempts=0,
+        lease_until=None,
+        payload={**row.payload, "revalidation_failures": failures},
+        next_attempt_at=datetime.utcnow() + timedelta(seconds=delay),
+        last_error=(
+            "Stored response revalidation retry limit reached; "
+            "response retained for inspection"
+            if exhausted
+            else "Waiting to revalidate stored response"
+        ),
+    )
+    if exhausted:
+        logger.warning("Stored chat response %s exhausted revalidation retries", row.id)
+
 
 async def process_one(db: Session, app: Any) -> bool:
     """Claim one durable item; uncertain writes require operator inspection."""
@@ -42,6 +68,7 @@ async def process_one(db: Session, app: Any) -> bool:
         db, row.connection_id, account_id=str(row.account_id)
     )
     if connection is None or not connection.enabled:
+        crud_chat.close_bindings(db, row.connection_id)
         crud_chat.transition(db, row, "cancelled", last_error="Connection disabled")
         return True
     config = provider_config(connection)
@@ -109,6 +136,12 @@ async def process_one(db: Session, app: Any) -> bool:
                 user = crud_chat.principal(db, connection, row.external_user_id)
                 if user is None:
                     if row.payload.get("actor_id"):
+                        crud_chat.close_bindings(
+                            db,
+                            connection.id,
+                            external_user_id=row.external_user_id,
+                            owner_user_id=UUID(row.payload["actor_id"]),
+                        )
                         crud_chat.transition(
                             db, row, "cancelled", last_error="Original actor revoked"
                         )
@@ -124,6 +157,12 @@ async def process_one(db: Session, app: Any) -> bool:
                 else:
                     original_actor = row.payload.get("actor_id")
                     if original_actor and original_actor != str(user.id):
+                        crud_chat.close_bindings(
+                            db,
+                            connection.id,
+                            external_user_id=row.external_user_id,
+                            owner_user_id=UUID(original_actor),
+                        )
                         crud_chat.transition(
                             db, row, "cancelled", last_error="Identity was relinked"
                         )
@@ -136,7 +175,12 @@ async def process_one(db: Session, app: Any) -> bool:
                         payload={**row.payload, "actor_id": str(user.id)},
                     )
                     broker = ChatBroker(db, connection, row.external_user_id, app)
-                    if row.payload.get("flow_watch"):
+                    if row.payload.get("conversation_watch"):
+                        await broker.poll_conversation(row)
+                        return True
+                    elif row.payload.get("conversation_notice"):
+                        reply = text
+                    elif row.payload.get("flow_watch"):
                         from preloop.services.chat_flows import watch_run
 
                         if not await watch_run(broker, row):
@@ -144,6 +188,20 @@ async def process_one(db: Session, app: Any) -> bool:
                         reply = row.reply
                     elif row.payload.get("flow_notice"):
                         reply = text
+                    elif (
+                        not row.payload.get("approval_request_id")
+                        and (
+                            conversation_reply := await broker.conversation_command(row)
+                        )
+                        is not None
+                    ):
+                        reply = conversation_reply
+                        crud_chat.transition(
+                            db,
+                            row,
+                            "processing",
+                            payload={**row.payload, "flow_conversation": True},
+                        )
                     elif text.split(maxsplit=1)[0:1] in (["/ask"], ["/help"]):
                         from preloop.services.chat_flows import start_or_help
 
@@ -272,7 +330,10 @@ async def process_one(db: Session, app: Any) -> bool:
                             broker.command(text, str(row.id)), timeout=90
                         )
                     else:
-                        reply = await asyncio.wait_for(broker.answer(text), timeout=90)
+                        reply = (
+                            "Read-only account assistant: "
+                            + await asyncio.wait_for(broker.answer(text), timeout=90)
+                        )
                         crud_chat.transition(
                             db,
                             row,
@@ -296,6 +357,12 @@ async def process_one(db: Session, app: Any) -> bool:
         if row.user_id is not None:
             user = crud_chat.principal(db, connection, row.external_user_id)
             if user is None or user.id != row.user_id:
+                crud_chat.close_bindings(
+                    db,
+                    connection.id,
+                    external_user_id=row.external_user_id,
+                    owner_user_id=row.user_id,
+                )
                 crud_chat.transition(
                     db, row, "cancelled", last_error="Identity revoked"
                 )
@@ -315,6 +382,12 @@ async def process_one(db: Session, app: Any) -> bool:
                 )
                 await ChatBroker(db, connection, row.external_user_id, app).request(
                     "GET", f"/api/v1/flows/executions/{execution_id}", "view_flows"
+                )
+            if row.payload.get("conversation_id"):
+                await ChatBroker(db, connection, row.external_user_id, app).request(
+                    "GET",
+                    f"/api/v1/flow-conversations/{row.payload['conversation_id']}",
+                    "view_flows",
                 )
             permission = row.payload.get("required_permission")
             if permission and not has_permission(user, permission, db):
@@ -384,6 +457,8 @@ async def process_one(db: Session, app: Any) -> bool:
         crud_chat.transition(
             db, row, "delivered", provider_message_id=message_id, last_error=None
         )
+    except ChatReadDeferredError:
+        return True
     except ChatProviderRetryError as exc:
         crud_chat.transition(
             db,
@@ -395,6 +470,13 @@ async def process_one(db: Session, app: Any) -> bool:
     except TeamsInstallRequiredError:
         crud_chat.transition(db, row, "failed", last_error=TEAMS_INSTALL_ERROR)
     except HTTPException as exc:
+        if (
+            row.reply is not None
+            and row.status in {"processing", "reply_ready"}
+            and (exc.status_code == 429 or exc.status_code >= 500)
+        ):
+            defer_stored_response(db, row)
+            return True
         crud_chat.transition(
             db,
             row,
@@ -417,6 +499,8 @@ async def process_one(db: Session, app: Any) -> bool:
                 "uncertain",
                 last_error="Operation outcome is uncertain; inspect before retrying",
             )
+        elif row.reply is not None and row.status in {"processing", "reply_ready"}:
+            defer_stored_response(db, row)
         else:
             crud_chat.transition(
                 db,

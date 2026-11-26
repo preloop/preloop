@@ -94,6 +94,9 @@ func printLiveValidationRoundTripResult(
 		seconds,
 		detail,
 	))) //nolint:errcheck
+	if outcome != nil && outcome.ValidationResult["live_validation_status"] == "credential_repair_required" {
+		return // The caller prints the credential-only repair command.
+	}
 	fmt.Fprintln(w, formatCLIError(
 		"  Fix the failure above, then re-verify with: preloop agents validate <agent> --live",
 	)) //nolint:errcheck

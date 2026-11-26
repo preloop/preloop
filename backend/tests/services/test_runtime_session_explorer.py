@@ -1126,3 +1126,24 @@ def test_resolve_agent_filters_owner_with_kind_never_widens_to_source_type(
 
     assert principals == [("managed_agent", "mine")]
     assert source_types is None
+
+
+def test_summary_insight_omits_unknown_imported_measurements(
+    service: RuntimeSessionExplorerService,
+) -> None:
+    """Unknown requests and cost are omitted instead of rendered as None or zero."""
+    row = _make_summary_row(total_requests=None, cost_is_known=False)
+    with (
+        patch.object(
+            rse_mod.crud_runtime_session,
+            "get_account_session_summary",
+            return_value=row,
+        ),
+        patch.object(
+            rse_mod.crud_ai_model, "get_default_active_model", return_value=None
+        ),
+    ):
+        insight = service.get_account_session_summary_insight(
+            account=_make_account(), runtime_session_id=row["id"]
+        )
+    assert not any("request" in item or "spend" in item for item in insight.highlights)

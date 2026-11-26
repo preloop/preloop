@@ -427,3 +427,21 @@ def test_owner_filter_rejects_malformed_ids(client: Any) -> None:
     response = client.get("/api/v1/runtime-sessions?owner_user_id=nope")
 
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("sort", ["last_activity", "started", "cost", "requests"])
+def test_session_sort_is_validated_and_applied_before_paging(
+    client: Any, db_session: Session, account_id: Any, sort: str
+) -> None:
+    """The list endpoint forwards the selected order and keeps the matched total."""
+    older = _session(db_session, account_id, "older", started_ago=timedelta(hours=3))
+    newer = _session(db_session, account_id, "newer", started_ago=timedelta(hours=1))
+    response = client.get(f"/api/v1/runtime-sessions?sort={sort}&limit=1")
+    assert response.status_code == 200, response.text
+    assert response.json()["total"] == 2
+    assert response.json()["has_more"] is True
+    if sort == "started":
+        assert response.json()["items"][0]["id"] == str(newer.id)
+    elif sort in {"cost", "requests"}:
+        assert response.json()["items"][0]["id"] == max(str(older.id), str(newer.id))
+    assert client.get("/api/v1/runtime-sessions?sort=invalid").status_code == 422

@@ -117,13 +117,29 @@ func validateCredentialCustody(custody []credentialCustody, opts managedEnrollme
 	return nil
 }
 
-func enrollmentSelectedUpstream(upstream *managedGatewayUpstream, alias string, selected *aiModelResponse, opts managedEnrollmentOptions) *managedGatewayUpstream {
+func enrollmentSelectedUpstream(agent AgentConfig, upstream *managedGatewayUpstream, alias string, selected *aiModelResponse, opts managedEnrollmentOptions) *managedGatewayUpstream {
 	// An explicit account-held selection must not copy a locally discovered
 	// credential when the operator requested no imports.
 	if opts.NoCredentialImport && strings.TrimSpace(alias) != "" && selected != nil && (selected.HasAPIKey || aiModelUsesAmbientProviderCredentials(selected)) {
 		upstream = nil
 	}
-	return applySelectedModelToUpstream(upstream, alias, selected)
+	result := applySelectedModelToUpstream(upstream, alias, selected)
+	// An already managed Claude config has no local upstream. Selecting a
+	// failed account model must still offer the fresh native login for repair,
+	// with the normal subscription-transfer consent before any mutation.
+	if isClaudeCodeAgent(agent) && !opts.NoCredentialImport && result != nil && selected != nil &&
+		selected.ProviderName == "anthropic" && normalizeAIModelEndpoint(selected.APIEndpoint) == "" &&
+		selected.CredentialType == anthropicClaudeCodeOAuthCredentialType && oauthCredentialStatusIsError(selected) {
+		if credential, _ := resolveClaudeOAuthCredential(); credential != nil &&
+			!oauthCredentialPayloadExpired(credential.Payload()) &&
+			(credential.RefreshToken == "" || credential.ExpiresAtMS > 0) {
+			result.APIKey = ""
+			result.SourceAgent = "claude_code"
+			result.CredentialType = anthropicClaudeCodeOAuthCredentialType
+			result.CredentialPayload = credential.Payload()
+		}
+	}
+	return result
 }
 
 // preferExistingGatewayCustody removes local material when the sync path would

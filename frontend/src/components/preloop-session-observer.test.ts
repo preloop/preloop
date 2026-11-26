@@ -1,5 +1,6 @@
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { setViewport, sendKeys } from '@web/test-runner-commands';
 import {
   ConnectionState,
   unifiedWebSocketManager,
@@ -43,7 +44,213 @@ describe('PreloopSessionObserver', () => {
   /** Pending approvals the stubbed list endpoint returns. */
   const PENDING_APPROVALS: Array<Record<string, unknown>> = [];
 
-  beforeEach(() => {
+  it('does not follow an explicitly idle turn even with a recent ingest timestamp (#2426)', async () => {
+    const element = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        .sessions=${[{ ...session, turn_state: 'idle' }]}
+        .features=${{ liveFollow: true }}
+      ></preloop-session-observer>`
+    );
+    await element.updateComplete;
+    await waitUntil(() => Boolean((element as any).activeSession));
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).not.to.contain('Following live');
+  });
+
+  it('labels imported usage estimates in the detail header (#2425)', async () => {
+    const element = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        .sessions=${[
+          {
+            ...session,
+            total_requests: null,
+            usage_source: 'imported',
+            cost_is_known: true,
+          },
+        ]}
+      ></preloop-session-observer>`
+    );
+    await element.updateComplete;
+    await waitUntil(() => Boolean((element as any).activeSession));
+    await element.updateComplete;
+    expect(
+      element.shadowRoot!.querySelector('.session-facts')!.textContent
+    ).to.contain('Cost est.');
+  });
+
+  it('loads a page around a linked activity instead of walking old pages (#2423)', async () => {
+    const element = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        .sessions=${[session]}
+        .focusTurnId=${'old-turn'}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('/activity?'))
+    );
+    const url = String(
+      fetchStub
+        .getCalls()
+        .find((call) => String(call.args[0]).includes('/activity?'))!.args[0]
+    );
+    expect(new URL(url, location.origin).searchParams.get('around')).to.equal(
+      'old-turn'
+    );
+    expect(
+      new URL(url, location.origin).searchParams.get('page_by_turn')
+    ).to.equal('true');
+  });
+
+  it('clears a previous turn focus before selecting a different session', async () => {
+    const element = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        .sessions=${[session, { ...session, id: 'second-session' }]}
+        .focusTurnId=${'old-turn'}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() => !(element as any).loadingSessionId);
+    await (element as any).openFromList('second-session', null);
+    const reads = fetchStub
+      .getCalls()
+      .filter((call) => String(call.args[0]).includes('/second-session/'));
+    expect(reads.length).to.be.greaterThan(0);
+    expect(
+      reads.every((call) => !String(call.args[0]).includes('around='))
+    ).to.equal(true);
+  });
+
+  it('loads both sides of a focused activity window without losing cursors', async () => {
+    const item = (id: string) => ({
+      activity_id: id,
+      activity_type: 'transcript_message',
+      timestamp: '2026-03-09T20:00:00Z',
+      title: id,
+      metadata: { role: 'assistant', text: id },
+    });
+    fetchStub
+      .withArgs(
+        sinon.match((url: unknown) => String(url).includes('/activity?'))
+      )
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), location.origin);
+        const older = url.searchParams.has('before');
+        const newer = url.searchParams.has('after');
+        return new Response(
+          JSON.stringify({
+            items: [
+              item(older ? 'older-row' : newer ? 'newer-row' : 'focused-row'),
+            ],
+            has_more: !older,
+            next_before: older
+              ? null
+              : newer
+                ? 'wrong-older-cursor'
+                : 'older-cursor',
+            has_newer: !newer,
+            next_after: newer
+              ? null
+              : older
+                ? 'wrong-newer-cursor'
+                : 'newer-cursor',
+          })
+        );
+      });
+    const element = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        .sessions=${[session]}
+        .focusTurnId=${'focused-row'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() =>
+      Boolean(element.shadowRoot!.querySelector('[data-load-newer-activity]'))
+    );
+    await (element as any).loadMoreEvents(session.id);
+    expect((element as any).loadedActivityPages[session.id].nextAfter).to.equal(
+      'newer-cursor'
+    );
+    (
+      element.shadowRoot!.querySelector(
+        '[data-load-newer-activity]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(
+      () => !(element as any).loadedActivityPages[session.id].hasNewer
+    );
+    const newerCall = fetchStub
+      .getCalls()
+      .find((call) => String(call.args[0]).includes('after='));
+    expect(
+      new URL(String(newerCall!.args[0]), location.origin).searchParams.get(
+        'after'
+      )
+    ).to.equal('newer-cursor');
+    expect((element as any).loadedActivityPages[session.id].hasMore).to.equal(
+      false
+    );
+    expect(
+      (element as any).loadedActivityPages[session.id].nextBefore
+    ).to.equal(null);
+    expect(
+      (element as any).loadedActivity[session.id].map(
+        (row: any) => row.activity_id
+      )
+    ).to.have.members(['focused-row', 'older-row', 'newer-row']);
+    await element.updateComplete;
+    expect(
+      element.shadowRoot!.querySelector('[data-load-newer-activity]')
+    ).to.equal(null);
+  });
+
+  it('drops a newer activity page if the selection changes while loading', async () => {
+    const element = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        .sessions=${[session, { ...session, id: 'second-session' }]}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !(element as any).loadingSessionId);
+    (element as any).loadedActivityPages[session.id] = {
+      hasMore: false,
+      nextBefore: null,
+      hasNewer: true,
+      nextAfter: 'newer-cursor',
+    };
+    let finish!: (response: Response) => void;
+    fetchStub
+      .withArgs(
+        sinon.match((url: unknown) =>
+          String(url).includes('after=newer-cursor')
+        )
+      )
+      .returns(
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        })
+      );
+    const pending = (element as any).loadNewerActivity(session.id);
+    await waitUntil(() => Boolean(finish));
+    await (element as any).openFromList('second-session', null);
+    finish(
+      new Response(
+        JSON.stringify({
+          items: [{ activity_id: 'stale-row' }],
+          has_newer: false,
+        })
+      )
+    );
+    await pending;
+    expect(
+      ((element as any).loadedActivity[session.id] ?? []).some(
+        (row: any) => row.activity_id === 'stale-row'
+      )
+    ).to.equal(false);
+  });
+
+  beforeEach(async () => {
+    await setViewport({ width: 1440, height: 1000 });
     PENDING_APPROVALS.length = 0;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -543,6 +750,36 @@ describe('PreloopSessionObserver', () => {
     expect(modelCalls()).to.have.length(1);
   });
 
+  it('keeps both panes visible for full-layout callers without phone routing', async () => {
+    await setViewport({ width: 390, height: 844 });
+    try {
+      const el = await fixture<PreloopSessionObserver>(html`
+        <preloop-session-observer
+          layout="full"
+          scope="managed_agent"
+          .scopeId=${'example-agent'}
+          .sessions=${[session]}
+          .selectedSessionId=${session.id}
+        ></preloop-session-observer>
+      `);
+      await waitUntil(() =>
+        Boolean(el.shadowRoot!.querySelector('#session-title'))
+      );
+      expect(
+        getComputedStyle(el.shadowRoot!.querySelector<HTMLElement>('.sidebar')!)
+          .display
+      ).to.not.equal('none');
+      expect(
+        getComputedStyle(el.shadowRoot!.querySelector<HTMLElement>('.content')!)
+          .display
+      ).to.not.equal('none');
+      expect(el.shadowRoot!.querySelector('.back-to-list')).to.equal(null);
+      expect(el.shadowRoot!.querySelector('.skip-detail')).to.exist;
+    } finally {
+      await setViewport({ width: 1280, height: 800 });
+    }
+  });
+
   it('renders normalized sessions and keeps optimizations opt-in', async () => {
     const el = (await fixture(
       html`<preloop-session-observer
@@ -638,6 +875,50 @@ describe('PreloopSessionObserver', () => {
     expect(
       embedded.shadowRoot!.querySelector('.observer')!.getAttribute('style')
     ).to.contain('min-height: 520px');
+  });
+
+  it('uses only semantic chip colors for every header state', async () => {
+    const el = await fixture<PreloopSessionObserver>(html`
+      <preloop-session-observer
+        .sessions=${[session]}
+      ></preloop-session-observer>
+    `);
+    await waitUntil(() =>
+      Boolean(el.shadowRoot!.querySelector('.session-heading .chip'))
+    );
+    for (const [state, label, variant] of [
+      ['working', 'Working', 'success'],
+      ['waiting_for_approval', 'Needs approval', 'warning'],
+      ['your_turn', 'Your turn', 'neutral'],
+      ['idle', 'Idle', 'neutral'],
+      ['ended', 'Ended', 'neutral'],
+      ['unknown', 'Idle', 'neutral'],
+    ]) {
+      el.sessions = [
+        {
+          ...session,
+          turn_state: state,
+          last_activity_at: new Date().toISOString(),
+        },
+      ];
+      await el.updateComplete;
+      const chip = el.shadowRoot!.querySelector('.session-heading .chip')!;
+      expect(chip.textContent?.trim()).to.equal(label);
+      expect(chip.getAttribute('variant')).to.equal(variant);
+      expect(chip.hasAttribute('pill')).to.be.true;
+    }
+  });
+
+  it('uses compact header tokens with the exact count available on hover', async () => {
+    const el = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        .sessions=${[session]}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot!.querySelector('.session-facts dd'));
+    const tokens = el.shadowRoot!.querySelector('.session-facts dd')!;
+    expect(tokens.textContent?.trim()).to.equal('1.3K');
+    expect(tokens.getAttribute('title')).to.equal('1,300');
   });
 
   it('scrolls a long session list inside the bounded panel', async () => {
@@ -1387,7 +1668,7 @@ describe('PreloopSessionObserver', () => {
         .null;
     });
 
-    it('switches out of conversation when a turn is linked', async () => {
+    it('keeps conversation when a turn is linked', async () => {
       const el = (await fixture(
         html`<preloop-session-observer
           defaultReplayMode="conversation"
@@ -1405,14 +1686,14 @@ describe('PreloopSessionObserver', () => {
 
       el.focusTurnId = 'event-1';
       await waitUntil(
-        () => (el as any).replayMode === 'timeline',
-        'Linking a turn did not switch to the transcript',
+        () => Boolean(el.shadowRoot?.querySelector('session-chat-view')),
+        'Conversation did not render',
         { timeout: 3000 }
       );
       const panel = el.shadowRoot?.querySelector(
-        'session-replay-panel'
-      ) as HTMLElement & { focusEventId: string | null };
-      expect(panel.focusEventId).to.equal('event-1');
+        'session-chat-view'
+      ) as HTMLElement & { focusTurnId: string | null };
+      expect(panel.focusTurnId).to.equal('event-1');
     });
 
     it('asks for a linked note with the session activity', async () => {
@@ -1437,7 +1718,7 @@ describe('PreloopSessionObserver', () => {
         .getCalls()
         .map((call) => String(call.args[0]))
         .find((url) => url.includes('/activity'))!;
-      expect(activityUrl).to.contain('operator_note_id=note-7');
+      expect(activityUrl).to.contain('around=note-7');
       expect(el).to.exist;
     });
 
@@ -1461,12 +1742,11 @@ describe('PreloopSessionObserver', () => {
       );
       el.focusTurnId = 'note-2';
       await waitUntil(
-        () =>
-          activityUrls().some((url) => url.includes('operator_note_id=note-2')),
+        () => activityUrls().some((url) => url.includes('around=note-2')),
         'Opening another note did not read activity again',
         { timeout: 3000 }
       );
-      expect(activityUrls()[0]).to.contain('operator_note_id=note-1');
+      expect(activityUrls()[0]).to.contain('around=note-1');
     });
 
     it('drops a stale activity answer for an earlier linked note', async () => {
@@ -1498,14 +1778,12 @@ describe('PreloopSessionObserver', () => {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
+      fetchStub.withArgs(sinon.match(/around=note-a/)).callsFake(async () => {
+        await oldGate;
+        return json({ items: [noteRow('note-a')] });
+      });
       fetchStub
-        .withArgs(sinon.match(/operator_note_id=note-a/))
-        .callsFake(async () => {
-          await oldGate;
-          return json({ items: [noteRow('note-a')] });
-        });
-      fetchStub
-        .withArgs(sinon.match(/operator_note_id=note-b/))
+        .withArgs(sinon.match(/around=note-b/))
         .callsFake(async () => json({ items: [noteRow('note-b')] }));
       el.focusTurnId = 'note-a';
       await el.updateComplete;
@@ -1671,7 +1949,7 @@ describe('PreloopSessionObserver', () => {
     it('offers follow and End session while the session runs', async () => {
       const el = (await fixture(
         html`<preloop-session-observer
-          .sessions=${[session]}
+          .sessions=${[{ ...session, turn_state: 'working', last_activity_at: new Date().toISOString(), last_request_at: new Date().toISOString() }]}
           .features=${{ endSession: true }}
         ></preloop-session-observer>`
       )) as PreloopSessionObserver;

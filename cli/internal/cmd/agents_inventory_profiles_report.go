@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -142,6 +143,9 @@ func sendAllUsersInventory(w io.Writer, deviceRefs ...string) error {
 	var response discoveryReportResponse
 	if err = postInventoryReport(client, report, &response); err != nil {
 		return fmt.Errorf("failed to send profile inventory: %w", err)
+	}
+	if response.LegacyEvidence {
+		fmt.Fprintln(os.Stderr, legacyInventoryNotice)
 	}
 	// Emit only the safe inventory DTO, even with --verbose or --json.
 	enc := json.NewEncoder(w)

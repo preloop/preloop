@@ -99,7 +99,9 @@ def stamped_times_to_heal(
 class TrackerClient:
     """Client for interacting with trackers."""
 
-    def __init__(self, tracker: Tracker, *, initialize_client: bool = True) -> None:
+    def __init__(
+        self, tracker: Tracker, *, initialize_client: bool = True, client: Any = None
+    ) -> None:
         """Initialize the tracker client."""
         self.tracker = tracker
         self.tracker_type = (
@@ -107,6 +109,10 @@ class TrackerClient:
             if hasattr(tracker.tracker_type, "value")
             else tracker.tracker_type.lower()
         )
+
+        if client is not None:
+            self.client = client
+            return
 
         connection_details = (
             dict(tracker.connection_details) if tracker.connection_details else {}
@@ -498,153 +504,9 @@ class TrackerClient:
         issues_processed = []
         embedding_updates = 0
         for issue_data in issue_data_list:
-            xformed_issue_data = self.client.transform_issue(issue_data, project)
-            comment_data = xformed_issue_data.pop("comments", [])
-            dependencies = xformed_issue_data.pop("dependencies", [])
-
-            current_issue_model = crud_issue.get_by_external_id(
-                db,
-                external_id=xformed_issue_data["external_id"],
-                project_id=project.id,
-                account_id=self.tracker.account_id,
-            )
-
-            issue_changed = False
-            # Ensure incoming datetime is a datetime object
-            if not isinstance(xformed_issue_data["updated_at"], datetime.datetime):
-                xformed_issue_data["updated_at"] = datetime.datetime.fromisoformat(
-                    xformed_issue_data["updated_at"]
-                )
-
-            # Ensure incoming datetime is timezone-aware
-            if xformed_issue_data["updated_at"].tzinfo is None:
-                xformed_issue_data["updated_at"] = xformed_issue_data[
-                    "updated_at"
-                ].replace(tzinfo=datetime.timezone.utc)
-
-            if current_issue_model:
-                # Ensure database datetime is timezone-aware for comparison
-                current_updated_at = current_issue_model.updated_at
-                if not current_updated_at.tzinfo:
-                    current_updated_at = current_updated_at.replace(
-                        tzinfo=datetime.timezone.utc
-                    )
-
-                if current_updated_at < xformed_issue_data["updated_at"]:
-                    issue_changed = True
-                    current_issue_model = crud_issue.update(
-                        db, db_obj=current_issue_model, obj_in=xformed_issue_data
-                    )
-                elif healed := stamped_times_to_heal(
-                    current_issue_model, xformed_issue_data
-                ):
-                    # An older sync stamped its own clock as the provider time;
-                    # the provider's earlier time replaces it (no content change).
-                    current_issue_model = crud_issue.heal_timestamps(
-                        db, db_obj=current_issue_model, values=healed
-                    )
-            else:
-                issue_changed = True
-                # A webhook may insert the same issue concurrently.
-                current_issue_model, _ = crud_issue.upsert(
-                    db, obj_in=xformed_issue_data
-                )
-
-            # Process dependencies
-            for dep in dependencies:
-                target_key = dep.get("target_key")
-                rel_type = dep.get("type")
-                if not target_key or not rel_type:
-                    continue
-
-                target_issue = crud_issue.get_by_key(
-                    db, key=target_key, account_id=self.tracker.account_id
-                )
-
-                if target_issue:
-                    _, created = crud_issue_relationship.create(
-                        db,
-                        source_issue_id=current_issue_model.id,
-                        target_issue_id=target_issue.id,
-                        type=rel_type,
-                        reason="Relationship detected in tracker.",
-                        confidence_score=1.0,
-                        is_committed=False,
-                        comes_from_tracker=True,
-                    )
-
-                    if created:
-                        # Create an IssueSet for the pair to cache the relationship
-                        issue_ids = sorted(
-                            [str(current_issue_model.id), str(target_issue.id)]
-                        )
-                        crud_issue_set.create(
-                            db,
-                            obj_in={
-                                "name": f"Tracked dependency: {current_issue_model.key} -> {target_issue.key}",
-                                "issue_ids": issue_ids,
-                                "ai_model_id": None,  # No AI model for tracked dependencies
-                                "meta_data": {"source": "tracker"},
-                            },
-                        )
-
-                else:
-                    # FIXME: On the first run, the dependencies are not always found because they may refer to issues that are not yet ingested.
-                    logger.warning(
-                        f"Could not find target issue with key '{target_key}' for dependency of issue {current_issue_model.key}."
-                    )
-
-            issues_processed.append(current_issue_model)
-
-            for single_comment_data in comment_data:
-                xformed_comment_data = self.client.transform_comment(
-                    single_comment_data, current_issue_model.id
-                )
-                xformed_comment_data["tracker_id"] = self.tracker.id
-                db_comment = crud_comment.get_by_external_id(
-                    db,
-                    external_id=xformed_comment_data["external_id"],
-                    issue_id=current_issue_model.id,
-                    account_id=self.tracker.account_id,
-                )
-
-                comment_changed = False
-                if db_comment:
-                    # Ensure both datetimes are timezone-aware for comparison
-                    db_updated_at = db_comment.updated_at
-                    if not db_updated_at.tzinfo:
-                        db_updated_at = db_updated_at.replace(
-                            tzinfo=datetime.timezone.utc
-                        )
-
-                    comment_updated_at = xformed_comment_data["updated_at"]
-                    if not comment_updated_at.tzinfo:
-                        comment_updated_at = comment_updated_at.replace(
-                            tzinfo=datetime.timezone.utc
-                        )
-
-                    if db_updated_at < comment_updated_at:
-                        comment_changed = True
-                        crud_comment.update(
-                            db, db_obj=db_comment, obj_in=xformed_comment_data
-                        )
-                else:
-                    comment_changed = True
-                    db_comment = crud_comment.create(db, obj_in=xformed_comment_data)
-
-                if comment_changed or force_update:
-                    crud_issue_embedding.create_embeddings(
-                        db=db,
-                        issue_id=current_issue_model.id,
-                        comment_id=db_comment.id,
-                        force_update=force_update,
-                    )
-
-            if issue_changed or force_update:
-                embedding_updates += 1
-                crud_issue_embedding.create_embeddings(
-                    db, issue_id=current_issue_model.id
-                )
+            issue, updates = self.ingest_issue(db, project, issue_data, force_update)
+            issues_processed.append(issue)
+            embedding_updates += updates
 
         if not (project.meta_data or {}).get(KEY_PREFIXES_RECORDED_KEY):
             # Once per project: lets bare-number lookups use exact keys even
@@ -653,6 +515,165 @@ class TrackerClient:
             db.commit()
 
         return issues_processed, embedding_updates
+
+    def ingest_issue(
+        self,
+        db: Session,
+        project: Project,
+        issue_data: Dict[str, Any],
+        force_update: bool = False,
+    ) -> Tuple[Issue, int]:
+        """Store one provider payload using the scanner's transforms and embeddings.
+
+        Args:
+            db: Database session.
+            project: Already synced project that owns the issue.
+            issue_data: Source payload in the same format as ``get_issues``.
+            force_update: Rebuild embeddings even when content is unchanged.
+
+        Returns:
+            Stored issue and number of issue embeddings refreshed.
+        """
+        xformed_issue_data = self.client.transform_issue(issue_data, project)
+        comment_data = xformed_issue_data.pop("comments", [])
+        dependencies = xformed_issue_data.pop("dependencies", [])
+
+        current_issue_model = crud_issue.get_by_external_id(
+            db,
+            external_id=xformed_issue_data["external_id"],
+            project_id=project.id,
+            account_id=self.tracker.account_id,
+        )
+
+        issue_changed = False
+        # Ensure incoming datetime is a datetime object
+        if not isinstance(xformed_issue_data["updated_at"], datetime.datetime):
+            xformed_issue_data["updated_at"] = datetime.datetime.fromisoformat(
+                xformed_issue_data["updated_at"]
+            )
+
+        # Ensure incoming datetime is timezone-aware
+        if xformed_issue_data["updated_at"].tzinfo is None:
+            xformed_issue_data["updated_at"] = xformed_issue_data["updated_at"].replace(
+                tzinfo=datetime.timezone.utc
+            )
+
+        if current_issue_model:
+            # Ensure database datetime is timezone-aware for comparison
+            current_updated_at = current_issue_model.updated_at
+            if not current_updated_at.tzinfo:
+                current_updated_at = current_updated_at.replace(
+                    tzinfo=datetime.timezone.utc
+                )
+
+            if current_updated_at < xformed_issue_data["updated_at"]:
+                issue_changed = True
+                current_issue_model = crud_issue.update(
+                    db, db_obj=current_issue_model, obj_in=xformed_issue_data
+                )
+            elif healed := stamped_times_to_heal(
+                current_issue_model, xformed_issue_data
+            ):
+                # An older sync stamped its own clock as the provider time;
+                # the provider's earlier time replaces it (no content change).
+                current_issue_model = crud_issue.heal_timestamps(
+                    db, db_obj=current_issue_model, values=healed
+                )
+        else:
+            issue_changed = True
+            # A webhook may insert the same issue concurrently.
+            current_issue_model, _ = crud_issue.upsert(db, obj_in=xformed_issue_data)
+
+        # Process dependencies
+        for dep in dependencies:
+            target_key = dep.get("target_key")
+            rel_type = dep.get("type")
+            if not target_key or not rel_type:
+                continue
+
+            target_issue = crud_issue.get_by_key(
+                db, key=target_key, account_id=self.tracker.account_id
+            )
+
+            if target_issue:
+                _, created = crud_issue_relationship.create(
+                    db,
+                    source_issue_id=current_issue_model.id,
+                    target_issue_id=target_issue.id,
+                    type=rel_type,
+                    reason="Relationship detected in tracker.",
+                    confidence_score=1.0,
+                    is_committed=False,
+                    comes_from_tracker=True,
+                )
+
+                if created:
+                    # Create an IssueSet for the pair to cache the relationship
+                    issue_ids = sorted(
+                        [str(current_issue_model.id), str(target_issue.id)]
+                    )
+                    crud_issue_set.create(
+                        db,
+                        obj_in={
+                            "name": f"Tracked dependency: {current_issue_model.key} -> {target_issue.key}",
+                            "issue_ids": issue_ids,
+                            "ai_model_id": None,  # No AI model for tracked dependencies
+                            "meta_data": {"source": "tracker"},
+                        },
+                    )
+
+            else:
+                # FIXME: On the first run, the dependencies are not always found because they may refer to issues that are not yet ingested.
+                logger.warning(
+                    f"Could not find target issue with key '{target_key}' for dependency of issue {current_issue_model.key}."
+                )
+
+        for single_comment_data in comment_data:
+            xformed_comment_data = self.client.transform_comment(
+                single_comment_data, current_issue_model.id
+            )
+            xformed_comment_data["tracker_id"] = self.tracker.id
+            db_comment = crud_comment.get_by_external_id(
+                db,
+                external_id=xformed_comment_data["external_id"],
+                issue_id=current_issue_model.id,
+                account_id=self.tracker.account_id,
+            )
+
+            comment_changed = False
+            if db_comment:
+                # Ensure both datetimes are timezone-aware for comparison
+                db_updated_at = db_comment.updated_at
+                if not db_updated_at.tzinfo:
+                    db_updated_at = db_updated_at.replace(tzinfo=datetime.timezone.utc)
+
+                comment_updated_at = xformed_comment_data["updated_at"]
+                if not comment_updated_at.tzinfo:
+                    comment_updated_at = comment_updated_at.replace(
+                        tzinfo=datetime.timezone.utc
+                    )
+
+                if db_updated_at < comment_updated_at:
+                    comment_changed = True
+                    crud_comment.update(
+                        db, db_obj=db_comment, obj_in=xformed_comment_data
+                    )
+            else:
+                comment_changed = True
+                db_comment = crud_comment.create(db, obj_in=xformed_comment_data)
+
+            if comment_changed or force_update:
+                crud_issue_embedding.create_embeddings(
+                    db=db,
+                    issue_id=current_issue_model.id,
+                    comment_id=db_comment.id,
+                    force_update=force_update,
+                )
+
+        if issue_changed or force_update:
+            crud_issue_embedding.create_embeddings(db, issue_id=current_issue_model.id)
+
+        return current_issue_model, int(issue_changed or force_update)
 
 
 def _scan_client_tracker_id(client: Any) -> Any:

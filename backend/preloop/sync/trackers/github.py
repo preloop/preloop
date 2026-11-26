@@ -32,6 +32,7 @@ from ..exceptions import (
     TrackerConnectionError,
     TrackerRateLimitError,
     TrackerResponseError,
+    TrackerIssueIsPullRequestError,
     TrackerPermissionError,
 )
 from .base import BaseTracker
@@ -932,12 +933,14 @@ class GitHubTracker(BaseTracker):
         )
 
         if "pull_request" in issue_data:
-            raise TrackerResponseError(
+            raise TrackerIssueIsPullRequestError(
                 f"Issue {issue_id} is a pull request, not an issue"
             )
 
         # Use the mapper to convert to Issue object
-        return self._parse_github_issue(issue_data)
+        issue = self._parse_github_issue(issue_data)
+        issue._sync_data = {**issue_data, "comments": []}
+        return issue
 
     async def get_comments(self, issue_id: str) -> List[IssueComment]:
         """Get comments for an issue."""

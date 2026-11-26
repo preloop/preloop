@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/preloop/preloop/cli/internal/api"
@@ -42,6 +43,9 @@ only return secret status and a hint; they cannot recover the secret.`,
 				Set       bool   `json:"webhook_secret_set"`
 			}
 			if err := client.Post(flowsPath+"/"+flowID+"/webhook-secret/rotate", nil, &response); err != nil {
+				if api.IsStatus(err, http.StatusNotFound) || api.IsStatus(err, http.StatusMethodNotAllowed) {
+					return fmt.Errorf("this server does not support webhook secret rotation, or the flow no longer exists; check the flow and upgrade the server if needed")
+				}
 				return fmt.Errorf("failed to rotate webhook secret: %w", err)
 			}
 			if response.Secret == "" {

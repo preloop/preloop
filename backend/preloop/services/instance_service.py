@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Literal, Optional
 
 import httpx
+from packaging.version import InvalidVersion, Version
 
 from preloop.config import SERVER_VERSION
 
@@ -100,25 +101,18 @@ def instance_edition() -> Literal["oss", "cloud", "enterprise"]:
     return "enterprise" if _is_enterprise() else "oss"
 
 
-def _parse_semver(value: object) -> Optional[tuple]:
-    """Parse a dotted version into an int tuple; None when unparseable.
+def _parse_semver(value: object) -> Version | None:
+    """Parse a release version, preserving prerelease ordering.
 
-    Accepts an optional leading ``v`` and ignores pre-release/build suffixes
-    on each component (``1.0.0-rc1`` -> ``(1, 0, 0)``). Anything without
-    numeric components (or not a string) is unparseable.
+    Accept both public SemVer and normalized Python alpha/beta/rc versions.
+    Build metadata does not affect update precedence.
     """
     if not isinstance(value, str):
         return None
-    v = value.strip().lstrip("v")
-    if not v:
+    try:
+        return Version(value.strip().split("+", 1)[0])
+    except InvalidVersion:
         return None
-    parts = []
-    for part in v.split("."):
-        head = part.split("-")[0].split("+")[0]
-        if not head.isdigit():
-            return None
-        parts.append(int(head))
-    return tuple(parts)
 
 
 def is_newer_version(candidate: object, current: str) -> bool:
@@ -132,9 +126,6 @@ def is_newer_version(candidate: object, current: str) -> bool:
     parsed_current = _parse_semver(current)
     if parsed_candidate is None or parsed_current is None:
         return False
-    width = max(len(parsed_candidate), len(parsed_current))
-    parsed_candidate += (0,) * (width - len(parsed_candidate))
-    parsed_current += (0,) * (width - len(parsed_current))
     return parsed_candidate > parsed_current
 
 

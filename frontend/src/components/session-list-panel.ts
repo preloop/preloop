@@ -1,12 +1,13 @@
-import { parseUTCDate } from '../utils/date';
+import { formatRelativeTime, parseUTCDate } from '../utils/date';
 import { agentStateChip } from '../utils/agent-status';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import type { ObservedSession } from '../utils/session-observer';
-import { formatCost, formatNumber } from '../utils/session-observer';
+import { formatCost } from '../utils/session-observer';
+import { formatCount, formatCountExact } from '../utils/count-format';
 import {
   noteAuthorIcon,
   noteAuthorKind,
@@ -60,6 +61,8 @@ export class SessionListPanel extends LitElement {
   @property({ type: String })
   emptyText = '';
 
+  @state() private focusedSessionId: string | null = null;
+
   // The console chip recipe, so "Idle" here is the same object as "Idle" on
   // the agent header instead of a solid Shoelace badge beside it.
   static styles = [
@@ -75,23 +78,22 @@ export class SessionListPanel extends LitElement {
       .list {
         display: flex;
         flex-direction: column;
-        gap: var(--sl-spacing-2x-small);
+        gap: 0;
       }
 
       .session-card {
         appearance: none;
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        background: var(--sl-color-neutral-0);
+        border: 0;
+        border-bottom: 1px solid var(--console-hairline);
+        border-left: 3px solid transparent;
+        border-radius: 0;
+        background: transparent;
         box-sizing: border-box;
         color: inherit;
         cursor: pointer;
         padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
         text-align: left;
-        transition:
-          border-color 0.15s ease,
-          background 0.15s ease,
-          box-shadow 0.15s ease;
+        transition: background 0.15s ease;
         width: 100%;
       }
 
@@ -105,6 +107,7 @@ export class SessionListPanel extends LitElement {
         font: inherit;
         padding: 0;
         text-align: left;
+        text-decoration: none;
         width: 100%;
       }
 
@@ -114,14 +117,12 @@ export class SessionListPanel extends LitElement {
         outline-offset: 2px;
       }
 
-      .session-card:hover,
-      .session-card.active {
-        background: var(--sl-color-primary-50);
-        border-color: var(--sl-color-primary-500);
+      .session-card:hover {
+        background: var(--console-hover-tint);
       }
 
       .session-card.active {
-        box-shadow: 0 0 0 1px var(--sl-color-primary-500);
+        border-left-color: var(--sl-color-primary-600);
       }
 
       .title-row,
@@ -146,7 +147,7 @@ export class SessionListPanel extends LitElement {
       }
 
       .meta {
-        color: var(--sl-color-neutral-600);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
       }
 
@@ -172,13 +173,13 @@ export class SessionListPanel extends LitElement {
       }
 
       .metric {
-        color: var(--sl-color-primary-700);
-        font-size: var(--sl-font-size-small);
-        font-weight: 600;
+        color: var(--sl-color-neutral-900);
+        font-size: var(--console-text-meta);
+        font-variant-numeric: tabular-nums;
       }
 
       .empty {
-        color: var(--sl-color-neutral-600);
+        color: var(--console-meta-color);
         padding: var(--sl-spacing-large);
         text-align: center;
       }
@@ -204,7 +205,7 @@ export class SessionListPanel extends LitElement {
       }
 
       .note-author {
-        color: var(--sl-color-neutral-600);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         overflow-wrap: anywhere;
       }
@@ -231,8 +232,8 @@ export class SessionListPanel extends LitElement {
       .artifact-kind {
         align-items: center;
         appearance: none;
-        background: var(--sl-color-neutral-0);
-        border: 1px solid var(--sl-color-neutral-300);
+        background: transparent;
+        border: 0;
         border-radius: 999px;
         color: var(--sl-color-neutral-700);
         cursor: pointer;
@@ -241,6 +242,13 @@ export class SessionListPanel extends LitElement {
         font-size: var(--sl-font-size-x-small);
         gap: 0.2rem;
         padding: 0.05rem 0.45rem;
+      }
+
+      @media (max-width: 640px) {
+        .artifact-kind {
+          min-height: 44px;
+          min-width: 44px;
+        }
       }
 
       .artifact-kind:hover,
@@ -312,6 +320,7 @@ export class SessionListPanel extends LitElement {
               type="button"
               class="artifact-kind"
               data-kind=${group}
+              tabindex=${this.rowTabIndex(session.id)}
               aria-label="Open ${count} ${ARTIFACT_KIND_LABELS[
                 group
               ].toLowerCase()}"
@@ -329,9 +338,18 @@ export class SessionListPanel extends LitElement {
                 type="button"
                 class="artifact-kind more"
                 data-kind="more"
+                tabindex=${this.rowTabIndex(session.id)}
                 aria-label="Open all artifacts: ${tooltip}"
-                @click=${(event: Event) => {
-                  event.stopPropagation();
+                @click=${(event: MouseEvent) => {
+                  if (
+                    event.button !== 0 ||
+                    event.metaKey ||
+                    event.ctrlKey ||
+                    event.shiftKey ||
+                    event.altKey
+                  )
+                    return;
+                  event.preventDefault();
                   this.selectSession(session);
                 }}
               >
@@ -402,21 +420,16 @@ export class SessionListPanel extends LitElement {
     return this.getChip(session).label;
   }
 
-  /** "Oct 12, 7:45 PM": short enough to share a line with the subtitle. */
+  /** Relative activity time; the absolute timestamp stays in the tooltip. */
   private formatShortDate(value: string | null): string {
     if (!value) return 'No activity yet';
     const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) return value;
-    return parsed.toLocaleString(undefined, {
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    return formatRelativeTime(value);
   }
 
   /**
-   * Subtitle and last activity on one line: "Gateway · m-2 · Oct 12, 7:45 PM".
+   * Subtitle and last activity on one line: "Gateway · m-2 · 5m ago".
    * The title spells it out ("Last activity ..."), with the full timestamp.
    */
   private metaLine(session: ObservedSession, long = false): string {
@@ -449,6 +462,54 @@ export class SessionListPanel extends LitElement {
     );
   }
 
+  private hasMeasuredRequests(session: ObservedSession): boolean {
+    const raw = session.raw as Record<string, unknown> | undefined;
+    return raw?.total_requests !== null && raw?.usage_source !== 'none';
+  }
+
+  /** Keep one row in the tab order, including after filtering or live refresh. */
+  private rowTabIndex(id: string): number {
+    const current =
+      [this.focusedSessionId, this.activeSessionId].find((candidate) =>
+        this.sessions.some((session) => session.id === candidate)
+      ) ?? this.sessions[0]?.id;
+    return id === current ? 0 : -1;
+  }
+
+  /** Native links retain the page filters but drop another session's turn. */
+  private sessionHref(id: string): string {
+    const url = new URL(window.location.href);
+    url.pathname = '/console/runtime-sessions';
+    url.searchParams.set('sessionId', id);
+    url.searchParams.delete('turn');
+    url.searchParams.delete('artifact');
+    return `${url.pathname}${url.search}`;
+  }
+
+  /** Move focus without changing the selected session; Enter activates the link. */
+  private async navigateRows(event: KeyboardEvent, id: string): Promise<void> {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
+      return;
+    const index = this.sessions.findIndex((session) => session.id === id);
+    const target =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? this.sessions.length - 1
+          : event.key === 'ArrowDown'
+            ? Math.min(index + 1, this.sessions.length - 1)
+            : event.key === 'ArrowUp'
+              ? Math.max(index - 1, 0)
+              : -1;
+    if (target < 0) return;
+    event.preventDefault();
+    this.focusedSessionId = this.sessions[target].id;
+    await this.updateComplete;
+    this.renderRoot
+      .querySelectorAll<HTMLAnchorElement>('.session-select')
+      [target]?.focus();
+  }
+
   render() {
     if (!this.sessions.length) {
       return html`<div class="empty">
@@ -462,25 +523,42 @@ export class SessionListPanel extends LitElement {
           this.sessions,
           (session) => session.id,
           (session) => html`
-            <!-- The card is a plain container. Selection is the real
-                 <button> below and the artifact icons are sibling buttons,
-                 so assistive technology reaches both (a role="button" card
-                 would flatten the icons away). A click anywhere else on the
-                 card still selects, for the mouse. -->
             <div
               class="session-card ${
                 this.activeSessionId === session.id ? 'active' : ''
               }"
-              @click=${() => this.selectSession(session)}
+              @click=${(event: MouseEvent) => {
+                if (
+                  event.button !== 0 ||
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey
+                )
+                  return;
+                if ((event.target as HTMLElement).closest('a, button')) return;
+                this.selectSession(session);
+              }}
             >
-              <button
-                type="button"
+              <a
                 class="session-select"
+                href=${this.sessionHref(session.id)}
+                tabindex=${this.rowTabIndex(session.id)}
+                @focus=${() => (this.focusedSessionId = session.id)}
+                @keydown=${(event: KeyboardEvent) => void this.navigateRows(event, session.id)}
                 aria-current=${
                   this.activeSessionId === session.id ? 'true' : 'false'
                 }
-                @click=${(event: Event) => {
-                  event.stopPropagation();
+                @click=${(event: MouseEvent) => {
+                  if (
+                    event.button !== 0 ||
+                    event.metaKey ||
+                    event.ctrlKey ||
+                    event.shiftKey ||
+                    event.altKey
+                  )
+                    return;
+                  event.preventDefault();
                   this.selectSession(session);
                 }}
               >
@@ -502,9 +580,16 @@ export class SessionListPanel extends LitElement {
                   ${this.metaLine(session)}
                 </div>
                 <div class="metric-row">
-                  <div class="metric">
-                    ${formatNumber(session.totalRequests)} requests
-                  </div>
+                  ${
+                    this.hasMeasuredRequests(session)
+                      ? html`<div
+                          class="metric"
+                          title="${formatCountExact(session.totalRequests)} requests"
+                        >
+                          ${formatCount(session.totalRequests)} requests
+                        </div>`
+                      : nothing
+                  }
                   <!-- Tokens before cost: the split says whether a session is
                      expensive because it reads a lot or writes a lot. The
                      cache rate is in the figures' tooltip, so the row stays
@@ -513,7 +598,7 @@ export class SessionListPanel extends LitElement {
                   ${
                     totalTokensOf(session.tokenUsage) > 0
                       ? html`<div class="metric tokens">
-                          ·
+                          ${this.hasMeasuredRequests(session) ? '·' : nothing}
                           <token-figures
                             hide-cache
                             .usage=${session.tokenUsage}
@@ -521,13 +606,19 @@ export class SessionListPanel extends LitElement {
                         </div>`
                       : nothing
                   }
-                  <div class="metric cost">
-                    · ${formatCost(session.estimatedCost)}
-                  </div>
+                  ${
+                    (session.raw as Record<string, unknown>)?.cost_is_known !==
+                    false
+                      ? html`<div class="metric cost">
+                          ${this.hasMeasuredRequests(session) || totalTokensOf(session.tokenUsage) > 0 ? '·' : nothing}
+                          ${formatCost(session.estimatedCost)} est.
+                        </div>`
+                      : nothing
+                  }
                 </div>
                 ${this.renderWasteBadge(session)}
                 ${this.renderNoteIndicator(session)}
-              </button>
+              </a>
               ${this.renderArtifactCell(session)}
             </div>
           `

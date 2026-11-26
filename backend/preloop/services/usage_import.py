@@ -39,10 +39,10 @@ from preloop.models.crud import (
     crud_flow_execution,
     crud_managed_agent,
     crud_runtime_session,
+    crud_runtime_session_activity,
 )
 from preloop.models.models.managed_agent import ManagedAgent
 from preloop.models.models.runtime_session import RuntimeSession
-from preloop.models.models.runtime_session_activity import RuntimeSessionActivity
 from preloop.schemas.usage_import import (
     UsageImportEvent,
     UsageIngestRecord,
@@ -581,25 +581,15 @@ def add_transcript_activities(
         session: The record's runtime session.
         timestamp: Fallback activity timestamp (the record's).
     """
-    indexed: list[tuple[RuntimeSessionActivity, str]] = []
-    for message in record.transcript or []:
-        activity = RuntimeSessionActivity(
-            account_id=account_id,
-            runtime_session_id=session.id,
-            activity_type=TRANSCRIPT_ACTIVITY_TYPE,
-            status=message.role,
-            summary=message.text[:MAX_TRANSCRIPT_ACTIVITY_SUMMARY_CHARS],
-            metadata_={
-                "role": message.role,
-                "source": f"usage_ingest:{source}",
-                "external_id": record.external_id,
-                "conversation_id": record.conversation_id,
-            },
-            timestamp=message.timestamp or timestamp,
-        )
-        db.add(activity)
-        indexed.append((activity, message.text))
-    db.flush()
+    indexed = crud_runtime_session_activity.add_transcript_messages(
+        db,
+        account_id=account_id,
+        runtime_session_id=session.id,
+        source=source,
+        record=record,
+        timestamp=timestamp,
+        summary_limit=MAX_TRANSCRIPT_ACTIVITY_SUMMARY_CHARS,
+    )
 
     # Search corpus chunks ride the caller's transaction (no commit here) and
     # are written after the flush, so a chunk can only exist for a message

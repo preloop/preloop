@@ -1,6 +1,11 @@
+import { formatCount, formatCountExact } from '../utils/count-format';
 import { randomUuid } from '../utils/random-uuid';
-import { parseUTCDate } from '../utils/date';
-import { LitElement, css, html, nothing } from 'lit';
+import {
+  formatRelativeTime,
+  formatAbsoluteTime,
+  parseUTCDate,
+} from '../utils/date';
+import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -74,7 +79,7 @@ import type {
   SessionObserverScope,
   SessionReplayMode,
 } from '../utils/session-observer';
-import { turnInfoFromSession } from '../utils/agent-status';
+import { agentStateChip, turnInfoFromSession } from '../utils/agent-status';
 import {
   formatCost,
   formatNumber,
@@ -92,6 +97,8 @@ import './runner-session-controls';
 import type { RunnerSessionControls } from './runner-session-controls';
 import './talk-button';
 import './session-list-panel';
+import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
+import consoleStyles from '../styles/console-styles.css?inline';
 import './session-replay-panel';
 import './session-request-timeline';
 import { runtimeFromSourceType } from '../utils/session-turns';
@@ -251,6 +258,18 @@ export class PreloopSessionObserver extends LitElement {
   @property({ type: String })
   layout: 'full' | 'embedded' = 'embedded';
 
+  /** Preserve API ranking when the host owns sorting and pagination. */
+  @property({ type: Boolean })
+  serverOrdered = false;
+
+  /** Let a host with list/detail routes choose a single pane on phones. */
+  @property({ type: Boolean })
+  mobileListDetail = false;
+
+  /** The page's URL selects the detail pane on a narrow viewport. */
+  @property({ type: Boolean })
+  mobileDetail = false;
+
   @property({ type: String })
   defaultReplayMode: SessionReplayMode = 'timeline';
 
@@ -355,6 +374,51 @@ export class PreloopSessionObserver extends LitElement {
 
   @state()
   private loadedEventPages: Record<string, EventPageState> = {};
+
+  @state()
+  private loadedActivityPages: Record<
+    string,
+    {
+      hasMore: boolean;
+      nextBefore: string | null;
+      hasNewer: boolean;
+      nextAfter: string | null;
+    }
+  > = {};
+
+  private rememberActivityPage(
+    sessionId: string,
+    page: {
+      has_more?: boolean;
+      next_before?: string | null;
+      has_newer?: boolean;
+      next_after?: string | null;
+    },
+    direction?: 'older' | 'newer'
+  ): void {
+    const previous = this.loadedActivityPages[sessionId];
+    this.loadedActivityPages = {
+      ...this.loadedActivityPages,
+      [sessionId]: {
+        hasMore:
+          direction === 'newer'
+            ? (previous?.hasMore ?? false)
+            : (page.has_more ?? false),
+        nextBefore:
+          direction === 'newer'
+            ? (previous?.nextBefore ?? null)
+            : (page.next_before ?? null),
+        hasNewer:
+          direction === 'older'
+            ? (previous?.hasNewer ?? false)
+            : (page.has_newer ?? false),
+        nextAfter:
+          direction === 'older'
+            ? (previous?.nextAfter ?? null)
+            : (page.next_after ?? null),
+      },
+    };
+  }
 
   @state()
   private loadedActivity: Record<string, RuntimeSessionActivityItem[]> = {};
@@ -635,6 +699,7 @@ export class PreloopSessionObserver extends LitElement {
   private refreshTimer: number | null = null;
 
   static styles = [
+    unsafeCSS(consoleStyles),
     consoleDialogStyles,
     reducedMotionStyles,
     css`
@@ -760,6 +825,62 @@ export class PreloopSessionObserver extends LitElement {
         text-overflow: ellipsis;
       }
 
+      .session-heading h2 {
+        margin: 0;
+        font-size: var(--console-text-card-title);
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      .session-identity,
+      .session-facts {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+        font-size: var(--console-text-meta);
+        color: var(--console-meta-color);
+      }
+      .session-identity {
+        margin-top: var(--sl-spacing-x-small);
+      }
+      .session-facts {
+        border-block: 1px solid var(--console-hairline);
+        margin: var(--sl-spacing-small) 0 0;
+        padding-block: var(--sl-spacing-small);
+        justify-content: flex-start;
+      }
+      .session-facts div {
+        display: flex;
+        gap: var(--sl-spacing-x-small);
+      }
+      .session-facts dd {
+        margin: 0;
+        color: var(--sl-color-neutral-900);
+        font-variant-numeric: tabular-nums;
+      }
+      .session-id {
+        display: inline-flex;
+        align-items: center;
+      }
+      .skip-detail {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+      }
+      .skip-detail:focus {
+        position: relative;
+        width: auto;
+        height: auto;
+        clip-path: none;
+        padding: var(--sl-spacing-small);
+        display: block;
+      }
+      .back-to-list {
+        display: none;
+      }
+
       .sidebar,
       .content {
         min-height: 0;
@@ -798,8 +919,12 @@ export class PreloopSessionObserver extends LitElement {
 
       /* Phone: 44px tap targets for Stop and End session (DESIGN.md D24). */
       @media (max-width: 720px) {
-        .mode-row sl-button.destructive {
+        .mode-row sl-button {
           --sl-input-height-small: 44px;
+        }
+        .session-id sl-copy-button::part(button) {
+          min-height: 44px;
+          min-width: 44px;
         }
       }
 
@@ -931,7 +1056,26 @@ export class PreloopSessionObserver extends LitElement {
 
       @media (max-width: 950px) {
         .observer.with-sidebar {
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .observer.mobile-list-detail:not(.mobile-detail) > .content,
+        .observer.mobile-list-detail:not(.mobile-detail) > .desktop-split,
+        .observer.mobile-list-detail.mobile-detail > .sidebar {
+          display: none;
+        }
+        .observer.full-layout {
+          height: auto !important;
+          min-height: 0;
+        }
+        .mobile-list-detail .back-to-list {
+          display: inline-flex;
+          align-self: flex-start;
+          min-height: 44px;
+          align-items: center;
+        }
+        .full-layout .sidebar,
+        .full-layout .content {
+          overflow: visible;
         }
       }
     `,
@@ -1008,7 +1152,11 @@ export class PreloopSessionObserver extends LitElement {
       this.observedSessions = [];
       this.activeSessionId = null;
     }
-    if (changed.has('sessions') || changed.has('scopeId')) {
+    if (
+      changed.has('sessions') ||
+      changed.has('scopeId') ||
+      changed.has('serverOrdered')
+    ) {
       this.applySessions(this.sessions || []);
     } else if (
       changed.has('selectedSessionId') &&
@@ -1176,13 +1324,14 @@ export class PreloopSessionObserver extends LitElement {
 
   /** Re-read one loaded session's activity timeline in place. */
   private async refreshActivity(sessionId: string): Promise<void> {
-    if (!this.loadedActivity[sessionId]) return;
+    if (!this.loadedActivity[sessionId] || this.loadingSessionId === sessionId)
+      return;
     const seq = ++this.activityReadSeq;
     try {
       const activity = await getAccountRuntimeSessionActivityTimeline(
         sessionId,
         {
-          operatorNoteId: this.focusTurnId,
+          around: this.focusTurnId,
         }
       );
       // The selection may have moved while the read was in flight, or a
@@ -1194,6 +1343,7 @@ export class PreloopSessionObserver extends LitElement {
         ...this.loadedActivity,
         [sessionId]: activity.items || [],
       };
+      this.rememberActivityPage(sessionId, activity);
     } catch (error) {
       // The scheduled scope refresh still runs; a failed read here only
       // means the row shows up a little later.
@@ -1336,7 +1486,11 @@ export class PreloopSessionObserver extends LitElement {
     const pinned = this.observedSessions.find(
       (session) => session.id === this.selectedSessionId
     );
-    if (rows !== null) this.observedSessions = normalizeObservedSessions(rows);
+    if (rows !== null) {
+      this.observedSessions = normalizeObservedSessions(rows, {
+        preserveOrder: this.serverOrdered,
+      });
+    }
     if (
       pinned &&
       !this.observedSessions.some((session) => session.id === pinned.id)
@@ -1448,7 +1602,8 @@ export class PreloopSessionObserver extends LitElement {
   // because an instant swap read as the list simply vanishing. Reduced-motion
   // users get the immediate swap they asked for.
   private collapseSidebar(): void {
-    if (this.sidebarCollapsed || this.hideSidebar) return;
+    if (this.layout === 'full' || this.sidebarCollapsed || this.hideSidebar)
+      return;
     this.clearSidebarAnimationTimer();
     if (this.prefersReducedMotion()) {
       this.sidebarAnimating = null;
@@ -1491,11 +1646,22 @@ export class PreloopSessionObserver extends LitElement {
     if (sessionId === this.activeSessionId && !options.force) {
       // Re-clicking the already-active session still expresses "inspect this"
       // intent, so it may collapse the list even though nothing reloads.
-      if (options.userInitiated) this.collapseSidebar();
+      if (options.userInitiated) {
+        this.collapseSidebar();
+        this.dispatchEvent(
+          new CustomEvent('session-selected', {
+            detail: { sessionId, userInitiated: true },
+            bubbles: true,
+            composed: true,
+          })
+        );
+      }
       return;
     }
     this.pinnedSessionError = null;
     if (options.userInitiated) {
+      this.focusTurnId = null;
+      this.focusArtifactId = null;
       ++this.pinnedSessionRequest;
       this.pinnedSessionPending = null;
       this.selectedSessionId = sessionId;
@@ -1521,7 +1687,7 @@ export class PreloopSessionObserver extends LitElement {
     this.landedArtifactId = null;
     this.dispatchEvent(
       new CustomEvent('session-selected', {
-        detail: { sessionId },
+        detail: { sessionId, userInitiated: !!options.userInitiated },
         bubbles: true,
         composed: true,
       })
@@ -1536,29 +1702,39 @@ export class PreloopSessionObserver extends LitElement {
     // an operator checks on a live session is whether it is blocked, and
     // waiting for the event page first would make that answer arrive late.
     void this.loadApprovalsForSession(sessionId);
-    // A timeline that cannot load is not worth an error on a replay that
-    // otherwise renders, with one exception: a session whose whole activity
-    // predates the plan's analytics window. That is the plan speaking, and
-    // it is the only thing this catch keeps.
+    // A search landing must report an unavailable target; an unfocused
+    // replay can still render gateway events when the activity read fails.
     const focusRequested = this.focusTurnId;
+    if (focusRequested) this.followLive = false;
+    const readSeq = ++this.activityReadSeq;
     try {
       const [events, activity] = await Promise.all([
         getRuntimeSessionGatewayEvents(sessionId, {
           limit: TURN_PAGE_SIZE,
           offset: 0,
+          around: focusRequested,
           historyWindow: TURN_HISTORY_WINDOW,
           // Every call replays the whole conversation; the page carries each
           // message once (1.7 MB -> about 150 KB on a long session, #1586).
           history: 'delta',
         }),
         getAccountRuntimeSessionActivityTimeline(sessionId, {
-          operatorNoteId: focusRequested,
-        }).catch((error: unknown) =>
-          isHistoryUnavailable(error)
-            ? error
-            : { items: [] as RuntimeSessionActivityItem[] }
-        ),
+          around: focusRequested,
+        }).catch((error: unknown) => {
+          if (isHistoryUnavailable(error)) return error;
+          if (focusRequested) throw error;
+          return { items: [] as RuntimeSessionActivityItem[], has_more: false };
+        }),
       ]);
+      if (
+        readSeq !== this.activityReadSeq ||
+        this.activeSessionId !== sessionId
+      )
+        return;
+      if (focusRequested !== this.focusTurnId) {
+        void this.selectSession(sessionId, { force: true });
+        return;
+      }
       if (isHistoryUnavailable(activity)) {
         // Say what the server said instead of drawing an empty replay.
         this.error = activity.message;
@@ -1590,19 +1766,21 @@ export class PreloopSessionObserver extends LitElement {
         ...this.loadedActivity,
         [sessionId]: activity.items || [],
       };
-      // A different note was linked while this read was in flight.
-      if (this.focusTurnId && this.focusTurnId !== focusRequested) {
-        void this.refreshActivity(sessionId);
-      }
+      this.rememberActivityPage(sessionId, activity);
       void this.loadArtifacts(sessionId);
     } catch (error) {
+      if (
+        readSeq !== this.activityReadSeq ||
+        this.activeSessionId !== sessionId
+      )
+        return;
       console.error('Failed to load selected session:', error);
       this.error =
         error instanceof Error
           ? error.message
           : 'Failed to load session replay';
     } finally {
-      this.loadingSessionId = null;
+      if (readSeq === this.activityReadSeq) this.loadingSessionId = null;
     }
   }
 
@@ -1625,12 +1803,76 @@ export class PreloopSessionObserver extends LitElement {
     return this.sortEventsDescending(Array.from(byId.values()));
   }
 
+  /** Extend the focused window without losing its older continuation. */
+  private async loadNewerActivity(sessionId: string): Promise<void> {
+    const page = this.loadedActivityPages[sessionId];
+    if (
+      !page?.hasNewer ||
+      !page.nextAfter ||
+      this.loadingMoreEventsForSessionId
+    )
+      return;
+    this.loadingMoreEventsForSessionId = sessionId;
+    const seq = this.activityReadSeq;
+    try {
+      const activity = await getAccountRuntimeSessionActivityTimeline(
+        sessionId,
+        {
+          after: page.nextAfter,
+        }
+      );
+      if (seq !== this.activityReadSeq || this.activeSessionId !== sessionId)
+        return;
+      this.mergeActivity(sessionId, activity.items);
+      this.rememberActivityPage(sessionId, activity, 'newer');
+    } catch (error) {
+      console.error('Failed to load newer session activity:', error);
+      this.error =
+        error instanceof Error
+          ? error.message
+          : 'Failed to load newer activity';
+    } finally {
+      this.loadingMoreEventsForSessionId = null;
+    }
+  }
+
+  private mergeActivity(
+    sessionId: string,
+    items: RuntimeSessionActivityItem[]
+  ): void {
+    this.loadedActivity = {
+      ...this.loadedActivity,
+      [sessionId]: [
+        ...new Map(
+          [...(this.loadedActivity[sessionId] ?? []), ...items].map((row) => [
+            row.activity_id || `${row.activity_type}:${row.timestamp}`,
+            row,
+          ])
+        ).values(),
+      ],
+    };
+  }
+
   private async loadMoreEvents(sessionId: string): Promise<void> {
     if (this.loadingMoreEventsForSessionId === sessionId) return;
     const page = this.loadedEventPages[sessionId];
-    if (!page?.hasMore || page.nextOffset === null) return;
+    const activityPage = this.loadedActivityPages[sessionId];
+    if ((!page?.hasMore || page.nextOffset === null) && !activityPage?.hasMore)
+      return;
     this.loadingMoreEventsForSessionId = sessionId;
+    const seq = this.activityReadSeq;
     try {
+      if (activityPage?.hasMore && activityPage.nextBefore) {
+        const activity = await getAccountRuntimeSessionActivityTimeline(
+          sessionId,
+          { before: activityPage.nextBefore }
+        );
+        if (seq !== this.activityReadSeq || this.activeSessionId !== sessionId)
+          return;
+        this.mergeActivity(sessionId, activity.items);
+        this.rememberActivityPage(sessionId, activity, 'older');
+      }
+      if (!page?.hasMore || page.nextOffset === null) return;
       const events = await getRuntimeSessionGatewayEvents(sessionId, {
         limit: TURN_PAGE_SIZE,
         offset: page.nextOffset,
@@ -2629,21 +2871,12 @@ export class PreloopSessionObserver extends LitElement {
     if (
       changed.has('focusTurnId') &&
       this.focusTurnId &&
-      this.replayMode === 'conversation'
-    ) {
-      // The conversation view has no per turn anchor and the transcript does,
-      // so a link to a turn lands where that turn can actually be shown.
-      this.setReplayMode('timeline');
-    }
-    if (
-      changed.has('focusTurnId') &&
-      this.focusTurnId &&
       this.activeSessionId &&
       this.loadedActivity[this.activeSessionId]
     ) {
       // Another note linked in a session already on screen: the activity
       // read only carries an older note when it is named, so read again.
-      void this.refreshActivity(this.activeSessionId);
+      void this.selectSession(this.activeSessionId, { force: true });
     }
   }
 
@@ -2763,6 +2996,7 @@ export class PreloopSessionObserver extends LitElement {
         @session-live-reload=${() => void this.reloadActiveSession()}
         .events=${this.activeEvents}
         .activity=${this.activeActivity}
+        .focusTurnId=${this.focusTurnId}
         .pendingApprovals=${this.activePendingApprovals}
         .sessionEnded=${this.isSessionEnded(this.activeSession)}
         .connected=${this.realtimeConnected}
@@ -2777,7 +3011,7 @@ export class PreloopSessionObserver extends LitElement {
           this.activeSessionId !== null &&
           this.loadingSessionId === this.activeSessionId
         }
-        .hasMoreEvents=${this.activeEventPage?.hasMore ?? false}
+        .hasMoreEvents=${(this.activeEventPage?.hasMore ?? false) || (this.activeSessionId ? (this.loadedActivityPages[this.activeSessionId]?.hasMore ?? false) : false)}
         .loadingMoreEvents=${
           this.loadingMoreEventsForSessionId === this.activeSessionId
         }
@@ -2903,7 +3137,8 @@ export class PreloopSessionObserver extends LitElement {
     if (!this.enabledFeatures.liveDesktop || !this.desktopEndpoint) {
       return nothing;
     }
-    if (!session || !this.isSessionLive(session)) return nothing;
+    // An online desktop remains usable between conversation turns.
+    if (!session || this.isSessionEnded(session)) return nothing;
     return html`
       <sl-button
         class="live-desktop"
@@ -2944,8 +3179,13 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   private isSessionLive(session: ObservedSession | null): boolean {
-    if (!session) return true;
+    if (!session) return false;
     if (session.status === 'ended' || session.endedAt) return false;
+    if (
+      agentStateChip((session.raw ?? {}) as Record<string, unknown>).label ===
+      'Idle'
+    )
+      return false;
     return session.status === 'active_now';
   }
 
@@ -2959,6 +3199,7 @@ export class PreloopSessionObserver extends LitElement {
     const raw = session.raw;
     if (!raw || typeof raw !== 'object') return false;
     const row = raw as Record<string, unknown>;
+    if (row.usage_source === 'none') return false;
     return (
       row.token_usage != null ||
       typeof row.estimated_cost === 'number' ||
@@ -3000,6 +3241,89 @@ export class PreloopSessionObserver extends LitElement {
     }).find((action) => action.id === 'end-session');
   }
 
+  private listHref(): string {
+    const url = new URL(window.location.href);
+    for (const key of ['sessionId', 'turn', 'artifact'])
+      url.searchParams.delete(key);
+    return `${url.pathname}${url.search}`;
+  }
+
+  /** Focus the named detail after a list or search navigation. */
+  public async focusDetail(): Promise<void> {
+    await this.updateComplete;
+    const heading =
+      this.renderRoot.querySelector<HTMLElement>('#session-title');
+    const target =
+      heading ?? this.renderRoot.querySelector<HTMLElement>('#session-detail');
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: 'start' });
+  }
+
+  private renderSessionHeader(): ReturnType<typeof html> | typeof nothing {
+    const session = this.activeSession;
+    if (!session) return nothing;
+    const raw = (session.raw ?? {}) as Record<string, unknown>;
+    const chip = agentStateChip({
+      turn_state: typeof raw.turn_state === 'string' ? raw.turn_state : null,
+      ended_at:
+        session.endedAt || (session.status === 'ended' ? 'ended' : null),
+      last_activity_at: session.lastActivityAt,
+    });
+    return html`<header class="session-heading">
+      <h2 id="session-title" tabindex="-1">${session.title}</h2>
+      <div class="session-identity">
+        <span data-session-owner
+          >${
+            session.flowHref
+              ? html`Flow
+                  <a href=${session.flowHref}
+                    >${session.flowName || 'Open flow'}</a
+                  >`
+              : session.agentHref
+                ? html`Agent
+                    <a href=${session.agentHref}
+                      >${session.agentName || 'Open agent'}</a
+                    >`
+                : html`Agent
+                  ${session.agentName || session.runtimePrincipalName || session.subtitle || 'Unknown'}`
+          }</span
+        >
+        ${session.startedAt ? html`<time datetime=${session.startedAt} title=${formatAbsoluteTime(session.startedAt)}>Started ${formatRelativeTime(session.startedAt)}</time>` : nothing}
+        <sl-badge class="chip" variant=${chip.variant} pill
+          >${chip.label}</sl-badge
+        >
+        <span class="session-id"
+          ><span title=${session.id}>${session.id.slice(0, 8)}</span>
+          <sl-copy-button
+            value=${session.id}
+            copy-label="Copy session ID"
+            success-label="Session ID copied"
+          ></sl-copy-button>
+        </span>
+      </div>
+      ${
+        this.sessionRowHasLedger(session)
+          ? html`<dl class="session-facts">
+              <div>
+                <dt>Tokens</dt>
+                <dd title=${formatCountExact(session.tokenUsage.total_tokens)}>
+                  ${formatCount(session.tokenUsage.total_tokens)}
+                </dd>
+              </div>
+              ${
+                (session.raw as Record<string, unknown>).cost_is_known !== false
+                  ? html`<div>
+                      <dt>Cost est.</dt>
+                      <dd>${formatCost(session.estimatedCost)}</dd>
+                    </div>`
+                  : nothing
+              }
+            </dl>`
+          : nothing
+      }
+    </header>`;
+  }
+
   private renderToolbar() {
     const session = this.activeSession;
     const live = this.isSessionLive(session);
@@ -3035,36 +3359,20 @@ export class PreloopSessionObserver extends LitElement {
                   </span>`
                 : nothing
             }
-            ${
-              session && this.sessionRowHasLedger(session)
-                ? html`
-                    <span class="meta">
-                      ${formatNumber(session.tokenUsage.total_tokens)} tokens ·
-                      ${formatCost(session.estimatedCost)}
-                    </span>
-                  `
-                : nothing
-            }
-            ${
-              session && (session.agentHref || session.flowHref)
-                ? html`<span class="meta" data-session-owner>
-                    ${
-                      session.flowHref
-                        ? html`Flow
-                            <a href=${session.flowHref}
-                              >${session.flowName || 'Open flow'}</a
-                            >`
-                        : html`Agent
-                            <a href=${session.agentHref!}
-                              >${session.agentName || 'Open agent'}</a
-                            >`
-                    }
-                  </span>`
-                : nothing
-            }
           </div>
         </div>
         <div class="mode-row">
+          ${
+            session && this.loadedActivityPages[session.id]?.hasNewer
+              ? html`<sl-button
+                  size="small"
+                  data-load-newer-activity
+                  ?loading=${this.loadingMoreEventsForSessionId === session.id}
+                  @click=${() => void this.loadNewerActivity(session.id)}
+                  >Load newer activity</sl-button
+                >`
+              : nothing
+          }
           ${
             this.enabledFeatures.liveFollow && live
               ? html`
@@ -3247,6 +3555,10 @@ export class PreloopSessionObserver extends LitElement {
     const content = html`
       <div
         class="content"
+        id="session-detail"
+        role="region"
+        aria-label="Session detail"
+        tabindex="-1"
         @wheel=${() => {
           this.recordingLastUserScroll = Date.now();
         }}
@@ -3282,7 +3594,33 @@ export class PreloopSessionObserver extends LitElement {
         @artifact-scrub=${(event: CustomEvent<{ artifactId: string }>) =>
           void this.scrollToArtifact(event.detail.artifactId)}
       >
-        ${this.renderToolbar()}
+        ${
+          this.mobileListDetail
+            ? html`<a
+                class="back-to-list"
+                href=${this.listHref()}
+                @click=${(event: MouseEvent) => {
+                  if (
+                    event.button !== 0 ||
+                    event.metaKey ||
+                    event.ctrlKey ||
+                    event.shiftKey ||
+                    event.altKey
+                  )
+                    return;
+                  event.preventDefault();
+                  this.dispatchEvent(
+                    new CustomEvent('session-list-back', {
+                      bubbles: true,
+                      composed: true,
+                    })
+                  );
+                }}
+                >← Back to sessions</a
+              >`
+            : nothing
+        }
+        ${this.renderSessionHeader()} ${this.renderToolbar()}
         ${this.pinnedSessionError ? html`<p role="alert">${this.pinnedSessionError}</p>` : nothing}
         ${this.pinnedSessionPending ? html`<p role="status">Loading selected session…</p>` : nothing}
         ${
@@ -3430,7 +3768,7 @@ export class PreloopSessionObserver extends LitElement {
           .interactionSummaries=${this.loadedInteractionSummaries}
           .loadingInteractionSummaries=${this.loadingInteractionSummaries}
           .summarizeVisibleContent=${this.summarizeVisibleContent}
-          .hasMoreEvents=${this.activeEventPage?.hasMore ?? false}
+          .hasMoreEvents=${(this.activeEventPage?.hasMore ?? false) || (this.activeSessionId ? (this.loadedActivityPages[this.activeSessionId]?.hasMore ?? false) : false)}
           .loadingMoreEvents=${
             this.loadingMoreEventsForSessionId === this.activeSessionId
           }
@@ -3545,8 +3883,27 @@ export class PreloopSessionObserver extends LitElement {
         ? 'observer sidebar-collapsed'
         : `observer with-sidebar${animClosed ? ' sidebar-anim-closed' : ''}`;
     return html`
+      ${
+        this.activeSession && (!this.mobileListDetail || this.mobileDetail)
+          ? html`<a
+              class="skip-detail"
+              href="#session-detail"
+              @click=${(event: Event) => {
+                event.preventDefault();
+                this.dispatchEvent(
+                  new CustomEvent('session-detail-requested', {
+                    bubbles: true,
+                    composed: true,
+                  })
+                );
+                void this.focusDetail();
+              }}
+              >Skip to session detail</a
+            >`
+          : nothing
+      }
       <div
-        class=${observerClass}
+        class=${`${observerClass}${this.layout === 'full' ? ' full-layout' : ''}${this.mobileListDetail ? ' mobile-list-detail' : ''}${this.mobileDetail ? ' mobile-detail' : ''}`}
         style=${
           this.layout === 'full'
             ? // A window-high master/detail panel: the list and the session
@@ -3626,19 +3983,23 @@ export class PreloopSessionObserver extends LitElement {
                       .emptyText=${
                         this.observedSessions.length === 0 ? this.emptyText : ''
                       }
-                      @session-selected=${(event: CustomEvent) =>
+                      @session-selected=${(event: CustomEvent) => {
+                        event.stopPropagation();
                         this.openFromList(
                           event.detail.sessionId,
                           event.detail.artifactKind ?? null
-                        )}
+                        );
+                      }}
                     ></session-list-panel>
+                    <slot name="list-footer"></slot>
                   </div>
                 `
         }
         ${
           this.desktopPanelOpen &&
           this.desktopEndpoint &&
-          this.isSessionLive(this.activeSession)
+          this.activeSession &&
+          !this.isSessionEnded(this.activeSession)
             ? html`<div class="desktop-split">
                 ${content} ${this.renderDesktopPanel()}
               </div>`

@@ -17,13 +17,14 @@ const (
 )
 
 type reviewPostingServer struct {
-	flow      map[string]any
-	puts      []map[string]any
-	posts     int
-	record    map[string]any
-	publish   func(w http.ResponseWriter)
-	putStatus int
-	ifMatch   []string
+	refinalize []map[string]any
+	flow       map[string]any
+	puts       []map[string]any
+	posts      int
+	record     map[string]any
+	publish    func(w http.ResponseWriter)
+	putStatus  int
+	ifMatch    []string
 	// concurrent makes the flow change on the server between the CLI's read
 	// and its write, as another editor would.
 	concurrent bool
@@ -54,6 +55,8 @@ func startReviewPostingServer(t *testing.T, state *reviewPostingServer) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.URL.Path == "/api/v1/openapi.json":
+			_, _ = w.Write([]byte(`{"components":{"schemas":{"GitCloneConfig":{"properties":{"platform_review":{}}}}}}`))
 		case r.URL.Path == "/api/v1/flows/"+reviewFlowID && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(state.flow)
 		case r.URL.Path == "/api/v1/flows/"+reviewFlowID && r.Method == http.MethodPut:
@@ -76,6 +79,11 @@ func startReviewPostingServer(t *testing.T, state *reviewPostingServer) {
 			_ = json.NewEncoder(w).Encode(state.flow)
 		case r.URL.Path == "/api/v1/flows/executions/"+reviewExecutionID && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "SUCCEEDED", "platform_review": state.record})
+		case r.URL.Path == "/api/v1/flows/executions/"+reviewExecutionID+"/refinalize" && r.Method == http.MethodPost:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			state.refinalize = append(state.refinalize, body)
+			_ = json.NewEncoder(w).Encode(map[string]any{"eligible": true, "digest": strings.Repeat("a", 64), "outcome": "preview"})
 		case r.URL.Path == "/api/v1/flows/executions/"+reviewExecutionID+"/platform-review" && r.Method == http.MethodPost:
 			state.posts++
 			if state.publish != nil {
@@ -747,5 +755,31 @@ func TestReviewPostingRecoveryDeadline(t *testing.T) {
 		if text := reviewReasonText(code); !strings.Contains(text, want) {
 			t.Fatalf("%s text = %q, want %q", code, text, want)
 		}
+	}
+}
+
+func TestReviewPostingRefinalizePreviewAndApply(t *testing.T) {
+	state := &reviewPostingServer{}
+	startReviewPostingServer(t, state)
+	out, err := runReviewPosting(t, "refinalize", reviewExecutionID)
+	if err != nil {
+		t.Fatalf("preview: %v %s", err, out)
+	}
+	if len(state.refinalize) != 1 || state.refinalize[0]["dry_run"] != true {
+		t.Fatalf("preview body: %v", state.refinalize)
+	}
+	if !strings.Contains(out, `"eligible": true`) {
+		t.Fatalf("preview output: %s", out)
+	}
+	_, err = runReviewPosting(t, "refinalize", reviewExecutionID, "--apply")
+	if err == nil || len(state.refinalize) != 1 {
+		t.Fatal("apply without preview digest must not make a request")
+	}
+	_, err = runReviewPosting(t, "refinalize", reviewExecutionID, "--apply", "--expected-digest", strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.refinalize[1]["dry_run"] != false || state.refinalize[1]["expected_digest"] != strings.Repeat("a", 64) {
+		t.Fatalf("apply body: %v", state.refinalize[1])
 	}
 }

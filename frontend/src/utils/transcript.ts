@@ -54,6 +54,7 @@ export type TranscriptStepKind =
   'tool_call' | 'tool_result' | 'system' | 'injected' | 'intermediate';
 
 export interface TranscriptStep {
+  activityId?: string | null;
   key: string;
   kind: TranscriptStepKind;
   label: string;
@@ -76,11 +77,13 @@ export interface TranscriptStep {
 export interface TranscriptMessageItem {
   type: 'message';
   key: string;
-  kind: 'user_prompt' | 'agent_response' | 'operator';
+  kind: 'user_prompt' | 'agent_response' | 'operator' | 'tool_output';
+  originLabel?: 'Tool output' | 'Skill output';
   role: string;
   text: string;
   timestamp: string | null;
   event: FlowGatewayEvent | null;
+  activityId?: string | null;
   redacted?: boolean;
   truncated?: boolean;
   failed?: boolean;
@@ -298,6 +301,8 @@ export interface RawToolResultScan {
    *  NONE yielded usable text). An EMPTY set is a positive claim: the raw
    *  body was parsed and contains no tool results at all. */
   prefixes: Set<string> | null;
+  /** Full user envelopes with structured tool output, including mixed blocks. */
+  envelopes?: Set<string>;
   /** Tool-result-shaped items that yielded no matchable text. When
    *  `prefixes` is non-null and this is > 0, exact detection is PARTIAL for
    *  the event: the unextractable results cannot be matched and may be
@@ -331,6 +336,7 @@ export function collectRawToolResultPrefixes(
   if (!arrays.length) return { prefixes: null, unusableToolResults: 0 };
 
   const prefixes = new Set<string>();
+  const envelopes = new Set<string>();
   let unusableToolResults = 0;
   let sawToolResultShape = false;
   for (const rawMessages of arrays) {
@@ -350,6 +356,7 @@ export function collectRawToolResultPrefixes(
       for (const block of content) {
         if (!isRecord(block)) continue;
         if (String(block.type || '').toLowerCase() === 'tool_result') {
+          envelopes.add(normalizeForMatch(contentToText(content)));
           sawToolResultShape = true;
           const text = contentToText(block.content ?? block);
           if (text.trim()) prefixes.add(normalizeForMatch(text));
@@ -365,7 +372,28 @@ export function collectRawToolResultPrefixes(
   if (sawToolResultShape && !prefixes.size) {
     return { prefixes: null, unusableToolResults };
   }
-  return { prefixes, unusableToolResults };
+  return { prefixes, envelopes, unusableToolResults };
+}
+
+/** Preserve generated origin when a provider wraps output in a user message. */
+function toolOutputOrigin(
+  text: string,
+  callIds?: readonly string[],
+  toolEnvelopes?: Set<string> | null
+): 'Tool output' | 'Skill output' | undefined {
+  // Claude's generated skill envelope has a specific directory header. A
+  // human mentioning skills in ordinary prose must remain a human prompt.
+  if (
+    /^(?:Launching skill:[^\n]+\n\s*)?Base directory for this skill:[^\n]+(?:\n|$)/i.test(
+      text
+    )
+  ) {
+    return 'Skill output';
+  }
+  if (callIds?.length || toolEnvelopes?.has(normalizeForMatch(text))) {
+    return 'Tool output';
+  }
+  return undefined;
 }
 
 function previewMessages(
@@ -435,6 +463,25 @@ function atomTime(atom: Atom): number {
  * observer stores them newest-first); `activity` rows supply tool calls,
  * operator messages and lifecycle markers.
  */
+/** Stable source order for messages pushed with one batch timestamp. */
+export function compareTranscriptActivity(
+  left: RuntimeSessionActivityItem,
+  right: RuntimeSessionActivityItem
+): number {
+  const time =
+    new Date(left.timestamp || 0).getTime() -
+    new Date(right.timestamp || 0).getTime();
+  if (time) return time;
+  const source = String(left.metadata?.external_id || '').localeCompare(
+    String(right.metadata?.external_id || '')
+  );
+  if (source) return source;
+  return (
+    Number(left.metadata?.message_index || 0) -
+    Number(right.metadata?.message_index || 0)
+  );
+}
+
 export function buildConversation(
   events: FlowGatewayEvent[],
   activity: RuntimeSessionActivityItem[] = []
@@ -636,12 +683,18 @@ export function buildConversation(
         return;
       }
 
+      const originLabel = toolOutputOrigin(
+        text,
+        message.tool_call_ids,
+        scan.envelopes
+      );
       atoms.push({
         type: 'message',
         order: order++,
         item: {
           type: 'message',
-          kind: 'user_prompt',
+          kind: originLabel ? 'tool_output' : 'user_prompt',
+          originLabel,
           role: message.role || 'user',
           event,
           ...base,
@@ -688,7 +741,9 @@ export function buildConversation(
     });
   }
 
-  for (const [index, item] of activity.entries()) {
+  for (const [index, item] of [...activity]
+    .sort(compareTranscriptActivity)
+    .entries()) {
     const activityType = (item.activity_type || '').toLowerCase();
     const key = `activity:${index}:${item.timestamp || ''}`;
     if (activityType === 'browser_step') {
@@ -718,6 +773,62 @@ export function buildConversation(
       });
       continue;
     }
+    if (activityType === 'transcript_message') {
+      const role = String(
+        item.metadata?.role || item.status || 'assistant'
+      ).toLowerCase();
+      const text = item.summary || '';
+      if (role === 'user' || role === 'assistant') {
+        const originLabel =
+          role === 'user'
+            ? toolOutputOrigin(
+                text,
+                Array.isArray(item.metadata?.tool_call_ids)
+                  ? item.metadata.tool_call_ids
+                  : undefined
+              )
+            : undefined;
+        atoms.push({
+          type: 'message',
+          order: order++,
+          item: {
+            type: 'message',
+            key: `activity:${item.activity_id || key}`,
+            kind: originLabel
+              ? 'tool_output'
+              : role === 'user'
+                ? 'user_prompt'
+                : 'agent_response',
+            originLabel,
+            role,
+            text,
+            timestamp: item.timestamp || null,
+            event: null,
+            activityId: item.activity_id,
+          },
+        });
+      } else {
+        atoms.push({
+          type: 'step',
+          order: order++,
+          step: {
+            key,
+            activityId: item.activity_id,
+            kind:
+              role === 'tool'
+                ? 'tool_result'
+                : role === 'tool_use'
+                  ? 'tool_call'
+                  : 'system',
+            label: item.title,
+            text,
+            timestamp: item.timestamp || null,
+            detectionExact: true,
+          },
+        });
+      }
+      continue;
+    }
     if (activityType === 'agent_control_message') {
       const metadata = (item.metadata || {}) as Record<string, unknown>;
       const role =
@@ -732,6 +843,7 @@ export function buildConversation(
           type: 'message',
           key,
           kind: 'operator',
+          activityId: item.activity_id,
           role,
           text: item.summary || item.title || '',
           timestamp: item.timestamp || null,
@@ -812,7 +924,11 @@ export function buildConversation(
       items.push(atom.item);
       return;
     }
-    if (atom.item.kind === 'agent_response' && !finalResponses.has(index)) {
+    if (
+      atom.item.kind === 'agent_response' &&
+      !atom.item.activityId &&
+      !finalResponses.has(index)
+    ) {
       currentSteps.push({
         key: atom.item.key,
         kind: 'intermediate',

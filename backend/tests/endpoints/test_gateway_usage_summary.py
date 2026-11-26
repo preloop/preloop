@@ -2,6 +2,9 @@
 
 from datetime import UTC, datetime, timedelta
 
+from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
+
 from preloop.models.crud import (
     crud_account,
     crud_ai_model,
@@ -1661,8 +1664,10 @@ def test_gateway_usage_summary_query_shape_matches_raw_rows(
     assert empty.json()["requests_by_day"] == []
 
 
-def test_session_activity_passes_the_turn_limit(client, monkeypatch):
-    """The console opens a session with its latest 50 turns (#1586)."""
+def test_session_activity_passes_the_turn_limit(
+    client: TestClient, monkeypatch: MonkeyPatch
+) -> None:
+    """Legacy limits and turn-page focus options reach the activity service."""
     from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 
     seen: dict[str, object] = {}
@@ -1674,9 +1679,17 @@ def test_session_activity_passes_the_turn_limit(client, monkeypatch):
         runtime_session_id: str,
         interaction_limit: int = 100,
         operator_note_id: str | None = None,
+        page_by_turn: bool = False,
+        before: str | None = None,
+        after: str | None = None,
+        around: str | None = None,
     ) -> dict[str, list[object]]:
         seen["limit"] = interaction_limit
         seen["operator_note_id"] = operator_note_id
+        seen["page_by_turn"] = page_by_turn
+        seen["before"] = before
+        seen["after"] = after
+        seen["around"] = around
         return {"items": []}
 
     monkeypatch.setattr(
@@ -1713,3 +1726,28 @@ def test_session_activity_passes_the_turn_limit(client, monkeypatch):
         ).status_code
         == 422
     )
+
+    assert (
+        client.get(
+            f"/api/v1/runtime-sessions/{session_id}/activity",
+            params={"page_by_turn": True, "limit": 20, "around": "example-match"},
+        ).status_code
+        == 200
+    )
+    assert seen["limit"] == 20
+    assert seen["page_by_turn"] is True
+    assert seen["around"] == "example-match"
+    assert (
+        client.get(
+            f"/api/v1/runtime-sessions/{session_id}/activity",
+            params={"page_by_turn": True, "before": "example-cursor"},
+        ).status_code
+        == 200
+    )
+    assert seen["before"] == "example-cursor"
+    response = client.get(
+        f"/api/v1/runtime-sessions/{session_id}/activity",
+        params={"page_by_turn": True, "after": "example-newer-cursor"},
+    )
+    assert response.status_code == 200
+    assert seen["after"] == "example-newer-cursor"

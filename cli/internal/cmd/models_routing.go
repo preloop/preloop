@@ -68,6 +68,11 @@ func init() { modelsCmd.AddCommand(newModelsRoutingCmd()) }
 
 // executeModelsRouting preserves unrelated model parameters and advanced routing fields.
 func executeModelsRouting(client *api.Client, out io.Writer, modelID string, changes map[string]interface{}, clear bool) error {
+	// Older servers store arbitrary model_parameters but do not apply the
+	// OpenRouter provider restrictions. Require their documented semantics.
+	if err := requireServerSchemaField(client, "AIModelCreate", "model_parameters", "OpenRouter", "OpenRouter provider routing"); err != nil {
+		return err
+	}
 	path := api.RESTPrefix + "/ai-models/" + url.PathEscape(strings.TrimSpace(modelID))
 	var model struct {
 		Provider   string                 `json:"provider_name"`

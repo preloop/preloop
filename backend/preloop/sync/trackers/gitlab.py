@@ -100,6 +100,7 @@ class GitLabTracker(BaseTracker):
         connection_details: Dict[str, Any],
         *,
         initialize_client: bool = True,
+        request_timeout: Optional[float] = None,
     ) -> None:
         """
         Initialize the GitLab tracker.
@@ -119,6 +120,8 @@ class GitLabTracker(BaseTracker):
             # Inside a connection test the constructor's auth call (and every
             # later call) is bounded; saved-tracker sync keeps the default.
             bounded: Dict[str, Any] = {}
+            if request_timeout is not None:
+                bounded["timeout"] = request_timeout
             if probe_timeout() is not None:
                 bounded["timeout"] = probe_timeout()
             self.gl = gitlab.Gitlab(self.url, private_token=api_key, **bounded)
@@ -137,6 +140,10 @@ class GitLabTracker(BaseTracker):
                 raise TrackerPermissionError(
                     "GitLab denied access. Check the token's api scope and group permissions.",
                     status_code=403,
+                ) from e
+            if request_timeout is not None:
+                raise TrackerResponseError(
+                    "GitLab client initialization failed", status_code=e.response_code
                 ) from e
             raise TrackerConnectionError("GitLab connection failed") from e
 
@@ -1505,12 +1512,18 @@ class GitLabTracker(BaseTracker):
         except gitlab.exceptions.GitlabGetError as e:
             if e.response_code == HTTP_STATUS_NOT_FOUND:
                 raise TrackerResponseError(
-                    f"Issue {issue_id} not found in project {project_id}"
+                    f"Issue {issue_id} not found in project {project_id}",
+                    status_code=404,
                 )
             raise
 
         # Use the mapper to convert to Issue object, passing project for path_with_namespace
-        return self._parse_gitlab_issue(issue, project=project)
+        result = self._parse_gitlab_issue(issue, project=project)
+        result._sync_data = {
+            **issue.attributes,
+            "key": f"{project.path_with_namespace}#{issue.iid}",
+        }
+        return result
 
     async def get_comments(self, issue_id: str) -> List[IssueComment]:
         """Get comments for an issue."""
@@ -1524,7 +1537,8 @@ class GitLabTracker(BaseTracker):
         except gitlab.exceptions.GitlabGetError as e:
             if e.response_code == HTTP_STATUS_NOT_FOUND:
                 raise TrackerResponseError(
-                    f"Issue {issue_id} not found in project {project_id}"
+                    f"Issue {issue_id} not found in project {project_id}",
+                    status_code=404,
                 )
             raise
 

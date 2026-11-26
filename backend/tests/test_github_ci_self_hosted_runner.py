@@ -12,6 +12,11 @@ import pytest
 
 from tests.ci_workflow import load_ci_jobs, step_script
 
+PICKER = Path(__file__).resolve().parents[2] / ".github/scripts/pick-runners.sh"
+LOCAL = ["self-hosted", "Linux", "X64", "preloop-ci-local"]
+GENERAL = ["self-hosted", "Linux", "X64", "preloop-ci-general"]
+AWS = ["self-hosted", "Linux", "X64", "preloop-ci-aws"]
+
 HOSTED_JOBS = (
     "test-backend-coverage",
     "test-frontend",
@@ -19,7 +24,6 @@ HOSTED_JOBS = (
 )
 PINNED_JOBS = (
     "requirements-resolve",
-    "lint",
     "helm-lint",
     "cli-vuln-scan",
     *HOSTED_JOBS,
@@ -27,14 +31,23 @@ PINNED_JOBS = (
 TEST_JOBS = ("test-backend", *HOSTED_JOBS)
 
 
-def _pick_script() -> str:
-    """Return the run script of the pick-runner decision step."""
-    for step in load_ci_jobs()["pick-runner"]["steps"]:
+def _pick_step(job: str) -> dict:
+    """Return the picker step of a CI job."""
+    for step in load_ci_jobs()[job]["steps"]:
         if step.get("id") == "pick":
-            script = step["run"]
-            assert isinstance(script, str)
-            return script
-    raise AssertionError("pick-runner has no step with id 'pick'")
+            return step
+    raise AssertionError(f"{job} has no step with id 'pick'")
+
+
+def _pick_script() -> str:
+    """Return the shared picker script both pick jobs run."""
+    assert _pick_step("pick-runner")["run"].strip() == (
+        "bash .github/scripts/pick-runners.sh late"
+    )
+    assert _pick_step("pick-light")["run"].strip() == (
+        "bash .github/scripts/pick-runners.sh early"
+    )
+    return PICKER.read_text()
 
 
 def test_backend_shards_route_through_pick_runner_plan() -> None:
@@ -87,8 +100,13 @@ def test_helm_checks_install_pinned_helm_before_rendering() -> None:
 def test_bootstrap_and_aggregation_do_not_depend_on_optional_capacity() -> None:
     """An offline spot pool must not prevent the fallback picker from running."""
     jobs = load_ci_jobs()
-    for name in ("changes", "pick-runner", "ci"):
+    for name in ("pick-light", "pick-runner", "ci"):
         assert jobs[name]["runs-on"] == "ubuntu-24.04", name
+    # Light jobs run even when the light picker failed, then on hosted.
+    for name in ("changes", "lint", "cli-fast"):
+        assert "!cancelled()" in jobs[name]["if"], name
+        assert jobs[name]["runs-on"].endswith("|| 'ubuntu-24.04' }}"), name
+        assert "github.run_attempt == 1 &&" in jobs[name]["runs-on"], name
     pick = jobs["pick-runner"]
     assert (
         pick["outputs"]["backend_runner"] == "${{ steps.pick.outputs.backend_runner }}"
@@ -120,21 +138,21 @@ def test_pick_runner_falls_back_to_the_public_runner() -> None:
     assert "postgres_ports" not in script
     # All-or-nothing self-hosted routing is what made CI slower.
     assert 'pick "$SELF_HOSTED"' not in script
-    assert "emit 0 " in script
+    assert "exit 0" in script
 
 
 def test_pick_runner_requires_an_idle_matching_runner() -> None:
     """Only an online, not-busy runner carrying all four labels counts."""
     script = _pick_script()
-    assert '["self-hosted","Linux","X64","preloop-ci-general"]' in script
+    assert json.dumps(GENERAL, separators=(",", ":")) in script
+    assert json.dumps(LOCAL, separators=(",", ":")) in script
     assert '.status == "online"' in script
     assert ".busy == false" in script
     for label in ("self-hosted", "Linux", "X64"):
         assert f'index("{label}")' in script
-    # One runner class per run: all shards private, or all hosted.
-    assert 'SPLITS="${BACKEND_SHARDS:-}"' in script
-    assert "$idle / $SPLITS" in script
-    assert "/ 8" not in script
+    # Runners are classified by label, never by name.
+    assert "(.name" not in script
+    assert "^deb" not in script
 
 
 def test_ci_aggregator_fails_when_pick_runner_fails() -> None:
@@ -226,6 +244,82 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
         assert "services" not in load_ci_jobs()[name]
 
 
+def _runner(labels: list[str], **extra: object) -> dict:
+    """Return a synthetic runner registration."""
+    runner: dict = {
+        "name": "runner",
+        "status": "online",
+        "busy": False,
+        "labels": [{"name": name} for name in labels],
+    }
+    runner.update(extra)
+    return runner
+
+
+def _pick(
+    tmp_path: Path,
+    mode: str,
+    runners: list[dict] | str | None,
+    **env: str,
+) -> dict[str, str]:
+    """Run the picker script against a fake ``gh`` and return its outputs.
+
+    Args:
+        tmp_path: Scratch directory for the fake binary and output files.
+        mode: ``early`` or ``late``.
+        runners: Registrations to report, raw stdout, or None for an API error.
+        **env: Overrides for the picker environment.
+
+    Returns:
+        The ``GITHUB_OUTPUT`` key/value pairs.
+    """
+    if not shutil.which("jq"):
+        pytest.skip("jq required to execute the picker")
+    payload = tmp_path / "runners.json"
+    if runners is None:
+        body = "sys.exit(1)"
+    else:
+        text = runners if isinstance(runners, str) else json.dumps({"runners": runners})
+        payload.write_text(text)
+        body = f"print(open({str(payload)!r}).read())"
+    gh = tmp_path / "gh"
+    gh.write_text(
+        "#!/usr/bin/env python3\nimport sys\n"
+        "assert sys.argv[2] == 'repos/example/repository/actions/runners'\n"
+        f"{body}\n"
+    )
+    gh.chmod(0o755)
+    output = tmp_path / "output"
+    output.write_text("")
+    full_env = dict(
+        os.environ,
+        PATH=f"{tmp_path}:{os.environ['PATH']}",
+        BACKEND_REQUIRED="true",
+        BACKEND_SHARDS="7",
+        TRUSTED_SOURCE="true",
+        RUN_ATTEMPT="1",
+        RUNNER_READ_TOKEN="synthetic",
+        SELF_HOSTED_TESTS="true",
+        LOCAL_RUNNERS="",
+        REPO="example/repository",
+        GITHUB_OUTPUT=str(output),
+        GITHUB_STEP_SUMMARY=str(tmp_path / "summary"),
+    )
+    full_env.update(env)
+    result = subprocess.run(
+        ["bash", str(PICKER), mode],
+        env=full_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+
+HOSTED = "ubuntu-24.04"
+
+
 @pytest.mark.parametrize(
     ("case", "expected", "shards"),
     [
@@ -238,11 +332,11 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
         ("unlabeled", 0, "6"),
         ("hosted-alias", 0, "6"),
         ("fork", 0, "6"),
+        ("rerun", 0, "2"),
         ("api-error", 0, "6"),
         ("malformed", 0, "6"),
         ("disabled", 0, "6"),
         ("missing-token", 0, "6"),
-        ("standby", 0, "6"),
         ("irrelevant", 0, "6"),
         ("many", 7, "7"),
         ("unset", 0, "2"),
@@ -257,62 +351,295 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
 def test_real_selector_uses_available_capacity(
     tmp_path: Path, case: str, expected: int, shards: str
 ) -> None:
-    """Execute the workflow's actual selector against synthetic API responses."""
-    if not shutil.which("jq"):
-        pytest.skip("jq required to execute workflow shell")
-    gh = tmp_path / "gh"
-    gh.write_text("""#!/usr/bin/env python3
-import json, os, sys
-case = os.environ['CASE']
-# Capacity routing must not wait for unrelated hosted queue pressure.
-assert sys.argv[2] == 'repos/example/repository/actions/runners'
-if case == 'api-error':
-    sys.exit(1)
-if case == 'malformed':
-    print('invalid json')
-    sys.exit(0)
-labels = ['self-hosted', 'Linux', 'X64', 'preloop-ci-general']
-if case == 'dedicated':
-    labels.append('gce-tests-only')
-if case in {'unlabeled', 'hosted-alias'}:
-    labels.remove('preloop-ci-general')
-if case == 'hosted-alias':
-    labels.append('ubuntu-latest')
-runner = dict(name='deb1' if case == 'standby' else 'general', status='offline' if case == 'offline' else 'online',
-              busy=case == 'busy', labels=[{'name': name} for name in labels])
-runners = [] if case == 'absent' else [runner] * (30 if case == 'many' else 3)
-if case == 'partial':
-    runners = [runner, dict(runner, status='offline'), dict(runner, busy=True)]
-print(json.dumps({'runners': runners}))
-""")
-    gh.chmod(0o755)
-    output = tmp_path / "output"
-    env = dict(
-        os.environ,
-        PATH=f"{tmp_path}:{os.environ['PATH']}",
-        CASE=case,
+    """Execute the picker against synthetic general-pool inventories."""
+    labels = list(GENERAL)
+    if case == "dedicated":
+        labels.append("gce-tests-only")
+    if case in {"unlabeled", "hosted-alias"}:
+        labels.remove("preloop-ci-general")
+    if case == "hosted-alias":
+        labels.append("ubuntu-latest")
+    runner = _runner(labels, status="offline" if case == "offline" else "online")
+    runner["busy"] = case == "busy"
+    runners: list[dict] | str | None = [runner] * (30 if case == "many" else 3)
+    if case == "absent":
+        runners = []
+    if case == "partial":
+        runners = [runner, dict(runner, status="offline"), dict(runner, busy=True)]
+    if case == "api-error":
+        runners = None
+    if case == "malformed":
+        runners = "invalid json"
+    outputs = _pick(
+        tmp_path,
+        "late",
+        runners,
         BACKEND_REQUIRED="false" if case == "irrelevant" else "true",
         BACKEND_SHARDS=shards,
         TRUSTED_SOURCE="false" if case == "fork" else "true",
+        RUN_ATTEMPT="2" if case == "rerun" else "1",
         RUNNER_READ_TOKEN="" if case == "missing-token" else "synthetic",
         SELF_HOSTED_TESTS={"disabled": "false", "unset": ""}.get(case, "true"),
-        REPO="example/repository",
-        GITHUB_OUTPUT=str(output),
-        GITHUB_STEP_SUMMARY=str(tmp_path / "summary"),
     )
-    result = subprocess.run(
-        ["bash", "-c", _pick_script()],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
-    assert result.returncode == 0, result.stderr
-    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
-    runner = json.loads(outputs["backend_runner"])
-    assert runner == (
-        ["self-hosted", "Linux", "X64", "preloop-ci-general"]
-        if expected
-        else "ubuntu-24.04"
-    )
+    assert json.loads(outputs["backend_runner"]) == (GENERAL if expected else HOSTED)
     assert int(outputs["observed_idle"]) == expected
+    assert outputs["self_hosted"] == ("true" if expected else "false")
+
+
+@pytest.mark.parametrize(
+    ("general", "local", "shards", "expected"),
+    [
+        # Hosted by default: three local slots cannot take a seven-group set.
+        (0, 3, "7", "hosted"),
+        # A narrow set that fits wholly on the local slots goes there.
+        (0, 3, "3", "local"),
+        (0, 3, "1", "local"),
+        (0, 2, "3", "hosted"),
+        # The general pool wins when it can take the set.
+        (3, 3, "3", "general"),
+        # Never split: two general plus two local is not four of one class.
+        (2, 2, "4", "hosted"),
+    ],
+)
+def test_backend_set_goes_to_exactly_one_class(
+    tmp_path: Path, general: int, local: int, shards: str, expected: str
+) -> None:
+    """The whole backend set lands on one runner class, hosted by default."""
+    runners = [_runner(GENERAL)] * general + [_runner(LOCAL, name="deb1")] * local
+    outputs = _pick(tmp_path, "late", runners, BACKEND_SHARDS=shards)
+    want = {"hosted": HOSTED, "general": GENERAL, "local": LOCAL}[expected]
+    assert json.loads(outputs["backend_runner"]) == want
+    assert outputs["runner_class"] == expected
+    assert outputs["self_hosted"] == ("false" if expected == "hosted" else "true")
+
+
+def test_local_pool_does_not_need_the_general_opt_in(tmp_path: Path) -> None:
+    """CI_SELF_HOSTED_TESTS gates the general pool only."""
+    outputs = _pick(
+        tmp_path, "late", [_runner(LOCAL)] * 3, BACKEND_SHARDS="2", SELF_HOSTED_TESTS=""
+    )
+    assert outputs["runner_class"] == "local"
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"LOCAL_RUNNERS": "false"},
+        {"TRUSTED_SOURCE": "false"},
+        {"RUN_ATTEMPT": "2"},
+        {"RUNNER_READ_TOKEN": ""},
+    ],
+)
+def test_local_pool_is_skipped_when_disabled_untrusted_or_rerun(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    """Forks, Dependabot and reruns never reach a docker-group runner."""
+    runners = [_runner(LOCAL)] * 3
+    late = _pick(
+        tmp_path,
+        "late",
+        runners,
+        BACKEND_SHARDS="1",
+        LEAF_FUZZ="true",
+        LEAF_BROWSER_FIXTURE="true",
+        **env,
+    )
+    early = _pick(tmp_path, "early", runners, **env)
+    for key in ("backend_runner", "browser_fixture_runner", "fuzz_runner"):
+        assert json.loads(late[key]) == HOSTED, key
+    for key in ("changes_runner", "lint_runner", "cli_fast_runner"):
+        assert json.loads(early[key]) == HOSTED, key
+    assert late["local_idle"] == early["local_idle"] == "0"
+
+
+@pytest.mark.parametrize(
+    ("idle", "changes", "lint", "cli_fast"),
+    [
+        (0, HOSTED, HOSTED, HOSTED),
+        (1, LOCAL, LOCAL, HOSTED),
+        (2, LOCAL, LOCAL, LOCAL),
+        (3, LOCAL, LOCAL, LOCAL),
+    ],
+)
+def test_early_light_jobs_prefer_idle_local_slots(
+    tmp_path: Path, idle: int, changes: object, lint: object, cli_fast: object
+) -> None:
+    """Changes runs alone first, so its slot is reused by Lint and CLI Fast."""
+    runners = [_runner(LOCAL)] * idle + [
+        _runner(LOCAL, busy=True),
+        _runner(LOCAL, status="offline"),
+        _runner(["self-hosted", "Linux", "X64"], name="deb9"),
+    ]
+    outputs = _pick(tmp_path, "early", runners)
+    assert json.loads(outputs["changes_runner"]) == changes
+    assert json.loads(outputs["lint_runner"]) == lint
+    assert json.loads(outputs["cli_fast_runner"]) == cli_fast
+
+
+@pytest.mark.parametrize(
+    ("idle", "shards", "fixture", "fuzz"),
+    [
+        # Backend takes three, nothing left for the leaves.
+        (3, "3", HOSTED, HOSTED),
+        # Seven groups go hosted; leaves use the slots in priority order.
+        (3, "7", LOCAL, LOCAL),
+        (2, "7", LOCAL, HOSTED),
+        (3, "1", LOCAL, HOSTED),
+        (1, "7", LOCAL, HOSTED),
+    ],
+)
+def test_leaves_take_local_slots_the_backend_left(
+    tmp_path: Path, idle: int, shards: str, fixture: object, fuzz: object
+) -> None:
+    """Fuzz needs one slot per concurrent leg, so it goes whole or hosted."""
+    outputs = _pick(
+        tmp_path,
+        "late",
+        [_runner(LOCAL)] * idle,
+        BACKEND_SHARDS=shards,
+        LEAF_FUZZ="true",
+        LEAF_BROWSER_FIXTURE="true",
+    )
+    assert json.loads(outputs["browser_fixture_runner"]) == fixture
+    assert json.loads(outputs["fuzz_runner"]) == fuzz
+
+
+def test_leaves_that_do_not_run_hold_no_slot(tmp_path: Path) -> None:
+    """A skipped leaf leaves its slot to the next one."""
+    outputs = _pick(
+        tmp_path,
+        "late",
+        [_runner(LOCAL)] * 2,
+        BACKEND_SHARDS="7",
+        LEAF_BROWSER_FIXTURE="false",
+        LEAF_FUZZ="true",
+    )
+    assert json.loads(outputs["fuzz_runner"]) == LOCAL
+    assert "docs_runner" not in outputs
+
+
+def test_leaf_workflows_accept_the_picked_runner() -> None:
+    """Each leaf passes the picker output and its callee defaults to hosted."""
+    jobs = load_ci_jobs()
+    root = PICKER.parents[2]
+    # Docs stays hosted: its lock needs Python >= 3.11.5, Debian 12 has 3.11.2.
+    assert "runner" not in jobs["leaf-docs"]["with"]
+    for leaf, output, workflow in (
+        ("leaf-fuzz", "fuzz_runner", "fuzz"),
+        ("leaf-browser-fixture", "browser_fixture_runner", "browser-fixture"),
+    ):
+        job = jobs[leaf]
+        assert "pick-runner" in job["needs"], leaf
+        assert job["with"]["runner"] == (
+            "${{ github.run_attempt == 1 && "
+            f"needs.pick-runner.outputs.{output} || '\"ubuntu-24.04\"' }}}}"
+        )
+        text = (root / f".github/workflows/{workflow}.yml").read_text()
+        assert "fromJSON(inputs.runner || '\"ubuntu-24.04\"')" in text, workflow
+        assert "default: '\"ubuntu-24.04\"'" in text, workflow
+
+
+@pytest.mark.parametrize(
+    ("general", "local", "aws", "shards", "expected"),
+    [
+        # The aws pool takes a set that fits on its idle runners.
+        (0, 0, 2, "2", "aws"),
+        (0, 0, 2, "1", "aws"),
+        (0, 0, 2, "3", "hosted"),
+        # Local and general come first when either can take the whole set.
+        (0, 3, 3, "2", "local"),
+        (3, 0, 3, "3", "general"),
+        # Never split across classes.
+        (0, 1, 1, "2", "hosted"),
+    ],
+)
+def test_aws_pool_takes_whole_backend_sets_when_enabled(
+    tmp_path: Path, general: int, local: int, aws: int, shards: str, expected: str
+) -> None:
+    """With CI_AWS_RUNNERS=true idle aws runners are the third class."""
+    runners = (
+        [_runner(GENERAL)] * general
+        + [_runner(LOCAL, name="deb1")] * local
+        + [_runner(AWS, name="ci-aws-i-1")] * aws
+    )
+    outputs = _pick(
+        tmp_path, "late", runners, BACKEND_SHARDS=shards, AWS_RUNNERS="true"
+    )
+    want = {"hosted": HOSTED, "general": GENERAL, "local": LOCAL, "aws": AWS}
+    assert json.loads(outputs["backend_runner"]) == want[expected]
+    assert outputs["runner_class"] == expected
+    assert outputs["aws_idle"] == str(aws)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"AWS_RUNNERS": "false"},
+        {"AWS_RUNNERS": "true", "TRUSTED_SOURCE": "false"},
+        {"AWS_RUNNERS": "true", "RUN_ATTEMPT": "2"},
+        {"AWS_RUNNERS": "true", "RUNNER_READ_TOKEN": ""},
+    ],
+)
+def test_aws_pool_is_off_by_default_and_never_for_forks_or_reruns(
+    tmp_path: Path, env: dict[str, str]
+) -> None:
+    """The variable defaults off; forks, Dependabot and reruns stay hosted."""
+    runners = [_runner(AWS, name="ci-aws-i-1")] * 4
+    late = _pick(tmp_path, "late", runners, BACKEND_SHARDS="1", **env)
+    early = _pick(tmp_path, "early", runners, **env)
+    assert json.loads(late["backend_runner"]) == HOSTED
+    for key in ("changes_runner", "lint_runner", "cli_fast_runner"):
+        assert json.loads(early[key]) == HOSTED, key
+    assert late["aws_idle"] == early["aws_idle"] == "0"
+
+
+@pytest.mark.parametrize(
+    ("local", "aws", "changes", "lint", "cli_fast"),
+    [
+        # One job per aws VM: the changes VM is gone before stage 2.
+        (0, 1, AWS, HOSTED, HOSTED),
+        (0, 2, AWS, AWS, HOSTED),
+        (0, 3, AWS, AWS, AWS),
+        # A local slot is reused by stage 2; aws fills the remainder.
+        (1, 1, LOCAL, LOCAL, AWS),
+        (2, 2, LOCAL, LOCAL, LOCAL),
+    ],
+)
+def test_light_jobs_use_aws_after_local_and_never_reuse_a_vm(
+    tmp_path: Path,
+    local: int,
+    aws: int,
+    changes: object,
+    lint: object,
+    cli_fast: object,
+) -> None:
+    """Light jobs prefer local slots, then idle aws runners, then hosted."""
+    runners = [_runner(LOCAL, name="deb1")] * local + [
+        _runner(AWS, name="ci-aws-i-1")
+    ] * aws
+    outputs = _pick(tmp_path, "early", runners, AWS_RUNNERS="true")
+    assert json.loads(outputs["changes_runner"]) == changes
+    assert json.loads(outputs["lint_runner"]) == lint
+    assert json.loads(outputs["cli_fast_runner"]) == cli_fast
+
+
+def test_leaves_never_take_aws_runners(tmp_path: Path) -> None:
+    """Fuzz and browser-fixture stay on local slots or hosted."""
+    outputs = _pick(
+        tmp_path,
+        "late",
+        [_runner(AWS, name="ci-aws-i-1")] * 4,
+        BACKEND_SHARDS="7",
+        LEAF_FUZZ="true",
+        LEAF_BROWSER_FIXTURE="true",
+        AWS_RUNNERS="true",
+    )
+    assert json.loads(outputs["fuzz_runner"]) == HOSTED
+    assert json.loads(outputs["browser_fixture_runner"]) == HOSTED
+
+
+def test_both_pickers_pass_the_aws_variable() -> None:
+    """CI_AWS_RUNNERS reaches both picker steps."""
+    for job in ("pick-light", "pick-runner"):
+        assert _pick_step(job)["env"]["AWS_RUNNERS"] == "${{ vars.CI_AWS_RUNNERS }}"

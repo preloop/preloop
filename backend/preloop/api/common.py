@@ -170,6 +170,8 @@ async def get_tracker_client(
     project_id: Union[str, UUID],
     db: Session,
     current_user: User,
+    *,
+    request_timeout: Optional[float] = None,
 ) -> BaseTracker:
     """Get the appropriate tracker client for the given organization and project,
     ensuring the current user has access.
@@ -179,6 +181,7 @@ async def get_tracker_client(
         project_id: The project ID or identifier.
         db: Database session.
         current_user: The authenticated user.
+        request_timeout: Bound provider initialization for interactive lookups.
 
     Returns:
         A tracker client instance.
@@ -369,17 +372,30 @@ async def get_tracker_client(
     logger.debug("Creating tracker client of type '%s'", tracker_type)
 
     try:
+        tracker_id = str(tracker.id)
+        api_key = tracker.resolved_api_key
+        credential_source = tracker_credential_source(tracker)
+        if request_timeout is not None:
+            from preloop.models.db.session import release_transaction
+
+            release_transaction(db)
+
         # Create the tracker client using the combined config. A managed grant
         # (auth_type managed_oauth) carries no stored key: the client resolves
         # a fresh credential through the provider plugin before each request,
         # after the account/project authorization checks above.
         tracker_client = await create_tracker_client(
             tracker_type=tracker_type,
-            tracker_id=str(tracker.id),
-            api_key=tracker.resolved_api_key,  # May be empty for OAuth
+            tracker_id=tracker_id,
+            api_key=api_key,  # May be empty for OAuth
             connection_details=full_config,
-            credential_source=tracker_credential_source(tracker),
+            credential_source=credential_source,
             raise_on_error=True,
+            **(
+                {"request_timeout": request_timeout}
+                if request_timeout is not None
+                else {}
+            ),
         )
         if not tracker_client:
             # Unsupported providers have no client even with raise_on_error.
@@ -387,9 +403,15 @@ async def get_tracker_client(
 
         return tracker_client
     except TrackerError as exc:
+        if request_timeout is not None:
+            raise
         logger.warning("Tracker client initialization failed: %s", type(exc).__name__)
         raise tracker_request_http_error(exc, tracker_type=tracker_type) from exc
     except ValueError as ve:  # Catch config and credential-resolution errors
+        if request_timeout is not None:
+            raise HTTPException(
+                502, "Tracker configuration refused the lookup."
+            ) from None
         logger.error(
             f"Configuration error creating tracker client: {type(ve).__name__}"
         )
@@ -402,6 +424,8 @@ async def get_tracker_client(
         )
         raise HTTPException(status_code=400, detail=detail) from ve
     except Exception as e:
+        if request_timeout is not None:
+            raise
         logger.error(f"Error creating tracker client: {type(e).__name__}")
         raise HTTPException(
             status_code=500, detail="Error creating tracker client"

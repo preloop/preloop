@@ -765,8 +765,10 @@ ISSUE_REFERENCE_FORMS = (
     "'.../group/project/-/issues/12' or '.../group/project/-/work_items/12', "
     "GitHub '.../owner/repo/issues/12', Jira '.../browse/PROJ-12'); a bare "
     "number '12', which must match exactly one synced issue; or the Preloop "
-    "issue UUID. Only synced issues are found; GitLab epics, objectives and "
-    "key results are not issues."
+    "issue UUID. Missing issues can be fetched from GitHub, GitLab, Jira or "
+    "Azure Boards when their project is already synced in this account "
+    "(compliance batches remain database-only). GitLab epics, objectives and "
+    "key results are not issues. Azure Boards accepts org/project#id and work item URLs."
 )
 
 PR_REFERENCE_FORMS = (
