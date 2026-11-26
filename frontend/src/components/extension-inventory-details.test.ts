@@ -65,6 +65,26 @@ const page: ExtensionPage = {
 };
 
 describe('extension descriptive metadata', () => {
+  it('uses the CLI agent name in a Codex inspection command', async () => {
+    const element = await fixture<ExtensionInventory>(
+      html`<extension-inventory
+        .loader=${async () => ({
+          ...page,
+          items: [{ ...page.items[0], agent_kind: 'codex' }],
+        })}
+        .accessLoader=${async () => ({ view: true, manage: false })}
+        .pinLoader=${async () => []}
+      ></extension-inventory>`
+    );
+    await waitUntil(
+      () => !!element.shadowRoot?.querySelector('.toggle-details')
+    );
+    (
+      element.shadowRoot!.querySelector('.toggle-details') as HTMLElement
+    ).click();
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).to.contain("--agent 'codex-cli'");
+  });
   it('renders descriptions, invocation, sorted kinds and expandable local content commands', async () => {
     const element = await fixture<ExtensionInventory>(
       html`<extension-inventory

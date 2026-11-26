@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 )
@@ -16,6 +17,20 @@ var agentsExtensionsShowCmd = &cobra.Command{
 }
 
 func init() { agentsExtensionsCmd.AddCommand(agentsExtensionsShowCmd) }
+
+// extensionDisplayText preserves local content while making terminal controls
+// visible. It never interprets escape sequences, including OSC clipboard writes.
+func extensionDisplayText(value string) string {
+	var output strings.Builder
+	for _, r := range value {
+		if (unicode.IsControl(r) && r != '\n' && r != '\t') || unicode.Is(unicode.Cf, r) {
+			fmt.Fprintf(&output, "\\u%04x", r)
+		} else {
+			output.WriteRune(r)
+		}
+	}
+	return output.String()
+}
 
 func runAgentsExtensionsShow(cmd *cobra.Command, args []string) error {
 	if !map[string]bool{"skill": true, "command": true, "plugin": true, "hook": true}[args[0]] {
@@ -39,7 +54,7 @@ func runAgentsExtensionsShow(cmd *cobra.Command, args []string) error {
 				continue
 			}
 			found = true
-			fmt.Fprintf(out, "\n%s %s (%s, %s, %s)\n", ext.Kind, ext.ID, group.app.id, ext.Scope, group.profileLabel)
+			fmt.Fprintf(out, "\n%s %s (%s, %s, %s)\n", ext.Kind, extensionDisplayText(ext.ID), group.app.id, ext.Scope, extensionDisplayText(group.profileLabel))
 			if err := writeExtensionJSON(cmd, ext); err != nil {
 				return err
 			}
@@ -49,18 +64,18 @@ func runAgentsExtensionsShow(cmd *cobra.Command, args []string) error {
 			if len(ext.Local.Files) > 0 {
 				fmt.Fprintln(out, "Files:")
 				for _, file := range ext.Local.Files {
-					fmt.Fprintln(out, "  "+file)
+					fmt.Fprintln(out, "  "+extensionDisplayText(file))
 				}
 			}
 			if len(ext.Local.Commands) > 0 {
 				fmt.Fprintln(out, "Hook commands:")
 				for _, command := range ext.Local.Commands {
-					fmt.Fprintln(out, command)
+					fmt.Fprintln(out, extensionDisplayText(command))
 				}
 			}
 			if ext.Local.Body != "" {
 				fmt.Fprintln(out, "Content:")
-				fmt.Fprintln(out, ext.Local.Body)
+				fmt.Fprintln(out, extensionDisplayText(ext.Local.Body))
 			}
 		}
 	}

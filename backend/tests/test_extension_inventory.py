@@ -1064,3 +1064,77 @@ def test_extension_search_has_usable_trigram_indexes(db_session: Session) -> Non
     output = "\n".join(plan)
     for field in ("id", "name", "description"):
         assert f"ix_discovered_extension_{field}_search" in output
+
+
+@pytest.mark.parametrize("name", ["a" * 129, "\U0001f600" * 300])
+@pytest.mark.parametrize("group", [None, "extension"])
+def test_extension_cursor_accepts_full_display_name(
+    client: TestClient, name: str, group: str | None
+) -> None:
+    """A maximum-length Unicode name must remain pageable in either shape."""
+    payload = report(
+        [
+            extension(kind="skill", id="first", details={"name": name}),
+            extension(kind="skill", id="second", details={"name": name}),
+        ]
+    )
+    payload["evidence"]["schema_version"] = 4
+    assert client.post(REPORTS, json=payload).status_code == 202
+    params: dict[str, Any] = {"limit": 1}
+    if group:
+        params["group"] = group
+    first = client.get(EXTENSIONS, params=params)
+    assert first.status_code == 200, first.text
+    params["cursor"] = first.json()["next_cursor"]
+    assert params["cursor"]
+    second = client.get(EXTENSIONS, params=params)
+    assert second.status_code == 200, second.text
+    assert second.json()["next_cursor"] is None
+    assert (
+        first.json()["items"][0]["extension_id"]
+        != second.json()["items"][0]["extension_id"]
+    )
+
+
+def test_extension_search_preserves_group_approval_state(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """A matching description selects a key without hiding changed devices."""
+    pinned = "sha256:" + "ab" * 32
+    changed = "sha256:" + "cd" * 32
+    for fingerprint, description, content_hash, version, source in [
+        ("a", "Review migrations", pinned, "1.0.0", "local"),
+        ("c", "Check a change", changed, "2.0.0", "git"),
+    ]:
+        payload = report(
+            [
+                extension(
+                    details={"description": description},
+                    content_hash=content_hash,
+                    version=version,
+                    source_kind=source,
+                )
+            ]
+        )
+        payload["evidence"]["schema_version"] = 4
+        payload["workstation_fingerprint"] = fingerprint * 64
+        store(db_session, test_user.account_id, payload)
+    crud_extension_approval.set_state(
+        db_session,
+        account_id=test_user.account_id,
+        agent_kind="claude_code",
+        extension_kind="plugin",
+        extension_id="reviewer@community",
+        decided_by_user_id=test_user.id,
+        payload=ExtensionApprovalUpdate(
+            approval_state="approved", pin=ExtensionPinCreate(content_hash=pinned)
+        ),
+    )
+    response = client.get(EXTENSIONS, params={"group": "extension", "q": "migrations"})
+    assert response.status_code == 200, response.text
+    row = response.json()["items"][0]
+    assert row["device_count"] == 2
+    assert row["versions"] == ["1.0.0", "2.0.0"]
+    assert row["source_kinds"] == ["git", "local"]
+    assert row["effective_state"] == "content_changed"
+    assert {item["content_hash"] for item in row["content_hashes"]} == {pinned, changed}

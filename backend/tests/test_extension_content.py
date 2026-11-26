@@ -43,7 +43,7 @@ PLANTED = {
     "github": "ghp_" + "x7Kq2LmN9pRs4TuVw1Xy3Za5Bc6De8Fg0HiJ",
     "aws": "AKIA" + "Q3EGUYZ7LMNOPQ5X",
     "bearer": "q7RkX2mVp9" + "LzT4nYw6BcJ8hDf3GsA5",
-    "password": "s3cr3t-" + "Pa55-w0rd",
+    "weak": "s3cr3t-" + "Pa55-w0rd",
 }
 
 
@@ -481,7 +481,7 @@ def test_identical_hashes_in_two_accounts_are_never_shared(
     """protects=cross-account isolation: a hash another account stored reads
     as absent, is asked for again and is stored separately; fails_when=one
     account reads, deduplicates against or deletes another's content."""
-    original = f"TOKEN={PLANTED['password']}\n"
+    original = f"TOKEN={PLANTED['weak']}\n"
     mine = skill_item([redacted_file("SKILL.md", original, "account one", x=1)])
     theirs = skill_item([redacted_file("SKILL.md", original, "account two", x=1)])
     assert mine["content_hash"] == theirs["content_hash"]

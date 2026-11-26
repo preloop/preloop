@@ -576,6 +576,8 @@ never authenticates, uploads, calls a model, or executes an extension. Use
 `--project .` in the repository for project extensions. The console provides a
 copyable command for each row. Report-hashed identifiers can also be resolved
 locally. A bounded or unreadable scan is reported as incomplete with exit 2.
+Terminal control characters are displayed as escapes; newlines and tabs are
+preserved so inspecting an extension cannot execute terminal escape sequences.
 
 ### Content hashes
 
