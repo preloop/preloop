@@ -24,7 +24,7 @@ func PlantedSecrets() []PlantedSecret {
 	github := join("ghp_", "x7Kq2LmN9pRs4TuV", "w1Xy3Za5Bc6De8Fg0HiJ")
 	slack := join("xoxb-", "2847561930", "-", "5839201746352", "-", "kR7mPq2XvL9nTz4BwY6cJh8D")
 	stripe := join("sk_", "live_", "4eC39HqLyjWDarjtT1zdp7dcQ9XbN2mK")
-	anthropic := join("sk-ant-", "api03-", "q7RkX2mVp9LzT4nYw6BcJ8hDf3GsA5uE1oPiN0xZvKtMrQyWbHgCdFjSlUaOeIX-kR7mPq2XvL9nTz4BwY6c", "-", "J8hDfQAA")
+	anthropic := join("sk-ant-a", "pi03-q7R", "kX2mVp9L", "zT4nYw6B", "cJ8hDf3G", "sA5uE1oP", "iN0xZvKt", "MrQyWbHg", "CdFjSlUa", "OeIX-kR7", "mPq2XvL9", "nTz4BwY6", "c-J8hDfQ", "AA")
 	jwt := join("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", ".", "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkphbmUgRG9lIn0", ".", "Xk7mPq2LvR9nTz4BwY6cJh8DfGs3A5uE1oPiN0xZvKt")
 	bearer := join("q7RkX2mVp9", "LzT4nYw6Bc", "J8hDf3GsA5")
 	basic := join("amFuZTpodW50", "ZXIyLXNlY3JldA==")
