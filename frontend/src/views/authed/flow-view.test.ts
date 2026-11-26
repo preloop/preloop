@@ -663,6 +663,64 @@ describe('FlowView detail page language', () => {
     }
   });
 
+  it('shows the flow branch rule and explicitly selected checkout project', async () => {
+    const repository = {
+      tracker_id: 'tracker-1',
+      project_id: 'project-1',
+      clone_path: '/workspace',
+    };
+    const element = await renderDetail({
+      git_clone_config: {
+        enabled: true,
+        repositories: [repository],
+      },
+    });
+    try {
+      element.projects = [{ id: 'project-1', name: 'Widgets' }];
+      await element.updateComplete;
+      const details = element.shadowRoot.querySelector('[data-flow-details]');
+      const checkoutCard = () =>
+        Array.from(
+          element.shadowRoot.querySelectorAll(
+            'sl-card'
+          ) as NodeListOf<HTMLElement>
+        ).find((card) =>
+          card
+            .querySelector('[slot="header"]')
+            ?.textContent?.includes('Git Clone Configuration')
+        );
+      expect(details.textContent).to.include(
+        'From trigger or repository default'
+      );
+      expect(checkoutCard()?.textContent).to.include('Widgets');
+      expect(checkoutCard()?.textContent).not.to.include(
+        'Auto-detect from trigger'
+      );
+
+      element.flow = {
+        ...element.flow,
+        git_clone_config: {
+          enabled: true,
+          source_branch: 'release/1.0',
+          repositories: [
+            {
+              ...repository,
+              repository_url: 'https://example.com/team/widgets.git',
+            },
+          ],
+        },
+      };
+      await element.updateComplete;
+
+      expect(details.textContent).to.include('release/1.0');
+      expect(checkoutCard()?.textContent).to.include(
+        'https://example.com/team/widgets.git'
+      );
+    } finally {
+      element.remove();
+    }
+  });
+
   it('puts recent executions before the prompt (#1692)', async () => {
     const element = await renderDetail({ prompt_template: 'Review it' });
     try {

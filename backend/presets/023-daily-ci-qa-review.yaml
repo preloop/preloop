@@ -163,7 +163,7 @@ git_clone_config:
   enabled: true
   git_user_name: Preloop
   git_user_email: hello@preloop.ai
-  source_branch: main
+  source_branch: null
   target_branch: null
   create_pull_request: true
   # Legacy publication: the platform pushes the agent's commit to a new
