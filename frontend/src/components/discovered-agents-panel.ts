@@ -153,7 +153,8 @@ export class DiscoveredAgentsPanel extends LitElement {
     if (!this.loaded) return nothing;
     return html`<sl-tab-group
       @sl-tab-show=${(event: CustomEvent<{ name: string }>) => {
-        this.extensionsActive = event.detail.name === 'extensions';
+        // Mount on first open and keep it: switching back must not reload.
+        if (event.detail.name === 'extensions') this.extensionsActive = true;
       }}
     >
       <sl-tab slot="nav" panel="agents">Discovered agents</sl-tab>

@@ -68,6 +68,8 @@ export interface ExtensionCoverage {
   collector_version: string | null;
   completeness: 'complete' | 'partial' | 'unknown';
   reasons: string[];
+  /** When the device's latest report ended; absent on older servers. */
+  reported_at?: string | null;
 }
 export interface ExtensionPage {
   coverage?: ExtensionCoverage[];
@@ -135,37 +137,46 @@ export async function fetchExtensionPolicyText(): Promise<string> {
 export async function getExtensions(
   filters: ExtensionFilters = {}
 ): Promise<ExtensionPage> {
-  const params = new URLSearchParams({ limit: '50' });
+  const params = new URLSearchParams({ limit: '200' });
   if (!filters.fingerprint) params.set('group', 'extension');
   for (const [key, value] of Object.entries(filters))
     if (value) params.set(key, value);
-  const page = await request<ExtensionPage>(`/discovery-extensions?${params}`);
-  // The inventory DTO omits constraints. Read only decisions on this page,
-  // once per identity, with bounded concurrency rather than an account scan.
-  const identities = new Map<string, ExtensionKey>();
-  for (const row of page.items) identities.set(approvalPath(row), row);
-  const pending = [...identities.entries()];
-  const constraints = new Map<string, string | null | undefined>();
-  await Promise.all(
-    Array.from({ length: Math.min(4, pending.length) }, async () => {
-      for (let item = pending.pop(); item; item = pending.pop()) {
-        const [key, row] = item;
-        try {
-          const decision = await getExtensionDecision(row);
-          constraints.set(key, decision?.version_constraint ?? null);
-        } catch {
-          constraints.set(key, undefined);
-        }
-      }
-    })
-  );
+  // The inventory DTO omits constraints. Read the account's decisions in
+  // parallel with the page, through the paginated list, not once per row.
+  const [page, constraints] = await Promise.all([
+    request<ExtensionPage>(`/discovery-extensions?${params}`),
+    getVersionConstraints().catch(() => null),
+  ]);
   return {
     ...page,
     items: page.items.map((row) => ({
       ...row,
-      version_constraint: constraints.get(approvalPath(row)),
+      // Undefined means the constraint could not be read; null means none.
+      version_constraint: constraints
+        ? (constraints.get(approvalPath(row)) ?? null)
+        : undefined,
     })),
   };
+}
+
+/** Every stored version constraint, keyed by approval path. */
+async function getVersionConstraints(): Promise<Map<string, string | null>> {
+  const constraints = new Map<string, string | null>();
+  let cursor: string | null = null;
+  // Bounded: 20 pages of 500 decisions.
+  for (let page = 0; page < 20; page++) {
+    const params = new URLSearchParams({ limit: '500' });
+    if (cursor) params.set('cursor', cursor);
+    const list = await request<{
+      items: (ExtensionKey & { version_constraint: string | null })[];
+      next_cursor: string | null;
+    }>(`/extension-approvals?${params}`);
+    for (const row of list.items)
+      constraints.set(approvalPath(row), row.version_constraint);
+    cursor = list.next_cursor;
+    if (!cursor) return constraints;
+  }
+  throw new Error('Too many extension decisions to read constraints');
 }
 
 const approvalPath = (extension: ExtensionKey): string =>

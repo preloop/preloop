@@ -829,11 +829,15 @@ def test_coverage_uses_latest_device_reasons_and_is_account_scoped(
             "reasons": ["extension_project_unscanned"],
         }
     ]
-    assert (
-        crud_discovered_extension.coverage(db_session, account_id=test_user.account_id)
-        == expected
+    stored = crud_discovered_extension.coverage(
+        db_session, account_id=test_user.account_id
     )
-    assert client.get(EXTENSIONS).json()["coverage"] == expected
+    # The report time lets the inventory tell a fresh report from a stale one.
+    assert all(row.pop("reported_at") is not None for row in stored)
+    assert stored == expected
+    api = client.get(EXTENSIONS).json()["coverage"]
+    assert all(row.pop("reported_at") for row in api)
+    assert api == expected
     assert crud_discovered_extension.coverage(db_session, account_id=uuid4()) == []
     assert (
         crud_discovered_extension.coverage(
