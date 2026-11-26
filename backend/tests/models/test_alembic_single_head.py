@@ -687,4 +687,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert extension_policy.down_revision == azure_requests.revision
     chat_conversations = script.get_revision("20261229_chat_conversations")
     assert chat_conversations.down_revision == extension_policy.revision
-    assert script.get_heads() == [chat_conversations.revision]
+    subagent_role = script.get_revision("20261231_subagent_role")
+    assert subagent_role.down_revision == chat_conversations.revision
+    assert script.get_heads() == [subagent_role.revision]
