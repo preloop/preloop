@@ -109,14 +109,6 @@ func removeClaudeAgentControlArtifacts() error {
 	if err := checkClaudeControlOwnership(path, ownership); err != nil {
 		return err
 	}
-	current, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	// Retry after a completed restore can safely discard the ownership record.
-	if ownership.Existed && err == nil && bytes.Equal(current, ownership.Original) {
-		return os.Remove(marker)
-	}
 	if ownership.Existed {
 		if err := writeFileAtomically(path, ownership.Original, os.FileMode(ownership.Mode), ".preloop-control-*"); err != nil {
 			return err

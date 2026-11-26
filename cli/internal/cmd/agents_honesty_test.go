@@ -118,6 +118,39 @@ func TestClaudeOffboardPreservesUnownedControl(t *testing.T) {
 	}
 }
 
+func TestClaudeControlRestoresPermissionsWhenBytesUnchanged(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	t.Setenv("PRELOOP_CONFIG_DIR", filepath.Join(home, ".preloop"))
+	path := claudeControlConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("{\n  \"control\": {\n    \"enabled\": true\n  }\n}")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0640); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeClaudePreloopControlFile(map[string]interface{}{"enabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeManagedAgentRuntimeArtifacts(AgentConfig{Name: "Claude Code"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Mode().Perm() != before.Mode().Perm() {
+		t.Fatal("offboard did not restore original permissions for unchanged bytes")
+	}
+}
+
 func TestClaudeControlPreservesChangesAfterEnrollment(t *testing.T) {
 	for _, symlink := range []bool{false, true} {
 		t.Run(map[bool]string{false: "edited", true: "symlink"}[symlink], func(t *testing.T) {
