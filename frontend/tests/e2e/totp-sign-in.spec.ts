@@ -363,8 +363,14 @@ async function cliLogin(page: Page, user: User, secret: string): Promise<void> {
   expect((await verify(page, code(secret))).status()).toBe(200);
   await page.waitForURL('**/console/authorize**');
   await page
-    .getByRole('button', { name: 'Authorize Application', exact: true })
+    .getByRole('button', { name: 'Authorize CLI', exact: true })
     .click();
+  await expect(
+    page.getByRole('heading', {
+      name: 'Finish login in your terminal',
+      exact: true,
+    })
+  ).toBeVisible();
   await expect(page.locator('.manual-code-box')).toBeVisible();
   const authorizationCode = (await page
     .locator('.manual-code-box')
@@ -375,6 +381,7 @@ async function cliLogin(page: Page, user: User, secret: string): Promise<void> {
     { env: cliEnv, encoding: 'utf8' }
   );
   expect(finished.status).toBe(0);
+  expect(finished.stdout.includes('Successfully authenticated!')).toBe(true);
 }
 
 test.use({ trace: 'off', video: 'off', screenshot: 'off' });
