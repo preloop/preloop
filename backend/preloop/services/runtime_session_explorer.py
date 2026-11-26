@@ -14,7 +14,9 @@ from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from preloop.models.models.ai_model import AIModel
+from preloop.models import models
+from preloop.models.crud import session_discovery
+
 from preloop.models.crud import (
     crud_agent_control_command,
     crud_ai_model,
@@ -60,6 +62,8 @@ from preloop.utils.agent_kind import (
 )
 from preloop.utils.request_fingerprint import public_request_fingerprint
 
+AIModel = models.AIModel
+
 logger = logging.getLogger(__name__)
 
 # Bound the per-request cost of list-path title generation: at most this many
@@ -79,8 +83,7 @@ TIMELINE_USAGE_META_KEYS: tuple[str, ...] = (
     "ws_override_source",
 )
 
-# Refresh a session's title once its request count has grown by at least this
-# many requests since the title was last generated.
+# Kept for plugin imports. Request volume is not evidence of a changed purpose.
 TITLE_REFRESH_REQUEST_DELTA = 5
 
 # Per-attempt provider I/O bound for interaction summaries. Matches the
@@ -152,6 +155,8 @@ class RuntimeSessionExplorerService:
         active_within_minutes: Optional[int] = None,
         has_artifacts: Optional[str] = None,
         owner_user_id: Optional[str] = None,
+        include_related: bool = False,
+        session_ids: Optional[list[str]] = None,
     ) -> AccountRuntimeSessionListResponse:
         principals, source_types = self._resolve_agent_filters(
             account=account,
@@ -191,6 +196,8 @@ class RuntimeSessionExplorerService:
                 else None
             ),
             has_artifacts=has_artifacts,
+            session_ids=session_ids,
+            prompt_since=history_window.cutoff,
         )
         raw_items = results["items"]
         self.schedule_missing_session_titles(
@@ -204,7 +211,14 @@ class RuntimeSessionExplorerService:
         )
         self._attach_note_badges(account=account, items=items)
         self._attach_session_labels(account=account, items=items)
+        related, truncated = (
+            self.session_family(account=account, items=items, history=history_window)
+            if include_related
+            else ([], False)
+        )
         return AccountRuntimeSessionListResponse(
+            related_sessions=related,
+            related_truncated=truncated,
             period_start=start_date,
             period_end=end_date,
             query=query,
@@ -216,6 +230,36 @@ class RuntimeSessionExplorerService:
             offset=offset,
             items=items,
         )
+
+    def session_family(
+        self,
+        *,
+        account: Account,
+        items: list[RuntimeSessionSummary],
+        history: AnalyticsHistoryWindow | None = None,
+    ) -> tuple[list[RuntimeSessionSummary], bool]:
+        """Read family context without a request or SQL query per displayed row."""
+        history = history or resolve_history_window(self.db, account=account)
+        ids, truncated = session_discovery.family_ids(
+            self.db,
+            account_id=str(account.id),
+            session_ids=[item.id for item in items],
+            since=history.cutoff,
+        )
+        own = {item.id for item in items}
+        ids = [session_id for session_id in ids if session_id not in own]
+        if not ids:
+            return [], truncated
+        rows = crud_runtime_session.list_account_sessions(
+            self.db,
+            account_id=str(account.id),
+            session_ids=ids,
+            limit=500,
+            prompt_since=history.cutoff,
+        )["items"]
+        related = [self._summary_row_to_schema(row) for row in rows]
+        self._attach_managed_agents(account=account, items=related, session_ids=ids)
+        return related, truncated
 
     def _resolve_agent_filters(
         self,
@@ -290,9 +334,16 @@ class RuntimeSessionExplorerService:
                 and str(row.owner_user_id).lower() == owner
             ]
 
-        principals = [
-            (row.session_source_type, row.session_source_id) for row in agents
-        ]
+        principals = list(
+            dict.fromkeys(
+                principal
+                for row in agents
+                for principal in (
+                    (row.session_source_type, row.session_source_id),
+                    ("managed_agent", str(row.id)),
+                )
+            )
+        )
         source_types = None
         # Source-type matching reaches sessions no managed agent owns, so it
         # never applies under an owner filter: that would widen the list back
@@ -578,14 +629,10 @@ class RuntimeSessionExplorerService:
     ) -> None:
         """Schedule best-effort title generation off the request path.
 
-        Selects the most-recent sessions on the current page that are untitled,
-        or whose request count has grown by at least
-        :data:`TITLE_REFRESH_REQUEST_DELTA` since the title was last generated,
-        bounded to :data:`MAX_TITLES_PER_LIST_REQUEST` sessions; the remainder
-        are picked up on subsequent loads. The actual (LLM-backed) generation is
-        registered as a FastAPI background task so it runs *after* the HTTP
-        response is sent and never blocks it. The generated titles therefore
-        appear on a later load, not in the response that scheduled them.
+        Only untitled sessions with an opening request are eligible. Request
+        volume cannot establish a changed purpose. Existing titles, including
+        harness titles, stay stable. Generation uses one durable admission per
+        session, and the optional plugin must summarize the opening request.
 
         When no ``background_tasks`` is provided (e.g. a non-request caller),
         this is a no-op so the hot path never makes inline LLM calls.
@@ -627,18 +674,27 @@ class RuntimeSessionExplorerService:
 
             schedule = get_plugin_manager().get_service("session_title_scheduler")
             if schedule is not None:
-                schedule(account_id=account_id, session_ids=session_ids)
+                from preloop.models.db.session import get_session_factory
+
+                with get_session_factory()() as db:
+                    admitted = session_discovery.reserve_initial_titles(
+                        db,
+                        account_id=account_id,
+                        session_ids=session_ids,
+                    )
+                if admitted:
+                    schedule(account_id=account_id, session_ids=admitted)
         except Exception:
             logger.info("Background title scheduling failed; skipping optional work")
 
     @staticmethod
     def _session_needs_title(row: dict) -> bool:
         """Return whether a session row should (re)generate its title."""
-        if not row.get("title"):
-            return True
-        current_requests = int(row.get("total_requests") or 0)
-        last_titled_at = int(row.get("title_request_count") or 0)
-        return current_requests - last_titled_at >= TITLE_REFRESH_REQUEST_DELTA
+        return bool(
+            not row.get("title")
+            and row.get("first_prompt")
+            and row.get("title_request_count") is None
+        )
 
     def get_account_session_detail(
         self,
@@ -687,7 +743,18 @@ class RuntimeSessionExplorerService:
         self._attach_tool_call_counts(
             account=account, items=[session], session_ids=[runtime_session_id]
         )
+        session.first_prompt = session_discovery.opening_prompts(
+            self.db,
+            account_id=str(account.id),
+            session_ids=[session.id],
+            since=history_window.cutoff,
+        ).get(session.id)
+        related, truncated = self.session_family(
+            account=account, items=[session], history=history_window
+        )
         return AccountRuntimeSessionDetailResponse(
+            related_sessions=related,
+            related_truncated=truncated,
             period_start=start_date,
             period_end=end_date,
             session=session,
@@ -1217,6 +1284,7 @@ class RuntimeSessionExplorerService:
             runtime_principal_id=row["runtime_principal_id"],
             runtime_principal_name=row["runtime_principal_name"],
             title=row.get("title"),
+            first_prompt=row.get("first_prompt"),
             summary=row.get("summary"),
             summary_updated_at=row.get("summary_updated_at"),
             started_at=row["started_at"],

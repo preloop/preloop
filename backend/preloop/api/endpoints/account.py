@@ -3504,6 +3504,7 @@ async def list_account_runtime_sessions(
     end_date: Optional[datetime] = Query(None),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    include_related: bool = Query(False),
     sort: Literal["last_activity", "started", "cost", "requests"] = Query(
         "last_activity", description="Descending order across all matching sessions"
     ),
@@ -3566,6 +3567,7 @@ async def list_account_runtime_sessions(
         lambda: RuntimeSessionExplorerService(db).list_account_sessions(
             account=account,
             query=query,
+            include_related=include_related,
             session_source_type=session_source_type,
             status=status,
             start_date=start_date,

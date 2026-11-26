@@ -13,7 +13,6 @@ from preloop.services.analytics_history import AnalyticsHistoryWindow
 from preloop.services.runtime_session_explorer import (
     INTERACTION_SUMMARY_ATTEMPT_TIMEOUT_SECONDS,
     MAX_TITLES_PER_LIST_REQUEST,
-    TITLE_REFRESH_REQUEST_DELTA,
     RuntimeSessionExplorerService,
 )
 
@@ -274,16 +273,21 @@ def test_parse_bool_variants():
 
 
 def test_session_needs_title_when_missing():
-    assert RuntimeSessionExplorerService._session_needs_title({"title": ""}) is True
+    assert (
+        RuntimeSessionExplorerService._session_needs_title(
+            {"title": "", "first_prompt": "Build a parser"}
+        )
+        is True
+    )
 
 
-def test_session_needs_title_when_request_delta_exceeded():
+def test_session_keeps_title_when_request_count_grows() -> None:
     row = {
         "title": "t",
-        "total_requests": TITLE_REFRESH_REQUEST_DELTA + 1,
+        "total_requests": 200,
         "title_request_count": 0,
     }
-    assert RuntimeSessionExplorerService._session_needs_title(row) is True
+    assert RuntimeSessionExplorerService._session_needs_title(row) is False
 
 
 def test_session_does_not_need_title_when_fresh():
@@ -303,7 +307,13 @@ def test_schedule_titles_noop_without_background_tasks(service):
 
 def test_schedule_titles_adds_bounded_task(service):
     rows = [
-        {"id": str(i), "title": "", "total_requests": 0, "title_request_count": 0}
+        {
+            "id": str(i),
+            "title": "",
+            "first_prompt": "Build a parser",
+            "total_requests": 0,
+            "title_request_count": None,
+        }
         for i in range(MAX_TITLES_PER_LIST_REQUEST + 5)
     ]
     bg = MagicMock()
@@ -342,13 +352,18 @@ def test_run_title_generation_only_submits_to_scheduler():
     with (
         patch("preloop.plugins.base.get_plugin_manager", return_value=pm),
         patch("preloop.models.db.session.get_session_factory") as factory,
+        patch(
+            "preloop.models.crud.session_discovery.reserve_initial_titles",
+            return_value=["s1", "s2"],
+        ) as reserve,
     ):
         RuntimeSessionExplorerService._run_title_generation(
             account_id="acct", session_ids=["s1", "s2"]
         )
     pm.get_service.assert_called_once_with("session_title_scheduler")
     schedule.assert_called_once_with(account_id="acct", session_ids=["s1", "s2"])
-    factory.assert_not_called()
+    factory.assert_called_once()
+    reserve.assert_called_once()
 
 
 def test_run_title_generation_skips_old_plugins_without_scheduler():
@@ -357,6 +372,10 @@ def test_run_title_generation_skips_old_plugins_without_scheduler():
     with (
         patch("preloop.plugins.base.get_plugin_manager", return_value=pm),
         patch("preloop.models.db.session.get_session_factory") as factory,
+        patch(
+            "preloop.models.crud.session_discovery.reserve_initial_titles",
+            return_value=["s1", "s2"],
+        ) as reserve,
     ):
         RuntimeSessionExplorerService._run_title_generation(
             account_id="a", session_ids=["s"]
@@ -1087,7 +1106,10 @@ def test_resolve_agent_filters_keeps_only_the_owners_agents(service):
             owner_user_id=str(owner),
         )
 
-    assert principals == [("managed_agent", "mine")]
+    assert principals == [
+        ("managed_agent", "mine"),
+        ("managed_agent", str(agents[0].id)),
+    ]
     assert source_types is None
 
 
@@ -1124,5 +1146,8 @@ def test_resolve_agent_filters_owner_with_kind_never_widens_to_source_type(
             owner_user_id=str(owner),
         )
 
-    assert principals == [("managed_agent", "mine")]
+    assert principals == [
+        ("managed_agent", "mine"),
+        ("managed_agent", str(agents[0].id)),
+    ]
     assert source_types is None

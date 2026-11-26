@@ -33,12 +33,12 @@ describe('RuntimeSessionsView', () => {
   let fetchStub: sinon.SinonStub;
   let wsStub: sinon.SinonStub;
 
-  const SEARCH_URL = '/api/v1/runtime-sessions/search';
+  const SEARCH_URL = '/api/v1/runtime-sessions/find';
 
   // One matching session with two snippets, one of each kind the corpus
   // publishes, so the tags and the deep link both have something to work with.
   function searchResponse(overrides: Record<string, unknown> = {}) {
-    return {
+    const response = {
       query: 'rollout plan',
       mode: 'keyword',
       effective_mode: 'keyword',
@@ -95,6 +95,29 @@ describe('RuntimeSessionsView', () => {
       ],
       ...overrides,
     };
+    const keys = Object.keys(response);
+    return Object.defineProperties(response, {
+      items: {
+        enumerable: true,
+        get: () =>
+          response.results.map((result) => ({
+            id: result.runtime_session_id,
+            title: result.title,
+            session_source_type: result.session_source_type,
+            session_source_id: result.session_source_id,
+            session_reference: result.session_reference,
+            started_at: result.started_at,
+            last_activity_at: result.last_activity_at,
+          })),
+      },
+      content_search: {
+        enumerable: true,
+        get: () =>
+          Object.fromEntries(
+            keys.map((key) => [key, (response as Record<string, unknown>)[key]])
+          ),
+      },
+    });
   }
 
   function searchCalls(): sinon.SinonSpyCall[] {
@@ -1310,7 +1333,7 @@ describe('RuntimeSessionsView', () => {
       expect(String((request.args[1] as RequestInit).method)).to.equal('POST');
       expect(
         JSON.parse(String((request.args[1] as RequestInit).body))
-      ).to.deep.include({ query: 'rollout plan', mode: 'keyword' });
+      ).to.deep.include({ query: 'rollout plan' });
       const searchBody = JSON.parse(
         String((request.args[1] as RequestInit).body)
       ) as Record<string, unknown>;
@@ -2433,7 +2456,34 @@ describe('RuntimeSessionsView', () => {
         '[data-testid="search-empty"]'
       );
       expect(empty).to.not.equal(null);
-      expect(empty!.textContent).to.contain('No session content matched');
+      expect(empty!.textContent).to.contain('No sessions matched');
+    });
+
+    it('offers the next page when scope filtering leaves an empty content page', async () => {
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(
+        async () =>
+          new Response(
+            JSON.stringify(
+              searchResponse({
+                total: null,
+                results: [],
+                has_more: true,
+                next_offset: 25,
+              })
+            ),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+      );
+      const element = await renderedSearch();
+      const empty = element.shadowRoot!.querySelector(
+        '[data-testid="search-empty"]'
+      )!;
+      expect(empty.textContent).to.contain('No matches on this page');
+      (empty.querySelector('sl-button') as HTMLElement).click();
+      await waitUntil(() => searchCalls().length === 2);
+      expect(
+        JSON.parse(String(searchCalls()[1].args[1]?.body)).offset
+      ).to.equal(25);
     });
 
     it('renders an error state when the search fails', async () => {

@@ -50,6 +50,9 @@ export function artifactGroupCounts(
 import './token-figures.ts';
 import { totalTokensOf } from './token-figures';
 
+import { sessionTree } from '../utils/session-tree';
+import { openTalkWindow } from '../utils/talk-window';
+
 @customElement('session-list-panel')
 export class SessionListPanel extends LitElement {
   @property({ type: Array })
@@ -60,6 +63,29 @@ export class SessionListPanel extends LitElement {
 
   @property({ type: String })
   emptyText = '';
+
+  @property({ attribute: false }) matchingTurns: Record<string, string> = {};
+  @property({ attribute: false }) snippets: Record<string, string> = {};
+  @property({ attribute: false }) matchedIds: string[] = [];
+  @state() private expanded = new Set<string>();
+
+  private get treeRows() {
+    return sessionTree(
+      this.sessions,
+      this.expanded,
+      new Set([
+        ...this.matchedIds,
+        ...(this.activeSessionId ? [this.activeSessionId] : []),
+      ])
+    );
+  }
+
+  private toggleChildren(id: string): void {
+    const next = new Set(this.expanded);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    this.expanded = next;
+  }
 
   @state() private focusedSessionId: string | null = null;
 
@@ -75,6 +101,14 @@ export class SessionListPanel extends LitElement {
 
       /* Compact rows (#1585): three single lines per session, so a page of
          20 fits in about two viewports instead of 50 tall cards in 30. */
+      button {
+        background: transparent;
+        border: 0;
+        color: var(--console-link-color);
+        font: inherit;
+        cursor: pointer;
+        padding: var(--sl-spacing-x-small);
+      }
       .session-lineage {
         padding: 0 var(--sl-spacing-small) var(--sl-spacing-small);
         overflow-wrap: anywhere;
@@ -464,7 +498,13 @@ export class SessionListPanel extends LitElement {
   ): void {
     this.dispatchEvent(
       new CustomEvent('session-selected', {
-        detail: { sessionId: session.id, artifactKind },
+        detail: {
+          sessionId: session.id,
+          artifactKind,
+          ...(this.matchingTurns[session.id]
+            ? { turnId: this.matchingTurns[session.id] }
+            : {}),
+        },
         bubbles: true,
         composed: true,
       })
@@ -485,7 +525,9 @@ export class SessionListPanel extends LitElement {
     const url = new URL(window.location.href);
     url.pathname = '/console/runtime-sessions';
     url.searchParams.set('sessionId', id);
-    url.searchParams.delete('turn');
+    if (this.matchingTurns[id])
+      url.searchParams.set('turn', this.matchingTurns[id]);
+    else url.searchParams.delete('turn');
     url.searchParams.delete('artifact');
     return `${url.pathname}${url.search}`;
   }
@@ -494,20 +536,21 @@ export class SessionListPanel extends LitElement {
   private async navigateRows(event: KeyboardEvent, id: string): Promise<void> {
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey)
       return;
-    const index = this.sessions.findIndex((session) => session.id === id);
+    const visible = this.treeRows.map((row) => row.session);
+    const index = visible.findIndex((session) => session.id === id);
     const target =
       event.key === 'Home'
         ? 0
         : event.key === 'End'
-          ? this.sessions.length - 1
+          ? this.treeRows.length - 1
           : event.key === 'ArrowDown'
-            ? Math.min(index + 1, this.sessions.length - 1)
+            ? Math.min(index + 1, this.treeRows.length - 1)
             : event.key === 'ArrowUp'
               ? Math.max(index - 1, 0)
               : -1;
     if (target < 0) return;
     event.preventDefault();
-    this.focusedSessionId = this.sessions[target].id;
+    this.focusedSessionId = visible[target].id;
     await this.updateComplete;
     this.renderRoot
       .querySelectorAll<HTMLAnchorElement>('.session-select')
@@ -524,10 +567,11 @@ export class SessionListPanel extends LitElement {
     return html`
       <div class="list">
         ${repeat(
-          this.sessions,
-          (session) => session.id,
-          (session) => html`
+          this.treeRows,
+          (row) => row.session.id,
+          ({ session, depth, children, runningChildren, expanded }) => html`
             <div
+              style=${`margin-inline-start: ${Math.min(depth, 6) * 16}px; width: auto`}
               class="session-card ${
                 this.activeSessionId === session.id ? 'active' : ''
               }"
@@ -626,15 +670,22 @@ export class SessionListPanel extends LitElement {
                     </div>`
                   : nothing
               }
+              ${session.firstPrompt ? html`<div class="meta" title=${session.firstPrompt}>${session.firstPrompt.slice(0, 120)}</div>` : nothing}
+              ${session.cwd ? html`<div class="meta" title=${session.cwd}>${session.cwd}</div>` : nothing}
+              ${this.snippets[session.id] ? html`<div class="meta" data-matching-snippet>${this.snippets[session.id].replace(/<\/?mark>/g, '')}</div>` : nothing}
               ${
-                this.sessions.some((row) => row.parentSessionId === session.id)
-                  ? html` <div class="meta session-lineage">
-                      ${this.sessions.filter((row) => row.parentSessionId === session.id).length}
-                      child${this.sessions.filter((row) => row.parentSessionId === session.id).length === 1 ? '' : 'ren'}
-                      in this list
-                    </div>`
+                children
+                  ? html`<button
+                      type="button"
+                      aria-expanded=${expanded}
+                      @click=${() => this.toggleChildren(session.id)}
+                    >
+                      ${expanded ? 'Hide' : 'Show'} ${children}
+                      subagents${runningChildren ? ` · ${runningChildren} running` : ''}
+                    </button>`
                   : nothing
               }
+              ${session.agentId ? html`<button type="button" data-session-talk @click=${() => openTalkWindow({ id: session.agentId!, display_name: session.agentName || undefined }, session.id, { sourceContext: 'sessions-list' })}>Talk</button>` : nothing}
               ${this.renderArtifactCell(session)}
             </div>
           `

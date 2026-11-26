@@ -49,6 +49,7 @@ import type { TalkSessionPicker } from '../../components/talk-session-picker';
 import {
   getAccountAgent,
   getAccountRuntimeSessionActivityTimeline,
+  getAccountRuntimeSessionDetail,
   getRuntimeSessionGatewayEvents,
   listApprovalRequests,
 } from '../../api';
@@ -838,6 +839,20 @@ export class AgentTalkView extends LitElement {
       if (generation !== this.sessionGeneration) return;
       this.agent = detail.agent;
       this.sessions = sessionPage.sessions || [];
+      if (
+        this.sessionId &&
+        !this.sessions.some((row) => row.id === this.sessionId)
+      ) {
+        try {
+          const selected = await getAccountRuntimeSessionDetail(this.sessionId);
+          if (generation !== this.sessionGeneration) return;
+          if (selected.session.agent_id === this.agentId) {
+            this.sessions = [selected.session, ...this.sessions];
+          }
+        } catch {
+          // The transcript loader reports an unavailable selection inline.
+        }
+      }
       if (!this.sessionResolved) {
         this.sessionResolved = true;
         if (!this.sessionId && !this.awaitingNewSession) {
@@ -1207,7 +1222,10 @@ export class AgentTalkView extends LitElement {
         lightweight: true,
       });
       if (generation !== this.sessionGeneration) return;
+      const selected = this.currentSession;
       this.sessions = detail.sessions || [];
+      if (selected && !this.sessions.some((row) => row.id === selected.id))
+        this.sessions = [selected, ...this.sessions];
     } catch (error) {
       // The notice still offers the switch, under a generic name.
       console.error('Failed to refresh talk sessions:', error);
@@ -1366,6 +1384,7 @@ export class AgentTalkView extends LitElement {
         </div>
         <div class="header-actions">
           <talk-session-picker
+            .agentId=${this.agentId}
             .sessions=${this.sessions}
             .currentSessionId=${this.sessionId}
             ?canStartNew=${agent?.supports_new_session !== false}
@@ -1486,6 +1505,7 @@ export class AgentTalkView extends LitElement {
       <talk-composer
         .agent=${this.agent}
         .sessionId=${this.sessionId}
+        .sessionSubject=${this.currentSession ? normalizeObservedSession(this.currentSession).title : ''}
         .sessionEnded=${Boolean(this.currentSession?.ended_at)}
         .sessionIdle=${Boolean(
           this.currentSession &&
@@ -1517,9 +1537,20 @@ export class AgentTalkView extends LitElement {
       this.composer?.focusInput();
     });
     this.addEventListener(TALK_SESSION_SELECT_EVENT, (event: Event) => {
-      const id = (event as CustomEvent<{ sessionId: string }>).detail
-        ?.sessionId;
-      if (id && id !== this.sessionId) this.switchSession(id);
+      const detail = (
+        event as CustomEvent<{
+          sessionId: string;
+          session?: RuntimeSessionSummary;
+        }>
+      ).detail;
+      if (
+        detail?.session &&
+        !this.sessions.some((row) => row.id === detail.sessionId)
+      ) {
+        this.sessions = [...this.sessions, detail.session];
+      }
+      if (detail?.sessionId && detail.sessionId !== this.sessionId)
+        this.switchSession(detail.sessionId);
     });
     this.addEventListener(TALK_SWITCH_SESSION_EVENT, (event: Event) => {
       const id = (event as CustomEvent<{ sessionId: string }>).detail

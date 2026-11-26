@@ -423,3 +423,17 @@ func TestNormalizeAgentKindMatchesTheServerFold(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionOpeningPromptAndFinishedTurn(t *testing.T) {
+	row := runtimeSessionRow{FirstPrompt: "Please fix\n the parser", TurnState: "your_turn"}
+	if got := fallbackSessionTitle(row); got != "Please fix the parser" {
+		t.Fatalf("title = %q", got)
+	}
+	if got := sessionState(row, time.Now()); got != "idle" {
+		t.Fatalf("state = %q", got)
+	}
+	row.TurnState = "ended"
+	if got := sessionState(row, time.Now()); got != "ended" {
+		t.Fatalf("state = %q", got)
+	}
+}
