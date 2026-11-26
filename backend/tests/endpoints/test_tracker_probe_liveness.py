@@ -116,9 +116,10 @@ def live_api(
     # Serve one authenticated round trip before a test starts its clock. The
     # first request on a cold app pays for auth, database and route warm-up,
     # which on a loaded runner took seconds and is not part of the probe bound.
-    for path in ("/api/v1/ping", "/api/v1/trackers"):
-        assert httpx.get(f"{base}{path}", timeout=30.0).status_code == 200
+    # Inside the try so a failed warm-up still stops the server.
     try:
+        for path in ("/api/v1/ping", "/api/v1/trackers"):
+            assert httpx.get(f"{base}{path}", timeout=30.0).status_code == 200
         yield base
     finally:
         # Drop the held connections first so a client stuck on them returns.
