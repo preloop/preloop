@@ -1227,6 +1227,23 @@ export class AgentsView extends LitElement {
   @state() private extensionsOpen = false;
   @state() private extensionsMounted = false;
   private extensionCountGeneration = 0;
+  private extensionSessionIdentity: string | null = null;
+
+  /** Compare login identity for UI retention only; the API authorizes every read. */
+  private currentExtensionSession(): string | null {
+    const token = localStorage.getItem('accessToken');
+    if (!token) return null;
+    try {
+      const payload = JSON.parse(
+        atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))
+      );
+      if (typeof payload.sub === 'string')
+        return JSON.stringify([payload.sub, payload.account_id ?? null]);
+    } catch {
+      // Opaque test or legacy credentials are retained only while unchanged.
+    }
+    return token;
+  }
 
   private async loadExtensionCount(): Promise<void> {
     const generation = ++this.extensionCountGeneration;
@@ -1250,6 +1267,7 @@ export class AgentsView extends LitElement {
 
   connectedCallback(): void {
     super.connectedCallback();
+    this.extensionSessionIdentity = this.currentExtensionSession();
     void this.loadExtensionCount();
     if (
       new URLSearchParams(window.location.search).get('section') ===
@@ -1257,8 +1275,12 @@ export class AgentsView extends LitElement {
     )
       this.openExtensions();
     this.unsubscribeCacheReset = onApiCachesInvalidated(() => {
-      this.extensionsMounted = false;
-      this.extensionsOpen = false;
+      const identity = this.currentExtensionSession();
+      if (identity !== this.extensionSessionIdentity) {
+        this.extensionsMounted = false;
+        this.extensionsOpen = false;
+        this.extensionSessionIdentity = identity;
+      }
       void this.loadExtensionCount();
       const generation = ++this.agentsLoadGeneration;
       this.subscriptionEstimates.clear();
