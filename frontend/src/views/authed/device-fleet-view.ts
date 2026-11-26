@@ -1479,9 +1479,7 @@ export class DeviceFleetView extends LitElement {
                   (finding) =>
                     html`<li>
                       <div class="row-main">
-                        <span
-                          >${finding.title || fleetFindingTitle(finding.rule)}</span
-                        >
+                        <span>${fleetFindingTitle(finding)}</span>
                         ${finding.detail ? html`<span class="meta">${finding.detail}</span>` : nothing}
                         <span class="meta"
                           >Opened ${this.timestamp(finding.opened_at)} · checked
