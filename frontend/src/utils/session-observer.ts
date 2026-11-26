@@ -37,6 +37,9 @@ export const SESSION_EVENTS_PAGE_REQUESTED_EVENT =
 export interface ObservedSession {
   id: string;
   sourceId: string | null;
+  parentSessionId?: string | null;
+  subagentRole?: string | null;
+  spawnLabel?: string | null;
   sourceType: string | null;
   title: string;
   subtitle: string | null;
@@ -297,6 +300,9 @@ export function normalizeObservedSession(
   return {
     id,
     sourceId,
+    parentSessionId: asString(row.parent_session_id),
+    subagentRole: asString(row.subagent_role),
+    spawnLabel: asString(row.alias),
     sourceType,
     title,
     subtitle:

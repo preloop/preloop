@@ -189,10 +189,20 @@ class ExtensionAggregate(BaseModel):
     content_hashes: list[ContentHashBucket] = Field(default_factory=list)
 
 
+class ExtensionCoverage(BaseModel):
+    """Latest safe coverage metadata reported by one device."""
+
+    fingerprint: str
+    collector_version: str | None = None
+    completeness: Literal["complete", "partial", "unknown"]
+    reasons: list[str] = Field(default_factory=list)
+
+
 class DiscoveredExtensionList(BaseModel):
     """Keyset-paginated device rows or account aggregates."""
 
     items: list[DiscoveredExtensionSummary] | list[ExtensionAggregate]
+    coverage: list[ExtensionCoverage] = Field(default_factory=list)
     completeness: Literal["complete", "partial", "unknown"] = "unknown"
     next_cursor: str | None
 

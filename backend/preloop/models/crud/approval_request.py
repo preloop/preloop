@@ -470,7 +470,25 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         counting whatever page it happened to load.
         """
         model = self.model
-        human = and_(model.auto_approved_reason.is_(None), ~model.decided_by_ai)
+        recorded_response = func.jsonb_path_exists(
+            model.responses,
+            '$[*] ? (@.user_id.type() == "string" && @.user_id != "" && '
+            '(@.decision == "approved" || @.decision == "declined"))',
+        )
+        recorded_event = (
+            select(models.ApprovalEvent.id)
+            .where(
+                models.ApprovalEvent.account_id == model.account_id,
+                models.ApprovalEvent.approval_request_id == model.id,
+                models.ApprovalEvent.event_type == "vote_received",
+            )
+            .exists()
+        )
+        human = and_(
+            model.auto_approved_reason.is_(None),
+            ~model.decided_by_ai,
+            or_(recorded_response, recorded_event),
+        )
         decided = model.status.in_(["approved", "declined"])
         row = (
             db.query(

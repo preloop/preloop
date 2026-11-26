@@ -325,7 +325,9 @@ class TestApproveRequest:
         updated_request.status = "approved"
 
         # Build expected Pydantic response
-        expected_response = MagicMock(spec=ApprovalRequestResponse)
+        expected_response = ApprovalRequestResponse.model_validate(
+            mock_approval_request
+        ).model_copy(update={"status": updated_request.status})
 
         with patch(
             "preloop.api.endpoints.approval_requests.get_async_db_session"
@@ -504,7 +506,9 @@ class TestDeclineRequest:
         updated_request.id = mock_approval_request.id
         updated_request.status = "declined"
 
-        expected_response = MagicMock(spec=ApprovalRequestResponse)
+        expected_response = ApprovalRequestResponse.model_validate(
+            mock_approval_request
+        ).model_copy(update={"status": updated_request.status})
 
         with patch(
             "preloop.api.endpoints.approval_requests.get_async_db_session"
@@ -601,7 +605,9 @@ class TestDecideRequest:
         updated_request.id = mock_approval_request.id
         updated_request.status = "approved"
 
-        expected_response = MagicMock(spec=ApprovalRequestResponse)
+        expected_response = ApprovalRequestResponse.model_validate(
+            mock_approval_request
+        ).model_copy(update={"status": updated_request.status})
 
         with patch(
             "preloop.api.endpoints.approval_requests.get_async_db_session"
@@ -653,7 +659,9 @@ class TestDecideRequest:
         updated_request.id = mock_approval_request.id
         updated_request.status = "declined"
 
-        expected_response = MagicMock(spec=ApprovalRequestResponse)
+        expected_response = ApprovalRequestResponse.model_validate(
+            mock_approval_request
+        ).model_copy(update={"status": updated_request.status})
 
         with patch(
             "preloop.api.endpoints.approval_requests.get_async_db_session"

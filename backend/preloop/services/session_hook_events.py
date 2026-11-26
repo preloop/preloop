@@ -20,7 +20,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_runtime_session, crud_runtime_session_activity
-from preloop.models.models import RuntimeSession, RuntimeSessionActivity
+from preloop.models import models
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
     build_account_event,
@@ -69,8 +69,8 @@ def _metadata(
 
 
 def _emit(
-    activity: RuntimeSessionActivity,
-    session: Optional[RuntimeSession],
+    activity: models.RuntimeSessionActivity,
+    session: Optional[models.RuntimeSession],
     event_type: str,
     actor_user_id: Any,
     extra: Optional[dict[str, Any]] = None,
@@ -109,7 +109,7 @@ def record_prompt(
     source: Optional[str],
     hook_event_name: str,
     managed_agent_id: Any = None,
-) -> Optional[RuntimeSessionActivity]:
+) -> Optional[models.RuntimeSessionActivity]:
     """Write one ``user_prompt`` row (no text) and announce it.
 
     Args:
@@ -141,7 +141,7 @@ def record_prompt(
     if activity is not None:
         _emit(
             activity,
-            db.get(RuntimeSession, activity.runtime_session_id),
+            crud_runtime_session.get(db, id=activity.runtime_session_id),
             EVENT_PROMPT,
             actor_user_id,
         )
@@ -170,14 +170,14 @@ def _tool_end_details(details: dict[str, Any]) -> dict[str, Any]:
 def record_session_event(
     db: Session,
     *,
-    session: RuntimeSession,
+    session: models.RuntimeSession,
     api_key_id: Any,
     actor_user_id: Any,
     source: Optional[str],
     hook_event_name: str,
     managed_agent_id: Any = None,
     details: Optional[dict[str, Any]] = None,
-) -> Optional[RuntimeSessionActivity]:
+) -> Optional[models.RuntimeSessionActivity]:
     """Write a ``turn_end`` or ``session_end`` row for a resolved session.
 
     ``SessionEnd`` stamps ``ended_at`` once and records ``session_end`` only
@@ -189,7 +189,7 @@ def record_session_event(
         api_key_id: Hook credential.
         actor_user_id: The credential's user.
         source: Agent adapter.
-        hook_event_name: One of the Stop, SessionEnd, PostToolUse,
+        hook_event_name: One of the SubagentStart, SubagentStop, Stop, SessionEnd, PostToolUse,
             PostToolUseFailure or Notification hook names.
         managed_agent_id: The credential's managed agent, when it has one.
         details: Optional hook fields: tool end details, the notification
@@ -204,6 +204,30 @@ def record_session_event(
     """
     now = datetime.now(timezone.utc)
     details = details or {}
+    if hook_event_name in {"SubagentStart", "SubagentStop"}:
+        role = details.get("subagent_role")
+        if session.parent_session_id is not None and isinstance(role, str) and role:
+            crud_runtime_session.update(
+                db, db_obj=session, obj_in={"subagent_role": role}, commit=False
+            )
+        if hook_event_name == "SubagentStart":
+            activity = crud_runtime_session_activity.log_hook_turn_event(
+                db,
+                account_id=session.account_id,
+                runtime_session_id=session.id,
+                activity_type="user_prompt",
+                api_key_id=api_key_id,
+                timestamp=now,
+                metadata=_metadata(
+                    source=source,
+                    hook_event_name=hook_event_name,
+                    actor_user_id=actor_user_id,
+                    subagent=True,
+                ),
+            )
+            if activity is not None:
+                _emit(activity, session, EVENT_PROMPT, actor_user_id)
+            return activity
     base = _metadata(
         source=source,
         hook_event_name=hook_event_name,
@@ -294,14 +318,14 @@ def record_session_event(
 def end_session_by_hook(
     db: Session,
     *,
-    session: RuntimeSession,
+    session: models.RuntimeSession,
     api_key_id: Any,
     actor_user_id: Any,
     source: Optional[str],
     hook_event_name: str = "SessionEnd",
     managed_agent_id: Any = None,
     reason: str = "session_end",
-) -> tuple[Optional[RuntimeSessionActivity], bool]:
+) -> tuple[Optional[models.RuntimeSessionActivity], bool]:
     """End a session from a SessionEnd hook, exactly once across routes.
 
     Both ``/agents/session-event`` and the notes ``/agents/session-end``

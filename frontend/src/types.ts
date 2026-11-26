@@ -641,6 +641,8 @@ export interface TerminalLocation {
 }
 
 export interface RuntimeSessionSummary {
+  parent_session_id?: string | null;
+  subagent_role?: string | null;
   terminal_location?: TerminalLocation | null;
   harness_session_id?: string | null;
   start_directory?: string | null;
@@ -2810,9 +2812,8 @@ export interface ApprovalRequest {
   /** True when an AI judged this request rather than a person. */
   decided_by_ai?: boolean;
   /**
-   * Set when a time-boxed bypass auto-approved this request without any human
-   * review (currently always `'bypass'`). Surfaces must render these
-   * distinctly from human decisions.
+   * Recorded automatic cause: bypass, native_tool_approvals_off, or
+   * flow_approval_policy. Unknown future values must not imply a bypass.
    */
   auto_approved_reason?: string | null;
   auto_approval_bypass_id?: string | null;
@@ -2824,6 +2825,8 @@ export interface ApprovalRequest {
    * would overstate how much human oversight actually happened.
    */
   decided_by_human?: boolean;
+  /** A stored vote response or event supports this human decision. */
+  human_decision_recorded?: boolean;
   /**
    * Why this request exists: the policy rule that gated the call, captured
    * when the request was created. Absent on rows created before this field

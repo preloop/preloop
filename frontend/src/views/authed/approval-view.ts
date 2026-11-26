@@ -1,4 +1,5 @@
 import '../../components/approval-readiness';
+import { approvalDecisionCause } from '../../utils/approvals';
 import { hasExternalDecision } from '../../actions/approval-actions';
 import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
@@ -2062,15 +2063,13 @@ export class ApprovalView extends AuthedElement {
   private decider(): string | null {
     const request = this.approvalRequest;
     if (!request) return null;
-    if (request.auto_approved_reason === 'flow_approval_policy') {
-      return "the flow's approval policy";
-    }
-    if (request.auto_approved_reason) return 'a time-boxed bypass';
-    if (request.decided_by_ai) return 'an AI reviewer';
+    const cause = approvalDecisionCause(request);
+    if (request.auto_approved_reason || request.decided_by_ai)
+      return cause.decider;
     const vote = [...this.history]
       .reverse()
       .find((event) => event.event_type === 'vote_received');
-    if (!vote) return null;
+    if (!vote) return cause.decider;
     return vote.actor_email || 'an approver';
   }
 

@@ -63,7 +63,14 @@ export interface ExtensionAggregate extends ExtensionKey {
   pin_count?: number;
   content_hashes?: ContentHashBucket[];
 }
+export interface ExtensionCoverage {
+  fingerprint: string;
+  collector_version: string | null;
+  completeness: 'complete' | 'partial' | 'unknown';
+  reasons: string[];
+}
 export interface ExtensionPage {
+  coverage?: ExtensionCoverage[];
   items: (InstalledExtension | ExtensionAggregate)[];
   next_cursor: string | null;
   completeness: 'complete' | 'partial' | 'unknown';

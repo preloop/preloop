@@ -377,6 +377,7 @@ class RuntimeSessionSummary(BaseModel):
     #: harnesses do not distinguish a subagent's traffic from their own.
     alias: Optional[str] = None
     parent_session_id: Optional[str] = None
+    subagent_role: Optional[str] = None
     runtime_principal_type: Optional[str] = None
     runtime_principal_id: Optional[str] = None
     runtime_principal_name: Optional[str] = None
