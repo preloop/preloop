@@ -316,6 +316,16 @@ describe('runner requirement console', () => {
       'Stale inventory',
       'Inventory unknown',
     ].forEach((t) => expect(text).to.include(t));
+    const inventory = el.shadowRoot!.querySelector('td details')!;
+    expect(inventory.hasAttribute('open')).to.be.false;
+    const toggle = inventory.querySelector('summary')!;
+    expect(toggle.textContent?.replace(/\s+/g, ' ')).to.include(
+      '2 harness entries'
+    );
+    expect(toggle.textContent).to.include('2 ungoverned');
+    toggle.click();
+    expect(inventory.hasAttribute('open')).to.be.true;
+    expect(inventory.textContent).to.include('Work laptop');
     expect(el.shadowRoot!.querySelectorAll('tbody tr')).to.have.length(5);
   });
   it('paginates beyond the first hundred members', async () => {
