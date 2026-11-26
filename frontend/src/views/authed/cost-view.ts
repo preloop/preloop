@@ -65,10 +65,12 @@ import type { ListColumn } from '../../table';
 import type { RowData } from '@tanstack/table-core';
 import '../../table/data-table';
 import { sessionCountLabel } from '../../utils/session-count';
+import { replaceListFilters } from '../../utils/list-filter-url';
 import {
   resolvePreviousTimeRange,
   ceilToMinute,
   resolveTimeRange,
+  normalizeTimeRangeKey,
   timeRangeShortLabel,
 } from '../../utils/time-range';
 import '../../components/view-header.ts';
@@ -894,12 +896,9 @@ export class CostView extends AuthedElement {
 
   connectedCallback() {
     super.connectedCallback();
-    this.selectedRange = this.loadStoredDateRange();
-    const query = new URLSearchParams(window.location.search);
-    this.requestedPanel = query.get('panel');
-    // ?tab= opens one tab; the old work-item and issue pages redirect here.
-    const tab = query.get('tab');
-    if (tab && CostView.LINKABLE_TABS.has(tab)) this.activeTab = tab;
+    this.requestedPanel = new URLSearchParams(window.location.search).get(
+      'panel'
+    );
     this.readUrlPeriod();
     window.addEventListener('popstate', this.restoreUrlPeriod);
     void this.load();
@@ -963,7 +962,13 @@ export class CostView extends AuthedElement {
     this.digestBlocked = link.blocked;
     this.digestSwitchTarget = null;
     if (!link.period && !link.accountId) this.activeAccountLabel = '';
-    this.selectedRange = this.loadStoredDateRange();
+    const params = new URLSearchParams(window.location.search);
+    const range = normalizeTimeRangeKey(params.get('range'));
+    this.selectedRange =
+      DATE_RANGE_PRESETS.find((preset) => preset === range) ??
+      this.loadStoredDateRange();
+    const tab = params.get('tab');
+    this.activeTab = tab && CostView.LINKABLE_TABS.has(tab) ? tab : 'agents';
     this.summary = null;
   }
 
@@ -1129,14 +1134,15 @@ export class CostView extends AuthedElement {
     this.digestBlocked = false;
     this.digestSwitchTarget = null;
     this.activeAccountLabel = '';
-    // Only leaving digest mode changes the URL; ordinary preset changes must
-    // not stack no-op history entries.
+    // Keep the digest as a Back destination. Preset changes update the
+    // current entry so Back still returns to the preceding page.
     if (hadDigestContext)
       window.history.pushState(
-        {},
+        window.history.state,
         '',
         withoutDigestPeriod(window.location.href)
       );
+    replaceListFilters({ range: value });
     this.selectedRange = value;
     this.previousRangeSummary = null;
     this.persistDateRange(value);
@@ -1446,8 +1452,14 @@ export class CostView extends AuthedElement {
 
   private async handleTabShow(event: CustomEvent<{ name: string }>) {
     const tab = event.detail?.name;
-    if (!tab) return;
-    this.activeTab = tab;
+    if (!tab || event.target !== event.currentTarget) return;
+    if (tab !== this.activeTab) {
+      this.activeTab = tab;
+      replaceListFilters({
+        tab: CostView.LINKABLE_TABS.has(tab) && tab !== 'agents' ? tab : null,
+        ...(this.digestPeriod ? {} : { range: this.selectedRange }),
+      });
+    }
     await this.loadTab(tab);
   }
 
@@ -3204,6 +3216,7 @@ export class CostView extends AuthedElement {
     if (destination === 'imports') {
       this.copilotRevealed = true;
       this.activeTab = 'copilot';
+      replaceListFilters({ tab: null });
       void this.loadTab('copilot');
       // The Copilot tab is created in this same update, so the ?active
       // binding alone does not reach sl-tab-group: show() syncs the panels.

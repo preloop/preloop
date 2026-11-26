@@ -62,9 +62,11 @@ function searchResponseWithExcerpt(excerpt: string) {
 
 describe('ApiUsageView', () => {
   let fetchStub: sinon.SinonStub;
+  let originalUrl: string;
   let defaultUsageFetch: (input: RequestInfo | URL) => Promise<Response>;
 
   beforeEach(() => {
+    originalUrl = window.location.href;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -337,8 +339,55 @@ describe('ApiUsageView', () => {
   });
 
   afterEach(() => {
+    window.history.replaceState(window.history.state, '', originalUrl);
     fetchStub.restore();
     localStorage.clear();
+  });
+
+  it('restores a shared gateway range, replaces it in the URL and reads Back state', async () => {
+    history.replaceState(
+      {},
+      '',
+      '/console/cost/gateway?range=last-7&source=shared#detail'
+    );
+    const element = await fixture<ApiUsageView>(
+      html`<api-usage-view></api-usage-view>`
+    );
+    const select = element.shadowRoot!.querySelector('time-range-select')!;
+    expect(select.value).to.equal('last-7');
+    const gatewayRequests = fetchStub
+      .getCalls()
+      .map(({ args }) => String(args[0]));
+    const initial = gatewayRequests.find(
+      (url) =>
+        url.startsWith('/api/v1/account/gateway-usage/summary') &&
+        url.includes('include_breakdown=true')
+    );
+    const params = new URL(initial!, window.location.origin).searchParams;
+    expect(
+      Date.parse(params.get('end_date')!) -
+        Date.parse(params.get('start_date')!)
+    ).to.equal(7 * 86400 * 1000);
+
+    const historyLength = history.length;
+    select.dispatchEvent(
+      new CustomEvent('range-change', { detail: { value: 'last-90' } })
+    );
+    await element.updateComplete;
+    expect(select.value).to.equal('last-90');
+    expect(new URLSearchParams(location.search).get('range')).to.equal(
+      'last-90'
+    );
+    expect(new URLSearchParams(location.search).get('source')).to.equal(
+      'shared'
+    );
+    expect(location.hash).to.equal('#detail');
+    expect(history.length).to.equal(historyLength);
+
+    history.replaceState({}, '', '/console/cost/gateway?range=last-7');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await element.updateComplete;
+    expect(select.value).to.equal('last-7');
   });
 
   it('offers a usage export for the current reporting window', async () => {

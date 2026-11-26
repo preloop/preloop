@@ -153,7 +153,8 @@ describe('CostView', () => {
   beforeEach(() => {
     accountStatus = 200;
     membershipsPayload = [];
-    originalUrl = window.location.pathname + window.location.search;
+    originalUrl =
+      window.location.pathname + window.location.search + window.location.hash;
     accountPayload = {
       id: '00000000-0000-4000-8000-000000000001',
       organization_name: 'Example account',
@@ -876,6 +877,59 @@ describe('CostView', () => {
     expect(getComputedStyle(sideColumn as Element).pointerEvents).to.equal(
       'auto'
     );
+  });
+
+  it('restores a shared Spend selection and updates the current history entry', async () => {
+    localStorage.setItem('preloop.cost.dateRange', 'last-90');
+    window.history.replaceState(
+      {},
+      '',
+      '/console/cost/spend?range=last-7&tab=models&source=shared#detail'
+    );
+    const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+    const select = element.shadowRoot!.querySelector('time-range-select')!;
+    await waitUntil(
+      () =>
+        element.shadowRoot
+          ?.querySelector('sl-tab[active]')
+          ?.getAttribute('panel') === 'models'
+    );
+    expect(select.value).to.equal('last-7');
+    expect(localStorage.getItem('preloop.cost.dateRange')).to.equal('last-90');
+
+    const historyLength = history.length;
+    select.dispatchEvent(
+      new CustomEvent('range-change', { detail: { value: 'last-30' } })
+    );
+    await element.updateComplete;
+    let params = new URLSearchParams(location.search);
+    expect(params.get('range')).to.equal('last-30');
+    expect(params.get('tab')).to.equal('models');
+    expect(params.get('source')).to.equal('shared');
+    expect(location.hash).to.equal('#detail');
+    expect(history.length).to.equal(historyLength);
+
+    element
+      .shadowRoot!.querySelector('sl-tab[panel=tools]')!
+      .dispatchEvent(
+        new MouseEvent('click', { bubbles: true, composed: true })
+      );
+    await waitUntil(
+      () => new URLSearchParams(location.search).get('tab') === 'tools'
+    );
+    params = new URLSearchParams(location.search);
+    expect(params.get('range')).to.equal('last-30');
+    expect(history.length).to.equal(historyLength);
+
+    history.replaceState({}, '', '/console/cost/spend?range=last-7&tab=models');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    await waitUntil(
+      () =>
+        element.shadowRoot
+          ?.querySelector('sl-tab[active]')
+          ?.getAttribute('panel') === 'models'
+    );
+    expect(select.value).to.equal('last-7');
   });
 
   it('opens the work item tab from ?tab= and passes the page window down', async () => {
@@ -2501,7 +2555,7 @@ describe('CostView', () => {
         new CustomEvent('range-change', { detail: { value: 'last-30' } })
       );
     await settled(element);
-    expect(window.location.search).to.equal('?panel=pricing');
+    expect(window.location.search).to.equal('?panel=pricing&range=last-30');
     expect(element.shadowRoot?.textContent).not.to.contain('Digest period:');
     window.history.replaceState({}, '', digestUrl);
     window.dispatchEvent(new PopStateEvent('popstate'));

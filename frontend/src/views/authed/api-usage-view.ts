@@ -57,6 +57,7 @@ import {
 import type { ListColumn } from '../../table';
 import '../../table/data-table';
 import { sessionCountLabel } from '../../utils/session-count';
+import { replaceListFilters } from '../../utils/list-filter-url';
 import { shortExecutionId } from '../../utils/execution-subject';
 import {
   isHistoryUnavailable,
@@ -67,6 +68,7 @@ import '../../components/capability-extension';
 import '../../components/collapsible-section';
 import {
   formatTimeRangeWindow,
+  normalizeTimeRangeKey,
   resolvePreviousTimeRange,
   resolveTimeRange,
   ceilToMinute,
@@ -149,8 +151,6 @@ export class ApiUsageView extends LitElement {
 
   @state()
   private searchError: string | null = null;
-
-  private initialized = false;
 
   private searchDebounce?: ReturnType<typeof setTimeout>;
 
@@ -632,12 +632,28 @@ export class ApiUsageView extends LitElement {
   connectedCallback() {
     super.connectedCallback();
 
-    if (!this.initialized) {
-      this.initialized = true;
-      void this.loadSummary();
-      void this.loadHistoryWindow();
-    }
+    this.selectedRange = this.rangeFromLocation();
+    this.rangeChosenByUser = false;
+    window.addEventListener('popstate', this.restoreRangeFromLocation);
+    void this.loadSummary();
+    void this.loadHistoryWindow();
   }
+
+  private rangeFromLocation(): TimeRangeKey {
+    const range = normalizeTimeRangeKey(
+      new URLSearchParams(window.location.search).get('range')
+    );
+    return (
+      DATE_RANGE_OPTIONS.find((option) => option.value === range)?.value ??
+      'last-30'
+    );
+  }
+
+  private readonly restoreRangeFromLocation = () => {
+    if (window.location.pathname !== '/console/cost/gateway') return;
+    const range = this.rangeFromLocation();
+    if (range !== this.selectedRange) this.applyRange(range, false);
+  };
 
   /**
    * How far back this plan shows analytics, so the day list can say where it
@@ -648,6 +664,7 @@ export class ApiUsageView extends LitElement {
   }
 
   disconnectedCallback() {
+    window.removeEventListener('popstate', this.restoreRangeFromLocation);
     if (this.searchDebounce) {
       clearTimeout(this.searchDebounce);
       this.searchDebounce = undefined;
@@ -780,13 +797,18 @@ export class ApiUsageView extends LitElement {
   }
 
   private handleRangeChange(event: Event) {
-    const value = (event as CustomEvent<{ value: string }>).detail
-      ?.value as TimeRangeKey;
-    if (!value || value === this.selectedRange) {
-      return;
-    }
-    this.selectedRange = value;
-    this.rangeChosenByUser = true;
+    const value = (event as CustomEvent<{ value: string }>).detail?.value;
+    const range = DATE_RANGE_OPTIONS.find(
+      (option) => option.value === value
+    )?.value;
+    if (!range || range === this.selectedRange) return;
+    replaceListFilters({ range });
+    this.applyRange(range, true);
+  }
+
+  private applyRange(range: TimeRangeKey, chosenByUser: boolean) {
+    this.selectedRange = range;
+    this.rangeChosenByUser = chosenByUser;
     // An in-flight search still carries the old window. Bump so its answer
     // cannot overwrite the results this range is about to load.
     this.searchRequestId++;
