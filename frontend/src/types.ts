@@ -214,7 +214,14 @@ export interface Flow {
   [key: string]: unknown;
 }
 
+export interface ExecutorEligibility {
+  eligible: boolean;
+  reason?: string | null;
+  message?: string | null;
+}
+
 export interface AIModel {
+  executor_eligibility?: Record<string, ExecutorEligibility>;
   model_parameters?: Record<string, unknown> | null;
   /** Recipient projections are owned and edited by the sharing account. */
   is_shared?: boolean;
@@ -620,6 +627,9 @@ export interface AccountGatewayUsageSearchResponse {
 export interface RuntimeSessionSummary {
   parent_session_id?: string | null;
   subagent_role?: string | null;
+  harness_session_id?: string | null;
+  start_directory?: string | null;
+  resume_command?: string | null;
   alias?: string | null;
   id: string;
   title?: string | null;
@@ -891,6 +901,7 @@ export interface ManagedAgentSummary {
 }
 
 export interface AgentControlCommandRequest {
+  working_directory?: string | null;
   message: string;
   metadata?: Record<string, unknown>;
   target_session_id?: string | null;
@@ -901,6 +912,7 @@ export interface AgentControlCommandRequest {
 }
 
 export interface AgentControlVoiceTranscriptRequest {
+  working_directory?: string | null;
   transcript: string;
   metadata?: Record<string, unknown>;
   voice?: Record<string, unknown>;
@@ -925,6 +937,7 @@ export interface AgentControlCommandResponse {
  * agent, delivered at the agent's next turn boundary.
  */
 export interface OperatorNote {
+  command_id?: string | null;
   note_id: string;
   /**
    * Delivery is explicit because the failure mode of every push design is a

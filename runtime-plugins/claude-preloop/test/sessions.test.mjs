@@ -309,3 +309,12 @@ test("turn progress forwards bounded assistant/tool output and final usage", asy
     manager.stop();
   }
 });
+
+test("reports the native session before replying, without exposing a temporary id", async () => {
+  const { manager } = makeManager();
+  const seen = [];
+  try {
+    await manager.completeTurn({ text: "example", commandId: "command-example", onSessionStarted: (id, cwd) => seen.push({ id, cwd }) });
+    assert.deepEqual(seen, [{ id: "session-1", cwd: "/tmp/workspace" }]);
+  } finally { manager.stop(); }
+});

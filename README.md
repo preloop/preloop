@@ -81,6 +81,11 @@ Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
 | **Fleet Map** | People, devices, agents, models and observed work in one [map](docs/guide/fleet-map.md). | Spreadsheets |
 | **Evidence packs** | Apache flow presets write `result.json` plus an evidence directory for CRA / AI Act-style work. Not a certification. | Custom GRC folders |
 
+Talk starts Claude Code and Codex conversations in a selected working directory.
+Session headers include the native session id and a copyable terminal resume
+command; `preloop sessions list --wide` and `--json` expose the same fields.
+
+
 ```text
 AI Agent → Preloop → [Policy]  → Allow / Deny / Require Approval → Execute
                    → [Gateway] → Budget + attribution             → Model

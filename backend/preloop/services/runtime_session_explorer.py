@@ -1267,6 +1267,7 @@ class RuntimeSessionExplorerService:
             turn_ended_at=row.get("turn_ended_at"),
             turn_interrupted=row.get("turn_interrupted"),
             cwd=row.get("cwd"),
+            start_directory=row.get("start_directory"),
             total_requests=row["total_requests"],
             usage_source=row.get("usage_source", "gateway"),
             cost_is_known=row.get("cost_is_known", True),

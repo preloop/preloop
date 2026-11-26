@@ -164,6 +164,7 @@ async def test_flow_update_preserves_model_scope_when_binding_is_omitted(
         source_preset_id=None,
         webhook_config=None,
     )
+    crud.update.return_value = crud.get.return_value
     mocker.patch.object(flows, "log_config_change")
     flow_in = schemas.FlowUpdate(name="Renamed flow")
     assert "ai_model_id" not in flow_in.model_fields_set
@@ -181,7 +182,11 @@ async def test_flow_update_preserves_model_scope_when_binding_is_omitted(
     else:
         await maybe_await(flows.update_flow(**kwargs))
         crud.update.assert_called_once()
-    load.assert_called_once_with(kwargs["db"], id=model_id)
+    # Successful saves also look up the model for executor eligibility advice.
+    expected_calls = 1 if scope == "other" else 2
+    assert load.call_count == expected_calls
+    assert all(str(call.kwargs["id"]) == str(model_id) for call in load.call_args_list)
+    assert all(call.args == (kwargs["db"],) for call in load.call_args_list)
 
 
 @pytest.mark.asyncio

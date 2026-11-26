@@ -535,18 +535,29 @@ def test_sibling_execution_is_not_found_for_the_other_identity(
 def test_identity_cannot_read_the_allowlist_or_another_flow(
     db_session: Session, shared: Shared, pair: SimpleNamespace, api: TestClient
 ) -> None:
-    """No machine route describes the flow, its projects or other identities."""
+    """Preflight reveals compatibility without configuration or other projects."""
     for path in (
         f"{ADMIN}/shared-flows/{shared.flow.id}",
         ADMIN,
         f"{ADMIN}/{pair.principal_b.id}",
-        f"/api/v1/flows/{shared.flow.id}",
         "/api/v1/flows",
     ):
         response = api.get(path, headers=_bearer(pair.token_a))
         assert response.status_code == 403, (path, response.text)
         assert str(shared.project_b.id) not in response.text
         assert shared.project_b.slug not in response.text
+    preflight = api.get(
+        f"/api/v1/flows/{shared.flow.id}", headers=_bearer(pair.token_a)
+    )
+    assert preflight.status_code == 200
+    assert set(preflight.json()) == {"id", "executor_eligibility"}
+    assert set(preflight.json()["executor_eligibility"]) == {
+        "eligible",
+        "reason",
+        "message",
+    }
+    assert str(shared.project_b.id) not in preflight.text
+    assert shared.project_b.slug not in preflight.text
     other_flow = api.post(
         f"/api/v1/flows/{uuid4()}/trigger",
         headers=_bearer(pair.token_a),
@@ -1593,10 +1604,44 @@ def test_identity_outside_the_posting_list_keeps_triggering_and_reading(
         assert read.status_code == 200, read.text
         assert str(shared.project_a.id) not in read.text
         assert "project_ids" not in read.text
-    for path in (
-        f"{ADMIN}/shared-flows/{shared.flow.id}",
-        f"/api/v1/flows/{shared.flow.id}",
-    ):
-        denied = api.get(path, headers=_bearer(token_b))
-        assert denied.status_code == 403
-        assert str(shared.project_a.id) not in denied.text
+    denied = api.get(f"{ADMIN}/shared-flows/{shared.flow.id}", headers=_bearer(token_b))
+    assert denied.status_code == 403
+    assert str(shared.project_a.id) not in denied.text
+    preflight = api.get(f"/api/v1/flows/{shared.flow.id}", headers=_bearer(token_b))
+    assert preflight.status_code == 200
+    assert set(preflight.json()) == {"id", "executor_eligibility"}
+    assert str(shared.project_a.id) not in preflight.text
+
+
+@pytest.mark.parametrize("leak_location", ["flow", "eligibility"])
+def test_operator_check_rejects_configuration_in_preflight(leak_location: str) -> None:
+    """Allowing compatibility reads must not hide a configuration disclosure."""
+    script = _verify_script()
+    flow, project_a, project_b = str(uuid4()), str(uuid4()), str(uuid4())
+    preflight: dict[str, Any] = {
+        "id": flow,
+        "executor_eligibility": {"eligible": True, "reason": None, "message": None},
+    }
+    target = preflight if leak_location == "flow" else preflight["executor_eligibility"]
+    target["prompt_template"] = "Private configuration"
+
+    def request(
+        token: str, method: str, path: str, body: dict[str, Any] | None
+    ) -> tuple[int, Any]:
+        if path == f"/api/v1/flows/{flow}":
+            return 200, preflight
+        if path.endswith("/executions?limit=100"):
+            return 200, []
+        if method == "POST":
+            return 422, None
+        return 403, None
+
+    results = script.run_checks(
+        request,
+        flow=flow,
+        tokens={"A": "token-a", "B": "token-b"},
+        projects={"A": project_a, "B": project_b},
+    )
+    failures = [message for passed, message in results if passed is False]
+    assert len(failures) == 2
+    assert all("executor preflight" in message for message in failures)

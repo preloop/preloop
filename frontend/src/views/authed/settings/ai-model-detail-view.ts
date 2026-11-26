@@ -1277,13 +1277,45 @@ export class AIModelDetailView extends LitElement {
     }
   }
 
+  private renderExecutorEligibility():
+    ReturnType<typeof html> | typeof nothing {
+    const entries = this.model?.executor_eligibility;
+    if (!entries || Object.keys(entries).length === 0) return nothing;
+    const labels: Record<string, string> = {
+      hosted: 'Hosted flows',
+      private_runner_container: 'Private runner containers',
+      private_runner_host: 'Private runner with host profile',
+      interactive_agent: 'Interactive agent',
+    };
+    return html`<div class="metadata-stack" data-executor-eligibility>
+      <div class="model-title">Executor eligibility</div>
+      <div class="meta-line">
+        For your identity and flows you own. Runner availability and provider
+        access are checked when you run.
+      </div>
+      ${Object.entries(entries).map(
+        ([kind, entry]) => html`
+          <div class="meta-line">
+            <strong>${labels[kind] || kind}:</strong>
+            ${entry.eligible ? 'Eligible' : 'Not eligible'}
+            ${entry.message ? html`<span> — ${entry.message}</span>` : nothing}
+          </div>
+        `
+      )}
+    </div>`;
+  }
+
   private async toggleOwnerFlowUse(enabled: boolean): Promise<void> {
     const modelId = this.modelId;
     this.ownerFlowUseSaving = true;
     this.ownerFlowUseError = null;
     try {
       const state = await setAIModelOwnerFlowUse(modelId, enabled);
-      if (modelId === this.modelId) this.ownerFlowUse = state;
+      if (modelId === this.modelId) {
+        this.ownerFlowUse = state;
+        const model = await getAIModel(modelId);
+        if (modelId === this.modelId) this.model = model;
+      }
     } catch (error) {
       if (modelId !== this.modelId) return;
       this.ownerFlowUseError =
@@ -3506,6 +3538,7 @@ export class AIModelDetailView extends LitElement {
                         </div>
                       `
                 }
+                ${this.renderExecutorEligibility()}
               </sl-card>
               <sl-card>
                 <div slot="header" class="model-title">Budget Management</div>

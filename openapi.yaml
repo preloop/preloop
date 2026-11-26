@@ -21289,7 +21289,11 @@ paths:
 
         The ``ETag`` header carries the flow''s configuration revision; send it
 
-        back as ``If-Match`` to make a later write or trigger conditional.'
+        back as ``If-Match`` to make a later write or trigger conditional.
+
+        A restricted CI identity with ``flow:trigger`` receives only the id and
+
+        executor eligibility of its bound flow; all human configuration is omitted.'
       operationId: read_flow_api_v1_flows__flow_id__get
       security:
       - bearerAuth: []
@@ -21307,7 +21311,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FlowResponse'
+                anyOf:
+                - $ref: '#/components/schemas/FlowResponse'
+                - $ref: '#/components/schemas/CiFlowPreflightRead'
+                title: Response Read Flow Api V1 Flows  Flow Id  Get
         '422':
           description: Validation Error
           content:
@@ -21320,7 +21327,7 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      x-restricted-ci: deny
+      x-restricted-ci: flow:trigger
     put:
       tags:
       - Flows
@@ -23631,6 +23638,46 @@ paths:
                 additionalProperties: true
                 title: Response Get Execution Lifecycle Api V1 Flow Executions  Execution
                   Id  Lifecycle Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/{agent_id}/control/directories:
+    get:
+      tags:
+      - Agent Control
+      summary: Get Agent Directories
+      description: Offer this account's recent directories; the host validates authorization.
+      operationId: get_agent_directories_api_v1_agents__agent_id__control_directories_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                title: Response Get Agent Directories Api V1 Agents  Agent Id  Control
+                  Directories Get
         '422':
           description: Validation Error
           content:
@@ -29448,6 +29495,15 @@ components:
             credentials, which only authorize their owner's interactive traffic and
             must never be auto-selected as a default.
           default: false
+        executor_eligibility:
+          additionalProperties:
+            $ref: '#/components/schemas/ExecutorEligibility'
+          type: object
+          title: Executor Eligibility
+          description: 'Credential identity compatibility for the caller: hosted and
+            private_runner_container describe their own flows; private_runner_host
+            and interactive_agent require their authorized agent login. Does not probe
+            provider health, budgets or runner availability.'
         is_built_in:
           type: boolean
           title: Is Built In
@@ -30606,6 +30662,16 @@ components:
         command_id:
           type: string
           title: Command Id
+        note_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note Id
+        delivery_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Delivery Message
         managed_agent_id:
           type: string
           format: uuid
@@ -30680,6 +30746,12 @@ components:
       description: Result of routing an operator command to a managed agent.
     AgentControlCommandStatusResponse:
       properties:
+        runtime_session_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Runtime Session Id
         command_id:
           type: string
           title: Command Id
@@ -30782,8 +30854,10 @@ components:
           format: uuid
           title: Managed Agent Id
         runtime_session_id:
-          type: string
-          format: uuid
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
           title: Runtime Session Id
         session_source_type:
           type: string
@@ -30795,6 +30869,12 @@ components:
           type: string
           format: date-time
           title: Timestamp
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
         payload:
           additionalProperties: true
           type: object
@@ -30806,7 +30886,6 @@ components:
       - message_id
       - account_id
       - managed_agent_id
-      - runtime_session_id
       - session_source_type
       - session_source_id
       - timestamp
@@ -30833,6 +30912,12 @@ components:
           type: boolean
           title: Start New Session
           default: false
+        working_directory:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Working Directory
         consent_request_id:
           anyOf:
           - type: string
@@ -30916,6 +31001,12 @@ components:
           type: boolean
           title: Start New Session
           default: false
+        working_directory:
+          anyOf:
+          - type: string
+            maxLength: 1024
+          - type: 'null'
+          title: Working Directory
         consent_request_id:
           anyOf:
           - type: string
@@ -31348,6 +31439,11 @@ components:
           - type: 'null'
           title: Source
           description: Agent adapter, e.g. 'claude_code'
+        control_owned:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Control Owned
         cwd:
           anyOf:
           - type: string
@@ -36699,6 +36795,21 @@ components:
       - tool_evidence
       title: CiExecutionResultResponse
       description: Restricted result envelope, including independent completion facts.
+    CiFlowPreflightRead:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        executor_eligibility:
+          $ref: '#/components/schemas/ExecutorEligibility'
+      type: object
+      required:
+      - id
+      - executor_eligibility
+      title: CiFlowPreflightRead
+      description: Only execution compatibility for a restricted identity's bound
+        flow.
     CiGrant:
       properties:
         version:
@@ -40792,6 +40903,28 @@ components:
       type: object
       title: ExecutionUpstreamRoute
       description: Which upstream providers served an OpenRouter-routed execution.
+    ExecutorEligibility:
+      properties:
+        eligible:
+          type: boolean
+          title: Eligible
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+          description: Stable denial code when ineligible
+        message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message
+          description: Safe remediation or execution prerequisite
+      type: object
+      required:
+      - eligible
+      title: ExecutorEligibility
+      description: Credential compatibility, separate from runtime health and availability.
     ExtensionAggregate:
       properties:
         agent_kind:
@@ -43759,6 +43892,10 @@ components:
           - type: string
           - type: 'null'
           title: Id
+        executor_eligibility:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutorEligibility'
+          - type: 'null'
         config_warnings:
           items:
             $ref: '#/components/schemas/FlowConfigWarning'
@@ -50932,6 +51069,11 @@ components:
         note_id:
           type: string
           title: Note Id
+        command_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Command Id
         state:
           type: string
           enum:
@@ -55695,6 +55837,7 @@ components:
             - no_control_plugin
             - control_offline
             - terminal_session
+            - turn_in_progress
             - runner_away
           - type: 'null'
           title: Reason Code
@@ -56723,6 +56866,11 @@ components:
           title: Agent Kind
           description: Agent kind of that managed agent (claude_code, codex, hermes,
             ...), or null when the session has no managed agent
+        start_directory:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Start Directory
         cwd:
           anyOf:
           - type: string
@@ -56748,6 +56896,20 @@ components:
           title: Artifact Counts
           description: Available artifacts on this session by kind (screenshot, transcript,
             ...); evicted and expired artifacts are not counted
+        harness_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Harness Session Id
+          description: Native identity suitable for the harness's resume command.
+          readOnly: true
+        resume_command:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resume Command
+          description: Shell-quoted command that reopens the conversation's project.
+          readOnly: true
       type: object
       required:
       - id
@@ -56755,6 +56917,8 @@ components:
       - session_source_id
       - started_at
       - token_usage
+      - harness_session_id
+      - resume_command
       title: RuntimeSessionSummary
       description: Aggregated runtime session summary for explorer views.
     RuntimeSessionSummaryInsight:
@@ -61998,7 +62162,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

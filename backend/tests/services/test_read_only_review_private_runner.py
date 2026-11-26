@@ -488,7 +488,13 @@ def test_subscription_model_admitted_for_codex_host_profile(
 
     _, flow = review
     flow.ai_model_id = uuid4()
-    model = SimpleNamespace(is_principal_bound_oauth=True)
+    model = SimpleNamespace(
+        is_principal_bound_oauth=True,
+        account_id=flow.account_id,
+        owner_flow_use_user_id=None,
+        credentials_secret_id=None,
+        id=flow.ai_model_id,
+    )
     with patch("preloop.services.model_routing.crud_ai_model.get", return_value=model):
         validate_execution_model_principal(MagicMock(), flow, {})
         flow.agent_config = {}
