@@ -1533,6 +1533,13 @@ export class FlowView extends LitElement {
                   ? html`
                       <span class="detail-label">Git clone</span>
                       <span>Enabled</span>
+                      <span class="detail-label">Flow source branch</span>
+                      <span
+                        >${
+                          this.flow.git_clone_config.source_branch ||
+                          'From trigger or repository default'
+                        }</span
+                      >
                     `
                   : ''
               }
@@ -1666,20 +1673,15 @@ ${this.flow.review_instructions}</pre>
                               }</span
                             >
 
-                            ${
-                              repo.repository_url
-                                ? html`
-                                    <strong>Repository:</strong>
-                                    <span>${repo.repository_url}</span>
-                                  `
-                                : html`
-                                    <strong>Repository:</strong>
-                                    <span
-                                      style="color: var(--sl-color-neutral-600);"
-                                      >Auto-detect from trigger</span
-                                    >
-                                  `
-                            }
+                            <strong>Repository:</strong>
+                            <span
+                              >${
+                                repo.repository_url ||
+                                (repo.project_id
+                                  ? this.getProjectName(repo.project_id)
+                                  : 'Auto-detect from trigger')
+                              }</span
+                            >
 
                             <strong>Clone Path:</strong>
                             <span>${repo.clone_path}</span>

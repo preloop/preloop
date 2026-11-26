@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from preloop.api.app import create_app
 from preloop.api.auth import get_current_active_user
+from preloop.api.auth.ci import get_current_actor
 from preloop.models.db.session import get_db_session
 from preloop.models.models.approval_request import ApprovalRequest
 from preloop.models.models.user import User
@@ -42,6 +43,7 @@ def app_e2e(db_session: Session, test_user: User):
     app = create_app()
     app.dependency_overrides[get_db_session] = override_get_db
     app.dependency_overrides[get_current_active_user] = lambda: test_user
+    app.dependency_overrides[get_current_actor] = lambda: test_user
     return app
 
 

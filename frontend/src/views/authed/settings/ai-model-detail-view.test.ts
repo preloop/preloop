@@ -496,6 +496,31 @@ describe('AIModelDetailView', () => {
     localStorage.clear();
   });
 
+  it('shows executor eligibility and the opt-in remediation in Details', async () => {
+    modelPayload.executor_eligibility = {
+      hosted: {
+        eligible: false,
+        reason: 'subscription_flow_opt_in_required',
+        message: 'Enable Use from my flows.',
+      },
+      private_runner_host: { eligible: true, message: 'Use your bound login.' },
+    };
+    const element = await fixture<AIModelDetailView>(
+      html`<ai-model-detail-view modelId="model-1"></ai-model-detail-view>`
+    );
+    await waitUntil(
+      () => !!element.shadowRoot?.querySelector('[data-executor-eligibility]')
+    );
+    const text = element.shadowRoot!.querySelector(
+      '[data-executor-eligibility]'
+    )!.textContent!;
+    expect(text).to.include('Hosted flows');
+    expect(text).to.include('Not eligible');
+    expect(text).to.include('Enable Use from my flows.');
+    expect(text).to.include('Private runner with host profile');
+    expect(text).to.include('Eligible');
+  });
+
   it('suggests a provider preference on an unpinned OpenRouter model', async () => {
     modelPayload.provider_name = 'openrouter';
     modelPayload.model_identifier = 'example/model-flash';

@@ -1,9 +1,11 @@
 import { LitElement, html, css, nothing } from 'lit';
+import { repeat } from 'lit/directives/repeat.js';
 import { customElement, state } from 'lit/decorators.js';
 import { getFeatures, getUserProfile, hasPermission } from '../api';
 import {
   runnerPolicyRequest,
   complianceLabel,
+  type MemberCompliance,
   type RunnerCompliance,
 } from '../api/runner-policy';
 import { formatLocalDateTime } from '../utils/date';
@@ -53,6 +55,9 @@ export class RunnerComplianceView extends LitElement {
     button {
       font: inherit;
       margin: 0.5rem;
+    }
+    summary {
+      cursor: pointer;
     }
     .pagination {
       display: flex;
@@ -118,6 +123,37 @@ export class RunnerComplianceView extends LitElement {
       if (generation === this.generation) this.loading = false;
     }
   }
+  private renderInventory(member: MemberCompliance) {
+    if (!member.inventory_known) return 'Inventory unknown';
+    const entries = member.harnesses;
+    const ungoverned = entries.filter(
+      (entry) => entry.governance === 'ungoverned'
+    ).length;
+    const rows = entries.map(
+      (entry) =>
+        html`<div>
+          ${entry.display_name || entry.harness} · ${entry.governance}
+          <small>${entry.runner_name}</small>
+        </div>`
+    );
+    return html`<small
+        >${member.inventory_fresh ? 'Fresh inventory' : 'Stale inventory'}</small
+      >
+      ${
+        entries.length > 1
+          ? html`<details>
+              <summary>
+                ${entries.length} harness
+                entries${ungoverned ? ` · ${ungoverned} ungoverned` : ''}
+              </summary>
+              ${rows}
+            </details>`
+          : entries.length
+            ? rows
+            : 'No harnesses reported'
+      }`;
+  }
+
   render() {
     if (!this.enabled) return nothing;
     return html`<section aria-label="Member runner compliance">
@@ -162,7 +198,9 @@ export class RunnerComplianceView extends LitElement {
                     </tr>
                   </thead>
                   <tbody>
-                    ${this.page.members.map(
+                    ${repeat(
+                      this.page.members,
+                      (member) => member.user_id,
                       (member) =>
                         html`<tr>
                           <th scope="row">
@@ -183,9 +221,7 @@ export class RunnerComplianceView extends LitElement {
                           <td>
                             ${member.runners.length ? member.runners.map((runner) => html`<div>${runner.name} · ${runner.status}</div>`) : 'No runners'}
                           </td>
-                          <td>
-                            ${!member.inventory_known ? 'Inventory unknown' : html`<small>${member.inventory_fresh ? 'Fresh inventory' : 'Stale inventory'}</small>${member.harnesses.length ? member.harnesses.map((harness) => html`<div>${harness.display_name || harness.harness} · ${harness.governance} <small>${harness.runner_name}</small></div>`) : 'No harnesses reported'}`}
-                          </td>
+                          <td>${this.renderInventory(member)}</td>
                         </tr>`
                     )}
                   </tbody>

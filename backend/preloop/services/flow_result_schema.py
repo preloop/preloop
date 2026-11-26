@@ -339,7 +339,7 @@ def _error_path(error: Any) -> str:
 
 
 def validate_result_document(
-    document: Optional[Mapping[str, Any]],
+    document: Any,
     schema: Mapping[str, Any],
     *,
     missing_message: str = NO_RESULT_CAPTURED,
@@ -362,6 +362,12 @@ def validate_result_document(
         return {
             "valid": False,
             "errors": [{"path": "$", "message": missing_message}],
+            "error_count": 1,
+        }
+    if not isinstance(document, Mapping):
+        return {
+            "valid": False,
+            "errors": [{"path": "$", "message": "Result document must be an object"}],
             "error_count": 1,
         }
     instance = dict(document)

@@ -10,6 +10,7 @@ endpoint does not own a second copy of the delivery contract.
 from __future__ import annotations
 
 import logging
+import shlex
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -227,6 +228,10 @@ def create_command_history_session(
             runtime_session_id=str(agent.runtime_session_id),
         )
 
+    if agent.session_source_type in {"claude_code", "codex"} and not shared:
+        # The harness start hook creates the canonical conversation row.
+        return None
+
     now = datetime.now(UTC)
     command_session_id = f"{agent.session_source_id}-{uuid.uuid4()}"
     return crud_runtime_session.upsert_by_source(
@@ -282,11 +287,12 @@ async def persist_and_deliver_command(
     now = datetime.now(UTC)
     command_ttl_seconds = int(settings.agent_control_command_ttl_seconds)
     command_expires_at = expires_at or (now + timedelta(seconds=command_ttl_seconds))
+    envelope = envelope.model_copy(update={"expires_at": command_expires_at})
     crud_agent_control_command.create_command(
         db,
         account_id=agent.account_id,
         managed_agent_id=agent.id,
-        runtime_session_id=history_session_id or agent.runtime_session_id,
+        runtime_session_id=history_session_id or envelope.runtime_session_id,
         consuming_account_id=consuming_account_id,
         command_id=envelope.message_id,
         envelope=envelope.model_dump(mode="json"),
@@ -485,6 +491,15 @@ async def dispatch_operator_message(
         name="send_message",
         payload=payload,
     )
+    if start_new_session and managed_agent.session_source_type in {
+        "claude_code",
+        "codex",
+    }:
+        envelope = envelope.model_copy(
+            update={"runtime_session_id": history_session_id}
+        )
+    elif target_session_id is not None:
+        envelope = envelope.model_copy(update={"runtime_session_id": target_session_id})
     return await persist_and_deliver_command(
         db,
         agent=managed_agent,
@@ -572,6 +587,7 @@ class SessionControlMode:
     #: operator and where a command-mode line is sent (runner sessions).
     kind: Optional[str] = None
     send_path: Optional[str] = None
+    herdr_target: Optional[dict[str, str]] = None
 
     @property
     def delivery(self) -> str:
@@ -603,6 +619,34 @@ def _is_command_history_session(agent: Any, session: Any) -> bool:
     )
 
 
+def resume_command(session: Any) -> Optional[str]:
+    """Exact shell command when the launch directory and harness id are known."""
+    directory = getattr(session, "start_directory", None)
+    native = native_session_id(session)
+    if (
+        not directory
+        or not native
+        or session.session_source_type not in {"claude_code", "codex"}
+    ):
+        return None
+    harness = (
+        "claude --resume"
+        if session.session_source_type == "claude_code"
+        else "codex resume"
+    )
+    return f"cd {shlex.quote(directory)} && {harness} {shlex.quote(native)}"
+
+
+def native_session_id(session: Any) -> Optional[str]:
+    """Return the harness identity without the durable principal prefix."""
+    source = str(session.session_source_id or "")
+    if session.session_reference == COMMAND_HISTORY_SESSION_REFERENCE:
+        return None
+    if session.session_source_type in {"claude_code", "codex"}:
+        return source.split(":", 1)[-1] or None
+    return source or None
+
+
 def session_reachable_by_control(agent: Any, session: Any) -> bool:
     """Say whether the agent's control plugin can drive ``session`` itself.
 
@@ -619,6 +663,16 @@ def session_reachable_by_control(agent: Any, session: Any) -> bool:
     Returns:
         True when a command can reach this session.
     """
+    if (
+        getattr(session, "control_owned", None) is False
+        and getattr(session, "ended_at", None) is None
+    ):
+        return False
+    if session.session_source_type in {"claude_code", "codex"} and (
+        getattr(session, "control_owned", False) is True
+        or getattr(session, "ended_at", None) is not None
+    ):
+        return native_session_id(session) is not None
     reachable = getattr(agent, "control_reachable_session_ids", None)
     if reachable is None:
         # The plugin predates the list; keep the earlier behaviour.
@@ -634,7 +688,7 @@ def session_reachable_by_control(agent: Any, session: Any) -> bool:
         return True
     if _is_command_history_session(agent, session):
         return True
-    return bool(session.session_source_id) and session.session_source_id in set(
+    return bool(native_session_id(session)) and native_session_id(session) in set(
         str(item) for item in reachable
     )
 
@@ -662,7 +716,7 @@ def session_managed_agent(db: Session, *, account_id: str, session: Any) -> Any:
             db,
             account_id=account_id,
             session_source_type=str(source_type),
-            session_source_id=str(source_id),
+            session_source_id=str(source_id).split(":", 1)[0],
         )
         if agent is not None:
             return agent
@@ -780,20 +834,74 @@ def resolve_session_control_mode(
         control_heartbeat_is_fresh,
     )
 
-    if session.ended_at is not None:
+    if session.ended_at is not None and session.session_source_type not in {
+        "claude_code",
+        "codex",
+    }:
         return SessionControlMode(
             "note", "session_ended", "the session has ended; nothing can be sent"
         )
     if session.session_source_type == RUNNER_SESSION_SOURCE_TYPE:
         return _runner_session_control_mode(db, account_id=account_id, session=session)
     agent = session_managed_agent(db, account_id=account_id, session=session)
+    ownership_unavailable = None
+    if (
+        session.session_source_type in {"claude_code", "codex"}
+        and session.ended_at is None
+    ):
+        owned = getattr(session, "control_owned", None)
+        if owned is False:
+            ownership_unavailable = SessionControlMode(
+                "note", TERMINAL_SESSION_REASON_CODE, TERMINAL_SESSION_REASON, agent
+            )
+        elif owned is None:
+            last = getattr(session, "last_activity_at", None) or getattr(
+                session, "started_at", None
+            )
+            if isinstance(last, datetime):
+                last = last if last.tzinfo else last.replace(tzinfo=UTC)
+            if (
+                isinstance(last, datetime)
+                and (now or datetime.now(UTC)) - last
+                <= crud_runtime_session.ACTIVE_WINDOW
+            ):
+                ownership_unavailable = SessionControlMode(
+                    "note",
+                    TERMINAL_SESSION_REASON_CODE
+                    if agent is not None
+                    else "not_managed",
+                    TERMINAL_SESSION_REASON
+                    if agent is not None
+                    else "This session receives notes at its next tool or model call",
+                    agent,
+                )
+            else:
+                ownership_unavailable = SessionControlMode(
+                    "note",
+                    "session_owner_unknown",
+                    "Cannot confirm that this older session is still open. Resume it locally from its original directory, then retry.",
+                    agent,
+                )
+    location = getattr(session, "terminal_location", None) or {}
+    if ownership_unavailable is not None and location.get("multiplexer") != "herdr":
+        return ownership_unavailable
     if agent is None:
         return SessionControlMode(
             "note",
-            "not_managed",
+            "session_unavailable"
+            if session.session_source_type in {"claude_code", "codex"}
+            else "not_managed",
             "this session is governed through hooks or the gateway, not run by "
             "an Agent Control agent; a line is a note read at its next tool or "
             "model call",
+        )
+    if (
+        session.session_source_type in {"claude_code", "codex"}
+        and session.ended_at is None
+        and getattr(session, "turn_state", None) in {"working", "waiting_for_approval"}
+    ):
+        return SessionControlMode(
+            "note", "turn_in_progress", "Delivers at the agent's next step", agent
         )
     kind = str(agent.agent_kind or agent.session_source_type or "").lower()
     name = agent.display_name or kind or "the agent"
@@ -812,8 +920,10 @@ def resolve_session_control_mode(
             f"{name} is {agent.lifecycle_state}, so it cannot take commands",
             agent,
         )
-    if not agent_has_control_config(db, account_id=account_id, agent=agent):
-        return SessionControlMode(
+    if ownership_unavailable is not None:
+        unavailable = ownership_unavailable
+    elif not agent_has_control_config(db, account_id=account_id, agent=agent):
+        unavailable = SessionControlMode(
             "note",
             "no_control_plugin",
             f"{name} is governed through hooks or the gateway and has no "
@@ -822,22 +932,65 @@ def resolve_session_control_mode(
             "mode)",
             agent,
         )
-    if agent.runtime_session_id is None or not control_heartbeat_is_fresh(
+    elif agent.runtime_session_id is None or not control_heartbeat_is_fresh(
         agent.control_last_heartbeat_at, now=now
     ):
         seconds = int(AGENT_CONTROL_PRESENCE_TTL.total_seconds())
-        return SessionControlMode(
+        unavailable = SessionControlMode(
             "note",
             "control_offline",
             f"{name} has no live Agent Control connection (no heartbeat in the "
             f"last {seconds}s); a line is a note until it reconnects",
             agent,
         )
-    if not session_reachable_by_control(agent, session):
-        return SessionControlMode(
+    elif not session_reachable_by_control(agent, session):
+        unavailable = SessionControlMode(
             "note",
             TERMINAL_SESSION_REASON_CODE,
             TERMINAL_SESSION_REASON,
             agent,
         )
-    return SessionControlMode("command", None, None, agent)
+    elif session.session_source_type in {"claude_code", "codex"} and not getattr(
+        session, "start_directory", None
+    ):
+        unavailable = SessionControlMode(
+            "note",
+            "session_directory_unknown",
+            "The original working directory was not recorded. Resume locally from that directory to register it, then retry.",
+            agent,
+        )
+    else:
+        if (
+            getattr(session, "turn_state", None) in {"working", "waiting_for_approval"}
+            and session.ended_at is None
+        ):
+            return SessionControlMode(
+                "note", "turn_in_progress", "Delivers at the agent's next step", agent
+            )
+        return SessionControlMode("command", None, None, agent)
+    # One additional delivery rung, only after sidecar resume was unavailable.
+    from preloop.models.crud.herdr_command import eligible_target
+
+    target = eligible_target(db, account_id=account_id, session=session, agent=agent)
+    if target is not None:
+        return SessionControlMode("command", None, None, agent, herdr_target=target)
+    location = getattr(session, "terminal_location", None) or {}
+    if location.get("multiplexer") == "herdr":
+        if location.get("state") == "working":
+            return SessionControlMode(
+                "note", "turn_in_progress", "Delivers at the agent's next step", agent
+            )
+        if location.get("state") == "blocked":
+            return SessionControlMode(
+                "note",
+                "agent_blocked",
+                "The agent is waiting at a terminal dialog. Handle it locally.",
+                agent,
+            )
+        return SessionControlMode(
+            "note",
+            "herdr_unavailable",
+            "The pane or device is unavailable for prompting. Check the pane and enable herdr prompting locally.",
+            agent,
+        )
+    return unavailable

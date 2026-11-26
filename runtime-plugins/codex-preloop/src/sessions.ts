@@ -8,6 +8,7 @@ import { SessionRegistrar } from "./session-registration.js";
 // drives interactive TUI threads on the shared `codex app-server` daemon.
 
 import os from "node:os";
+import { randomUUID } from "node:crypto";
 import { employeeClientOptionsFor } from "./employee.js";
 
 import type { ControlConfig } from "./config.js";
@@ -61,7 +62,8 @@ export type CodexClientFactory = (config: ControlConfig) => CodexClient;
 
 export type TurnOutcome = {
   reply_text: string;
-  session_id: string;
+  working_directory?: string;
+  session_id?: string;
   usage?: CodexUsage | null;
   /** Set when the in-flight run was aborted by interrupt. */
   stopped?: boolean;
@@ -78,6 +80,7 @@ export type SendMessageParams = {
   /** Force `startThread` even when the envelope names a session. */
   startNewSession?: boolean;
   commandId?: string;
+  onSessionStarted?: (id: string, cwd?: string) => void;
 };
 
 type OwnedThread = {
@@ -97,6 +100,7 @@ export function clientOptionsFor(
 ): { codexPathOverride?: string; apiKey?: string; baseUrl?: string; env?: Record<string, string>; config?: Record<string, unknown> } {
   if (config.codex_employee_scoped) return employeeClientOptionsFor(config);
   return {
+    env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")), PRELOOP_CONTROL_OWNED: "1" },
     ...(config.codex_path ? { codexPathOverride: config.codex_path } : {}),
     ...(config.codex_gateway_api_key ? { apiKey: config.codex_gateway_api_key } : {}),
     ...(config.codex_gateway_base_url ? { baseUrl: config.codex_gateway_base_url } : {}),
@@ -311,7 +315,7 @@ export class SessionManager {
         ? client.resumeThread(resumeId, options)
         : client.startThread(options);
       session = {
-        key: thread.id ?? resumeId ?? `pending-${this.sessions.size + 1}`,
+        key: thread.id ?? resumeId ?? `pending-${randomUUID()}`,
         thread,
         lastActivity: Date.now(),
         cwd: options.workingDirectory,
@@ -336,8 +340,8 @@ export class SessionManager {
     // interrupt) or calling thread.run twice on a live SDK thread.
     const previous = session.tail ?? Promise.resolve();
     const outcome = previous.then(
-      () => this.runTurn(session, params.text, timeoutMs),
-      () => this.runTurn(session, params.text, timeoutMs),
+      () => this.runTurn(session, params.text, timeoutMs, params.onSessionStarted),
+      () => this.runTurn(session, params.text, timeoutMs, params.onSessionStarted),
     );
     session.tail = outcome.then(
       () => undefined,
@@ -350,7 +354,9 @@ export class SessionManager {
     session: OwnedThread,
     text: string,
     timeoutMs: number,
+    onSessionStarted?: (id: string, cwd?: string) => void,
   ): Promise<TurnOutcome> {
+    if (session.thread.id) onSessionStarted?.(session.thread.id, session.cwd);
     const controller = new AbortController();
     session.controller = controller;
     session.lastActivity = Date.now();
@@ -370,6 +376,7 @@ export class SessionManager {
         }, timeoutMs);
         session.thread.run(text, { signal: controller.signal, onSessionStarted: async id => {
           this.remember(session);
+          onSessionStarted?.(id, session.cwd);
           await session.registrar.register(id, session.cwd);
         } }).then(
           (value) => resolve(value),
@@ -380,7 +387,8 @@ export class SessionManager {
       await session.registrar.register(session.thread.id ?? undefined, session.cwd);
       return {
         reply_text: turn.finalResponse ?? "",
-        session_id: session.thread.id ?? session.key,
+        working_directory: session.cwd,
+        session_id: session.thread.id ?? undefined,
         usage: turn.usage ?? null,
       };
     } catch (error) {
@@ -394,7 +402,7 @@ export class SessionManager {
         this.remember(session);
         return {
           reply_text: "",
-          session_id: session.thread.id ?? session.key,
+          session_id: session.thread.id ?? undefined,
           stopped: true,
         };
       }
@@ -428,7 +436,7 @@ export class SessionManager {
     const session = targetSessionId
       ? this.find(targetSessionId)
       : this.mostRecent();
-    const sessionId = session?.thread.id ?? session?.key;
+    const sessionId = session?.thread.id ?? undefined;
     if (session) {
       session.controller?.abort();
       this.sessions.delete(session.key);
@@ -452,7 +460,7 @@ export class SessionManager {
   ownedSessionIds(): string[] {
     const ids = new Set<string>();
     for (const session of this.sessions.values()) {
-      ids.add(session.thread.id ?? session.key);
+      if (session.thread.id) ids.add(session.thread.id);
     }
     return [...ids];
   }

@@ -214,7 +214,14 @@ export interface Flow {
   [key: string]: unknown;
 }
 
+export interface ExecutorEligibility {
+  eligible: boolean;
+  reason?: string | null;
+  message?: string | null;
+}
+
 export interface AIModel {
+  executor_eligibility?: Record<string, ExecutorEligibility>;
   model_parameters?: Record<string, unknown> | null;
   /** Recipient projections are owned and edited by the sharing account. */
   is_shared?: boolean;
@@ -617,7 +624,27 @@ export interface AccountGatewayUsageSearchResponse {
   items: GatewayUsageSearchResultItem[];
 }
 
+/** Metadata only: terminal output is never collected. */
+export interface TerminalLocation {
+  multiplexer: 'herdr';
+  device_id: string;
+  workspace_id: string;
+  workspace_label: string | null;
+  tab_id: string;
+  tab_label: string | null;
+  pane_id: string;
+  terminal_title: string | null;
+  pane_label?: string | null;
+  state: string;
+  observed_at: string;
+  pane_closed_at?: string | null;
+}
+
 export interface RuntimeSessionSummary {
+  terminal_location?: TerminalLocation | null;
+  harness_session_id?: string | null;
+  start_directory?: string | null;
+  resume_command?: string | null;
   alias?: string | null;
   id: string;
   title?: string | null;
@@ -654,7 +681,9 @@ export interface RuntimeSessionSummary {
   /** Working directory the agent's hook last reported (a label, not trusted). */
   cwd?: string | null;
   activity_status: 'active_now' | 'idle' | 'ended' | string;
-  total_requests: number;
+  total_requests: number | null;
+  usage_source?: string;
+  cost_is_known?: boolean;
   successful_requests: number;
   failed_requests: number;
   token_usage: GatewayTokenUsage;
@@ -887,6 +916,7 @@ export interface ManagedAgentSummary {
 }
 
 export interface AgentControlCommandRequest {
+  working_directory?: string | null;
   message: string;
   metadata?: Record<string, unknown>;
   target_session_id?: string | null;
@@ -897,6 +927,7 @@ export interface AgentControlCommandRequest {
 }
 
 export interface AgentControlVoiceTranscriptRequest {
+  working_directory?: string | null;
   transcript: string;
   metadata?: Record<string, unknown>;
   voice?: Record<string, unknown>;
@@ -921,6 +952,7 @@ export interface AgentControlCommandResponse {
  * agent, delivered at the agent's next turn boundary.
  */
 export interface OperatorNote {
+  command_id?: string | null;
   note_id: string;
   /**
    * Delivery is explicit because the failure mode of every push design is a
@@ -1293,6 +1325,11 @@ export interface RuntimeSessionArtifactListResponse {
 }
 
 export interface RuntimeSessionActivityListResponse {
+  has_more?: boolean;
+  next_before?: string | null;
+  has_newer?: boolean;
+  next_after?: string | null;
+  partial_turn?: boolean;
   items: RuntimeSessionActivityItem[];
 }
 

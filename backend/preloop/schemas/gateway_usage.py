@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import shlex
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
+from preloop.models.schemas.terminal_location import TerminalLocation
 from preloop.schemas.resource_share import SharedResourceRead
 
 from preloop.services.cache_accounting import compute_cache_hit_ratio
@@ -368,6 +370,7 @@ class RuntimeSessionSummary(BaseModel):
     id: str
     session_source_type: str
     session_source_id: str
+    terminal_location: Optional[TerminalLocation] = None
     session_reference: Optional[str] = None
     #: The session that spawned this one, when the harness reported it.
     #: ``None`` means the lineage is unknown, which is the normal case: most
@@ -398,7 +401,9 @@ class RuntimeSessionSummary(BaseModel):
     turn_started_at: Optional[datetime] = None
     turn_ended_at: Optional[datetime] = None
     turn_interrupted: Optional[bool] = None
-    total_requests: int = 0
+    total_requests: Optional[int] = 0
+    usage_source: str = "gateway"
+    cost_is_known: bool = True
     successful_requests: int = 0
     failed_requests: int = 0
     token_usage: GatewayTokenUsage
@@ -439,6 +444,33 @@ class RuntimeSessionSummary(BaseModel):
             "or null when the session has no managed agent"
         ),
     )
+    start_directory: Optional[str] = None
+
+    @computed_field
+    @property
+    def harness_session_id(self) -> Optional[str]:
+        """Native identity suitable for the harness's resume command."""
+        if self.session_source_type not in {"claude_code", "codex"}:
+            return None
+        if self.session_reference == "Agent Control new session":
+            return None
+        if ":" not in self.session_source_id:
+            return None
+        return self.session_source_id.split(":", 1)[1]
+
+    @computed_field
+    @property
+    def resume_command(self) -> Optional[str]:
+        """Shell-quoted command that reopens the conversation's project."""
+        if not self.start_directory or not self.harness_session_id:
+            return None
+        harness = (
+            "claude --resume"
+            if self.session_source_type == "claude_code"
+            else "codex resume"
+        )
+        return f"cd {shlex.quote(self.start_directory)} && {harness} {shlex.quote(self.harness_session_id)}"
+
     cwd: Optional[str] = Field(
         None,
         description=(
@@ -984,6 +1016,11 @@ class RuntimeSessionActivityItem(BaseModel):
 class RuntimeSessionActivityListResponse(BaseModel):
     """List of activity items for a runtime session."""
 
+    has_more: bool = False
+    next_before: Optional[str] = None
+    has_newer: bool = False
+    next_after: Optional[str] = None
+    partial_turn: bool = False
     items: List[RuntimeSessionActivityItem] = Field(default_factory=list)
 
 

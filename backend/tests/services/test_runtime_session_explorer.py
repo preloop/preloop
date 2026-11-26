@@ -542,6 +542,33 @@ def test_get_account_session_detail_returns_response(service):
     assert response.usage_by_model == []
 
 
+def test_session_detail_attaches_pending_approvals_like_the_list(service):
+    row = _make_summary_row()
+
+    def attach(*, account, items, session_ids):
+        assert session_ids == [row["id"]]
+        items[0].pending_approval_count = 1
+
+    with (
+        patch.object(
+            rse_mod.crud_runtime_session,
+            "get_account_session_summary",
+            return_value=row,
+        ),
+        patch.object(
+            rse_mod.crud_api_usage, "get_gateway_usage_by_model", return_value=[]
+        ),
+        patch.object(
+            service, "_attach_pending_approval_counts", side_effect=attach
+        ) as attached,
+    ):
+        response = service.get_account_session_detail(
+            account=_make_account(), runtime_session_id=row["id"]
+        )
+    attached.assert_called_once()
+    assert response.session.pending_approval_count == 1
+
+
 def test_get_account_session_interactions_raises_404(service):
     with patch.object(
         rse_mod.crud_runtime_session,
@@ -1126,3 +1153,32 @@ def test_resolve_agent_filters_owner_with_kind_never_widens_to_source_type(
 
     assert principals == [("managed_agent", "mine")]
     assert source_types is None
+
+
+def test_summary_insight_omits_unknown_imported_measurements(
+    service: RuntimeSessionExplorerService,
+) -> None:
+    """Unknown requests and cost are omitted instead of rendered as None or zero."""
+    row = _make_summary_row(total_requests=None, cost_is_known=False)
+    with (
+        patch.object(
+            rse_mod.crud_runtime_session,
+            "get_account_session_summary",
+            return_value=row,
+        ),
+        patch.object(
+            rse_mod.crud_ai_model, "get_default_active_model", return_value=None
+        ),
+    ):
+        insight = service.get_account_session_summary_insight(
+            account=_make_account(), runtime_session_id=row["id"]
+        )
+    assert not any("request" in item or "spend" in item for item in insight.highlights)
+
+
+def test_summary_row_to_schema_keeps_the_start_directory():
+    summary = RuntimeSessionExplorerService._summary_row_to_schema(
+        _make_summary_row(cwd="/tmp/later", start_directory="/tmp/example")
+    )
+    assert summary.start_directory == "/tmp/example"
+    assert summary.cwd == "/tmp/later"

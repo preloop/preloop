@@ -1,3 +1,4 @@
+import '../../components/session-resume-info';
 import {
   conversationActivityLine,
   conversationCanSend,
@@ -326,6 +327,7 @@ export class AgentTalkView extends LitElement {
           : nothing
       }
       <talk-composer
+        .workingDirectory=${this.newSessionDirectory}
         .sendMessage=${this.sendConversationMessage}
         .transportDisabled=${!conversationCanSend(thread) || Boolean(this.error)}
         .transportPlaceholder=${conversationPlaceholder(thread)}
@@ -1309,7 +1311,11 @@ export class AgentTalkView extends LitElement {
     this.composer?.focusInput();
   }
 
+  private newSessionDirectory = '';
+
   private startNewSession(): void {
+    this.newSessionDirectory =
+      this.currentSession?.start_directory || this.currentSession?.cwd || '';
     this.awaitingNewSession = true;
     this.switchSession(null);
   }
@@ -1430,7 +1436,11 @@ export class AgentTalkView extends LitElement {
     }
 
     return html`
-      ${this.renderHeader()} ${this.renderSessionNotice()}
+      ${this.renderHeader()}
+      <session-resume-info
+        .session=${this.currentSession ?? null}
+      ></session-resume-info>
+      ${this.renderSessionNotice()}
       ${
         this.error
           ? html`<div class="talk-error" role="alert" data-testid="talk-error">

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -118,5 +119,44 @@ func TestModelsListResetCopyUsesAllowanceKind(t *testing.T) {
 				t.Fatal("monthly allowance mislabeled")
 			}
 		})
+	}
+}
+
+func TestModelsExecutorEligibilityReadAndList(t *testing.T) {
+	model := `{"id":"model-1","name":"Subscription example","executor_eligibility":{"hosted":{"eligible":false,"reason":"subscription_flow_opt_in_required","message":"Enable Use from my flows."},"private_runner_host":{"eligible":true,"message":"Use your bound login."}},"api_key":"never-print"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/ai-models":
+			fmt.Fprint(w, "["+model+"]")
+		case "/api/v1/ai-models/model-1":
+			fmt.Fprint(w, model)
+		case "/api/v1/features":
+			fmt.Fprint(w, `{"features":{}}`)
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, _ := api.NewClient("test-token", server.URL)
+	for _, show := range []bool{false, true} {
+		var out bytes.Buffer
+		var err error
+		if show {
+			err = executeModelsShow(client, &out, "model-1")
+		} else {
+			err = executeModelsList(client, &out)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"hosted: not eligible", "subscription_flow_opt_in_required", "Enable Use from my flows.", "private_runner_host: eligible", "Use your bound login."} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("missing %q in %s", want, out.String())
+			}
+		}
+		if strings.Contains(out.String(), "never-print") {
+			t.Fatal("credential leaked")
+		}
 	}
 }

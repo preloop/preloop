@@ -13,6 +13,7 @@ from pydantic import (
     model_validator,
 )
 
+from preloop.models.schemas.executor_eligibility import ExecutorEligibility
 from preloop.schemas.gateway_usage import (
     GatewayTokenUsage,
     GatewayUsageByDay,
@@ -599,6 +600,15 @@ class AIModelInDBBase(BaseModel):
 
 class AIModelRead(AIModelInDBBase):
     """Schema for reading AIModel entries, including timestamps."""
+
+    executor_eligibility: dict[str, ExecutorEligibility] = Field(
+        default_factory=dict,
+        description=(
+            "Credential identity compatibility for the caller: hosted and private_runner_container "
+            "describe their own flows; private_runner_host and interactive_agent require their "
+            "authorized agent login. Does not probe provider health, budgets or runner availability."
+        ),
+    )
 
     is_built_in: bool = False
 

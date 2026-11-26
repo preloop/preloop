@@ -423,3 +423,21 @@ func TestNormalizeAgentKindMatchesTheServerFold(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionsWideIncludesLocalResumeIdentity(t *testing.T) {
+	var out bytes.Buffer
+	row := runtimeSessionRow{ID: "runtime-example", HarnessSessionID: "native-example", StartDirectory: "/tmp/example project", ResumeCommand: "cd '/tmp/example project' && claude --resume native-example"}
+	if err := writeSessionsTable(&out, []runtimeSessionRow{row}, []string{"Example"}, time.Now(), true); err != nil { t.Fatal(err) }
+	for _, value := range []string{row.HarnessSessionID, row.StartDirectory, row.ResumeCommand} {
+		if !strings.Contains(out.String(), value) { t.Fatalf("wide output omitted %q", value) }
+	}
+}
+
+func TestJoinNonEmptySkipsMissingLabels(t *testing.T) {
+	if got := joinNonEmpty(" / ", "", "Example tab", ""); got != "Example tab" {
+		t.Fatalf("got %q", got)
+	}
+	if got := joinNonEmpty(" / ", "", ""); got != "" {
+		t.Fatalf("got %q", got)
+	}
+}

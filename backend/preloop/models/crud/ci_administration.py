@@ -52,10 +52,10 @@ def _binding_mode(repository_binding: Any) -> Literal["dedicated", "shared"]:
     return "shared" if shared else "dedicated"
 
 
-# The machine ceiling includes the explicitly granted own-execution evidence route.
+# The machine ceiling includes own-execution evidence and bound-flow preflight.
 # Changing enforcement coverage requires explicit contract/rollout review before
 # issuance resumes; extra routes must not silently broaden a deployed ceiling.
-_EXPECTED_V1_MACHINE_ROUTE_COUNT = 13
+_EXPECTED_V1_MACHINE_ROUTE_COUNT = 14
 
 
 class CiSharedFlowError(ValueError):

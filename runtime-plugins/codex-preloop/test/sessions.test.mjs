@@ -366,3 +366,67 @@ test("execution-scoped workers register with the execution credential", async ()
     if(original.alias===undefined) delete process.env.PRELOOP_SESSION_ALIAS; else process.env.PRELOOP_SESSION_ALIAS=original.alias;
   }
 });
+
+test("a pre-start thread never exposes its temporary identity", async () => {
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const thread = {id: null, run(_text, options) {
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        const error = new Error("aborted"); error.name = "AbortError"; reject(error);
+      }, {once: true});
+      entered();
+    });
+  }};
+  const manager = new SessionManager(baseConfig, () => ({startThread: () => thread, resumeThread: () => thread}));
+  const running = manager.sendMessage({text: "Example", startNewSession: true});
+  try {
+    await started;
+    assert.deepEqual(manager.ownedSessionIds(), []);
+    assert.equal(await manager.release(), undefined);
+    assert.equal((await running).session_id, undefined);
+  } finally {
+    manager.stop();
+    await running;
+  }
+});
+
+test("releasing an established thread cannot orphan another starting thread", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("{}", {status: 200});
+  let count = 0;
+  const signals = [];
+  const rejecters = [];
+  const manager = new SessionManager(baseConfig, () => ({
+    startThread() {
+      if (++count === 1) return {id: "established-example", async run() {return {finalResponse: "done", usage: null};}};
+      return {id: null, run(_text, options) {
+        signals.push(options.signal);
+        return new Promise((_resolve, reject) => {
+          rejecters.push(reject);
+          options.signal.addEventListener("abort", () => {
+            const error = new Error("aborted"); error.name = "AbortError"; reject(error);
+          }, {once: true});
+        });
+      }};
+    },
+    resumeThread() {throw new Error("unexpected resume");},
+  }));
+  const pending = [];
+  try {
+    await manager.sendMessage({text: "First", startNewSession: true});
+    pending.push(manager.sendMessage({text: "Second", startNewSession: true}));
+    await new Promise(setImmediate);
+    await manager.release("established-example");
+    pending.push(manager.sendMessage({text: "Third", startNewSession: true}));
+    await new Promise(setImmediate);
+    assert.equal(signals.length, 2);
+    manager.stop();
+    assert.ok(signals.every(signal => signal.aborted), "shutdown must reach both starting threads");
+  } finally {
+    manager.stop();
+    for (const reject of rejecters) reject(new Error("test cleanup"));
+    await Promise.allSettled(pending);
+    globalThis.fetch = originalFetch;
+  }
+});

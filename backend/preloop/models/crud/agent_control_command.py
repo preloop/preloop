@@ -115,6 +115,20 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             )
         )
 
+    def bind_session(
+        self, db: Session, *, command: AgentControlCommand, runtime_session_id: Any
+    ) -> None:
+        """Bind a starting command exactly once, before recording its progress."""
+        if command.runtime_session_id is not None:
+            return
+        command.runtime_session_id = runtime_session_id
+        command.envelope = {
+            **command.envelope,
+            "runtime_session_id": str(runtime_session_id),
+        }
+        db.add(command)
+        db.flush()
+
     def get_by_command_id(
         self,
         db: Session,
@@ -352,6 +366,10 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             query.filter(
                 AgentControlCommand.managed_agent_id == managed_agent_id,
                 AgentControlCommand.kind == "command",
+                func.coalesce(
+                    AgentControlCommand.envelope["payload"]["delivery_route"].astext, ""
+                )
+                != "herdr_pane",
                 AgentControlCommand.status == "pending",
                 (AgentControlCommand.expires_at.is_(None))
                 | (AgentControlCommand.expires_at > now),
@@ -414,6 +432,10 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             )
         expired = query.filter(
             AgentControlCommand.status == "pending",
+            func.coalesce(
+                AgentControlCommand.envelope["payload"]["delivery_route"].astext, ""
+            )
+            != "herdr_pane",
             AgentControlCommand.expires_at.isnot(None),
             AgentControlCommand.expires_at <= now,
         ).update({"status": "expired", "expired_at": now}, synchronize_session="fetch")
@@ -815,6 +837,34 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             if changed
             else None
         )
+
+    def cancel_pending_session_notes(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        user_id: Any,
+    ) -> int:
+        """A resumed prompt supersedes pending notes; delivered notes stay read."""
+        rows = (
+            db.query(AgentControlCommand)
+            .filter(
+                AgentControlCommand.account_id == account_id,
+                AgentControlCommand.runtime_session_id == runtime_session_id,
+                AgentControlCommand.kind == "note",
+                AgentControlCommand.status == "pending",
+            )
+            .with_for_update()
+            .all()
+        )
+        for row in rows:
+            row.status = "cancelled"
+            row.cancelled_at = datetime.now(timezone.utc)
+            row.cancelled_by_user_id = user_id
+            row.last_error = "Superseded by a prompt resuming this session"
+        db.flush()
+        return len(rows)
 
     def cancel_note(
         self,

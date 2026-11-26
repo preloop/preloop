@@ -469,6 +469,54 @@ describe('RunnersView', () => {
     expect(element.shadowRoot!.querySelector('.empty-state')).to.equal(null);
   });
 
+  it('lists unmanaged terminal panes as metadata without inventing sessions', async () => {
+    const element = await renderWith([
+      {
+        id: 'runner-1',
+        name: 'Example device',
+        status: 'online',
+        harness_inventory: {
+          schema: 1,
+          hash: 'inventory-1',
+          generated_at: '2026-11-26T12:00:00Z',
+          entries: [],
+          herdr: {
+            protocol: 22,
+            observe_enabled: true,
+            prompt_enabled: false,
+            agents: [
+              {
+                harness_kind: 'codex',
+                cwd: '/example/project',
+                workspace_label: 'Example workspace',
+                tab_label: 'Development',
+                pane_id: 'pane-1',
+                terminal_title: '<script>example</script>',
+                runtime_session_id: null,
+                managed: false,
+              },
+              {
+                harness_kind: 'claude_code',
+                pane_id: 'pane-2',
+                runtime_session_id: 'session-2',
+                managed: true,
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    const panes = element.shadowRoot!.querySelectorAll('[data-unmanaged-pane]');
+    expect(panes.length).to.equal(1);
+    expect(panes[0].textContent).to.contain('Unmanaged agent');
+    expect(panes[0].textContent).to.contain('/example/project');
+    expect(panes[0].textContent?.replace(/\s+/g, ' ')).to.contain(
+      'Example workspace / Development'
+    );
+    expect(panes[0].textContent).to.contain('Replies are not visible');
+    expect(panes[0].querySelector('script')).to.equal(null);
+  });
+
   it('renders the harness inventory with login, governance, models and billing', async () => {
     const element = await renderWith([
       {

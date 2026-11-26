@@ -644,8 +644,9 @@ test("presence lists owned threads as reachable", async () => {
   );
   assert.deepEqual(sidecar.reachableSessionIds(), ["thread-1"]);
   // Opening the thread republishes presence without waiting for a heartbeat.
-  assert.equal(early.length, 1);
-  assert.deepEqual(early[0].payload.reachable_session_ids, ["thread-1"]);
+  const presence = early.filter(frame => frame.name !== "command_session");
+  assert.equal(presence.length, 1);
+  assert.deepEqual(presence[0].payload.reachable_session_ids, ["thread-1"]);
 
   const sent = [];
   sidecar.sendEnvelope = (envelope) => sent.push(envelope);
@@ -741,4 +742,25 @@ test("presence lists loaded app-server TUI threads as reachable and forwards the
   appServer.listeners.onEvent("other-thread", { kind: "turn_started", turn_id: "t9" });
   assert.equal(sent[4].payload.seq, 1, "the counter is per thread");
   sidecar.stop();
+});
+
+
+test("an expired prompt never starts a harness turn", async () => {
+  const { sidecar, state } = makeSidecar();
+  try {
+    await assert.rejects(sidecar.dispatch({ type: "command", name: "send_message", message_id: "expired-example", expires_at: "2000-01-01T00:00:00Z", payload: { text: "Example" } }), /expired/);
+    assert.deepEqual(state.texts, []);
+  } finally { sidecar.stop(); }
+});
+
+
+test("a new conversation does not take over an unrelated local terminal", async () => {
+  const { sidecar } = makeSidecar();
+  sidecar.launcher.mode = "local";
+  let takeovers = 0;
+  sidecar.takeOver = async () => { takeovers++; return "local-session"; };
+  try {
+    await sidecar.dispatch({ type: "command", name: "send_message", message_id: "new-example", payload: { text: "Example", start_new_session: true } });
+    assert.equal(takeovers, 0);
+  } finally { sidecar.stop(); }
 });

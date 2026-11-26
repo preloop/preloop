@@ -1,5 +1,5 @@
 import { formatRelativeTime, parseUTCDate } from '../utils/date';
-import { agentStateChip } from '../utils/agent-status';
+import { terminalSessionChip } from '../utils/terminal-location';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -131,6 +131,17 @@ export class SessionListPanel extends LitElement {
         display: flex;
         gap: var(--sl-spacing-small);
         justify-content: space-between;
+      }
+
+      .title-row sl-badge {
+        max-width: 60%;
+        min-width: 0;
+      }
+
+      .title-row sl-badge::part(base) {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       .title,
@@ -407,13 +418,7 @@ export class SessionListPanel extends LitElement {
    * from the row's server `turn_state`; recency alone is not "working".
    */
   private getChip(session: ObservedSession) {
-    const raw = (session.raw ?? {}) as Record<string, unknown>;
-    return agentStateChip({
-      turn_state: typeof raw.turn_state === 'string' ? raw.turn_state : null,
-      ended_at:
-        session.endedAt || (session.status === 'ended' ? 'ended' : null),
-      last_activity_at: session.lastActivityAt,
-    });
+    return terminalSessionChip(session);
   }
 
   private getLabel(session: ObservedSession): string {
@@ -460,6 +465,11 @@ export class SessionListPanel extends LitElement {
         composed: true,
       })
     );
+  }
+
+  private hasMeasuredRequests(session: ObservedSession): boolean {
+    const raw = session.raw as Record<string, unknown> | undefined;
+    return raw?.total_requests !== null && raw?.usage_source !== 'none';
   }
 
   /** Keep one row in the tab order, including after filtering or live refresh. */
@@ -564,6 +574,7 @@ export class SessionListPanel extends LitElement {
                   <sl-badge
                     class="chip"
                     variant=${this.getVariant(session)}
+                    title=${this.getChip(session).title}
                     pill
                   >
                     ${this.getLabel(session)}
@@ -575,12 +586,16 @@ export class SessionListPanel extends LitElement {
                   ${this.metaLine(session)}
                 </div>
                 <div class="metric-row">
-                  <div
-                    class="metric"
-                    title="${formatCountExact(session.totalRequests)} requests"
-                  >
-                    ${formatCount(session.totalRequests)} requests
-                  </div>
+                  ${
+                    this.hasMeasuredRequests(session)
+                      ? html`<div
+                          class="metric"
+                          title="${formatCountExact(session.totalRequests)} requests"
+                        >
+                          ${formatCount(session.totalRequests)} requests
+                        </div>`
+                      : nothing
+                  }
                   <!-- Tokens before cost: the split says whether a session is
                      expensive because it reads a lot or writes a lot. The
                      cache rate is in the figures' tooltip, so the row stays
@@ -589,7 +604,7 @@ export class SessionListPanel extends LitElement {
                   ${
                     totalTokensOf(session.tokenUsage) > 0
                       ? html`<div class="metric tokens">
-                          ·
+                          ${this.hasMeasuredRequests(session) ? '·' : nothing}
                           <token-figures
                             hide-cache
                             .usage=${session.tokenUsage}
@@ -597,9 +612,15 @@ export class SessionListPanel extends LitElement {
                         </div>`
                       : nothing
                   }
-                  <div class="metric cost">
-                    · ${formatCost(session.estimatedCost)} est.
-                  </div>
+                  ${
+                    (session.raw as Record<string, unknown>)?.cost_is_known !==
+                    false
+                      ? html`<div class="metric cost">
+                          ${this.hasMeasuredRequests(session) || totalTokensOf(session.tokenUsage) > 0 ? '·' : nothing}
+                          ${formatCost(session.estimatedCost)} est.
+                        </div>`
+                      : nothing
+                  }
                 </div>
                 ${this.renderWasteBadge(session)}
                 ${this.renderNoteIndicator(session)}

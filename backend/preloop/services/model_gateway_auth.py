@@ -540,6 +540,24 @@ def collect_subject_model_allowlists(
     return allowlists
 
 
+def configured_agent_model_ids(
+    bindings: Sequence[models.ManagedAgentAIModelBinding],
+    account_models: Sequence[models.AIModel],
+) -> set[str]:
+    """Intersect active agent bindings with a readable model inventory.
+
+    Args:
+        bindings: Active bindings already scoped to the authorized agents.
+        account_models: Models whose principal compatibility is being checked.
+
+    Returns:
+        Configured model ids; repeated slots and agents are deduplicated.
+    """
+    return {str(binding.ai_model_id) for binding in bindings} & {
+        str(model.id) for model in account_models
+    }
+
+
 def _principal_authorized_model_ids(
     db: Session,
     auth_context: ModelGatewayAuthContext,
@@ -620,7 +638,7 @@ def _principal_authorized_model_ids(
         account_id=str(auth_context.account_id),
         agent_id=managed_agent_id,
     )
-    configured_ids = {str(binding.ai_model_id) for binding in bindings} & all_ids
+    configured_ids = configured_agent_model_ids(bindings, account_models)
     authorized |= configured_ids & bound_ids
     if configured_ids and not collect_subject_model_allowlists(db, auth_context):
         authorized &= configured_ids

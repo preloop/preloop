@@ -65,25 +65,39 @@ var sessionsListNow = time.Now
 
 // runtimeSessionRow is the part of a list item this command renders. --json
 // does not go through this type: it re-emits the item as the server sent it.
+type terminalLocation struct {
+	PaneLabel      string  `json:"pane_label"`
+	WorkspaceLabel string  `json:"workspace_label"`
+	TabLabel       string  `json:"tab_label"`
+	State          string  `json:"state"`
+	PaneClosedAt   *string `json:"pane_closed_at"`
+}
+
 type runtimeSessionRow struct {
-	ID                   string   `json:"id"`
-	SessionSourceType    string   `json:"session_source_type"`
-	SessionSourceID      string   `json:"session_source_id"`
-	Alias                string   `json:"alias"`
-	ParentSessionID      string   `json:"parent_session_id"`
-	RuntimePrincipalName string   `json:"runtime_principal_name"`
-	Title                string   `json:"title"`
-	StartedAt            api.Time `json:"started_at"`
-	LastActivityAt       api.Time `json:"last_activity_at"`
-	LastRequestAt        api.Time `json:"last_request_at"`
-	EndedAt              api.Time `json:"ended_at"`
-	TotalRequests        int      `json:"total_requests"`
-	ManagedAgentID       string   `json:"managed_agent_id"`
-	ManagedAgentName     string   `json:"managed_agent_name"`
-	AgentKind            string   `json:"agent_kind"`
-	Cwd                  string   `json:"cwd"`
-	ToolCallCount        int      `json:"tool_call_count"`
-	PendingApprovalCount int      `json:"pending_approval_count"`
+	SessionReference     string            `json:"session_reference"`
+	TurnState            string            `json:"turn_state"`
+	TerminalLocation     *terminalLocation `json:"terminal_location"`
+	ID                   string            `json:"id"`
+	SessionSourceType    string            `json:"session_source_type"`
+	SessionSourceID      string            `json:"session_source_id"`
+	Alias                string            `json:"alias"`
+	ParentSessionID      string            `json:"parent_session_id"`
+	RuntimePrincipalName string            `json:"runtime_principal_name"`
+	Title                string            `json:"title"`
+	StartedAt            api.Time          `json:"started_at"`
+	LastActivityAt       api.Time          `json:"last_activity_at"`
+	LastRequestAt        api.Time          `json:"last_request_at"`
+	EndedAt              api.Time          `json:"ended_at"`
+	TotalRequests        int               `json:"total_requests"`
+	ManagedAgentID       string            `json:"managed_agent_id"`
+	ManagedAgentName     string            `json:"managed_agent_name"`
+	AgentKind            string            `json:"agent_kind"`
+	Cwd                  string            `json:"cwd"`
+	ToolCallCount        int               `json:"tool_call_count"`
+	PendingApprovalCount int               `json:"pending_approval_count"`
+	StartDirectory       string            `json:"start_directory"`
+	HarnessSessionID     string            `json:"harness_session_id"`
+	ResumeCommand        string            `json:"resume_command"`
 }
 
 // sessionsListPage is one page of the endpoint's answer, with the items kept
@@ -378,7 +392,7 @@ func writeSessionsTable(out io.Writer, rows []runtimeSessionRow, titles []string
 	writer := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	header := "ID\tALIAS\tPARENT\tAGENT\tSTARTED\tLAST ACTIVITY\tSTATE\tTOOLS\tMODEL\tPENDING\tTITLE"
 	if wide {
-		header = "ID\tALIAS\tPARENT\tAGENT\tKIND\tSTARTED\tLAST ACTIVITY\tSTATE\tTOOLS\tMODEL\tPENDING\tTITLE"
+		header = "ID\tALIAS\tPARENT\tAGENT\tKIND\tPLACE\tSTARTED\tLAST ACTIVITY\tSTATE\tTOOLS\tMODEL\tPENDING\tTITLE\tHARNESS SESSION\tSTART DIRECTORY\tRESUME"
 	}
 	fmt.Fprintln(writer, header) //nolint:errcheck
 	for index, row := range rows {
@@ -392,7 +406,15 @@ func writeSessionsTable(out io.Writer, rows []runtimeSessionRow, titles []string
 		}
 		columns := []string{id, dashIfEmpty(row.Alias), dashIfEmpty(parent), sessionAgentLabel(row)}
 		if wide {
-			columns = append(columns, dashIfEmpty(sessionKind(row)))
+			place := ""
+			if row.TerminalLocation != nil {
+				place = joinNonEmpty(" / ",
+					row.TerminalLocation.WorkspaceLabel,
+					row.TerminalLocation.TabLabel,
+					row.TerminalLocation.PaneLabel,
+				)
+			}
+			columns = append(columns, dashIfEmpty(sessionKind(row)), dashIfEmpty(place))
 		}
 		columns = append(columns,
 			relativeTime(row.StartedAt, now),
@@ -403,6 +425,9 @@ func writeSessionsTable(out io.Writer, rows []runtimeSessionRow, titles []string
 			strconv.Itoa(row.PendingApprovalCount),
 			titles[index],
 		)
+		if wide {
+			columns = append(columns, dashIfEmpty(row.HarnessSessionID), dashIfEmpty(row.StartDirectory), dashIfEmpty(row.ResumeCommand))
+		}
 		for i, column := range columns {
 			columns[i] = terminalSafe(column)
 		}
@@ -451,6 +476,23 @@ func sessionLastObserved(row runtimeSessionRow) api.Time {
 func sessionState(row runtimeSessionRow, now time.Time) string {
 	if !row.EndedAt.IsZero() {
 		return "ended"
+	}
+	if row.TerminalLocation != nil && row.TurnState == "working" {
+		return "working"
+	}
+	if row.TerminalLocation != nil && row.PendingApprovalCount > 0 {
+		return "needs approval"
+	}
+	if loc := row.TerminalLocation; loc != nil {
+		if loc.PaneClosedAt != nil {
+			return "pane closed"
+		}
+		switch loc.State {
+		case "blocked":
+			return "waiting at a terminal dialog"
+		case "working", "idle", "done":
+			return loc.State
+		}
 	}
 	last := sessionLastObserved(row)
 	if !last.IsZero() && now.Sub(last.Time) <= sessionLiveWindow {
@@ -583,4 +625,15 @@ func explainSessionsListError(err error) error {
 		reason = fmt.Sprintf("the server answered with status %d", apiErr.StatusCode)
 	}
 	return fmt.Errorf("the session list failed: %s", reason)
+}
+
+// joinNonEmpty joins the non-empty parts with sep.
+func joinNonEmpty(sep string, parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, sep)
 }

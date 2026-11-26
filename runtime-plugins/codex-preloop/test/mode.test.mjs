@@ -144,7 +144,7 @@ test("send_message errors when a local launcher does not switch", async () => {
   );
   sidecar.configure(baseConfig);
   try {
-    await sidecar.start();
+    await sidecar.launcher.listen();
     const client = net.createConnection(socketPath);
     await new Promise((resolve, reject) => {
       client.once("connect", resolve);
@@ -158,7 +158,7 @@ test("send_message errors when a local launcher does not switch", async () => {
         sidecar.dispatch({
           type: "command",
           name: "send_message",
-          payload: { text: "from the phone", start_new_session: true },
+          payload: { text: "from the phone", session_source_id: "local-9" },
         }),
       /timed out waiting for launcher switch/,
     );

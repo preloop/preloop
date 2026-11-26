@@ -57,10 +57,7 @@ func moneyText(amount *float64) string {
 	return fmt.Sprintf("$%.4f", *amount)
 }
 func executeModelsList(client *api.Client, w io.Writer) error {
-	var own []struct {
-		Name string `json:"name"`
-		ID   string `json:"id"`
-	}
+	var own []modelEligibilityRead
 	if err := client.Get(api.RESTPrefix+"/ai-models", &own); err != nil {
 		return err
 	}
@@ -94,6 +91,7 @@ func executeModelsList(client *api.Client, w io.Writer) error {
 	fmt.Fprintln(w, "Your models — billed to your provider key:")
 	for _, model := range own {
 		fmt.Fprintf(w, "  %s [your key] (%s)\n", model.Name, model.ID)
+		printExecutorEligibility(w, model.ExecutorEligibility)
 	}
 	return nil
 }

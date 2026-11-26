@@ -1,7 +1,7 @@
 """Non-blocking advice returned with a saved flow.
 
-A warning never blocks a save: it names a configuration that works but is
-known to give unreliable results, and links to the fix.
+A warning never blocks a save: it names an incompatible executor or a
+configuration known to give unreliable results, and links to the fix.
 """
 
 import logging
@@ -10,6 +10,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_ai_model, crud_flow
+from preloop.models.schemas.executor_eligibility import ExecutorEligibility
 from preloop.schemas.openrouter import (
     STRUCTURED_RESULTS_DOCS_URL,
     pins_upstream_provider,
@@ -77,7 +78,11 @@ def _model_ids(flow: Any) -> list[Any]:
 
 
 def flow_config_warnings(
-    db: Session, flow: Any, *, account_id: Optional[Any] = None
+    db: Session,
+    flow: Any,
+    *,
+    account_id: Optional[Any] = None,
+    executor_eligibility: Optional[ExecutorEligibility] = None,
 ) -> list[dict[str, Any]]:
     """Advice for a saved flow; never raises.
 
@@ -91,6 +96,7 @@ def flow_config_warnings(
         db: Database session.
         flow: The saved flow.
         account_id: Caller's account; models outside it are skipped.
+        executor_eligibility: Decision already computed by the flow read, if any.
 
     Returns:
         Warnings with ``code``, ``message``, ``ai_model_id`` and ``docs_url``.
@@ -98,7 +104,21 @@ def flow_config_warnings(
     try:
         from preloop.services.platform_review import review_posting_warnings
 
+        from preloop.services.model_executor_eligibility import (
+            flow_executor_eligibility,
+        )
+
         warnings: list[dict[str, Any]] = review_posting_warnings(flow)
+        eligibility = executor_eligibility or flow_executor_eligibility(db, flow)
+        if not eligibility.eligible:
+            warnings.append(
+                {
+                    "code": eligibility.reason,
+                    "message": eligibility.message,
+                    "ai_model_id": str(flow.ai_model_id),
+                    "docs_url": "https://docs.preloop.ai/guide/flows/model-routing/#subscription-credentials-and-execution-identity",
+                }
+            )
         if not _structured_result(db, flow):
             return warnings
         ids = _model_ids(flow)

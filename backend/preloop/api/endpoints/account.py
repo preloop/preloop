@@ -17,6 +17,7 @@ from preloop.services.built_in_models import (
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Body,
     Depends,
     HTTPException,
     Path,
@@ -56,6 +57,7 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.models.db.session import get_db_session
+from preloop.models.crud.billing import billing
 from preloop.models.models.account import Account
 from preloop.models.models.attention_dismissal import AttentionDismissal
 from preloop.models.models.user import User as UserModel
@@ -363,6 +365,8 @@ def _live_validation_disables_gateway(validation: dict) -> bool:
 
 def _managed_agent_onboarding_flags(
     latest_enrollment: Optional[dict],
+    *,
+    gateway_traffic_verified: bool = False,
 ) -> tuple[bool, bool, str]:
     if not latest_enrollment:
         return False, False, "incomplete"
@@ -380,6 +384,8 @@ def _managed_agent_onboarding_flags(
     )
     if _live_validation_disables_gateway(validation):
         model_gateway_configured = False
+    if gateway_traffic_verified:
+        model_gateway_configured = True
 
     if mcp_proxy_configured and model_gateway_configured:
         return True, True, "fully_onboarded"
@@ -886,6 +892,15 @@ def _enrich_managed_agent_summaries(
         else []
     )
 
+    verified_enrollments = crud_managed_agent_enrollment.gateway_verified_enrollments(
+        db,
+        account_id=account_id,
+        enrollment_ids=[
+            str(latest["id"])
+            for latest, _ in enrollment_summaries.values()
+            if latest is not None
+        ],
+    )
     unresolved_model_summaries: list[tuple[dict, str, str]] = []
     for summary in summaries:
         agent_id = str(summary["id"])
@@ -896,7 +911,13 @@ def _enrich_managed_agent_summaries(
             summary["mcp_proxy_configured"],
             summary["model_gateway_configured"],
             summary["onboarding_state"],
-        ) = _managed_agent_onboarding_flags(latest_enrollment_summary)
+        ) = _managed_agent_onboarding_flags(
+            latest_enrollment_summary,
+            gateway_traffic_verified=bool(
+                latest_enrollment_summary
+                and str(latest_enrollment_summary["id"]) in verified_enrollments
+            ),
+        )
         (
             summary["live_validation_supported"],
             summary["live_validation_passed"],
@@ -2555,8 +2576,10 @@ async def create_account_managed_agent_credential(
     await run_db_off_loop(
         lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
     )
+    # Match decommission and membership issuance lock order before reading state.
+    billing.lock_account(db, str(account.id))
     agent = crud_managed_agent.get_for_account(
-        db, account_id=str(account.id), agent_id=agent_id
+        db, account_id=str(account.id), agent_id=agent_id, for_update=True
     )
     if agent is None:
         raise HTTPException(
@@ -3044,6 +3067,8 @@ async def update_account_managed_agent(
     await run_db_off_loop(
         lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
     )
+    # Match credential issuance and the CRUD lifecycle transition lock order.
+    billing.lock_account(db, str(account.id))
     # Locked for the whole handler: ``lifecycle_state`` is read here and the
     # credential restore/revoke decision below is made from that read, so a
     # concurrent operator action (a resume racing a decommission) must not
@@ -3136,8 +3161,18 @@ async def update_account_managed_agent(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
+    revoked_managed_credentials = 0
     if should_revoke_runtime_access:
         revoke_timestamp = datetime.now(UTC)
+        revoked_managed_credentials = (
+            crud_managed_agent_credential.revoke_all_for_agent(
+                db,
+                account_id=str(account.id),
+                agent_id=str(agent.id),
+                reason=update.reason or "agent decommissioned",
+                revoked_at=revoke_timestamp,
+            )
+        )
         # Revoke only this agent's keys (plus legacy keys with no agent
         # binding). Several registry entries can share one runtime principal,
         # and a principal-wide sweep would also kill sibling agents' durable
@@ -3209,6 +3244,7 @@ async def update_account_managed_agent(
                     "session_source_type": updated.session_source_type,
                     "session_source_id": updated.session_source_id,
                     "lifecycle_action": update.lifecycle_action,
+                    "revoked_count": revoked_managed_credentials,
                     "previous_lifecycle_state": prior_lifecycle_state,
                     "lifecycle_state": updated.lifecycle_state,
                     "previous_lifecycle_reason": previous_lifecycle_reason,
@@ -3545,6 +3581,7 @@ async def list_account_runtime_sessions(
             "artifact kind such as transcript, screenshot, document or audio"
         ),
     ),
+    workspace_id: Optional[str] = Query(None, min_length=1, max_length=256),
     owner_user_id: Optional[UUID] = Query(
         None,
         description=(
@@ -3584,8 +3621,98 @@ async def list_account_runtime_sessions(
             flow_execution_id=str(flow_execution_id) if flow_execution_id else None,
             active_within_minutes=active_within_minutes,
             has_artifacts=has_artifacts,
+            workspace_id=workspace_id,
             owner_user_id=str(owner_user_id) if owner_user_id else None,
         )
+    )
+
+
+@router.post("/runtime-sessions", response_model=AccountRuntimeSessionListResponse)
+@require_permission("view_runtime_sessions")
+def search_account_runtime_session_identity(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    background_tasks: BackgroundTasks,
+    query: Annotated[str, Body(embed=True, min_length=1, max_length=500)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+    session_source_type: Optional[str] = Query(None),
+    status: str = Query("all", pattern="^(all|active|ended)$"),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    agent: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Managed agent id or display name; only that agent's sessions",
+    ),
+    agent_kind: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "Agent kind (claude_code, codex, cursor, hermes, ...); sessions of "
+            "managed agents of that kind or recorded from that source"
+        ),
+    ),
+    alias: Optional[str] = Query(None, min_length=1, max_length=64),
+    parent_session_id: Optional[UUID] = Query(
+        None, description="Only sessions this session spawned"
+    ),
+    flow_execution_id: Optional[UUID] = Query(
+        None, description="Only sessions linked to this flow execution"
+    ),
+    active_within_minutes: Optional[int] = Query(
+        None,
+        ge=1,
+        le=1440,
+        description="Only open sessions with activity in the last N minutes",
+    ),
+    has_artifacts: Optional[str] = Query(
+        None,
+        description=(
+            "Only sessions holding an available artifact: 'any', or an "
+            "artifact kind such as transcript, screenshot, document or audio"
+        ),
+    ),
+    owner_user_id: Optional[UUID] = Query(
+        None,
+        description=(
+            "Only sessions of managed agents this user owns; a user who owns "
+            "no agent matches no session"
+        ),
+    ),
+) -> AccountRuntimeSessionListResponse:
+    """Search session identity without placing the query in access-log URLs."""
+    if has_artifacts is not None and has_artifacts != "any":
+        if has_artifacts not in ARTIFACT_KINDS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "has_artifacts must be 'any' or one of: "
+                    + ", ".join(sorted(ARTIFACT_KINDS))
+                ),
+            )
+    # FastAPI dispatches this synchronous database handler on its worker pool.
+    return RuntimeSessionExplorerService(db).list_account_sessions(
+        account=account,
+        query=query,
+        session_source_type=session_source_type,
+        status=status,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        offset=offset,
+        background_tasks=background_tasks,
+        agent=agent,
+        agent_kind=agent_kind,
+        alias=alias,
+        parent_session_id=str(parent_session_id) if parent_session_id else None,
+        flow_execution_id=str(flow_execution_id) if flow_execution_id else None,
+        active_within_minutes=active_within_minutes,
+        has_artifacts=has_artifacts,
+        owner_user_id=str(owner_user_id) if owner_user_id else None,
     )
 
 
@@ -3658,9 +3785,21 @@ async def get_account_session_activity_timeline(
         ge=1,
         le=100,
         description=(
-            "Most recent model interactions merged into the timeline. The "
-            "console asks for the latest 50 when a session opens."
+            "Prompt turns when page_by_turn is true; otherwise recent model "
+            "interactions. The console requests 20 turns per page."
         ),
+    ),
+    page_by_turn: bool = Query(False, description="Page complete prompt turns."),
+    before: Optional[str] = Query(
+        None, max_length=64, description="Previous page's next_before cursor."
+    ),
+    after: Optional[str] = Query(
+        None, max_length=64, description="Previous page's next_after cursor."
+    ),
+    around: Optional[str] = Query(
+        None,
+        max_length=64,
+        description="Activity, usage or note id to center in the page.",
     ),
     operator_note_id: Optional[str] = Query(
         None,
@@ -3684,6 +3823,10 @@ async def get_account_session_activity_timeline(
             runtime_session_id=runtime_session_id,
             interaction_limit=limit,
             operator_note_id=operator_note_id,
+            page_by_turn=page_by_turn,
+            before=before,
+            after=after,
+            around=around,
         )
     )
 
@@ -3951,6 +4094,9 @@ async def get_account_runtime_session_gateway_events(
             "long session does not carry the whole conversation (#1689)."
         ),
     ),
+    around: str | None = Query(
+        None, max_length=64, description="Center on an activity, usage or note id."
+    ),
     before: str | None = Query(
         None,
         description=(
@@ -4000,6 +4146,19 @@ async def get_account_runtime_session_gateway_events(
         page_limit = (
             min(tail, 200) if tail else min(limit, 5000 if metadata_only else 100)
         )
+        page_offset = offset
+        if around and before is None:
+            try:
+                page_offset = crud_runtime_session_activity.gateway_offset_around(
+                    db,
+                    account_id=account.id,
+                    runtime_session_id=runtime_session_id,
+                    target=around,
+                    limit=page_limit,
+                    start_date=cutoff,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
         rows = crud_runtime_session_activity.list_model_gateway_calls_for_session(
             db,
             start_date=cutoff,
@@ -4007,7 +4166,7 @@ async def get_account_runtime_session_gateway_events(
             runtime_session_id=runtime_session_id,
             tail=tail,
             limit=limit,
-            offset=offset,
+            offset=page_offset,
             metadata_only=metadata_only,
             before=cursor,
             extra=1 if cursor is not None else 0,
@@ -4036,14 +4195,14 @@ async def get_account_runtime_session_gateway_events(
             has_more = cursor_has_more
             next_offset = None
         else:
-            next_offset = offset + len(events)
+            next_offset = page_offset + len(events)
             has_more = next_offset < total
         return {
             "source": "database",
             "logs": events,
             "pagination": {
                 "limit": page_limit,
-                "offset": offset if cursor is None else None,
+                "offset": page_offset if cursor is None else None,
                 "next_offset": next_offset if has_more else None,
                 # The oldest event on this page; pass it as `before`.
                 "next_cursor": str(rows[-1].id) if has_more and rows else None,

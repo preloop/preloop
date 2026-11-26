@@ -68,6 +68,10 @@ from preloop.services.runner_sessions import (
 from preloop.services.runner_workspace_credentials import (
     normalize_authorized_directories,
 )
+from preloop.services.herdr_inventory import (
+    record_herdr_inventory,
+    reconcile_cached_herdr_inventory,
+)
 from preloop.services.harness_inventory import (
     inventory_for_viewer,
     inventory_hash_known,
@@ -1034,7 +1038,9 @@ async def _deliver_session_messages(
     """Send pending remote session frames, enforcing the kill switch first."""
     if flows_or_tools_halted(db, runner.account_id):
         end_sessions_for_kill_switch(db, runner.account_id)
-    messages = pending_runner_messages(db, runner)
+    from preloop.services.herdr_commands import pending_messages
+
+    messages = pending_runner_messages(db, runner) + pending_messages(db, runner)
     release_transaction(db)
     for message in messages:
         await websocket.send_json(message)
@@ -1306,6 +1312,16 @@ async def runner_ws(
                     inventory_wanted = not inventory_hash_known(
                         runner, raw.get("harness_inventory_hash")
                     )
+                if "herdr_inventory" in raw:
+                    inventory_changed = (
+                        record_herdr_inventory(db, runner, raw["herdr_inventory"])
+                        or inventory_changed
+                    )
+                else:
+                    inventory_changed = (
+                        reconcile_cached_herdr_inventory(db, runner)
+                        or inventory_changed
+                    )
                 # Busy means no free slot, not "holds a job": a runner with
                 # spare capacity must stay dispatchable while it works.
                 crud_flow_runner.touch_heartbeat(
@@ -1376,6 +1392,13 @@ async def runner_ws(
                 release_transaction(db)
                 await websocket.send_json(reply)
                 await _deliver_session_messages(db, websocket, runner)
+                continue
+
+            if msg_type == "herdr_prompt_result":
+                from preloop.services.herdr_commands import apply_result
+
+                apply_result(db, runner, raw)
+                await websocket.send_json({"type": "ack"})
                 continue
 
             if msg_type in RUNNER_SESSION_MESSAGE_TYPES:

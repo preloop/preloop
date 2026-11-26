@@ -152,6 +152,7 @@ class RuntimeSessionExplorerService:
         active_within_minutes: Optional[int] = None,
         has_artifacts: Optional[str] = None,
         owner_user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> AccountRuntimeSessionListResponse:
         principals, source_types = self._resolve_agent_filters(
             account=account,
@@ -191,6 +192,7 @@ class RuntimeSessionExplorerService:
                 else None
             ),
             has_artifacts=has_artifacts,
+            workspace_id=workspace_id,
         )
         raw_items = results["items"]
         self.schedule_missing_session_titles(
@@ -458,6 +460,14 @@ class RuntimeSessionExplorerService:
         pending = {str(key): int(value or 0) for key, value in rows}
         for item in items:
             item.pending_approval_count = pending.get(item.id, 0)
+            if (
+                item.pending_approval_count
+                and item.terminal_location
+                and item.terminal_location.pane_closed_at
+                and item.ended_at is None
+            ):
+                item.is_active_now = True
+                item.activity_status = "active_now"
 
     def _attach_artifact_counts(
         self,
@@ -687,6 +697,11 @@ class RuntimeSessionExplorerService:
         self._attach_tool_call_counts(
             account=account, items=[session], session_ids=[runtime_session_id]
         )
+        # Same pending-approval normalization as the list, so a closed pane
+        # with a pending approval reads the same in both views.
+        self._attach_pending_approval_counts(
+            account=account, items=[session], session_ids=[runtime_session_id]
+        )
         return AccountRuntimeSessionDetailResponse(
             period_start=start_date,
             period_end=end_date,
@@ -764,6 +779,10 @@ class RuntimeSessionExplorerService:
         runtime_session_id: str,
         interaction_limit: int = 100,
         operator_note_id: Optional[str] = None,
+        before: Optional[str] = None,
+        after: Optional[str] = None,
+        around: Optional[str] = None,
+        page_by_turn: bool = False,
     ) -> RuntimeSessionActivityListResponse:
         history_window = resolve_history_window(self.db, account=account)
         summary_row = crud_runtime_session.get_account_session_summary(
@@ -789,6 +808,23 @@ class RuntimeSessionExplorerService:
             end_date=end_date,
             history_window=history_window,
         )
+        page = None
+        if page_by_turn:
+            try:
+                page = crud_runtime_session_activity.list_timeline_turn_page(
+                    self.db,
+                    account_id=str(account.id),
+                    runtime_session_id=runtime_session_id,
+                    limit=interaction_limit,
+                    before=before,
+                    after=after,
+                    around=around or operator_note_id,
+                    start_date=history_window.cutoff,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            start_date = page["window_start"] or start_date
+            end_date = page["window_end"] or end_date
         flow_execution_id = summary_row.get("flow_execution_id")
         interactions = crud_gateway_usage_search_document.search_account_documents(
             self.db,
@@ -813,6 +849,7 @@ class RuntimeSessionExplorerService:
             summary_row=summary_row,
             interactions=interaction_items,
             operator_note_id=operator_note_id,
+            activity_rows=page["rows"] if page is not None else None,
         )
         cutoff = history_window.cutoff
         if cutoff is not None:
@@ -821,7 +858,14 @@ class RuntimeSessionExplorerService:
                 for item in items
                 if self._normalize_timestamp(item.timestamp) >= cutoff
             ]
-        return RuntimeSessionActivityListResponse(items=items)
+        return RuntimeSessionActivityListResponse(
+            items=items,
+            has_more=page["has_more"] if page else False,
+            next_before=page["next_before"] if page else None,
+            has_newer=page["has_newer"] if page else False,
+            next_after=page["next_after"] if page else None,
+            partial_turn=page["partial_turn"] if page else False,
+        )
 
     def get_account_session_summary_insight(
         self,
@@ -855,12 +899,15 @@ class RuntimeSessionExplorerService:
         risk_level = "high" if summary.failed_requests else "low"
         if summary.estimated_cost > 1 and risk_level == "low":
             risk_level = "medium"
-        highlights = [
-            f"{summary.total_requests} model request"
-            f"{'' if summary.total_requests == 1 else 's'}",
-            f"{summary.token_usage.total_tokens} total tokens",
-            f"${summary.estimated_cost:.4f} estimated spend",
-        ]
+        highlights = [f"{summary.token_usage.total_tokens} total tokens"]
+        if summary.total_requests is not None:
+            highlights.insert(
+                0,
+                f"{summary.total_requests} model request"
+                f"{'' if summary.total_requests == 1 else 's'}",
+            )
+        if summary.cost_is_known:
+            highlights.append(f"${summary.estimated_cost:.4f} estimated spend")
         if summary.latest_model_alias:
             highlights.append(f"Latest model: {summary.latest_model_alias}")
         return RuntimeSessionSummaryInsight(
@@ -1234,7 +1281,11 @@ class RuntimeSessionExplorerService:
             turn_ended_at=row.get("turn_ended_at"),
             turn_interrupted=row.get("turn_interrupted"),
             cwd=row.get("cwd"),
+            terminal_location=row.get("terminal_location"),
+            start_directory=row.get("start_directory"),
             total_requests=row["total_requests"],
+            usage_source=row.get("usage_source", "gateway"),
+            cost_is_known=row.get("cost_is_known", True),
             successful_requests=row["successful_requests"],
             failed_requests=row["failed_requests"],
             token_usage=GatewayTokenUsage.from_row(row),
@@ -1249,6 +1300,7 @@ class RuntimeSessionExplorerService:
         summary_row: dict,
         interactions,
         operator_note_id: Optional[str] = None,
+        activity_rows: Optional[list[Any]] = None,
     ) -> list[RuntimeSessionActivityItem]:
         items: list[RuntimeSessionActivityItem] = []
         interaction_api_usage_ids = {
@@ -1299,12 +1351,16 @@ class RuntimeSessionExplorerService:
         # History-free rows: a model call's replayed conversation is read
         # from the gateway-events endpoint, never from this timeline.
         activity_rows = (
-            crud_runtime_session_activity.list_timeline_rows_for_runtime_session(
-                self.db,
-                account_id=summary_row["account_id"],
-                runtime_session_id=summary_row["id"],
-                limit=100,
-                operator_note_id=operator_note_id,
+            activity_rows
+            if activity_rows is not None
+            else (
+                crud_runtime_session_activity.list_timeline_rows_for_runtime_session(
+                    self.db,
+                    account_id=summary_row["account_id"],
+                    runtime_session_id=summary_row["id"],
+                    limit=100,
+                    operator_note_id=operator_note_id,
+                )
             )
         )
         if activity_rows:

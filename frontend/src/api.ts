@@ -353,7 +353,10 @@ export function extractErrorMessage(
         typeof errorData.detail.message === 'string' &&
         errorData.detail.message.trim()
       ) {
-        return errorData.detail.message;
+        const resume = errorData.detail.resume_command;
+        return typeof resume === 'string' && resume
+          ? `${errorData.detail.message} Resume locally: ${resume}`
+          : errorData.detail.message;
       }
       return JSON.stringify(errorData.detail);
     }
@@ -1377,6 +1380,7 @@ export interface GatewayUsageSearchParams extends GatewayUsageSummaryParams {
 }
 
 export interface RuntimeSessionListParams extends GatewayUsageSummaryParams {
+  workspaceId?: string;
   sort?: 'last_activity' | 'started' | 'cost' | 'requests';
   query?: string;
   sessionSourceType?: string;
@@ -1502,6 +1506,7 @@ function buildRuntimeSessionListQuery(
   if (params.status) {
     queryParams.set('status', params.status);
   }
+  if (params.workspaceId) queryParams.set('workspace_id', params.workspaceId);
   if (params.hasArtifacts) {
     queryParams.set('has_artifacts', params.hasArtifacts);
   }
@@ -2615,8 +2620,16 @@ export async function getAccountGatewayUsageSearch(
 export async function getAccountRuntimeSessions(
   params: RuntimeSessionListParams = {}
 ): Promise<AccountRuntimeSessionListResponse> {
+  const { query, ...filters } = params;
   const response = await fetchWithAuth(
-    `${REST_API_PREFIX}/runtime-sessions${buildRuntimeSessionListQuery(params)}`
+    `${REST_API_PREFIX}/runtime-sessions${buildRuntimeSessionListQuery(filters)}`,
+    query
+      ? {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+        }
+      : undefined
   );
   if (!response.ok) {
     throw new Error('Failed to fetch sessions');
@@ -2909,6 +2922,35 @@ export async function replaceManagedAgentModelBindings(
   return response.json();
 }
 
+export async function getAgentControlCommandStatus(
+  agentId: string,
+  commandId: string
+): Promise<{
+  runtime_session_id?: string | null;
+  terminal: boolean;
+  delivery_state: string;
+  last_error?: string | null;
+}> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/commands/${encodeURIComponent(commandId)}`
+  );
+  if (!response.ok) throw new Error('Could not confirm command delivery');
+  return response.json();
+}
+
+export async function getAgentWorkingDirectories(
+  agentId: string
+): Promise<string[]> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/directories`
+  );
+  if (!response.ok) return [];
+  const data: unknown = await response.json();
+  return Array.isArray(data)
+    ? data.filter((value): value is string => typeof value === 'string')
+    : [];
+}
+
 export async function sendAgentControlCommand(
   agentId: string,
   payload: AgentControlCommandRequest,
@@ -2924,40 +2966,6 @@ export async function sendAgentControlCommand(
 
   if (response.ok) {
     return response.json().catch(() => ({}));
-  }
-
-  // Older backends only accept { message, metadata }. If the new shape is
-  // rejected, retry once with session targeting folded into metadata.
-  if (
-    (response.status === 400 || response.status === 422) &&
-    (payload.target_session_id || payload.session_mode)
-  ) {
-    const legacyResponse = await fetchWithAuth(url, {
-      signal,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: payload.message,
-        metadata: {
-          ...(payload.metadata || {}),
-          target_session_id: payload.target_session_id ?? null,
-          session_mode: payload.session_mode ?? null,
-          start_new_session: payload.start_new_session ?? false,
-        },
-      }),
-    });
-
-    if (legacyResponse.ok) {
-      return legacyResponse.json().catch(() => ({}));
-    }
-
-    const legacyErrorData = await legacyResponse.json().catch(() => ({}));
-    throw new Error(
-      extractErrorMessage(
-        legacyErrorData,
-        'Failed to send Agent Control command'
-      )
-    );
   }
 
   const errorData = await response.json().catch(() => ({}));
@@ -3320,16 +3328,26 @@ export async function getAccountRuntimeSessionInteractions(
  * Model turns merged into a session's activity timeline when it opens: the
  * latest ones. A busy session's full set was a megabyte (#1586).
  */
-export const SESSION_ACTIVITY_TURNS = 50;
+export const SESSION_ACTIVITY_TURNS = 20;
 
 export async function getAccountRuntimeSessionActivityTimeline(
   runtimeSessionId: string,
-  options: { limit?: number; operatorNoteId?: string | null } = {}
+  options: {
+    limit?: number;
+    operatorNoteId?: string | null;
+    around?: string | null;
+    before?: string | null;
+    after?: string | null;
+  } = {}
 ): Promise<RuntimeSessionActivityListResponse> {
   const query = new URLSearchParams({
     limit: String(options.limit ?? SESSION_ACTIVITY_TURNS),
+    page_by_turn: 'true',
   });
-  // A linked note older than the recent page rides along, so the link lands.
+  if (options.around) query.set('around', options.around);
+  if (options.before) query.set('before', options.before);
+  if (options.after) query.set('after', options.after);
+  // Older callers can still name a delivered note directly.
   if (options.operatorNoteId) {
     query.set('operator_note_id', options.operatorNoteId);
   }
@@ -3753,6 +3771,7 @@ export async function getRuntimeSessionGatewayEvents(
          * not shift when new events land at the head, as an offset does.
          */
         before?: string;
+        around?: string | null;
         metadataOnly?: boolean;
         /**
          * `delta` leaves out history an older event on the same page already
@@ -3779,6 +3798,7 @@ export async function getRuntimeSessionGatewayEvents(
     if (options.offset !== undefined)
       searchParams.set('offset', String(options.offset));
     if (options.before) searchParams.set('before', options.before);
+    if (options.around) searchParams.set('around', options.around);
     if (options.metadataOnly) searchParams.set('metadata_only', 'true');
     if (options.history === 'delta') searchParams.set('history', 'delta');
     if (options.historyWindow !== undefined)
@@ -6136,6 +6156,29 @@ export interface HarnessInventory {
   generated_at: string;
   hash: string;
   entries: HarnessInventoryEntry[];
+  herdr?: {
+    protocol: number;
+    observe_enabled: boolean;
+    prompt_enabled: boolean;
+    observed_at: string;
+    status?: string;
+    agents: Array<{
+      harness_kind: string;
+      harness_session_id: string;
+      cwd?: string | null;
+      multiplexer: 'herdr';
+      workspace_id: string;
+      workspace_label: string | null;
+      tab_id: string;
+      tab_label: string | null;
+      pane_id: string;
+      terminal_title: string | null;
+      pane_label?: string | null;
+      state: string;
+      runtime_session_id: string | null;
+      managed: boolean;
+    }>;
+  } | null;
 }
 
 /** One model a harness can run, with how many eligible runners list it. */
@@ -6477,6 +6520,12 @@ export interface RuntimeSessionControl {
     | 'no_control_plugin'
     | 'control_offline'
     | 'terminal_session'
+    | 'turn_in_progress'
+    | 'agent_blocked'
+    | 'herdr_unavailable'
+    | 'session_owner_unknown'
+    | 'session_directory_unknown'
+    | 'session_unavailable'
     | 'runner_away'
     | null;
   reason: string | null;
@@ -10085,6 +10134,43 @@ export async function registerAzureDevOpsWebhook(
     throw await azureDevOpsWebhookError(
       response,
       'Failed to register the Azure DevOps service hooks'
+    );
+  }
+  return response.json();
+}
+
+export interface RefinalizePreview {
+  selected_result?: unknown;
+  eligible: boolean;
+  digest: string;
+  gates: Record<string, { passed: boolean; reason?: string }>;
+  publication?: { would_publish?: boolean; reason?: string };
+  refinalization?: { at: string; user_name: string };
+}
+
+/** Preview by default; applying pins the exact reviewed stored state. */
+export async function refinalizeExecution(
+  executionId: string,
+  digest?: string
+): Promise<RefinalizePreview> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/flows/executions/${encodeURIComponent(executionId)}/refinalize`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        dry_run: !digest,
+        ...(digest ? { expected_digest: digest } : {}),
+      }),
+    }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(
+      body.detail?.message ||
+        (typeof body.detail === 'string'
+          ? body.detail
+          : 'The saved review could not be re-finalized. Preview again.')
     );
   }
   return response.json();

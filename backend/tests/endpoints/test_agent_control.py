@@ -190,7 +190,7 @@ def test_agent_control_ws_connects_and_updates_presence(client, db_session, test
         assert refreshed_session is not None
         assert refreshed_agent.runtime_session_id == runtime_session.id
         assert refreshed_agent.last_seen_at > old_seen_at.replace(tzinfo=None)
-        assert refreshed_session.last_activity_at > old_seen_at.replace(tzinfo=None)
+        assert refreshed_session.last_activity_at == old_seen_at.replace(tzinfo=None)
 
 
 def test_agent_control_ws_runtime_token_can_reconnect(client, db_session, test_user):
@@ -1022,6 +1022,11 @@ def test_agent_control_existing_session_envelope_includes_native_ids(
         runtime_principal_name="Claude Code",
         started_at=datetime.now(UTC),
         last_activity_at=datetime.now(UTC),
+    )
+    managed_agent.control_last_heartbeat_at = datetime.now(UTC)
+    managed_agent.control_reachable_session_ids = ["ses_native_abc123"]
+    crud_runtime_session.record_start_directory(
+        db_session, session=native_session, cwd="/tmp/example", control_owned=True
     )
     db_session.commit()
 

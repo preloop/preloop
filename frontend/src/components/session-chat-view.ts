@@ -329,6 +329,12 @@ export class SessionChatView extends LitElement {
   followLive = false;
 
   @property({ type: String })
+  focusTurnId: string | null = null;
+
+  private landedFocusId: string | null = null;
+  private focusTimer: number | null = null;
+
+  @property({ type: String })
   emptyText = 'No conversation captured for this session yet.';
 
   /**
@@ -703,6 +709,13 @@ export class SessionChatView extends LitElement {
     .artifact-item {
       margin: 0.25rem 0;
     }
+    [data-focus-id] {
+      scroll-margin-top: 80px;
+    }
+    .jump-highlight {
+      outline: 3px solid var(--sl-color-primary-300);
+      outline-offset: 1px;
+    }
     .turn {
       display: flex;
       flex-direction: column;
@@ -856,6 +869,48 @@ export class SessionChatView extends LitElement {
 
   updated(changed: PropertyValues<this>): void {
     this.bindThread();
+    if (changed.has('focusTurnId') || changed.has('sessionId'))
+      this.landedFocusId = null;
+    if (this.focusTurnId && this.landedFocusId !== this.focusTurnId) {
+      const row = [
+        ...this.renderRoot.querySelectorAll<HTMLElement>('[data-focus-id]'),
+      ].find(
+        (node) =>
+          node.dataset.focusId === this.focusTurnId ||
+          node.dataset.usageId === this.focusTurnId ||
+          node.dataset.noteId === this.focusTurnId
+      );
+      if (row) {
+        this.landedFocusId = this.focusTurnId;
+        this.renderRoot
+          .querySelectorAll('.jump-highlight')
+          .forEach((node) => node.classList.remove('jump-highlight'));
+        const disclosure = row.closest('sl-details') as
+          | (HTMLElement & {
+              open: boolean;
+              updateComplete: Promise<boolean>;
+              show: () => Promise<void>;
+            })
+          | null;
+        const focusId = this.focusTurnId;
+        const land = () => {
+          if (!row.isConnected || this.focusTurnId !== focusId) return;
+          row.scrollIntoView({ block: 'start', behavior: 'instant' });
+          row.classList.add('jump-highlight');
+          if (this.focusTimer !== null) window.clearTimeout(this.focusTimer);
+          this.focusTimer = window.setTimeout(
+            () => row.classList.remove('jump-highlight'),
+            2000
+          );
+        };
+        if (disclosure && !disclosure.open)
+          void disclosure.updateComplete
+            .then(() => disclosure.show())
+            .then(land);
+        else land();
+      }
+    }
+    if (this.focusTurnId) return;
     // A turn the operator just typed always pulls the thread down: they are
     // looking at what they sent.
     const pendingGrew = this.pending.length > this.lastScrolledPendingCount;
@@ -884,6 +939,7 @@ export class SessionChatView extends LitElement {
   }
 
   disconnectedCallback(): void {
+    if (this.focusTimer !== null) window.clearTimeout(this.focusTimer);
     this.removeEventListener('keydown', this.markGesture);
     window.removeEventListener('pointerup', this.handlePointerUp);
     window.removeEventListener('pointercancel', this.handlePointerUp);
@@ -1116,7 +1172,9 @@ export class SessionChatView extends LitElement {
         ? 'user'
         : item.kind === 'operator'
           ? 'operator'
-          : 'agent';
+          : item.kind === 'tool_output'
+            ? 'tool-output'
+            : 'agent';
     const displayText = item.text
       ? item.text
       : item.redacted
@@ -1126,6 +1184,9 @@ export class SessionChatView extends LitElement {
       <div
         class="bubble ${bubbleClass} ${item.failed ? 'failed' : ''}"
         data-kind=${item.kind}
+        data-focus-id=${item.activityId || item.event?.id || nothing}
+        data-usage-id=${item.event?.payload?.api_usage_id || nothing}
+        data-note-id=${item.note?.noteId || nothing}
         data-recording-activity=${recordingId ?? nothing}
       >
         <div class="bubble-meta">
@@ -1133,11 +1194,13 @@ export class SessionChatView extends LitElement {
             ${
               item.kind === 'user_prompt'
                 ? 'You'
-                : item.note
-                  ? noteRoleLabel(item.note)
-                  : item.kind === 'operator'
-                    ? 'Operator'
-                    : 'Agent'
+                : item.kind === 'tool_output'
+                  ? item.originLabel || 'Tool output'
+                  : item.note
+                    ? noteRoleLabel(item.note)
+                    : item.kind === 'operator'
+                      ? 'Operator'
+                      : 'Agent'
             }
           </span>
           <span>${this.formatTime(item.timestamp)}</span>
@@ -1214,7 +1277,10 @@ export class SessionChatView extends LitElement {
         ? 'Content redacted by capture policy.'
         : '';
     return html`
-      <div class="step step-kind-${step.kind}">
+      <div
+        class="step step-kind-${step.kind}"
+        data-focus-id=${step.activityId || nothing}
+      >
         <div class="step-header">
           <span class="step-label">${step.label}</span>
           ${
@@ -1444,7 +1510,10 @@ ${
         this.activity,
         item.mergedKeys
       );
-      return html`<div data-recording-activity=${activityId ?? nothing}>
+      return html`<div
+        data-recording-activity=${activityId ?? nothing}
+        data-focus-id=${activityId ?? nothing}
+      >
         ${recordingCue(this, activityId, this.recordingSync, this.recordingEnabled)}<session-tool-card
           .row=${item}
         ></session-tool-card>
@@ -1487,7 +1556,14 @@ ${
       >
       ${context.map(
         (item) =>
-          html`<pre class="step-text" data-role=${item.role}>${item.text}</pre>`
+          html`<pre
+            class="step-text"
+            data-role=${item.role}
+            data-focus-id=${item.activityId || item.event?.id || nothing}
+            data-usage-id=${item.event?.payload?.api_usage_id || nothing}
+            data-note-id=${item.note?.noteId || nothing}
+          >
+${item.text}</pre>`
       )}
     </sl-details>`;
   }
@@ -1529,9 +1605,13 @@ ${
           <span class="bubble-role">You</span>
           <span>${this.formatTime(message.at)}</span>
           ${
-            message.state === 'sending'
-              ? html`<sl-badge variant="neutral" pill>Sending</sl-badge>`
-              : nothing
+            message.state === 'sent' &&
+            message.startNewSession &&
+            !message.targetSessionId
+              ? html`<sl-badge variant="neutral" pill>Starting</sl-badge>`
+              : message.state === 'sending'
+                ? html`<sl-badge variant="neutral" pill>Sending</sl-badge>`
+                : nothing
           }
           ${
             message.state === 'failed'
@@ -1544,7 +1624,7 @@ ${
                   variant="neutral"
                   pill
                   data-testid="pending-note-state"
-                  >Waiting for the agent</sl-badge
+                  >Delivers at the agent’s next step</sl-badge
                 >`
               : nothing
           }
