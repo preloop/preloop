@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -165,5 +168,23 @@ func TestHookExecutableClassification(t *testing.T) {
 		if got.Executable != tc.executable || got.PreloopManaged != tc.managed {
 			t.Fatalf("classification: %+v", got)
 		}
+	}
+}
+
+func TestExtensionDetailsBoundEmptyDirectoryWalk(t *testing.T) {
+	home := extensionHome(t)
+	scan := &extensionScan{home: home, errors: map[string]bool{}}
+	for parent := 0; parent < 16; parent++ {
+		for child := 0; child < 160; child++ {
+			if err := os.MkdirAll(filepath.Join(home, fmt.Sprintf("group-%02d/empty-%03d", parent, child)), 0700); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	root := scan.open(home)
+	defer root.root.Close()
+	root.fileList(".")
+	if !scan.errors["extension_limit"] {
+		t.Fatal("empty directory traversal was not bounded")
 	}
 }
