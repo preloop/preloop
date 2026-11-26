@@ -358,7 +358,14 @@ export class ExtensionInventory extends LitElement {
         align-items: center;
         margin-top: 16px;
       }
+      .how-narrow {
+        display: none;
+      }
       @media (max-width: 640px) {
+        .how-narrow {
+          display: block;
+          flex-basis: 100%;
+        }
         thead {
           display: none;
         }
@@ -878,6 +885,8 @@ export class ExtensionInventory extends LitElement {
         }</span
       >
       ${this.coverageStatus()}
+      <!-- The table heading is hidden on narrow screens; keep the help reachable. -->
+      <div class="how-narrow">${this.howApprovalsWork()}</div>
     </div>`;
   }
 

@@ -123,7 +123,15 @@ describe('extension inventory', () => {
         const root = element.shadowRoot!;
         // The standing caveats live beside the Approval heading, not above
         // the table.
-        const how = root.querySelector('th.approval-heading details.how')!;
+        const how = {
+          textContent: root
+            .querySelector('th.approval-heading details.how')!
+            .textContent!.replace(/\s+/g, ' '),
+          hasAttribute: (name: string): boolean =>
+            root
+              .querySelector('th.approval-heading details.how')!
+              .hasAttribute(name),
+        };
         expect(how.textContent).to.contain('does not disable or block');
         expect(how.textContent).to.contain('does not check versions');
         expect(how.textContent).to.contain(
@@ -131,9 +139,11 @@ describe('extension inventory', () => {
         );
         expect(how.textContent).to.contain('whole account');
         expect(how.hasAttribute('open')).to.equal(false);
-        expect(root.querySelector('.summary')!.textContent).not.to.contain(
+        expect(root.querySelector('.summary-text')!.textContent).not.to.contain(
           'block'
         );
+        // Narrow screens hide the table heading; a copy stays reachable there.
+        expect(root.querySelector('.how-narrow details.how')).to.exist;
         expect(
           root.querySelector('td[data-label="Approval"]')!.textContent
         ).to.contain('2.*');
@@ -291,9 +301,9 @@ describe('extension inventory', () => {
     );
     expect(root.querySelector('tbody')?.textContent).to.contain('Project');
     expect(root.querySelector('tbody sl-select')).to.equal(null);
-    expect(root.querySelector('details.how')!.textContent).to.contain(
-      'does not show what an agent loaded or ran'
-    );
+    expect(
+      root.querySelector('details.how')!.textContent!.replace(/\s+/g, ' ')
+    ).to.contain('does not show what an agent loaded or ran');
   });
 
   // protects=account decisions; fails_when=select does not persist and reload;
