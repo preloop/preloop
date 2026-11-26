@@ -164,3 +164,91 @@ class TestSensitiveFieldNames:
             "client_secret",
         }
         assert expected.issubset(SENSITIVE_FIELD_NAMES)
+
+
+class TestRedactAgentConfig:
+    """Tests for redact_agent_config, used on stored agent enrollment JSON."""
+
+    PROVIDER_KEY = "sk-ant-" + "api03-Example0123456789abcdefghij"
+    AGENT_KEY = "agt_" + "Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8L9z0X1c"
+
+    def test_redacts_env_style_and_nested_sensitive_keys(self) -> None:
+        from preloop.utils.redaction import CONFIG_REDACTED, redact_agent_config
+
+        result = redact_agent_config(
+            {
+                "env": {
+                    "ANTHROPIC_API_KEY": "plain-value",
+                    "ANTHROPIC_AUTH_TOKEN": "plain-value",
+                    "CLAUDE_CODE_OAUTH_TOKEN": "plain-value",
+                    "AWS_SECRET_ACCESS_KEY": "plain-value",
+                    "AWS_SESSION_TOKEN": "plain-value",
+                    "ANTHROPIC_MODEL": "example-model",
+                },
+                "experimental_bearer_token": "plain-value",
+                "headers": {"Authorization": "Basic abc", "X-Api-Key": "plain"},
+                "token": "plain-value",
+                "apiKey": "plain-value",
+                "secrets": {"nested": ["plain-value", 5]},
+                "db_password": "plain-value",
+            }
+        )
+
+        assert "plain" not in str(result)
+        assert result["env"]["ANTHROPIC_MODEL"] == "example-model"
+        assert result["env"]["AWS_SESSION_TOKEN"] == CONFIG_REDACTED
+        assert result["token"] == CONFIG_REDACTED
+        assert result["secrets"] == {"nested": [CONFIG_REDACTED, 5]}
+
+    def test_redacts_secret_looking_values_under_any_key(self) -> None:
+        from preloop.utils.redaction import CONFIG_REDACTED, redact_agent_config
+
+        result = redact_agent_config(
+            {
+                "args": ["--header", f"Authorization: Bearer {self.AGENT_KEY}"],
+                "note": self.PROVIDER_KEY,
+                "other": "sk-" + "A" * 24,
+                "inline": "Bearer abcDEF123456",
+                "value": self.AGENT_KEY,
+            }
+        )
+
+        assert self.AGENT_KEY not in str(result)
+        assert self.PROVIDER_KEY not in str(result)
+        assert result["note"] == CONFIG_REDACTED
+        assert result["other"] == CONFIG_REDACTED
+        assert result["inline"] == CONFIG_REDACTED
+        assert result["value"] == CONFIG_REDACTED
+        assert result["args"][0] == "--header"
+
+    def test_keeps_placeholders_flags_and_references(self) -> None:
+        from preloop.utils.redaction import redact_agent_config
+
+        data = {
+            "manual_apply": {
+                "env": {"ANTHROPIC_API_KEY": "<AGENT_KEY>"},
+                "headers": {"Authorization": "Bearer <AGENT_KEY>"},
+                "hint": {"api_key": "<AGENT_KEY_LAST_20>", "token": "<redacted>"},
+                "limitations": ["Uses bearer authentication for the MCP server."],
+                "remove": ["env.ANTHROPIC_AUTH_TOKEN"],
+            },
+            "control_bearer_token_ok": True,
+            "gateway_api_key_configured": False,
+            "token": None,
+            "max_tokens": 4096,
+            "bearer_token_env_var": "PRELOOP_AGENT_KEY",
+            "credentials_secret_id": "00000000-0000-0000-0000-000000000001",
+            "api_key": "",
+            "tokenizer": "example",
+        }
+
+        assert redact_agent_config(data) == data
+
+    def test_is_idempotent_and_does_not_mutate(self) -> None:
+        from preloop.utils.redaction import redact_agent_config
+
+        data = {"env": {"ANTHROPIC_API_KEY": self.PROVIDER_KEY}}
+        once = redact_agent_config(data)
+
+        assert redact_agent_config(once) == once
+        assert data["env"]["ANTHROPIC_API_KEY"] == self.PROVIDER_KEY

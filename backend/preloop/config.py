@@ -1405,6 +1405,17 @@ class Settings(BaseSettings):
             "(WORKSPACE_SNAPSHOT_TTL_HOURS)."
         ),
     )
+    preloop_pending_enrollment_ttl_hours: int = Field(
+        72,
+        ge=1,
+        description=(
+            "How long a managed-agent enrollment may wait in "
+            "pending_local_config (onboarding printed the config change for "
+            "the user to apply by hand) before the hourly sweep expires it "
+            "and removes what that onboarding created, in hours "
+            "(PRELOOP_PENDING_ENROLLMENT_TTL_HOURS)."
+        ),
+    )
     cost_digest_enabled: bool = Field(
         True,
         description=(
