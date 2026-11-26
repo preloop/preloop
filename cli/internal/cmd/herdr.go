@@ -159,6 +159,9 @@ func (p *herdrPublisher) addToHeartbeat(msg map[string]any) {
 			r.Status = herdr.ErrUnsupported.Error()
 		} else if e != nil {
 			return
+		} else {
+			// Re-arm so the next downgrade is reported again.
+			p.unsupported = false
 		}
 		r.ObserveEnabled = s.Observe
 		r.PromptEnabled = s.Prompt

@@ -408,10 +408,11 @@ func writeSessionsTable(out io.Writer, rows []runtimeSessionRow, titles []string
 		if wide {
 			place := ""
 			if row.TerminalLocation != nil {
-				place = row.TerminalLocation.WorkspaceLabel + " / " + row.TerminalLocation.TabLabel
-				if row.TerminalLocation.PaneLabel != "" {
-					place += " / " + row.TerminalLocation.PaneLabel
-				}
+				place = joinNonEmpty(" / ",
+					row.TerminalLocation.WorkspaceLabel,
+					row.TerminalLocation.TabLabel,
+					row.TerminalLocation.PaneLabel,
+				)
 			}
 			columns = append(columns, dashIfEmpty(sessionKind(row)), dashIfEmpty(place))
 		}
@@ -624,4 +625,15 @@ func explainSessionsListError(err error) error {
 		reason = fmt.Sprintf("the server answered with status %d", apiErr.StatusCode)
 	}
 	return fmt.Errorf("the session list failed: %s", reason)
+}
+
+// joinNonEmpty joins the non-empty parts with sep.
+func joinNonEmpty(sep string, parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != "" {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, sep)
 }

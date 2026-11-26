@@ -697,6 +697,11 @@ class RuntimeSessionExplorerService:
         self._attach_tool_call_counts(
             account=account, items=[session], session_ids=[runtime_session_id]
         )
+        # Same pending-approval normalization as the list, so a closed pane
+        # with a pending approval reads the same in both views.
+        self._attach_pending_approval_counts(
+            account=account, items=[session], session_ids=[runtime_session_id]
+        )
         return AccountRuntimeSessionDetailResponse(
             period_start=start_date,
             period_end=end_date,

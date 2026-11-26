@@ -78,6 +78,14 @@ func TestHerdrPublisherChangesOnly(t *testing.T) {
 	if len(poll()) != 0 {
 		t.Fatal("unsupported repeated")
 	}
+	os.WriteFile(snapshotPath, b, 0600)
+	if len(poll()) != 1 {
+		t.Fatal("recovered snapshot not sent")
+	}
+	os.WriteFile(snapshotPath, []byte(`{"protocol":99}`), 0600)
+	if m = poll(); m["herdr_inventory"] == nil || m["herdr_inventory"].(herdr.Report).Status != "herdr_protocol_unsupported" {
+		t.Fatal("second downgrade not reported", m)
+	}
 	if e := herdr.SaveSettings(dir, herdr.Settings{}); e != nil {
 		t.Fatal(e)
 	}
