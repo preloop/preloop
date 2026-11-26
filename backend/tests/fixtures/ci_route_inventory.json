@@ -212,7 +212,7 @@
   "GET /api/v1/flows/harness-options": "deny",
   "GET /api/v1/flows/presets": "deny",
   "GET /api/v1/flows/summary": "deny",
-  "GET /api/v1/flows/{flow_id}": "deny",
+  "GET /api/v1/flows/{flow_id}": "flow:trigger",
   "GET /api/v1/flows/{flow_id}/gateway-usage/summary": "deny",
   "GET /api/v1/health": "deny",
   "GET /api/v1/health/plugins": "deny",

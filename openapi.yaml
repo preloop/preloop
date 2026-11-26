@@ -21289,7 +21289,11 @@ paths:
 
         The ``ETag`` header carries the flow''s configuration revision; send it
 
-        back as ``If-Match`` to make a later write or trigger conditional.'
+        back as ``If-Match`` to make a later write or trigger conditional.
+
+        A restricted CI identity with ``flow:trigger`` receives only the id and
+
+        executor eligibility of its bound flow; all human configuration is omitted.'
       operationId: read_flow_api_v1_flows__flow_id__get
       security:
       - bearerAuth: []
@@ -21307,7 +21311,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FlowResponse'
+                anyOf:
+                - $ref: '#/components/schemas/FlowResponse'
+                - $ref: '#/components/schemas/CiFlowPreflightRead'
+                title: Response Read Flow Api V1 Flows  Flow Id  Get
         '422':
           description: Validation Error
           content:
@@ -21320,7 +21327,7 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
-      x-restricted-ci: deny
+      x-restricted-ci: flow:trigger
     put:
       tags:
       - Flows
@@ -29488,6 +29495,15 @@ components:
             credentials, which only authorize their owner's interactive traffic and
             must never be auto-selected as a default.
           default: false
+        executor_eligibility:
+          additionalProperties:
+            $ref: '#/components/schemas/ExecutorEligibility'
+          type: object
+          title: Executor Eligibility
+          description: 'Credential identity compatibility for the caller: hosted and
+            private_runner_container describe their own flows; private_runner_host
+            and interactive_agent require their authorized agent login. Does not probe
+            provider health, budgets or runner availability.'
         is_built_in:
           type: boolean
           title: Is Built In
@@ -36766,6 +36782,21 @@ components:
       - tool_evidence
       title: CiExecutionResultResponse
       description: Restricted result envelope, including independent completion facts.
+    CiFlowPreflightRead:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        executor_eligibility:
+          $ref: '#/components/schemas/ExecutorEligibility'
+      type: object
+      required:
+      - id
+      - executor_eligibility
+      title: CiFlowPreflightRead
+      description: Only execution compatibility for a restricted identity's bound
+        flow.
     CiGrant:
       properties:
         version:
@@ -40837,6 +40868,28 @@ components:
       type: object
       title: ExecutionUpstreamRoute
       description: Which upstream providers served an OpenRouter-routed execution.
+    ExecutorEligibility:
+      properties:
+        eligible:
+          type: boolean
+          title: Eligible
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+          description: Stable denial code when ineligible
+        message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message
+          description: Safe remediation or execution prerequisite
+      type: object
+      required:
+      - eligible
+      title: ExecutorEligibility
+      description: Credential compatibility, separate from runtime health and availability.
     ExtensionAggregate:
       properties:
         agent_kind:
@@ -43776,6 +43829,10 @@ components:
           - type: string
           - type: 'null'
           title: Id
+        executor_eligibility:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutorEligibility'
+          - type: 'null'
         config_warnings:
           items:
             $ref: '#/components/schemas/FlowConfigWarning'

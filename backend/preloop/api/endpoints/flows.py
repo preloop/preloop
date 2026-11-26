@@ -31,6 +31,7 @@ from preloop.api.flow_preconditions import (
 )
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.api.traffic_attribution import set_reason_code
+from preloop.models.schemas.flow import CiFlowPreflightRead
 from preloop.models.schemas.flow_revision import FlowRevisionMismatchError
 from preloop.cra.evidence_pack import (
     EvidenceMemberError,
@@ -645,8 +646,12 @@ def _with_config_warnings(db: Session, flow: Any, *, account_id: Any) -> Any:
         The same flow with ``config_warnings`` set.
     """
     from preloop.services.flow_config_warnings import flow_config_warnings
+    from preloop.services.model_executor_eligibility import flow_executor_eligibility
 
-    flow.config_warnings = flow_config_warnings(db, flow, account_id=account_id)
+    flow.executor_eligibility = flow_executor_eligibility(db, flow)
+    flow.config_warnings = flow_config_warnings(
+        db, flow, account_id=account_id, executor_eligibility=flow.executor_eligibility
+    )
     return flow
 
 
@@ -4194,20 +4199,46 @@ async def retry_flow_execution(
     return result
 
 
-@router.get("/flows/{flow_id}", response_model=schemas.FlowResponse)
-@require_permission("view_flows")
+@router.get(
+    "/flows/{flow_id}", response_model=schemas.FlowResponse | CiFlowPreflightRead
+)
+@require_permission("view_flows", ci_action=CiAction.TRIGGER)
 def read_flow(
     *,
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
     response: Response = None,  # type: ignore[assignment]
-):
+) -> models.Flow | CiFlowPreflightRead:
     """Get flow by ID.
 
     The ``ETag`` header carries the flow's configuration revision; send it
     back as ``If-Match`` to make a later write or trigger conditional.
+    A restricted CI identity with ``flow:trigger`` receives only the id and
+    executor eligibility of its bound flow; all human configuration is omitted.
     """
+    if isinstance(current_user, CiAuthorizationContext):
+        from preloop.models.crud import crud_ci_principal
+        from preloop.services.ci_execution import _review_flow
+        from preloop.services.model_executor_eligibility import (
+            flow_executor_eligibility,
+        )
+
+        if flow_id != current_user.flow_id:
+            raise HTTPException(403, "Restricted CI flow denied")
+        try:
+            crud_ci_principal.authorize(
+                db, context=current_user, action=CiAction.TRIGGER
+            )
+            flow = _review_flow(db, current_user)
+        except PermissionError:
+            raise HTTPException(403, "Restricted CI flow denied") from None
+        except FlowHaltActiveError:
+            raise _halted_response() from None
+        set_flow_etag(response, getattr(flow, "config_revision", None))
+        return CiFlowPreflightRead(
+            id=flow.id, executor_eligibility=flow_executor_eligibility(db, flow)
+        )
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow or not filter_viewable(db, current_user, VISIBLE_FLOW, [flow]):
         raise HTTPException(status_code=404, detail="Flow not found")

@@ -214,7 +214,14 @@ export interface Flow {
   [key: string]: unknown;
 }
 
+export interface ExecutorEligibility {
+  eligible: boolean;
+  reason?: string | null;
+  message?: string | null;
+}
+
 export interface AIModel {
+  executor_eligibility?: Record<string, ExecutorEligibility>;
   model_parameters?: Record<string, unknown> | null;
   /** Recipient projections are owned and edited by the sharing account. */
   is_shared?: boolean;

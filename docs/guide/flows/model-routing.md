@@ -110,6 +110,46 @@ rule targets, eval matrix entries, hosted execution, or native session resume.
 The runner must independently support the native profile. Empty routing rule
 sets behave like absent routing configuration.
 
+## Check before triggering
+
+`GET /api/v1/flows/{id}` returns `executor_eligibility` for the saved default
+selection and includes any denial in `config_warnings`. It runs the same
+principal compatibility check used by trigger preflight, using the flow's
+creator rather than the person reading or triggering it. An owner can therefore
+have an eligible flow while a different user's model read reports their own
+hosted flows as ineligible. Saves remain non-blocking; the trigger still refuses
+an incompatible selection before clone and launch.
+
+```json
+{
+  "executor_eligibility": {
+    "eligible": false,
+    "reason": "subscription_flow_opt_in_required",
+    "message": "The subscription owner must enable Use from my flows on this model."
+  }
+}
+```
+
+For subscription registrations, the owner enables **Use from my flows** in the
+model page or runs `preloop models flow-use <id> on`. Only that owner's flows
+become eligible. The model read/list and `preloop models show <id>` expose the
+[executor matrix](../concepts/model-gateway.md#check-executor-eligibility-before-a-run)
+for the calling user.
+
+A restricted CI identity with `flow:trigger` can read this same flow URL, but
+receives only `id` and `executor_eligibility`, plus the revision `ETag`. It cannot
+read other flows or models, prompts, repository configuration, owner identity
+or credentials. This uses its existing authority to trigger the bound flow;
+revoked keys and grants are rechecked. Send the `ETag` as `If-Match` when triggering
+to ensure that the reviewed configuration has not changed.
+
+This is credential identity preflight, not a reservation or a provider probe.
+Host profiles and persistent agents keep their own login admission at runtime;
+a private pool alone does not confer that identity. Label routing and matrix
+overrides are resolved and checked at trigger time, so inspect the selected
+registration's matrix too. Provider health, runner readiness, capabilities,
+budgets and other policies can still prevent a run.
+
 ## Subscription credentials and execution identity
 
 A subscription model is a Codex (ChatGPT sign-in) or Claude subscription
