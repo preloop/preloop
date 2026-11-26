@@ -642,6 +642,34 @@ describe('RuntimeSessionsView', () => {
     window.history.replaceState({}, '', '/console/runtime-sessions');
   });
 
+  it('restores and clears the terminal workspace filter through the paged API', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/console/runtime-sessions?workspace_id=workspace-1'
+    );
+    const element = await fixture<RuntimeSessionsView>(
+      html`<runtime-sessions-view></runtime-sessions-view>`
+    );
+    await waitUntil(() => !(element as any).loading);
+    const filter = element.shadowRoot!.querySelector(
+      'sl-select[label="Workspace"]'
+    ) as HTMLSelectElement;
+    expect(filter.value).to.equal('workspace-1');
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) =>
+          String(call.args[0]).includes('workspace_id=workspace-1')
+        )
+    ).to.equal(true);
+    await (element as any).clearFilters();
+    expect(
+      new URLSearchParams(window.location.search).has('workspace_id')
+    ).to.equal(false);
+    expect((element as any).buildListParams().workspaceId).to.equal(undefined);
+  });
+
   it('opens the new session dialog over non-ephemeral runners', async () => {
     const runners = [
       { id: 'r-1', name: 'laptop', status: 'online', labels: [] },
@@ -1040,11 +1068,12 @@ describe('RuntimeSessionsView', () => {
       toolbar.shadowRoot!.querySelector('sl-input.search-input'),
       ...Array.from(toolbar.querySelectorAll('sl-select')),
     ] as HTMLElement[];
-    expect(controls).to.have.length(6);
+    expect(controls).to.have.length(7);
     expect(
       controls.slice(1).map((control) => control.getAttribute('label'))
     ).to.deep.equal([
       'Source type',
+      'Workspace',
       'Status',
       'Date range',
       'Has artifacts',

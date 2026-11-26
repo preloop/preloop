@@ -15,7 +15,7 @@ from sqlalchemy import (
     false,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -107,6 +107,7 @@ class RuntimeSession(Base):
     desktop_endpoint_id: Mapped[Optional[str]] = mapped_column(
         String(128), nullable=True
     )
+    terminal_location: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     summary_updated_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     title_request_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

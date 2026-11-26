@@ -286,6 +286,11 @@ export class RuntimeSessionsView extends LitElement {
   @state()
   private status = 'all';
 
+  @state()
+  private workspaceId = '';
+
+  private seenWorkspaces = new Map<string, string>();
+
   /** "Has artifacts" list filter: `all`, `any`, or one artifact kind. */
   @state()
   private hasArtifacts = 'all';
@@ -927,6 +932,7 @@ export class RuntimeSessionsView extends LitElement {
     }
     this.sessionSourceType = params.get('source_type') ?? 'all';
     this.status = params.get('status') ?? 'all';
+    this.workspaceId = params.get('workspace_id') ?? '';
     this.hasArtifacts = params.get('has_artifacts') ?? 'all';
     const sort = params.get('sort');
     this.sort = ['started', 'cost', 'requests'].includes(sort ?? '')
@@ -1118,6 +1124,7 @@ export class RuntimeSessionsView extends LitElement {
 
   private buildListParams(): RuntimeSessionListParams {
     const params: RuntimeSessionListParams = {
+      workspaceId: this.workspaceId || undefined,
       limit: SESSION_PAGE_SIZE,
       status: this.status as 'all' | 'active' | 'ended',
       sort: this.sort,
@@ -1553,6 +1560,7 @@ export class RuntimeSessionsView extends LitElement {
       source_type:
         this.sessionSourceType === 'all' ? '' : this.sessionSourceType,
       status: this.status === 'all' ? '' : this.status,
+      workspace_id: this.workspaceId,
       has_artifacts: this.hasArtifacts === 'all' ? '' : this.hasArtifacts,
       from: this.selectedRange === 'custom' ? this.startDate : '',
       to: this.selectedRange === 'custom' ? this.endDate : '',
@@ -1698,6 +1706,7 @@ export class RuntimeSessionsView extends LitElement {
     this.searchQuery = '';
     this.sessionSourceType = 'all';
     this.status = 'all';
+    this.workspaceId = '';
     this.hasArtifacts = 'all';
     this.interactionQuery = '';
     this.clearSearchResults();
@@ -1939,6 +1948,12 @@ export class RuntimeSessionsView extends LitElement {
 
   private sourceTypeOptions(): string[] {
     for (const row of this.sessions?.items ?? []) {
+      const location = row.terminal_location;
+      if (location)
+        this.seenWorkspaces.set(
+          location.workspace_id,
+          location.workspace_label || location.workspace_id
+        );
       if (row.session_source_type) {
         this.seenSourceTypes.add(row.session_source_type);
       }
@@ -2064,6 +2079,7 @@ export class RuntimeSessionsView extends LitElement {
       this.searchQuery !== '' ||
       this.sessionSourceType !== 'all' ||
       this.status !== 'all' ||
+      this.workspaceId !== '' ||
       this.hasArtifacts !== 'all'
     );
   }
@@ -3235,6 +3251,22 @@ export class RuntimeSessionsView extends LitElement {
                         >${this.sourceTypeLabel(kind)}</sl-option
                       >`
                   )}
+                </sl-select>
+                <sl-select
+                  size="small"
+                  label="Workspace"
+                  value=${this.workspaceId}
+                  ?disabled=${this.isSearching}
+                  title="Filter sessions by terminal workspace"
+                  @sl-change=${(event: Event) => {
+                    this.workspaceId = (
+                      event.target as HTMLSelectElement
+                    ).value;
+                    void this.applyFilters();
+                  }}
+                >
+                  <sl-option value="">All workspaces</sl-option>
+                  ${Array.from(new Map([...this.seenWorkspaces, ...(this.workspaceId && !this.seenWorkspaces.has(this.workspaceId) ? [[this.workspaceId, this.workspaceId] as [string, string]] : [])])).map(([id, label]) => html`<sl-option value=${id}>${label}</sl-option>`)}
                 </sl-select>
                 <sl-select
                   size="small"

@@ -1,3 +1,7 @@
+import {
+  paneClosesActivity,
+  terminalSessionChip,
+} from '../utils/terminal-location';
 import { formatCount, formatCountExact } from '../utils/count-format';
 import { randomUuid } from '../utils/random-uuid';
 import {
@@ -79,7 +83,7 @@ import type {
   SessionObserverScope,
   SessionReplayMode,
 } from '../utils/session-observer';
-import { agentStateChip, turnInfoFromSession } from '../utils/agent-status';
+import { turnInfoFromSession } from '../utils/agent-status';
 import {
   formatCost,
   formatNumber,
@@ -2873,7 +2877,7 @@ export class PreloopSessionObserver extends LitElement {
         .liveEnabled=${this.replayMode === 'conversation'}
         .sessionId=${this.activeSessionId || ''}
         .runtime=${runtimeFromSourceType(this.activeSession?.sourceType ?? null)}
-        .ended=${Boolean(this.activeSession?.endedAt)}
+        .ended=${Boolean(this.activeSession?.endedAt) || paneClosesActivity(this.activeSession)}
         .turn=${turnInfoFromSession(
           this.activeSession?.raw as Record<string, unknown> | undefined
         )}
@@ -3138,13 +3142,7 @@ export class PreloopSessionObserver extends LitElement {
   private renderSessionHeader(): ReturnType<typeof html> | typeof nothing {
     const session = this.activeSession;
     if (!session) return nothing;
-    const raw = (session.raw ?? {}) as Record<string, unknown>;
-    const chip = agentStateChip({
-      turn_state: typeof raw.turn_state === 'string' ? raw.turn_state : null,
-      ended_at:
-        session.endedAt || (session.status === 'ended' ? 'ended' : null),
-      last_activity_at: session.lastActivityAt,
-    });
+    const chip = terminalSessionChip(session);
     return html`<header class="session-heading">
       <h2 id="session-title" tabindex="-1">${session.title}</h2>
       <div class="session-identity">
@@ -3165,7 +3163,7 @@ export class PreloopSessionObserver extends LitElement {
           }</span
         >
         ${session.startedAt ? html`<time datetime=${session.startedAt} title=${formatAbsoluteTime(session.startedAt)}>Started ${formatRelativeTime(session.startedAt)}</time>` : nothing}
-        <sl-badge class="chip" variant=${chip.variant} pill
+        <sl-badge class="chip" variant=${chip.variant} title=${chip.title} pill
           >${chip.label}</sl-badge
         >
         <span class="session-id"

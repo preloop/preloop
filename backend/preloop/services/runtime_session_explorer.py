@@ -152,6 +152,7 @@ class RuntimeSessionExplorerService:
         active_within_minutes: Optional[int] = None,
         has_artifacts: Optional[str] = None,
         owner_user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> AccountRuntimeSessionListResponse:
         principals, source_types = self._resolve_agent_filters(
             account=account,
@@ -191,6 +192,7 @@ class RuntimeSessionExplorerService:
                 else None
             ),
             has_artifacts=has_artifacts,
+            workspace_id=workspace_id,
         )
         raw_items = results["items"]
         self.schedule_missing_session_titles(
@@ -458,6 +460,14 @@ class RuntimeSessionExplorerService:
         pending = {str(key): int(value or 0) for key, value in rows}
         for item in items:
             item.pending_approval_count = pending.get(item.id, 0)
+            if (
+                item.pending_approval_count
+                and item.terminal_location
+                and item.terminal_location.pane_closed_at
+                and item.ended_at is None
+            ):
+                item.is_active_now = True
+                item.activity_status = "active_now"
 
     def _attach_artifact_counts(
         self,
@@ -1234,6 +1244,7 @@ class RuntimeSessionExplorerService:
             turn_ended_at=row.get("turn_ended_at"),
             turn_interrupted=row.get("turn_interrupted"),
             cwd=row.get("cwd"),
+            terminal_location=row.get("terminal_location"),
             total_requests=row["total_requests"],
             successful_requests=row["successful_requests"],
             failed_requests=row["failed_requests"],

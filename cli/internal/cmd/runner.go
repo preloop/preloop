@@ -725,6 +725,7 @@ func runRunnerSession(
 	// Publication controllers talk to the server over this socket, so they
 	// cannot outlive the session. The jobs themselves can, and do.
 	defer jobs.abortPublications()
+	defer runnerHerdr.reconnect()
 	_ = conn.SetReadDeadline(time.Now().Add(runnerReadWait))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(runnerReadWait))

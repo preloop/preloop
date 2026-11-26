@@ -68,6 +68,7 @@ from preloop.services.runner_sessions import (
 from preloop.services.runner_workspace_credentials import (
     normalize_authorized_directories,
 )
+from preloop.services.herdr_inventory import record_herdr_inventory
 from preloop.services.harness_inventory import (
     inventory_for_viewer,
     inventory_hash_known,
@@ -1305,6 +1306,11 @@ async def runner_ws(
                 elif "harness_inventory_hash" in raw:
                     inventory_wanted = not inventory_hash_known(
                         runner, raw.get("harness_inventory_hash")
+                    )
+                if "herdr_inventory" in raw:
+                    inventory_changed = (
+                        record_herdr_inventory(db, runner, raw["herdr_inventory"])
+                        or inventory_changed
                     )
                 # Busy means no free slot, not "holds a job": a runner with
                 # spare capacity must stay dispatchable while it works.

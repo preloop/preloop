@@ -1,3 +1,4 @@
+import { paneClosesActivity } from '../utils/terminal-location';
 import type { RecordingSync } from '../types';
 import {
   recordingCue,
@@ -263,7 +264,7 @@ export class SessionReplayPanel extends LitElement {
       this.session?.id || '',
       this.events,
       this.activity,
-      Boolean(this.session?.endedAt),
+      Boolean(this.session?.endedAt) || paneClosesActivity(this.session),
       this.approvalState,
       (state) => {
         this.approvalState = state;

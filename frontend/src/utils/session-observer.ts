@@ -1,3 +1,4 @@
+import { paneClosed, terminalLocation } from './terminal-location';
 import { cleanSessionSubject } from './session-subject';
 import type {
   FlowGatewayConversationPreviewMessage,
@@ -190,6 +191,14 @@ export function formatSessionSourceLabel(sourceType: string | null): string {
 }
 
 function getStatus(row: Record<string, unknown>): string {
+  if (paneClosed(terminalLocation(row))) {
+    const ownActivity =
+      row.turn_state === 'working' ||
+      row.turn_state === 'waiting_for_approval' ||
+      (typeof row.pending_approval_count === 'number' &&
+        row.pending_approval_count > 0);
+    return !row.ended_at && ownActivity ? 'active_now' : 'ended';
+  }
   const explicit = asString(row.activity_status);
   if (explicit) return explicit;
   if (row.ended_at) return 'ended';

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/preloop/preloop/cli/internal/herdr"
 )
 
 // Harness inventory wire shapes (personal runners, contract A, #1480).
@@ -72,6 +73,7 @@ type harnessInventoryEntry struct {
 }
 
 type harnessInventory struct {
+	Herdr       *herdr.Report           `json:"herdr,omitempty"`
 	Schema      int                     `json:"schema"`
 	GeneratedAt string                  `json:"generated_at"`
 	Hash        string                  `json:"hash"`

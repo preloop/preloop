@@ -996,6 +996,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         flow_execution_id: Optional[str] = None,
         active_within: Optional[timedelta] = None,
         has_artifacts: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """List runtime sessions with aggregated gateway usage.
 
@@ -1018,6 +1019,11 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         as the returned usage figures.
         """
         session_query = db.query(self.model).filter(self.model.account_id == account_id)
+
+        if workspace_id is not None:
+            session_query = session_query.filter(
+                self.model.terminal_location["workspace_id"].astext == workspace_id
+            )
 
         if principals is not None or source_types is not None:
             alternatives = [
@@ -1080,7 +1086,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 )
             )
         use_model_page = (
-            sort == "last_activity"
+            workspace_id is None
+            and sort == "last_activity"
             and bool(ai_model_id)
             and self._model_page_is_bounded(
                 principals=principals,
@@ -1843,6 +1850,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.turn_interrupted,
                 self.model.legal_hold,
                 self.model.cwd,
+                self.model.terminal_location,
                 func.max(cast(usage_model.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
                 func.max(cast(usage_model.flow_execution_id, String)).label(
@@ -1903,6 +1911,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.turn_interrupted,
                 self.model.legal_hold,
                 self.model.cwd,
+                self.model.terminal_location,
             )
         )
 
@@ -2255,6 +2264,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.turn_interrupted,
                 self.model.legal_hold,
                 self.model.cwd,
+                self.model.terminal_location,
                 func.max(cast(ApiUsage.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
                 func.max(cast(ApiUsage.flow_execution_id, String)).label(
@@ -2318,6 +2328,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.turn_interrupted,
                 self.model.legal_hold,
                 self.model.cwd,
+                self.model.terminal_location,
             )
             .first()
         )
@@ -2452,7 +2463,11 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         elif last_observed_at is not None:
             last_observed_at = last_observed_at.astimezone(UTC)
 
-        if row.ended_at is not None:
+        terminal = getattr(row, "terminal_location", None) or {}
+        pane_closed = terminal.get("pane_closed_at") and getattr(
+            row, "turn_state", None
+        ) not in ("working", "waiting_for_approval")
+        if row.ended_at is not None or pane_closed:
             activity_status = "ended"
             is_active_now = False
         elif (
@@ -2503,6 +2518,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "turn_ended_at": getattr(row, "turn_ended_at", None),
             "turn_interrupted": getattr(row, "turn_interrupted", None),
             "cwd": getattr(row, "cwd", None),
+            "terminal_location": getattr(row, "terminal_location", None),
             "total_requests": int(row.request_count or 0),
             "successful_requests": int(row.success_count or 0),
             "failed_requests": int(row.error_count or 0),

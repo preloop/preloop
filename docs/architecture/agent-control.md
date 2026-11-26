@@ -464,6 +464,53 @@ as scanner errors even when issue synchronization succeeds. Managed repository
 URL lookup permits an empty stored key; credentials still arrive through the
 orchestrator's managed resolver.
 
+## herdr terminal adapter
+
+The optional Go adapter observes herdr, a supported terminal workspace manager,
+inside the resident runner. Local `observe` and `prompt` permissions are separate
+and default to false. The server cannot grant either permission. No additional
+daemon or credential is required. The runner's authenticated inventory channel
+carries changes from protocol 22 snapshots on its normal heartbeat. Snapshot
+polls are spaced at least five seconds apart. Unknown protocol versions fail
+closed and report `herdr_protocol_unsupported` once; an absent executable is
+silent. Failed snapshots do not mean that every pane closed.
+
+A terminal location belongs to an existing runtime session and contains device,
+workspace, tab, and pane identity, display labels, observed state, and closure
+time. Matching requires account, device, normalized harness kind, and native
+session identity. A foreign or ambiguous match cannot attach a pane to a session.
+Unmatched panes remain unmanaged inventory entries without session content.
+Closing or replacing a pane retires its old location on reconciliation. Active
+Preloop turns and pending approvals take precedence over terminal observations.
+Display labels are untrusted, length-limited text, and location data follows the
+session's retention.
+
+Pane prompting is a Talk transport with these required device-side guards:
+
+- Read the local `prompt` permission at delivery time. Server metadata is not
+  authority to enable it.
+- Immediately before submission, obtain a fresh supported snapshot and verify
+  the exact pane, harness, and native session identity. Refuse a shell, a missing
+  pane, or a different session.
+- Only idle or done agents may receive prompts. Working agents use operator
+  notes. Blocked panes cannot receive prompts, including answers to approval,
+  permission, or question dialogs. Never use `send-keys`.
+- Bound prompt size, strip control characters, and pass text as one process
+  argument without a shell. Use `herdr agent prompt` with `--wait`.
+- Apply the same operator authorization and session-start consent as sidecar
+  Talk, and persist the same audit record with delivery route `herdr_pane`.
+- Treat blocked, stalled, timed-out, and missing-pane outcomes as explicit
+  terminal command states with actionable reasons. A timeout or stalled result
+  does not prove no input was submitted, so it must not trigger a blind retry.
+
+The transport belongs after the sidecar-resume rung and before cannot-deliver in
+the shared Talk routing decision. It must not introduce a separate routing
+ladder. Observation alone never enables that transport. Replies come through
+the existing governed session record; terminal output is never scraped and
+`herdr agent read` is never used. Ungoverned agents have no visible reply record.
+Remote herdr targets and creating workspaces from the console are outside this
+adapter's scope. See the [user guide](../guide/herdr.md).
+
 ## Nanobot managed runtime
 
 The optional `runtime-plugins/nanobot-preloop` process embeds a pinned Nanobot

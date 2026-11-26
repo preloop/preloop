@@ -363,3 +363,36 @@ def test_list_resolves_the_admin_check_once_per_request(
         r["harness_inventory"]["entries"][0]["version"] is None for r in with_inventory
     )
     assert calls.count("manage_account") == 1
+
+
+@pytest.mark.asyncio
+async def test_herdr_heartbeat_uses_runner_inventory_and_survives_harness_refresh(
+    db_session: Session, ws_runner: models.FlowRunner, monkeypatch
+) -> None:
+    """Metadata uses the authenticated heartbeat and no session is invented."""
+    from tests.models.crud.test_terminal_location import fixture_report
+
+    report = fixture_report()
+    report["agents"][0]["content"] = "must not upload"
+    sent: List[Dict[str, Any]] = []
+    websocket, _ = _socket(
+        monkeypatch,
+        ws_runner,
+        [
+            {"type": "heartbeat", "herdr_inventory": report},
+            _fixture("heartbeat_with_inventory.json"),
+        ],
+        sent,
+    )
+    await runners.runner_ws(websocket, ws_runner.id, db_session)
+    assert len(_acks(sent)) == 2
+    db_session.refresh(ws_runner)
+    inventory = ws_runner.harness_inventory
+    assert (
+        inventory["entries"]
+        == _fixture("harness_inventory_copilot_signed_in.json")["entries"]
+    )
+    assert len(inventory["herdr"]["agents"]) == 20
+    assert all(not agent["managed"] for agent in inventory["herdr"]["agents"])
+    assert "content" not in inventory["herdr"]["agents"][0]
+    assert db_session.query(models.RuntimeSession).count() == 0
