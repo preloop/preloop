@@ -416,17 +416,34 @@ func (s *extensionScan) captureHooks() {
 		}
 		for i, source := range sources {
 			entry := contentHook{CommandHash: hashes[i]}
-			if matcher := []rune(source.Matcher); len(matcher) > 256 {
-				entry.Matcher = string(matcher[:256])
-			} else {
-				entry.Matcher = source.Matcher
+			matcher, err := redact.Text(source.Matcher, redact.Options{Home: capture.home})
+			if err != nil {
+				capture.err = err
+				return
 			}
-			if len(source.Command) > contentFileLimit {
+			if matcher.Withheld != "" {
+				entry.Status = contentPrivateKey
+			} else if len(source.Command) > contentFileLimit {
 				entry.Status = contentTooLarge
 			} else {
+				// Redact before truncating so a bound cannot split a secret.
+				bounded := []rune(matcher.Text)
+				if len(bounded) > 256 {
+					bounded = bounded[:256]
+				}
+				entry.Matcher = string(bounded)
+				item.bytes += len(entry.Matcher)
 				item.bytes += capture.redactInto([]byte(source.Command), "", contentExtensionLimit-item.bytes, &entry.Status, &entry.Command, &entry.Redactions)
 				if entry.Status == contentBinary || entry.Status == contentUnreadable {
 					entry.Status = contentTooLarge
+				}
+				if matcher.Total > 0 {
+					if entry.Redactions == nil {
+						entry.Redactions = map[string]int{}
+					}
+					for kind, count := range matcher.Counts {
+						entry.Redactions[kind] += count
+					}
 				}
 			}
 			for _, count := range entry.Redactions {

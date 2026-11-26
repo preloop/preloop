@@ -12,7 +12,7 @@ import (
 )
 
 func TestRunnerDiscoveryContentPrivacy(t *testing.T) {
-	for _, mode := range []string{"enabled", "device", "flag", "environment", "account", "excluded", "all-users", "offline"} {
+	for _, mode := range []string{"enabled", "matcher", "device", "flag", "environment", "account", "excluded", "all-users", "offline"} {
 		t.Run(mode, func(t *testing.T) {
 			resetInventoryCommand(t)
 			home, secrets := contentHome(t)
@@ -29,6 +29,14 @@ func TestRunnerDiscoveryContentPrivacy(t *testing.T) {
 				runnerFingerprint.Store("")
 			})
 			switch mode {
+			case "matcher":
+				settings, err := json.Marshal(map[string]any{"hooks": map[string]any{
+					"PreToolUse": []map[string]any{{"matcher": secrets[0], "hooks": []map[string]any{{"type": "command", "command": "echo checked"}}}},
+				}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeInventoryFixture(t, home, ".claude/settings.json", string(settings))
 			case "device":
 				writeInventoryFixture(t, home, ".preloop/config.yaml", "discovery:\n  extension_content: false\n")
 			case "flag":
@@ -74,7 +82,7 @@ func TestRunnerDiscoveryContentPrivacy(t *testing.T) {
 			if reports != 1 {
 				t.Fatal("missing inventory report")
 			}
-			wantUpload := mode == "enabled" || mode == "all-users" || mode == "excluded"
+			wantUpload := mode == "enabled" || mode == "matcher" || mode == "all-users" || mode == "excluded"
 			if (len(content.uploads) > 0) != wantUpload {
 				t.Fatalf("content uploads = %d, expected upload = %v", len(content.uploads), wantUpload)
 			}

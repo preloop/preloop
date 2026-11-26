@@ -159,6 +159,53 @@ func contentHome(t *testing.T) (string, []string) {
 	return home, secrets
 }
 
+func TestHookMatcherContentPrivacy(t *testing.T) {
+	planted := redacttest.PlantedSecrets()[0]
+	for _, mode := range []string{"plain", "secret", "private-key"} {
+		t.Run(mode, func(t *testing.T) {
+			matcher, command := "Bash", "echo checked"
+			if mode == "secret" {
+				matcher, command = planted.Line, planted.Line
+			} else if mode == "private-key" {
+				matcher = redacttest.PlantedPrivateKey()
+			}
+			commandHash := extensionHash([]byte(command))
+			pair := contentPair{Kind: "hook", ContentHash: extensionHash([]byte(commandHash))}
+			capture := newContentCapture(t.TempDir(), []contentPair{pair}, nil)
+			scan := extensionScan{capture: capture, hookContent: map[string][]contentHookSource{
+				"PreToolUse": {{Matcher: matcher, Command: command}},
+			}}
+			scan.captureHooks()
+			item := capture.items[pair]
+			if capture.err != nil || item == nil || len(item.Hooks) != 1 {
+				t.Fatal("hook capture failed")
+			}
+			hook := item.Hooks[0]
+			if hook.CommandHash != commandHash {
+				t.Fatal("redaction changed the command hash")
+			}
+			switch mode {
+			case "plain":
+				if hook.Matcher != matcher || hook.Command == nil || *hook.Command != command {
+					t.Fatal("ordinary hook content changed")
+				}
+			case "secret":
+				wire, err := json.Marshal(item)
+				if err != nil || bytes.Contains(wire, []byte(planted.Secret)) {
+					t.Fatal("hook matcher or command retained a secret")
+				}
+				if item.redactions != 2 {
+					t.Fatalf("matcher and command redaction count = %d, want 2", item.redactions)
+				}
+			case "private-key":
+				if hook.Matcher != "" || hook.Command != nil || hook.Status != contentPrivateKey {
+					t.Fatal("private-key matcher was not withheld")
+				}
+			}
+		})
+	}
+}
+
 func contentReport(t *testing.T, home string) discoveryReportRequest {
 	t.Helper()
 	deps := inventoryTestDependencies(t, home)
