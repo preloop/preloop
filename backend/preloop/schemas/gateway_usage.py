@@ -988,6 +988,8 @@ class RuntimeSessionActivityListResponse(BaseModel):
 
     has_more: bool = False
     next_before: Optional[str] = None
+    has_newer: bool = False
+    next_after: Optional[str] = None
     partial_turn: bool = False
     items: List[RuntimeSessionActivityItem] = Field(default_factory=list)
 

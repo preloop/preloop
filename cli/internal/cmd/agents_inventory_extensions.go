@@ -387,9 +387,24 @@ func (r *extensionRoot) hookDirectory(base, scope, project string) {
 	}
 }
 
-func extensionEnabled(doc map[string]json.RawMessage) map[string]bool {
-	var enabled map[string]bool
-	_ = json.Unmarshal(doc["enabledPlugins"], &enabled)
+func (r *extensionRoot) extensionEnabled(doc map[string]json.RawMessage) map[string]bool {
+	raw, ok := doc["enabledPlugins"]
+	if !ok {
+		return nil
+	}
+	var values map[string]*bool
+	if json.Unmarshal(raw, &values) != nil || values == nil {
+		r.scan.fail("extension_malformed")
+		return nil
+	}
+	enabled := map[string]bool{}
+	for id, value := range values {
+		if value == nil {
+			r.scan.fail("extension_malformed")
+			continue
+		}
+		enabled[id] = *value
+	}
 	return enabled
 }
 
@@ -452,10 +467,16 @@ func (r *extensionRoot) plugin(id, marketplace string, record map[string]json.Ra
 		}
 		if !filepath.IsLocal(path) {
 			r.scan.fail("extension_unsafe_path")
-		} else {
-			manifest := r.document(filepath.Join(path, ".claude-plugin", "plugin.json"))
-			if codex && manifest == nil {
+		} else if _, err := r.stat(path); err == nil {
+			var manifest map[string]json.RawMessage
+			if codex {
 				manifest = r.document(filepath.Join(path, "plugin.json"))
+				if manifest == nil {
+					manifest = r.document(filepath.Join(path, ".codex-plugin", "plugin.json"))
+				}
+			}
+			if manifest == nil {
+				manifest = r.document(filepath.Join(path, ".claude-plugin", "plugin.json"))
 			}
 			if version := extensionString(manifest["version"]); version != "" {
 				ext.Version = version
@@ -476,97 +497,17 @@ func (r *extensionRoot) plugin(id, marketplace string, record map[string]json.Ra
 	return ext
 }
 
-func (r *extensionRoot) claudePlugins(enabled map[string]bool) []inventoryExtension {
-	before := len(r.scan.extensions)
-	marketplaces := r.document(filepath.Join(".claude", "plugins", "known_marketplaces.json"))
-	for _, entry := range r.dirs(filepath.Join(".claude", "plugins", "store")) {
-		path := filepath.Join(".claude", "plugins", "store", entry.Name())
-		if _, err := r.stat(path); err != nil {
-			continue
-		}
-		if entry.IsDir() || filepath.Ext(path) != ".json" {
-			continue
-		}
-		doc := r.document(path)
-		if doc == nil {
-			continue
-		}
-		var records map[string][]map[string]json.RawMessage
-		if raw, ok := doc["plugins"]; ok {
-			if json.Unmarshal(raw, &records) != nil {
-				r.scan.fail("extension_malformed")
-				continue
-			}
-		} else {
-			records = map[string][]map[string]json.RawMessage{strings.TrimSuffix(entry.Name(), ".json"): {doc}}
-		}
-		ids := make([]string, 0, len(records))
-		for id := range records {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			for _, record := range records[id] {
-				market := extensionString(record["marketplace"])
-				if parts := strings.SplitN(id, "@", 2); len(parts) == 2 {
-					market = parts[1]
-				}
-				var known map[string]json.RawMessage
-				_ = json.Unmarshal(marketplaces[market], &known)
-				if record["source"] == nil {
-					record["source"] = known["source"]
-				}
-				if record["installPath"] == nil {
-					install := extensionString(known["installLocation"])
-					if install == "" {
-						install = filepath.Join(".claude", "plugins", "marketplaces", market)
-					}
-					name := extensionString(record["name"])
-					if name == "" {
-						name = strings.Split(id, "@")[0]
-					}
-					record["installPath"], _ = json.Marshal(filepath.Join(install, "plugins", name))
-				}
-				r.scan.add(r.plugin(id, market, record, enabled, false))
-			}
-		}
-	}
-	return append([]inventoryExtension{}, r.scan.extensions[before:]...)
-}
-
-func (r *extensionRoot) codexPlugins() {
-	base := filepath.Join(".codex", "plugins")
-	for _, market := range r.dirs(base) {
-		marketPath := filepath.Join(base, market.Name())
-		if info, err := r.stat(marketPath); err != nil || !info.IsDir() {
-			continue
-		}
-		for _, plugin := range r.dirs(marketPath) {
-			path := filepath.Join(marketPath, plugin.Name())
-			if info, err := r.stat(path); err != nil || !info.IsDir() {
-				continue
-			}
-			record := r.document(filepath.Join(path, "plugin.json"))
-			if record == nil {
-				record = map[string]json.RawMessage{}
-			}
-			record["installPath"], _ = json.Marshal(path)
-			r.scan.add(r.plugin(plugin.Name(), market.Name(), record, nil, true))
-		}
-	}
-}
-
-func collectInventoryExtensions(home, agent, salt string, profileOnly bool) ([]inventoryExtension, []string) {
-	return collectExtensions(home, agent, salt, profileOnly, false)
+func collectInventoryExtensions(home, agent, salt string, profileOnly bool, projects ...string) ([]inventoryExtension, []string) {
+	return collectExtensions(home, agent, salt, profileOnly, false, projects...)
 }
 
 // collectDisplayExtensions is the inventory collector with identifiers left in
 // clear for a local listing. Report hashing is unchanged.
-func collectDisplayExtensions(home, agent, salt string, profileOnly bool) ([]inventoryExtension, []string) {
-	return collectExtensions(home, agent, salt, profileOnly, true)
+func collectDisplayExtensions(home, agent, salt string, profileOnly bool, projects ...string) ([]inventoryExtension, []string) {
+	return collectExtensions(home, agent, salt, profileOnly, true, projects...)
 }
 
-func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool) ([]inventoryExtension, []string) {
+func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool, explicitProjects ...string) ([]inventoryExtension, []string) {
 	scan := &extensionScan{home: home, salt: salt, localDisplay: localDisplay, extensions: []inventoryExtension{}, errors: map[string]bool{}}
 	if agent != "claude-code" && agent != "codex-cli" {
 		return scan.extensions, nil
@@ -578,8 +519,14 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool)
 	defer root.root.Close()
 	if agent == "claude-code" {
 		settings := root.document(filepath.Join(".claude", "settings.json"))
-		enabled := extensionEnabled(settings)
-		plugins := root.claudePlugins(enabled)
+		enabled := root.extensionEnabled(settings)
+		plugins := root.claudePlugins(enabled, profileOnly)
+		installedProjects := map[string]bool{}
+		for _, plugin := range plugins {
+			if plugin.Scope == "project" {
+				installedProjects[plugin.ProjectRefHash+"\x00"+plugin.ID] = true
+			}
+		}
 		root.localFiles(filepath.Join(".claude", "skills"), "user", "", true)
 		root.localFiles(filepath.Join(".claude", "commands"), "user", "", false)
 		root.hooks(settings["hooks"], "user", "")
@@ -590,8 +537,46 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool)
 			if raw := doc["projects"]; raw != nil && json.Unmarshal(raw, &projects) != nil {
 				scan.fail("extension_malformed")
 			}
+			// Explicit roots opt into the same bounded walk without modifying
+			// Claude's configuration or broadening other users' profile scans.
+			if projects == nil {
+				projects = map[string]json.RawMessage{}
+			}
+			for _, path := range explicitProjects {
+				projects[path] = nil
+			}
+			// The user root has already been scanned. Recognize filesystem
+			// aliases too, without following them for a second content walk.
+			homeInfo, _ := root.root.Stat(".")
+			isHome := func(path string) bool {
+				info, err := os.Stat(path)
+				return err == nil && homeInfo != nil && os.SameFile(homeInfo, info)
+			}
+			projectHashes := map[string]bool{scan.projectHash(home): true}
+			for path := range projects {
+				projectHashes[scan.projectHash(path)] = true
+			}
+			for _, plugin := range plugins {
+				if plugin.Scope == "project" && !projectHashes[plugin.ProjectRefHash] {
+					scan.fail("extension_project_unscanned")
+				}
+			}
+			// Detect a local project omitted from the registry without walking
+			// its contents. The caller can explicitly include it with --project.
+			if cwd, err := os.Getwd(); err != nil {
+				scan.fail("extension_unreadable")
+			} else if !isHome(cwd) && !projectHashes[scan.projectHash(cwd)] {
+				if _, err := os.Lstat(filepath.Join(cwd, ".claude")); err == nil {
+					scan.fail("extension_project_unscanned")
+				} else if !os.IsNotExist(err) {
+					scan.fail("extension_unreadable")
+				}
+			}
 			paths := make([]string, 0, len(projects))
 			for path := range projects {
+				if filepath.IsAbs(path) && isHome(path) {
+					continue
+				}
 				paths = append(paths, path)
 			}
 			sort.Strings(paths)
@@ -606,13 +591,21 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool)
 				}
 				project := scan.open(path)
 				if project == nil {
+					scan.fail("extension_unreadable")
 					continue
 				}
 				hash := scan.projectHash(path)
 				settings := project.document(filepath.Join(".claude", "settings.json"))
-				overrides := extensionEnabled(settings)
+				overrides := project.extensionEnabled(settings)
+				localSettings := project.document(filepath.Join(".claude", "settings.local.json"))
+				for id, value := range project.extensionEnabled(localSettings) {
+					if overrides == nil {
+						overrides = map[string]bool{}
+					}
+					overrides[id] = value
+				}
 				for _, plugin := range plugins {
-					if value, ok := overrides[plugin.ID]; ok {
+					if value, ok := overrides[plugin.ID]; ok && plugin.Scope == "user" && !installedProjects[hash+"\x00"+plugin.ID] {
 						plugin.Scope = "project"
 						plugin.ProjectRefHash = hash
 						plugin.Enabled = "false"

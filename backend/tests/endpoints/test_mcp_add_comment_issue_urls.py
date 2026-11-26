@@ -99,4 +99,4 @@ async def test_url_for_unsynced_project_never_reaches_a_suffix_match(
     with pytest.raises(HTTPException) as err:
         await _comment(db_session, test_user, f"{HOST}/team/api/-/{word}/12")
     assert err.value.status_code == 404
-    assert "(looked up synced issue team/api#12)" in err.value.detail
+    assert "project is not synced in this account" in err.value.detail

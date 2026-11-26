@@ -283,6 +283,9 @@ func runGatewayLiveValidation(
 	} else if isUpstreamTransientValidationError(requestErr) {
 		liveValidationStatus = "upstream_transient"
 	}
+	if isTerminalSubscriptionValidationError(agent, requestErr) {
+		liveValidationStatus = "credential_repair_required"
+	}
 	budgetDenied := !passed && isPreloopBudgetDenialValidationError(requestErr)
 	result := mergeStringMaps(validationResult, map[string]interface{}{
 		"live_validation_attempted":      true,
@@ -550,7 +553,7 @@ func liveValidationStatusKeepsGatewayConfig(validationResult map[string]interfac
 		return false
 	}
 	status, _ := validationResult["live_validation_status"].(string)
-	return status == "upstream_transient" || status == "timeout"
+	return status == "upstream_transient" || status == "timeout" || status == "credential_repair_required"
 }
 
 // liveValidationUpstreamNote explains an upstream-side refusal to the operator,
@@ -1399,6 +1402,9 @@ func recoverDeferredGatewayValidationFailure(
 	if result.Err == nil || result.Outcome == nil {
 		return
 	}
+	if result.Outcome.ValidationResult["live_validation_status"] == "credential_repair_required" {
+		return // Keep the route so credential-only reconnect is sufficient.
+	}
 	if liveValidationStatusKeepsGatewayConfig(result.Outcome.ValidationResult) {
 		note := liveValidationUpstreamNote(result.Outcome.ValidationResult)
 		if note == "" {
@@ -1505,8 +1511,14 @@ func persistDeferredLiveValidationResult(
 // live_validation_status / live_validation_error carry the detail the
 // console surfaces.
 func deferredLiveValidationPersistStatus(outcome *managedLiveValidationOutcome) string {
-	if outcome == nil || !outcome.Attempted || outcome.Passed {
+	if outcome == nil || !outcome.Attempted {
+		return "applied"
+	}
+	if outcome.Passed {
 		return "validated"
+	}
+	if outcome.ValidationResult["live_validation_status"] == "credential_repair_required" {
+		return "validation_failed"
 	}
 	if liveValidationOutcomeKeepsGatewayConfig(outcome) {
 		return "validation_inconclusive"
@@ -1605,6 +1617,11 @@ func printDeferredLiveValidationLine(
 	}
 	if result.Err != nil {
 		status, _ := result.Outcome.ValidationResult["live_validation_status"].(string)
+		if status == "credential_repair_required" {
+			fmt.Fprint(output, formatDeferredLiveValidationRoundTrip(result))                     //nolint:errcheck
+			fmt.Fprintf(output, "      Repair: %s\n", subscriptionReconnectCommand(result.Agent)) //nolint:errcheck
+			return
+		}
 		switch status {
 		case "throttled", "upstream_unavailable", "upstream_transient", "timeout":
 			// Keep the nuanced status wording for inconclusive upstream outcomes.
@@ -1679,8 +1696,10 @@ func applyLiveValidationOutcomesToSummary(
 			if resolveAgentDisplayName(outcomes[i].Agent) != name {
 				continue
 			}
-			if result.Outcome != nil && result.Outcome.Attempted && !result.Outcome.Passed && outcomes[i].Status == agentOnboardingStatusOnboarded {
+			if result.Outcome != nil && !result.Outcome.Passed && outcomes[i].Status == agentOnboardingStatusOnboarded {
 				outcomes[i].Status = agentOnboardingStatusPartial
+				outcomes[i].Reason = reason
+				break
 			}
 			if outcomes[i].Reason == "" {
 				outcomes[i].Reason = reason
@@ -1695,7 +1714,13 @@ func applyLiveValidationOutcomesToSummary(
 // liveValidationSummaryReason renders direct gateway probe evidence or failure.
 // Success still leaves application behavior unverified; skipped probes add no evidence.
 func liveValidationSummaryReason(result deferredLiveValidationResult) string {
-	if result.Outcome == nil || !result.Outcome.Attempted {
+	if result.Outcome == nil {
+		return ""
+	}
+	if !result.Outcome.Attempted {
+		if reason, _ := result.Outcome.ValidationResult["live_validation_skip_reason"].(string); reason != "" {
+			return "gateway validation not run: " + reason
+		}
 		return ""
 	}
 	if result.Outcome.Passed {
@@ -1708,6 +1733,8 @@ func liveValidationSummaryReason(result deferredLiveValidationResult) string {
 	)
 	status, _ := result.Outcome.ValidationResult["live_validation_status"].(string)
 	switch status {
+	case "credential_repair_required":
+		return "gateway validation failed: " + firstErrorLine(result.Err) + "; repair: " + subscriptionReconnectCommand(result.Agent)
 	case "timeout":
 		return "live validation inconclusive (request timed out); model routing retained; " + revalidate
 	case "throttled":
@@ -1764,4 +1791,30 @@ func currentLiveValidationInputs(saved, current map[string]interface{}) map[stri
 		}
 	}
 	return result
+}
+
+// isTerminalSubscriptionValidationError separates rejected grants from outages.
+// Older gateways expose the terminal code in text; newer ones also include an
+// unambiguous terminal authorization message. The common refresh prefix alone
+// is insufficient because transient provider failures use it too.
+func isTerminalSubscriptionValidationError(agent AgentConfig, err error) bool {
+	if err == nil || (!isClaudeCodeAgent(agent) && !isCodexCLIAgent(agent)) {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	if !strings.Contains(message, "model credentials could not be refreshed") {
+		return false
+	}
+	return terminalSubscriptionRefreshCode.MatchString(message) ||
+		strings.Contains(message, "subscription authorization is no longer valid")
+}
+
+var terminalSubscriptionRefreshCode = regexp.MustCompile(`\b(invalid_grant|refresh_token_reused|refresh_token_expired|invalid_refresh_token|revoked|token_revoked)\b`)
+
+func subscriptionReconnectCommand(agent AgentConfig) string {
+	name := "Claude Code"
+	if isCodexCLIAgent(agent) {
+		name = "Codex CLI"
+	}
+	return fmt.Sprintf("preloop agents reconnect %q --from-local", name)
 }

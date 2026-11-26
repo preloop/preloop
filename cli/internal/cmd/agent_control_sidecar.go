@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -102,6 +103,37 @@ type agentControlSidecarServiceEnv struct {
 	// Home pins HOME to the enabling user's home, so the job reads the same
 	// control config and socket the enabling shell does (#1531).
 	Home string
+}
+
+// npm and the plugin use env node, so Node must be on this process's PATH.
+// Finding an installation in a fallback directory alone is not sufficient.
+var lookupAgentControlNode = exec.LookPath
+
+var readAgentControlNodeVersion = func(path string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, path, "--version").Output()
+	return strings.TrimSpace(string(output)), err
+}
+
+func preflightClaudeAgentControlNode(agent AgentConfig) error {
+	if !isClaudeCodeAgent(agent) {
+		return nil
+	}
+	if path, err := lookupAgentControlNode("node"); err == nil {
+		version, versionErr := readAgentControlNodeVersion(path)
+		majorText, _, hasMinor := strings.Cut(strings.TrimPrefix(version, "v"), ".")
+		major, parseErr := strconv.Atoi(majorText)
+		// Match runtime-plugins/claude-preloop/package.json engines.node.
+		if versionErr == nil && parseErr == nil && hasMinor && major >= 20 {
+			return nil
+		}
+	}
+	repair := "Install Node.js 20 or newer from https://nodejs.org and add its bin directory to PATH"
+	if runtime.GOOS == "darwin" {
+		repair = "Run `brew install node@22` and `export PATH=\"$(brew --prefix node@22)/bin:$PATH\"` in this shell"
+	}
+	return fmt.Errorf("Claude Code Agent Control requires a working Node.js 20 or newer on PATH. %s, verify `node --version`, then rerun `preloop agents onboard \"Claude Code\"`", repair)
 }
 
 // systemdLogPathUsable reports whether path can be written as a systemd

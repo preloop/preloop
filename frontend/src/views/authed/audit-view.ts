@@ -158,6 +158,12 @@ const LIVE_REFRESH_MAX_INTERVAL_MS = 30000;
 // "10K+ events" and pages with Next, without a last page (#1592).
 const AUDIT_COUNT_LIMIT = 10000;
 const DEEP_LINK_PAGES = 4;
+
+function shiftUtcDate(date: string, days: number): string {
+  const shifted = new Date(date);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
 /** The fixed console header, which a scrolled-to row must clear. */
 const HEADER_OFFSET_PX = 60;
 
@@ -216,7 +222,7 @@ export class AuditView extends AuthedElement {
   @state() private _outcomeMatchAny = false;
   @state() private _toolNameFilter = '';
   @state() private _startDate = '';
-  @state() private _endDate = '';
+  @state() private _throughDate = '';
   @state() private _minCost = '';
   @state() private _maxCost = '';
 
@@ -478,8 +484,8 @@ export class AuditView extends AuthedElement {
     if (this._toolNameFilter) params.set('tool_name', this._toolNameFilter);
     if (this._startDate)
       params.set('start_date', new Date(this._startDate).toISOString());
-    if (this._endDate)
-      params.set('end_date', new Date(this._endDate).toISOString());
+    if (this._throughDate)
+      params.set('end_date', `${this._throughDate}T23:59:59.999999Z`);
     if (this._minCost) params.set('min_cost', this._minCost);
     if (this._maxCost) params.set('max_cost', this._maxCost);
     return params;
@@ -599,10 +605,9 @@ export class AuditView extends AuthedElement {
       showToast('Event not in the current range', 'warning');
       return;
     }
-    const day = parseUTCDate(when);
-    const next = new Date(day.getTime() + 24 * 3600 * 1000);
-    this._startDate = day.toISOString().slice(0, 10);
-    this._endDate = next.toISOString().slice(0, 10);
+    const day = parseUTCDate(when).toISOString().slice(0, 10);
+    this._startDate = day;
+    this._throughDate = day;
     this._page = 0;
     this._deepLinkPending = true;
     this._syncFilterLocation();
@@ -706,7 +711,13 @@ export class AuditView extends AuthedElement {
     this._outcomeMatchAny = params.get('outcome_match') === 'any';
     this._toolNameFilter = params.get('tool_name') ?? '';
     this._startDate = validFilterDate(params.get('start_date'));
-    this._endDate = validFilterDate(params.get('end_date'));
+    // URLs use the next midnight, except legacy same-day selections that
+    // stored both dates as the selected day.
+    const endBoundary = validFilterDate(params.get('end_date'));
+    this._throughDate =
+      endBoundary && endBoundary !== this._startDate
+        ? shiftUtcDate(endBoundary, -1)
+        : endBoundary;
     this._minCost = params.get('min_cost') ?? '';
     this._maxCost = params.get('max_cost') ?? '';
     // A linked page of the timeline opens on that page, at that size.
@@ -761,7 +772,7 @@ export class AuditView extends AuthedElement {
       outcome_match: this._outcomeMatchAny ? 'any' : null,
       tool_name: this._toolNameFilter,
       start_date: this._startDate,
-      end_date: this._endDate,
+      end_date: this._throughDate ? shiftUtcDate(this._throughDate, 1) : null,
       min_cost: this._minCost,
       max_cost: this._maxCost,
     });
@@ -801,7 +812,7 @@ export class AuditView extends AuthedElement {
       this._outcomeFilters.length ||
       this._toolNameFilter ||
       this._startDate ||
-      this._endDate ||
+      this._throughDate ||
       this._minCost ||
       this._maxCost
     );
@@ -814,7 +825,7 @@ export class AuditView extends AuthedElement {
     this._outcomeMatchAny = false;
     this._toolNameFilter = '';
     this._startDate = '';
-    this._endDate = '';
+    this._throughDate = '';
     this._minCost = '';
     this._maxCost = '';
     this._page = 0;
@@ -1578,7 +1589,7 @@ export class AuditView extends AuthedElement {
           </sl-tooltip>
 
           <sl-tooltip
-            content="Failures, halts, denies and budget stops in the filtered period. Candidates only: classification under DORA Art. 17 stays with your firm."
+            content="Downloads a CSV of failures, halts, denies and budget stops. Uses the UTC dates only (30 days without a start date). Classification under DORA Art. 17 stays with your firm."
           >
             <sl-button
               size="small"
@@ -1686,7 +1697,8 @@ export class AuditView extends AuthedElement {
       if (kind === 'incidents') {
         path = REST_API_PREFIX + '/exports/incident-candidates';
         if (this._startDate) params.set('from', this._startDate);
-        if (this._endDate) params.set('to', this._endDate);
+        if (this._throughDate)
+          params.set('to', shiftUtcDate(this._throughDate, 1));
       }
       const response = await fetchWithAuth(`${path}?${params.toString()}`);
       if (!response.ok) {
@@ -1818,7 +1830,7 @@ export class AuditView extends AuthedElement {
         <sl-input
           type="date"
           size="small"
-          label="From date"
+          label="From date (UTC)"
           .value=${this._startDate}
           @sl-change=${(e: Event) => {
             this._startDate = (e.target as HTMLInputElement).value;
@@ -1829,10 +1841,10 @@ export class AuditView extends AuthedElement {
         <sl-input
           type="date"
           size="small"
-          label="To date"
-          .value=${this._endDate}
+          label="Through date (UTC)"
+          .value=${this._throughDate}
           @sl-change=${(e: Event) => {
-            this._endDate = (e.target as HTMLInputElement).value;
+            this._throughDate = (e.target as HTMLInputElement).value;
             this._applyFilters();
           }}
         ></sl-input>
@@ -2368,7 +2380,7 @@ export class AuditView extends AuthedElement {
         min-width: 0;
       }
       /* Every filter is named (a native date box shows no placeholder, so
-         From and To looked identical); keep the names small. */
+         the date fields looked identical); keep the names small. */
       .filter-bar sl-input::part(form-control-label),
       .filter-bar sl-select::part(form-control-label) {
         font-size: var(--sl-font-size-x-small);

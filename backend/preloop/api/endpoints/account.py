@@ -3505,6 +3505,9 @@ async def list_account_runtime_sessions(
     end_date: Optional[datetime] = Query(None),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    sort: Literal["last_activity", "started", "cost", "requests"] = Query(
+        "last_activity", description="Descending order across all matching sessions"
+    ),
     agent: Optional[str] = Query(
         None,
         min_length=1,
@@ -3547,7 +3550,7 @@ async def list_account_runtime_sessions(
             "no agent matches no session"
         ),
     ),
-):
+) -> AccountRuntimeSessionListResponse:
     """List runtime sessions for the current account."""
     if has_artifacts is not None and has_artifacts != "any":
         if has_artifacts not in ARTIFACT_KINDS:
@@ -3570,6 +3573,7 @@ async def list_account_runtime_sessions(
             end_date=end_date,
             limit=limit,
             offset=offset,
+            sort=sort,
             background_tasks=background_tasks,
             agent=agent,
             agent_kind=agent_kind,
@@ -3585,7 +3589,7 @@ async def list_account_runtime_sessions(
 
 @router.post("/runtime-sessions", response_model=AccountRuntimeSessionListResponse)
 @require_permission("view_runtime_sessions")
-async def search_account_runtime_session_identity(
+def search_account_runtime_session_identity(
     account: Annotated[Account, Depends(get_account_for_user)],
     background_tasks: BackgroundTasks,
     query: Annotated[str, Body(embed=True, min_length=1, max_length=500)],
@@ -3650,28 +3654,25 @@ async def search_account_runtime_session_identity(
                     + ", ".join(sorted(ARTIFACT_KINDS))
                 ),
             )
-    # Off the loop on purpose: the console polls this path, and a saturated
-    # pool must not stall the liveness probe. See preloop.api.loop_safety.
-    return await run_db_off_loop(
-        lambda: RuntimeSessionExplorerService(db).list_account_sessions(
-            account=account,
-            query=query,
-            session_source_type=session_source_type,
-            status=status,
-            start_date=start_date,
-            end_date=end_date,
-            limit=limit,
-            offset=offset,
-            background_tasks=background_tasks,
-            agent=agent,
-            agent_kind=agent_kind,
-            alias=alias,
-            parent_session_id=str(parent_session_id) if parent_session_id else None,
-            flow_execution_id=str(flow_execution_id) if flow_execution_id else None,
-            active_within_minutes=active_within_minutes,
-            has_artifacts=has_artifacts,
-            owner_user_id=str(owner_user_id) if owner_user_id else None,
-        )
+    # FastAPI dispatches this synchronous database handler on its worker pool.
+    return RuntimeSessionExplorerService(db).list_account_sessions(
+        account=account,
+        query=query,
+        session_source_type=session_source_type,
+        status=status,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        offset=offset,
+        background_tasks=background_tasks,
+        agent=agent,
+        agent_kind=agent_kind,
+        alias=alias,
+        parent_session_id=str(parent_session_id) if parent_session_id else None,
+        flow_execution_id=str(flow_execution_id) if flow_execution_id else None,
+        active_within_minutes=active_within_minutes,
+        has_artifacts=has_artifacts,
+        owner_user_id=str(owner_user_id) if owner_user_id else None,
     )
 
 
@@ -3752,6 +3753,9 @@ async def get_account_session_activity_timeline(
     before: Optional[str] = Query(
         None, max_length=64, description="Previous page's next_before cursor."
     ),
+    after: Optional[str] = Query(
+        None, max_length=64, description="Previous page's next_after cursor."
+    ),
     around: Optional[str] = Query(
         None,
         max_length=64,
@@ -3781,6 +3785,7 @@ async def get_account_session_activity_timeline(
             operator_note_id=operator_note_id,
             page_by_turn=page_by_turn,
             before=before,
+            after=after,
             around=around,
         )
     )

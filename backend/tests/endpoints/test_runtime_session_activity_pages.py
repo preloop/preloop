@@ -48,6 +48,17 @@ def test_turn_page_and_gateway_focus_are_scoped_to_the_session(
     assert len(activities) == 4
     assert str(rows[5].id) in {item["activity_id"] for item in activities}
     assert page["has_more"]
+    assert page["has_newer"]
+    newer = client.get(
+        f"{base}/activity",
+        params={"page_by_turn": True, "limit": 4, "after": page["next_after"]},
+    )
+    assert newer.status_code == 200, newer.text
+    newer_ids = {
+        item["activity_id"] for item in newer.json()["items"] if item["activity_id"]
+    }
+    assert newer_ids
+    assert not newer_ids & {item["activity_id"] for item in activities}
     gateway = client.get(
         f"{base}/gateway-events", params={"limit": 4, "around": usage_ids[5]}
     )
@@ -100,6 +111,11 @@ def test_foreign_activity_and_usage_targets_are_not_disclosed(
                     params={"page_by_turn": True, "around": target},
                 )
                 assert response.status_code == 404, response.text
+            response = client.get(
+                f"/api/v1/runtime-sessions/{sessions[0].id}/activity",
+                params={"page_by_turn": True, "after": target},
+            )
+            assert response.status_code == 404, response.text
 
 
 def test_identity_search_accepts_query_in_post_body(

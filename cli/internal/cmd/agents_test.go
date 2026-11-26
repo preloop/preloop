@@ -1170,10 +1170,9 @@ func TestParseClaudeManagedGatewayUpstreamImportsOAuthWithWarning(t *testing.T) 
 		t.Fatalf("expected OAuth-backed Claude model traffic to route through gateway")
 	}
 	if len(upstream.Notes) == 0 ||
-		!strings.Contains(strings.Join(upstream.Notes, "\n"), "ANTHROPIC_API_KEY") ||
-		!strings.Contains(strings.Join(upstream.Notes, "\n"), "best-effort") ||
-		!strings.Contains(strings.Join(upstream.Notes, "\n"), "subscription/OAuth") {
-		t.Fatalf("expected OAuth risk and API billing guidance note, got %#v", upstream.Notes)
+		!strings.Contains(strings.Join(upstream.Notes, "\n"), "reconnect") ||
+		strings.Contains(strings.Join(upstream.Notes, "\n"), "ANTHROPIC_API_KEY") {
+		t.Fatalf("expected subscription recovery guidance, got %#v", upstream.Notes)
 	}
 }
 

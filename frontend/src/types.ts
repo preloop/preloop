@@ -1297,6 +1297,8 @@ export interface RuntimeSessionArtifactListResponse {
 export interface RuntimeSessionActivityListResponse {
   has_more?: boolean;
   next_before?: string | null;
+  has_newer?: boolean;
+  next_after?: string | null;
   partial_turn?: boolean;
   items: RuntimeSessionActivityItem[];
 }

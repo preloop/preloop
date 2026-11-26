@@ -25,8 +25,8 @@ Ubuntu 24.04 uses setup-python's Ubuntu build when system Python is not 3.11;
 it does not need a misleading `ubuntu-latest` label or a hosted toolcache.
 
 The picker assigns at most one shard per observed idle runner, up to the
-configured general-pool limit. Standby deb1–deb12 registrations are excluded.
-Other jobs stay hosted. A runner registration represents
+configured general-pool limit. Runners are classified by label, never by name.
+A runner registration represents
 a configured slot, not a CPU; provision slots to fit the host's measured capacity.
 This snapshot is not a reservation: another run can consume a slot or a spot
 VM can stop after selection. GitHub cannot migrate an assigned job between
@@ -73,10 +73,64 @@ GitHub-hosted `ubuntu-24.04` has no Postgres, so the same step starts
 `pgvector/pgvector:pg16` on `127.0.0.1:5432` and removes that container
 afterwards. A self-hosted VM that already runs the server skips that start.
 
+## Local pool (`preloop-ci-local`)
+
+A Debian 12 VM with 8 CPUs and 15 GB of RAM hosts three runner slots,
+deb1–deb3, labelled `self-hosted`, `Linux`, `X64` and `preloop-ci-local`.
+Three slots on 8 CPUs leaves each job a little over two cores, which is what a
+light job or one backend shard needs. Do not add slots without measuring:
+more registrations on the same VM make every job on it slower. The earlier
+deb4–deb12 registrations were removed.
+
+The local pool is its own runner class. It is on by default for trusted
+sources and is turned off with the repository variable
+`CI_LOCAL_RUNNERS=false`; it does not need `CI_SELF_HOSTED_TESTS`.
+`.github/scripts/pick-runners.sh` makes every decision from one inventory
+snapshot and is covered by `backend/tests/test_github_ci_self_hosted_runner.py`:
+
+- `Pick light-job runners` runs first and gives idle local slots to Detect
+  changed paths, then to Lint & Format and CLI Fast (in that order; changes
+  finishes before the other two start, so it can reuse a slot).
+- `Pick test runner` runs after the fast gate. A run's backend groups go to
+  the general pool when it has one idle runner per group, else to the local
+  pool when it has one idle slot per group, else all to hosted. With three
+  slots that means a narrow impact-selected set (one to three groups) can run
+  locally; a full seven-group set stays hosted. Local slots left over go to
+  the browser-fixture and fuzz leaves in that order. Fuzz runs two legs at
+  once, so it needs two free slots or stays hosted. The docs leaf stays
+  hosted: its lock needs Python 3.11.5 or later and Debian 12 ships 3.11.2.
+- Anything without an idle slot at selection time, every picker failure,
+  reruns, forks and Dependabot PRs use `ubuntu-24.04`. CI has no
+  `pull_request_target` job.
+
+The picker is defence in depth, not the security boundary. A job on a local
+slot runs as a member of the `docker` group, which is root on that VM. For
+`pull_request` events GitHub runs the workflow file from the PR's merge
+commit, so a fork PR can name `preloop-ci-local` (or `preloop-ci-general`) in
+its own `runs-on` and skip the picker. What stops that today is GitHub's
+fork-workflow approval, which this repository sets to first-time
+contributors only, and the repository-level runners sit in the default
+runner group with no workflow restriction. Requiring approval for all
+outside contributors, or moving the private runners into a runner group
+restricted to workflows on `main`, would make the boundary hard.
+
+The snapshot is not a reservation. A local job whose slot is taken in the
+meantime waits for the next free slot. Backend shards on local slots are
+watched by the hosted recovery listener like general-pool shards; light jobs
+are not, and rely on their timeouts.
+
+Each slot has its own `_work` directory. Between jobs a runner job-completed
+hook (`ACTIONS_RUNNER_HOOK_JOB_COMPLETED`) deletes that job's workspace and
+`_temp`, keeping the tool cache. An hourly systemd timer prunes Docker
+containers, networks, images and build cache that no job is using. Chromium's
+system libraries are preinstalled, because the slot user has no sudo and
+`playwright install --with-deps` needs root.
+
 ## Hosted control jobs
 
-Changed-path detection, the runner picker and the final CI aggregator always
-run on GitHub-hosted `ubuntu-24.04`. The general pool is optional spot capacity,
+The runner pickers and the final CI aggregator always run on GitHub-hosted
+`ubuntu-24.04`. Changed-path detection prefers an idle local slot and falls
+back to hosted whenever the light picker produced no answer. The general pool is optional spot capacity,
 so an offline pool must not prevent the picker from selecting hosted shards or
 the aggregator from finishing. `CI_SELF_HOSTED_BOOTSTRAP` is no longer used;
 existing repository values have no effect on this workflow.

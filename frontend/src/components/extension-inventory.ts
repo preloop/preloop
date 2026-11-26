@@ -5,6 +5,7 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
+import './extension-enforcement';
 import { tableScrollStyles } from '../styles/table-scroll';
 import { formatRelativeTime } from '../utils/date';
 import { downloadText } from '../utils/records-format';
@@ -71,6 +72,7 @@ export class ExtensionInventory extends LitElement {
   @state() private loading = true;
   @state() private canView = false;
   @state() private canManage = false;
+  @state() private approvalRevision = 0;
   @state() private error = '';
   @state() private busy = '';
   @state() private downloading = false;
@@ -247,6 +249,7 @@ export class ExtensionInventory extends LitElement {
     this.error = '';
     try {
       await this.updater(row, next);
+      this.approvalRevision += 1;
       // Decisions are account-wide; refresh every visible occurrence and filter.
       await this.refresh();
     } catch (error) {
@@ -625,6 +628,7 @@ export class ExtensionInventory extends LitElement {
             : nothing
       }
       ${this.page ? html`<div class="footer"><span class="meta" aria-live="polite">${this.page.items.length} extensions shown</span>${this.page.next_cursor ? html`<sl-button size="small" ?loading=${this.loading} @click=${() => this.refresh(true)}>Load more</sl-button>` : nothing}</div>` : nothing}
+      ${!this.fingerprint && this.canManage ? html`<extension-enforcement .canManage=${this.canManage} .approvalRevision=${this.approvalRevision}></extension-enforcement>` : nothing}
     `;
   }
 }

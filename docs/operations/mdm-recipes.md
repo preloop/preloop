@@ -37,7 +37,8 @@ vendor entitlement is certified by these fixtures. Review the vendor's
 Another managed source can supersede the delivered file. A root-only unreadable
 file is not an effective policy: the app user must be able to read it.
 
-This overlay supplies only `hooks.PreToolUse`. It does not configure model
+The `claude-code` hook overlay supplies only `hooks.PreToolUse`. The separate
+[extension restrictions](#extension-restrictions) recipe exports a second drop-in. It does not configure model
 routing, MCP allowlists, OTel, enrollment, Codex or Desktop. For a Desktop pilot,
 use the separate [Desktop adapter guide](../guide/clients/claude-desktop.md),
 record its effective configuration and run the acceptance checklist below;
@@ -314,3 +315,119 @@ preloop agents extensions check --policy-file /path/to/policy.json
 
 The check proves that extension files are present or absent in the locations
 the collector reads. It does not prove what the agent loaded or executed.
+
+## Extension restrictions
+
+The **Extensions → Enforcement** card renders an account's explicit marketplace
+policy and Unapproved marketplace plugin names into a separate drop-in. It does
+not infer source URLs from hashed inventory. Content pins and version constraints
+remain inventory/check evidence: this overlay cannot enforce them. Approved and
+Unknown plugins are not force-enabled or disabled.
+
+Reading, editing and rendering this policy require `manage_agents`: marketplace
+headers may contain credentials. After a concurrent edit rejects a save, use
+**Reload saved policy (discard edits)** to load the latest revision and bundle
+registrations before editing again.
+
+1. If **Managed hooks only** is selected, deploy and register the `claude-code`
+   hook bundle for the target platform first. The renderer requires that active
+   registration, but registration alone does not prove the hook is installed.
+2. Edit the six options and explicit marketplace sources. Include every allowed
+   source, including `anthropics/claude-plugins-official` if it should remain
+   available. Preview refuses a restricted policy with no allowed marketplace:
+   `strictKnownMarketplaces: []` blocks all sources, including official ones.
+   Pattern sources, `skills-dir` and GitHub owner wildcards are policy matchers;
+   they cannot be registered on devices.
+3. Select macOS, Linux or Windows and preview. Read the omitted restrictions,
+   rendered JSON and the last registered revision. **Out of date** compares the
+   current rendered hash with the active extension bundle for that platform.
+4. Download the renderer response and review it offline:
+
+   ```sh
+   preloop agents managed-config claude-code-extensions \
+     --from-file preloop-extension-overlay.json --platform darwin \
+     --output ./extension-bundle --dry-run
+   ```
+
+   Remove `--dry-run` to write `50-preloop-extensions.json`, `manifest.json` and
+   `preview.txt`. The CLI verifies the hash of the exact UTF-8 settings bytes.
+   `--from-file` never connects to Preloop and cannot be combined with
+   `--register`. An explicitly supplied `--platform` must match the response.
+   Without `--from-file`, the command authenticates to the account renderer;
+   add `--register` to record its manifest. The old hook export remains offline.
+   `--overwrite` replaces only regular files in a separate review directory.
+   The command refuses managed system directories, including their drop-ins.
+5. Use endpoint tooling to place **only** the reviewed settings artifact at the
+   target below. Do not put `manifest.json` in the drop-in directory: Claude Code
+   reads every non-hidden `*.json` there. Refuse a pre-existing target; reconcile
+   its owner and effective policy before replacing anything. Inspect the main
+   managed file and other drop-ins for conflicting keys before rollout.
+
+   | Platform | Drop-in target |
+   | --- | --- |
+   | macOS | `/Library/Application Support/ClaudeCode/managed-settings.d/50-preloop-extensions.json` |
+   | Linux | `/etc/claude-code/managed-settings.d/50-preloop-extensions.json` |
+   | Windows | `C:\Program Files\ClaudeCode\managed-settings.d\50-preloop-extensions.json` |
+
+   Claude Code merges the main file first, then drop-ins in alphabetical order.
+   Restart and verify the effective source, a refused plugin, a refused
+   marketplace, and the Preloop hook before expanding the pilot.
+
+### Supported keys and versions
+
+The verified table in `backend/preloop/services/extension_policy_keys.py` records
+the shape, source URL, check date (2026-11-25) and minimum supported version for
+every emitted key. Removing an entry omits that key as `shape unverified`.
+The current supported floor is **Claude Code 2.1.332**, including drop-in support.
+This is a conservative tested floor, not a claim about each key's introduction:
+the vendor reference does not date every key. The preview reports the highest
+floor among emitted keys and drop-in support. Older clients, or clients without
+drop-in directory support, ignore the file or unsupported keys. There is no
+runtime version detection in this release.
+
+Verified shapes: `enabledPlugins` maps plugin IDs to `false`;
+`strictKnownMarketplaces` and `blockedMarketplaces` contain source objects;
+`extraKnownMarketplaces` maps names to `{source: {...}}`;
+`allowManagedHooksOnly`, `disableSkillShellExecution` and `disableSideloadFlags`
+are booleans; `strictPluginOnlyCustomization` is emitted only as `["skills"]`.
+The overlay never locks `mcp` or `hooks` through that array.
+See the vendor's [settings reference](https://code.claude.com/docs/en/settings-reference),
+[plugin policy](https://code.claude.com/docs/en/plugins/org),
+[hooks](https://code.claude.com/docs/en/hooks), [skills](https://code.claude.com/docs/en/skills),
+and [managed sources](https://code.claude.com/docs/en/managed-settings).
+
+### Vendor admin console: unverified for Preloop routes
+
+The same JSON can be copied from the card's explicitly labelled **Vendor admin
+console (unverified)** section for review and pasting into **Organization settings
+→ Claude Code → Managed settings**. `--delivery vendor_console` records the
+operator's intended channel in the manifest; it does not change the JSON or
+verify delivery. The default is `--delivery endpoint_file`.
+
+**Delivery is unverified for agents routed through Preloop with a non-default
+`ANTHROPIC_BASE_URL`.** The Team/Enterprise organisation experiment in #2320
+criterion 11a has not been performed. Do not assume that onboarding through
+Preloop receives admin-console policy. Prefer the endpoint file for Preloop
+routes, personal plans, API keys and cloud-provider routes. For eligible managed
+plans, the vendor console can simplify rollout only after delivery is verified
+in that environment. The vendor describes client-side control that an unmanaged
+device can bypass, a cache that can persist for 24 hours, and delivery exclusions
+for cloud-provider sessions. See [server-managed settings](https://code.claude.com/docs/en/server-managed-settings).
+
+### Limits and rollback
+
+- no allow-list-only mode for plugins exists in Claude Code
+- restrictions stop loading and do not delete files on disk
+- a higher-precedence managed source (server-managed settings, MDM plist, registry) supersedes the file
+- export and registration do not prove installation
+
+The source-precedence statement describes the vendor's default selection.
+Newer clients also offer explicit managed-source composition; this overlay does
+not emit that setting. Endpoint files still depend on the client honoring them
+and on protecting the system directory from standard-user writes.
+
+To roll back delivery, have the endpoint policy owner remove only
+`50-preloop-extensions.json` and restart/verify Claude Code. Preserve the hook
+bundle and other managed sources. Reverting Preloop or downgrading the policy
+migration does not remove files already deployed to devices. Registered extension
+bundle revisions then remain inert metadata.

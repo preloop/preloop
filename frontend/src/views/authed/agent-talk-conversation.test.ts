@@ -10,6 +10,7 @@ import './agent-talk-view';
 import type { AgentTalkView } from './agent-talk-view';
 import {
   conversationEvents,
+  conversationIntro,
   conversationLabel,
   conversationNotice,
   conversationRequest,
@@ -45,6 +46,18 @@ const thread: FlowConversation = {
 };
 
 describe('Hosted conversation on Talk', () => {
+  for (const [origin, label] of Object.entries({
+    slack: 'Slack',
+    mattermost: 'Mattermost',
+    discord: 'Discord',
+    teams: 'Microsoft Teams',
+  })) {
+    it(`shows the ${origin} origin in the existing thread introduction`, () => {
+      expect(conversationIntro({ ...thread, origin })).to.equal(
+        `Started in ${label}.`
+      );
+    });
+  }
   let fetch: sinon.SinonStub;
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-token');
@@ -182,8 +195,9 @@ describe('Hosted conversation on Talk', () => {
   it('advances the elapsed time without a poll', async () => {
     const el = await mount();
     const root = await show(el, { state: 'working', idle_deadline: null });
-    (el as any).conversationBusySince = Date.now() - 75_000;
-    (el as any).conversationNow = Date.now();
+    const now = Date.now();
+    (el as any).conversationBusySince = now;
+    (el as any).conversationNow = now + 75_000;
     await el.updateComplete;
     await (root.querySelector('session-chat-view') as any).updateComplete;
     expect(indicator(root)!.textContent).to.contain('Working (1m 15s)');

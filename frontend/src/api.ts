@@ -417,7 +417,12 @@ async function refreshToken(): Promise<RefreshResult> {
         }
       }
 
-      if (!response || response.status >= 500) {
+      // A 429 is the request rate limiter refusing this attempt, not the
+      // server rejecting the refresh token: the session is still valid. It is
+      // not retried here, because another attempt inside the same window
+      // would only spend more of a budget shared with everyone behind this
+      // address.
+      if (!response || response.status >= 500 || response.status === 429) {
         // Still transient: keep the session. The next 401 will try again.
         console.error('Token refresh failed transiently; keeping session');
         return { token: null, terminal: false };
@@ -1372,6 +1377,7 @@ export interface GatewayUsageSearchParams extends GatewayUsageSummaryParams {
 }
 
 export interface RuntimeSessionListParams extends GatewayUsageSummaryParams {
+  sort?: 'last_activity' | 'started' | 'cost' | 'requests';
   query?: string;
   sessionSourceType?: string;
   /**
@@ -1477,6 +1483,7 @@ function buildRuntimeSessionListQuery(
 ): string {
   const queryParams = new URLSearchParams();
 
+  if (params.sort) queryParams.set('sort', params.sort);
   if (params.startDate) {
     queryParams.set('start_date', params.startDate);
   }
@@ -3330,6 +3337,7 @@ export async function getAccountRuntimeSessionActivityTimeline(
     operatorNoteId?: string | null;
     around?: string | null;
     before?: string | null;
+    after?: string | null;
   } = {}
 ): Promise<RuntimeSessionActivityListResponse> {
   const query = new URLSearchParams({
@@ -3338,6 +3346,7 @@ export async function getAccountRuntimeSessionActivityTimeline(
   });
   if (options.around) query.set('around', options.around);
   if (options.before) query.set('before', options.before);
+  if (options.after) query.set('after', options.after);
   // Older callers can still name a delivered note directly.
   if (options.operatorNoteId) {
     query.set('operator_note_id', options.operatorNoteId);
@@ -4104,21 +4113,23 @@ export async function listProjectPullRequests(
     `${REST_API_PREFIX}/projects/${encodeURIComponent(projectId)}/pull-requests?${query.toString()}`
   );
   if (!response.ok) {
-    // Classify the server's configuration error without displaying its raw
-    // detail, which can contain tracker connection settings.
-    let configurationError = false;
-    try {
-      const body = await response.json();
-      configurationError =
-        typeof body?.detail === 'string' &&
-        /^Configuration error for tracker:/i.test(body.detail);
-    } catch {
-      // Proxies can return non-JSON errors; the HTTP status still applies.
-    }
+    const errorData = await response.json().catch(() => ({}));
+    // Older servers included connection settings in this error's detail.
+    const configurationError =
+      typeof errorData?.detail === 'string' &&
+      /^Configuration error for tracker:/i.test(errorData.detail);
+    const repairable =
+      [400, 403].includes(response.status) && !configurationError;
     throw new ApiError(
-      'Failed to fetch pull requests',
+      repairable
+        ? trackerErrorDetail(errorData, 'Failed to fetch pull requests')
+        : 'Failed to fetch pull requests',
       response.status,
-      configurationError ? 'tracker_configuration_error' : undefined
+      configurationError
+        ? 'tracker_configuration_error'
+        : repairable
+          ? 'tracker_repair_required'
+          : undefined
     );
   }
   return response.json();

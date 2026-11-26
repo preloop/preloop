@@ -106,6 +106,7 @@ def audit(
             "execution_id": str(row.execution_id),
             "turn": row.turns,
             "owner_user_id": str(row.owner_user_id),
+            "origin": row.origin,
         },
     )
 
@@ -201,6 +202,7 @@ def start_conversation(
             flow=flow,
             owner=current_user,
             policy=policy,
+            origin=body.origin,
         )
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc

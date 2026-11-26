@@ -131,10 +131,25 @@ def test_transcript_turn_pages_preserve_same_timestamp_message_order(
         f"Message {i}" for i in (3, 2, 1, 0)
     ]
     assert not earlier["has_more"]
+    one_turn = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **{**kwargs, "limit": 1}, after=earlier["next_after"]
+    )
+    assert [row.summary for row in one_turn["rows"]] == ["Message 5", "Message 4"]
+    final_turn = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **{**kwargs, "limit": 1}, after=one_turn["next_after"]
+    )
+    assert [row.summary for row in final_turn["rows"]] == ["Message 7", "Message 6"]
+    assert not final_turn["has_newer"]
 
 
+@pytest.mark.parametrize("same_timestamp", [False, True])
+@pytest.mark.parametrize(("row_count", "focus_index"), [(2100, 5), (6200, 2200)])
 def test_focus_survives_an_oversized_turn_and_respects_history(
-    db_session: Session, create_account: Callable[..., models.Account]
+    db_session: Session,
+    create_account: Callable[..., models.Account],
+    same_timestamp: bool,
+    row_count: int,
+    focus_index: int,
 ) -> None:
     """A safety cap cannot hide the search target or disclose expired history."""
     account = create_account()
@@ -151,12 +166,16 @@ def test_focus_survives_an_oversized_turn_and_respects_history(
         models.RuntimeSessionActivity(
             account_id=account.id,
             runtime_session_id=session.id,
-            timestamp=at + timedelta(seconds=index),
-            activity_type="transcript_message" if index == 0 else "tool_call",
+            timestamp=at if same_timestamp else at + timedelta(seconds=index),
+            activity_type="transcript_message",
             summary=f"Example row {index}",
-            metadata_={"role": "user"},
+            metadata_={
+                "role": "user" if index == 0 else "assistant",
+                "external_id": "example-batch",
+                "message_index": index,
+            },
         )
-        for index in range(2100)
+        for index in range(row_count)
     ]
     db_session.add_all(rows)
     db_session.flush()
@@ -166,16 +185,39 @@ def test_focus_survives_an_oversized_turn_and_respects_history(
         "limit": 20,
     }
     focused = crud_runtime_session_activity.list_timeline_turn_page(
-        db_session, **kwargs, around=str(rows[5].id)
+        db_session, **kwargs, around=str(rows[focus_index].id)
     )
-    assert rows[5].id in {row.id for row in focused["rows"]}
+    assert rows[focus_index].id in {row.id for row in focused["rows"]}
     assert len(focused["rows"]) <= 2000
     assert focused["partial_turn"]
-    page = crud_runtime_session_activity.list_timeline_turn_page(db_session, **kwargs)
+    assert focused["has_more"] is (focus_index > 1000)
+    if not focused["has_more"]:
+        assert focused["next_before"] is None
+    assert focused["has_newer"]
+    seen = {row.id for row in focused["rows"]}
+    for direction, flag, cursor in (
+        ("before", "has_more", "next_before"),
+        ("after", "has_newer", "next_after"),
+    ):
+        page = focused
+        while page[flag]:
+            page = crud_runtime_session_activity.list_timeline_turn_page(
+                db_session, **kwargs, **{direction: page[cursor]}
+            )
+            page_ids = {row.id for row in page["rows"]}
+            assert page_ids, "An advertised cursor must make progress"
+            assert len(page_ids) <= 2000
+            assert not seen & page_ids
+            seen.update(page_ids)
+    assert seen == {row.id for row in rows}
+    latest = crud_runtime_session_activity.list_timeline_turn_page(db_session, **kwargs)
     older = crud_runtime_session_activity.list_timeline_turn_page(
-        db_session, **kwargs, before=page["next_before"]
+        db_session, **kwargs, before=latest["next_before"]
     )
-    assert {row.id for row in page["rows"] + older["rows"]} == {row.id for row in rows}
+    recovered = crud_runtime_session_activity.list_timeline_turn_page(
+        db_session, **kwargs, after=older["next_after"]
+    )
+    assert {row.id for row in recovered["rows"]} == {row.id for row in latest["rows"]}
     for method in (
         crud_runtime_session_activity.list_timeline_turn_page,
         crud_runtime_session_activity.gateway_offset_around,

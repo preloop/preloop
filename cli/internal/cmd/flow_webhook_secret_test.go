@@ -89,3 +89,30 @@ func TestFlowWebhookSecretRotateFailure(t *testing.T) {
 		t.Fatal("reported success after failure")
 	}
 }
+
+func TestFlowWebhookSecretRotateLegacyServer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`[{"id":"11111111-2222-4333-8444-555555555555","name":"Example flow"}]`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	testenv.SetHome(t, t.TempDir())
+	oldToken, oldURL := FlagToken, FlagURL
+	FlagToken, FlagURL = "tok", server.URL
+	t.Cleanup(func() { FlagToken, FlagURL = oldToken, oldURL })
+	cmd := newFlowWebhookSecretCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"rotate", "11111111-2222-4333-8444-555555555555"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "upgrade the server") {
+		t.Fatalf("expected compatibility guidance, got %v", err)
+	}
+	if strings.Contains(out.String(), "shown once") {
+		t.Fatal("reported rotation after a refusal")
+	}
+}

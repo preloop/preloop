@@ -64,7 +64,7 @@ var readClaudeKeychainBlobForSync = func() (string, error) {
 // writeClaudeSubscriptionCredentialForSync writes a pulled bundle into the
 // active local store, preserving fields Preloop does not hold (scopes,
 // subscriptionType). Tests replace it.
-var writeClaudeSubscriptionCredentialForSync = writeClaudeSubscriptionCredential
+var writeClaudeSubscriptionCredentialForSync = writeClaudeSubscriptionCredentialToSource
 
 // errClaudeOAuthSplitSecrets refuses a sync when the enrollment's Claude Code
 // rows point at more than one credential secret.
@@ -77,6 +77,9 @@ type claudeOAuthLocalBundle struct {
 	MtimeNS    int64
 	Newer      bool
 	Source     string
+	// KeychainUnavailable requires manual source selection for legacy
+	// enrollments. A locked Keychain does not prove a file shares its lineage.
+	KeychainUnavailable bool
 }
 
 type claudeOAuthSyncOutcome = codexOAuthSyncOutcome
@@ -151,10 +154,9 @@ func claudeCredentialFilePath() string {
 	return path
 }
 
-// evaluateClaudeOAuthLocalBundle reads the local login from the store a pull
-// would write: the Keychain when it holds a login, else the credentials
-// file. With no Keychain login, an unchanged file and no marker check due,
-// it returns after one stat.
+// evaluateClaudeOAuthLocalBundle honors the enrolled store. Legacy enrollments
+// try Keychain first and can use a valid file when Keychain is unavailable.
+// An explicitly enrolled Keychain must not be replaced by an unrelated file.
 func evaluateClaudeOAuthLocalBundle(state *localEnrollmentState, fullRead bool) (claudeOAuthLocalBundle, error) {
 	syncedExpires := int64(0)
 	syncedMtime := int64(0)
@@ -167,32 +169,43 @@ func evaluateClaudeOAuthLocalBundle(state *localEnrollmentState, fullRead bool) 
 	if info, err := os.Stat(path); err == nil {
 		mtimeNS = info.ModTime().UnixNano()
 	}
-	blob, err := readClaudeKeychainBlobForSync()
-	if err != nil {
-		return claudeOAuthLocalBundle{}, fmt.Errorf("claude code oauth sync: %w", err)
+	blob := ""
+	var keychainErr error
+	if state == nil || state.ClaudeOAuthCredentialSource != claudeOAuthSourceFile {
+		blob, keychainErr = readClaudeKeychainBlobForSync()
+		if state != nil && state.ClaudeOAuthCredentialSource == claudeOAuthSourceKeychain && (keychainErr != nil || strings.TrimSpace(blob) == "") {
+			return claudeOAuthLocalBundle{}, errors.New("claude code oauth sync: enrolled Keychain login is unavailable; unlock Keychain or reconnect the subscription")
+		}
 	}
 	source := claudeOAuthSourceKeychain
-	if strings.TrimSpace(blob) == "" {
+	if keychainErr != nil || strings.TrimSpace(blob) == "" {
 		source = claudeOAuthSourceFile
-		if !fullRead && syncedExpires > 0 && mtimeNS > 0 && syncedMtime > 0 && mtimeNS <= syncedMtime {
+		if keychainErr == nil && !fullRead && syncedExpires > 0 && mtimeNS > 0 && syncedMtime > 0 && mtimeNS <= syncedMtime {
 			return claudeOAuthLocalBundle{MtimeNS: mtimeNS, Source: source}, nil
 		}
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
+			if keychainErr != nil {
+				return claudeOAuthLocalBundle{}, errors.New("claude code oauth sync: Keychain is unavailable and no usable credential file was found")
+			}
 			return claudeOAuthLocalBundle{MtimeNS: mtimeNS, Source: source}, nil
 		}
 		blob = string(data)
 	}
 	cred := parseClaudeOAuthCredentialBlob(blob, 0)
 	if cred == nil || strings.TrimSpace(cred.RefreshToken) == "" || cred.ExpiresAtMS <= 0 {
+		if keychainErr != nil {
+			return claudeOAuthLocalBundle{}, errors.New("claude code oauth sync: Keychain is unavailable and no usable credential file was found")
+		}
 		return claudeOAuthLocalBundle{MtimeNS: mtimeNS, Source: source}, nil
 	}
 	cred.ExpiresAtMS = oauthPayloadEpochMillis(cred.ExpiresAtMS)
 	return claudeOAuthLocalBundle{
-		Credential: cred,
-		MtimeNS:    mtimeNS,
-		Newer:      claudeLocalBundleNewer(cred.ExpiresAtMS, syncedExpires),
-		Source:     source,
+		Credential:          cred,
+		MtimeNS:             mtimeNS,
+		Newer:               claudeLocalBundleNewer(cred.ExpiresAtMS, syncedExpires),
+		Source:              source,
+		KeychainUnavailable: keychainErr != nil,
 	}, nil
 }
 
@@ -268,6 +281,9 @@ func syncClaudeOAuthCredentials(
 			return claudeOAuthSyncOutcome{}, fmt.Errorf("claude code oauth sync: no local Claude subscription login found")
 		}
 		return claudeOAuthSyncOutcome{Unchanged: true}, nil
+	}
+	if bundle.KeychainUnavailable && !force {
+		return recordClaudeOAuthSyncFailure(state, errors.New(`claude code oauth sync: Keychain is unavailable; unlock it to keep using that login, or run preloop agents sync-credentials "Claude Code" to select the credentials file explicitly, or reconnect the subscription`))
 	}
 	if !force && !bundle.Newer && !checkDue {
 		return claudeOAuthSyncOutcome{Unchanged: true}, nil
@@ -353,6 +369,7 @@ func reconcileClaudeOAuthBundle(
 			return recordClaudeOAuthSyncFailure(state, markerErr)
 		}
 		if claudeEnrollmentStateStillPresent(state) {
+			state.ClaudeOAuthCredentialSource = bundle.Source
 			state.ClaudeOAuthServerCheckedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			state.ClaudeOAuthSyncModelIDs = ids
 			if state.ClaudeOAuthSyncedServerExpiresMS <= 0 && best != nil {
@@ -376,7 +393,7 @@ func pullClaudeOAuthBundle(
 	var exported exportedModelCredential
 	path := api.RESTPrefix + "/ai-models/" + url.PathEscape(modelID) + "/credentials/export"
 	if err := client.Post(path, nil, &exported); err != nil {
-		return claudeOAuthSyncOutcome{}, fmt.Errorf("claude code oauth sync: export model %s: %w", modelID, err)
+		return claudeOAuthSyncOutcome{}, fmt.Errorf("claude code oauth sync: credential export failed for model %s", modelID)
 	}
 	if strings.TrimSpace(exported.CredentialType) != anthropicClaudeCodeOAuthCredentialType ||
 		!isClaudeCodeOAuthAccessToken(exported.Access) ||
@@ -390,15 +407,16 @@ func pullClaudeOAuthBundle(
 		exported.Expires = marker.Expires
 	}
 	exported.Expires = oauthPayloadEpochMillis(exported.Expires)
-	destination, err := writeClaudeSubscriptionCredentialForSync(exported)
+	destination, err := writeClaudeSubscriptionCredentialForSync(exported, bundle.Source)
 	if err != nil {
-		return claudeOAuthSyncOutcome{}, fmt.Errorf("claude code oauth sync: write local login: %w", err)
+		return claudeOAuthSyncOutcome{}, errors.New("claude code oauth sync: could not write the local login; credential stores may be unavailable")
 	}
 	mtimeNS := bundle.MtimeNS
 	if info, statErr := os.Stat(claudeCredentialFilePath()); statErr == nil {
 		mtimeNS = info.ModTime().UnixNano()
 	}
 	state.ClaudeOAuthSyncedLocalExpiresMS = exported.Expires
+	state.ClaudeOAuthCredentialSource = bundle.Source
 	state.ClaudeOAuthSyncedServerExpiresMS = exported.Expires
 	state.ClaudeOAuthSyncedFileMtimeNS = mtimeNS
 	state.ClaudeOAuthServerCheckedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -434,6 +452,7 @@ func pushClaudeOAuthGroups(
 		return outcome, failErr
 	}
 	state.ClaudeOAuthSyncedLocalExpiresMS = bundle.Credential.ExpiresAtMS
+	state.ClaudeOAuthCredentialSource = bundle.Source
 	state.ClaudeOAuthSyncedServerExpiresMS = bundle.Credential.ExpiresAtMS
 	state.ClaudeOAuthSyncedFileMtimeNS = bundle.MtimeNS
 	state.ClaudeOAuthServerCheckedAt = time.Now().UTC().Format(time.RFC3339Nano)

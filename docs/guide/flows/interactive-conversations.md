@@ -183,10 +183,17 @@ to that conversation and execution; it does not grant access to other threads.
 Stronger isolation requires a separate driver UID and protected capability
 transport. The current hosted runtime does not provide that isolation.
 
-Chat-started flow follow-ups are a separate integration: the broker must retain
-the conversation ID on its chat thread, map the paired user to the conversation
-owner, call these start/send/end routes, and poll the same answers. This change
-does not reinterpret existing `ask ALIAS TEXT` messages as conversation follow-ups.
+[Chat connections](../../chat-connections.md#interactive-flow-conversations)
+use these same routes. On a flow with both a chat alias and interactive enabled,
+`ask ALIAS TEXT` starts a conversation owned by the linked user. A durable binding
+keeps its ID on the bot DM or Slack channel thread, and the durable chat worker
+polls complete answers and state notices. The console lists it alongside
+console-started conversations and Talk shows its chat origin. Slack and
+Mattermost bot DMs and Teams personal chats accept plain follow-ups; Slack channel replies must mention
+the bot in the original thread. Discord follow-ups use `/preloop message:TEXT`.
+Use `end` and `status` (Discord: `/preloop message:/end` and
+`/preloop message:/status`). End the active conversation before another `ask`.
+Flows without interactive enabled retain separate one-shot runs.
 
 ## Validation boundary
 

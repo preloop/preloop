@@ -33,6 +33,7 @@ type offboardRecoveryFixture struct {
 	modelDeleted                               bool
 	checkInitialConfig                         bool
 	credentialType, storePath                  string
+	models                                     []aiModelResponse
 }
 
 func newOffboardRecoveryFixture(t *testing.T, kinds ...string) *offboardRecoveryFixture {
@@ -52,11 +53,15 @@ func newOffboardRecoveryFixture(t *testing.T, kinds ...string) *offboardRecovery
 		f.credentialType = anthropicClaudeCodeOAuthCredentialType
 		f.storePath = filepath.Join(home, ".claude", ".credentials.json")
 		f.exportBody = `{"credential_type":"oauth_anthropic_claude_code","access":"synthetic-live-access","refresh":"synthetic-rotated-refresh","expires":1900000000000}`
+		mustWriteRecoveryFile(t, f.storePath, `{"claudeAiOauth":{"accessToken":"synthetic-stale-access","refreshToken":"synthetic-stale-refresh"},"other":"preserve"}`)
 		mustWriteRecoveryFile(t, filepath.Join(home, ".claude.json"), `{"customApiKeyResponses":{"approved":["synthetic-key-suffix"]},"other":"preserve"}`)
 	}
 	mustWriteRecoveryFile(t, f.agent.ConfigPath, f.config)
 	backup := filepath.Join(home, "backup.toml")
 	mustWriteRecoveryFile(t, backup, "model = \"original-model\"\n")
+	if isClaudeCodeAgent(f.agent) {
+		mustWriteRecoveryFile(t, backup, `{"model":"original-model"}`)
+	}
 	mustWriteRecoveryFile(t, filepath.Join(home, ".codex", "auth.json"), `{"tokens":{"refresh_token":"synthetic-stale-refresh","id_token":"preserve"},"auth_mode":"chatgpt"}`)
 	state := &localEnrollmentState{AgentName: f.agent.Name, ConfigPath: f.agent.ConfigPath, BackupPath: backup, ConfigExisted: true, RuntimePrincipalID: runtimePrincipalIDForAgent(f.agent)}
 	if err := saveLocalEnrollmentState(state); err != nil {
@@ -67,6 +72,12 @@ func newOffboardRecoveryFixture(t *testing.T, kinds ...string) *offboardRecovery
 		defer f.mu.Unlock()
 		f.events = append(f.events, r.Method+" "+r.URL.Path)
 		detail := *detailWithModelForTest("model-1")
+		if f.models != nil {
+			detail.Agent.ConfiguredModels = nil
+			for _, model := range f.models {
+				detail.Agent.ConfiguredModels = append(detail.Agent.ConfiguredModels, managedAgentModelBindingSummary{AIModelID: model.ID})
+			}
+		}
 		detail.Agent.SessionSourceID = runtimePrincipalIDForAgent(f.agent)
 		detail.Agent.SessionSourceType = "codex"
 		if isClaudeCodeAgent(f.agent) {
@@ -112,6 +123,9 @@ func newOffboardRecoveryFixture(t *testing.T, kinds ...string) *offboardRecovery
 			models := []aiModelResponse{}
 			if !f.modelDeleted {
 				models = append(models, aiModelResponse{ID: "model-1", CredentialType: f.credentialType, MetaData: map[string]any{"gateway": map[string]any{"model_alias": "managed-model"}}})
+				if f.models != nil {
+					models = f.models
+				}
 			}
 			_ = json.NewEncoder(w).Encode(models)
 		case r.URL.Path == "/api/v1/mcp-servers":
@@ -500,5 +514,100 @@ func TestExecuteOffboardArchiveFailureRetainsRetryState(t *testing.T) {
 	out, err = runRecoveryOffboard(t, f)
 	if err != nil || f.archives != 2 || f.deletes != 1 || !strings.Contains(out, "✓ Offboarded") {
 		t.Fatalf("retry did not complete: %v %v", err, f.events)
+	}
+}
+
+func TestExecuteOffboardClaudeSharedSubscriptionFamilies(t *testing.T) {
+	for _, fault := range []string{"none", "export", "store", "distinct", "unknown_identity"} {
+		t.Run(fault, func(t *testing.T) {
+			f := newOffboardRecoveryFixture(t, "claude")
+			stubClaudeBinary(t)
+			for _, family := range []string{"opus", "fable", "sonnet", "haiku"} {
+				f.models = append(f.models, aiModelResponse{
+					ID: "model-" + family, CredentialType: anthropicClaudeCodeOAuthCredentialType,
+					CredentialsSecretID: "shared-subscription",
+					MetaData:            map[string]any{"gateway": map[string]any{"model_alias": "managed-model"}},
+				})
+			}
+			switch fault {
+			case "export":
+				f.exportStatus = http.StatusServiceUnavailable
+			case "store":
+				writeOffboardCredentialStoreFile = func(string, []byte) error { return errors.New("synthetic write failure") }
+			case "distinct":
+				f.models[3].CredentialsSecretID = "different-subscription"
+			case "unknown_identity":
+				f.models[3].CredentialsSecretID = ""
+			}
+			before, err := os.ReadFile(f.storePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var offboardErr error
+			out := captureStdout(t, func() error {
+				offboardErr = executeOffboard(f.agent, true, offboardCleanupNo, offboardCleanupNo)
+				return nil
+			})
+			if fault != "none" {
+				assertRecoveryUntouched(t, f, out, offboardErr)
+				after, readErr := os.ReadFile(f.storePath)
+				if readErr != nil || string(after) != string(before) {
+					t.Fatal("failed recovery changed local login")
+				}
+				if fault == "distinct" || fault == "unknown_identity" {
+					if f.exports != 0 || !strings.Contains(offboardErr.Error(), "reconnect") {
+						t.Fatal("ambiguous subscriptions must be refused before export with recovery advice")
+					}
+					return
+				}
+				f.exportStatus = http.StatusOK
+				writeOffboardCredentialStoreFile = writeOffboardCredentialFile
+				out = captureStdout(t, func() error {
+					offboardErr = executeOffboard(f.agent, true, offboardCleanupNo, offboardCleanupNo)
+					return nil
+				})
+			}
+			if offboardErr != nil {
+				t.Fatalf("shared subscription offboard: %v", offboardErr)
+			}
+			wantExports := 1
+			if fault != "none" {
+				wantExports++
+			}
+			if f.exports != wantExports || f.archives != 1 || !strings.Contains(out, "✓ Offboarded") {
+				t.Fatal("shared lineage was not recovered once before offboard completed")
+			}
+			after, err := os.ReadFile(f.storePath)
+			if err != nil || !strings.Contains(string(after), "synthetic-rotated-refresh") || !strings.Contains(string(after), "preserve") {
+				t.Fatal("live login or unrelated metadata missing")
+			}
+			if strings.Contains(out, "synthetic-live-access") || strings.Contains(out, "synthetic-rotated-refresh") {
+				t.Fatal("credential leaked")
+			}
+		})
+	}
+}
+
+func TestExecuteOffboardClaudeUsesEnrolledFileWithLockedKeychain(t *testing.T) {
+	f := newOffboardRecoveryFixture(t, "claude")
+	stubClaudeBinary(t)
+	state, err := loadLocalEnrollmentState(f.agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.ClaudeOAuthCredentialSource = claudeOAuthSourceFile
+	if err := saveLocalEnrollmentState(state); err != nil {
+		t.Fatal(err)
+	}
+	readClaudeOffboardKeychain = func() (string, error) {
+		t.Fatal("file enrollment must not access Keychain")
+		return "", errors.New("locked")
+	}
+	out, err := runRecoveryOffboard(t, f)
+	if err != nil {
+		t.Fatalf("file offboard failed: %v", err)
+	}
+	if f.exports != 1 || f.archives != 1 || !strings.Contains(out, "✓ Offboarded") {
+		t.Fatal("file-based offboard did not complete")
 	}
 }

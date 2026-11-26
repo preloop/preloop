@@ -142,6 +142,7 @@ class RuntimeSessionExplorerService:
         end_date: Optional[datetime] = None,
         limit: int = 20,
         offset: int = 0,
+        sort: str = "last_activity",
         background_tasks: Optional[BackgroundTasks] = None,
         agent: Optional[str] = None,
         agent_kind: Optional[str] = None,
@@ -178,6 +179,7 @@ class RuntimeSessionExplorerService:
             status=status,
             limit=limit,
             offset=offset,
+            sort=sort,
             principals=principals,
             source_types=source_types,
             alias=alias,
@@ -763,6 +765,7 @@ class RuntimeSessionExplorerService:
         interaction_limit: int = 100,
         operator_note_id: Optional[str] = None,
         before: Optional[str] = None,
+        after: Optional[str] = None,
         around: Optional[str] = None,
         page_by_turn: bool = False,
     ) -> RuntimeSessionActivityListResponse:
@@ -799,6 +802,7 @@ class RuntimeSessionExplorerService:
                     runtime_session_id=runtime_session_id,
                     limit=interaction_limit,
                     before=before,
+                    after=after,
                     around=around or operator_note_id,
                     start_date=history_window.cutoff,
                 )
@@ -843,6 +847,8 @@ class RuntimeSessionExplorerService:
             items=items,
             has_more=page["has_more"] if page else False,
             next_before=page["next_before"] if page else None,
+            has_newer=page["has_newer"] if page else False,
+            next_after=page["next_after"] if page else None,
             partial_turn=page["partial_turn"] if page else False,
         )
 

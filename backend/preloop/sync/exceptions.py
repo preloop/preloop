@@ -80,3 +80,7 @@ class EmbeddingError(PreloopSyncError):
     """Raised when there's an issue with generating embeddings."""
 
     pass
+
+
+class TrackerIssueIsPullRequestError(TrackerResponseError):
+    """The issues API returned a pull request instead of an issue."""

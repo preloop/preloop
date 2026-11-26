@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -42,6 +44,10 @@ var agentsExtensionsCmd = &cobra.Command{
 The command is read-only: it does not authenticate, use the network, or write
 a file. Identifiers stay in clear, including names an inventory report would
 hash. A partial scan prints "Scan incomplete: <reason>" and exits 2.
+
+Claude project skills, commands and hooks are scanned only for roots in
+~/.claude.json or explicitly included with --project. Use --project . to include
+the current directory, and the same flag on agents discover --report to send it.
 
 Examples:
   preloop agents extensions
@@ -81,6 +87,7 @@ Examples:
 func init() {
 	agentsExtensionsCmd.PersistentFlags().StringArray("agent", nil, "app id to scan (repeatable; default claude-code and codex-cli)")
 	agentsExtensionsCmd.PersistentFlags().Bool("json", false, "print JSON instead of text")
+	agentsExtensionsCmd.PersistentFlags().StringArray("project", nil, "include a Claude project root (repeatable; use . for the current directory)")
 	agentsExtensionsCmd.PersistentFlags().Bool("all-users", false, "scan bounded local profiles; requires elevated administrator rights")
 	agentsExtensionsCmd.Flags().StringArray("kind", nil, "extension kind to show: plugin, skill, hook, or command (repeatable)")
 	agentsExtensionsCheckCmd.Flags().String("policy-file", "", "path to an offline extension policy file")
@@ -356,10 +363,38 @@ func selectedExtensionKinds(cmd *cobra.Command) (map[string]bool, error) {
 	return kinds, nil
 }
 
+// extensionProjects resolves and validates explicit project scan scope.
+func extensionProjects(cmd *cobra.Command) ([]string, error) {
+	projects, _ := cmd.Flags().GetStringArray("project")
+	if len(projects) == 0 && cmd.Flags().Changed("project") {
+		return nil, errors.New("--project requires a directory")
+	}
+	allUsers, _ := cmd.Flags().GetBool("all-users")
+	if allUsers && len(projects) > 0 {
+		return nil, errors.New("--project cannot be combined with --all-users")
+	}
+	paths := make([]string, 0, len(projects))
+	for _, project := range projects {
+		if strings.TrimSpace(project) == "" {
+			return nil, errors.New("--project requires a directory")
+		}
+		path, err := filepath.Abs(project)
+		if err != nil {
+			return nil, errors.New("could not resolve --project directory")
+		}
+		paths = append(paths, path)
+	}
+	return uniqueSorted(paths), nil
+}
+
 func scanExtensionGroups(cmd *cobra.Command, apps []extensionApp, kinds map[string]bool) ([]extensionGroup, []string, error) {
+	projects, err := extensionProjects(cmd)
+	if err != nil {
+		return nil, nil, err
+	}
 	allUsers, _ := cmd.Flags().GetBool("all-users")
 	if !allUsers {
-		return scanCurrentUserExtensions(apps, kinds)
+		return scanCurrentUserExtensions(apps, kinds, projects...)
 	}
 	if !inventoryProfiles.Elevated() {
 		return nil, nil, errors.New("--all-users requires elevated administrator rights")
@@ -367,7 +402,7 @@ func scanExtensionGroups(cmd *cobra.Command, apps []extensionApp, kinds map[stri
 	return scanAllUserExtensions(apps, kinds)
 }
 
-func scanCurrentUserExtensions(apps []extensionApp, kinds map[string]bool) ([]extensionGroup, []string, error) {
+func scanCurrentUserExtensions(apps []extensionApp, kinds map[string]bool, projects ...string) ([]extensionGroup, []string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, nil, errors.New("home directory is unavailable")
@@ -375,7 +410,7 @@ func scanCurrentUserExtensions(apps []extensionApp, kinds map[string]bool) ([]ex
 	groups := make([]extensionGroup, 0, len(apps))
 	reasons := []string{}
 	for _, app := range apps {
-		found, errs := collectDisplayExtensions(home, app.id, "", false)
+		found, errs := collectDisplayExtensions(home, app.id, "", false, projects...)
 		reasons = append(reasons, errs...)
 		groups = append(groups, extensionGroup{app: app, profileRef: "current", profileLabel: "current user", extensions: filterExtensionKinds(found, kinds)})
 	}
@@ -496,6 +531,14 @@ func writeExtensionTables(w io.Writer, groups []extensionGroup, reasons []string
 		}
 		count += len(group.extensions)
 	}
+	for _, group := range groups {
+		if group.app.id == "claude-code" && group.profileRef == "current" {
+			if _, err := io.WriteString(w, "Claude project coverage: roots in ~/.claude.json and --project only. Use --project . to include the current directory; also pass it to agents discover --report.\n"); err != nil {
+				return err
+			}
+			break
+		}
+	}
 	_, err := io.WriteString(w, extensionSummary(count, reasons))
 	return err
 }
@@ -593,6 +636,9 @@ func loadExtensionPolicy(online bool, path string) ([]byte, string, error) {
 	}
 	var payload json.RawMessage
 	if err := client.Get(api.RESTPrefix+"/agents/extension-approvals/export", &payload); err != nil {
+		if api.IsStatus(err, http.StatusNotFound) || api.IsStatus(err, http.StatusMethodNotAllowed) {
+			return nil, "", fmt.Errorf("this server does not support extension policy export; upgrade the server or check an exported policy with --policy-file")
+		}
 		return nil, "", err
 	}
 	if len(payload) > inventoryConfigLimit {

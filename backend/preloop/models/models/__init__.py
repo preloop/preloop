@@ -263,6 +263,7 @@ __all__ = [
     "CallbackKeyBinding",
     "CallbackReceipt",
     "ChatConnection",
+    "ChatConversationBinding",
     "ChatIdentity",
     "ChatLinkCode",
     "ChatWork",
@@ -472,6 +473,7 @@ __all__ = [
     "DiscoveredExtension",
     "ExtensionApproval",
     "ExtensionApprovalPin",
+    "ExtensionEnforcementPolicy",
 ]
 
 from .readiness import (
@@ -487,7 +489,7 @@ from .person_auth_identity import PersonAuthIdentity, PersonPasswordCredential
 
 from .mcp_inventory import MCPInventoryFinding, MCPInventoryReview
 
-from .chat import ChatSetupDraft, ChatListener
+from .chat import ChatSetupDraft, ChatListener, ChatConversationBinding
 
 from .support import (
     SupportConversation,
@@ -520,3 +522,5 @@ from .extension_approval import ExtensionApproval
 from .extension_approval_pin import ExtensionApprovalPin
 from .tool_registry_entry import ToolRegistryEntry
 from .flow_conversation import FlowConversation, FlowConversationMessage
+
+from .extension_enforcement_policy import ExtensionEnforcementPolicy

@@ -88,7 +88,14 @@ func init() {
 }
 
 func reviewPostingClient() (*api.Client, error) {
-	return api.NewClient(FlagToken, FlagURL)
+	client, err := api.NewClient(FlagToken, FlagURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireServerSchemaField(client, "GitCloneConfig", "platform_review", "", "flow review posting"); err != nil {
+		return nil, err
+	}
+	return client, nil
 }
 
 func newReviewPostingShowCmd() *cobra.Command {

@@ -166,6 +166,26 @@ Issue analytics features are no longer accessible from the main sidebar, they ar
 
 The Overview (`/console`) leads with five current-state counts (agents, flows, models, tools, need attention), the two gateway endpoints (model gateway and tool firewall), a Usage card (tokens or estimated dollars over one page-wide time range, with global budget rows and the limits dialog), and activity cards. "Need attention" links to `/console/attention`, which lists pending approvals, agents with setup or live-check problems, flows with failed runs, models with gateway failures, budgets over their soft or hard limit, and a stale price catalog. Both views derive their items with `utils/attention.ts` (`deriveAttentionItems`, pure) from the same inputs fetched by `utils/attention-data.ts` (`loadAttentionInputs`), so the hero count and the page agree. Any row except a pending approval can be dismissed ("expected", "snoozed for N days", or "fixed"), and a dismissal is stored server-side against the item's fingerprint: the client's summary of why the item is showing (the latest failed run id, the agent's onboarding, validation and latest-session failure state, the sorted list of unpriced aliases), so the item stays hidden only while that reason is unchanged and comes back by itself when it is not. One marker is deliberately stable: a model with no price at all can be marked unpriced-by-design from the Models list or the model detail page, which stores `model-unpriced:<alias>` against the fingerprint `unpriced:<alias>`. It carries no timestamp, so another unpriced request does not resurface the model; the Models count and badge, and the inbox's "N models unpriced" item, all leave it out until somebody restores it or the model gets a price (which stops the item being derived at all). The dismissals live behind `GET/PUT/DELETE /api/v1/attention/dismissals[/{item_id}]`: reading is open to any account member so the inbox renders the same for everyone, writing takes `manage_agents`, and the console hides the Dismiss/Restore controls (rather than showing buttons that 403) from members without it or against a server that predates the endpoint.
 
+### Sessions list and detail
+
+The Sessions page owns filters, server pagination and the `sessionId`, `sort`,
+`q`, `turn` and `artifact` URL parameters. At desktop widths, the observer keeps
+its list beside the detail; below 950px, the URL selects either the list or the
+detail, with a Back to sessions link. The list footer is slotted into the
+observer's scrolling sidebar. The detail header states the session identity,
+started time, status and copyable id above the tokens and estimated-cost strip.
+
+Session rows are links with roving focus (Up/Down, Home/End, then Enter).
+A skip link focuses the detail heading, and `/` focuses search outside editable
+controls. The server orders all matching sessions before paging by last activity,
+started time, estimated cost or requests; ranked content search keeps relevance
+order. Counts distinguish loaded rows from the matched total, and a pinned deep
+link does not inflate that total.
+
+The Sessions page opts into the observer's `serverOrdered` and
+`mobileListDetail` properties. Other hosts retain activity ordering and stacked
+phone panes. Toolbar actions use a separate slot from the live result count.
+
 ### Console surfaces (`src/styles/console-surfaces.css`, `console-styles.css`)
 
 Every console background comes from one surface ladder declared per theme at document level: `--console-page`, `--console-surface`, `--console-surface-raised`, and `--console-hairline`. Declaring them on the document matters because Shoelace's dark theme is a class on `<html>` that shadow-scoped CSS cannot select, while custom properties inherit into every shadow root. In dark mode the ladder gets lighter with elevation (cards carry no border or shadow; the lightness step is the elevation); in light mode cards keep a hairline and the smallest shadow. Two rules follow from it and are enforced across the views: a depth limit of two (page, then surface: nothing inside a card gets a filled box of its own; rows separate by hairline), and states are tints, not paint (status chips are a 16% tint of their tone with dark ink; solid fills survive only on section count badges and the danger pill of a failed run). The design rationale lives in the private `DESIGN.md` (D27). Link text and meta text are tested for WCAG AA contrast on all three rungs in both themes (`console-surfaces.test.ts`).

@@ -980,9 +980,7 @@ jobs:
           cp artifacts/audited-sbom/*.json release-assets/
           # Copy installer assets
           cp docker-compose.release.yaml release-assets/docker-compose.release.yaml
-          cp scripts/install-cli.sh release-assets/install-cli.sh
-          cp scripts/install-cli.ps1 release-assets/install-cli.ps1
-          cp scripts/install-oss.sh release-assets/install-oss.sh
+          python3 scripts/release_assets.py installers release-assets --version "${GITHUB_REF_NAME#v}"
           chmod +x release-assets/install-cli.sh release-assets/install-oss.sh
           # Cover every published payload; the manifest is itself attested.
           python3 scripts/release_assets.py checksum release-assets
@@ -1063,7 +1061,7 @@ jobs:
           macOS / Linux:
 
           \`\`\`bash
-          curl -fsSL https://preloop.ai/install/cli | sh
+          curl -fsSL "https://preloop.ai/install/cli?version=${PACKAGE_VERSION}" | sh
           \`\`\`
 
           ### Windows binaries
@@ -1073,6 +1071,7 @@ jobs:
           Download \`preloop-windows-amd64.exe\` or \`preloop-windows-arm64.exe\` from the assets below (Authenticode signing via SignPath pending certificate approval — verify with \`SHA256SUMS\`), or install with PowerShell:
 
           \`\`\`powershell
+          \$env:PRELOOP_VERSION = '${PACKAGE_VERSION}'
           irm https://preloop.ai/install/cli.ps1 | iex
           \`\`\`
 
@@ -1083,7 +1082,7 @@ jobs:
           ## Install Open Source Edition
 
           \`\`\`bash
-          curl -fsSL https://preloop.ai/install/oss | sh
+          curl -fsSL "https://preloop.ai/install/oss?version=${PACKAGE_VERSION}" | sh
           \`\`\`
 
           This downloads the versioned \`docker-compose.release.yaml\`, writes a local \`.env\`, and starts the OSS stack with Docker Compose.
@@ -1091,7 +1090,7 @@ jobs:
           ## Helm
 
           \`\`\`bash
-          helm install preloop https://github.com/preloop/preloop/releases/download/${REF_NAME}/preloop-${PACKAGE_VERSION}.tgz
+          helm install preloop https://github.com/preloop/preloop/releases/download/${REF_NAME}/preloop-${PACKAGE_VERSION}.tgz --set-string image.tag=${PACKAGE_VERSION} --set-string console.tag=${PACKAGE_VERSION}
           \`\`\`
 
           For ingress and custom hostname, see [Kubernetes Setup](https://github.com/preloop/preloop#kubernetes-setup) and the [chart README](https://github.com/preloop/preloop/blob/main/helm/preloop/README.md).

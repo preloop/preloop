@@ -187,9 +187,19 @@ fragments are ignored. A bare number matches the issue number exactly (`12`
 never matches `#112`); when it matches issues in more than one project the
 tool returns an error listing the candidate keys, so pass one of them.
 
-Only synced issues are found. A GitLab `/-/work_items/<iid>` URL that names an
-epic, objective or key result, or an issue in a project that is not synced,
-returns "not found" with the key that was looked up.
+When an issue is missing locally, `get_issue`, `update_issue`, and issue
+comments fetch it from GitHub, GitLab, Jira or Azure Boards and store it using
+the normal sync path. Use a full project key or issue URL; the project must
+already be synced in your account. Azure Boards accepts `acme/My Project#12`
+and `https://dev.azure.com/acme/My%20Project/_workitems/edit/12`.
+
+Bare numbers, partial or ambiguous keys, and compliance batches remain
+database-only. A missing project is never imported automatically. Tracker
+lookups have a timeout: authentication, rate-limit and connection failures
+report an upstream error rather than claiming the issue does not exist.
+Pull requests use `get_pull_request`. GitLab epics, objectives and key results
+are not issues. For GitLab comments, prefer `group/project!12` or an MR URL
+when you mean a merge request; `group/project#12` checks for an issue first.
 
 ### `get_issue`
 

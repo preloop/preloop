@@ -118,7 +118,7 @@ func writeClaudePlugin(t *testing.T, home, name, market, version string) {
 	t.Helper()
 	install := ".claude/plugins/marketplaces/" + market + "/plugins/" + name
 	body := fmt.Sprintf(`{"name":%q,"marketplace":%q,"version":%q,"installPath":%q}`, name, market, version, install)
-	writeInventoryFixture(t, home, ".claude/plugins/store/"+name+".json", body)
+	writeClaudePluginRecord(t, home, name, body)
 	writeInventoryFixture(t, home, install+"/.claude-plugin/plugin.json", fmt.Sprintf(`{"version":%q}`, version))
 }
 
@@ -176,7 +176,7 @@ func TestInventoryExtensionsListFixture(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "fixture-person")
 	testenv.SetHome(t, home)
 	secret := "planted-secret-must-stay-on-device"
-	writeInventoryFixture(t, home, ".claude/plugins/store/reviewer.json", `{"name":"reviewer","marketplace":"claude-plugins-official","version":"1.0.0","installPath":".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer","token":"`+secret+`"}`)
+	writeClaudePluginRecord(t, home, "reviewer", `{"name":"reviewer","marketplace":"claude-plugins-official","version":"1.0.0","installPath":".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer","token":"`+secret+`"}`)
 	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer/.claude-plugin/plugin.json", `{"version":"1.4.0","description":"`+secret+`"}`)
 	writeInventoryFixture(t, home, ".claude/skills/fixture-person-notes/SKILL.md", secret)
 	writeInventoryFixture(t, home, ".claude/commands/summarize.md", secret)
@@ -436,7 +436,7 @@ func TestInventoryExtensionsCheckApproved(t *testing.T) {
 // unknown or unapproved; no_claim=a fixture marked builtin, not a vendor bundle.
 func TestInventoryExtensionsCheckBuiltin(t *testing.T) {
 	home := extensionHome(t)
-	writeInventoryFixture(t, home, ".claude/plugins/store/bundled.json", `{"name":"bundled","builtin":true,"version":"1.0.0"}`)
+	writeClaudePluginRecord(t, home, "bundled", `{"name":"bundled","builtin":true,"version":"1.0.0"}`)
 	path := writePolicyFile(t, []map[string]any{})
 	stdout, _, err := runExtensions(t, "check", "--policy-file", path, "--json", "--agent", "claude-code")
 	finding := findExtensionFinding(decodeExtensionCheck(t, stdout), "bundled")
@@ -484,7 +484,7 @@ func TestInventoryExtensionsCheckPrecedence(t *testing.T) {
 // no_claim=a mode-000 file stands in for an unreadable skill tree.
 func TestInventoryExtensionsCheckVersionAndContentEdges(t *testing.T) {
 	home := extensionHome(t)
-	writeInventoryFixture(t, home, ".claude/plugins/store/reviewer.json", `{"name":"reviewer","marketplace":"community"}`)
+	writeClaudePluginRecord(t, home, "reviewer", `{"name":"reviewer","marketplace":"community"}`)
 	path := writePolicyFile(t, []map[string]any{policyEntry("claude_code", "plugin", "reviewer@community", "approved", map[string]any{"version_constraint": "1.0.0"})})
 	stdout, _, err := runExtensions(t, "check", "--policy-file", path, "--json", "--agent", "claude-code")
 	finding := findExtensionFinding(decodeExtensionCheck(t, stdout), "reviewer@community")
@@ -642,6 +642,23 @@ func TestInventoryExtensionsCheckOnlineError(t *testing.T) {
 	_, _, err := runExtensions(t, "check", "--online")
 	if ProcessExitCode(err) != 1 {
 		t.Fatalf("exit=%d", ProcessExitCode(err))
+	}
+}
+
+func TestInventoryExtensionsCheckLegacyServer(t *testing.T) {
+	extensionHome(t)
+	t.Setenv("PRELOOP_TOKEN", "synthetic-token")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.NotFound(w, nil)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("PRELOOP_URL", server.URL)
+	stdout, _, err := runExtensions(t, "check", "--online", "--json")
+	if ProcessExitCode(err) != 1 || !strings.Contains(err.Error(), "--policy-file") {
+		t.Fatalf("expected offline alternative, got %v", err)
+	}
+	if strings.Contains(stdout, `"result": "pass"`) {
+		t.Fatal("unsupported export was reported as a policy pass")
 	}
 }
 

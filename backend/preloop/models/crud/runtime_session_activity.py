@@ -1283,6 +1283,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         runtime_session_id: Any,
         limit: int,
         before: Optional[str] = None,
+        after: Optional[str] = None,
         around: Optional[str] = None,
         start_date: Optional[datetime] = None,
     ) -> dict[str, Any]:
@@ -1324,12 +1325,12 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         )
         focus = None
         upper = None
-        if before or around:
+        if before or after or around:
             focus = self.get_timeline_focus(
                 db,
                 account_id=account_id,
                 runtime_session_id=runtime_session_id,
-                target=before or around,
+                target=before or after or around,
             )
             if focus is None or (
                 start_date is not None
@@ -1338,6 +1339,33 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
                 raise ValueError("Activity target not found in this session")
         if before:
             upper = key(focus)
+        elif after:
+            # Start at the first remaining row. When it begins a new turn,
+            # counting the cursor's completed turn would yield an empty page
+            # for limit=1. Hook-only boundaries cannot supply visible rows.
+            first_remaining = (
+                base.filter(
+                    self.model.activity_type.notin_(HOOK_ACTIVITY_TYPES),
+                    order_key > tuple_(*key(focus)),
+                )
+                .with_entities(
+                    self.model.id,
+                    self.model.timestamp,
+                    order[1].label("external_id"),
+                    order[2].label("message_index"),
+                )
+                .order_by(*order)
+                .first()
+            )
+            if first_remaining is not None:
+                later = (
+                    turns.filter(order_key > tuple_(*key(first_remaining)))
+                    .order_by(*order)
+                    .limit(limit)
+                    .all()
+                )
+                if len(later) == limit:
+                    upper = key(later[-1])
         elif around:
             # Half the page follows the match; the other half precedes it.
             later = (
@@ -1359,16 +1387,22 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         more_turns = len(selected) > limit
         selected = selected[:limit]
         lower = key(selected[-1]) if selected and more_turns else None
-        rows_query = base.filter(self.model.activity_type.notin_(HOOK_ACTIVITY_TYPES))
-        if lower is not None:
+        timeline = base.filter(self.model.activity_type.notin_(HOOK_ACTIVITY_TYPES))
+        rows_query = timeline
+        if after:
+            lower = key(focus)
+            rows_query = rows_query.filter(order_key > tuple_(*lower))
+        elif lower is not None:
             rows_query = rows_query.filter(order_key >= tuple_(*lower))
         if upper is not None:
             rows_query = rows_query.filter(order_key < tuple_(*upper))
         # An unusually long single turn still has a recoverable continuation.
         row_limit = 2000
+        read_order = order if after else tuple(column.desc() for column in order)
+        rebound = False
         ids = (
             rows_query.with_entities(self.model.id)
-            .order_by(*(column.desc() for column in order))
+            .order_by(*read_order)
             .limit(row_limit + 1)
             .all()
         )
@@ -1376,6 +1410,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         if (
             around
             and not before
+            and not after
             and truncated
             and focus.id not in {row.id for row in ids[:row_limit]}
         ):
@@ -1394,6 +1429,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
                 .first()
             )
             if later is not None:
+                rebound = True
                 upper = key(later)
                 rows_query = rows_query.filter(order_key < tuple_(*upper))
                 ids = (
@@ -1402,6 +1438,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
                     .limit(row_limit + 1)
                     .all()
                 )
+        truncated = len(ids) > row_limit
         ids = ids[:row_limit]
         slim = self.model.metadata_
         for history_key in self.GATEWAY_HISTORY_KEYS:
@@ -1425,16 +1462,45 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             .order_by(*(column.desc() for column in order))
             .all()
         )
-        has_more = bool(rows) and (more_turns or truncated)
+        has_more = False
+        has_newer = False
+        if rows:
+            edges = (
+                timeline.with_entities(
+                    self.model.id,
+                    self.model.timestamp,
+                    order[1].label("external_id"),
+                    order[2].label("message_index"),
+                )
+                .filter(self.model.id.in_([rows[0].id, rows[-1].id]))
+                .all()
+            )
+            edge_keys = {row.id: key(row) for row in edges}
+            has_more = (
+                timeline.filter(order_key < tuple_(*edge_keys[rows[-1].id]))
+                .with_entities(self.model.id)
+                .first()
+                is not None
+            )
+            has_newer = (
+                timeline.filter(order_key > tuple_(*edge_keys[rows[0].id]))
+                .with_entities(self.model.id)
+                .first()
+                is not None
+            )
         return {
             "rows": rows,
             "has_more": has_more,
             "next_before": str(rows[-1].id) if has_more else None,
+            "has_newer": has_newer,
+            "next_after": str(rows[0].id) if has_newer else None,
             "window_start": rows[-1].timestamp
             if truncated and rows
             else (lower[0] if lower else None),
-            "window_end": upper[0] if upper else None,
-            "partial_turn": truncated,
+            "window_end": rows[0].timestamp
+            if after and truncated and rows
+            else (upper[0] if upper else None),
+            "partial_turn": truncated or rebound,
         }
 
     def list_tool_calls_page(

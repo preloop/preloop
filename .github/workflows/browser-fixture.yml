@@ -14,6 +14,10 @@ name: Browser fixture flow
 on:
   workflow_call:
     inputs:
+      runner:
+        description: JSON runs-on value chosen by the CI picker
+        type: string
+        default: '"ubuntu-24.04"'
       full:
         type: boolean
         default: false
@@ -39,7 +43,8 @@ jobs:
     permissions:
       contents: read
     name: Browser fixture flow
-    runs-on: ubuntu-24.04
+    # Hosted ubuntu-24.04 unless the CI picker hands over an idle local slot.
+    runs-on: ${{ fromJSON(inputs.runner || '"ubuntu-24.04"') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,7 +68,13 @@ jobs:
         working-directory: environments/preloop/tools
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          # --with-deps needs root (apt). Local slots have the Chromium system
+          # libraries preinstalled; see .github/self-hosted-runners.md.
+          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+            npx playwright install --with-deps chromium
+          else
+            npx playwright install chromium
+          fi
 
       - name: Set up Python
         uses: ./.github/actions/setup-ci-python

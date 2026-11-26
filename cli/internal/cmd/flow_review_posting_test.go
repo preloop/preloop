@@ -54,6 +54,8 @@ func startReviewPostingServer(t *testing.T, state *reviewPostingServer) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.URL.Path == "/api/v1/openapi.json":
+			_, _ = w.Write([]byte(`{"components":{"schemas":{"GitCloneConfig":{"properties":{"platform_review":{}}}}}}`))
 		case r.URL.Path == "/api/v1/flows/"+reviewFlowID && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(state.flow)
 		case r.URL.Path == "/api/v1/flows/"+reviewFlowID && r.Method == http.MethodPut:

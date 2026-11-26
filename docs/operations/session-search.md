@@ -17,9 +17,11 @@ A content link opens the activity page around its activity, usage or delivered
 note ID. The matching row scrolls into view and is marked for two seconds.
 Activity pages use 20 prompt turns by default in the console, keeping transcript
 messages and tool calls together. The API opts in with `page_by_turn=true` and
-returns `next_before` for older pages. A 2,000-row safety cap can split unusually
-large turns; `partial_turn` identifies that case and the cursor preserves access
-to older rows. Without the opt-in the existing activity overview is unchanged.
+returns `next_before` for older pages and `next_after` for newer pages. Pass those
+cursors as `before` or `after`; each advertised continuation contains more rows.
+A focused window exposes **Load newer activity** so the rest of a large turn stays
+reachable. A 2,000-row safety cap can split unusually large turns; `partial_turn`
+identifies that case and the cursors preserve access to rows on both sides. Without the opt-in the existing activity overview is unchanged.
 
 ## What is in the corpus, and when it got there
 

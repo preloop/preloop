@@ -18,6 +18,7 @@ from runner import (  # noqa: E402
     AcceptanceError,
     Run,
     latest_baseline,
+    matrix_passed,
     public_probe,
     published_rc,
     scrub,
@@ -74,6 +75,36 @@ def test_published_rc_can_be_gated() -> None:
     assert published_rc([candidate], "v1.0.0-rc.2") is candidate
 
 
+def test_explicit_published_102_baseline_preserves_legacy_default() -> None:
+    releases = [release("v1.0.2"), release("v0.17.12")]
+    assert latest_baseline(releases, "v1.0.2")["tag_name"] == "v1.0.2"
+    assert latest_baseline(releases)["tag_name"] == "v0.17.12"
+
+
+@pytest.mark.parametrize(
+    "flags", [{"draft": True}, {"prerelease": True}, {"published_at": None}]
+)
+def test_explicit_baseline_requires_a_published_stable_release(
+    flags: dict[str, Any],
+) -> None:
+    with pytest.raises(AcceptanceError, match="No published"):
+        latest_baseline([release("v1.0.2", **flags)], "v1.0.2")
+
+
+def test_unsupported_baseline_is_not_silently_accepted() -> None:
+    with pytest.raises(AcceptanceError, match="Supported baselines"):
+        latest_baseline([release("v2.0.0")], "v2.0.0")
+
+
+def test_published_110_rc_can_be_gated() -> None:
+    candidate = release("v1.1.0-rc.1", prerelease=True)
+    assert published_rc([candidate], candidate["tag_name"]) is candidate
+    with pytest.raises(AcceptanceError, match="actually published"):
+        published_rc(
+            [release("v1.1.0-rc.2", prerelease=True, draft=True)], "v1.1.0-rc.2"
+        )
+
+
 @pytest.fixture
 def run(tmp_path: Path) -> Run:
     return Run(
@@ -82,6 +113,9 @@ def run(tmp_path: Path) -> Run:
             candidate_ref="HEAD",
             rc=None,
             runtime="both",
+            baseline=None,
+            installer=False,
+            cli_matrix=False,
         )
     )
 
@@ -95,7 +129,14 @@ def test_compose_reuses_real_commands_but_bounds_services_and_network(run: Run) 
     run.pg_image, run.nats_image = "postgres@sha256:synthetic", "nats@sha256:synthetic"
     command = run.compose(Path(__file__).resolve().parents[3], "app@sha256:synthetic")
     config = json.loads((run.root / "compose.json").read_text())
-    assert set(config["services"]) == {"postgres", "nats", "migrate", "api"}
+    assert set(config["services"]) == {
+        "postgres",
+        "nats",
+        "migrate",
+        "api",
+        "gateway",
+        "mock",
+    }
     assert (
         config["services"]["migrate"]["command"] == "python scripts/init_db.py --force"
     )
@@ -174,6 +215,7 @@ def test_helm_uses_same_secret_for_both_images(run: Run) -> None:
     old = values("example/app:0.17.1", run.app_env())
     new = values("example/app:candidate", run.app_env())
     assert old["extraEnv"] == new["extraEnv"]
+    assert "MODEL_ENDPOINT_ALLOWED_CIDRS" in {item["name"] for item in old["extraEnv"]}
     assert old["existingSecret"] == new["existingSecret"] == "acceptance-credentials"
     assert old["image"]["pullPolicy"] == "Never"
     secret = next(
@@ -398,3 +440,181 @@ def test_kind_import_exports_only_tested_platform(
         == limits[limits.index("--memory-swap") + 1]
     )
     assert not (run.root / "kind-images.tar").exists()
+
+
+def test_matrix_requires_both_clients_and_actual_content() -> None:
+    operations = {
+        name: {"content_verified": True}
+        for name in (
+            "login",
+            "discover",
+            "onboard",
+            "gateway",
+            "policy_apply",
+            "restrictive_defaults",
+            "runner_connect_1",
+            "runner_connect_2",
+            "runner_reconnect",
+            "flow",
+            "discovery_report",
+        )
+    }
+    cells = [
+        {"cli": cli, "server": "candidate", "operations": dict(operations)}
+        for cli in ("baseline", "candidate")
+    ]
+    assert matrix_passed(cells)
+    cells[1]["error"] = "RuntimeError"
+    assert not matrix_passed(cells)
+    del cells[1]["error"]
+    assert not matrix_passed(cells[:1])
+    cells[1]["operations"]["flow"] = {"create_status": 200, "trigger_status": 200}
+    assert not matrix_passed(cells)
+    cells[1]["operations"]["flow"] = {"content_verified": True}
+    cells[0]["operations"]["runner_connect_2"] = {"exit_code": 0}
+    assert not matrix_passed(cells)
+
+
+def test_matrix_does_not_treat_unsupported_commands_as_success() -> None:
+    operations = {
+        name: {"content_verified": True}
+        for name in (
+            "login",
+            "discover",
+            "onboard",
+            "gateway",
+            "policy_apply",
+            "restrictive_defaults",
+            "runner_connect_1",
+            "runner_connect_2",
+            "runner_reconnect",
+            "discovery_report",
+            "review_posting_guard",
+            "routing_guard",
+            "extension_policy_unsupported",
+            "account_health_unsupported",
+            "shared_flow_unsupported",
+            "webhook_rotation_unsupported",
+            "managed_bundle_unsupported",
+        )
+    }
+    cells = [
+        {"cli": cli, "server": "baseline", "operations": dict(operations)}
+        for cli in ("baseline", "candidate")
+    ]
+    cells[1]["operations"]["discovery_report"] = {
+        "exit_code": 1,
+        "explicit_unsaved": True,
+    }
+    assert matrix_passed(cells)
+    cells[1]["operations"]["discovery_report"]["exit_code"] = 0
+    assert not matrix_passed(cells)
+    cells[1]["operations"]["discovery_report"]["exit_code"] = 1
+    cells[1]["operations"]["routing_guard"] = {"exit_code": 0}
+    assert not matrix_passed(cells)
+
+
+@pytest.mark.parametrize("with_matrix", [False, True])
+def test_compose_checks_content_after_each_of_two_initializer_retries(
+    run: Run, monkeypatch: pytest.MonkeyPatch, with_matrix: bool
+) -> None:
+    import runner
+
+    run.args.cli_matrix = with_matrix
+    run.baseline_source = run.candidate_source = Path(__file__).resolve().parents[3]
+    run.baseline_image = run.candidate_image = "synthetic-app"
+    run.pg_image, run.nats_image = "synthetic-postgres", "synthetic-nats"
+    calls: list[tuple[str, list[str]]] = []
+    probes = []
+    policy_checks = []
+
+    def command(label: str, argv: list[str], **kwargs: Any) -> str:
+        calls.append((label, argv))
+        return ""
+
+    def probe(
+        prefix: list[str], seed: bool, previous: dict[str, Any]
+    ) -> dict[str, Any]:
+        probes.append(seed)
+        policy_checks.append(previous.get("verify_matrix_policies", False))
+        return {
+            key: "synthetic"
+            for key in (
+                "digest",
+                "counts",
+                "credential_backfill",
+                "migration_head",
+                "checks",
+            )
+        }
+
+    def matrix(prefix: list[str], phase: str) -> None:
+        run.report.setdefault("compatibility", {})[phase] = []
+
+    monkeypatch.setattr(run, "command", command)
+    monkeypatch.setattr(run, "probe", probe)
+    monkeypatch.setattr(run, "ready", lambda prefix: None)
+    monkeypatch.setattr(run, "require_compose_image", lambda cmd, label: None)
+    monkeypatch.setattr(run, "matrix", matrix)
+    monkeypatch.setattr(runner, "matrix_passed", lambda cells: True)
+    run.run_compose()
+    assert probes == [True, False, False, False]
+    assert policy_checks == [False, False, with_matrix, with_matrix]
+    assert len(run.report["runtimes"]["compose"]["retries"]) == 2
+    for label, argv in calls:
+        if "drain" in label:
+            assert {"api", "gateway", "mock"}.issubset(argv)
+    assert len([label for label, _ in calls if "migrate-retry" in label]) == 2
+
+
+def test_installer_checksum_failure_prevents_execution(
+    run: Run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run.report["baseline"] = {"tag": "v1.0.2"}
+    calls = []
+
+    def command(label: str, argv: list[str], **kwargs: Any) -> str:
+        calls.append(label)
+        assets = run.root / "release-assets"
+        (assets / "install-oss.sh").write_text("unverified installer")
+        (assets / "SHA256SUMS").write_text("wrong  install-oss.sh\n")
+        return ""
+
+    from unittest.mock import MagicMock
+    import runner
+
+    monkeypatch.setattr(runner.socket, "socket", MagicMock())
+    monkeypatch.setattr(run, "command", command)
+    with pytest.raises(AcceptanceError, match="checksum mismatch"):
+        run.install_baseline()
+    assert calls == ["download-installer"]
+    assert run.compose_files is None
+
+
+def test_installer_default_encryption_can_be_rehearsed(tmp_path: Path) -> None:
+    rig = Run(
+        argparse.Namespace(
+            output=str(tmp_path / "derived"), rc=None, derive_encryption_key=True
+        )
+    )
+    assert rig.app_env()["SECURITY__ENCRYPTION_KEY"] == ""
+    assert rig.app_env()["SECRET_KEY"] == rig.secret
+
+
+def test_running_rig_freezes_probe_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    import runner
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "fixture.py").write_text("before")
+    monkeypatch.setattr(runner, "HERE", source)
+    rig = Run(argparse.Namespace(output=str(tmp_path / "evidence"), rc=None))
+    (source / "fixture.py").write_text("after")
+    assert (rig.harness_source / "fixture.py").read_text() == "before"
+    assert (
+        rig.report["harness_sha256"]["fixture.py"]
+        == hashlib.sha256(b"before").hexdigest()
+    )

@@ -36,6 +36,8 @@ const VIEW_OPTIONS: Array<{
  * unmounted, only hidden, so clearing the selection gives them back exactly
  * as they were. See `list-bar-swap` for how the height is held.
  *
+ * @slot actions - Controls beside the count, outside its live region.
+ * @slot count - Noninteractive result count announced after updates.
  * @fires search-change - `{ detail: { value } }` when the search input changes
  * @fires view-change - `{ detail: { value } }` when a view button is pressed
  */
@@ -312,6 +314,7 @@ export class ListToolbar extends LitElement {
         </form>
 
         <div class="view-switcher-group">
+          <slot name="actions"></slot>
           <span class="results-count" aria-live="polite">
             <slot name="count"></slot>
           </span>

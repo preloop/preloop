@@ -1681,12 +1681,14 @@ def test_session_activity_passes_the_turn_limit(
         operator_note_id: str | None = None,
         page_by_turn: bool = False,
         before: str | None = None,
+        after: str | None = None,
         around: str | None = None,
     ) -> dict[str, list[object]]:
         seen["limit"] = interaction_limit
         seen["operator_note_id"] = operator_note_id
         seen["page_by_turn"] = page_by_turn
         seen["before"] = before
+        seen["after"] = after
         seen["around"] = around
         return {"items": []}
 
@@ -1743,3 +1745,9 @@ def test_session_activity_passes_the_turn_limit(
         == 200
     )
     assert seen["before"] == "example-cursor"
+    response = client.get(
+        f"/api/v1/runtime-sessions/{session_id}/activity",
+        params={"page_by_turn": True, "after": "example-newer-cursor"},
+    )
+    assert response.status_code == 200
+    assert seen["after"] == "example-newer-cursor"

@@ -74,9 +74,10 @@ type discoveryReportRequest struct {
 }
 
 type discoveryReportResponse struct {
-	Received int `json:"received"`
-	Created  int `json:"created"`
-	Updated  int `json:"updated"`
+	Received       int  `json:"received"`
+	Created        int  `json:"created"`
+	Updated        int  `json:"updated"`
+	LegacyEvidence bool `json:"-"`
 }
 
 // discoveryReportingRequested reports whether the user opted in, by flag or
@@ -173,7 +174,7 @@ func fetchDiscoverySalt(client *api.Client) (string, error) {
 
 // sendDiscoveryReport fetches the salt and posts the report. Called only
 // after the user opted in.
-func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, deviceRefs ...string) error {
+func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, deviceRef string, projects ...string) error {
 	if client == nil {
 		return errors.New("discovery reporting needs a Preloop login or token (PRELOOP_TOKEN); run 'preloop login' or pass --token")
 	}
@@ -181,10 +182,7 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	if err != nil {
 		return err
 	}
-	machineID := ""
-	if len(deviceRefs) > 0 {
-		machineID = strings.TrimSpace(deviceRefs[0])
-	}
+	machineID := strings.TrimSpace(deviceRef)
 	if machineID == "" {
 		machineID, err = readMachineID()
 		if err != nil {
@@ -193,14 +191,21 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	}
 	home, _ := os.UserHomeDir()
 	report := buildDiscoveryReport(salt, machineID, home, agents)
-	if err := addDiscoveryExtensions(&report, salt, home, inventoryProbes); err != nil {
+	deps := inventoryProbes
+	deps.ExtensionProjects = projects
+	if err := addDiscoveryExtensions(&report, salt, home, deps); err != nil {
 		return err
 	}
 	var resp discoveryReportResponse
 	if err := postInventoryReport(client, report, &resp); err != nil {
 		return fmt.Errorf("failed to send discovery report: %w", err)
 	}
-	fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent inventory metadata, extension identifiers and hashes; no file contents or credentials.\n", resp.Received, resp.Created) //nolint:errcheck
+	disclosure := "inventory metadata, extension identifiers and hashes"
+	if resp.LegacyEvidence {
+		fmt.Fprintln(w, legacyInventoryNotice)
+		disclosure = "inventory metadata"
+	}
+	fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent %s; no file contents or credentials.\n", resp.Received, resp.Created, disclosure) //nolint:errcheck
 	return nil
 }
 
