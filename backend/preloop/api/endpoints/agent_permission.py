@@ -1265,6 +1265,7 @@ class AgentSessionStartRequest(BaseModel):
     source: Optional[str] = Field(
         None, max_length=64, description="Agent adapter, e.g. 'claude_code'"
     )
+    control_owned: Optional[bool] = None
     cwd: Optional[str] = Field(None, max_length=4096, description="Working directory")
     parent_session_id: Optional[str] = Field(
         None,
@@ -1328,6 +1329,7 @@ def _register_session_start(
             first_prompt=payload.first_prompt,
             alias=payload.alias,
             actor_user_id=identity.runner_join_actor,
+            control_owned=payload.control_owned,
         )
         if result is not None and is_prompt_event(payload.hook_event_name):
             try:

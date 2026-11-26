@@ -21,10 +21,11 @@ class AgentControlEnvelope(BaseModel):
     message_id: str
     account_id: UUID
     managed_agent_id: UUID
-    runtime_session_id: UUID
+    runtime_session_id: Optional[UUID] = None
     session_source_type: str
     session_source_id: str
     timestamp: datetime
+    expires_at: Optional[datetime] = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -44,6 +45,7 @@ class AgentControlSendMessageRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     target_session_id: Optional[UUID] = None
     start_new_session: bool = False
+    working_directory: Optional[str] = Field(default=None, max_length=1024)
     consent_request_id: Optional[UUID] = None
     input_mode: AgentControlInputMode = "text"
     voice: dict[str, Any] = Field(default_factory=dict)
@@ -67,6 +69,7 @@ class AgentControlVoiceTranscriptRequest(BaseModel):
     voice: dict[str, Any] = Field(default_factory=dict)
     target_session_id: Optional[UUID] = None
     start_new_session: bool = False
+    working_directory: Optional[str] = Field(default=None, max_length=1024)
     consent_request_id: Optional[UUID] = None
 
 
@@ -92,6 +95,8 @@ class AgentControlCommandResponse(BaseModel):
     """Result of routing an operator command to a managed agent."""
 
     command_id: str
+    note_id: Optional[str] = None
+    delivery_message: Optional[str] = None
     managed_agent_id: UUID
     runtime_session_id: Optional[UUID] = None
     target_session_id: Optional[UUID] = None
@@ -123,6 +128,7 @@ class AgentControlCommandStatusResponse(BaseModel):
     cancelled. ``status`` is the stored row status it is derived from.
     """
 
+    runtime_session_id: Optional[UUID] = None
     command_id: str
     managed_agent_id: UUID
     status: str
@@ -158,6 +164,7 @@ class RuntimeSessionControlResponse(BaseModel):
             "no_control_plugin",
             "control_offline",
             "terminal_session",
+            "turn_in_progress",
             # Command mode (#1509): the runner hosting a remote session is
             # asleep or offline; a turn is held until it reconnects.
             "runner_away",

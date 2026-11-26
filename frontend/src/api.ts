@@ -353,7 +353,10 @@ export function extractErrorMessage(
         typeof errorData.detail.message === 'string' &&
         errorData.detail.message.trim()
       ) {
-        return errorData.detail.message;
+        const resume = errorData.detail.resume_command;
+        return typeof resume === 'string' && resume
+          ? `${errorData.detail.message} Resume locally: ${resume}`
+          : errorData.detail.message;
       }
       return JSON.stringify(errorData.detail);
     }
@@ -2917,6 +2920,35 @@ export async function replaceManagedAgentModelBindings(
   return response.json();
 }
 
+export async function getAgentControlCommandStatus(
+  agentId: string,
+  commandId: string
+): Promise<{
+  runtime_session_id?: string | null;
+  terminal: boolean;
+  delivery_state: string;
+  last_error?: string | null;
+}> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/commands/${encodeURIComponent(commandId)}`
+  );
+  if (!response.ok) throw new Error('Could not confirm command delivery');
+  return response.json();
+}
+
+export async function getAgentWorkingDirectories(
+  agentId: string
+): Promise<string[]> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/directories`
+  );
+  if (!response.ok) return [];
+  const data: unknown = await response.json();
+  return Array.isArray(data)
+    ? data.filter((value): value is string => typeof value === 'string')
+    : [];
+}
+
 export async function sendAgentControlCommand(
   agentId: string,
   payload: AgentControlCommandRequest,
@@ -2932,40 +2964,6 @@ export async function sendAgentControlCommand(
 
   if (response.ok) {
     return response.json().catch(() => ({}));
-  }
-
-  // Older backends only accept { message, metadata }. If the new shape is
-  // rejected, retry once with session targeting folded into metadata.
-  if (
-    (response.status === 400 || response.status === 422) &&
-    (payload.target_session_id || payload.session_mode)
-  ) {
-    const legacyResponse = await fetchWithAuth(url, {
-      signal,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: payload.message,
-        metadata: {
-          ...(payload.metadata || {}),
-          target_session_id: payload.target_session_id ?? null,
-          session_mode: payload.session_mode ?? null,
-          start_new_session: payload.start_new_session ?? false,
-        },
-      }),
-    });
-
-    if (legacyResponse.ok) {
-      return legacyResponse.json().catch(() => ({}));
-    }
-
-    const legacyErrorData = await legacyResponse.json().catch(() => ({}));
-    throw new Error(
-      extractErrorMessage(
-        legacyErrorData,
-        'Failed to send Agent Control command'
-      )
-    );
   }
 
   const errorData = await response.json().catch(() => ({}));
