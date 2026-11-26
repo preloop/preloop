@@ -2911,6 +2911,32 @@ export async function replaceManagedAgentModelBindings(
   return response.json();
 }
 
+export async function getAgentControlCommandStatus(
+  agentId: string,
+  commandId: string
+): Promise<{
+  runtime_session_id?: string | null;
+  terminal: boolean;
+  delivery_state: string;
+  last_error?: string | null;
+}> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/commands/${encodeURIComponent(commandId)}`
+  );
+  if (!response.ok) throw new Error('Could not confirm command delivery');
+  return response.json();
+}
+
+export async function getAgentWorkingDirectories(
+  agentId: string
+): Promise<string[]> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/directories`
+  );
+  if (!response.ok) return [];
+  return response.json();
+}
+
 export async function sendAgentControlCommand(
   agentId: string,
   payload: AgentControlCommandRequest,

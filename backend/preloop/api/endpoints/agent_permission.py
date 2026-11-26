@@ -254,6 +254,7 @@ def _origin_runtime_session_id(
             account_id=identity.account_id,
             external_session_id=session_id,
             actor_user_id=identity.runner_join_actor,
+            control_owned=payload.control_owned,
         )
         if hosted is not None:
             return OriginSession(str(hosted.id), hosted_runner=True)
@@ -1265,6 +1266,7 @@ class AgentSessionStartRequest(BaseModel):
     source: Optional[str] = Field(
         None, max_length=64, description="Agent adapter, e.g. 'claude_code'"
     )
+    control_owned: Optional[bool] = None
     cwd: Optional[str] = Field(None, max_length=4096, description="Working directory")
     parent_session_id: Optional[str] = Field(
         None,

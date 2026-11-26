@@ -95,6 +95,9 @@ type runtimeSessionRow struct {
 	Cwd                  string            `json:"cwd"`
 	ToolCallCount        int               `json:"tool_call_count"`
 	PendingApprovalCount int               `json:"pending_approval_count"`
+	StartDirectory       string            `json:"start_directory"`
+	HarnessSessionID     string            `json:"harness_session_id"`
+	ResumeCommand        string            `json:"resume_command"`
 }
 
 // sessionsListPage is one page of the endpoint's answer, with the items kept
@@ -389,7 +392,7 @@ func writeSessionsTable(out io.Writer, rows []runtimeSessionRow, titles []string
 	writer := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	header := "ID\tALIAS\tPARENT\tAGENT\tSTARTED\tLAST ACTIVITY\tSTATE\tTOOLS\tMODEL\tPENDING\tTITLE"
 	if wide {
-		header = "ID\tALIAS\tPARENT\tAGENT\tKIND\tPLACE\tSTARTED\tLAST ACTIVITY\tSTATE\tTOOLS\tMODEL\tPENDING\tTITLE"
+		header = "ID\tALIAS\tPARENT\tAGENT\tKIND\tPLACE\tSTARTED\tLAST ACTIVITY\tSTATE\tTOOLS\tMODEL\tPENDING\tTITLE\tHARNESS SESSION\tSTART DIRECTORY\tRESUME"
 	}
 	fmt.Fprintln(writer, header) //nolint:errcheck
 	for index, row := range rows {
@@ -421,6 +424,9 @@ func writeSessionsTable(out io.Writer, rows []runtimeSessionRow, titles []string
 			strconv.Itoa(row.PendingApprovalCount),
 			titles[index],
 		)
+		if wide {
+			columns = append(columns, dashIfEmpty(row.HarnessSessionID), dashIfEmpty(row.StartDirectory), dashIfEmpty(row.ResumeCommand))
+		}
 		for i, column := range columns {
 			columns[i] = terminalSafe(column)
 		}

@@ -284,7 +284,7 @@ test("reconnect replays only outcomes that missed delivery", async () => {
     }),
   );
   // Presence frames (the reachable session list) may ride along.
-  const frames = live.sent.filter((frame) => frame.name !== "session_mode");
+  const frames = live.sent.filter((frame) => frame.name !== "session_mode" && frame.name !== "command_session");
   assert.equal(frames.length, 2);
   assert.equal(frames[0].name, "command_progress");
   assert.equal(frames[0].payload.command_id, "live-1");
@@ -397,4 +397,13 @@ test("presence lists sdk-owned and launcher sessions as reachable", async () => 
     "launcher-tui",
   ]);
   sidecar.stop();
+});
+
+
+test("an expired prompt never starts a harness turn", async () => {
+  const { sidecar, state } = makeSidecar();
+  try {
+    await assert.rejects(sidecar.dispatch({ type: "command", name: "send_message", message_id: "expired-example", expires_at: "2000-01-01T00:00:00Z", payload: { text: "Example" } }), /expired/);
+    assert.deepEqual(state.texts, []);
+  } finally { sidecar.stop(); }
 });

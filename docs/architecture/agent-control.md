@@ -519,3 +519,27 @@ MCP firewall. It owns persisted session references and bounds turns, duration an
 token/context consumption. Native and MCP tool execution require explicit
 Preloop permission decisions; background subagents and outbound channel tools
 are disabled. See its README for supported limits and installation.
+
+### Native Talk conversations
+
+For Claude Code and Codex, a new Talk command starts without a runtime session
+binding. The sidecar reports `command_session` with the command id, native
+harness id and launch directory before progress. The server resolves the same
+principal/native source key as the session-start hook and gateway, then records
+that command, its progress and its result on that one runtime session. Replayed
+results also carry the identity so a reconnect can recover a missed start frame.
+
+Session-targeted prompts and operator notes use the same server decision: an
+active turn receives a note at its next boundary; an idle sidecar-owned or ended
+session resumes its native id in its original directory. Open terminal sessions
+receive notes without starting a second harness process. An unavailable idle
+sidecar session refuses the send and offers its local resume command. A resume
+prompt cancels pending notes on that session as superseded; notes already
+delivered remain in history and are not injected again.
+
+`start_directory` is recorded once and is separate from the latest hook `cwd`.
+Talk offers recent directories, with selection checked by the sidecar against
+its configured workspace and any existing runner directory authorization. The
+session header and `preloop sessions list --wide` / `--json` expose the native
+harness id, original directory and shell-quoted resume command. Existing rows
+with no recorded launch directory do not invent one from a later cwd.

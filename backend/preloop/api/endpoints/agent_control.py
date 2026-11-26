@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 from starlette import status
+from starlette.requests import Request
 
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.api.auth import get_current_active_user
@@ -76,9 +77,7 @@ from preloop.services.agent_control_dispatch import (
     dispatch_operator_message,
     persist_and_deliver_command,
     resolve_session_control_mode,
-    TERMINAL_SESSION_REASON,
-    TERMINAL_SESSION_REASON_CODE,
-    session_reachable_by_control,
+    native_session_id,
     session_managed_agent,
 )
 
@@ -1038,11 +1037,18 @@ def _persist_agent_control_result(
     )
     if command is None or command.kind != "command":
         return None
+    if command.status in {"failed", "expired", "cancelled"} or isinstance(
+        crud_agent_control_command.command_result_payload(command), dict
+    ):
+        return None
     # Results are recorded after ack. Errors may land on a still-pending
     # command if the runtime never acknowledged delivery.
     if inbound.name == "command_result" and command.status != "acked":
         return None
 
+    inbound.payload["runtime_session_id"] = (
+        str(command.runtime_session_id) if command.runtime_session_id else None
+    )
     default_status = "failed" if inbound.name == "command_error" else "completed"
     result_status = str(inbound.payload.get("status") or default_status)
     reply_text = inbound.payload.get("reply_text")
@@ -1059,8 +1065,7 @@ def _persist_agent_control_result(
         db,
         account_id=result_account_id,
         command_id=command_id.strip(),
-        fallback_runtime_session_id=command.runtime_session_id
-        or context.runtime_session_id,
+        fallback_runtime_session_id=command.runtime_session_id,
         status=result_status,
         message=message,
         metadata=sanitized,
@@ -1095,6 +1100,15 @@ def _persist_agent_control_result(
         error=error_text if isinstance(error_text, str) else None,
         commit=commit,
     )
+    if command.runtime_session_id is not None:
+        crud_runtime_session.record_control_turn(
+            db,
+            account_id=result_account_id,
+            runtime_session_id=command.runtime_session_id,
+            completed=True,
+        )
+        if commit:
+            control_connection.commit(db)
     return result_account_id
 
 
@@ -1519,6 +1533,7 @@ async def _emit_agent_message(
     if inbound.type == "heartbeat" or inbound.name in {
         "command_progress",
         "session_progress",
+        "command_session",
     }:
         return
     event_type = f"agent_control_{inbound.type}"
@@ -1533,9 +1548,104 @@ async def _emit_agent_message(
                 "agent_payload": _sanitize_agent_control_payload(inbound.payload),
             },
             managed_agent_id=connection.managed_agent_id,
-            runtime_session_id=connection.runtime_session_id,
+            runtime_session_id=(
+                inbound.payload.get("runtime_session_id")
+                if inbound.payload.get("command_id")
+                else connection.runtime_session_id
+            ),
             session_source_type=connection.session_source_type,
             session_source_id=connection.session_source_id,
+        )
+    )
+
+
+def _bind_command_session(
+    db: Session,
+    connection: AgentControlConnectionContext,
+    inbound: AgentControlInboundEnvelope,
+) -> None:
+    """Attach native startup (or a replayed result) to its own command."""
+    if getattr(inbound, "name", None) not in {
+        "command_session",
+        "command_result",
+        "command_error",
+    }:
+        return
+    from preloop.services.agent_session_headers import normalize_session_id
+    from preloop.services.agent_session_lineage import session_source_id_for
+
+    native = normalize_session_id(inbound.payload.get("native_session_id"))
+    command_id = inbound.payload.get("command_id")
+    if native is None or not isinstance(command_id, str):
+        return
+    command = crud_agent_control_command.get_by_command_id(
+        db,
+        account_id=connection.account_id,
+        managed_agent_id=connection.managed_agent_id,
+        command_id=command_id,
+    )
+    if (
+        command is None
+        or command.kind != "command"
+        or command.status not in {"delivered", "acked"}
+    ):
+        return
+    if command.runtime_session_id is not None:
+        return
+    account_id = command.consuming_account_id or connection.account_id
+    source_type = connection.managed_agent_session_source_type
+    if source_type not in {"claude_code", "codex"}:
+        return
+    source_id = session_source_id_for(
+        connection.managed_agent_session_source_id, native
+    )
+    now = datetime.now(UTC)
+    session = crud_runtime_session.resolve_control_session(
+        db,
+        account_id=account_id,
+        session_source_type=source_type,
+        session_source_id=source_id,
+        runtime_principal_type=source_type,
+        runtime_principal_id=source_id,
+        started_at=now,
+        last_activity_at=now,
+    )
+    crud_runtime_session.record_start_directory(
+        db,
+        session=session,
+        cwd=inbound.payload.get("working_directory"),
+        control_owned=True,
+    )
+    crud_agent_control_command.bind_session(
+        db, command=command, runtime_session_id=session.id
+    )
+    crud_runtime_session.record_control_turn(
+        db, account_id=account_id, runtime_session_id=session.id
+    )
+    if (
+        crud_runtime_session_activity.command_message(
+            db, account_id=account_id, command_id=command_id
+        )
+        is None
+    ):
+        crud_runtime_session_activity.log_agent_control_message(
+            db,
+            account_id=account_id,
+            runtime_session_id=session.id,
+            message=command.envelope.get("payload", {}).get("text", ""),
+            status="delivered",
+            metadata={"kind": "operator_command", "command_id": command_id},
+            timestamp=command.created_at,
+            commit=False,
+        )
+    emit_account_event(
+        build_account_event(
+            account_id=str(account_id),
+            topic=ACCOUNT_TOPIC_AGENT_CONTROL,
+            event_type="managed_agent_command_session",
+            payload={"command_id": command_id, "runtime_session_id": str(session.id)},
+            managed_agent_id=connection.managed_agent_id,
+            runtime_session_id=str(session.id),
         )
     )
 
@@ -1567,6 +1677,7 @@ def _process_control_message(
     )
     _mark_control_verified_from_capabilities(db, connection, inbound, commit=False)
     _handle_command_ack(db, connection, inbound, commit=False)
+    _bind_command_session(db, connection, inbound)
     indexed_accounts = {
         _persist_agent_control_result(db, connection, inbound, commit=False),
         _persist_agent_control_progress(db, connection, inbound),
@@ -1841,7 +1952,8 @@ def _resolve_session_mode(
     )
     principal_matches = (
         target_session.runtime_principal_type == agent.session_source_type
-        and target_session.runtime_principal_id == agent.session_source_id
+        and str(target_session.runtime_principal_id).split(":", 1)[0]
+        == agent.session_source_id
     )
     if not source_matches and not principal_matches:
         raise HTTPException(
@@ -1863,8 +1975,10 @@ def _existing_session_identity(
     if target_session is None:
         return {}
     return {
-        "session_source_id": target_session.session_source_id,
+        "session_source_id": native_session_id(target_session),
         "session_reference": target_session.session_reference,
+        "working_directory": getattr(target_session, "start_directory", None)
+        or target_session.cwd,
     }
 
 
@@ -2086,24 +2200,76 @@ async def _route_managed_agent_prompt(
         agent=agent,
         request=request,
     )
-    if (
-        session_mode == "existing"
-        and target_session is not None
-        and not session_reachable_by_control(agent, target_session)
-    ):
-        # The plugin cannot type into this terminal; a command would resume
-        # the same native session in a second process and fork it. The
-        # operator sends a note instead (POST /operator-notes).
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": TERMINAL_SESSION_REASON_CODE,
-                "message": TERMINAL_SESSION_REASON,
-            },
-        )
     await _require_session_start_consent(
         db, agent=agent, request=request, current_user=current_user
     )
+    if (
+        target_session is not None
+        and target_session.session_source_type in {"claude_code", "codex"}
+        and not request.interrupt
+    ):
+        from preloop.api.endpoints.operator_notes import _create_note
+        from preloop.schemas.operator_notes import OperatorNoteCreate
+        from preloop.services.agent_control_dispatch import resume_command
+
+        decision = resolve_session_control_mode(
+            db, account_id=str(current_user.account_id), session=target_session
+        )
+        if decision.mode == "note":
+            if decision.reason_code not in {"terminal_session", "turn_in_progress"}:
+                raise HTTPException(
+                    409,
+                    {
+                        "code": "session_unavailable",
+                        "message": decision.reason,
+                        "resume_command": resume_command(target_session),
+                    },
+                )
+            note = _create_note(
+                db,
+                request=Request({"type": "http", "headers": []}),
+                current_user=current_user,
+                payload=OperatorNoteCreate(
+                    text=request.message, runtime_session_id=target_session.id
+                ),
+                route_session=False,
+            )
+            envelope = build_operator_envelope(
+                agent, name="operator_note", payload={"text": request.message}
+            ).model_copy(
+                update={
+                    "runtime_session_id": target_session.id,
+                    "message_id": note.command_id,
+                }
+            )
+            return AgentControlCommandResponse(
+                command_id=note.command_id,
+                note_id=note.command_id,
+                managed_agent_id=agent.id,
+                runtime_session_id=target_session.id,
+                target_session_id=target_session.id,
+                session_mode="existing",
+                command_status="pending",
+                command_envelope=envelope,
+                delivery_message=decision.reason,
+            )
+        crud_agent_control_command.cancel_pending_session_notes(
+            db,
+            account_id=current_user.account_id,
+            runtime_session_id=target_session.id,
+            user_id=current_user.id,
+        )
+    identity = _existing_session_identity(target_session)
+    if target_session is None:
+        directories = crud_runtime_session.recent_directories(
+            db,
+            account_id=current_user.account_id,
+            principal_type=agent.session_source_type,
+            principal_id=agent.session_source_id,
+        )
+        identity["working_directory"] = request.working_directory or (
+            directories[0] if directories else None
+        )
     try:
         dispatched = await dispatch_operator_message(
             db,
@@ -2118,7 +2284,7 @@ async def _route_managed_agent_prompt(
             spawn_worktree=request.spawn_worktree,
             voice=request.voice,
             session_mode=session_mode,
-            session_identity=_existing_session_identity(target_session),
+            session_identity=identity,
             created_by_user_id=current_user.id,
             require_delivery=True,
             consuming_account_id=current_user.account_id,
@@ -2237,6 +2403,28 @@ async def _route_managed_agent_prompt(
     )
 
 
+@router.get("/agents/{agent_id}/control/directories", response_model=list[str])
+@require_permission("control_managed_agent")
+def get_agent_directories(
+    agent_id: str,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> list[str]:
+    """Offer this account's recent directories; the host validates authorization."""
+    ensure_permission_in_oss(db, current_user, "control_managed_agent")
+    agent = crud_managed_agent.get_visible_target(
+        db, account_id=str(current_user.account_id), agent_id=agent_id
+    )
+    if agent is None:
+        raise HTTPException(404, "Managed agent not found")
+    return crud_runtime_session.recent_directories(
+        db,
+        account_id=current_user.account_id,
+        principal_type=agent.session_source_type,
+        principal_id=agent.session_source_id,
+    )
+
+
 @router.post(
     "/agents/{agent_id}/control/commands",
     response_model=AgentControlCommandResponse,
@@ -2321,6 +2509,7 @@ def get_managed_agent_command_status(
     delivery_state, result_status = command_delivery_state(record)
     return AgentControlCommandStatusResponse(
         command_id=record.command_id,
+        runtime_session_id=record.runtime_session_id,
         managed_agent_id=record.managed_agent_id,
         status=record.status,
         delivery_state=delivery_state,
@@ -2405,6 +2594,7 @@ async def send_managed_agent_voice_transcript(
     )
     prompt_request = AgentControlSendMessageRequest(
         message=request.transcript,
+        working_directory=request.working_directory,
         consent_request_id=request.consent_request_id,
         metadata=request.metadata,
         target_session_id=request.target_session_id,

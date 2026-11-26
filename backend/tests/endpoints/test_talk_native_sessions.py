@@ -1,0 +1,244 @@
+"""Native Talk routing through the HTTP endpoints and a real database."""
+
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
+
+import pytest
+from sqlalchemy.orm import Session
+from fastapi.testclient import TestClient
+
+from preloop.models import models
+from preloop.models.crud import crud_runtime_session, crud_agent_control_command
+from preloop.services.agent_session_lineage import register_session_start
+from tests.endpoints.test_agent_control_persistence import _setup_controllable_agent
+
+
+def native_session(
+    client: TestClient, db: Session, user: models.User
+) -> tuple[Any, Any]:
+    """Create an enrolled host and one native sidecar conversation."""
+    agent, _ = _setup_controllable_agent(
+        client, db, user, session_source_id="example-host"
+    )
+    agent.agent_kind = "claude_code"
+    agent.session_source_type = "claude_code"
+    agent.control_last_heartbeat_at = datetime.now(UTC)
+    agent.control_reachable_session_ids = []
+    db.commit()
+    result = register_session_start(
+        db,
+        account_id=user.account_id,
+        principal_type="claude_code",
+        principal_id=agent.session_source_id,
+        principal_name="Example agent",
+        external_session_id="example-native",
+        cwd="/tmp/example project",
+        control_owned=True,
+    )
+    session = crud_runtime_session.get_account_session(
+        db, account_id=user.account_id, runtime_session_id=result.runtime_session_id
+    )
+    session.turn_state = "your_turn"
+    db.commit()
+    return agent, session
+
+
+@pytest.mark.parametrize("endpoint", ["note", "prompt"])
+def test_idle_input_resumes_exact_native_session(
+    client: TestClient, db_session: Session, test_user: models.User, endpoint: str
+) -> None:
+    agent, session = native_session(client, db_session, test_user)
+    with patch(
+        "preloop.api.endpoints.agent_control.agent_control_manager.send_to_agent",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as send:
+        if endpoint == "note":
+            response = client.post(
+                "/api/v1/operator-notes",
+                json={
+                    "text": "Continue the example",
+                    "runtime_session_id": str(session.id),
+                },
+            )
+        else:
+            response = client.post(
+                f"/api/v1/agents/{agent.id}/control/prompts",
+                json={
+                    "message": "Continue the example",
+                    "target_session_id": str(session.id),
+                },
+            )
+    assert response.status_code in {201, 202}, response.text
+    command = crud_agent_control_command.get_by_command_id(
+        db_session,
+        account_id=test_user.account_id,
+        command_id=response.json()["command_id"],
+    )
+    assert command.kind == "command"
+    assert command.runtime_session_id == session.id
+    payload = send.call_args.kwargs["envelope"].payload
+    assert payload["session_source_id"] == "example-native"
+    assert payload["working_directory"] == "/tmp/example project"
+
+
+@pytest.mark.parametrize("state,owned", [("working", True), ("your_turn", False)])
+def test_busy_or_interactive_prompt_becomes_note(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    state: str,
+    owned: bool,
+) -> None:
+    agent, session = native_session(client, db_session, test_user)
+    session.turn_state, session.control_owned = state, owned
+    db_session.commit()
+    with patch(
+        "preloop.api.endpoints.agent_control.agent_control_manager.send_to_agent",
+        new_callable=AsyncMock,
+    ) as send:
+        response = client.post(
+            f"/api/v1/agents/{agent.id}/control/prompts",
+            json={"message": "Example follow-up", "target_session_id": str(session.id)},
+        )
+    assert response.status_code == 202, response.text
+    assert response.json()["note_id"]
+    send.assert_not_called()
+
+
+def test_offline_idle_note_refuses_with_local_resume_command(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    agent, session = native_session(client, db_session, test_user)
+    agent.control_last_heartbeat_at = datetime.now(UTC) - timedelta(hours=1)
+    db_session.commit()
+    response = client.post(
+        "/api/v1/operator-notes",
+        json={"text": "Continue", "runtime_session_id": str(session.id)},
+    )
+    assert response.status_code == 409, response.text
+    assert (
+        response.json()["detail"]["resume_command"]
+        == "cd '/tmp/example project' && claude --resume example-native"
+    )
+
+
+def test_resume_cancels_only_pending_notes(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    agent, session = native_session(client, db_session, test_user)
+    notes = []
+    for state in ("pending", "delivered"):
+        note = crud_agent_control_command.create_note(
+            db_session,
+            account_id=test_user.account_id,
+            managed_agent_id=agent.id,
+            runtime_session_id=session.id,
+            note_id=str(uuid4()),
+            body="Earlier example",
+            envelope={},
+            author_display="Jane Doe",
+            author_auth_method="session",
+            created_by_user_id=test_user.id,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        note.status = state
+        db_session.commit()
+        notes.append(note)
+    with patch(
+        "preloop.api.endpoints.agent_control.agent_control_manager.send_to_agent",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        response = client.post(
+            "/api/v1/operator-notes",
+            json={"text": "Resume the example", "runtime_session_id": str(session.id)},
+        )
+    assert response.status_code == 201, response.text
+    for note in notes:
+        db_session.refresh(note)
+    assert [note.status for note in notes] == ["cancelled", "delivered"]
+
+
+def test_new_command_binds_hook_session_among_other_live_sessions(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+) -> None:
+    """The hook, command, progress and result share one native conversation."""
+    from types import SimpleNamespace
+    from preloop.api.endpoints import agent_control
+    from preloop.schemas.agent_control import AgentControlInboundEnvelope
+
+    agent, unrelated = native_session(client, db_session, test_user)
+    with patch.object(
+        agent_control.agent_control_manager,
+        "send_to_agent",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        response = client.post(
+            f"/api/v1/agents/{agent.id}/control/prompts",
+            json={
+                "message": "A separate example",
+                "start_new_session": True,
+                "working_directory": "/tmp/second-example",
+            },
+        )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["runtime_session_id"] is None
+    assert body["target_session_id"] is None
+    command = crud_agent_control_command.get_by_command_id(
+        db_session, account_id=test_user.account_id, command_id=body["command_id"]
+    )
+    assert command.runtime_session_id is None
+    hook = register_session_start(
+        db_session,
+        account_id=test_user.account_id,
+        principal_type="claude_code",
+        principal_id=agent.session_source_id,
+        principal_name="Example agent",
+        external_session_id="second-native",
+        cwd="/tmp/second-example",
+        control_owned=True,
+    )
+    crud_agent_control_command.mark_delivered(
+        db_session,
+        account_id=test_user.account_id,
+        managed_agent_id=agent.id,
+        command_id=command.command_id,
+        delivered_at=datetime.now(UTC),
+    )
+    context = SimpleNamespace(
+        account_id=test_user.account_id,
+        managed_agent_id=agent.id,
+        managed_agent_session_source_type="claude_code",
+        managed_agent_session_source_id=agent.session_source_id,
+    )
+    inbound = AgentControlInboundEnvelope(
+        type="event",
+        name="command_session",
+        payload={
+            "command_id": command.command_id,
+            "native_session_id": "second-native",
+            "working_directory": "/tmp/second-example",
+        },
+    )
+    with patch.object(agent_control, "emit_account_event"):
+        agent_control._bind_command_session(db_session, context, inbound)
+    db_session.refresh(command)
+    assert str(command.runtime_session_id) == hook.runtime_session_id
+    assert command.runtime_session_id != unrelated.id
+    assert agent_control._resolve_command_progress_target(
+        db_session, context, command.command_id
+    ) == (str(test_user.account_id), hook.runtime_session_id)
+    bound = crud_runtime_session.get_account_session(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=hook.runtime_session_id,
+    )
+    assert bound.start_directory == "/tmp/second-example"
+    assert bound.control_owned is True

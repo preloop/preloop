@@ -41,6 +41,7 @@ import { AppServerDriver, AppServerEvent } from "./app-server-client.js";
 import { LauncherBridge, OwnershipMode } from "./mode.js";
 import {
   WorkspaceError,
+  resolveWorkingDirectory,
   WorkspaceManager,
   WorkspaceSpec,
 } from "./workspace.js";
@@ -71,6 +72,7 @@ export type { WorkspaceSpec } from "./workspace.js";
 
 export type OperatorCommand = {
   message_id?: string;
+  expires_at?: string;
   type?: string;
   name?: string;
   payload?: {
@@ -79,6 +81,7 @@ export type OperatorCommand = {
     input_mode?: string;
     metadata?: Record<string, unknown>;
     interrupt?: boolean;
+    working_directory?: string;
     target_session_id?: string;
     session_source_id?: string;
     session_reference?: string;
@@ -555,6 +558,9 @@ export class PreloopCodexSidecar {
     if (!this.sessions) {
       this.sessions = new SessionManager(this.verify(), this.clientFactory);
     }
+    if (command.expires_at && Date.parse(command.expires_at) <= Date.now()) {
+      throw new Error("Command expired before the harness turn started; send a new prompt");
+    }
     const payload = command.payload ?? {};
     const targetSessionId = resolveTargetSessionId(payload);
     const resumeSessionId = resolveResumeSessionId(payload);
@@ -616,12 +622,7 @@ export class PreloopCodexSidecar {
     const spawnWorktree = Boolean(
       payload.spawn_worktree ?? payload.metadata?.["spawn_worktree"],
     );
-    let cwd =
-      typeof payload.cwd === "string"
-        ? payload.cwd
-        : typeof payload.metadata?.["cwd"] === "string"
-          ? String(payload.metadata["cwd"])
-          : undefined;
+    let cwd = await resolveWorkingDirectory(this.verify(), payload.working_directory);
     if (workspace && typeof workspace === "object") {
       const spec = workspace as WorkspaceSpec;
       if (spec.mode === "persistent_checkout") {
@@ -647,6 +648,7 @@ export class PreloopCodexSidecar {
       return await this.sessions.sendMessage({
         text,
         commandId: command.message_id,
+        onSessionStarted: (id, directory) => this.sendEnvelope({ type: "event", name: "command_session", payload: { command_id: command.message_id, native_session_id: id, working_directory: directory } }),
         targetSessionId,
         resumeSessionId,
         metadata: payload.metadata,
@@ -915,6 +917,7 @@ function commandResultPayload(
       reply_text: result.reply_text,
       session_id: result.session_id,
       native_session_id: result.session_id,
+      working_directory: result.working_directory,
     };
     const metadata: Record<string, unknown> = {};
     if (result.usage) {

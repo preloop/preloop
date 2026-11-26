@@ -2,6 +2,7 @@ import {
   paneClosesActivity,
   terminalSessionChip,
 } from '../utils/terminal-location';
+import './session-resume-info';
 import { formatCount, formatCountExact } from '../utils/count-format';
 import { randomUuid } from '../utils/random-uuid';
 import {
@@ -3191,6 +3192,9 @@ export class PreloopSessionObserver extends LitElement {
             </dl>`
           : nothing
       }
+      <session-resume-info
+        .session=${session.raw ?? null}
+      ></session-resume-info>
     </header>`;
   }
 

@@ -61,6 +61,7 @@ export type CodexClientFactory = (config: ControlConfig) => CodexClient;
 
 export type TurnOutcome = {
   reply_text: string;
+  working_directory?: string;
   session_id: string;
   usage?: CodexUsage | null;
   /** Set when the in-flight run was aborted by interrupt. */
@@ -78,6 +79,7 @@ export type SendMessageParams = {
   /** Force `startThread` even when the envelope names a session. */
   startNewSession?: boolean;
   commandId?: string;
+  onSessionStarted?: (id: string, cwd?: string) => void;
 };
 
 type OwnedThread = {
@@ -97,6 +99,7 @@ export function clientOptionsFor(
 ): { codexPathOverride?: string; apiKey?: string; baseUrl?: string; env?: Record<string, string>; config?: Record<string, unknown> } {
   if (config.codex_employee_scoped) return employeeClientOptionsFor(config);
   return {
+    env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")), PRELOOP_CONTROL_OWNED: "1" },
     ...(config.codex_path ? { codexPathOverride: config.codex_path } : {}),
     ...(config.codex_gateway_api_key ? { apiKey: config.codex_gateway_api_key } : {}),
     ...(config.codex_gateway_base_url ? { baseUrl: config.codex_gateway_base_url } : {}),
@@ -336,8 +339,8 @@ export class SessionManager {
     // interrupt) or calling thread.run twice on a live SDK thread.
     const previous = session.tail ?? Promise.resolve();
     const outcome = previous.then(
-      () => this.runTurn(session, params.text, timeoutMs),
-      () => this.runTurn(session, params.text, timeoutMs),
+      () => this.runTurn(session, params.text, timeoutMs, params.onSessionStarted),
+      () => this.runTurn(session, params.text, timeoutMs, params.onSessionStarted),
     );
     session.tail = outcome.then(
       () => undefined,
@@ -350,7 +353,9 @@ export class SessionManager {
     session: OwnedThread,
     text: string,
     timeoutMs: number,
+    onSessionStarted?: (id: string, cwd?: string) => void,
   ): Promise<TurnOutcome> {
+    if (session.thread.id) onSessionStarted?.(session.thread.id, session.cwd);
     const controller = new AbortController();
     session.controller = controller;
     session.lastActivity = Date.now();
@@ -370,6 +375,7 @@ export class SessionManager {
         }, timeoutMs);
         session.thread.run(text, { signal: controller.signal, onSessionStarted: async id => {
           this.remember(session);
+          onSessionStarted?.(id, session.cwd);
           await session.registrar.register(id, session.cwd);
         } }).then(
           (value) => resolve(value),
@@ -380,6 +386,7 @@ export class SessionManager {
       await session.registrar.register(session.thread.id ?? undefined, session.cwd);
       return {
         reply_text: turn.finalResponse ?? "",
+        working_directory: session.cwd,
         session_id: session.thread.id ?? session.key,
         usage: turn.usage ?? null,
       };

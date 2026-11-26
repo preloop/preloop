@@ -635,6 +635,9 @@ export interface TerminalLocation {
 
 export interface RuntimeSessionSummary {
   terminal_location?: TerminalLocation | null;
+  harness_session_id?: string | null;
+  start_directory?: string | null;
+  resume_command?: string | null;
   alias?: string | null;
   id: string;
   title?: string | null;
@@ -904,6 +907,7 @@ export interface ManagedAgentSummary {
 }
 
 export interface AgentControlCommandRequest {
+  working_directory?: string | null;
   message: string;
   metadata?: Record<string, unknown>;
   target_session_id?: string | null;
@@ -914,6 +918,7 @@ export interface AgentControlCommandRequest {
 }
 
 export interface AgentControlVoiceTranscriptRequest {
+  working_directory?: string | null;
   transcript: string;
   metadata?: Record<string, unknown>;
   voice?: Record<string, unknown>;
@@ -938,6 +943,7 @@ export interface AgentControlCommandResponse {
  * agent, delivered at the agent's next turn boundary.
  */
 export interface OperatorNote {
+  command_id?: string | null;
   note_id: string;
   /**
    * Delivery is explicit because the failure mode of every push design is a

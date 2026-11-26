@@ -43,7 +43,7 @@ def _nats(mock_get_nats_client):
 
 
 @patch("preloop.api.endpoints.agent_control.get_nats_client")
-def test_existing_terminal_session_command_refused_409(
+def test_existing_terminal_session_command_routes_as_note(
     mock_get_nats_client, client, db_session, test_user
 ):
     _nats(mock_get_nats_client)
@@ -56,14 +56,13 @@ def test_existing_terminal_session_command_refused_409(
         json={"message": "hello", "target_session_id": str(terminal.id)},
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["code"] == "terminal_session"
-    assert (
-        crud_agent_control_command.list_recent_for_agent(
-            db_session, account_id=test_user.account_id, managed_agent_id=agent.id
-        )
-        == []
+    assert response.status_code == 202, response.text
+    assert response.json()["note_id"]
+    note = crud_agent_control_command.get_note(
+        db_session, account_id=test_user.account_id, note_id=response.json()["note_id"]
     )
+    assert note.kind == "note"
+    assert note.runtime_session_id == terminal.id
 
 
 @patch("preloop.api.endpoints.agent_control.get_nats_client")

@@ -37,7 +37,7 @@ import {
 import { SessionProgressForwarder } from "./progress.js";
 import { SessionActivity, TranscriptObserver } from "./observer.js";
 import { LauncherBridge, OwnershipMode } from "./mode.js";
-import { GitRunner, WorkspaceManager, WorkspaceSpec } from "./workspace.js";
+import { GitRunner, resolveWorkingDirectory, WorkspaceManager, WorkspaceSpec } from "./workspace.js";
 import {
   FLOW_WORKSPACE_MODE,
   FlowWorkspaceSpec,
@@ -73,6 +73,7 @@ export type { OwnershipMode, IpcMessage } from "./mode.js";
 
 export type OperatorCommand = {
   message_id?: string;
+  expires_at?: string;
   type?: string;
   name?: string;
   payload?: {
@@ -82,6 +83,7 @@ export type OperatorCommand = {
     metadata?: Record<string, unknown>;
     interrupt?: boolean;
     start_new_session?: boolean;
+    working_directory?: string;
     target_session_id?: string;
     session_source_id?: string;
     session_reference?: string;
@@ -372,6 +374,7 @@ export class PreloopClaudeSidecar {
       }
       const payload: Record<string, unknown> = {
         command_id: command.message_id,
+        ...this.commandIdentities.get(command.message_id ?? ""),
         status: "completed",
         result,
         reply_text: typeof result === "string" ? result : "",
@@ -385,6 +388,7 @@ export class PreloopClaudeSidecar {
       if (workspacePath) {
         payload.metadata = { workspace_path: workspacePath };
       }
+      if (command.message_id) this.commandIdentities.delete(command.message_id);
       const completed = { name: "command_result" as const, payload };
       this.rememberOutcome(command.message_id, completed);
       this.deliverOutcome(socket, command.message_id, completed);
@@ -404,9 +408,11 @@ export class PreloopClaudeSidecar {
     } catch (error) {
       const payload = {
         command_id: command.message_id,
+        ...this.commandIdentities.get(command.message_id ?? ""),
         status: "failed",
         error: errorMessage(error),
       };
+      if (command.message_id) this.commandIdentities.delete(command.message_id);
       const failed = { name: "command_error" as const, payload };
       this.rememberOutcome(command.message_id, failed);
       this.deliverOutcome(socket, command.message_id, failed);
@@ -443,6 +449,9 @@ export class PreloopClaudeSidecar {
         onLiveProgress: (sessionId, event) =>
           this.progress.push(sessionId, event),
       });
+    }
+    if (command.expires_at && Date.parse(command.expires_at) <= Date.now()) {
+      throw new Error("Command expired before the harness turn started; send a new prompt");
     }
     const payload = command.payload ?? {};
     // A flow asks for a new session so its model is applied to a fresh
@@ -488,7 +497,7 @@ export class PreloopClaudeSidecar {
     // The cwd comes only from a validated workspace: a raw `cwd` in the
     // payload or metadata is ignored, so a message cannot point a session
     // at a directory the host owner did not authorize.
-    let cwd: string | undefined;
+    let cwd = await resolveWorkingDirectory(this.verify(), payload.working_directory);
     if (workspace && typeof workspace === "object") {
       const spec = workspace as WorkspaceSpec;
       if ((spec as FlowWorkspaceSpec).mode === FLOW_WORKSPACE_MODE) {
@@ -515,6 +524,12 @@ export class PreloopClaudeSidecar {
       const turn = await this.sessions.completeTurn({
         text,
         commandId: messageId,
+        onSessionStarted: (id, directory) => {
+          if (!messageId) return;
+          const identity = { native_session_id: id, working_directory: directory };
+          this.commandIdentities.set(messageId, identity);
+          this.sendEnvelope({ type: "event", name: "command_session", payload: { command_id: messageId, ...identity } });
+        },
         onProgress: messageId
           ? (event) =>
               this.sendEnvelope({
@@ -647,6 +662,8 @@ export class PreloopClaudeSidecar {
       },
     });
   }
+
+  private commandIdentities = new Map<string, { native_session_id: string; working_directory?: string }>();
 
   private sendEnvelope(envelope: Record<string, unknown>): void {
     if (this.socket && this.socket.readyState === this.socket.OPEN) {

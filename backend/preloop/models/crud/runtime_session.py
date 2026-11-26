@@ -601,6 +601,93 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         db.flush()
         return True
 
+    def recent_directories(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        principal_type: str,
+        principal_id: str,
+    ) -> list[str]:
+        """Recent observed project directories for this account's agent only."""
+        rows = (
+            db.query(self.model.start_directory, self.model.cwd)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.runtime_principal_type == principal_type,
+                (self.model.runtime_principal_id == principal_id)
+                | self.model.runtime_principal_id.startswith(principal_id + ":"),
+            )
+            .order_by(self.model.last_activity_at.desc())
+            .limit(50)
+            .all()
+        )
+        return list(dict.fromkeys(start or cwd for start, cwd in rows if start or cwd))[
+            :10
+        ]
+
+    def resolve_control_session(
+        self,
+        db: Session,
+        **values: Any,
+    ) -> RuntimeSession:
+        """Race the session-start hook without losing the control transaction."""
+        from sqlalchemy.exc import IntegrityError
+
+        try:
+            with db.begin_nested():
+                return self.upsert_by_source(db, **values)
+        except IntegrityError:
+            session = self.get_by_source(
+                db,
+                account_id=values["account_id"],
+                session_source_type=values["session_source_type"],
+                session_source_id=values["session_source_id"],
+            )
+            if session is None:
+                raise
+            return session
+
+    def record_control_turn(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        completed: bool = False,
+    ) -> None:
+        """Use sidecar turn bounds when hooks are absent; preserve approvals."""
+        from .runtime_session_turn_state import apply_activity
+
+        session = self.get_account_session(
+            db, account_id=account_id, runtime_session_id=runtime_session_id
+        )
+        if session is None:
+            return
+        if not completed:
+            session.ended_at = None
+        apply_activity(session, "turn_end" if completed else "user_prompt")
+        db.add(session)
+        db.flush()
+
+    def record_start_directory(
+        self,
+        db: Session,
+        *,
+        session: RuntimeSession,
+        cwd: Optional[str],
+        control_owned: Optional[bool] = None,
+    ) -> None:
+        """Keep the launch directory while current cwd continues to change."""
+        if cwd and not session.start_directory:
+            session.start_directory = cwd[:1024]
+        if cwd and not session.cwd:
+            session.cwd = cwd[:1024]
+        if control_owned is not None:
+            session.control_owned = control_owned
+        db.add(session)
+        db.flush()
+
     def upsert_by_source(
         self,
         db: Session,
@@ -1851,6 +1938,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.legal_hold,
                 self.model.cwd,
                 self.model.terminal_location,
+                self.model.start_directory,
                 func.max(cast(usage_model.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
                 func.max(cast(usage_model.flow_execution_id, String)).label(
@@ -1912,6 +2000,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.legal_hold,
                 self.model.cwd,
                 self.model.terminal_location,
+                self.model.start_directory,
             )
         )
 
@@ -2265,6 +2354,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.legal_hold,
                 self.model.cwd,
                 self.model.terminal_location,
+                self.model.start_directory,
                 func.max(cast(ApiUsage.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
                 func.max(cast(ApiUsage.flow_execution_id, String)).label(
@@ -2329,6 +2419,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.legal_hold,
                 self.model.cwd,
                 self.model.terminal_location,
+                self.model.start_directory,
             )
             .first()
         )
@@ -2519,6 +2610,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "turn_interrupted": getattr(row, "turn_interrupted", None),
             "cwd": getattr(row, "cwd", None),
             "terminal_location": getattr(row, "terminal_location", None),
+            "start_directory": getattr(row, "start_directory", None),
             "total_requests": int(row.request_count or 0),
             "successful_requests": int(row.success_count or 0),
             "failed_requests": int(row.error_count or 0),
