@@ -2486,6 +2486,49 @@ describe('RuntimeSessionsView', () => {
       ).to.equal(25);
     });
 
+    it('counts identity matches and opens their session without a content snippet', async () => {
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(
+        async () =>
+          new Response(
+            JSON.stringify({
+              items: [
+                {
+                  id: 'runtime-session-2',
+                  title: 'Directory-only session',
+                  activity_status: 'idle',
+                },
+              ],
+              related_sessions: [],
+              has_more: false,
+              content_search: {
+                ...searchResponse({ total: 0, results: [] }),
+                items: undefined,
+                content_search: undefined,
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+      );
+      const element = await renderedSearch('/workspace/catalog');
+      expect(
+        element.shadowRoot!.querySelector('.session-count')!.textContent
+      ).to.contain('1 matching session');
+      const title = element.shadowRoot!.querySelector(
+        '.session-item-title a'
+      ) as HTMLAnchorElement;
+      expect(title.href).to.contain('sessionId=runtime-session-2');
+      title.click();
+      await element.updateComplete;
+      expect(
+        element
+          .shadowRoot!.querySelector('.sessions-page')!
+          .classList.contains('has-detail')
+      ).to.equal(true);
+      expect(
+        !!element.shadowRoot!.querySelector('preloop-session-observer')
+      ).to.equal(true);
+    });
+
     it('renders an error state when the search fails', async () => {
       fetchStub
         .withArgs(SEARCH_URL, sinon.match.any)

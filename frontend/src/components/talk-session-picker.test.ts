@@ -159,4 +159,21 @@ describe('Talk session finder', () => {
     expect(el.querySelector('[data-session-id="old"]')).to.equal(null);
     expect(el.querySelector('[data-session-id="new"]')).to.exist;
   });
+  it('keeps a related session on another agent as context instead of selecting the wrong target', async () => {
+    const el = await fixture<TalkSessionPicker>(
+      html`<talk-session-picker
+        agentId="current-agent"
+        .sessions=${[session('other-session', { agent_id: 'other-agent' })]}
+      ></talk-session-picker>`
+    );
+    const selected = sinon.spy();
+    el.addEventListener('talk-session-select', selected);
+    const option = el.querySelector(
+      '[data-session-id="other-session"]'
+    ) as HTMLButtonElement;
+    expect(option.disabled).to.equal(true);
+    option.click();
+    expect(selected).not.to.have.been.called;
+    expect(el.textContent).to.contain('Related session on another agent');
+  });
 });

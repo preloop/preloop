@@ -100,6 +100,8 @@ export class TalkSessionPicker extends LitElement {
   }
 
   private select(session: RuntimeSessionSummary): void {
+    if (this.agentId && session.agent_id && session.agent_id !== this.agentId)
+      return;
     this.dispatchEvent(
       new CustomEvent(TALK_SESSION_SELECT_EVENT, {
         detail: { sessionId: session.id, session },
@@ -195,6 +197,7 @@ export class TalkSessionPicker extends LitElement {
                       <button
                         type="button"
                         class="talk-session-option"
+                        ?disabled=${!!this.agentId && !!session.agentId && session.agentId !== this.agentId}
                         data-session-id=${session.id}
                         aria-current=${session.id === this.currentSessionId ? 'true' : 'false'}
                         style="display:block;width:100%;text-align:start;background:transparent;color:inherit;border:0;padding:8px;cursor:pointer"
@@ -206,6 +209,7 @@ export class TalkSessionPicker extends LitElement {
                         <span class="talk-session-option-meta"
                           >${session.cwd || session.sessionReference || session.id.slice(0, 8)}</span
                         >
+                        ${this.agentId && session.agentId && session.agentId !== this.agentId ? html`<span class="talk-session-option-meta">Related session on another agent</span>` : nothing}
                         ${session.firstPrompt ? html`<span class="talk-session-option-meta" title=${session.firstPrompt}>${session.firstPrompt.slice(0, 120)}</span>` : nothing}
                         ${session.parentSessionId ? html`<span class="talk-session-option-meta">Subagent of ${normalized.find((row) => row.id === session.parentSessionId)?.title || session.parentSessionId.slice(0, 8)} · ${group(session.status)}</span>` : nothing}
                         ${this.result?.matching_snippets?.[session.id] ? html`<span class="talk-session-option-meta">${this.result.matching_snippets[session.id].replace(/<\/?mark>/g, '')}</span>` : nothing}

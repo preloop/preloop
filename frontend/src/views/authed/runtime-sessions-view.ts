@@ -1929,6 +1929,40 @@ export class RuntimeSessionsView extends LitElement {
     return `${url.pathname}${url.search}`;
   }
 
+  private searchSessionHref(id: string): string {
+    const url = new URL(window.location.href);
+    url.searchParams.set('sessionId', id);
+    url.searchParams.delete('turn');
+    url.searchParams.delete('artifact');
+    return `${url.pathname}${url.search}`;
+  }
+
+  private openSearchSession(event: MouseEvent, id: string): void {
+    if (
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    )
+      return;
+    event.preventDefault();
+    this.selectedSessionId = id;
+    this.focusTurnId = null;
+    this.focusArtifactId = null;
+    this.syncUrl({ push: true });
+    void this.focusSelectedDetail();
+  }
+
+  private get selectedSearchSessionVisible(): boolean {
+    return (
+      !!this.selectedSessionId &&
+      this.searchResultSessions().some(
+        (row) => row.id === this.selectedSessionId
+      )
+    );
+  }
+
   private handleSnippetClick(
     event: MouseEvent,
     result: SessionSearchResult,
@@ -1982,10 +2016,16 @@ export class RuntimeSessionsView extends LitElement {
    */
   private get sessionCountLabel(): string {
     if (this.isSearching) {
-      if (this.searchLoading || !this.searchResults) {
+      if (this.searchLoading || (!this.searchResults && !this.foundSessions)) {
         return '';
       }
-      const matched = this.searchResults.total;
+      if (this.foundSessions) {
+        const shown = this.foundSessions.items.length;
+        return this.foundSessions.has_more
+          ? `${shown.toLocaleString()} matching sessions loaded`
+          : `${shown.toLocaleString()} matching session${shown === 1 ? '' : 's'}`;
+      }
+      const matched = this.searchResults!.total;
       return `${this.formatNumber(matched)} matching session${
         matched === 1 ? '' : 's'
       }`;
@@ -2437,11 +2477,15 @@ export class RuntimeSessionsView extends LitElement {
       <sl-card data-testid=${`search-result-${result.runtime_session_id}`}>
         <div class="search-result-header">
           <div class="session-item-title">
-            ${this.searchResultTitle(result)}
+            <a
+              href=${this.searchSessionHref(result.runtime_session_id)}
+              @click=${(event: MouseEvent) => this.openSearchSession(event, result.runtime_session_id)}
+              >${this.searchResultTitle(result)}</a
+            >
           </div>
           <div class="search-result-meta">
-            ${result.matched_chunk_count}
-            match${result.matched_chunk_count === 1 ? '' : 'es'} ·
+            ${result.matched_chunk_count ? `${result.matched_chunk_count} match${result.matched_chunk_count === 1 ? '' : 'es'}` : 'Session'}
+            ·
             <span
               title=${this.formatDateTime(
                 result.last_match_at ?? result.started_at
@@ -3333,7 +3377,7 @@ export class RuntimeSessionsView extends LitElement {
   render() {
     return html`
       <div
-        class="sessions-page ${this.selectedSessionId && (!this.isSearching || this.searchResults?.results.some((result) => result.runtime_session_id === this.selectedSessionId)) ? 'has-detail' : ''}"
+        class="sessions-page ${this.selectedSessionId && (!this.isSearching || this.selectedSearchSessionVisible) ? 'has-detail' : ''}"
       >
         <view-header
           class="list-chrome"
@@ -3527,12 +3571,7 @@ export class RuntimeSessionsView extends LitElement {
                             ${this.renderSearchResults()}
                           </section>
                           ${
-                            this.selectedSessionId &&
-                            (this.searchResults?.results ?? []).some(
-                              (result) =>
-                                result.runtime_session_id ===
-                                this.selectedSessionId
-                            )
+                            this.selectedSearchSessionVisible
                               ? this.renderObserver(this.searchResultSessions())
                               : ''
                           }
