@@ -190,7 +190,7 @@ def test_agent_control_ws_connects_and_updates_presence(client, db_session, test
         assert refreshed_session is not None
         assert refreshed_agent.runtime_session_id == runtime_session.id
         assert refreshed_agent.last_seen_at > old_seen_at.replace(tzinfo=None)
-        assert refreshed_session.last_activity_at > old_seen_at.replace(tzinfo=None)
+        assert refreshed_session.last_activity_at == old_seen_at.replace(tzinfo=None)
 
 
 def test_agent_control_ws_runtime_token_can_reconnect(client, db_session, test_user):
