@@ -212,7 +212,13 @@ class RuntimeSessionExplorerService:
         self._attach_note_badges(account=account, items=items)
         self._attach_session_labels(account=account, items=items)
         related, truncated = (
-            self.session_family(account=account, items=items, history=history_window)
+            self.session_family(
+                account=account,
+                items=items,
+                history=history_window,
+                start_date=start_date,
+                end_date=end_date,
+            )
             if include_related
             else ([], False)
         )
@@ -237,9 +243,19 @@ class RuntimeSessionExplorerService:
         account: Account,
         items: list[RuntimeSessionSummary],
         history: AnalyticsHistoryWindow | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
     ) -> tuple[list[RuntimeSessionSummary], bool]:
         """Read family context without a request or SQL query per displayed row."""
         history = history or resolve_history_window(self.db, account=account)
+        start_date, end_date = self._normalize_period(start_date, end_date)
+        start_date, end_date = restrict_history_window(
+            self.db,
+            account=account,
+            start_date=start_date,
+            end_date=end_date,
+            history_window=history,
+        )
         ids, truncated = session_discovery.family_ids(
             self.db,
             account_id=str(account.id),
@@ -256,6 +272,8 @@ class RuntimeSessionExplorerService:
             session_ids=ids,
             limit=500,
             prompt_since=history.cutoff,
+            usage_start_date=start_date,
+            usage_end_date=end_date,
         )["items"]
         related = [self._summary_row_to_schema(row) for row in rows]
         self._attach_managed_agents(account=account, items=related, session_ids=ids)
@@ -750,7 +768,11 @@ class RuntimeSessionExplorerService:
             since=history_window.cutoff,
         ).get(session.id)
         related, truncated = self.session_family(
-            account=account, items=[session], history=history_window
+            account=account,
+            items=[session],
+            history=history_window,
+            start_date=start_date,
+            end_date=end_date,
         )
         return AccountRuntimeSessionDetailResponse(
             related_sessions=related,

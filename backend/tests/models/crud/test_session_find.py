@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -219,3 +221,118 @@ def test_identity_failure_preserves_content_matches(
     assert [row.id for row in result.items] == [session_id]
     assert "Identity search" in result.search_warning
     assert "quasar" in result.matching_snippets[session_id]
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "agent",
+        "status",
+        "session_source_type",
+        "session_ids",
+        "default_window",
+        "has_artifacts",
+    ],
+)
+def test_content_ranking_applies_scope_before_limit(
+    db_session: Session, create_account: Any, scope: str
+) -> None:
+    """A stronger foreign or old match cannot consume the scoped first page."""
+    from datetime import timedelta
+
+    account = create_account()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    agent = models.ManagedAgent(
+        account_id=account.id,
+        display_name="Example selector",
+        agent_kind="codex",
+        session_source_type="managed_agent",
+        session_source_id="example-selector",
+        lifecycle_updated_at=now,
+        last_seen_at=now,
+    )
+    db_session.add(agent)
+    db_session.flush()
+    rows = []
+    for index in range(2):
+        occurred = (
+            now - timedelta(days=45)
+            if index == 0 and scope == "default_window"
+            else now
+        )
+        row = models.RuntimeSession(
+            account_id=account.id,
+            session_source_type="custom" if index == 0 else "codex",
+            session_source_id=f"scope-example-{index}",
+            runtime_principal_type="managed_agent",
+            runtime_principal_id="another-agent" if index == 0 else str(agent.id),
+            title="Unrelated title",
+            started_at=occurred,
+            last_activity_at=occurred,
+            ended_at=occurred if index == 0 else None,
+        )
+        db_session.add(row)
+        db_session.flush()
+        with patch(
+            "preloop.services.session_search_index.settings.model_gateway_capture_content",
+            True,
+        ):
+            index_transcript_message(
+                db_session,
+                account_id=account.id,
+                runtime_session_id=row.id,
+                source_id=f"scope-turn-{index}",
+                text="quasar " * (20 if index == 0 else 1),
+                role="assistant",
+                occurred_at=occurred,
+            )
+        rows.append(row)
+    db_session.add(
+        models.RuntimeSessionArtifact(
+            account_id=account.id,
+            runtime_session_id=rows[1].id,
+            kind="document",
+            source="agent",
+            content_type="text/plain",
+            size_bytes=1,
+            sha256="a" * 64,
+            manifest={},
+            availability="available",
+        )
+    )
+    db_session.flush()
+    from preloop.schemas.session_search import (
+        SessionSearchRequest,
+        SessionSearchFilters,
+    )
+    from preloop.services.session_search_audit import audited_search
+
+    unscoped = audited_search(
+        db_session,
+        account_id=account.id,
+        actor=SearchActor(),
+        request=SessionSearchRequest(
+            query="quasar",
+            limit=1,
+            filters=SessionSearchFilters(
+                start_date=(now - timedelta(days=60)).replace(tzinfo=UTC)
+            ),
+        ),
+    )
+    assert str(unscoped.results[0].runtime_session_id) == str(rows[0].id)
+    filters = {
+        "agent": {"agent": str(agent.id)},
+        "status": {"status": "active"},
+        "session_source_type": {"session_source_type": "codex"},
+        "session_ids": {"session_ids": [rows[1].id]},
+        "default_window": {},
+        "has_artifacts": {"has_artifacts": "document"},
+    }[scope]
+    result = find_sessions(
+        db_session,
+        account=account,
+        payload=SessionFindRequest(query="quasar", limit=1, **filters),
+        actor=SearchActor(),
+    )
+    assert [row.id for row in result.items] == [str(rows[1].id)]
+    assert not result.has_more

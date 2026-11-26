@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Any, Sequence
 
-from sqlalchemy import String, case, cast, func, or_, select
+from sqlalchemy import String, case, cast, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -221,3 +221,48 @@ def reserve_initial_titles(
     )
     db.commit()
     return [str(value) for value in ids]
+
+
+def selection_ids(
+    db: Session,
+    *,
+    account_id: Any,
+    session_ids: Sequence[Any] | None = None,
+    principals: Sequence[tuple[str, str]] | None = None,
+    source_types: Sequence[str] | None = None,
+    source_type: str | None = None,
+    status: str | None = None,
+    has_artifacts: str | None = None,
+) -> Any:
+    """Build the account-bounded selection subquery before content ranking."""
+    from preloop.models.crud.runtime_session import crud_runtime_session
+    from preloop.models.crud.runtime_session_artifact import (
+        sessions_with_available_artifacts,
+    )
+
+    session = models.RuntimeSession
+    query = db.query(session.id).filter(session.account_id == account_id)
+    if session_ids is not None:
+        query = query.filter(session.id.in_(session_ids))
+    if principals is not None or source_types is not None:
+        alternatives = [
+            crud_runtime_session._principal_condition(kind, identifier)
+            for kind, identifier in principals or ()
+        ]
+        if source_types:
+            alternatives.append(session.session_source_type.in_(source_types))
+        query = query.filter(or_(*alternatives) if alternatives else false())
+    if source_type:
+        query = query.filter(session.session_source_type == source_type)
+    if status == "active":
+        query = query.filter(session.ended_at.is_(None))
+    elif status == "ended":
+        query = query.filter(session.ended_at.isnot(None))
+    if has_artifacts:
+        holders = sessions_with_available_artifacts(
+            db,
+            account_id=account_id,
+            kind=None if has_artifacts == "any" else has_artifacts,
+        )
+        query = query.filter(session.id.in_(holders))
+    return query

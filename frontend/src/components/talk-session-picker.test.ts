@@ -81,6 +81,7 @@ describe('Talk session finder', () => {
     expect(fetch.firstCall.args[0]).to.equal('/api/v1/runtime-sessions/find');
     expect(JSON.parse(String(fetch.firstCall.args[1]?.body))).to.include({
       agent: 'example-agent',
+      start_date: '1970-01-01T00:00:00.000Z',
       query: 'quasar',
     });
     expect(el.textContent).to.contain('Middle quasar request');

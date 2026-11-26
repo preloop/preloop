@@ -345,7 +345,10 @@ account usage CSV expose these controls. See the [OpenRouter guide](../guide/pro
 `POST /runtime-sessions/find` combines identity matches with the existing audited
 keyword relevance service. It returns full list rows, matching snippets and
 bounded parent, sibling and child context. An empty query never reads the
-content index. The console session list, embedded session search and Talk picker
+content index. Session scope and the effective history window apply before
+content ranking, so unrelated matches cannot consume a scoped page. Family
+identity remains available as context while usage uses the page's reporting
+window and plan cutoff. The console session list, embedded session search and Talk picker
 use this contract; raw list identity queries also match the opening request,
 directory and both session id prefixes. Query text stays in POST bodies.
 

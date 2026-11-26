@@ -998,6 +998,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         has_artifacts: Optional[str] = None,
         session_ids: Optional[list[str]] = None,
         prompt_since: Optional[datetime] = None,
+        usage_start_date: Optional[datetime] = None,
+        usage_end_date: Optional[datetime] = None,
     ) -> dict[str, Any]:
         """List runtime sessions with aggregated gateway usage.
 
@@ -1014,6 +1016,9 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
 
         ``has_artifacts`` keeps sessions holding at least one available
         artifact: ``any`` for any kind, otherwise that artifact kind.
+
+        ``usage_start_date`` and ``usage_end_date`` bound context-row metrics
+        independently of which family identities are visible.
 
         ``sort`` orders all matches descending before paging, with session id
         breaking ties. Cost and requests use the same period and attribution
@@ -1225,10 +1230,12 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             if total == 0:
                 return {"total": 0, "has_more": False, "items": []}
             page_ids = None
+        usage_start_date = usage_start_date or start_date
+        usage_end_date = usage_end_date or end_date
         link_filters = {
             "account_id": account_id,
-            "start_date": start_date,
-            "end_date": end_date,
+            "start_date": usage_start_date,
+            "end_date": usage_end_date,
             "ai_model_id": ai_model_id,
         }
         if sort == "started":
@@ -1360,8 +1367,8 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             db,
             account_id=account_id,
             runtime_session_ids=session_ids,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=usage_start_date,
+            end_date=usage_end_date,
             ai_model_id=ai_model_id,
         )
 

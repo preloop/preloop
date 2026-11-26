@@ -58133,17 +58133,64 @@ components:
           description: Artifact label filters as key:value, for example site:nord.
             Repeatable; every one must match (AND). tags:x matches an artifact whose
             tags include x. Restricts the search to artifact chunks.
+        session_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+            maxItems: 500
+          - type: 'null'
+          title: Session Ids
+        session_principals:
+          anyOf:
+          - items:
+              prefixItems:
+              - type: string
+              - type: string
+              type: array
+              maxItems: 2
+              minItems: 2
+            type: array
+            maxItems: 500
+          - type: 'null'
+          title: Session Principals
+        session_source_types:
+          anyOf:
+          - items:
+              type: string
+            type: array
+            maxItems: 100
+          - type: 'null'
+          title: Session Source Types
+        session_source_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Source Type
+        session_status:
+          anyOf:
+          - type: string
+            enum:
+            - all
+            - active
+            - ended
+          - type: 'null'
+          title: Session Status
+        session_has_artifacts:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Has Artifacts
       additionalProperties: false
       type: object
       title: SessionSearchFilters
       description: 'Filters over the denormalised columns the corpus carries.
 
 
-        Everything here is a column on the corpus row itself, snapshotted by the
+        Chunk filters use denormalised corpus columns. Optional session filters
 
-        writer, so filtering never joins a source table and never reaches outside
-
-        the account bound applied by the query.'
+        narrow the corpus through an account-bounded subquery before ranking.'
     SessionSearchRequest:
       properties:
         query:

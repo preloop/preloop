@@ -58,6 +58,11 @@ def find_sessions(
     if not query:
         return page
     if query:
+        filters["start_date"] = page.period_start
+        filters["end_date"] = page.period_end
+        principals, source_types = explorer._resolve_agent_filters(
+            account=account, agent=payload.agent, agent_kind=payload.agent_kind
+        )
         try:
             with db.begin_nested():
                 matches = session_search_audit.audited_search(
@@ -71,8 +76,14 @@ def find_sessions(
                         offset=payload.offset,
                         max_snippets_per_session=3,
                         filters=SessionSearchFilters(
-                            start_date=payload.start_date,
-                            end_date=payload.end_date,
+                            start_date=page.period_start,
+                            end_date=page.period_end,
+                            session_ids=payload.session_ids,
+                            session_principals=principals,
+                            session_source_types=source_types,
+                            session_source_type=payload.session_source_type,
+                            session_status=payload.status,
+                            session_has_artifacts=payload.has_artifacts,
                         ),
                     ),
                 )
@@ -140,5 +151,7 @@ def find_sessions(
     page.related_sessions, page.related_truncated = explorer.session_family(
         account=account,
         items=page.items,
+        start_date=page.period_start,
+        end_date=page.period_end,
     )
     return page

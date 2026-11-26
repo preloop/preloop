@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class SessionFindRequest(BaseModel):
@@ -23,3 +23,11 @@ class SessionFindRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     sort: Literal["last_activity", "started", "cost", "requests"] = "last_activity"
     has_artifacts: str | None = None
+
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        """Reject ambiguous naive bounds at the HTTP boundary."""
+        if value is not None and value.utcoffset() is None:
+            raise ValueError("date bounds must include a timezone offset")
+        return value

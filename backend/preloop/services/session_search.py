@@ -222,6 +222,12 @@ def _to_crud_filters(request: SessionSearchRequest) -> CrudSessionSearchFilters:
         source_kind=filters.source_kind,
         artifact_kind=filters.kind,
         artifact_labels=_label_terms(filters.label or ()),
+        session_ids=filters.session_ids,
+        session_principals=filters.session_principals,
+        session_source_types=filters.session_source_types,
+        session_source_type=filters.session_source_type,
+        session_status=filters.session_status,
+        session_has_artifacts=filters.session_has_artifacts,
     )
 
 

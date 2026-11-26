@@ -56,6 +56,7 @@ export class TalkSessionPicker extends LitElement {
     try {
       const result = await findRuntimeSessions({
         agent: this.agentId,
+        startDate: new Date(0).toISOString(),
         query: this.query,
         limit: 30,
         offset: more ? (this.result?.next_offset ?? 0) : 0,

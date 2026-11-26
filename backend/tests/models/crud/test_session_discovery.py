@@ -217,3 +217,43 @@ def test_new_hook_activity_wins_over_older_model_usage(
         session_ids=[str(row.id)],
     )
     assert result["items"][0]["is_active_now"]
+
+
+@pytest.mark.parametrize("plan_limited", [False, True])
+def test_family_usage_respects_period_and_plan_cutoff(
+    db_session: Session, family: dict[str, Any], plan_limited: bool
+) -> None:
+    """Context keeps identity while withholding usage outside the reporting window."""
+    from preloop.services.analytics_history import AnalyticsHistoryWindow
+
+    parent, child = family["rows"][:2]
+    db_session.add(
+        models.ApiUsage(
+            account_id=parent.account_id,
+            runtime_session_id=parent.id,
+            endpoint="/v1/chat/completions",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            action_type="model_gateway",
+            estimated_cost=42,
+            timestamp=family["now"] - timedelta(days=40),
+        )
+    )
+    db_session.flush()
+    service = RuntimeSessionExplorerService(db_session)
+    listed = service.list_account_sessions(
+        account=family["account"], session_ids=[str(child.id)]
+    )
+    cutoff = family["now"].replace(tzinfo=UTC) - timedelta(days=7)
+    related, _ = service.session_family(
+        account=family["account"],
+        items=listed.items,
+        start_date=None if plan_limited else cutoff,
+        history=AnalyticsHistoryWindow(cutoff if plan_limited else None),
+    )
+    row = next(row for row in related if row.id == str(parent.id))
+    assert row.total_requests == 0
+    assert row.estimated_cost == 0
+    assert row.token_usage.total_tokens == 0
+    assert row.last_request_at is None

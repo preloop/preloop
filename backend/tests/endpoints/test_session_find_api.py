@@ -38,7 +38,13 @@ def test_finder_returns_identity_and_family_contract(
 
 def test_finder_rejects_unbounded_pages_and_unknown_filters(client: Any) -> None:
     """The shared selection contract rejects requests that bypass its bounds."""
-    for body in ({"limit": 501}, {"query": "x" * 513}, {"account_id": "other"}):
+    for body in (
+        {"limit": 501},
+        {"query": "x" * 513},
+        {"account_id": "other"},
+        {"query": "test", "start_date": "2026-11-01T00:00:00"},
+        {"end_date": "2026-11-01T00:00:00"},
+    ):
         assert (
             client.post("/api/v1/runtime-sessions/find", json=body).status_code == 422
         )

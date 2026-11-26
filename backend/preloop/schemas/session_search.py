@@ -119,9 +119,8 @@ DEFAULT_SNIPPETS_PER_SESSION = 3
 class SessionSearchFilters(BaseModel):
     """Filters over the denormalised columns the corpus carries.
 
-    Everything here is a column on the corpus row itself, snapshotted by the
-    writer, so filtering never joins a source table and never reaches outside
-    the account bound applied by the query.
+    Chunk filters use denormalised corpus columns. Optional session filters
+    narrow the corpus through an account-bounded subquery before ranking.
     """
 
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
@@ -181,6 +180,13 @@ class SessionSearchFilters(BaseModel):
             "chunks."
         ),
     )
+
+    session_ids: Optional[List[UUID]] = Field(None, max_length=500)
+    session_principals: Optional[List[tuple[str, str]]] = Field(None, max_length=500)
+    session_source_types: Optional[List[str]] = Field(None, max_length=100)
+    session_source_type: Optional[str] = None
+    session_status: Optional[Literal["all", "active", "ended"]] = None
+    session_has_artifacts: Optional[str] = None
 
     @field_validator("label")
     @classmethod
