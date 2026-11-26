@@ -768,18 +768,23 @@ export class ExtensionInventory extends LitElement {
         : page.completeness === 'partial'
           ? 'Scan partial'
           : 'Coverage unknown';
-    const variant =
+    // Literal variants per state; computed badge variants are not allowed.
+    const badge =
       page.completeness === 'complete'
-        ? 'success'
+        ? html`<sl-badge variant="success" pill class="coverage-badge"
+            >${label}</sl-badge
+          >`
         : page.completeness === 'partial'
-          ? 'warning'
-          : 'neutral';
+          ? html`<sl-badge variant="warning" pill class="coverage-badge"
+              >${label}</sl-badge
+            >`
+          : html`<sl-badge variant="neutral" pill class="coverage-badge"
+              >${label}</sl-badge
+            >`;
     const one = devices.length === 1 ? devices[0] : null;
     return html`<details class="coverage" data-state=${page.completeness}>
       <summary>
-        <sl-badge variant=${variant} pill class="coverage-badge"
-          >${label}</sl-badge
-        >
+        ${badge}
         ${
           one
             ? html`<span class="meta inline"
