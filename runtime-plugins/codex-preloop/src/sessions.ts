@@ -8,6 +8,7 @@ import { SessionRegistrar } from "./session-registration.js";
 // drives interactive TUI threads on the shared `codex app-server` daemon.
 
 import os from "node:os";
+import { randomUUID } from "node:crypto";
 import { employeeClientOptionsFor } from "./employee.js";
 
 import type { ControlConfig } from "./config.js";
@@ -314,7 +315,7 @@ export class SessionManager {
         ? client.resumeThread(resumeId, options)
         : client.startThread(options);
       session = {
-        key: thread.id ?? resumeId ?? `pending-${this.sessions.size + 1}`,
+        key: thread.id ?? resumeId ?? `pending-${randomUUID()}`,
         thread,
         lastActivity: Date.now(),
         cwd: options.workingDirectory,
