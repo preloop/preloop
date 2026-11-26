@@ -372,6 +372,7 @@ export class PreloopClaudeSidecar {
       }
       const payload: Record<string, unknown> = {
         command_id: command.message_id,
+        ...this.commandIdentities.get(command.message_id ?? ""),
         status: "completed",
         result,
         reply_text: typeof result === "string" ? result : "",
@@ -515,6 +516,12 @@ export class PreloopClaudeSidecar {
       const turn = await this.sessions.completeTurn({
         text,
         commandId: messageId,
+        onSessionStarted: (id, directory) => {
+          if (!messageId) return;
+          const identity = { native_session_id: id, working_directory: directory };
+          this.commandIdentities.set(messageId, identity);
+          this.sendEnvelope({ type: "event", name: "command_session", payload: { command_id: messageId, ...identity } });
+        },
         onProgress: messageId
           ? (event) =>
               this.sendEnvelope({
@@ -647,6 +654,8 @@ export class PreloopClaudeSidecar {
       },
     });
   }
+
+  private commandIdentities = new Map<string, { native_session_id: string; working_directory?: string }>();
 
   private sendEnvelope(envelope: Record<string, unknown>): void {
     if (this.socket && this.socket.readyState === this.socket.OPEN) {

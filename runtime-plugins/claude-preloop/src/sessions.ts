@@ -194,6 +194,7 @@ class OwnedSession {
     private registrar: SessionRegistrar,
     private cwd?: string,
     private onLive?: LiveProgressListener,
+    private onSessionStarted?: (id: string, cwd?: string) => void,
   ) {}
 
   private emitLive(event: LiveProgress): void {
@@ -258,6 +259,7 @@ class OwnedSession {
         this.lastActivity = Date.now();
         if (message.type === "system" && message.subtype === "init") {
           this.sessionId = message.session_id ?? this.sessionId;
+          if (this.sessionId) this.onSessionStarted?.(this.sessionId, this.cwd);
           // Never block the message stream on the registration request.
           void this.registrar.register(this.sessionId, this.cwd);
           continue;
@@ -478,6 +480,7 @@ function resultErrorText(message: SdkMessage): string {
 
 export type SendMessageParams = {
   onProgress?: (event: TurnProgress) => void;
+  onSessionStarted?: (id: string, cwd?: string) => void;
   /** Envelope id of the command this turn answers. */
   commandId?: string;
   text: string;
@@ -634,12 +637,14 @@ export class SessionManager {
     cwd?: string,
     model?: string,
     executionId?: string,
+    onSessionStarted?: (id: string, cwd?: string) => void,
   ): Promise<OwnedSession> {
     const session = new OwnedSession(
       resumeSessionId ?? randomUUID(),
       this.registrar,
-      cwd ?? this.config.workspace_root,
+      cwd ?? this.config.workspace_root ?? os.homedir(),
       this.onLiveProgress,
+      onSessionStarted,
     );
     const executable = await this.claudeExecutable();
     const handle = await this.queryFactory({
@@ -687,6 +692,7 @@ export class SessionManager {
         cwd,
         params.model,
         flowExecutionId(params.metadata),
+        params.onSessionStarted,
       );
     }
     const timeoutMs = selectTurnTimeoutMs(
@@ -698,7 +704,7 @@ export class SessionManager {
     const binary = `${executable.path ?? "bundled"} version=${executable.version ?? "unknown"}`;
     const started = Date.now();
     const owned = session;
-    const label = () => owned.sessionId ?? owned.key;
+    const label = () => owned.sessionId ?? "starting";
     const modelLabel = params.model ?? "default";
     const executionLabel = flowExecutionId(params.metadata) ?? "-";
     this.log(
@@ -783,7 +789,7 @@ export class SessionManager {
   ownedSessionIds(): string[] {
     return [...this.sessions.values()]
       .filter((session) => session.isLive())
-      .map((session) => session.sessionId ?? session.key);
+      .flatMap((session) => session.sessionId ? [session.sessionId] : []);
   }
 
   stop(): void {

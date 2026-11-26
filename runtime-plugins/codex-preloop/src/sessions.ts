@@ -78,6 +78,7 @@ export type SendMessageParams = {
   /** Force `startThread` even when the envelope names a session. */
   startNewSession?: boolean;
   commandId?: string;
+  onSessionStarted?: (id: string, cwd?: string) => void;
 };
 
 type OwnedThread = {
@@ -336,8 +337,8 @@ export class SessionManager {
     // interrupt) or calling thread.run twice on a live SDK thread.
     const previous = session.tail ?? Promise.resolve();
     const outcome = previous.then(
-      () => this.runTurn(session, params.text, timeoutMs),
-      () => this.runTurn(session, params.text, timeoutMs),
+      () => this.runTurn(session, params.text, timeoutMs, params.onSessionStarted),
+      () => this.runTurn(session, params.text, timeoutMs, params.onSessionStarted),
     );
     session.tail = outcome.then(
       () => undefined,
@@ -350,7 +351,9 @@ export class SessionManager {
     session: OwnedThread,
     text: string,
     timeoutMs: number,
+    onSessionStarted?: (id: string, cwd?: string) => void,
   ): Promise<TurnOutcome> {
+    if (session.thread.id) onSessionStarted?.(session.thread.id, session.cwd);
     const controller = new AbortController();
     session.controller = controller;
     session.lastActivity = Date.now();
@@ -370,6 +373,7 @@ export class SessionManager {
         }, timeoutMs);
         session.thread.run(text, { signal: controller.signal, onSessionStarted: async id => {
           this.remember(session);
+          onSessionStarted?.(id, session.cwd);
           await session.registrar.register(id, session.cwd);
         } }).then(
           (value) => resolve(value),

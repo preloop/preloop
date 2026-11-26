@@ -30487,8 +30487,10 @@ components:
           format: uuid
           title: Managed Agent Id
         runtime_session_id:
-          type: string
-          format: uuid
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
           title: Runtime Session Id
         session_source_type:
           type: string
@@ -30511,7 +30513,6 @@ components:
       - message_id
       - account_id
       - managed_agent_id
-      - runtime_session_id
       - session_source_type
       - session_source_id
       - timestamp
@@ -61568,7 +61569,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

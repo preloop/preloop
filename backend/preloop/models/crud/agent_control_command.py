@@ -115,6 +115,20 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             )
         )
 
+    def bind_session(
+        self, db: Session, *, command: AgentControlCommand, runtime_session_id: Any
+    ) -> None:
+        """Bind a starting command exactly once, before recording its progress."""
+        if command.runtime_session_id is not None:
+            return
+        command.runtime_session_id = runtime_session_id
+        command.envelope = {
+            **command.envelope,
+            "runtime_session_id": str(runtime_session_id),
+        }
+        db.add(command)
+        db.flush()
+
     def get_by_command_id(
         self,
         db: Session,

@@ -227,6 +227,10 @@ def create_command_history_session(
             runtime_session_id=str(agent.runtime_session_id),
         )
 
+    if agent.session_source_type in {"claude_code", "codex"} and not shared:
+        # The harness start hook creates the canonical conversation row.
+        return None
+
     now = datetime.now(UTC)
     command_session_id = f"{agent.session_source_id}-{uuid.uuid4()}"
     return crud_runtime_session.upsert_by_source(
@@ -286,7 +290,7 @@ async def persist_and_deliver_command(
         db,
         account_id=agent.account_id,
         managed_agent_id=agent.id,
-        runtime_session_id=history_session_id or agent.runtime_session_id,
+        runtime_session_id=history_session_id or envelope.runtime_session_id,
         consuming_account_id=consuming_account_id,
         command_id=envelope.message_id,
         envelope=envelope.model_dump(mode="json"),
@@ -485,6 +489,15 @@ async def dispatch_operator_message(
         name="send_message",
         payload=payload,
     )
+    if start_new_session and managed_agent.session_source_type in {
+        "claude_code",
+        "codex",
+    }:
+        envelope = envelope.model_copy(
+            update={"runtime_session_id": history_session_id}
+        )
+    elif target_session_id is not None:
+        envelope = envelope.model_copy(update={"runtime_session_id": target_session_id})
     return await persist_and_deliver_command(
         db,
         agent=managed_agent,
@@ -603,6 +616,16 @@ def _is_command_history_session(agent: Any, session: Any) -> bool:
     )
 
 
+def native_session_id(session: Any) -> Optional[str]:
+    """Return the harness identity without the durable principal prefix."""
+    source = str(session.session_source_id or "")
+    if session.session_reference == COMMAND_HISTORY_SESSION_REFERENCE:
+        return None
+    if session.session_source_type in {"claude_code", "codex"}:
+        return source.split(":", 1)[-1] or None
+    return source or None
+
+
 def session_reachable_by_control(agent: Any, session: Any) -> bool:
     """Say whether the agent's control plugin can drive ``session`` itself.
 
@@ -634,7 +657,7 @@ def session_reachable_by_control(agent: Any, session: Any) -> bool:
         return True
     if _is_command_history_session(agent, session):
         return True
-    return bool(session.session_source_id) and session.session_source_id in set(
+    return bool(native_session_id(session)) and native_session_id(session) in set(
         str(item) for item in reachable
     )
 
@@ -662,7 +685,7 @@ def session_managed_agent(db: Session, *, account_id: str, session: Any) -> Any:
             db,
             account_id=account_id,
             session_source_type=str(source_type),
-            session_source_id=str(source_id),
+            session_source_id=str(source_id).split(":", 1)[0],
         )
         if agent is not None:
             return agent

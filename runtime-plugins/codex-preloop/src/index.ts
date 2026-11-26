@@ -647,6 +647,7 @@ export class PreloopCodexSidecar {
       return await this.sessions.sendMessage({
         text,
         commandId: command.message_id,
+        onSessionStarted: (id, directory) => this.sendEnvelope({ type: "event", name: "command_session", payload: { command_id: command.message_id, native_session_id: id, working_directory: directory } }),
         targetSessionId,
         resumeSessionId,
         metadata: payload.metadata,

@@ -21,7 +21,7 @@ class AgentControlEnvelope(BaseModel):
     message_id: str
     account_id: UUID
     managed_agent_id: UUID
-    runtime_session_id: UUID
+    runtime_session_id: Optional[UUID] = None
     session_source_type: str
     session_source_id: str
     timestamp: datetime

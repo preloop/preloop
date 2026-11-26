@@ -79,6 +79,7 @@ from preloop.services.agent_control_dispatch import (
     TERMINAL_SESSION_REASON,
     TERMINAL_SESSION_REASON_CODE,
     session_reachable_by_control,
+    native_session_id,
     session_managed_agent,
 )
 
@@ -1059,8 +1060,7 @@ def _persist_agent_control_result(
         db,
         account_id=result_account_id,
         command_id=command_id.strip(),
-        fallback_runtime_session_id=command.runtime_session_id
-        or context.runtime_session_id,
+        fallback_runtime_session_id=command.runtime_session_id,
         status=result_status,
         message=message,
         metadata=sanitized,
@@ -1540,6 +1540,84 @@ async def _emit_agent_message(
     )
 
 
+def _bind_command_session(
+    db: Session,
+    connection: AgentControlConnectionContext,
+    inbound: AgentControlInboundEnvelope,
+) -> None:
+    """Attach native startup (or a replayed result) to its own command."""
+    if getattr(inbound, "name", None) not in {"command_session", "command_result"}:
+        return
+    from preloop.services.agent_session_headers import normalize_session_id
+    from preloop.services.agent_session_lineage import session_source_id_for
+
+    native = normalize_session_id(inbound.payload.get("native_session_id"))
+    command_id = inbound.payload.get("command_id")
+    if native is None or not isinstance(command_id, str):
+        return
+    command = crud_agent_control_command.get_by_command_id(
+        db,
+        account_id=connection.account_id,
+        managed_agent_id=connection.managed_agent_id,
+        command_id=command_id,
+    )
+    if (
+        command is None
+        or command.kind != "command"
+        or command.status not in {"delivered", "acked"}
+    ):
+        return
+    if command.runtime_session_id is not None:
+        return
+    account_id = command.consuming_account_id or connection.account_id
+    source_type = connection.managed_agent_session_source_type
+    if source_type not in {"claude_code", "codex"}:
+        return
+    source_id = session_source_id_for(
+        connection.managed_agent_session_source_id, native
+    )
+    now = datetime.now(UTC)
+    session = crud_runtime_session.upsert_by_source(
+        db,
+        account_id=account_id,
+        session_source_type=source_type,
+        session_source_id=source_id,
+        runtime_principal_type=source_type,
+        runtime_principal_id=source_id,
+        started_at=now,
+        last_activity_at=now,
+    )
+    crud_agent_control_command.bind_session(
+        db, command=command, runtime_session_id=session.id
+    )
+    if (
+        crud_runtime_session_activity.command_message(
+            db, account_id=account_id, command_id=command_id
+        )
+        is None
+    ):
+        crud_runtime_session_activity.log_agent_control_message(
+            db,
+            account_id=account_id,
+            runtime_session_id=session.id,
+            message=command.envelope.get("payload", {}).get("text", ""),
+            status="delivered",
+            metadata={"kind": "operator_command", "command_id": command_id},
+            timestamp=command.created_at,
+            commit=False,
+        )
+    emit_account_event(
+        build_account_event(
+            account_id=str(account_id),
+            topic=ACCOUNT_TOPIC_AGENT_CONTROL,
+            event_type="managed_agent_command_session",
+            payload={"command_id": command_id, "runtime_session_id": str(session.id)},
+            managed_agent_id=connection.managed_agent_id,
+            runtime_session_id=str(session.id),
+        )
+    )
+
+
 def _process_control_message(
     db: Session,
     connection: AgentControlConnectionContext,
@@ -1567,6 +1645,7 @@ def _process_control_message(
     )
     _mark_control_verified_from_capabilities(db, connection, inbound, commit=False)
     _handle_command_ack(db, connection, inbound, commit=False)
+    _bind_command_session(db, connection, inbound)
     indexed_accounts = {
         _persist_agent_control_result(db, connection, inbound, commit=False),
         _persist_agent_control_progress(db, connection, inbound),
@@ -1841,7 +1920,8 @@ def _resolve_session_mode(
     )
     principal_matches = (
         target_session.runtime_principal_type == agent.session_source_type
-        and target_session.runtime_principal_id == agent.session_source_id
+        and str(target_session.runtime_principal_id).split(":", 1)[0]
+        == agent.session_source_id
     )
     if not source_matches and not principal_matches:
         raise HTTPException(
@@ -1863,8 +1943,10 @@ def _existing_session_identity(
     if target_session is None:
         return {}
     return {
-        "session_source_id": target_session.session_source_id,
+        "session_source_id": native_session_id(target_session),
         "session_reference": target_session.session_reference,
+        "working_directory": getattr(target_session, "start_directory", None)
+        or target_session.cwd,
     }
 
 
