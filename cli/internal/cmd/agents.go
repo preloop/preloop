@@ -2653,7 +2653,7 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 			removeClaudeDesktopModelRoute(os.Stdin, os.Stdout, strings.TrimRight(client.BaseURL(), "/"), recordedPath, autoApprove)
 		}
 		if state != nil {
-			if _, err := restoreAgentFromBackup(agent, state); err != nil {
+			if _, err := restoreAgentFromBackupWithRuntimeCleanup(agent, state, !isClaudeCodeAgent(agent)); err != nil {
 				return partial(err)
 			}
 		} else {
@@ -2677,6 +2677,13 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 			if err := saveLocalEnrollmentState(state); err != nil {
 				return partial(err)
 			}
+		}
+	}
+	// Revoke Claude's remote access before reporting local ownership conflicts.
+	// This also runs without a config backup and on archived cleanup retries.
+	if isClaudeCodeAgent(agent) {
+		if err := removeManagedAgentRuntimeArtifacts(agent); err != nil {
+			return partial(err)
 		}
 	}
 	if detail != nil {
@@ -2723,6 +2730,10 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 }
 
 func restoreAgentFromBackup(agent AgentConfig, state *localEnrollmentState) (time.Time, error) {
+	return restoreAgentFromBackupWithRuntimeCleanup(agent, state, true)
+}
+
+func restoreAgentFromBackupWithRuntimeCleanup(agent AgentConfig, state *localEnrollmentState, cleanupRuntime bool) (time.Time, error) {
 	backupBytes, err := os.ReadFile(state.BackupPath)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("failed to read backup: %w", err)
@@ -2737,8 +2748,10 @@ func restoreAgentFromBackup(agent AgentConfig, state *localEnrollmentState) (tim
 			return time.Time{}, fmt.Errorf("failed to restore config: %w", err)
 		}
 	}
-	if err := removeManagedAgentRuntimeArtifacts(agent); err != nil {
-		return time.Time{}, err
+	if cleanupRuntime {
+		if err := removeManagedAgentRuntimeArtifacts(agent); err != nil {
+			return time.Time{}, err
+		}
 	}
 	if err := removeClaudeCodeManagedMCPServer(agent); err != nil {
 		return time.Time{}, err

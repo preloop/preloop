@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -30,7 +31,7 @@ func TestClaudeApprovalPromptExplainsWaitWithoutChangingDefault(t *testing.T) {
 	if err != nil || !yes {
 		t.Fatalf("default changed: yes=%t err=%v", yes, err)
 	}
-	for _, want := range []string{"Enforce", "Skill", "ToolSearch", "Agent", "Approvals", "570", "600", "Off: auto-approve (recorded)", "workflow"} {
+	for _, want := range []string{"Enforce", "Skill", "ToolSearch", "Agent", "Approvals", "570", "585", "600", "Off: auto-approve (recorded)", "workflow"} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("missing approval consequence %q", want)
 		}
@@ -154,6 +155,9 @@ func TestClaudeControlRestoresPermissionsWhenBytesUnchanged(t *testing.T) {
 func TestClaudeControlPreservesChangesAfterEnrollment(t *testing.T) {
 	for _, symlink := range []bool{false, true} {
 		t.Run(map[bool]string{false: "edited", true: "symlink"}[symlink], func(t *testing.T) {
+			if symlink && runtime.GOOS == "windows" {
+				t.Skip("symlinks require privileges on Windows")
+			}
 			home := testenv.SetTempHome(t)
 			t.Setenv("PRELOOP_CONFIG_DIR", filepath.Join(home, ".preloop"))
 			if err := writeClaudePreloopControlFile(map[string]interface{}{"enabled": true}); err != nil {
@@ -191,5 +195,51 @@ func TestClaudeControlPreservesChangesAfterEnrollment(t *testing.T) {
 				t.Fatal("operator replacement changed")
 			}
 		})
+	}
+}
+
+func TestClaudeOffboardCleansControlWithoutEnrollmentState(t *testing.T) {
+	f := newOffboardRecoveryFixture(t, "claude")
+	if err := removeLocalEnrollmentState(f.agent); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeClaudePreloopControlFile(map[string]interface{}{"enabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRecoveryOffboard(t, f); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(claudeControlConfigPath()); !os.IsNotExist(err) {
+		t.Fatal("owned control file remains without local enrollment state")
+	}
+}
+
+func TestClaudeOffboardRevokesBeforeReportingControlConflict(t *testing.T) {
+	f := newOffboardRecoveryFixture(t, "claude")
+	if err := writeClaudePreloopControlFile(map[string]interface{}{"enabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	path := claudeControlConfigPath()
+	if err := os.WriteFile(path, []byte("operator replacement"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRecoveryOffboard(t, f); err == nil {
+		t.Fatal("cleanup conflict must remain visible")
+	}
+	if f.archives != 1 {
+		t.Fatal("cleanup conflict prevented credential revocation")
+	}
+	state, err := loadLocalEnrollmentState(f.agent)
+	if err != nil || !state.OffboardArchived {
+		t.Fatal("archive retry state was not retained")
+	}
+	if _, err := runRecoveryOffboard(t, f); err == nil {
+		t.Fatal("retry must report the unresolved cleanup conflict")
+	}
+	if f.archives != 1 {
+		t.Fatal("cleanup retry repeated decommission")
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "operator replacement" {
+		t.Fatal("operator replacement was not preserved")
 	}
 }

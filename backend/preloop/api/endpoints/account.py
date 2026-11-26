@@ -56,6 +56,7 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.models.db.session import get_db_session
+from preloop.models.crud.billing import billing
 from preloop.models.models.account import Account
 from preloop.models.models.attention_dismissal import AttentionDismissal
 from preloop.models.models.user import User as UserModel
@@ -2571,8 +2572,10 @@ async def create_account_managed_agent_credential(
     await run_db_off_loop(
         lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
     )
+    # Match decommission and membership issuance lock order before reading state.
+    billing.lock_account(db, str(account.id))
     agent = crud_managed_agent.get_for_account(
-        db, account_id=str(account.id), agent_id=agent_id
+        db, account_id=str(account.id), agent_id=agent_id, for_update=True
     )
     if agent is None:
         raise HTTPException(

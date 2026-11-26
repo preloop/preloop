@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -54,7 +55,9 @@ def test_gateway_success_reconciles_console_state(
     assert after["live_validation_status"] == "failed"
 
 
-@pytest.mark.parametrize("kind", ["failed", "imported", "older", "sibling"])
+@pytest.mark.parametrize(
+    "kind", ["failed", "imported", "older", "reapplied", "sibling"]
+)
 def test_only_current_server_gateway_success_proves_route(
     client: Any, db_session: Session, test_user: models.User, kind: str
 ) -> None:
@@ -63,6 +66,9 @@ def test_only_current_server_gateway_success_proves_route(
         client, db_session, test_user, source_id="gateway-evidence-negative"
     )
     enrollment = _failed_enrollment(db_session, test_user, agent_id)
+    if kind == "reapplied":
+        enrollment.last_applied_at = datetime.now(UTC) + timedelta(seconds=1)
+        db_session.flush()
     if kind == "sibling":
         _, token = _seed_pauseable_agent(
             client, db_session, test_user, source_id="gateway-evidence-sibling"
@@ -85,6 +91,58 @@ def test_only_current_server_gateway_success_proves_route(
     db_session.commit()
     after = client.get(f"/api/v1/agents/{agent_id}").json()["agent"]
     assert after["model_gateway_configured"] is False
+
+
+def test_credential_creation_locks_agent_before_issuing(
+    client: Any, db_session: Session, test_user: models.User
+) -> None:
+    """Issuance must serialize with decommission before inserting an active key."""
+    agent_id, _ = _seed_pauseable_agent(
+        client, db_session, test_user, source_id="credential-serialization"
+    )
+    statements: list[str] = []
+    connection = db_session.connection()
+
+    def record_statement(
+        conn: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        executemany: bool,
+    ) -> None:
+        """Record SQL structure without retaining parameter values."""
+        statements.append(statement.lower())
+
+    event.listen(connection, "before_cursor_execute", record_statement)
+    try:
+        response = client.post(
+            f"/api/v1/agents/{agent_id}/credentials",
+            json={"name": "serialized-credential", "scopes": ["mcp:read"]},
+        )
+    finally:
+        event.remove(connection, "before_cursor_execute", record_statement)
+    assert response.status_code == 201
+    lock_indexes = [
+        index
+        for index, statement in enumerate(statements)
+        if "from managed_agent " in statement and "for update" in statement
+    ]
+    assert lock_indexes, "credential creation did not lock the agent lifecycle row"
+    account_lock = next(
+        index
+        for index, statement in enumerate(statements)
+        if "from account " in statement and "for update" in statement
+    )
+    assert account_lock < lock_indexes[0], (
+        "lock account before agent, as decommission does"
+    )
+    key_insert = next(
+        index
+        for index, statement in enumerate(statements)
+        if "insert into api_key " in statement
+    )
+    assert lock_indexes[0] < key_insert
 
 
 def test_offboard_revokes_credential_metadata_and_audits(

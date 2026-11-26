@@ -52,9 +52,10 @@ Allow and deny rules still apply. Approve pending calls on the Preloop Console's
 otherwise unattended session.
 
 The selected approval workflow controls expiry. A newly installed Claude hook
-waits at most **570 seconds**, with a **600-second host timeout**; an earlier
-workflow timeout wins. A previously configured shorter hook cap is preserved.
-Expiry denies the call.
+has a **570-second approval expiry budget** and a **585-second hook deadline**,
+including 15 seconds of HTTP headroom, within the **600-second host timeout**.
+An earlier workflow timeout wins. A previously configured shorter hook cap is
+preserved. Expiry denies the call.
 
 For recording without human waits, set **Off: auto-approve (recorded)** under
 the agent's **Native tool approvals** in the Console. Escalated calls are
