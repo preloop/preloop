@@ -483,12 +483,16 @@ def _run_fast_admission(
 
 
 def _review(
-    user_type: str, state: str = "APPROVED", login: str = "preloop[bot]"
+    user_type: str,
+    state: str = "APPROVED",
+    login: str = "preloop[bot]",
+    body: str | None = "Preloop has reviewed this PR.",
 ) -> dict[str, Any]:
     return {
         "id": 1,
         "commit_id": HEAD_SHA,
         "state": state,
+        "body": body,
         "user": {"type": user_type, "login": login},
     }
 
@@ -540,6 +544,30 @@ def test_fast_admission_dedups_only_on_bot_reviews(tmp_path: Path) -> None:
         event_name="workflow_dispatch",
     )
     assert "reviewed=true" not in dispatched
+
+
+@pytest.mark.parametrize("body", [None, "", " \n\t"])
+def test_fast_admission_ignores_bot_inline_reply_reviews(
+    tmp_path: Path, body: str | None
+) -> None:
+    """An inline thread reply creates an empty COMMENTED review, not a verdict."""
+    code, output = _run_fast_admission(
+        tmp_path,
+        fast="success",
+        reviews=[_review("Bot", "COMMENTED", body=body)],
+    )
+    assert code == 0
+    assert "reviewed=true" not in output
+
+
+@pytest.mark.parametrize("state", ["APPROVED", "CHANGES_REQUESTED"])
+def test_fast_admission_keeps_explicit_bot_verdicts(tmp_path: Path, state: str) -> None:
+    """An explicit verdict remains a receipt even when its body is empty."""
+    code, output = _run_fast_admission(
+        tmp_path, fast="success", reviews=[_review("Bot", state, body="")]
+    )
+    assert code == 0
+    assert "reviewed=true" in output
 
 
 def _concurrency_lane(event: str, action: str, label: str, fork: bool) -> str:
