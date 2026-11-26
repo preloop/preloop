@@ -33,17 +33,15 @@ def context(monkeypatch: pytest.MonkeyPatch) -> tuple:
         approvals_required=1,
     )
     monkeypatch.setattr(readiness.crud_readiness, "members", lambda *a, **k: [user])
-    monkeypatch.setattr(readiness.crud_readiness, "can_decide", lambda *a: True)
+    monkeypatch.setattr(readiness.crud_readiness, "deciders", lambda db, users: users)
     monkeypatch.setattr(readiness.crud_readiness, "recipients", lambda *a: {user.id})
     monkeypatch.setattr(
         readiness.crud_readiness, "chat_destinations", lambda *a, **k: []
     )
     monkeypatch.setattr(
-        readiness.crud_approval_bypass, "get_active_for_user", lambda *a, **k: None
+        readiness.crud_readiness, "muted_user_ids", lambda *a, **k: set()
     )
-    monkeypatch.setattr(
-        readiness.notification_preferences, "get_by_user", lambda *a: None
-    )
+    monkeypatch.setattr(readiness.crud_readiness, "preferences", lambda *a, **k: {})
     monkeypatch.setattr(readiness, "email_is_configured", lambda: True)
     monkeypatch.setattr(readiness, "get_apns_service", lambda: None)
     monkeypatch.setattr(readiness, "is_fcm_configured", lambda: False)
@@ -67,9 +65,9 @@ def test_email_destination_and_quorum(
 ) -> None:
     db, account, user, workflow = context
     monkeypatch.setattr(
-        readiness.notification_preferences,
-        "get_by_user",
-        lambda *a: models.NotificationPreferences(enable_email=True),
+        readiness.crud_readiness,
+        "preferences",
+        lambda *a, **k: {user.id: models.NotificationPreferences(enable_email=True)},
     )
     result = readiness.describe_readiness(db, account=account, workflow=workflow)
     assert result.destinations == ["Email"]
@@ -138,16 +136,17 @@ def test_ai_automatic_fallback_has_no_human_warning(context: tuple) -> None:
 def test_all_recipient_bypass_mutes_destinations(
     context: tuple, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db, account, _, workflow = context
+    db, account, user, workflow = context
     workflow.channel_configs = {"webhook": {"url": "https://example.com/hook"}}
     monkeypatch.setattr(
-        readiness.crud_approval_bypass,
-        "get_active_for_user",
-        lambda *a, **k: models.ApprovalBypass(mode="mute_notifications"),
+        readiness.crud_readiness,
+        "muted_user_ids",
+        lambda *a, **k: {user.id},
     )
     result = readiness.describe_readiness(db, account=account, workflow=workflow)
     assert not result.destinations
     assert any("muted" in issue for issue in result.issues)
+    assert not any("No notification destination" in issue for issue in result.issues)
 
 
 def test_native_workflow_precedence_and_no_creation(
@@ -183,7 +182,7 @@ def test_push_requires_enabled_preference_token_and_provider(
     context: tuple, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An enabled switch without a usable destination is not readiness."""
-    db, account, _, workflow = context
+    db, account, user, workflow = context
     prefs = models.NotificationPreferences(
         enable_email=False,
         enable_mobile_push=True,
@@ -191,7 +190,7 @@ def test_push_requires_enabled_preference_token_and_provider(
         mobile_device_tokens=[{"platform": "android", "token": "synthetic-token"}],
     )
     monkeypatch.setattr(
-        readiness.notification_preferences, "get_by_user", lambda *a: prefs
+        readiness.crud_readiness, "preferences", lambda *a, **k: {user.id: prefs}
     )
     monkeypatch.setattr(readiness, "is_fcm_configured", lambda: False)
     assert not readiness.describe_readiness(
@@ -212,7 +211,7 @@ def test_push_proxy_is_a_configured_destination(
     context: tuple, monkeypatch: pytest.MonkeyPatch, platform: str
 ) -> None:
     """A proxy can deliver to registered devices without native push credentials."""
-    db, account, _, workflow = context
+    db, account, user, workflow = context
     prefs = models.NotificationPreferences(
         enable_email=False,
         enable_mobile_push=True,
@@ -220,7 +219,7 @@ def test_push_proxy_is_a_configured_destination(
         mobile_device_tokens=[{"platform": platform, "token": "synthetic-token"}],
     )
     monkeypatch.setattr(
-        readiness.notification_preferences, "get_by_user", lambda *a: prefs
+        readiness.crud_readiness, "preferences", lambda *a, **k: {user.id: prefs}
     )
     monkeypatch.setattr(readiness, "is_push_proxy_configured", lambda: True)
     result = readiness.describe_readiness(db, account=account, workflow=workflow)
@@ -264,3 +263,116 @@ def test_external_service_does_not_claim_console_deciders(context: tuple) -> Non
     assert result.deciders == []
     assert result.destinations == ["Webhook"]
     assert not result.issues
+
+
+def test_batched_reads_preserve_team_permissions_and_bypass_scope(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three core reads cover every recipient while excluding foreign grants."""
+    from datetime import datetime, timedelta
+    from unittest.mock import patch
+    from uuid import uuid4
+    from sqlalchemy import select
+    from preloop.models.crud import crud_account, crud_user
+    from preloop.models.crud import approval_readiness as crud
+    from preloop.plugins import account_hooks
+
+    monkeypatch.setattr(crud, "members_have_full_access", lambda: False)
+    monkeypatch.setattr(account_hooks, "_authorizer", None)
+    users = [
+        crud_user.create(
+            db_session,
+            obj_in={
+                "account_id": test_user.account_id,
+                "username": f"reviewer-{index}",
+                "email": f"reviewer-{index}@example.com",
+                "hashed_password": "synthetic",
+                "is_active": True,
+                "email_verified": True,
+            },
+        )
+        for index in range(2)
+    ]
+    foreign = crud_account.create(
+        db_session, obj_in={"organization_name": "Other example"}
+    )
+    roles = [
+        models.Role(account_id=aid, name=name, is_system_role=False)
+        for aid, name in [
+            (test_user.account_id, "Read approvals"),
+            (test_user.account_id, "Decide approvals"),
+            (foreign.id, "Foreign decisions"),
+        ]
+    ]
+    db_session.add_all(roles)
+    db_session.flush()
+    for role, name in zip(
+        roles, ["view_approvals", "decide_approvals", "decide_approvals"], strict=True
+    ):
+        permission = db_session.scalar(
+            select(models.Permission).where(models.Permission.name == name)
+        )
+        if permission is None:
+            permission = models.Permission(
+                name=name, description="Synthetic permission", category="approvals"
+            )
+            db_session.add(permission)
+            db_session.flush()
+        db_session.add(
+            models.RolePermission(role_id=role.id, permission_id=permission.id)
+        )
+    team = models.Team(account_id=test_user.account_id, name="Review team")
+    db_session.add(team)
+    db_session.flush()
+    db_session.add_all(
+        [models.UserRole(user_id=user.id, role_id=roles[0].id) for user in users]
+        + [
+            models.TeamMembership(user_id=users[0].id, team_id=team.id),
+            models.TeamRole(team_id=team.id, role_id=roles[1].id),
+            models.UserRole(user_id=users[1].id, role_id=roles[2].id),
+        ]
+    )
+    for user in users:
+        db_session.add(
+            models.NotificationPreferences(user_id=user.id, enable_email=True)
+        )
+    now = datetime.utcnow()
+    for user, agent_id, expiry in [
+        (users[0], None, now + timedelta(hours=1)),
+        (users[1], uuid4(), now + timedelta(hours=1)),
+        (users[1], None, now - timedelta(hours=1)),
+    ]:
+        db_session.add(
+            models.ApprovalBypass(
+                account_id=test_user.account_id,
+                user_id=user.id,
+                managed_agent_id=agent_id,
+                mode="mute_notifications",
+                expires_at=expiry,
+                created_by_user_id=test_user.id,
+            )
+        )
+    db_session.flush()
+    ids = {user.id for user in users}
+    with patch.object(db_session, "scalars", wraps=db_session.scalars) as reads:
+        assert crud.deciders(db_session, users) == [users[0]]
+        assert (
+            set(
+                crud.preferences(
+                    db_session, account_id=test_user.account_id, user_ids=ids
+                )
+            )
+            == ids
+        )
+        assert crud.muted_user_ids(
+            db_session, account_id=test_user.account_id, user_ids=ids, agent_id=None
+        ) == {users[0].id}
+        assert reads.call_count == 3
+    monkeypatch.setattr(
+        account_hooks,
+        "_authorizer",
+        lambda *args: account_hooks.Decision(effect="deny"),
+    )
+    assert crud.deciders(db_session, users) == []

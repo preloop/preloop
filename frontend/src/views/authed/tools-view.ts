@@ -2271,6 +2271,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private _openWorkflowDeepLink(): void {
+    if (this.toolsContextLoading) return;
     const url = new URL(window.location.href);
     const id = url.searchParams.get('edit_workflow');
     if (!id) return;
@@ -2281,6 +2282,11 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     else
       this.error =
         'The approval workflow is no longer available. Choose a workflow from the Workflows menu.';
+  }
+
+  /** Consume workflow links when the router reuses this mounted view. */
+  onAfterEnter(): void {
+    this._onFilterPopState();
   }
 
   private _renderWorkflowsMenu() {

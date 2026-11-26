@@ -234,6 +234,19 @@ describe('ToolsView (approvals + conditions)', () => {
     }
   });
 
+  it('opens a workflow link when the router reuses the mounted tools view', async () => {
+    history.replaceState({}, '', '/console/tools?tab=mcp');
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(() => !(el as any).toolsContextLoading);
+    expect((el as any).showPolicyDialog).to.equal(false);
+    // Same-path routing updates location and calls onAfterEnter, without popstate.
+    history.pushState({}, '', '/console/tools?tab=mcp&edit_workflow=new');
+    el.onAfterEnter();
+    await el.updateComplete;
+    expect((el as any).showPolicyDialog).to.equal(true);
+    expect(location.search).not.to.contain('edit_workflow');
+  });
+
   it('refreshes unhealthy server state and shows a failed scan diagnostic', async () => {
     const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
     await waitUntil(() => !(el as any).loading);

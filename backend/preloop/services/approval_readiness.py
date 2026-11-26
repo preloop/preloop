@@ -6,8 +6,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import approval_readiness as crud_readiness
-from preloop.models.crud import crud_approval_workflow, crud_approval_bypass
-from preloop.models.crud import notification_preferences
+from preloop.models.crud import crud_approval_workflow
 from preloop.schemas.approval_readiness import ApprovalReadiness
 from preloop.services.approval_window import resolve_approval_window
 from preloop.services.event_webhooks.approval_shim import resolve_webhook_target
@@ -115,7 +114,7 @@ def describe_readiness(
                     f"{result.workflow_name} (human fallback: {workflow.name})"
                 )
     users = crud_readiness.members(db, account_id=account.id)
-    deciders = [user for user in users if crud_readiness.can_decide(db, user)]
+    deciders = crud_readiness.deciders(db, users)
     result.deciders = [user.full_name or user.username for user in deciders]
     recipient_ids = crud_readiness.recipients(db, workflow)
     recipients = [user for user in users if user.id in recipient_ids]
@@ -125,8 +124,11 @@ def describe_readiness(
     if target:
         destinations.add(target[0].capitalize())
     email_configured = email_is_configured()
+    preferences = crud_readiness.preferences(
+        db, account_id=account.id, user_ids=recipient_ids
+    )
     for user in recipients:
-        prefs = notification_preferences.get_by_user(db, user.id)
+        prefs = preferences.get(user.id)
         if prefs and prefs.enable_email and user.email and email_configured:
             destinations.add("Email")
         if prefs and prefs.enable_mobile_push and prefs.notify_when_needed:
@@ -146,13 +148,11 @@ def describe_readiness(
             db, account_id=account.id, user_ids=eligible_ids
         )
     )
-    bypasses = [
-        crud_approval_bypass.get_active_for_user(
-            db, account_id=account.id, user_id=id, managed_agent_id=agent_id
-        )
-        for id in recipient_ids
-    ]
-    if bypasses and all(bypass is not None for bypass in bypasses):
+    muted_ids = crud_readiness.muted_user_ids(
+        db, account_id=account.id, user_ids=recipient_ids, agent_id=agent_id
+    )
+    muted_by_bypass = bool(recipient_ids) and recipient_ids <= muted_ids
+    if muted_by_bypass:
         destinations.clear()
         result.issues.append(
             "Notifications are muted by an active approval bypass. Review the bypass before running."
@@ -166,7 +166,7 @@ def describe_readiness(
         result.issues.append(
             "No active workflow recipients are configured. Choose people or a team in the approval workflow."
         )
-    if not destinations:
+    if not destinations and not muted_by_bypass:
         if owner_id and {user.id for user in recipients} == {owner_id}:
             result.issues.append(
                 "Only the agent's owner receives requests, and no notification destination is available. Enable notifications or add another recipient."

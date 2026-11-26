@@ -596,6 +596,24 @@ describe('AgentDetailView', () => {
         return el;
       }
 
+      for (const allowed of [false, true]) {
+        it(`renders approval readiness only with policy permission (${allowed})`, async () => {
+          withDesktopEnable({
+            permissions: allowed ? ['view_policies'] : ['view_agents'],
+          });
+          const el = await loadedView();
+          for (const tab of ['sessions', 'tools']) {
+            (el as any).activeTab = tab;
+            if (tab === 'tools')
+              await waitUntil(() => (el as any).editorContextReady);
+            await el.updateComplete;
+            expect(
+              !!el.shadowRoot!.querySelector('approval-readiness')
+            ).to.equal(allowed, tab);
+          }
+        });
+      }
+
       for (const { name, config, visible } of [
         {
           name: 'active non-shared agent with permission and no endpoint',

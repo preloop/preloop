@@ -260,6 +260,7 @@ export class AgentDetailView extends LitElement {
   @state() private canControlDesktop = false;
   /** `manage_agents`: may enable a desktop on the agent's host (#1566). */
   @state() private canEnableDesktop = false;
+  @state() private canViewApprovalReadiness = false;
 
   @state()
   private associatedFlows: any[] = [];
@@ -1967,6 +1968,8 @@ export class AgentDetailView extends LitElement {
     this.canControlDesktop = canTakeDesktopControl(profile);
     this.canEnableDesktop =
       !!profile && hasPermission(profile.permissions, 'manage_agents');
+    this.canViewApprovalReadiness =
+      !!profile && hasPermission(profile.permissions, 'view_policies');
     this.currentUserId = profile?.id ?? null;
     if (this.activeTab === 'desktop' && endpoints.length === 0) {
       this.activeTab = 'sessions';
@@ -3969,7 +3972,9 @@ export class AgentDetailView extends LitElement {
       <div class="page" style="padding-top: 0;">
         ${this.renderSummaryStrip(aggregate)} ${this.renderDesktopEnable()}
         ${
-          this.activeTab !== 'tools' && this.agent.lifecycle_state === 'active'
+          this.canViewApprovalReadiness &&
+          this.activeTab !== 'tools' &&
+          this.agent.lifecycle_state === 'active'
             ? html`
                 <approval-readiness
                   .agentId=${this.agentId}
@@ -4259,11 +4264,15 @@ export class AgentDetailView extends LitElement {
                               </sl-select>
                             </div>
                           </div>
-                          <approval-readiness
-                            .agentId=${this.agentId}
-                            .workflowId=${this.governance.approval_workflow_id || ''}
-                            .enforced=${this.effectiveNativeToolApprovals() !== 'off'}
-                          ></approval-readiness>
+                          ${
+                            this.canViewApprovalReadiness
+                              ? html`<approval-readiness
+                                  .agentId=${this.agentId}
+                                  .workflowId=${this.governance.approval_workflow_id || ''}
+                                  .enforced=${this.effectiveNativeToolApprovals() !== 'off'}
+                                ></approval-readiness>`
+                              : nothing
+                          }
                           ${
                             this.effectiveNativeToolApprovals() === 'off'
                               ? html`
