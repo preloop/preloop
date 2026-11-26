@@ -106,6 +106,7 @@ describe('Session route navigation', () => {
       history: 'replace',
     });
     await expectSession('Review the changes');
+    expect(api.callsTo('/api/v1/runtime-sessions')).to.have.length(1);
     const view = outlet.firstElementChild as RuntimeSessionsView;
     const observer = view.shadowRoot!.querySelector(
       'preloop-session-observer'
@@ -115,6 +116,7 @@ describe('Session route navigation', () => {
       .click();
     await waitUntil(() => location.search === '?sessionId=parent-session');
     await expectSession('Prepare the release');
+    expect(api.callsTo('/api/v1/runtime-sessions')).to.have.length(2);
     expect(outlet.firstElementChild).to.equal(view);
     await waitUntil(
       () =>
@@ -123,8 +125,10 @@ describe('Session route navigation', () => {
     );
     history.back();
     await expectSession('Review the changes');
+    expect(api.callsTo('/api/v1/runtime-sessions')).to.have.length(3);
     history.forward();
     await expectSession('Prepare the release');
+    expect(api.callsTo('/api/v1/runtime-sessions')).to.have.length(4);
   });
 
   it('opens a session outside the list through the path redirect', async () => {

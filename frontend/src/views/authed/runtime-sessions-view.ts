@@ -909,9 +909,7 @@ export class RuntimeSessionsView extends LitElement {
 
   /** Reused routes do not reconnect or emit popstate on in-page links. */
   onAfterEnter(): void {
-    if (window.location.search !== this.appliedLocationSearch) {
-      this.applyLocation();
-    }
+    this.applyLocation();
   }
 
   /** Whether the page is answering a content query rather than listing. */
@@ -962,6 +960,8 @@ export class RuntimeSessionsView extends LitElement {
    * matches what is on screen.
    */
   private applyLocation(): void {
+    // Back/Forward can reach both the router hook and the popstate listener.
+    if (window.location.search === this.appliedLocationSearch) return;
     const previousQuery = this.searchQuery;
     this.readLocation();
     this.cancelSearchDebounce();
