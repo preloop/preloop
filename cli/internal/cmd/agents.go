@@ -335,6 +335,10 @@ to the full gateway path (/openai/v1/chat/completions, /openai/v1/responses, or
 /anthropic/v1/messages). Business and Enterprise seats need the admin BYOK
 policy. See docs/guide/clients/vscode-copilot.md.
 
+With non-terminal or closed stdin, onboarding is always skipped, including
+with --yes or PRELOOP_CONFIRM. Run preloop agents onboard from a terminal
+to onboard interactively.
+
 When the post-scan onboarding prompts run, an error onboarding one agent does
 not stop the remaining agents; a per-agent summary (onboarded / partial /
 failed) is printed at the end. A missing agent binary downgrades that agent to
@@ -358,6 +362,9 @@ var agentsEnrollCmd = &cobra.Command{
 	Long: `Create or locate the managed agent identity in Preloop, create a durable
 credential for it, back up the local config, and add a managed Preloop MCP server
 entry to the selected agent configuration.
+
+Unattended acceptance of prompt defaults requires PRELOOP_CONFIRM=1.
+The separate --unattended enrollment-token flow does not use prompt defaults.
 
 This is the mutating companion to 'preloop agents discover'. Use --dry-run to
 preview the planned config and account changes without writing anything.
@@ -1041,6 +1048,11 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 		return enc.Encode(safeDiscoveryJSON(discovered))
 	}
 
+	if !stdinIsTerminal() {
+		fmt.Println("Onboarding skipped: stdin is not a terminal; run 'preloop agents onboard' from a terminal to onboard interactively.")
+		noOnboardPrompt = true
+	}
+
 	if len(discovered) == 0 {
 		fmt.Println("No AI agents found on this machine.")
 		fmt.Println(agentDiscoverySearchLabel())
@@ -1403,7 +1415,7 @@ func promptForTextInput(reader *bufio.Reader, writer io.Writer, prompt string) (
 		return "", err
 	}
 	input, err := reader.ReadString('\n')
-	if err != nil && err != io.EOF {
+	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(input), nil
@@ -1430,6 +1442,10 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	if isUnattendedEnrollmentCommand(cmd) {
 		return runUnattendedEnrollment(cmd, args)
 	}
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	if !dryRun && !stdinIsTerminal() && !nonInteractiveAutoConfirm() {
+		return errors.New("onboarding requires a terminal; run 'preloop agents onboard' interactively or set PRELOOP_CONFIRM=1 to accept defaults unattended")
+	}
 	for _, flag := range []string{"enrollment-token-file", "apps", "target-user", "device-ref"} {
 		if cmd.Flags().Changed(flag) {
 			return fmt.Errorf("--%s requires --unattended", flag)
@@ -1441,7 +1457,6 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	if modelRouteRequested(cmd) {
 		return runClaudeDesktopModelRouteCmd(cmd, args)
 	}
-	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	noCredentialImport, _ := cmd.Flags().GetBool("no-credential-import")
 	autoApprove := isAutoApprove(cmd)
 	liveValidate, _ := cmd.Flags().GetBool("live-validate")
@@ -2207,6 +2222,9 @@ func runAgentsInstallPlugin(cmd *cobra.Command, args []string) error {
 	}
 	agentForInstall := AgentConfig{Name: agentName}
 	if agentControlPluginInstallerCommand(agentForInstall) == "npm" {
+		if err := preflightNpmGlobalInstall(executable, agentControlPluginPackageName(agentForInstall)); err != nil {
+			return err
+		}
 		// npm install -g <source folder> links the folder as-is, so prepare an
 		// unbuilt sidecar checkout before installing it. This keeps the
 		// standalone command aligned with the onboarding installer.

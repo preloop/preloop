@@ -517,6 +517,8 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if input == nil {
 		input = os.Stdin
 	}
+	// Keep buffered input across the name, provider and confirmation prompts.
+	input = bufio.NewReader(input)
 	output := opts.Output
 	if output == nil {
 		output = os.Stdout
@@ -4991,6 +4993,19 @@ func installAgentControlRuntimePlugin(agent AgentConfig, writer io.Writer) map[s
 			) //nolint:errcheck
 		}
 		return mergeStringMaps(result, ensureManagedAgentControlSidecar(agent, writer))
+	}
+
+	if installer == "npm" {
+		if err := preflightNpmGlobalInstall(installerPath, agentControlPluginPackageName(agent)); err != nil {
+			result["control_plugin_install_status"] = "npm_prefix_unwritable"
+			result["control_plugin_install_error"] = err.Error()
+			result["control_plugin_installed"] = false
+			result["control_plugin_verified"] = false
+			if writer != nil {
+				fmt.Fprintf(writer, "  Agent Control plugin installation skipped: %s\n", err)
+			}
+			return result
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

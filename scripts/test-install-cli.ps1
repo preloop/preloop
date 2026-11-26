@@ -22,7 +22,7 @@ $env:PRELOOP_DISABLE_TELEMETRY = 'true'
 if ($Case) {
   $env:PRELOOP_VERSION = '1.1.0-rc.1'
   $env:PRELOOP_REPO = 'example/fixture'
-  $env:PRELOOP_CONFIRM = '1'
+  $env:PRELOOP_CONFIRM = if ($Case.StartsWith('success-stdin-')) { '' } else { '1' }
   $env:PROCESSOR_ARCHITECTURE = 'AMD64'
   $env:PROCESSOR_ARCHITEW6432 = ''
   $env:INSTALL_DIR = Join-Path $TestRoot 'install'
@@ -55,7 +55,7 @@ if ($Case) {
     } else {
       Copy-Item -LiteralPath $Fixture -Destination $OutFile
       Set-Content -LiteralPath $OutFile -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding ASCII
-      if ($Case -eq 'binary-unavailable') { throw 'Fixture binary download failed after partial write.' }
+      if ($Case -eq 'binary-unavailable', 'success-stdin-closed', 'success-stdin-pipe') { throw 'Fixture binary download failed after partial write.' }
     }
   }
 
@@ -103,13 +103,44 @@ public static class InstallerFixture {
     $target = Join-Path $installDir 'preloop.exe'
     [IO.File]::WriteAllText($target, 'previous installation must survive verification failures')
     $previousHash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+    $profileDir = Join-Path $caseRoot 'profile'
+    $clientDir = Join-Path $profileDir '.preloop'
+    New-Item -ItemType Directory -Path $clientDir -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $clientDir 'client_id') -Value 'synthetic-client-id'
+    Set-Content -LiteralPath (Join-Path $profileDir 'agent-config.json') -Value '{"mcpServers":{}}'
+    $before = @(Get-ChildItem -LiteralPath $profileDir -Recurse -File | ForEach-Object {
+      "$($_.FullName)|$((Get-FileHash -LiteralPath $_.FullName).Hash)|$($_.LastWriteTimeUtc.Ticks)"
+    })
     $env:TEMP = $downloadDir
     $env:TMP = $downloadDir
     $arguments = @('-NoProfile', '-NonInteractive', '-File', "`"$PSCommandPath`"", '-Case', $testCase,
       '-Fixture', "`"$fixturePath`"", '-TestRoot', "`"$caseRoot`"", '-Installer', "`"$Installer`"")
-    $process = Start-Process -FilePath "$PSHOME\powershell.exe" -ArgumentList $arguments -Wait -PassThru -NoNewWindow `
-      -RedirectStandardOutput (Join-Path $caseRoot 'stdout.txt') `
-      -RedirectStandardError (Join-Path $caseRoot 'stderr.txt')
+    if ($testCase.StartsWith('success-stdin-')) {
+      $info = New-Object System.Diagnostics.ProcessStartInfo
+      $info.FileName = "$PSHOME\powershell.exe"
+      $info.Arguments = $arguments -join ' '
+      $info.UseShellExecute = $false
+      $info.RedirectStandardInput = $true
+      $info.RedirectStandardOutput = $true
+      $info.RedirectStandardError = $true
+      $process = [Diagnostics.Process]::Start($info)
+      if ($testCase -eq 'success-stdin-pipe') { $process.StandardInput.WriteLine("y`ny`ny") }
+      $process.StandardInput.Close()
+      $stdout = $process.StandardOutput.ReadToEnd()
+      $stderr = $process.StandardError.ReadToEnd()
+      $process.WaitForExit()
+      Set-Content -LiteralPath (Join-Path $caseRoot 'stdout.txt') -Value $stdout
+      Set-Content -LiteralPath (Join-Path $caseRoot 'stderr.txt') -Value $stderr
+      Assert-True ($stdout.Contains('Onboarding skipped')) "$testCase did not explain skipped onboarding."
+      $after = @(Get-ChildItem -LiteralPath $profileDir -Recurse -File | ForEach-Object {
+        "$($_.FullName)|$((Get-FileHash -LiteralPath $_.FullName).Hash)|$($_.LastWriteTimeUtc.Ticks)"
+      })
+      Assert-True (($before -join "`n") -eq ($after -join "`n")) "$testCase changed fixture home."
+    } else {
+      $process = Start-Process -FilePath "$PSHOME\powershell.exe" -ArgumentList $arguments -Wait -PassThru -NoNewWindow `
+        -RedirectStandardOutput (Join-Path $caseRoot 'stdout.txt') `
+        -RedirectStandardError (Join-Path $caseRoot 'stderr.txt')
+    }
     $success = $testCase.StartsWith('success')
     $stderr = Get-Content -LiteralPath (Join-Path $caseRoot 'stderr.txt') -Raw
     Assert-True (($process.ExitCode -eq 0) -eq $success) "$testCase unexpected exit $($process.ExitCode): $stderr"
@@ -140,5 +171,5 @@ public static class InstallerFixture {
   [Environment]::SetEnvironmentVariable('Path', $originalUserPath, 'User')
   $env:TEMP = $originalTemp
   $env:TMP = $originalTmp
-  if ($passed -eq 10) { Remove-Item -LiteralPath $root -Recurse -Force }
+  if ($passed -eq $cases.Count) { Remove-Item -LiteralPath $root -Recurse -Force }
 }

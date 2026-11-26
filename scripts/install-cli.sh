@@ -127,6 +127,10 @@ prompt_default_yes() {
     echo "y"
     return
   fi
+  if [ ! -t 0 ]; then
+    echo "n"
+    return
+  fi
   printf '%s ' "$prompt_text" >&2
   # 2>/dev/null must come first so the shell's "cannot open /dev/tty" error
   # is silenced when there is no controlling terminal.
@@ -137,9 +141,9 @@ prompt_default_yes() {
       printf '%s\n' "$answer" | tr '[:upper:]' '[:lower:]'
     fi
   else
-    # No tty - accept the default (echo it to stderr to finish the prompt line)
-    echo "y" >&2
-    echo "y"
+    # EOF or an unavailable terminal never accepts a default.
+    echo "n" >&2
+    echo "n"
   fi
 }
 
@@ -239,6 +243,21 @@ else
   echo "(Continuing - agent discovery is optional.)"
 fi
 
+# A piped installer may have a controlling terminal, but stdin is script
+# content, not consent. Finish after the read-only scan unless opted in.
+if [ ! -t 0 ] && ! preloop_confirm_set; then
+  echo "Onboarding skipped: stdin is not a terminal; run 'preloop agents onboard' from a terminal after 'preloop login'."
+  exit 0
+fi
+
+run_setup_command() {
+  if preloop_confirm_set; then
+    "$PRELOOP_BIN" "$@"
+  else
+    "$PRELOOP_BIN" "$@" < /dev/tty
+  fi
+}
+
 # Step 2: choose the Preloop instance to connect to. The CLI talks to
 # Preloop Cloud (https://preloop.ai) by default, but works identically
 # against a self-hosted open-source instance. Honors a pre-set PRELOOP_URL,
@@ -258,7 +277,7 @@ else
   echo "  - Self-hosted:   your own open-source instance, e.g. http://localhost:8000"
   echo "    (install it with: curl -fsSL https://preloop.ai/install/oss | sh)"
   printf 'Preloop instance URL [%s]: ' "$target_url"
-  if read -r custom_url < /dev/tty 2>/dev/null; then
+  if read -r custom_url 2>/dev/null < /dev/tty; then
     custom_url="$(printf '%s' "$custom_url" | tr -d '[:space:]')"
     if [ -n "$custom_url" ]; then
       target_url="$custom_url"
@@ -298,7 +317,7 @@ if identity_lines="$(existing_login_identity "$PRELOOP_BIN")"; then
     onboard_ans="$(prompt_default_yes "Onboard discovered agents now? [Y/n]")"
     case "$onboard_ans" in
       y|yes)
-        "$PRELOOP_BIN" agents discover < /dev/tty || true
+        run_setup_command agents onboard || true
         ;;
     esac
   fi
@@ -316,7 +335,7 @@ if preloop_confirm_set; then
   auth_choice="y"
 else
   printf '%s ' "$prompt"
-  if read -r auth_choice < /dev/tty 2>/dev/null; then
+  if read -r auth_choice 2>/dev/null < /dev/tty; then
     auth_choice="$(printf '%s' "$auth_choice" | tr '[:upper:]' '[:lower:]')"
     [ -z "$auth_choice" ] && auth_choice="y"
   else
@@ -332,17 +351,15 @@ case "$auth_choice" in
 esac
 
 if [ -n "$auth_command" ]; then
-  if "$PRELOOP_BIN" "$auth_command" < /dev/tty; then
+  if run_setup_command "$auth_command"; then
     if [ "$discovered_agents" = "1" ]; then
       echo ""
       onboard_ans="$(prompt_default_yes "Onboard discovered agents now? [Y/n]")"
       case "$onboard_ans" in
         y|yes)
-          # `preloop agents discover` re-prints the listing and then walks
-          # through each candidate with a (Y/n) onboarding prompt. When
-          # PRELOOP_CONFIRM is set in the environment the inner prompts are
-          # auto-approved, matching the unattended behavior of this script.
-          "$PRELOOP_BIN" agents discover < /dev/tty || true
+          # Explicit onboarding preserves PRELOOP_CONFIRM for unattended
+          # installs; discovery itself never enrolls with non-terminal stdin.
+          run_setup_command agents onboard || true
           ;;
       esac
     fi

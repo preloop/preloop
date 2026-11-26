@@ -42,6 +42,16 @@ function Test-PreloopConfirm {
   }
 }
 
+function Read-PreloopInput {
+  param([string]$Prompt)
+  Write-Host "$Prompt`: " -NoNewline
+  $answer = [Console]::ReadLine()
+  if ($null -eq $answer) {
+    throw "Input closed; setup stopped without accepting prompt defaults."
+  }
+  return $answer
+}
+
 function Get-PreloopArch {
   $arch = $env:PROCESSOR_ARCHITECTURE
   $wow64 = $env:PROCESSOR_ARCHITEW6432
@@ -178,17 +188,22 @@ if (Test-PreloopConfirm) {
 }
 
 Write-Host ""
+if ([Console]::IsInputRedirected -or -not [Environment]::UserInteractive) {
+  Write-Host "Onboarding skipped: stdin is not a terminal; run 'preloop agents onboard' from a terminal after 'preloop login'."
+  exit 0
+}
+
 Write-Host "The CLI connects your agents to a Preloop control plane."
 Write-Host "  Preloop Cloud: $cloudUrl (default)"
 Write-Host "  Self-hosted:   e.g. http://localhost:8000"
-$custom = Read-Host "Preloop instance URL [$targetUrl]"
+$custom = Read-PreloopInput "Preloop instance URL [$targetUrl]"
 if (-not [string]::IsNullOrWhiteSpace($custom)) {
   $targetUrl = $custom.Trim()
   $env:PRELOOP_URL = $targetUrl
 }
 Write-Host "Preloop instance: $targetUrl"
 
-$auth = Read-Host "Sign in (or sign up) now? [Y/s/n]"
+$auth = Read-PreloopInput "Sign in (or sign up) now? [Y/s/n]"
 if ([string]::IsNullOrWhiteSpace($auth)) { $auth = 'y' }
 switch -Regex ($auth.Trim().ToLowerInvariant()) {
   '^(y|yes|l|login)$' {
