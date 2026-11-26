@@ -172,8 +172,12 @@ def fallback_approval_summary(
     if question:
         return question[:SUMMARY_MAX_CHARS]
     parts = []
+    null_keys = []
     for key, value in redact_dict(dict(tool_args or {})).items():
         if not isinstance(key, str) or key.startswith("_"):
+            continue
+        if value is None:
+            null_keys.append(key)
             continue
         if isinstance(value, (dict, list)):
             value = json.dumps(value, default=str)
@@ -184,6 +188,10 @@ def fallback_approval_summary(
     ask = f"Allow {tool_name}"
     if parts:
         ask += " with " + ", ".join(parts)
+        if null_keys:
+            ask += f" (null: {', '.join(null_keys)})"
+    elif null_keys:
+        ask += " with " + ", ".join(f"{key}=null" for key in null_keys)
     ask += "?"
     if len(ask) > SUMMARY_MAX_CHARS:
         ask = ask[: SUMMARY_MAX_CHARS - 1].rstrip() + "…"
