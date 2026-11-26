@@ -334,6 +334,7 @@ export class RuntimeSessionsView extends LitElement {
   private searchDebounce: number | null = null;
   private loadSequence = 0;
   private searchSequence = 0;
+  private appliedLocationSearch = '';
   private onPopState = () => this.applyLocation();
 
   static styles = [
@@ -906,6 +907,13 @@ export class RuntimeSessionsView extends LitElement {
     window.removeEventListener('keydown', this.handleSearchShortcut);
   }
 
+  /** Reused routes do not reconnect or emit popstate on in-page links. */
+  onAfterEnter(): void {
+    if (window.location.search !== this.appliedLocationSearch) {
+      this.applyLocation();
+    }
+  }
+
   /** Whether the page is answering a content query rather than listing. */
   private get isSearching(): boolean {
     return this.searchQuery.trim() !== '';
@@ -913,6 +921,7 @@ export class RuntimeSessionsView extends LitElement {
 
   /** Pull the deep linkable state out of the current location. */
   private readLocation(): void {
+    this.appliedLocationSearch = window.location.search;
     const params = new URLSearchParams(window.location.search);
     this.selectedSessionId = params.get('sessionId');
     this.linkedSessionId = this.selectedSessionId;
@@ -946,7 +955,7 @@ export class RuntimeSessionsView extends LitElement {
   }
 
   /**
-   * Restore the view the location describes, for the back button.
+   * Restore the view for a routed link or browser history navigation.
    *
    * A snippet click pushes a location, so going back has to put the page in
    * the state that location names rather than leaving a url that no longer
@@ -1600,6 +1609,7 @@ export class RuntimeSessionsView extends LitElement {
     } else {
       window.history.replaceState(window.history.state, '', target);
     }
+    this.appliedLocationSearch = url.search;
   }
 
   private handleRangeChange(event: Event) {

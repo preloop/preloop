@@ -165,6 +165,70 @@ describe('Device fleet', () => {
     await view.updateComplete;
     return view;
   }
+  it('names each extension finding and its effective reason before expanding evidence', async () => {
+    history.replaceState(
+      {},
+      '',
+      '?device=' + encodeURIComponent(device.device_key)
+    );
+    setup();
+    const view = await mount();
+    const generic = 'An installed agent extension needs approval.';
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [
+        { extension_id: 'review-helper', kind: 'skill', reason: 'unapproved' },
+        'review-helper (skill): Unapproved',
+      ],
+      [
+        {
+          extension_id: 'release-check',
+          kind: 'hook',
+          reason: 'content_changed',
+          approval_state: 'approved',
+        },
+        'release-check (hook): Content changed',
+      ],
+      [
+        {
+          extension_id: 'build-tools',
+          kind: 'plugin',
+          reason: 'version_outside_constraint',
+          effective_state: 'approved',
+        },
+        'build-tools (plugin): Version outside constraint',
+      ],
+      [
+        { extension_id: 'review-helper', kind: 'skill' },
+        'review-helper (skill)',
+      ],
+      [{ extension_id: 'review-helper' }, 'review-helper'],
+      [{ kind: 'command', reason: 'unapproved' }, 'command: Unapproved'],
+      [{}, generic],
+      [{ extension_id: null, kind: [], reason: {} }, generic],
+      [{ extension_id: ' ', kind: '', reason: ' ' }, generic],
+    ];
+    view.device = {
+      ...view.device,
+      findings: cases.map(([evidence], index) => ({
+        ...device.findings[0],
+        id: `extension-finding-${index}`,
+        rule: 'unapproved_extension',
+        title: generic,
+        evidence,
+      })),
+    };
+    await view.updateComplete;
+    const rows = view.shadowRoot.querySelectorAll(
+      '[data-testid="device-findings"] li'
+    );
+    expect(rows).to.have.length(cases.length);
+    cases.forEach(([, title], index) => {
+      expect(
+        rows[index].querySelector('.row-main > span').textContent.trim()
+      ).to.equal(title);
+      expect(rows[index].querySelector('details').open).to.equal(false);
+    });
+  });
   async function chooseRoster(
     view: any,
     file = new File(
