@@ -84,7 +84,7 @@ import type {
   SessionObserverScope,
   SessionReplayMode,
 } from '../utils/session-observer';
-import { turnInfoFromSession } from '../utils/agent-status';
+import { agentStateChip, turnInfoFromSession } from '../utils/agent-status';
 import {
   formatCost,
   formatNumber,
