@@ -2,6 +2,21 @@
 
 Command-line interface for managing AI agent policies, approvals, and MCP tools.
 
+## Server compatibility
+
+Core login, onboarding, policy and runner commands can be used with a 1.0.2
+server. Features added later still require server support. Review posting and
+OpenRouter routing check the server's API schema before sending settings that
+older versions would ignore. If a proxy hides `/api/v1/openapi.json`, these
+commands explain that support cannot be verified.
+
+Discovery reporting retries a rejected v3 inventory as v2 and identifies evidence
+omitted by that downgrade. If the old server lacks the discovery evidence
+service, the CLI says the report was not saved and suggests local discovery
+without `--report`. The server's advertised version range is informational;
+the CLI does not enforce it. See the [local upgrade and compatibility
+harness](../docs/operations/upgrade-acceptance.md) for reproducible checks.
+
 ## Installation
 
 ### Installer (recommended)

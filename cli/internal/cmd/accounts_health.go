@@ -96,7 +96,7 @@ func runAccountsHealth(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("account health is for platform operators only")
 		}
 		if api.IsStatus(err, http.StatusNotFound) {
-			return fmt.Errorf("account %s not found", accountID)
+			return fmt.Errorf("account %s not found, or this server does not support account health; check the account ID and upgrade the server if needed", accountID)
 		}
 		return err
 	}

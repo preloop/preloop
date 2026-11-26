@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -261,6 +262,46 @@ func TestDiscoverReportWithoutLoginFails(t *testing.T) {
 	err := sendDiscoveryReport(nil, nil, io.Discard, "")
 	if err == nil || !strings.Contains(err.Error(), "login") {
 		t.Fatalf("expected a login error, got %v", err)
+	}
+}
+
+func TestDiscoveryReportDisclosesAcceptedEvidence(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "v3", true: "v2"}[legacy], func(t *testing.T) {
+			setupDiscoveryHome(t)
+			posts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					_ = json.NewEncoder(w).Encode(map[string]string{"salt": testDiscoverySalt})
+					return
+				}
+				posts++
+				if legacy && posts == 1 {
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					_, _ = w.Write([]byte(`{"detail":[{"loc":["body","evidence","schema_version"],"type":"literal_error"}]}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"received":1,"created":1}`))
+			}))
+			t.Cleanup(server.Close)
+			useDiscoveryServer(t, server.URL)
+			client, err := api.NewClient(FlagToken, FlagURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			if err := sendDiscoveryReport(client, nil, &output, ""); err != nil {
+				t.Fatal(err)
+			}
+			text := output.String()
+			if legacy {
+				if !strings.Contains(text, legacyInventoryNotice) || !strings.Contains(text, "Sent inventory metadata;") {
+					t.Fatalf("missing downgrade disclosure: %s", text)
+				}
+			} else if !strings.Contains(text, "Sent inventory metadata, extension identifiers and hashes;") {
+				t.Fatalf("missing v3 disclosure: %s", text)
+			}
+		})
 	}
 }
 

@@ -223,12 +223,16 @@ func TestExtensionReportVersionFallback(t *testing.T) {
 			exts := []inventoryExtension{{Kind: "skill", ID: "notes", Scope: "user", SourceKind: "local", Enabled: "unknown"}}
 			report := discoveryReportRequest{Candidates: []discoveryReportCandidate{{AgentKind: "claude_code", Extensions: &exts}}, Evidence: &inventoryReportEvidence{SchemaVersion: 3, StartedAt: time.Now(), Applications: []inventoryReportApplication{{Extensions: &exts, Completeness: "complete"}}}}
 			client := api.NewClientWithToken(server.URL, "synthetic-token")
-			err := postInventoryReport(client, report, &discoveryReportResponse{})
+			var response discoveryReportResponse
+			err := postInventoryReport(client, report, &response)
 			if schemaError && (err != nil || calls != 2) {
 				t.Fatalf("calls=%d err=%v", calls, err)
 			}
 			if !schemaError && (err == nil || calls != 1) {
 				t.Fatalf("unexpected retry: %d %v", calls, err)
+			}
+			if response.LegacyEvidence != schemaError {
+				t.Fatal("successful downgrade must be visible to the caller")
 			}
 			if report.Evidence.SchemaVersion != 3 || report.Candidates[0].Extensions == nil {
 				t.Fatal("fallback mutated input")
@@ -270,5 +274,31 @@ func TestExtensionReportToLocalStack(t *testing.T) {
 		if strings.Contains(output.String(), private) {
 			t.Fatal("private fixture value escaped")
 		}
+	}
+}
+
+func TestInventoryReportMissingEvidenceService(t *testing.T) {
+	for _, detail := range []string{"Discovery evidence service unavailable", "Temporary outage"} {
+		t.Run(detail, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]string{"detail": detail})
+			}))
+			defer server.Close()
+			client := api.NewClientWithToken(server.URL, "synthetic-token")
+			err := postInventoryReport(client, discoveryReportRequest{Evidence: &inventoryReportEvidence{SchemaVersion: 3}}, &discoveryReportResponse{})
+			if err == nil || calls != 1 {
+				t.Fatalf("unavailable evidence must not retry without evidence: calls=%d err=%v", calls, err)
+			}
+			if detail == "Discovery evidence service unavailable" {
+				if !strings.Contains(err.Error(), "the report was not saved") || !strings.Contains(err.Error(), "without --report") {
+					t.Fatalf("missing compatibility guidance: %v", err)
+				}
+			} else if !api.IsStatus(err, http.StatusServiceUnavailable) {
+				t.Fatalf("unrelated service errors must remain unchanged: %v", err)
+			}
+		})
 	}
 }

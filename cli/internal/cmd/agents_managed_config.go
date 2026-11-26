@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -189,6 +190,9 @@ func runClaudeManagedConfig(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		if err := client.Post(api.RESTPrefix+"/agents/managed-config/bundles", manifest, nil); err != nil {
+			if api.IsStatus(err, http.StatusNotFound) || api.IsStatus(err, http.StatusMethodNotAllowed) {
+				return fmt.Errorf("bundle exported locally; this server does not support bundle registration; upgrade the server, then retry with --overwrite --register")
+			}
 			return fmt.Errorf("bundle exported; registration failed (retry with --overwrite --register): %w", err)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Registered bundle revision with the selected account. This does not verify installation or generate expectations without matching workstation evidence.")

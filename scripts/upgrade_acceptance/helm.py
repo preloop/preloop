@@ -168,6 +168,7 @@ def values(image: str, env: dict[str, str]) -> dict[str, Any]:
                 "SECURITY__ENCRYPTION_KEY",
                 "LITELLM_LOCAL_MODEL_COST_MAP",
                 "MODEL_PRICE_LIVE_LOOKUP_ENABLED",
+                "MODEL_ENDPOINT_ALLOWED_CIDRS",
                 "SECRET_KEY",
             )
         ],
