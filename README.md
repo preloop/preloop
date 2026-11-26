@@ -73,7 +73,7 @@ Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
 | **MCP Firewall** | Govern every tool call. Allow, deny, require approval, require justification. YAML + CEL. [Connect OAuth MCP servers](docs/guide/tools/external-mcp.md#oauth-connections) with automatic token refresh. | MintMCP, Lunar.dev MCPX, TrueFoundry |
 | **AI Model Gateway** | OpenAI-, Anthropic- and Gemini-compatible. Budgets, allowed-model lists, token accounting, attribution. | Portkey, Helicone, LiteLLM, Kong AI |
 | **Flows** | Start an agent when a tracker, webhook, or CI job fires, with the same firewall, approvals, and cost. `preloop flow trigger`. | Custom CI glue, AgentCore Runtime |
-| **Private runners** | Run flow agents on your own machines over an outbound WebSocket, no inbound ports. | Self-managed CI runners |
+| **Private runners** | Run flow agents on your own machines over an outbound WebSocket, with daily discovery of installed agents and extensions and device/account opt-outs. | Self-managed CI runners |
 | **Agent Control** | Talk to long-running agents from the console, phone, or watch. Steer runs with [operator notes](docs/guide/operator-notes.md), and follow or prompt sessions in [herdr workspaces](docs/guide/herdr.md). | Terminal access |
 | **Cost & Budgets** | Spend by model, agent, session, API key, flow, and user, including [imported Copilot usage](docs/guide/copilot-usage-import.md). | FinOps dashboards, vendor billing exports |
 | **Human Approvals** | Mobile, watch, Slack, Mattermost, Teams Workflows, email, webhook, or `preloop approvals`. Native `Bash`/`Edit`. Agents can `ask_user`. Opt-in [external consent hand-off](docs/guide/webhooks.md#external-approval-hand-off) after upstream scope refusals. | Custom Slack bots, Peta Desk |

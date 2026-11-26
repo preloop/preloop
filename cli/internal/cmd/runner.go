@@ -305,6 +305,8 @@ func runRunnerFg(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	stopDiscovery := startRunnerDiscovery(state)
+	defer stopDiscovery()
 	stopFingerprintRefresh := startRunnerFingerprintRefresh(client, state.DeviceRef)
 	defer stopFingerprintRefresh()
 	// Checkouts of sessions that did not survive the restart are garbage;
@@ -1790,6 +1792,7 @@ func rotateRunnerToken(client *api.Client, out io.Writer) error {
 
 func runRunnerStatus(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "install: %s\n", runnerServiceState())
+	printRunnerDiscoveryStatus(cmd.OutOrStdout())
 	if state, err := readRunnerState(); err == nil {
 		fmt.Fprintf(cmd.OutOrStdout(), "runner_id: %s\n", state.ID)
 		fmt.Fprintf(cmd.OutOrStdout(), "name: %s\n", state.Name)

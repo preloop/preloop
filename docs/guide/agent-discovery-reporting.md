@@ -1,13 +1,13 @@
-# Agent discovery reporting (opt-in)
+# Agent discovery reporting
 
 Editions: OSS, Cloud, Enterprise
 
 `preloop agents discover` scans the local machine for known agent tools
 (Claude Code, Cursor, Codex CLI and the rest). By default the scan stays on
 the machine: it only reads `GET /api/v1/agents` to mark which agents are
-already enrolled. Discovery reporting is the opt-in way to tell Preloop which
-agent tools exist on workstations that were never onboarded, so they show up
-in the console under **Agents > Not yet governed**.
+already enrolled. Manual reporting is opt-in. An installed resident runner also
+reports automatically, including agent tools that were never onboarded, so they
+show up in the console under **Agents > Not yet governed**.
 
 For the per-OS distinction between installed, configured, observed active and
 governed, read the [coverage guide](endpoint-coverage.md#platform-scope).
@@ -25,8 +25,64 @@ preloop agents discover --report --json --no-onboard-prompt
 PRELOOP_DISCOVERY_REPORT=1 preloop agents discover --json --no-onboard-prompt
 ```
 
-Without one of them nothing about the scan leaves the machine. With `--json`
+Without one of them the manual scan sends no discovery report. With `--json`
 the report confirmation goes to stderr so stdout stays valid JSON.
+
+## Automatic runner reports
+
+A resident runner reports once after a randomized 30-second to five-minute startup
+delay, then about every 24 hours with up to 10% jitter. A successful report is
+remembered across restarts, so restarting a service does not immediately report
+again. One-shot ephemeral runners do not collect discovery.
+
+Automatic reports use the same read-only collector and privacy rules as manual
+reports. They include installed agents, including agents not onboarded, and their
+extensions. They never prompt, enroll an agent, install an extension, execute an
+agent, or rewrite an application's configuration. The only local writes are
+runner scheduling and status records.
+
+Configure the device in the Preloop config file:
+
+```yaml
+runner:
+  discovery:
+    enabled: true
+    interval: 24h
+```
+
+Set `enabled: false` to stop automatic discovery on that device. The runner reads
+this setting every minute. Intervals are bounded to one hour through seven days;
+an invalid duration uses 24 hours. `preloop runner status` shows the last attempt,
+last successful report, result, and the opt-out instruction, even while offline.
+
+Administrators with `manage_policies` can read or replace account controls at
+`GET` / `PUT /api/v1/account/runner-discovery`:
+
+```json
+{"enabled": false, "interval_seconds": null}
+```
+
+`enabled: false` also rejects incoming automatic reports. A non-null
+`interval_seconds` overrides device intervals and must be 3600 through 604800.
+Null lets devices use their configured interval. Policy is refreshed every five
+minutes; a failed policy fetch prevents collection and retries with backoff.
+Device opt-out always wins. These controls leave explicitly requested manual
+reports available.
+
+Failures retry after one minute, doubling with jitter up to one hour. The runner
+does not spool inventories on disk. It collects fresh evidence on a retry and
+keeps the last successful timestamp. An older server without runner reporting
+support fails closed and is retried; it never falls back to a user's login token.
+
+The runner uses its own credential. Its inventory capability grants only
+`report_discovery` on its policy and report routes, scoped to its account and
+workstation. It cannot list candidates or read another device's reports. Token
+rotation and removal revoke this reporting access too.
+
+The standard launchd agent, systemd user service and Windows logon task scan the
+user who runs them. An administrator-installed elevated service scans all local
+profiles through the existing bounded all-users collector. Unreadable profiles,
+probe failures and scan limits remain incomplete evidence, never proof of absence.
 
 ## Device-scoped token for scheduled runs
 
@@ -69,10 +125,8 @@ report builder does not populate it. Optional evidence fields and the exact
 hash inputs are documented in the [collector field inventory](endpoint-coverage.md#fields-and-data-paths).
 
 The machine id is `/etc/machine-id` on Linux, `IOPlatformUUID` on macOS and
-`MachineGuid` on Windows. When none is available current-user reporting
-generates a random id once and keeps it in the CLI config directory. All-user
-reporting reuses an existing fallback or requires `--device-ref`; it does not
-create an identity file.
+`MachineGuid` on Windows. When none is available, reporting reuses an existing fallback identity or requires
+`--device-ref`. The read-only collector never creates an identity file.
 
 ## What is never sent
 
@@ -92,7 +146,10 @@ agent kind, config path hash), with `first_seen_at`, `last_seen_at` and a
 status: `new`, `onboarded` or `ignored`.
 
 - A new row fires the [`agent.discovered`](webhooks.md) webhook once. A
-  re-report of the same tool only moves `last_seen_at` and emits nothing.
+  re-report of the same tool updates `last_seen_at` and its reported enrollment
+  state, preserves `first_seen_at`, and emits no new discovery event. The console
+  shows **First seen** and a **New this week** badge for candidates first seen
+  within seven days that are still not onboarded.
 - For current-user discovery, every enrollment write for an agent from the
   same workstation (applied, validated or failing validation, for any agent
   kind including MCP-only and IDE-config agents) carries the same two hashes,

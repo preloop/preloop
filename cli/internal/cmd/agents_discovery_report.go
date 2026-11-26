@@ -182,18 +182,8 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	if err != nil {
 		return err
 	}
-	machineID := strings.TrimSpace(deviceRef)
-	if machineID == "" {
-		machineID, err = readMachineID()
-		if err != nil {
-			return fmt.Errorf("could not determine a workstation id: %w", err)
-		}
-	}
-	home, _ := os.UserHomeDir()
-	report := buildDiscoveryReport(salt, machineID, home, agents)
-	deps := inventoryProbes
-	deps.ExtensionProjects = projects
-	if err := addDiscoveryExtensions(&report, salt, home, deps); err != nil {
+	report, _, err := collectDiscoveryInventoryReport(salt, deviceRef, false, projects...)
+	if err != nil {
 		return err
 	}
 	var resp discoveryReportResponse

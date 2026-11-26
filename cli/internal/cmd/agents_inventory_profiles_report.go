@@ -107,7 +107,7 @@ func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEn
 		hash := hmacHex(salt, "preloop-profile-app:v2:"+app.ProfileRef+":"+app.AppID)
 
 		evidence.Applications = append(evidence.Applications, inventoryReportApplication{Extensions: &app.Extensions, Completeness: app.Completeness, AgentKind: kind, ConfigPathHash: hash, ProfileRef: app.ProfileRef, Installed: "unknown", Configured: inventoryConfiguredState(app), Controls: inventoryReportControls(app.Controls)})
-		report.Candidates = append(report.Candidates, discoveryReportCandidate{Extensions: &app.Extensions, AgentKind: kind, ConfigPathHash: hash, MCPServerCount: app.MCPCounts.Servers})
+		report.Candidates = append(report.Candidates, discoveryReportCandidate{Extensions: &app.Extensions, AgentKind: kind, ConfigPathHash: hash, MCPServerCount: app.MCPCounts.Servers, Enrolled: app.MCPRoutes.Managed > 0})
 
 	}
 	report.Evidence = &evidence
@@ -124,27 +124,14 @@ func sendAllUsersInventory(w io.Writer, deviceRefs ...string) error {
 	if err != nil {
 		return err
 	}
-	machineID := ""
+	deviceRef := ""
 	if len(deviceRefs) > 0 {
-		machineID = strings.TrimSpace(deviceRefs[0])
+		deviceRef = deviceRefs[0]
 	}
-	if machineID == "" {
-		machineID, err = readInventoryMachineID()
-		if err != nil {
-			return errors.New("could not determine workstation identity without writing state; supply --device-ref")
-		}
+	report, scan, err := collectDiscoveryInventoryReport(salt, deviceRef, true)
+	if err != nil {
+		return err
 	}
-	id := make([]byte, 16)
-	if _, err = rand.Read(id); err != nil {
-		return errors.New("could not generate observation identity")
-	}
-	id[6] = (id[6] & 15) | 64
-	id[8] = (id[8] & 63) | 128
-	observationID := fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
-	scan := collectAllUsersInventory(inventoryProbes, inventoryProfiles, salt, workstationFingerprint(salt, strings.TrimSpace(machineID)))
-	report := buildAllUsersReport(salt, machineID, observationID, scan, inventoryProbes.Now().UTC())
-	appendManagedConfigurationEvidence(&report, salt, inventoryProbes.GOOS, readManagedInventoryConfig)
-	report.Evidence.EndedAt = inventoryProbes.Now().UTC()
 	var response discoveryReportResponse
 	if err = postInventoryReport(client, report, &response); err != nil {
 		return fmt.Errorf("failed to send profile inventory: %w", err)
@@ -156,6 +143,65 @@ func sendAllUsersInventory(w io.Writer, deviceRefs ...string) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(scan)
+}
+
+// collectDiscoveryInventoryReport is the read-only collector shared by manual
+// profile reporting and scheduled runner reports. It never resolves credentials
+// or invokes the onboarding command, even when confirmation is enabled.
+func collectDiscoveryInventoryReport(salt, deviceRef string, allUsers bool, projects ...string) (discoveryReportRequest, inventoryEnvelope, error) {
+	machineID := strings.TrimSpace(deviceRef)
+	var err error
+	if machineID == "" {
+		machineID, err = readInventoryMachineID()
+		if err != nil {
+			return discoveryReportRequest{}, inventoryEnvelope{}, errors.New("could not determine workstation identity without writing state; supply --device-ref")
+		}
+	}
+	id := make([]byte, 16)
+	if _, err = rand.Read(id); err != nil {
+		return discoveryReportRequest{}, inventoryEnvelope{}, errors.New("could not generate observation identity")
+	}
+	id[6] = (id[6] & 15) | 64
+	id[8] = (id[8] & 63) | 128
+	observationID := fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
+	deps := inventoryProbes
+	deps.ExtensionProjects = projects
+	var scan inventoryEnvelope
+	if allUsers {
+		scan = collectAllUsersInventory(deps, inventoryProfiles, salt, workstationFingerprint(salt, machineID))
+	} else {
+		deps.ExtensionSalt = salt
+		scan = collectAgentInventory(deps)
+		home, homeErr := deps.Home()
+		if homeErr != nil {
+			return discoveryReportRequest{}, scan, errors.New("could not determine current profile")
+		}
+		ref := inventoryProfileRef(salt, workstationFingerprint(salt, machineID), home)
+		scan.Profiles = []inventoryProfileResult{{ProfileRef: ref, Completeness: scan.Completeness}}
+		for i := range scan.Apps {
+			scan.Apps[i].ProfileRef = ref
+		}
+	}
+	report := buildAllUsersReport(salt, machineID, observationID, scan, inventoryProbes.Now().UTC())
+	if !allUsers {
+		home, _ := deps.Home()
+		hashes := map[string]string{}
+		for _, app := range scan.Apps {
+			old := hmacHex(salt, "preloop-profile-app:v2:"+app.ProfileRef+":"+app.AppID)
+			hashes[old] = configPathHash(salt, home, app.configPath)
+		}
+		for i := range report.Candidates {
+			report.Candidates[i].ConfigPathHash = hashes[report.Candidates[i].ConfigPathHash]
+		}
+		for i := range report.Evidence.Applications {
+			report.Evidence.Applications[i].ConfigPathHash = hashes[report.Evidence.Applications[i].ConfigPathHash]
+		}
+	}
+	if allUsers {
+		appendManagedConfigurationEvidence(&report, salt, inventoryProbes.GOOS, readManagedInventoryConfig)
+	}
+	report.Evidence.EndedAt = inventoryProbes.Now().UTC()
+	return report, scan, nil
 }
 
 func inventoryConfiguredState(app inventoryApp) string {

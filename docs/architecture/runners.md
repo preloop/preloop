@@ -113,3 +113,30 @@ no row fails `gateway_bypassed` unless the flow opts out
 `services/host_exec_gateway.py`. Hosted Codex containers install the Preloop
 `PreToolUse` hook before Codex starts (`agents/codex_native_hook.py`), so
 native commands follow the same deny and approval-park rules.
+
+
+## Scheduled discovery
+
+Resident CLI runners run a separate discovery worker alongside the WebSocket
+loop. A fake-clock-testable scheduler applies startup jitter, daily jitter,
+retry backoff and persisted success suppression. Discovery never blocks a
+heartbeat or leases a flow slot. Ephemeral runners skip the worker.
+
+`collectDiscoveryInventoryReport` is the shared read-only entry point for manual
+and runner reporting. Elevated workers use bounded profile enumeration; user
+workers keep the same config-path hashes as manual current-user reports.
+`postInventoryReport` retains serializer privacy controls and downgrade retries.
+
+Only `GET /runners/{id}/discovery-policy` and
+`POST /runners/{id}/discovery-reports` accept the runner token for discovery.
+The server checks active account membership and the existing `inventory` runner
+capability, granting reporting authority only. The report fingerprint must match
+the runner's device, or binds it on the first report if none was stored.
+Both routes reuse the normal discovery ingestion transaction and post-commit
+fleet findings hook. They do not grant the token general REST access.
+
+Account controls are stored under `meta_data.runner_discovery` through CRUD and
+exposed to administrators with `manage_policies`. Account opt-out is enforced on
+the report POST as well as in the collector. The separate local
+`runner-discovery.json` contains scheduling timestamps and fixed result codes,
+never credentials, paths from discovery, inventory contents or server errors.

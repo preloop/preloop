@@ -33,6 +33,8 @@ type inventoryMCPCounts struct {
 }
 
 type inventoryApp struct {
+	// configPath is local correlation data and never appears in inventory JSON.
+	configPath    string
 	Extensions    []inventoryExtension `json:"extensions"`
 	Completeness  string               `json:"completeness"`
 	AppID         string               `json:"app_id"`
@@ -170,6 +172,8 @@ func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 			result.Apps = append(result.Apps, app)
 			continue
 		}
+		app.configPath = expandAgentConfigPath(home, filepath.Join(home, spec.BootstrapConfigPath))
+		configFound := false
 		paths := configPathsForAgentSpec
 		if deps.ConfigPaths != nil {
 			paths = func(_ string, s agentSpec) []string { return deps.ConfigPaths(s) }
@@ -177,6 +181,10 @@ func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 		for _, path := range paths(home, spec) {
 			status, code := inventoryStat(deps, path)
 			if status == "present" {
+				if !configFound {
+					app.configPath = path
+					configFound = true
+				}
 				// Config existence is evidence even when its contents cannot be
 				// inspected; the separate error makes this a partial inventory.
 				addProbe("config", "present", "")

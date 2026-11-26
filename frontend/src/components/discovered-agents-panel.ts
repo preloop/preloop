@@ -23,6 +23,27 @@ export function onboardCommandFor(candidate: DiscoveredAgentCandidate): string {
   return `preloop agents onboard ${candidate.agent_kind}`;
 }
 
+/** A recent first observation that still needs onboarding. */
+export function isNewDiscovery(
+  candidate: DiscoveredAgentCandidate,
+  now = Date.now()
+): boolean {
+  const firstSeen = Date.parse(
+    candidate.first_seen_at.endsWith('Z') ||
+      /[+-]\d\d:\d\d$/.test(candidate.first_seen_at)
+      ? candidate.first_seen_at
+      : candidate.first_seen_at + 'Z'
+  );
+  const age = now - firstSeen;
+  return (
+    candidate.status === 'new' &&
+    !candidate.enrolled &&
+    !candidate.managed_agent_id &&
+    age >= 0 &&
+    age <= 7 * 86_400_000
+  );
+}
+
 /** Short, non-reversible label for a salted workstation fingerprint. */
 export function shortWorkstation(fingerprint: string): string {
   return fingerprint.slice(0, 8);
@@ -178,9 +199,9 @@ export class DiscoveredAgentsPanel extends LitElement {
           <sl-badge variant="warning" pill>${this.total}</sl-badge>
         </h2>
         <p class="hint">
-          Agent tools reported by <code>preloop agents discover --report</code>.
-          Workstations are shown as salted hashes; no hostnames, user names or
-          paths are collected.
+          Agent tools reported automatically by runners or by
+          <code>preloop agents discover --report</code>. Workstations are shown
+          as salted hashes; no hostnames, user names or paths are collected.
           ${this.truncated ? html`${this.truncationNotice()}` : nothing}
         </p>
         ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
@@ -207,7 +228,14 @@ export class DiscoveredAgentsPanel extends LitElement {
                       >
                     </td>
                     <td>${candidate.mcp_server_count}</td>
-                    <td>${formatRelativeTime(candidate.first_seen_at)}</td>
+                    <td>
+                      <time
+                        datetime=${candidate.first_seen_at}
+                        title=${candidate.first_seen_at}
+                        >${formatRelativeTime(candidate.first_seen_at)}</time
+                      >
+                      ${isNewDiscovery(candidate) ? html`<sl-badge class="new-discovery" variant="primary">New this week</sl-badge>` : nothing}
+                    </td>
                     <td>${formatRelativeTime(candidate.last_seen_at)}</td>
                     <td>
                       <div class="actions">
