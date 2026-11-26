@@ -947,3 +947,32 @@ func TestRollbackSnapshotCoversSeparateHookFiles(t *testing.T) {
 		t.Fatalf("the hook credential this run wrote must be removed: %v", statErr)
 	}
 }
+
+// An agent kind without manual setup, with writable own files and a
+// read-only ~/.preloop: stop before any server change and say what is
+// actually wrong, not that the configuration is unwritable.
+func TestUnsupportedAgentWithReadOnlyStateSaysWhatIsMissing(t *testing.T) {
+	skipIfRootOrWindows(t)
+	rig := newManualRigServer(t)
+	home := testenv.SetTempHome(t)
+	t.Setenv("PATH", t.TempDir())
+	config := filepath.Join(home, ".gemini", "settings.json")
+	mustWriteRecoveryFile(t, config, "{}\n")
+	stateDir := filepath.Join(home, ".preloop")
+	if err := os.MkdirAll(stateDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
+
+	output, err := runManualRigOnboard(t, rig, AgentConfig{Name: "Gemini CLI", ConfigPath: config}, managedEnrollmentOptions{})
+	var unwritable *errConfigNotWritable
+	if !errors.As(err, &unwritable) || !unwritable.OnlyState {
+		t.Fatalf("want the state-only stop, got %v\n%s", err, output)
+	}
+	if !strings.Contains(err.Error(), "own configuration is writable, but ~/.preloop is not") {
+		t.Fatalf("message: %v", err)
+	}
+	if mutations := rig.mutations(); len(mutations) != 0 {
+		t.Fatalf("nothing may change on the server: %v", mutations)
+	}
+}

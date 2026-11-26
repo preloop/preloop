@@ -218,6 +218,9 @@ _CONFIG_SECRET_VALUE = re.compile(
     rf"|\bnpm_[A-Za-z0-9]{{20,}}"
     r"|\bAKIA[0-9A-Z]{16}\b"
     r"|\bAIza[0-9A-Za-z_\-]{30,}"
+    # The password of a URL with credentials (``postgres://user:pass@host``).
+    # Only the password part is replaced; scheme, user and host stay.
+    r"|(?<=://)(?P<url_user>[^/\s:@]+):[^/\s@]+(?=@)"
     # A bearer token: at least 8 token characters with a digit among them, or
     # 20 and more. Prose such as "Bearer authentication" is left alone.
     r"|\bBearer\s+(?=[A-Za-z0-9._~+/=\-]*[0-9]|[A-Za-z0-9._~+/=\-]{20})"
@@ -246,13 +249,21 @@ def _is_config_secret_key(key: Any) -> bool:
     return _CONFIG_REFERENCE_KEY.search(normalised) is None
 
 
+def _replace_config_secret(match: re.Match[str]) -> str:
+    """Replace one matched credential, keeping the user of a credential URL."""
+    user = match.groupdict().get("url_user")
+    if user is not None:
+        return f"{user}:{CONFIG_REDACTED}"
+    return CONFIG_REDACTED
+
+
 def _redact_config_string(value: str, *, under_secret_key: bool) -> str:
     """Redact one string of an agent config snapshot."""
     if not value.strip() or _PLACEHOLDER_ONLY.fullmatch(value):
         return value
     if under_secret_key:
         return CONFIG_REDACTED
-    return _CONFIG_SECRET_VALUE.sub(CONFIG_REDACTED, value)
+    return _CONFIG_SECRET_VALUE.sub(_replace_config_secret, value)
 
 
 def redact_agent_config(data: Any, *, _under_secret_key: bool = False) -> Any:

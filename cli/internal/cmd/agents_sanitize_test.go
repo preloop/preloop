@@ -22,6 +22,7 @@ func TestSanitizeConfigSnapshotRedactsEnvStyleSecrets(t *testing.T) {
 			"ANTHROPIC_CUSTOM_MODEL_OPTION": "anthropic/claude-sonnet-4-5",
 			"MAX_THINKING_TOKENS":           "8000",
 			"UNRELATED":                     syntheticAgentKey,
+			"DATABASE_URL":                  "postgres://jane:synthetic-db-pass@db.example.com/app",
 		},
 		"experimental_bearer_token": "synthetic-codex",
 		"mcpServers": map[string]interface{}{
@@ -36,6 +37,7 @@ func TestSanitizeConfigSnapshotRedactsEnvStyleSecrets(t *testing.T) {
 	for _, secret := range []string{
 		"sk-ant-api03", "synthetic-auth", "sk-ant-oat01", "synthetic-aws", "synthetic-bedrock",
 		"synthetic-codex", "synthetic-inline-token", "synthetic-header", syntheticAgentKey,
+		"synthetic-db-pass",
 	} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("snapshot still holds %q: %s", secret, text)
@@ -46,6 +48,7 @@ func TestSanitizeConfigSnapshotRedactsEnvStyleSecrets(t *testing.T) {
 		`"ANTHROPIC_CUSTOM_MODEL_OPTION":"anthropic/claude-sonnet-4-5"`,
 		`"MAX_THINKING_TOKENS":"8000"`,
 		`"theme":"dark"`,
+		`"DATABASE_URL":"postgres://jane:<redacted>@db.example.com/app"`,
 	} {
 		if !strings.Contains(text, kept) {
 			t.Fatalf("snapshot lost a non-secret %s: %s", kept, text)

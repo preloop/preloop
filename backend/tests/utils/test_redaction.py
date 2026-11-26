@@ -282,3 +282,25 @@ def test_agent_config_redacts_generic_token_and_key_names() -> None:
     assert env["ANTHROPIC_BASE_URL"] == "https://preloop.example.com/anthropic"
     assert env["bearer_token_env_var"] == "EXAMPLE_TOKEN"
     assert env["gateway_token_ok"] is True
+
+
+def test_agent_config_redacts_the_password_of_a_credential_url() -> None:
+    from preloop.utils.redaction import redact_agent_config
+
+    stored = {
+        "env": {
+            "DATABASE_URL": "postgres://jane:synthetic-pass@db.example.com/app",
+            "DOCS": "https://example.com/guide",
+            "PORT": "host.example.com:5432",
+        },
+        "args": ["--url", "https://bot:synthetic-pass@git.example.com/repo.git"],
+    }
+
+    redacted = redact_agent_config(stored)
+
+    assert redacted["env"]["DATABASE_URL"] == (
+        "postgres://jane:<redacted>@db.example.com/app"
+    )
+    assert redacted["env"]["DOCS"] == "https://example.com/guide"
+    assert redacted["env"]["PORT"] == "host.example.com:5432"
+    assert "synthetic-pass" not in redacted["args"][1]

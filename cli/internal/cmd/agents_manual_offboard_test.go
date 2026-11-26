@@ -323,3 +323,31 @@ func TestOffboardAfterServerOnlyStillRequiresTheBlockToBeRemoved(t *testing.T) {
 	}
 	_ = rig
 }
+
+// --server-only ran while the file was read-only. The mount is then fixed
+// and plain offboard is run again: the block must be removed, not skipped.
+func TestOffboardRetryAfterServerOnlyCleansAFileThatBecameWritable(t *testing.T) {
+	rig, home := newOffboardRig(t)
+	agent := normalizeDiscoveredAgent(home.agent)
+	if err := saveLocalEnrollmentState(&localEnrollmentState{
+		AgentName:          agent.Name,
+		ConfigPath:         agent.ConfigPath,
+		RuntimePrincipalID: runtimePrincipalIDForAgent(agent),
+		OffboardArchived:   true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = rig
+
+	out, err := runOffboardRig(t, home.agent)
+	if err != nil {
+		t.Fatalf("offboard retry: %v\n%s", err, out)
+	}
+	doc, _ := loadJSONDocument(home.settings)
+	if lookupNested(doc, "env", "ANTHROPIC_BASE_URL") != nil {
+		t.Fatalf("Offboarded was printed over a file that still points at Preloop: %v\n%s", doc, out)
+	}
+	if !strings.Contains(out, "✓ Offboarded Claude Code") || strings.Contains(out, "Restored config") {
+		t.Fatalf("output:\n%s", out)
+	}
+}

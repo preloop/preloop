@@ -2726,6 +2726,7 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	} else if configReadOnly {
 		local.Line = fmt.Sprintf("This machine: %s holds no Preloop configuration; nothing to change.", agent.ConfigPath)
 	}
+	archivedByEarlierRun := state != nil && state.OffboardArchived
 	if state == nil || !state.OffboardArchived {
 		switch {
 		case claudeLoginIsEnvSourced(agent):
@@ -2806,6 +2807,23 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 			}
 		}
 	}
+	// A retry after --server-only: the Preloop side is already archived, so
+	// the block above was skipped, but a file that has become writable since
+	// still holds the Preloop block and must be cleaned now.
+	if archivedByEarlierRun && !configReadOnly && localPlan.Readable && localPlan.StillManaged {
+		if strings.TrimSpace(state.BackupPath) != "" {
+			if _, err := restoreAgentFromBackupWithRuntimeCleanup(agent, state, !isClaudeCodeAgent(agent)); err != nil {
+				return partial(err)
+			}
+		} else if localPlan.Desired != nil {
+			if err := writeAgentConfigDocument(agent, localPlan.Desired); err != nil {
+				return partial(err)
+			}
+			_ = removeClaudeCodeManagedMCPServer(agent)
+			_ = removeApprovalHooks(agent, nil)
+			local.Line = fmt.Sprintf("This machine: removed the Preloop block from %s.", agent.ConfigPath)
+		}
+	}
 	// Revoke Claude's remote access before reporting local ownership conflicts.
 	// This also runs without a config backup and on archived cleanup retries.
 	if isClaudeCodeAgent(agent) {
@@ -2847,6 +2865,14 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		if err := removeLocalEnrollmentState(agent); err != nil {
 			return partial(err)
 		}
+	}
+	// Whatever path led here, the file decides: "Offboarded" is printed only
+	// when it no longer points at Preloop.
+	if final := planLocalOffboard(agent, nil, baseURL); final.Readable && final.StillManaged {
+		local = localOffboardOutcome{Line: fmt.Sprintf(
+			"This machine: NOT changed. %s still holds the Preloop block; its key no longer works. Run this command again to remove it.",
+			agent.ConfigPath,
+		)}
 	}
 	if local.Clean {
 		fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
@@ -7405,11 +7431,18 @@ func isSensitiveKey(key string) bool {
 // (for example in an MCP server's argument list).
 var secretValuePattern = regexp.MustCompile(`(agt_[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9_-]{16,}|(?i:bearer)\s+[A-Za-z0-9._~+/=-]{8,})`)
 
+// urlPasswordPattern matches the password of a URL that carries credentials
+// (postgres://user:pass@host). Only the password is replaced.
+var urlPasswordPattern = regexp.MustCompile(`(://[^/\s:@]+):[^/\s@]+@`)
+
 func redactSecretLookingValue(value string) string {
-	if !secretValuePattern.MatchString(value) {
-		return value
+	if secretValuePattern.MatchString(value) {
+		value = secretValuePattern.ReplaceAllString(value, "<redacted>")
 	}
-	return secretValuePattern.ReplaceAllString(value, "<redacted>")
+	if urlPasswordPattern.MatchString(value) {
+		value = urlPasswordPattern.ReplaceAllString(value, "${1}:<redacted>@")
+	}
+	return value
 }
 
 // publicPlanNote returns an onboarding note safe for stdout.

@@ -263,9 +263,21 @@ type manualModeDecision struct {
 
 // errConfigNotWritable is returned, before anything changed on the server,
 // for an agent kind manual setup does not cover yet.
-type errConfigNotWritable struct{ Agent string }
+type errConfigNotWritable struct {
+	Agent string
+	// OnlyState: the agent's own files are writable; only ~/.preloop is not.
+	OnlyState bool
+}
 
 func (e *errConfigNotWritable) Error() string {
+	if e.OnlyState {
+		return fmt.Sprintf(
+			"%s's own configuration is writable, but ~/.preloop is not, and onboarding this agent type needs it for the backup and restore state. "+
+				"Make ~/.preloop writable (in a container, a volume) and run onboarding again. "+
+				"Nothing was changed in Preloop or on this machine. See %s",
+			e.Agent, manualSetupDocsURL,
+		)
+	}
 	return fmt.Sprintf(
 		"%s configuration is not writable from here and manual setup is not available for this agent yet. "+
 			"Nothing was changed in Preloop or on this machine. See %s",
@@ -284,14 +296,14 @@ func decideManualMode(agent AgentConfig, opts managedEnrollmentOptions, output i
 		return decision, nil
 	}
 	printWritabilityReport(output, decision.Report)
-	if !manualApplySupported(agent) {
-		return decision, &errConfigNotWritable{Agent: resolveAgentDisplayName(agent)}
-	}
 	onlyState := len(blocked) > 0
 	for _, probe := range blocked {
 		if probe.Target.Role != writeRoleState {
 			onlyState = false
 		}
+	}
+	if !manualApplySupported(agent) {
+		return decision, &errConfigNotWritable{Agent: resolveAgentDisplayName(agent), OnlyState: onlyState}
 	}
 	if onlyState {
 		printManualLine(output, "Onboarding continues without local Preloop state: the agent's own files are writable and will be written, but no backup or resume state can be kept on this machine.")
