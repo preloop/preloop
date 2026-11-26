@@ -31,7 +31,9 @@ async function mount(
     filters.push(f);
     return {
       items: items.filter(
-        (r) => !f.agent_kind || r.agent_kind === f.agent_kind
+        (r) =>
+          (!f.agent_kind || r.agent_kind === f.agent_kind) &&
+          (!f.state || r.approval_state === f.state)
       ),
       next_cursor: null,
       completeness: 'complete',
@@ -95,6 +97,19 @@ describe('extension inventory scoped to an agent kind', () => {
     expect(
       element.shadowRoot!.querySelector('.empty')!.textContent
     ).not.to.contain('preloop');
+  });
+
+  it('says a filter emptied the table instead of the custom empty text', async () => {
+    const { element } = await mount();
+    const select = element.shadowRoot!.querySelector(
+      'sl-select[label="Approval state"]'
+    ) as HTMLElement & { value: string };
+    select.value = 'approved';
+    select.dispatchEvent(new CustomEvent('sl-change'));
+    await waitUntil(() => element.shadowRoot!.querySelector('.empty'));
+    const text = element.shadowRoot!.querySelector('.empty')!.textContent!;
+    expect(text).to.contain('No extensions reported for this selection.');
+    expect(text).not.to.contain('No device has reported');
   });
 
   it('shows the given empty state when nothing was reported', async () => {

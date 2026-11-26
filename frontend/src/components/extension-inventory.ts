@@ -365,6 +365,9 @@ export class ExtensionInventory extends LitElement {
       .how-narrow {
         display: none;
       }
+      .how-always {
+        flex-basis: 100%;
+      }
       @media (max-width: 640px) {
         .how-narrow {
           display: block;
@@ -914,7 +917,9 @@ export class ExtensionInventory extends LitElement {
       >
       ${this.coverageStatus()}
       <!-- The table heading is hidden on narrow screens; keep the help reachable. -->
-      <div class="how-narrow">${this.howApprovalsWork()}</div>
+      <div class=${page.items.length ? 'how-narrow' : 'how-always'}>
+        ${this.howApprovalsWork()}
+      </div>
     </div>`;
   }
 
@@ -1087,7 +1092,7 @@ export class ExtensionInventory extends LitElement {
               </table>
             </div>`
           : this.page && !this.loading
-            ? this.emptyText
+            ? this.emptyText && !this.stateFilter && !this.sourceFilter
               ? html`<p class="empty">${this.emptyText}</p>
                   ${this.page.coverage?.length ? nothing : this.reportSteps()}`
               : this.page.coverage?.length ||

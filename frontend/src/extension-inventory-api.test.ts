@@ -1,6 +1,10 @@
 import { expect } from '@open-wc/testing';
 import sinon from 'sinon';
-import { getExtensions, setExtensionApproval } from './extension-inventory-api';
+import {
+  getExtensions,
+  invalidateVersionConstraints,
+  setExtensionApproval,
+} from './extension-inventory-api';
 import type { ExtensionKey } from './extension-inventory-api';
 
 const key: ExtensionKey = {
@@ -14,6 +18,7 @@ describe('extension inventory API', () => {
   beforeEach(() => localStorage.setItem('accessToken', 'synthetic-token'));
   afterEach(() => localStorage.removeItem('accessToken'));
   afterEach(() => sinon.restore());
+  beforeEach(() => invalidateVersionConstraints());
   for (const status of [200, 500]) {
     it(`reads constraints in one paginated list, not per row (${status})`, async () => {
       const other = { ...key, extension_id: 'other-skill' };
@@ -53,6 +58,35 @@ describe('extension inventory API', () => {
       );
     });
   }
+  // protects=one constraint scan per view; fails_when=Load more or a filter
+  // change rescans every approval; no_claim=fetch stub, fixed clock window.
+  it('reuses one constraint scan across pages and filters until a write', async () => {
+    const fetch = sinon.stub(window, 'fetch').callsFake(async (input) =>
+      String(input).includes('/discovery-extensions?')
+        ? new Response(
+            JSON.stringify({
+              items: [key],
+              next_cursor: null,
+              completeness: 'complete',
+            })
+          )
+        : new Response(JSON.stringify({ items: [], next_cursor: null }))
+    );
+    const scans = (): number =>
+      fetch
+        .getCalls()
+        .filter((call) =>
+          String(call.args[0]).includes('/extension-approvals?')
+        ).length;
+    await getExtensions();
+    await getExtensions({ cursor: 'next' });
+    await getExtensions({ state: 'unknown' });
+    expect(scans()).to.equal(1);
+    invalidateVersionConstraints();
+    await getExtensions();
+    expect(scans()).to.equal(2);
+  });
+
   // protects=REST context and filters; fails_when=device reads become account
   // aggregates; no_claim=fetch stub, backend tested separately.
   it('encodes device filters and requests account aggregates', async () => {
