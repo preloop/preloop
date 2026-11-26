@@ -220,9 +220,20 @@ export class AgentCredentialsCard extends LitElement {
     this.resolveCreate = null;
   }
 
+  private get createUnavailableReason(): string {
+    if (!this.canManage)
+      return 'You do not have permission to create agent keys.';
+    if (this.lifecycleState !== 'active')
+      return 'Only active agents can receive new keys.';
+    return '';
+  }
+
   private async create(): Promise<void> {
-    if (this.busy || !this.canManage || this.lifecycleState !== 'active')
+    if (this.busy) return;
+    if (this.createUnavailableReason) {
+      this.createError = this.createUnavailableReason;
       return;
+    }
     const name = this.keyName.trim();
     if (!name || name.length > 100) {
       this.createError = 'Enter a key name between 1 and 100 characters.';
@@ -309,7 +320,7 @@ export class AgentCredentialsCard extends LitElement {
         </div>
         <p>Keys that let this agent authenticate with Preloop.</p>
         ${this.canManage && this.lifecycleState !== 'active' ? html`<p>Only active agents can receive new keys.</p>` : nothing}
-        ${this.error ? html`<sl-alert open variant="danger" role="alert">${this.error} <sl-button size="small" @click=${() => void this.load()}>Retry</sl-button></sl-alert>` : nothing}
+        ${this.error ? html`<sl-alert open variant="danger" role="alert">${this.error} <sl-button size="small" @click=${() => void this.load()}>Reload</sl-button></sl-alert>` : nothing}
         ${
           this.loading
             ? html`<p role="status">Loading credentials…</p>`
@@ -400,7 +411,7 @@ export class AgentCredentialsCard extends LitElement {
                       >
                     `
                   : html`
-                      ${this.createError ? html`<sl-alert open variant="danger" role="alert">${this.createError}</sl-alert>` : nothing}
+                      ${this.createUnavailableReason || this.createError ? html`<sl-alert open variant="danger" role="alert">${this.createUnavailableReason || this.createError}</sl-alert>` : nothing}
                       <sl-input
                         label="Key name"
                         maxlength="100"
@@ -439,7 +450,7 @@ export class AgentCredentialsCard extends LitElement {
                         data-create-submit
                         variant="primary"
                         ?loading=${this.busy}
-                        ?disabled=${!this.keyName.trim()}
+                        ?disabled=${!this.keyName.trim() || !!this.createUnavailableReason}
                         @click=${() => void this.create()}
                         >Create key</sl-button
                       >

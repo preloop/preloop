@@ -382,4 +382,70 @@ describe('Agent credentials card', () => {
     ).to.equal(false);
     expect(el.shadowRoot!.textContent).not.to.contain('Revoked');
   });
+  for (const reason of ['inactive', 'permission'] as const) {
+    it(`explains and blocks creation when ${reason} changes while the dialog is open`, async () => {
+      const el = await mount();
+      void el.openCreate();
+      await el.updateComplete;
+      const name = el.shadowRoot!.querySelector('sl-input') as any;
+      name.value = 'New key';
+      name.dispatchEvent(new Event('sl-input'));
+      if (reason === 'inactive') el.lifecycleState = 'suspended';
+      else (el as any).canManage = false;
+      await el.updateComplete;
+      const submit = el.shadowRoot!.querySelector(
+        '[data-create-submit]'
+      ) as any;
+      expect(submit.disabled).to.equal(true);
+      expect(
+        el.shadowRoot!.querySelector('sl-dialog sl-alert')!.textContent
+      ).to.contain(reason === 'inactive' ? 'Only active agents' : 'permission');
+      submit.click();
+      expect(
+        fetchStub.getCalls().some((call) => call.args[1]?.method === 'POST')
+      ).to.equal(false);
+      if (reason === 'inactive') el.lifecycleState = 'active';
+      else (el as any).canManage = true;
+      await el.updateComplete;
+      expect(submit.disabled).to.equal(false);
+      expect(el.shadowRoot!.querySelector('sl-dialog sl-alert')).to.equal(null);
+    });
+  }
+
+  it('labels a list refresh after a failed revocation as Reload', async () => {
+    const el = await mount();
+    fetchStub.callsFake(async (_input, init) =>
+      init?.method === 'DELETE'
+        ? json({ detail: 'Could not revoke this key' }, 500)
+        : json([credential])
+    );
+    (el.shadowRoot!.querySelector('[data-revoke]') as HTMLElement).click();
+    await waitUntil(
+      () =>
+        !!document
+          .querySelector('confirm-dialog')
+          ?.shadowRoot?.querySelector('[data-testid="confirm-dialog-confirm"]')
+    );
+    (
+      document
+        .querySelector('confirm-dialog')!
+        .shadowRoot!.querySelector(
+          '[data-testid="confirm-dialog-confirm"]'
+        ) as HTMLElement
+    ).click();
+    await waitUntil(() =>
+      el.shadowRoot?.textContent?.includes('Could not revoke this key')
+    );
+    const refresh = el.shadowRoot!.querySelector(
+      'sl-alert sl-button'
+    ) as HTMLElement;
+    expect(refresh.textContent).to.equal('Reload');
+    refresh.click();
+    await waitUntil(
+      () => !el.shadowRoot?.textContent?.includes('Could not revoke this key')
+    );
+    expect(
+      fetchStub.getCalls().filter((call) => call.args[1]?.method === 'DELETE')
+    ).to.have.length(1);
+  });
 });

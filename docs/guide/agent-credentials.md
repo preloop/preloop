@@ -1,5 +1,7 @@
 # Agent credentials in the console
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Open **Agents**, select an agent, and use its **Credentials** card to manage
 keys. The card lists each key's name, prefix, creation time, last use, expiry,
 and status. Settings > API keys links to the agent list.

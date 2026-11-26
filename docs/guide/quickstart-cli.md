@@ -10,7 +10,7 @@ Agent Control has one extra runtime requirement: for OpenClaw, Hermes, or anothe
     1. Run the install command.
     2. The CLI scans your machine and lists every supported agent it found.
     3. It opens your browser to sign in or sign up.
-    4. You're redirected back to **`/console/agents`** with everything wired up.
+    4. Approve the CLI login in the browser, then return to the terminal to finish authentication and onboarding.
 
 ---
 
@@ -50,13 +50,15 @@ The installer:
 If this is your first time, choose **`s`** (sign up) at the prompt. The CLI opens a browser to `https://preloop.ai/register?…` and remembers the OAuth context it was about to consent to. After you create your account:
 
 1. Preloop signs you in (no detour through the sign-in page).
-2. The OAuth consent page resumes where it left off and authorizes the CLI.
-3. Your browser lands on **`https://preloop.ai/console/agents?cli=connected`**, the live canvas of your account's agents.
+2. The OAuth consent page resumes where it left off. Choose **Authorize CLI**.
+3. With local loopback login, your browser lands on **`https://preloop.ai/console/agents?cli=connected`**. Return to the waiting terminal and look for **Successfully authenticated!**. The terminal waits up to five minutes for browser approval.
 
 If you already have an account, choose **`Y`** (default) and the same flow runs from `/login` instead.
 
 !!! tip "SSH and headless hosts"
-    On a headless host the CLI falls back to the copy/paste flow (`preloop login --headless`). Force it with `preloop login --headless` or `preloop signup --headless` to skip the loopback callback entirely. After pasting the code, the consent page shows a **Continue to your agents** button.
+    On a headless host the CLI uses the copy/paste flow. Force it with `preloop login --headless` or `preloop signup --headless` to skip the loopback callback. Choose **Authorize CLI** in the browser, copy the one-time code, and paste it at **Authorization code:** in the waiting terminal. Wait for **Successfully authenticated!**, then close the browser tab. This flow stays on the code page instead of redirecting to Agents.
+
+    The terminal has no input timeout, but the code expires five minutes after approval. If you close the tab before copying the code, reopen the URL printed in the terminal and approve again.
 
 ---
 

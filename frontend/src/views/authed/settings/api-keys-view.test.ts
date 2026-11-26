@@ -982,7 +982,7 @@ describe('ApiKeysView', () => {
     );
     const hint = el.shadowRoot!.querySelector('[data-agent-keys-hint]')!;
     expect(hint.textContent).to.contain(
-      "Agent keys live on each agent's page."
+      "Create new agent keys from each agent's page."
     );
     expect(hint.querySelector('a')!.getAttribute('href')).to.equal(
       '/console/agents'
