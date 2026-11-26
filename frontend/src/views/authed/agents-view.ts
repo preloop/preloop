@@ -95,6 +95,8 @@ import {
   getAgentStatusChip,
   getSystemAgentTags,
   getVisibleAgentTags,
+  WAITING_FOR_LOCAL_CONFIG,
+  WAITING_FOR_LOCAL_CONFIG_LABEL,
 } from '../../utils/agent-display';
 import { formatRelativeTime, parseUTCDate } from '../../utils/date';
 import { consoleDialogStyles } from '../../styles/console-dialog';
@@ -2429,6 +2431,7 @@ export class AgentsView extends LitElement {
     if (agent.onboarding_state === 'fully_onboarded') return 'success';
     if (agent.onboarding_state === 'mcp_proxy_only') return 'warning';
     if (agent.onboarding_state === 'gateway_only') return 'warning';
+    if (agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG) return 'warning';
     return 'neutral';
   }
 
@@ -2436,6 +2439,9 @@ export class AgentsView extends LitElement {
     if (agent.onboarding_state === 'fully_onboarded') return 'Fully onboarded';
     if (agent.onboarding_state === 'mcp_proxy_only') return 'MCP only';
     if (agent.onboarding_state === 'gateway_only') return 'Gateway only';
+    if (agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG) {
+      return WAITING_FOR_LOCAL_CONFIG_LABEL;
+    }
     return 'Incomplete';
   }
 
@@ -2449,6 +2455,9 @@ export class AgentsView extends LitElement {
     }
     if (agent.onboarding_state === 'gateway_only') {
       return 'Model traffic flows through Preloop, but MCP tool traffic is still direct.';
+    }
+    if (agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG) {
+      return 'Waiting for local configuration: open the agent for the change to apply.';
     }
     return 'This agent is not fully managed by Preloop yet.';
   }

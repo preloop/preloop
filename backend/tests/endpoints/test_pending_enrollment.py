@@ -923,7 +923,8 @@ def test_manual_setup_generates_a_claude_code_baseline(
     assert settings_file == {
         "path": "~/.claude/settings.json",
         "format": "json",
-        "exists": False,
+        # A baseline must say "merge", never "create with exactly this".
+        "exists": True,
         "merge": {"env": env},
         "remove": [],
         "host_source": None,

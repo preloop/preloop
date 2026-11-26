@@ -38,8 +38,12 @@ def _file(path: str, file_format: str, merge: dict[str, Any]) -> dict[str, Any]:
     return {
         "path": path,
         "format": file_format,
-        # The server cannot see the user's disk.
-        "exists": False,
+        # The server cannot see the user's disk. These are configuration
+        # files an installed agent normally already has, so the safe
+        # instruction is "merge and keep everything else": telling a user to
+        # create the file with exactly this content would invite them to
+        # overwrite their settings.
+        "exists": True,
         "merge": merge,
         "remove": [],
         "host_source": None,
