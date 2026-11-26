@@ -63,6 +63,13 @@ export function getAgentLifecycleLabel(agent: ManagedAgentSummary): string {
 export const REMOVE_AGENT_CONSEQUENCE =
   "Past sessions and activity remain in Preloop after removal. This also revokes the agent's Preloop credentials. If the agent is still onboarded on a machine, its gateway and MCP access stop working until you run `preloop agents onboard` again. To disconnect cleanly, run `preloop agents offboard` on that machine instead.";
 
+/**
+ * Onboarding left a pending setup: the agent's config file could not be
+ * written, and the user applies the change by hand.
+ */
+export const WAITING_FOR_LOCAL_CONFIG = 'waiting_for_local_config';
+export const WAITING_FOR_LOCAL_CONFIG_LABEL = 'Waiting for local configuration';
+
 export interface AgentStatusChip {
   label: string;
   variant: 'success' | 'neutral' | 'warning' | 'danger';
@@ -113,6 +120,15 @@ export function getAgentStatusChip(
   }
   if (agent.lifecycle_state === 'suspended') {
     return { label: 'Paused', variant: 'neutral' };
+  }
+  // The CLI could not write the agent's config, so the user has a change to
+  // apply by hand: nothing is routed through Preloop until they do.
+  if (agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG) {
+    return {
+      label: WAITING_FOR_LOCAL_CONFIG_LABEL,
+      variant: 'warning',
+      tooltip: 'Onboarding is not finished until the config change is applied',
+    };
   }
   if (agent.live_validation_status === 'failed') {
     return { label: 'Live check failed', variant: 'warning' };

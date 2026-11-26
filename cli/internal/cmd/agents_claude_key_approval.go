@@ -37,6 +37,10 @@ func claudeAPIKeyFingerprint(token string) string {
 // settings path (~/.claude/settings.json → ~/.claude.json) so relocated
 // config roots keep working.
 func claudeUserConfigPath(agent AgentConfig) string {
+	// With CLAUDE_CONFIG_DIR set, Claude Code keeps .claude.json inside it.
+	if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
+		return filepath.Join(dir, ".claude.json")
+	}
 	settingsDir := filepath.Dir(agent.ConfigPath)
 	return filepath.Join(filepath.Dir(settingsDir), ".claude.json")
 }

@@ -100,6 +100,25 @@ describe('getAgentStatusChip', () => {
     ).to.deep.equal({ label: 'Live check failed', variant: 'warning' });
   });
 
+  it('says when onboarding is waiting for a local config change', () => {
+    const waiting = getAgentStatusChip({
+      ...baseAgent,
+      onboarding_state: 'waiting_for_local_config',
+      live_validation_status: 'failed',
+      is_active_now: true,
+    });
+    expect(waiting.label).to.equal('Waiting for local configuration');
+    expect(waiting.variant).to.equal('warning');
+    // Lifecycle still comes first.
+    expect(
+      getAgentStatusChip({
+        ...baseAgent,
+        onboarding_state: 'waiting_for_local_config',
+        lifecycle_state: 'decommissioned',
+      }).label
+    ).to.equal('Decommissioned');
+  });
+
   it('flags an agent that was never connected, and only that one', () => {
     expect(
       getAgentStatusChip({

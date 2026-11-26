@@ -55,6 +55,33 @@ class CRUDManagedAgentAIModelBinding(CRUDBase[ManagedAgentAIModelBinding]):
             .all()
         )
 
+    def model_bound_to_other_agent(
+        self, db: Session, *, account_id: str, ai_model_id: str, agent_id: str
+    ) -> bool:
+        """Tell whether a model is bound to an agent other than ``agent_id``.
+
+        Inactive bindings count: they still name a slot of another agent.
+
+        Args:
+            db: Database session.
+            account_id: Owning account.
+            ai_model_id: AI model id.
+            agent_id: The agent whose own bindings are ignored.
+
+        Returns:
+            True when another managed agent has a binding to the model.
+        """
+        return (
+            db.query(self.model.id)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.ai_model_id == ai_model_id,
+                self.model.managed_agent_id != agent_id,
+            )
+            .first()
+            is not None
+        )
+
     def list_for_agent(
         self,
         db: Session,

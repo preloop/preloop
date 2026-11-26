@@ -4131,6 +4131,7 @@ func TestCollectOffboardCleanupCandidatesHonorsRecentUsage(t *testing.T) {
 					ID:   "model-1",
 					Name: "OpenClaw google/gemini-3.1-pro-preview",
 					MetaData: map[string]interface{}{
+						"managed_agent_id": "agent-current",
 						"gateway": map[string]interface{}{
 							"model_alias": "google/gemini-3.1-pro-preview",
 						},
@@ -4202,6 +4203,7 @@ func TestCollectOffboardCleanupCandidatesProtectsModelsUsedByFlows(t *testing.T)
 					ID:   "model-1",
 					Name: "OpenClaw google/gemini-3.1-pro-preview",
 					MetaData: map[string]interface{}{
+						"managed_agent_id": "agent-current",
 						"gateway": map[string]interface{}{
 							"model_alias": "google/gemini-3.1-pro-preview",
 						},

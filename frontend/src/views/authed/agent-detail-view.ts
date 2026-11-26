@@ -46,6 +46,8 @@ import { NOTES_FIRST_PAGE } from '../../components/agent-notes-tab';
 import '../../components/talk-button.ts';
 import '../../components/time-range-select.ts';
 import '../../components/confirm-dialog.ts';
+import '../../components/agent-manual-setup.ts';
+import type { ManualSetupCancelledDetail } from '../../components/agent-manual-setup';
 import { confirmDialog } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import { actionsFor } from '../../actions';
@@ -122,6 +124,8 @@ import {
   getAgentStatusChip,
   getSystemAgentTags,
   getVisibleAgentTags,
+  WAITING_FOR_LOCAL_CONFIG,
+  WAITING_FOR_LOCAL_CONFIG_LABEL,
 } from '../../utils/agent-display';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import '../../components/capability-extension';
@@ -313,6 +317,18 @@ export class AgentDetailView extends LitElement {
 
   @state()
   private actionLoading = false;
+
+  /**
+   * The agent whose manual setup panel stays at the top of the page. Set when
+   * a pending setup ends while the page is open, so the panel's own report of
+   * what happened is not lost when the agent reloads without the pending state.
+   */
+  @state()
+  private manualSetupPinnedFor: string | null = null;
+
+  /** The "Set up manually" disclosure was opened, so its panel is loaded. */
+  @state()
+  private manualSetupOpened = false;
 
   @state()
   private liveActivity = {
@@ -767,6 +783,13 @@ export class AgentDetailView extends LitElement {
       }
       .agent-settings {
         margin: 8px 0;
+      }
+      .manual-setup-pending {
+        margin: var(--sl-spacing-small) 0 var(--sl-spacing-medium);
+      }
+      .agent-settings agent-manual-setup {
+        margin: 8px 0 var(--sl-spacing-medium);
+        max-width: 60rem;
       }
       .agent-settings p {
         margin: 8px 0;
@@ -1520,7 +1543,8 @@ export class AgentDetailView extends LitElement {
     if (this.agent.onboarding_state === 'fully_onboarded') return 'success';
     if (
       this.agent.onboarding_state === 'mcp_proxy_only' ||
-      this.agent.onboarding_state === 'gateway_only'
+      this.agent.onboarding_state === 'gateway_only' ||
+      this.agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG
     ) {
       return 'warning';
     }
@@ -1533,6 +1557,9 @@ export class AgentDetailView extends LitElement {
       return 'Fully onboarded';
     if (this.agent.onboarding_state === 'mcp_proxy_only') return 'MCP only';
     if (this.agent.onboarding_state === 'gateway_only') return 'Gateway only';
+    if (this.agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG) {
+      return WAITING_FOR_LOCAL_CONFIG_LABEL;
+    }
     return 'Incomplete';
   }
 
@@ -1546,6 +1573,9 @@ export class AgentDetailView extends LitElement {
     }
     if (this.agent.onboarding_state === 'gateway_only') {
       return 'Model traffic flows through Preloop, but MCP tool traffic is still direct.';
+    }
+    if (this.agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG) {
+      return 'Onboarding is waiting for a config change to be applied where the agent runs.';
     }
     return 'This agent is not fully managed by Preloop yet.';
   }
@@ -1944,6 +1974,75 @@ export class AgentDetailView extends LitElement {
       )}
     `;
   }
+
+  /**
+   * The change a user applies by hand when the CLI cannot write the agent's
+   * config. A setup that is waiting for it is shown open, above the tabs, so
+   * it cannot be missed; otherwise the panel sits behind a disclosure and is
+   * only loaded when opened.
+   */
+  private renderManualSetup(
+    slot: 'banner' | 'entry'
+  ): TemplateResult | typeof nothing {
+    const agent = this.agent;
+    if (!agent) return nothing;
+    const readOnly = !!(agent.read_only || agent.is_shared);
+    const panel = html`<agent-manual-setup
+      .agentId=${agent.id}
+      .displayName=${agent.display_name}
+      ?read-only=${readOnly}
+      @manual-setup-cancelled=${this.handleManualSetupCancelled}
+      @manual-setup-changed=${this.handleManualSetupChanged}
+    ></agent-manual-setup>`;
+    const pinned =
+      agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG ||
+      this.manualSetupPinnedFor === agent.id;
+    if (slot === 'banner') {
+      if (!pinned) return nothing;
+      return html`<div class="manual-setup-pending" data-manual-setup-banner>
+        ${panel}
+      </div>`;
+    }
+    if (pinned) return nothing;
+    if (agent.lifecycle_state === 'decommissioned') return nothing;
+    return html`<details
+      class="agent-settings"
+      data-manual-setup-entry
+      @toggle=${(event: Event) => {
+        if ((event.currentTarget as HTMLDetailsElement).open) {
+          this.manualSetupOpened = true;
+        }
+      }}
+    >
+      <summary>Set up manually</summary>
+      <p>
+        For an agent whose config file is read-only or managed for you, for
+        example in a container: the change to apply by hand.
+      </p>
+      ${this.manualSetupOpened ? panel : nothing}
+    </details>`;
+  }
+
+  private handleManualSetupCancelled = (
+    event: CustomEvent<ManualSetupCancelledDetail>
+  ): void => {
+    if (event.detail?.agentId !== this.agentId) return;
+    if (event.detail.removed?.agent === 'deleted') {
+      // The agent is gone: there is no page left to show.
+      window.location.href = '/console/agents';
+      return;
+    }
+    this.manualSetupPinnedFor = this.agentId;
+    void this.loadData(true);
+  };
+
+  private handleManualSetupChanged = (
+    event: CustomEvent<{ agentId: string }>
+  ): void => {
+    if (event.detail?.agentId !== this.agentId) return;
+    this.manualSetupPinnedFor = this.agentId;
+    void this.loadData(true);
+  };
 
   /**
    * Loopback desktop the runtime advertised. Hidden when the agent has none.
@@ -4054,6 +4153,7 @@ export class AgentDetailView extends LitElement {
               `
             : nothing
         }
+        ${this.renderManualSetup('banner')}
         <details class="agent-settings">
           <summary>
             ${this.agent.is_shared ? nothing : html`Session permissions: ${SESSION_CONSENT_OPTIONS.find((option) => option.value === (this.agent?.others_may_start_sessions ?? 'ask_me'))?.label} ·`}
@@ -4064,7 +4164,7 @@ export class AgentDetailView extends LitElement {
           </p>
           ${this.renderSessionConsent()} ${this.renderIdentityHistory()}
         </details>
-        ${this.renderExtensions()}
+        ${this.renderManualSetup('entry')} ${this.renderExtensions()}
 
         <!-- Sub-view Tab Navigation -->
         ${(() => {

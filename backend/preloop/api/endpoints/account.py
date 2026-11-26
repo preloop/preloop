@@ -91,7 +91,15 @@ from preloop.schemas.gateway_usage import (
     ManagedAgentCredentialCreateResponse,
     ManagedAgentCredentialSummary,
     ManagedAgentDetailResponse,
+    ManagedAgentEnrollmentCancelRequest,
+    ManagedAgentEnrollmentCancelResponse,
     ManagedAgentEnrollmentCreateRequest,
+    ManagedAgentManualSetupPending,
+    ManagedAgentManualSetupResponse,
+    ManagedAgentOnboardingRollbackRequest,
+    ManagedAgentOnboardingRollbackResponse,
+    OnboardingCleanupRemoved,
+    OnboardingCreatedResources,
     ManagedAgentEnrollmentRestoreRequest,
     ManagedAgentEnrollmentSummary,
     ManagedAgentModelBindingSummary,
@@ -155,6 +163,17 @@ from preloop.services.cache_accounting import (
 )
 from preloop.services.artifact_media import ARTIFACT_KINDS
 from preloop.services.aux_model_retry import call_with_aux_retry
+from preloop.models.crud.managed_agent_enrollment import (
+    CLOSED_PENDING_ENROLLMENT_STATUSES,
+    ENROLLMENT_STATUS_CANCELLED,
+    ENROLLMENT_STATUS_EXPIRED,
+    ENROLLMENT_STATUS_PENDING_LOCAL_CONFIG,
+)
+from preloop.services import managed_agent_onboarding_cleanup as onboarding_cleanup
+from preloop.services.managed_agent_manual_setup import (
+    build_manual_setup_baseline,
+    resume_command,
+)
 from preloop.services.managed_agent_identity import (
     ManagedAgentIdentityError,
     PrincipalIdentity,
@@ -369,6 +388,14 @@ def _managed_agent_onboarding_flags(
     gateway_traffic_verified: bool = False,
 ) -> tuple[bool, bool, str]:
     if not latest_enrollment:
+        return False, False, "incomplete"
+    enrollment_status = latest_enrollment.get("status")
+    if enrollment_status == ENROLLMENT_STATUS_PENDING_LOCAL_CONFIG:
+        # Manual mode: the server side exists, the local config is not applied
+        # yet, so nothing is routed through Preloop.
+        return False, False, "waiting_for_local_config"
+    if enrollment_status in CLOSED_PENDING_ENROLLMENT_STATUSES:
+        # The planned config of a cancelled or expired setup was never applied.
         return False, False, "incomplete"
 
     validation = _enrollment_section(latest_enrollment, "validation_result")
@@ -2760,6 +2787,9 @@ async def create_account_managed_agent_enrollment(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
+    managed_config, backup_metadata = payload.managed_config, payload.backup_metadata
+    if payload.status == ENROLLMENT_STATUS_PENDING_LOCAL_CONFIG:
+        managed_config, backup_metadata = _pending_enrollment_payload(payload)
     enrollment = crud_managed_agent_enrollment.create_for_agent(
         db,
         account_id=account.id,
@@ -2770,8 +2800,8 @@ async def create_account_managed_agent_enrollment(
         status=payload.status,
         target_config_path=payload.target_config_path,
         discovered_config=payload.discovered_config,
-        managed_config=payload.managed_config,
-        backup_metadata=payload.backup_metadata,
+        managed_config=managed_config,
+        backup_metadata=backup_metadata,
         validation_result=payload.validation_result,
         restore_available=payload.restore_available,
         last_applied_at=payload.last_applied_at,
@@ -2832,6 +2862,72 @@ async def create_account_managed_agent_enrollment(
 ENROLLMENT_STATUS_VALIDATED = "validated"
 # A restore removes Preloop's management; it is not evidence of a device link.
 ENROLLMENT_STATUSES_WITHOUT_DEVICE_LINK = frozenset({"restored"})
+CLOSED_PENDING_ENROLLMENT_MESSAGES = {
+    ENROLLMENT_STATUS_CANCELLED: (
+        "This pending setup was cancelled; run onboarding again"
+    ),
+    ENROLLMENT_STATUS_EXPIRED: "This pending setup expired; run onboarding again",
+}
+
+
+def _pending_enrollment_payload(
+    payload: ManagedAgentEnrollmentCreateRequest,
+) -> tuple[dict, dict]:
+    """Check and sanitise the JSON a ``pending_local_config`` enrollment stores.
+
+    ``backup_metadata.created_resources`` drives the later cleanup, so a
+    malformed one is refused now instead of being silently ignored then.
+    ``managed_config.manual_apply`` is shown to the user again, so anything in
+    it that looks like a real agent key is replaced by ``<AGENT_KEY>``.
+
+    Args:
+        payload: The enrollment create request.
+
+    Returns:
+        The ``managed_config`` and ``backup_metadata`` to store.
+
+    Raises:
+        HTTPException: 422 when either object has the wrong shape.
+    """
+    from pydantic import ValidationError
+
+    managed_config = dict(payload.managed_config)
+    backup_metadata = dict(payload.backup_metadata)
+    if "created_resources" in backup_metadata:
+        try:
+            created = OnboardingCreatedResources.model_validate(
+                backup_metadata["created_resources"]
+            )
+        except ValidationError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="backup_metadata.created_resources is malformed",
+            ) from None
+        backup_metadata["created_resources"] = created.model_dump()
+    if "manual_apply" in managed_config:
+        if not isinstance(managed_config["manual_apply"], dict):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="managed_config.manual_apply must be an object",
+            )
+        managed_config["manual_apply"] = onboarding_cleanup.redact_agent_keys(
+            managed_config["manual_apply"]
+        )
+    return managed_config, backup_metadata
+
+
+def _refuse_closed_pending_enrollment(enrollment: Any) -> None:
+    """Refuse to act on a cancelled or expired pending enrollment.
+
+    Its credential and models are gone, so it can no longer be validated or
+    restored.
+
+    Raises:
+        HTTPException: 409 with the reason and what to do next.
+    """
+    message = CLOSED_PENDING_ENROLLMENT_MESSAGES.get(enrollment.status)
+    if message is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
 
 
 def _link_discovery_candidates(
@@ -2942,16 +3038,23 @@ async def validate_account_managed_agent_enrollment(
 
     The first time an enrollment reaches ``validated`` the agent counts as
     onboarded and ``agent.onboarded`` is enqueued in the same transaction.
+    This is also how ``preloop agents onboard --resume`` completes a
+    ``pending_local_config`` enrollment; a resume that does not validate
+    leaves it pending. A cancelled or expired one is refused with 409.
     """
     await run_db_off_loop(
         lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
     )
+    # Locked so a resume cannot interleave with a cancel or the expiry sweep.
     existing = crud_managed_agent_enrollment.get_for_agent(
         db,
         account_id=str(account.id),
         agent_id=agent_id,
         enrollment_id=enrollment_id,
+        for_update=True,
     )
+    if existing is not None:
+        _refuse_closed_pending_enrollment(existing)
     already_validated = (
         existing is not None and existing.status == ENROLLMENT_STATUS_VALIDATED
     )
@@ -3020,6 +3123,20 @@ async def restore_account_managed_agent_enrollment(
     await run_db_off_loop(
         lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
     )
+    existing = crud_managed_agent_enrollment.get_for_agent(
+        db,
+        account_id=str(account.id),
+        agent_id=agent_id,
+        enrollment_id=enrollment_id,
+    )
+    if existing is not None:
+        # Nothing was applied locally, so there is nothing to restore.
+        _refuse_closed_pending_enrollment(existing)
+        if existing.status == ENROLLMENT_STATUS_PENDING_LOCAL_CONFIG:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This setup is still pending; cancel it instead",
+            )
     enrollment = crud_managed_agent_enrollment.mark_restored(
         db,
         account_id=str(account.id),
@@ -3163,41 +3280,15 @@ async def update_account_managed_agent(
         )
     revoked_managed_credentials = 0
     if should_revoke_runtime_access:
-        revoke_timestamp = datetime.now(UTC)
-        revoked_managed_credentials = (
-            crud_managed_agent_credential.revoke_all_for_agent(
-                db,
-                account_id=str(account.id),
-                agent_id=str(agent.id),
-                reason=update.reason or "agent decommissioned",
-                revoked_at=revoke_timestamp,
-            )
-        )
-        # Revoke only this agent's keys (plus legacy keys with no agent
-        # binding). Several registry entries can share one runtime principal,
-        # and a principal-wide sweep would also kill sibling agents' durable
-        # credentials.
-        crud_api_key.deactivate_runtime_keys_for_managed_agent(
+        # Shared with the onboarding cleanup, which decommissions an agent
+        # left without a usable key.
+        revoked_managed_credentials = onboarding_cleanup.revoke_agent_runtime_access(
             db,
             account_id=account.id,
-            managed_agent_id=str(agent.id),
-            commit=False,
+            agent=agent,
+            reason=update.reason or "agent decommissioned",
+            bound_runtime_session_id=bound_runtime_session_id,
         )
-        crud_api_key.deactivate_unbound_runtime_keys_for_principal(
-            db,
-            account_id=account.id,
-            runtime_principal_type=agent.session_source_type,
-            runtime_principal_id=agent.session_source_id,
-            commit=False,
-        )
-        if bound_runtime_session_id is not None:
-            crud_runtime_session.update_operator_state(
-                db,
-                account_id=str(account.id),
-                runtime_session_id=bound_runtime_session_id,
-                ended_at=revoke_timestamp,
-                commit=False,
-            )
     if should_restore_runtime_access:
         crud_api_key.reactivate_runtime_keys_for_managed_agent(
             db,
@@ -3328,22 +3419,15 @@ async def delete_account_managed_agent(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
 
-    # Revoke only this agent's keys (plus legacy keys with no agent binding).
-    # Several registry entries can share one runtime principal (repeated
-    # onboards of the same local agent); a principal-wide sweep would also
-    # deactivate sibling agents' durable credentials.
-    legacy_keys = crud_api_key.deactivate_unbound_runtime_keys_for_principal(
-        db,
-        account_id=account.id,
-        runtime_principal_type=agent.session_source_type,
-        runtime_principal_id=agent.session_source_id,
-        commit=False,
-    )
-    bound_keys = crud_api_key.deactivate_runtime_keys_for_managed_agent(
-        db,
-        account_id=account.id,
-        managed_agent_id=str(agent.id),
-        commit=False,
+    display_name = agent.display_name
+    session_source_type = agent.session_source_type
+    session_source_id = agent.session_source_id
+    previous_lifecycle_state = agent.lifecycle_state
+    # Revokes only this agent's keys (plus legacy keys with no agent binding).
+    # Shared with the onboarding cleanup, which removes an agent an unfinished
+    # onboarding created.
+    revoked_keys = onboarding_cleanup.deactivate_agent_keys(
+        db, account_id=account.id, agent=agent
     )
     crud_audit_log.log_action(
         db,
@@ -3357,16 +3441,18 @@ async def delete_account_managed_agent(
         user_agent=request.headers.get("user-agent"),
         details={
             "agent_id": agent_id,
-            "display_name": agent.display_name,
-            "session_source_type": agent.session_source_type,
-            "session_source_id": agent.session_source_id,
-            "previous_lifecycle_state": agent.lifecycle_state,
-            "revoked_credentials": len(legacy_keys) + len(bound_keys),
+            "display_name": display_name,
+            "session_source_type": session_source_type,
+            "session_source_id": session_source_id,
+            "previous_lifecycle_state": previous_lifecycle_state,
+            "revoked_credentials": revoked_keys,
             "session_history_retained": True,
             "local_configuration_restored": False,
         },
         commit=False,
     )
+    # After the audit row: an unavailable audit store must not leave an
+    # unaudited removal.
     crud_managed_agent.remove_registry_entry(db, agent=agent, commit=False)
     db.commit()
 
@@ -3377,12 +3463,241 @@ async def delete_account_managed_agent(
             event_type="managed_agent_removed",
             payload={
                 "agent_id": agent_id,
-                "session_source_type": agent.session_source_type,
-                "session_source_id": agent.session_source_id,
+                "session_source_type": session_source_type,
+                "session_source_id": session_source_id,
             },
         )
     )
     return {"message": "Managed agent removed"}
+
+
+def _finish_onboarding_cleanup(
+    db: Session,
+    *,
+    account_id: str,
+    result: onboarding_cleanup.OnboardingCleanupResult,
+    action: str,
+    enrollment_id: Optional[str] = None,
+) -> OnboardingCleanupRemoved:
+    """Publish the realtime events of a committed onboarding cleanup.
+
+    Args:
+        db: Database session, after the cleanup was committed.
+        account_id: Account the agent belongs to.
+        result: The cleanup result.
+        action: Audit action name.
+        enrollment_id: The cancelled enrollment, if any.
+
+    Returns:
+        The ``removed`` object of the response.
+    """
+    onboarding_cleanup.emit_onboarding_cleanup_events(
+        account_id=account_id,
+        result=result,
+        action=action,
+        enrollment_id=enrollment_id,
+    )
+    if result.agent == onboarding_cleanup.AGENT_DECOMMISSIONED:
+        onboarding_cleanup.emit_agent_decommissioned(
+            db, account_id=account_id, agent_id=result.agent_id
+        )
+    return OnboardingCleanupRemoved(**result.as_dict())
+
+
+@router.post(
+    "/agents/{agent_id}/enrollments/{enrollment_id}/cancel",
+    response_model=ManagedAgentEnrollmentCancelResponse,
+)
+@require_permission("manage_agents")
+def cancel_account_managed_agent_enrollment(
+    agent_id: str,
+    enrollment_id: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    request: Request,
+    payload: Optional[ManagedAgentEnrollmentCancelRequest] = None,
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ManagedAgentEnrollmentCancelResponse:
+    """Cancel a pending manual setup and remove what its onboarding created.
+
+    Only a ``pending_local_config`` enrollment can be cancelled (409
+    otherwise). The credential and AI models that onboarding created are
+    removed, the agent is deleted when that onboarding created it and it was
+    never used, or decommissioned when it is left without a usable key, and
+    the enrollment becomes ``cancelled``. All of it commits together.
+    """
+    ensure_permission_in_oss(db, current_user, "manage_agents")
+    account_id = str(account.id)
+    # Same lock order as credential issuance: account, then agent rows.
+    billing.lock_account(db, account_id)
+    enrollment = crud_managed_agent_enrollment.get_for_agent(
+        db,
+        account_id=account_id,
+        agent_id=agent_id,
+        enrollment_id=enrollment_id,
+        for_update=True,
+    )
+    if enrollment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Managed agent enrollment not found",
+        )
+    if enrollment.status != ENROLLMENT_STATUS_PENDING_LOCAL_CONFIG:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only a setup that is waiting for local config can be cancelled",
+        )
+    created_resources = (enrollment.backup_metadata or {}).get("created_resources")
+    model_floor = enrollment.created_at - onboarding_cleanup.ONBOARDING_MODEL_WINDOW
+    crud_managed_agent_enrollment.close_pending(
+        db, enrollment=enrollment, status=ENROLLMENT_STATUS_CANCELLED
+    )
+    # Read before the cleanup: deleting the agent deletes its enrollments.
+    summary = ManagedAgentEnrollmentSummary(
+        **crud_managed_agent_enrollment._to_summary(enrollment)
+    )
+    result = onboarding_cleanup.cleanup_onboarding_resources(
+        db,
+        account_id=account_id,
+        agent_id=agent_id,
+        created_resources=created_resources,
+        models_created_no_earlier_than=model_floor,
+        reason=(payload.reason if payload and payload.reason else None)
+        or "pending onboarding cancelled",
+        audit_action=onboarding_cleanup.AUDIT_ACTION_CANCELLED,
+        actor_user_id=current_user.id,
+        audit_details={"enrollment_id": enrollment_id},
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    if result is None:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
+        )
+    db.commit()
+    removed = _finish_onboarding_cleanup(
+        db,
+        account_id=account_id,
+        result=result,
+        action=onboarding_cleanup.AUDIT_ACTION_CANCELLED,
+        enrollment_id=enrollment_id,
+    )
+    return ManagedAgentEnrollmentCancelResponse(enrollment=summary, removed=removed)
+
+
+@router.post(
+    "/agents/{agent_id}/onboarding-rollback",
+    response_model=ManagedAgentOnboardingRollbackResponse,
+)
+@require_permission("manage_agents")
+def rollback_account_managed_agent_onboarding(
+    agent_id: str,
+    payload: ManagedAgentOnboardingRollbackRequest,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    request: Request,
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ManagedAgentOnboardingRollbackResponse:
+    """Undo a failed or aborted onboarding that left no pending enrollment.
+
+    Runs the same cleanup as cancelling a pending setup, for the resources
+    the CLI reports it created: listed credentials of this agent are revoked,
+    listed AI models nothing else uses are deleted, and the agent is deleted,
+    decommissioned or kept by the same rules. Ids that do not belong to the
+    account and the agent are ignored.
+    """
+    ensure_permission_in_oss(db, current_user, "manage_agents")
+    account_id = str(account.id)
+    result = onboarding_cleanup.cleanup_onboarding_resources(
+        db,
+        account_id=account_id,
+        agent_id=agent_id,
+        created_resources=payload.created_resources.model_dump(),
+        models_created_no_earlier_than=datetime.now(UTC)
+        - onboarding_cleanup.ONBOARDING_MODEL_WINDOW,
+        reason=payload.reason or "onboarding rolled back",
+        audit_action=onboarding_cleanup.AUDIT_ACTION_ROLLED_BACK,
+        actor_user_id=current_user.id,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    if result is None:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
+        )
+    db.commit()
+    removed = _finish_onboarding_cleanup(
+        db,
+        account_id=account_id,
+        result=result,
+        action=onboarding_cleanup.AUDIT_ACTION_ROLLED_BACK,
+    )
+    return ManagedAgentOnboardingRollbackResponse(removed=removed)
+
+
+@router.get(
+    "/agents/{agent_id}/manual-setup",
+    response_model=ManagedAgentManualSetupResponse,
+)
+@require_permission("view_agents")
+def get_account_managed_agent_manual_setup(
+    agent_id: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    request: Request,
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ManagedAgentManualSetupResponse:
+    """Return the config change a user applies by hand for one agent.
+
+    While the agent has a ``pending_local_config`` enrollment, the
+    instructions are the ones its onboarding stored. Otherwise a baseline is
+    generated for Claude Code, Codex CLI and Cursor from the server's public
+    URL; other kinds have none. Secrets are always the placeholder
+    ``<AGENT_KEY>``.
+    """
+    account_id = str(account.id)
+    _require_managed_agent_view(
+        db, current_user, account_id=account_id, agent_id=agent_id
+    )
+    agent = crud_managed_agent.get_for_account(
+        db, account_id=account_id, agent_id=agent_id
+    )
+    if agent is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
+        )
+    agent_kind = agent.agent_kind or agent.session_source_type
+    pending = crud_managed_agent_enrollment.get_pending_for_agent(
+        db, account_id=account_id, agent_id=agent_id
+    )
+    instructions: Optional[dict] = None
+    pending_summary: Optional[ManagedAgentManualSetupPending] = None
+    if pending is not None:
+        row = crud_managed_agent_enrollment._to_summary(pending)
+        pending_summary = ManagedAgentManualSetupPending(
+            enrollment_id=row["id"],
+            status=row["status"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
+        )
+        stored = row["managed_config"].get("manual_apply")
+        if isinstance(stored, dict) and stored:
+            instructions = onboarding_cleanup.redact_agent_keys(stored)
+    if instructions is None:
+        base_url = (settings.preloop_url or "").strip().rstrip("/") or str(
+            request.base_url
+        ).rstrip("/")
+        instructions = build_manual_setup_baseline(agent_kind, base_url)
+    return ManagedAgentManualSetupResponse(
+        agent_id=str(agent.id),
+        agent_kind=agent_kind,
+        display_name=agent.display_name,
+        pending=pending_summary,
+        instructions=instructions,
+        resume_command=resume_command(agent.display_name),
+    )
 
 
 @router.post(
