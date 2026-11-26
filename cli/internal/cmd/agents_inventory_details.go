@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -48,7 +49,7 @@ type extensionLocalDetail struct {
 
 var detailLocationPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://|www\.|[a-z]:[\\/]|(^|[\s("'])[/\\~]|[\w.-]+/[^\s]+)`)
 var detailExecutablePattern = regexp.MustCompile(`^[A-Za-z0-9_.+-]{1,128}$`)
-var detailSkillNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+var detailSkillNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 func (s *extensionScan) detailText(value string) (string, bool) {
 	// Inspect the entire authored value before truncation, including controls.
@@ -83,7 +84,7 @@ func (s *extensionScan) detailText(value string) (string, bool) {
 	if len(runes) > 300 {
 		clean = string(runes[:300])
 	}
-	return clean, false
+	return strings.TrimSpace(clean), false
 }
 
 func (r *extensionRoot) fileList(base string) []string {
@@ -233,8 +234,55 @@ func (s *extensionScan) hookCommand(command string) extensionHookCommand {
 	if hidden || !detailExecutablePattern.MatchString(safe) {
 		safe = "unknown"
 	}
-	managed := (safe == "preloop" || safe == "preloop.exe") && (strings.HasPrefix(rest, "agents permission-hook") || strings.HasPrefix(rest, "agents session-hook") || strings.HasPrefix(rest, "agents stop-hook") || strings.HasPrefix(rest, "agents activity-hook") || strings.HasPrefix(rest, "agents session-end-hook") || strings.HasPrefix(rest, "usage hook"))
+	managed := false
+	args := strings.Fields(rest)
+	if (safe == "preloop" || safe == "preloop.exe") && len(args) >= 2 {
+		managed = args[0] == "usage" && args[1] == "hook"
+		if args[0] == "agents" {
+			for _, name := range []string{"permission-hook", "session-hook", "stop-hook", "activity-hook", "session-end-hook"} {
+				managed = managed || args[1] == name
+			}
+		}
+	}
 	return extensionHookCommand{Executable: safe, PreloopManaged: managed}
+}
+
+// componentRoots augments conventional plugin directories with manifest paths.
+// Only paths inside this install are accepted, never sibling or absolute paths.
+func (r *extensionRoot) componentRoots(manifest map[string]json.RawMessage, field, fallback string) []string {
+	roots := []string{fallback}
+	raw := manifest[field]
+	var paths []string
+	if value := extensionString(raw); value != "" {
+		paths = []string{value}
+	} else {
+		_ = json.Unmarshal(raw, &paths)
+	}
+	for _, path := range paths {
+		if !filepath.IsLocal(path) || strings.Contains(path, "\\") {
+			r.scan.fail("extension_unsafe_path")
+			continue
+		}
+		roots = append(roots, filepath.ToSlash(filepath.Clean(path)))
+	}
+	return uniqueSorted(roots)
+}
+
+func componentContains(file string, roots []string, skills bool) bool {
+	for _, root := range roots {
+		if file == root {
+			return true
+		}
+		prefix := strings.TrimSuffix(root, "/") + "/"
+		if !strings.HasPrefix(file, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(file, prefix)
+		if !skills || rest == "SKILL.md" || (strings.Count(rest, "/") == 1 && strings.HasSuffix(rest, "/SKILL.md")) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *extensionRoot) pluginDetails(path string, manifest map[string]json.RawMessage, ext *inventoryExtension) {
@@ -249,48 +297,95 @@ func (r *extensionRoot) pluginDetails(path string, manifest map[string]json.RawM
 	}
 	details.Author, _ = r.scan.detailText(author.Name)
 	files := r.fileList(path)
+	skills := r.componentRoots(manifest, "skills", "skills")
+	commands := r.componentRoots(manifest, "commands", "commands")
+	agents := r.componentRoots(manifest, "agents", "agents")
 	for _, file := range files {
 		rel, _ := filepath.Rel(path, file)
 		rel = filepath.ToSlash(rel)
-		switch {
-		case strings.HasPrefix(rel, "skills/") && strings.HasSuffix(rel, "/SKILL.md"):
+		if filepath.Base(file) == "SKILL.md" && componentContains(rel, skills, true) {
 			details.Bundles.Skills++
 			skillPath := filepath.Dir(file)
 			id := filepath.Base(skillPath)
 			d, local := r.markdownDetails(skillPath, id, true, ext.ID)
 			hash, status := treeHash(r.root, skillPath)
 			ext.Bundled = append(ext.Bundled, inventoryExtension{Kind: "skill", ID: strings.Split(ext.ID, "@")[0] + ":" + id, Details: d, Local: local, ContentHash: hash, HashStatus: status})
-		case strings.HasPrefix(rel, "commands/") && strings.HasSuffix(rel, ".md"):
+		}
+		if strings.HasSuffix(rel, ".md") && componentContains(rel, commands, false) {
 			details.Bundles.Commands++
-		case strings.HasPrefix(rel, "agents/") && strings.HasSuffix(rel, ".md"):
+		}
+		if strings.HasSuffix(rel, ".md") && componentContains(rel, agents, false) {
 			details.Bundles.Agents++
 		}
 	}
-	hookDoc := r.document(filepath.Join(path, "hooks", "hooks.json"))
-	if hookDoc == nil {
-		_ = json.Unmarshal(manifest["hooks"], &hookDoc)
+	hookDocs := []map[string]json.RawMessage{}
+	for _, file := range r.componentRoots(manifest, "hooks", "hooks/hooks.json") {
+		if doc := r.document(filepath.Join(path, file)); doc != nil {
+			hookDocs = append(hookDocs, doc)
+		}
 	}
-	var events map[string][]json.RawMessage
-	if json.Unmarshal(hookDoc["hooks"], &events) == nil {
+	var inline map[string]json.RawMessage
+	if json.Unmarshal(manifest["hooks"], &inline) == nil && inline != nil {
+		hookDocs = append(hookDocs, inline)
+	}
+	localCommands := []string{}
+	for _, doc := range hookDocs {
+		var events map[string][]json.RawMessage
+		if json.Unmarshal(doc["hooks"], &events) != nil {
+			r.scan.fail("extension_malformed")
+			continue
+		}
 		for _, groups := range events {
 			for _, group := range groups {
 				var obj struct {
-					Hooks []json.RawMessage `json:"hooks"`
+					Matcher string `json:"matcher"`
+					Command string `json:"command"`
+					Hooks   []struct {
+						Command string `json:"command"`
+					} `json:"hooks"`
 				}
-				_ = json.Unmarshal(group, &obj)
+				if json.Unmarshal(group, &obj) != nil {
+					r.scan.fail("extension_malformed")
+					continue
+				}
 				details.Bundles.Hooks += len(obj.Hooks)
+				if obj.Command != "" {
+					details.Bundles.Hooks++
+					localCommands = append(localCommands, fmt.Sprintf("Matcher: %s\n%s", obj.Matcher, obj.Command))
+				}
+				for _, hook := range obj.Hooks {
+					if hook.Command != "" {
+						localCommands = append(localCommands, fmt.Sprintf("Matcher: %s\n%s", obj.Matcher, hook.Command))
+					}
+				}
 			}
 		}
 	}
-	mcp := r.document(filepath.Join(path, ".mcp.json"))
-	var servers map[string]json.RawMessage
-	if json.Unmarshal(mcp["mcpServers"], &servers) == nil {
-		details.Bundles.MCPServers = len(servers)
-	} else if json.Unmarshal(manifest["mcpServers"], &servers) == nil {
-		details.Bundles.MCPServers = len(servers)
+	serverNames := map[string]bool{}
+	for _, file := range r.componentRoots(manifest, "mcpServers", ".mcp.json") {
+		doc := r.document(filepath.Join(path, file))
+		if doc == nil {
+			continue
+		}
+		var servers map[string]json.RawMessage
+		if json.Unmarshal(doc["mcpServers"], &servers) != nil {
+			r.scan.fail("extension_malformed")
+			continue
+		}
+		for name := range servers {
+			serverNames[name] = true
+		}
 	}
+	var servers map[string]json.RawMessage
+	if json.Unmarshal(manifest["mcpServers"], &servers) == nil {
+		for name := range servers {
+			serverNames[name] = true
+		}
+	}
+	details.Bundles.MCPServers = len(serverNames)
 	ext.Details = details
 	if r.scan.localDisplay {
-		ext.Local = &extensionLocalDetail{Files: files}
+		body, _ := json.MarshalIndent(manifest, "", "  ")
+		ext.Local = &extensionLocalDetail{Files: files, Body: string(body), Commands: localCommands}
 	}
 }

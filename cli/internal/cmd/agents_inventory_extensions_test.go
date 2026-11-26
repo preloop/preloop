@@ -258,9 +258,16 @@ func TestExtensionReportToLocalStack(t *testing.T) {
 	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
 	home := t.TempDir()
 	writeInventoryFixture(t, home, ".claude/settings.json", `{}`)
-	writeClaudePluginRecord(t, home, "reviewer", `{"name":"reviewer","marketplace":"community","version":"1.4.0","description":"synthetic-extension-secret"}`)
+	writeClaudePlugin(t, home, "reviewer", "community", "1.4.0")
+	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/community/plugins/reviewer/.claude-plugin/plugin.json", `{"name":"reviewer","version":"1.4.0","description":"Review helpers for consistent code checks.","author":{"name":"Jane Doe"}}`)
+	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/community/plugins/reviewer/skills/review/SKILL.md", "---\nname: review\ndescription: Review a proposed change.\n---\nsynthetic-extension-secret")
+	writeInventoryFixture(t, home, ".claude/skills/careful/SKILL.md", "---\nname: careful\ndescription: Review changes before acting, with a checklist for tests and permissions.\n---\nsynthetic-extension-secret")
+	writeInventoryFixture(t, home, ".claude/skills/careful/scripts/check.py", "synthetic-extension-secret")
+	writeInventoryFixture(t, home, ".claude/settings.json", `{"hooks":{"PreToolUse":[{"matcher":"Bash|Edit","hooks":[{"type":"command","command":"preloop agents permission-hook --source claude_code"},{"type":"command","command":"python3 /private/check.py --token synthetic-extension-secret"}]}]}}`)
+
 	oldProbes, oldProfiles := inventoryProbes, inventoryProfiles
 	inventoryProbes = inventoryTestDependencies(t, home)
+	inventoryProbes.Now = time.Now
 	inventoryProfiles = inventoryProfileDependencies{Elevated: func() bool { return true }, Profiles: func() ([]inventoryProfile, bool, error) { return []inventoryProfile{{Home: home}}, false, nil }, OpenRoot: os.OpenRoot}
 	oldURL, oldToken := FlagURL, FlagToken
 	FlagURL, FlagToken = endpoint, "synthetic-extension-identity"

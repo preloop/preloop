@@ -204,3 +204,29 @@ def test_runner_reports_preserve_first_seen_and_evaluate_findings(
     assert by_kind["codex"].first_seen_at == later
     assert emit.call_count == 2
     assert evaluate.call_count == 2
+
+
+def test_account_policy_persists_without_replacing_other_settings(
+    db_session: Session, test_user: models.User
+) -> None:
+    """The account opt-out survives reads and preserves unrelated metadata."""
+    from preloop.models.crud import crud_account
+
+    account = crud_account.get(db_session, id=test_user.account_id)
+    assert account is not None
+    crud_account.update(
+        db_session,
+        db_obj=account,
+        obj_in={"meta_data": {"unrelated": {"enabled": True}}},
+    )
+    crud_account.set_runner_discovery_policy(
+        db_session,
+        account_id=account.id,
+        policy={"enabled": False, "interval_seconds": 3600},
+    )
+    db_session.expire_all()
+    saved = crud_account.get(db_session, id=account.id)
+    assert saved is not None
+    assert saved.meta_data["unrelated"] == {"enabled": True}
+    assert agent_discovery._runner_discovery_policy(saved).enabled is False
+    assert agent_discovery._runner_discovery_policy(saved).interval_seconds == 3600

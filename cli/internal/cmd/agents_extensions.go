@@ -172,7 +172,7 @@ func agentsExtensionsCommand(cmd *cobra.Command) (*cobra.Command, bool) {
 		return cmd, true
 	}
 	parent := cmd.Parent()
-	if cmd.Name() == "check" && parent.Name() == "extensions" && parent.Parent() != nil && parent.Parent().Name() == "agents" {
+	if (cmd.Name() == "check" || cmd.Name() == "show") && parent.Name() == "extensions" && parent.Parent() != nil && parent.Parent().Name() == "agents" {
 		return cmd, true
 	}
 	return nil, false

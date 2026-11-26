@@ -9,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
 import './extension-enforcement';
 import { tableScrollStyles } from '../styles/table-scroll';
 import { formatRelativeTime } from '../utils/date';
+import { fleetHref } from '../device-fleet-api';
 import { downloadText } from '../utils/records-format';
 import {
   addExtensionPin,
@@ -17,6 +18,7 @@ import {
   fetchExtensionPolicyText,
   getExtensionPins,
   getExtensions,
+  getExtensionDevices,
   setExtensionApproval,
   type ExtensionAggregate,
   type ExtensionCoverage,
@@ -156,6 +158,17 @@ const label = (value: string): string =>
 const keyOf = (row: ExtensionKey): string =>
   JSON.stringify([row.agent_kind, row.extension_kind, row.extension_id]);
 
+const detailKey = (row: ExtensionKey): string =>
+  JSON.stringify([
+    keyOf(row),
+    'fingerprint' in row ? (row as InstalledExtension).fingerprint : '',
+    'profile_ref' in row ? (row as InstalledExtension).profile_ref : '',
+    'scope' in row ? (row as InstalledExtension).scope : '',
+    'project_ref_hash' in row
+      ? (row as InstalledExtension).project_ref_hash
+      : '',
+  ]);
+
 /** Presence and account-wide decisions; never implies loading or execution. */
 @customElement('extension-inventory')
 export class ExtensionInventory extends LitElement {
@@ -169,6 +182,7 @@ export class ExtensionInventory extends LitElement {
   @property({ attribute: false }) accessLoader = extensionAccess;
   @property({ attribute: false }) policyLoader = fetchExtensionPolicyText;
   @property({ attribute: false }) policySaver = downloadText;
+  @property({ attribute: false }) deviceLoader = getExtensionDevices;
   @property({ attribute: false }) pinLoader = getExtensionPins;
   @property({ attribute: false }) pinAdder = addExtensionPin;
   @property({ attribute: false }) pinRemover = deleteExtensionPin;
@@ -180,7 +194,7 @@ export class ExtensionInventory extends LitElement {
   /** Row whose approval this user just set to Unapproved. */
   @state() private unapprovedHint = '';
   @state() private copied = '';
-  private expandedRow: ExtensionKey | null = null;
+  private expandedRow: InstalledExtension | ExtensionAggregate | null = null;
   @state() private pins: ExtensionPin[] = [];
   @state() private page: ExtensionPage | null = null;
   @state() private loading = true;
@@ -192,6 +206,11 @@ export class ExtensionInventory extends LitElement {
   @state() private downloading = false;
   @state() private stateFilter = '';
   @state() private sourceFilter = '';
+  @state() private search = '';
+  @state() private detailDevices: InstalledExtension[] = [];
+  @state() private deviceCursor: string | null = null;
+  @state() private deviceError = '';
+  private searchTimer?: ReturnType<typeof setTimeout>;
   private requestId = 0;
   private access?: Promise<{ view: boolean; manage: boolean }>;
 
@@ -201,6 +220,56 @@ export class ExtensionInventory extends LitElement {
       :host {
         display: block;
         font-size: var(--console-text-body);
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .description {
+        margin: 5px 0;
+        font-weight: 400;
+        max-width: 48ch;
+        white-space: normal;
+      }
+      .invocation {
+        display: block;
+        font-size: var(--console-text-meta);
+        margin-top: 4px;
+        white-space: normal;
+      }
+      .search {
+        display: grid;
+        gap: 5px;
+        font-size: var(--console-text-meta);
+      }
+      .search input {
+        font: inherit;
+        color: inherit;
+        background: var(--sl-input-background-color);
+        border: 1px solid var(--console-hairline);
+        border-radius: 4px;
+        padding: 8px;
+        min-width: 240px;
+      }
+      .extension-details td {
+        white-space: normal;
+        background: var(--console-surface);
+      }
+      .extension-details code {
+        overflow-wrap: anywhere;
+      }
+      .extension-details p {
+        margin: 8px 0;
+      }
+      .extension-details ul {
+        padding-left: 20px;
       }
       .filters {
         display: flex;
@@ -428,6 +497,7 @@ export class ExtensionInventory extends LitElement {
       this.canManage = access.manage;
       if (!access.view) return;
       const filters: ExtensionFilters = {
+        q: this.search || undefined,
         fingerprint: this.fingerprint || undefined,
         agent_kind: this.agentKind || undefined,
         state: (this.stateFilter || undefined) as
@@ -455,7 +525,17 @@ export class ExtensionInventory extends LitElement {
       // An open hash list re-reads its pins so pin and unpin show at once.
       if (this.expandedRow && !append) {
         const pins = await this.pinLoader(this.expandedRow);
-        if (id === this.requestId) this.pins = pins;
+        if (id === this.requestId) {
+          this.pins = pins;
+          if (
+            !this.page.items.some((row) => detailKey(row) === this.expanded)
+          ) {
+            this.expanded = '';
+            this.expandedRow = null;
+          } else if (this.expandedRow && !('fingerprint' in this.expandedRow)) {
+            void this.loadDetailDevices(this.expandedRow);
+          }
+        }
       }
     } catch (error) {
       this.access = undefined;
@@ -527,8 +607,10 @@ export class ExtensionInventory extends LitElement {
     }
   }
 
-  private async toggle(row: ExtensionAggregate): Promise<void> {
-    const key = keyOf(row);
+  private async toggle(
+    row: InstalledExtension | ExtensionAggregate
+  ): Promise<void> {
+    const key = detailKey(row);
     if (this.expanded === key) {
       this.expanded = '';
       this.expandedRow = null;
@@ -537,6 +619,10 @@ export class ExtensionInventory extends LitElement {
     this.expanded = key;
     this.expandedRow = row;
     this.pins = [];
+    this.detailDevices = [];
+    this.deviceCursor = null;
+    this.deviceError = '';
+    if (!('fingerprint' in row)) void this.loadDetailDevices(row);
     try {
       const pins = await this.pinLoader(row);
       if (this.expanded === key) this.pins = pins;
@@ -707,7 +793,7 @@ export class ExtensionInventory extends LitElement {
       ><sl-button
         size="small"
         variant="text"
-        class="copy"
+        class="copy copy-command"
         aria-label=${`Copy ${text}`}
         @click=${() => this.copy(text)}
         >${this.copied === text ? 'Copied' : 'Copy'}</sl-button
@@ -768,18 +854,23 @@ export class ExtensionInventory extends LitElement {
         : page.completeness === 'partial'
           ? 'Scan partial'
           : 'Coverage unknown';
-    const variant =
+    // Literal variants per state; computed badge variants are not allowed.
+    const badge =
       page.completeness === 'complete'
-        ? 'success'
+        ? html`<sl-badge variant="success" pill class="coverage-badge"
+            >${label}</sl-badge
+          >`
         : page.completeness === 'partial'
-          ? 'warning'
-          : 'neutral';
+          ? html`<sl-badge variant="warning" pill class="coverage-badge"
+              >${label}</sl-badge
+            >`
+          : html`<sl-badge variant="neutral" pill class="coverage-badge"
+              >${label}</sl-badge
+            >`;
     const one = devices.length === 1 ? devices[0] : null;
     return html`<details class="coverage" data-state=${page.completeness}>
       <summary>
-        <sl-badge variant=${variant} pill class="coverage-badge"
-          >${label}</sl-badge
-        >
+        ${badge}
         ${
           one
             ? html`<span class="meta inline"
@@ -929,6 +1020,142 @@ export class ExtensionInventory extends LitElement {
       : nothing;
   }
 
+  private extensionIdentity(row: ExtensionKey): TemplateResult {
+    const details = row.details;
+    return html`<strong>${details?.name || row.extension_id}</strong>
+      ${details?.name && details.name !== row.extension_id ? html`<span class="meta">${row.extension_id}</span>` : nothing}
+      ${details?.description ? html`<p class="description">${details.description}</p>` : details?.description_withheld ? html`<span class="meta">Description withheld for privacy</span>` : html`<span class="meta">No description reported</span>`}
+      ${details?.invocation ? html`<span class="invocation">${details.invocation}</span>` : nothing}`;
+  }
+
+  private detailsToggle(
+    row: InstalledExtension | ExtensionAggregate
+  ): TemplateResult {
+    return html`<sl-button
+      size="small"
+      variant="text"
+      class="toggle-details toggle-hashes"
+      aria-expanded=${this.expanded === detailKey(row) ? 'true' : 'false'}
+      aria-label=${`Details for ${row.extension_id}`}
+      @click=${() => this.toggle(row)}
+      >Details<span class="sr-only"> for ${row.extension_id}</span></sl-button
+    >`;
+  }
+
+  private async loadDetailDevices(
+    row: ExtensionKey,
+    append = false
+  ): Promise<void> {
+    const key = detailKey(row);
+    try {
+      const page = await this.deviceLoader(
+        row,
+        append ? (this.deviceCursor ?? undefined) : undefined
+      );
+      if (this.expanded !== key) return;
+      const devices = page.items.filter(
+        (item): item is InstalledExtension => 'fingerprint' in item
+      );
+      this.detailDevices = append
+        ? [...this.detailDevices, ...devices]
+        : devices;
+      this.deviceCursor = page.next_cursor;
+    } catch {
+      if (this.expanded === key)
+        this.deviceError = 'Device details could not be loaded.';
+    }
+  }
+
+  /** Extension point for a future content viewer keyed by the reported hash. */
+  protected renderExtensionContentViewer(
+    _row: InstalledExtension | ExtensionAggregate,
+    _contentHash: string | null
+  ): TemplateResult | typeof nothing {
+    return nothing;
+  }
+
+  private detailsRow(
+    row: InstalledExtension | ExtensionAggregate
+  ): TemplateResult {
+    const details = row.details;
+    const quote = (value: string): string =>
+      "'" + value.replace(/'/g, "'\"'\"'") + "'";
+    const agent =
+      row.agent_kind === 'claude_code'
+        ? 'claude-code'
+        : row.agent_kind === 'codex_cli'
+          ? 'codex-cli'
+          : row.agent_kind;
+    const command = `preloop agents extensions show ${row.extension_kind} ${quote(row.extension_id)} --agent ${quote(agent)}`;
+    const devices = 'fingerprint' in row ? [row] : this.detailDevices;
+    const hashes =
+      'fingerprint' in row
+        ? [row.content_hash ?? null]
+        : (row.content_hashes ?? []).map((bucket) => bucket.content_hash);
+    return html`<tr class="extension-details">
+      <td colspan=${this.fingerprint ? 9 : 7}>
+        ${details?.author ? html`<p>Author: ${details.author}</p>` : nothing}
+        ${details?.plugin ? html`<p>Bundled by ${details.plugin}</p>` : nothing}
+        ${details?.script_count != null ? html`<p>Bundled scripts: ${details.script_count}</p>` : nothing}
+        ${details?.bundles ? html`<p class="plugin-contents">Plugin contents: ${details.bundles.skills} ${details.bundles.skills === 1 ? 'skill' : 'skills'}, ${details.bundles.commands} ${details.bundles.commands === 1 ? 'command' : 'commands'}, ${details.bundles.hooks} ${details.bundles.hooks === 1 ? 'hook' : 'hooks'}, ${details.bundles.mcp_servers} MCP ${details.bundles.mcp_servers === 1 ? 'server' : 'servers'}, ${details.bundles.agents} ${details.bundles.agents === 1 ? 'agent' : 'agents'}</p>` : nothing}
+        ${
+          details?.hook_matchers?.length
+            ? html`<ul aria-label="Hook matchers">
+                ${details.hook_matchers.map(
+                  (group) =>
+                    html`<li>
+                      <strong
+                        >${group.matcher_withheld ? 'Matcher withheld for privacy' : group.matcher || 'All tools / no matcher'}</strong
+                      >: ${group.count} commands
+                      <ul>
+                        ${group.commands.map((command) => html`<li><code>${command.executable}</code>${command.preloop_managed ? ' (Preloop-managed)' : ''}</li>`)}
+                      </ul>
+                    </li>`
+                )}
+              </ul>`
+            : nothing
+        }
+        ${!('fingerprint' in row) ? html`<p>Installed on ${row.device_count} ${row.device_count === 1 ? 'device' : 'devices'}. Metadata above is from the latest matching report.</p>` : nothing}
+        ${
+          devices.length
+            ? html`<ul aria-label="Device locations">
+                ${devices.map(
+                  (device) =>
+                    html`<li>
+                      <a href=${fleetHref(`fp:${device.fingerprint}`)}
+                        >Device ${device.fingerprint.slice(0, 12)}</a
+                      >
+                      <span>
+                        ·
+                        ${label(device.scope)}${device.project_ref_hash ? html` · Project <code>${device.project_ref_hash}</code>` : nothing}</span
+                      >
+                      <span>
+                        · Profile
+                        ${device.profile_ref === 'current' ? 'current' : device.profile_ref.slice(0, 12)}</span
+                      >
+                      ${device.content_hash ? html`<div>Content hash: <code>${device.content_hash}</code></div>` : html`<span> · Content hash unavailable</span>`}
+                      ${device.source_ref_hash ? html`<div>Source hash: <code>${device.source_ref_hash}</code></div>` : nothing}
+                    </li>`
+                )}
+              </ul>`
+            : nothing
+        }
+        ${this.deviceError ? html`<p role="status">${this.deviceError}</p>` : nothing}
+        ${this.deviceCursor ? html`<sl-button size="small" @click=${() => this.loadDetailDevices(row, true)}>More devices</sl-button>` : nothing}
+        <p>
+          Read the full content locally on a device that reported this
+          extension:
+        </p>
+        ${this.command(command)}
+        <p class="meta">
+          For project extensions, run from that repository and append --project
+          .
+        </p>
+        ${hashes.map((hash) => this.renderExtensionContentViewer(row, hash))}
+      </td>
+    </tr>`;
+  }
+
   private deviceRow(row: InstalledExtension): TemplateResult {
     return html`<tr>
       <td data-label="Agent">
@@ -939,7 +1166,7 @@ export class ExtensionInventory extends LitElement {
       </td>
       <td data-label="Kind">${label(row.extension_kind)}</td>
       <td class="identity" data-label="Extension">
-        ${row.extension_id}${row.id_hashed ? html`<span class="meta">Hashed identifier</span>` : nothing}
+        ${this.extensionIdentity(row)}${row.id_hashed ? html`<span class="meta">Hashed identifier</span>` : nothing}
       </td>
       <td data-label="Version">${row.version ?? 'Unknown'}</td>
       <td data-label="Source">
@@ -956,6 +1183,7 @@ export class ExtensionInventory extends LitElement {
       </td>
       <td data-label="Approval">
         ${this.approval(row)}${this.stateBadges(row.effective_state)}
+        ${this.detailsToggle(row)}
         ${
           this.canManage &&
           row.content_hash &&
@@ -978,6 +1206,18 @@ export class ExtensionInventory extends LitElement {
     return html`
       ${this.summary()}
       <div class="filters">
+        <label class="search"
+          >Search name or description
+          <input
+            type="search"
+            .value=${this.search}
+            @input=${(event: Event) => {
+              this.search = (event.target as HTMLInputElement).value;
+              clearTimeout(this.searchTimer);
+              this.searchTimer = setTimeout(() => void this.refresh(), 200);
+            }}
+          />
+        </label>
         <sl-select
           size="small"
           label="Approval state"
@@ -1040,44 +1280,41 @@ export class ExtensionInventory extends LitElement {
                   </tr>
                 </thead>
                 <tbody>
-                  ${this.page.items.map((row) =>
-                    'fingerprint' in row
-                      ? this.deviceRow(row)
-                      : html`<tr>
-                            <td data-label="Agent">${row.agent_kind}</td>
-                            <td data-label="Kind">
-                              ${label(row.extension_kind)}
-                            </td>
-                            <td class="identity" data-label="Extension">
-                              ${row.extension_id}
-                            </td>
-                            <td class="number" data-label="Devices">
-                              ${row.device_count}
-                            </td>
-                            <td data-label="Versions seen">
-                              ${row.versions.join(', ') || 'Unknown'}
-                            </td>
-                            <td data-label="Sources">
-                              ${row.source_kinds.map(label).join(', ')}
-                            </td>
-                            <td data-label="Approval">
-                              ${this.approval(row)}${this.stateBadges(row.effective_state, row.pin_count)}
-                              ${
-                                row.content_hashes?.length
-                                  ? html`<sl-button
-                                      size="small"
-                                      variant="text"
-                                      class="toggle-hashes"
-                                      aria-expanded=${this.expanded === keyOf(row) ? 'true' : 'false'}
-                                      @click=${() => this.toggle(row)}
-                                      >Content hashes</sl-button
-                                    >`
-                                  : nothing
-                              }
-                            </td>
-                          </tr>
-                          ${this.expanded === keyOf(row) ? this.hashList(row) : nothing}`
-                  )}
+                  ${[...this.page.items]
+                    .sort(
+                      (a, b) =>
+                        a.extension_kind.localeCompare(b.extension_kind) ||
+                        (a.details?.name || a.extension_id).localeCompare(
+                          b.details?.name || b.extension_id
+                        )
+                    )
+                    .map((row) =>
+                      'fingerprint' in row
+                        ? html`${this.deviceRow(row)}${this.expanded === detailKey(row) ? this.detailsRow(row) : nothing}`
+                        : html`<tr>
+                              <td data-label="Agent">${row.agent_kind}</td>
+                              <td data-label="Kind">
+                                ${label(row.extension_kind)}
+                              </td>
+                              <td class="identity" data-label="Extension">
+                                ${this.extensionIdentity(row)}
+                              </td>
+                              <td class="number" data-label="Devices">
+                                ${row.device_count}
+                              </td>
+                              <td data-label="Versions seen">
+                                ${row.versions.join(', ') || 'Unknown'}
+                              </td>
+                              <td data-label="Sources">
+                                ${row.source_kinds.map(label).join(', ')}
+                              </td>
+                              <td data-label="Approval">
+                                ${this.approval(row)}${this.stateBadges(row.effective_state, row.pin_count)}
+                                ${this.detailsToggle(row)}
+                              </td>
+                            </tr>
+                            ${this.expanded === detailKey(row) ? html`${this.detailsRow(row)}${this.hashList(row)}` : nothing}`
+                    )}
                 </tbody>
               </table>
             </div>`

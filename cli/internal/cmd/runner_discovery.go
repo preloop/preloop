@@ -233,7 +233,10 @@ func startRunnerDiscovery(state *runnerState) func() {
 		saved = runnerDiscoveryState{RunnerID: state.ID, Server: server}
 	}
 	now := time.Now().UTC()
-	schedule := newRunnerDiscoverySchedule(now, saved, rand.Float64)
+	startupFraction := rand.Float64()
+	schedule := newRunnerDiscoverySchedule(now, saved, func() float64 { return startupFraction })
+	schedule.random = rand.Float64
+	startupAt := now.Add(30*time.Second + time.Duration(startupFraction*float64(270*time.Second)))
 	worker := runnerDiscoveryWorker{
 		schedule: schedule,
 		fetchPolicy: func(policy *runnerDiscoveryPolicy) error {
@@ -241,9 +244,12 @@ func startRunnerDiscovery(state *runnerState) func() {
 		},
 		report: func(salt string) error { return runRunnerDiscoveryReport(client, salt, state.DeviceRef) },
 	}
+	if saved.Failures > 0 {
+		worker.nextPolicy = schedule.NextAttempt
+	}
 	stop := make(chan struct{})
 	go func() {
-		timer := time.NewTimer(30*time.Second + time.Duration(rand.Float64()*float64(270*time.Second)))
+		timer := time.NewTimer(time.Until(startupAt))
 		defer timer.Stop()
 		for {
 			select {

@@ -928,3 +928,113 @@ def test_extension_details_reject_unsafe_fields(details: dict[str, Any]) -> None
     payload["evidence"]["schema_version"] = 4
     with pytest.raises(ValidationError):
         DiscoveryReportRequest.model_validate(payload)
+
+
+def test_extension_details_http_search(client: TestClient) -> None:
+    """Search descriptive metadata through real ingest and both read endpoints."""
+    payload = report(
+        [
+            extension(id="zeta", details={"description": "Review database migrations"}),
+            extension(
+                kind="skill",
+                id="careful",
+                source_kind="local",
+                details={
+                    "name": "careful",
+                    "description": "Check a change",
+                    "invocation": "/careful",
+                },
+            ),
+        ]
+    )
+    payload["evidence"]["schema_version"] = 4
+    response = client.post(REPORTS, json=payload)
+    assert response.status_code == 202, response.text
+    for group in ("extension", None):
+        params = {"q": "MIGRATIONS"}
+        if group:
+            params["group"] = group
+        result = client.get(EXTENSIONS, params=params)
+        assert result.status_code == 200, result.text
+        assert [row["extension_id"] for row in result.json()["items"]] == ["zeta"]
+        assert (
+            result.json()["items"][0]["details"]["description"]
+            == "Review database migrations"
+        )
+    result = client.get(
+        EXTENSIONS, params={"extension_kind": "skill", "extension_id": "careful"}
+    )
+    assert [row["extension_id"] for row in result.json()["items"]] == ["careful"]
+
+
+def test_v3_extension_serialization_omits_new_defaults() -> None:
+    """Adding optional v4 fields must not change immutable v3 replay hashes."""
+    dumped = DiscoveryEvidence.model_validate(report()["evidence"]).model_dump(
+        mode="json"
+    )
+    assert "details" not in dumped["applications"][0]["extensions"][0]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"details": {"script_count": 1}},
+        {
+            "kind": "hook",
+            "event": "PreToolUse",
+            "count": 2,
+            "details": {
+                "hook_matchers": [
+                    {
+                        "matcher": "Bash",
+                        "count": 1,
+                        "commands": [{"executable": "bash", "preloop_managed": False}],
+                    }
+                ]
+            },
+        },
+    ],
+)
+def test_extension_details_match_kind_and_hook_count(changes: dict[str, Any]) -> None:
+    """Do not accept inconsistent kind-specific metadata."""
+    payload = report([extension(**changes)])
+    payload["evidence"]["schema_version"] = 4
+    with pytest.raises(ValidationError):
+        DiscoveryReportRequest.model_validate(payload)
+
+
+def test_extension_sort_uses_display_name_across_pages(client: TestClient) -> None:
+    """Kind and display name determine order before pagination, with stable ties."""
+    payload = report(
+        [
+            extension(
+                kind="skill",
+                id="a-directory",
+                source_kind="local",
+                details={"name": "zebra"},
+            ),
+            extension(
+                kind="skill",
+                id="z-directory",
+                source_kind="local",
+                details={"name": "alpha"},
+            ),
+            extension(id="plugin"),
+        ]
+    )
+    payload["evidence"]["schema_version"] = 4
+    assert client.post(REPORTS, json=payload).status_code == 202
+    for group in (None, "extension"):
+        seen = []
+        params = {"limit": 1}
+        if group:
+            params["group"] = group
+        while True:
+            response = client.get(EXTENSIONS, params=params)
+            assert response.status_code == 200, response.text
+            page = response.json()
+            seen.extend(item["extension_id"] for item in page["items"])
+            if not page["next_cursor"]:
+                break
+            params["cursor"] = page["next_cursor"]
+        assert seen == ["plugin", "z-directory", "a-directory"]

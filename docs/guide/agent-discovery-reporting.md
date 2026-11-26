@@ -141,9 +141,14 @@ The machine id is `/etc/machine-id` on Linux, `IOPlatformUUID` on macOS and
 
 ## What is never sent
 
-The shipped report serializers omit user names, hostnames, home or config paths
-in clear, prompts, API keys or other credentials, environment variables, MCP
-server names, URLs, commands or arguments. The server rejects unknown fields
+The shipped report serializers omit local profile names, hostnames, home or
+config paths in clear, file bodies, credential files, environment values, MCP
+server names, source URLs, hook command strings and arguments. V4 adds the
+bounded authored metadata described under [Extensions](#extensions), including
+descriptions, author names, hook matchers and executable basenames. This is a
+new data class: an extension author could put sensitive text in a description.
+The privacy filter is not a general secret detector. Use
+`--no-extension-details` when authored metadata must stay local. The server rejects unknown fields
 and constrains hashes, enums,
 counts and agent-kind/version strings. This validates shape, not the truth or
 sensitivity of an arbitrary client's schema-valid values. The narrow report
@@ -373,11 +378,14 @@ Upgrade advice appears only when the reported collector is older than the
 supported extension collector version. Older reports that omitted specific
 reasons remain unknown; missing reasons do not imply an outdated collector.
 
-`preloop agents discover --inventory` emits `preloop.inventory.v3`, including
+`preloop agents discover --inventory` emits `preloop.inventory.v4`, including
 installed extensions for Claude Code and Codex CLI. `--report` sends the same
 metadata on each candidate, bound to the matching app's hashed config context.
-Servers continue accepting v1 and v2. A v3 CLI retries once with extensions
-removed when an older server specifically rejects evidence schema version 3.
+Servers continue accepting v1, v2 and v3. On an explicit schema-version
+rejection, a v4 CLI retries with v3 after removing `details` from both candidate
+and evidence records. If the server also rejects v3, the existing v2 retry
+removes extensions and managed configuration. Other validation failures do not
+trigger a downgrade. Older CLIs continue to work against the new server.
 
 Extension identifiers (plugin, skill, command and hook event names, versions,
 and marketplace names) are sent in clear. Marketplace and git URLs, hook
@@ -390,13 +398,13 @@ only by SHA-256 hashes; project references use the config-path hashing scheme
 
 | Agent | Kind | Known locations below the profile home | Collected metadata |
 | --- | --- | --- | --- |
-| Claude Code | Plugin | `.claude/plugins/installed_plugins.json` (version 2), `known_marketplaces.json`, installed content under `cache/<marketplace>/<name>/<version>/` | Name and marketplace, manifest version (falling back to record version), source hash, enabled state |
-| Claude Code | Skill | `.claude/skills/<name>/SKILL.md` | Directory name and file SHA-256 |
-| Claude Code | Hook | `hooks` in `.claude/settings.json`; JSON event mappings in `.claude/hooks/` | Event, command count, one aggregate hash |
-| Claude Code | Command | `.claude/commands/*.md` | File stem and file SHA-256 |
-| Codex CLI | Plugin | `.codex/plugins/cache/<marketplace>/<name>/<version>/`, `[plugins]` in `.codex/config.toml` | Name and marketplace, manifest version, source hash, enabled state |
-| Codex CLI | Skill | `.codex/skills/<name>/` | Directory name and `SKILL.md` SHA-256 when present |
-| Codex CLI | Hook | `.codex/hooks.json`, `[hooks]` in `.codex/config.toml` | Event, command count, one aggregate hash |
+| Claude Code | Plugin | `.claude/plugins/installed_plugins.json` (version 2), `known_marketplaces.json`, installed content under `cache/<marketplace>/<name>/<version>/` | Name and marketplace, manifest version (falling back to record version), description, author name, component counts, source hash, enabled state |
+| Claude Code | Skill | `.claude/skills/<name>/SKILL.md` | Directory identifier, front matter name and description, invocation, script count, tree hash |
+| Claude Code | Hook | `hooks` in `.claude/settings.json`; JSON event mappings in `.claude/hooks/` | Event, matchers, command counts, executable basenames, Preloop classification, aggregate hash |
+| Claude Code | Command | `.claude/commands/*.md` | File stem, front matter description, slash invocation, file hash |
+| Codex CLI | Plugin | `.codex/plugins/cache/<marketplace>/<name>/<version>/`, `[plugins]` in `.codex/config.toml` | Name and marketplace, manifest version, description, author name, component counts, source hash, enabled state |
+| Codex CLI | Skill | `.agents/skills/<name>/` and legacy `.codex/skills/<name>/` | Directory identifier, front matter name and description, invocation, script count, tree hash |
+| Codex CLI | Hook | `.codex/hooks.json`, `[hooks]` in `.codex/config.toml` | Event, matchers, command counts, executable basenames, Preloop classification, aggregate hash |
 
 The plugin layouts were verified with Claude Code 2.1.332 and Codex CLI 0.172.0
 using their plugin managers. Claude's install registry is authoritative: unused
@@ -421,7 +429,7 @@ established by this scan.
 For the current user, project roots listed in `~/.claude.json` or explicitly
 included with the repeatable `--project` flag are also scanned for
 `.claude/skills/`, `.claude/commands/`, `.claude/hooks/`, and
-`.claude/settings.json`. Unknown projects are not searched. A project plugin's
+`.claude/settings.json` and `.claude/settings.local.json`. Unknown projects are not searched. A project plugin's
 registry entry does not register its root for the skill/command/hook walk. If
 that root, or the current directory's `.claude` directory, is outside the selected
 roots, collection is partial (`extension_project_unscanned`) in both the local
@@ -446,8 +454,10 @@ local settings override user settings. A project's explicit plugin setting
 also produces a project-scope record for a user install, unless that project
 has its own install. Without an applicable setting, enabled state is `unknown`.
 All-users inventory scans profile-local locations
-only. Plugin-bundled skills, hooks and commands are represented by the plugin,
-not duplicated as standalone extensions.
+only. Plugin-bundled skills also appear as skill records with the plugin
+identifier in `details.plugin`; hooks and commands within a plugin contribute
+to its component counts. Explicit `--project` roots also include Codex's
+`.agents/skills/` and legacy `.codex/skills/` directories.
 
 ```json
 {
@@ -468,11 +478,86 @@ last two occur only on hooks). `enabled` is the string `true`, `false` or
 `local`, `builtin` or `unknown`. Only Claude's `claude-plugins-official` and
 Codex's `openai-curated-remote` are classified as official marketplaces.
 
+### Descriptive metadata, enabled by default
+
+Each v4 extension can carry one optional `details` object:
+
+| Field | Source |
+| --- | --- |
+| `name`, `description` | Skill `SKILL.md` YAML front matter; command front matter supplies its description; plugin manifests supply their description. Bodies are never used as description fallbacks. |
+| `description_withheld` | True when the privacy filter removes the description. |
+| `invocation` | Generated from the harness, skill or command name and invocation controls; hook records name the event. |
+| `script_count` | Number of regular files in a skill's `scripts/` directory, recursively. |
+| `plugin` | Parent plugin identifier for a bundled skill. |
+| `author` | The plugin manifest's `author.name`, or string-form author. Email and URL fields are excluded. |
+| `bundles` | Counts of skills, commands, hooks, MCP servers and agents in conventional plugin locations and safe manifest-declared locations. |
+| `hook_matchers` | Per matcher: sanitized matcher text, command count, and one `{executable, preloop_managed}` classification per command. Private matchers have `matcher_withheld: true`. |
+
+All authored text is checked against the case-insensitive home-path segment
+rule used for local identifiers before truncation. A matching description is
+omitted and marked withheld. Other unsafe text is omitted. Text containing a
+path or URL is also withheld. Controls and format characters are stripped,
+whitespace is collapsed, and each text field is limited to 300 Unicode
+characters. The server validates lengths, text shape, allowed fields and
+counts; it cannot independently know a device's private login or home path.
+
+Claude Code skills use `/name` (plugin skills use `/plugin:name`).
+`user-invocable: false` removes the slash form; `disable-model-invocation: true`
+removes the model-initiated form. Codex skills use `$name` or the `/skills`
+picker, including `$plugin:name` for plugin skills. Codex's
+`agents/openai.yaml` `policy.allow_implicit_invocation: false` removes the
+model-initiated form. These are declared invocation mechanisms, not proof that
+a skill was loaded or that current runtime policy permits it. See the
+[Claude Code skill reference](https://code.claude.com/docs/en/skills),
+[Codex skill invocation examples](https://developers.openai.com/blog/eval-skills),
+and [Codex plugin namespaces](https://github.com/openai/codex/blob/main/codex-rs/ext/skills/src/loader/namespace.rs).
+
+A hook classification contains only the executable basename, such as `bash`,
+`python3`, or `preloop`. Shell arguments and script paths are never included.
+Unclassifiable executable tokens become `unknown`. `preloop_managed` identifies
+a `preloop` executable invoking a known Preloop hook subcommand; it is not a
+signature check of that executable. No hook is executed during collection.
+
+Scope remains `user` or `project`. Project locations remain hashed in this
+release because no account permission to disclose repository basenames is
+part of this contract. No full or partial location path is uploaded.
+
+To omit the entire descriptive object while retaining identifiers and hashes:
+
+```sh
+preloop agents discover --report --no-extension-details
+preloop agents discover --inventory --no-extension-details
+```
+
+The flag also applies to `--all-users`. Reporting itself is still opt-in.
+Nullable JSONB on `discovered_extension` keeps kind-specific fields in one
+extensible structure, with strict typed validation before CRUD persistence.
+Both device and aggregate reads return `details`; an aggregate uses the latest
+matching device report. Expand the row to see devices, scopes, project hashes,
+component counts and content hashes. Search matches identifier, front matter
+name and description across the selected inventory.
+
+### Read full content locally
+
+```sh
+preloop agents extensions show skill careful --agent claude-code
+preloop agents extensions show hook PreToolUse --agent claude-code
+preloop agents extensions show plugin reviewer@community --agent claude-code
+```
+
+The first line states `Local only: nothing is sent to Preloop.` This command
+prints full skill or command text, hook command strings, plugin manifest details
+and the local file list, within the collector's existing bounded reads. It
+never authenticates, uploads, calls a model, or executes an extension. Use
+`--project .` in the repository for project extensions. The console provides a
+copyable command for each row. Report-hashed identifiers can also be resolved
+locally. A bounded or unreadable scan is reported as incomplete with exit 2.
+
 ### Content hashes
 
 Every extension record carries `content_hash` and `content_hash_status`
-(`ok`, `too_large` or `unreadable`). Only the final hash leaves the device:
-file names and file contents never do.
+(`ok`, `too_large` or `unreadable`). Only the final hash of content leaves the device. File lists and bodies never
+do; the descriptive front matter fields above are a separate, bounded class.
 
 | Kind | Hash input |
 |---|---|
