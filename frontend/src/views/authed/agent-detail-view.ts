@@ -3927,14 +3927,15 @@ export class AgentDetailView extends LitElement {
       </summary>
       <p data-testid="agent-extensions-caption">
         Extensions reported for ${kind} agents in this account.
-        <a href="/console/agents">Open the account inventory</a> (Agents page,
-        Extensions tab).
+        <a href="/console/agents?section=extensions"
+          >Open the account inventory</a
+        >.
       </p>
       ${
         this.extensionsOpened
           ? html`<extension-inventory
               .agentKind=${kind}
-              emptyText=${`No device has reported extensions for ${kind} agents. Run preloop agents discover --report --project . on the device.`}
+              emptyText=${`No device has reported extensions for ${kind} agents.`}
               @extensions-loaded=${(
                 event: CustomEvent<{ count: number; more: boolean }>
               ) => {

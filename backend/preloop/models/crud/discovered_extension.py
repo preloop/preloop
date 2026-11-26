@@ -192,10 +192,13 @@ class CRUDDiscoveredExtension:
                 model.evidence["scan_scope"].contains(["user_config"]),
                 model.evidence["extension_errors"],
                 model.evidence["errors"],
+                model.ended_at,
             ).join(latest, latest.c.id == model.id)
         )
         result = []
-        for device, collector, version, state, user_scope, errors, generic in rows:
+        for row in rows:
+            device, collector, version, state, user_scope, errors, generic = row[:7]
+            reported_at = row[7]
             completeness = (
                 "unknown"
                 if (version or 1) < 3 or not user_scope
@@ -209,6 +212,7 @@ class CRUDDiscoveredExtension:
                     "collector_version": collector,
                     "completeness": completeness,
                     "reasons": errors or generic or [],
+                    "reported_at": reported_at,
                 }
             )
         return result
@@ -232,6 +236,17 @@ class CRUDDiscoveredExtension:
             if all(row["completeness"] == "complete" for row in rows)
             else "partial"
         )
+
+    def count_for_account(self, db: Session, *, account_id: UUID) -> int:
+        """Count distinct present extension identities without loading inventory."""
+        model = models.DiscoveredExtension
+        identities = (
+            select(model.agent_kind, model.extension_kind, model.extension_id)
+            .where(model.account_id == account_id, model.present.is_(True))
+            .distinct()
+            .subquery()
+        )
+        return int(db.scalar(select(func.count()).select_from(identities)) or 0)
 
     def list_for_device(
         self, db: Session, *, account_id: UUID, fingerprint: str, **filters: Any

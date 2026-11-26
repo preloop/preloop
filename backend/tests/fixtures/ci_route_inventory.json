@@ -67,6 +67,7 @@
   "GET /api/v1/agents/control": "deny",
   "GET /api/v1/agents/discovery-candidates": "deny",
   "GET /api/v1/agents/discovery-extensions": "deny",
+  "GET /api/v1/agents/discovery-extensions/count": "deny",
   "GET /api/v1/agents/discovery-salt": "deny",
   "GET /api/v1/agents/extension-approvals": "deny",
   "GET /api/v1/agents/extension-approvals/export": "deny",

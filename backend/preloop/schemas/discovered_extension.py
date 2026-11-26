@@ -196,6 +196,7 @@ class ExtensionCoverage(BaseModel):
     collector_version: str | None = None
     completeness: Literal["complete", "partial", "unknown"]
     reasons: list[str] = Field(default_factory=list)
+    reported_at: datetime | None = None
 
 
 class DiscoveredExtensionList(BaseModel):

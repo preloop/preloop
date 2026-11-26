@@ -100,6 +100,101 @@ describe('AgentsView', () => {
   let flowItems: Array<Record<string, unknown>>;
   let defaultFetch: (input: RequestInfo | URL) => Promise<Response>;
 
+  it('offers one counted inventory entry in every view and retains it when closed', async () => {
+    const element = await fixture<AgentsView>(
+      html`<agents-view></agents-view>`
+    );
+    await waitForAgents(element);
+    await waitUntil(() => (element as any).extensionCount === 74);
+    expect(
+      fetchStub.getCalls().filter((call) => {
+        const url = String(call.args[0]);
+        return (
+          url.includes('/discovery-extensions?') ||
+          url.includes('/extension-approvals')
+        );
+      })
+    ).to.have.length(0);
+    let inventory: Element | null = null;
+    for (const mode of ['list', 'cards', 'canvas']) {
+      (element as any).currentView = mode;
+      await element.updateComplete;
+      const entries = element.shadowRoot!.querySelectorAll('.extensions-entry');
+      expect(entries.length).to.equal(1);
+      expect(entries[0].textContent?.replace(/\s+/g, ' ')).to.contain(
+        'Extensions (74)'
+      );
+      (entries[0] as HTMLElement).click();
+      await element.updateComplete;
+      const current = element.shadowRoot!.querySelector('extension-inventory');
+      expect(current).to.exist;
+      if (inventory) expect(current).to.equal(inventory);
+      inventory = current;
+      (element as any).extensionsOpen = false;
+      await element.updateComplete;
+    }
+  });
+
+  it('keeps the inventory entry usable when the count is unavailable', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/discovery-extensions/count'))
+        return new Response('', { status: 503 });
+      return defaultFetch(input);
+    });
+    const element = await fixture<AgentsView>(
+      html`<agents-view></agents-view>`
+    );
+    await waitUntil(() => (element as any).extensionCountUnavailable);
+    await element.updateComplete;
+    const entry = element.shadowRoot!.querySelector(
+      '.extensions-entry'
+    ) as HTMLElement;
+    expect(entry.textContent).to.contain('count unavailable');
+    entry.click();
+    await element.updateComplete;
+    expect(element.shadowRoot!.querySelector('extension-inventory')).to.exist;
+  });
+
+  it('retains an open inventory on token rotation but clears it on identity change and sign-out', async () => {
+    const token = (sub: string, account: string, exp: number): string =>
+      `header.${btoa(JSON.stringify({ sub, account_id: account, exp }))}.signature`;
+    localStorage.setItem('accessToken', token('jane', 'account-a', 1));
+    const element = await fixture<AgentsView>(
+      html`<agents-view></agents-view>`
+    );
+    await waitForAgents(element);
+    (
+      element.shadowRoot!.querySelector('.extensions-entry') as HTMLElement
+    ).click();
+    await element.updateComplete;
+    const inventory = element.shadowRoot!.querySelector('extension-inventory');
+    localStorage.setItem('accessToken', token('jane', 'account-a', 2));
+    invalidateApiCaches();
+    await element.updateComplete;
+    expect((element as any).extensionsOpen).to.equal(true);
+    expect(element.shadowRoot!.querySelector('extension-inventory')).to.equal(
+      inventory
+    );
+    localStorage.setItem('accessToken', token('jane', 'account-b', 3));
+    invalidateApiCaches();
+    await element.updateComplete;
+    expect((element as any).extensionsOpen).to.equal(false);
+    expect(element.shadowRoot!.querySelector('extension-inventory')).to.equal(
+      null
+    );
+    (
+      element.shadowRoot!.querySelector('.extensions-entry') as HTMLElement
+    ).click();
+    await element.updateComplete;
+    localStorage.removeItem('accessToken');
+    invalidateApiCaches();
+    await element.updateComplete;
+    expect((element as any).extensionsOpen).to.equal(false);
+    expect(element.shadowRoot!.querySelector('extension-inventory')).to.equal(
+      null
+    );
+  });
+
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -111,6 +206,23 @@ describe('AgentsView', () => {
     defaultFetch = async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
+      if (url.includes('/discovery-extensions/count'))
+        return new Response(JSON.stringify({ count: 74 }));
+      if (url.includes('/agents/discovery-candidates'))
+        return new Response(
+          JSON.stringify({ items: [], total: 0, truncated: false })
+        );
+      if (
+        url.includes('/agents/discovery-extensions?') ||
+        url.includes('/agents/extension-approvals?')
+      )
+        return new Response(
+          JSON.stringify({
+            items: [],
+            next_cursor: null,
+            completeness: 'complete',
+          })
+        );
       if (url.startsWith('/api/v1/agents')) {
         return new Response(
           JSON.stringify({

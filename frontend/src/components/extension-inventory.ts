@@ -5,6 +5,7 @@ import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
+import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
 import './extension-enforcement';
 import { tableScrollStyles } from '../styles/table-scroll';
 import { formatRelativeTime } from '../utils/date';
@@ -18,6 +19,7 @@ import {
   getExtensions,
   setExtensionApproval,
   type ExtensionAggregate,
+  type ExtensionCoverage,
   type ExtensionApprovalState,
   type ExtensionEffectiveState,
   type ExtensionFilters,
@@ -44,6 +46,95 @@ export function collectorTooOld(version: string | null): boolean {
     if (difference) return difference < 0;
   }
   return true;
+}
+
+/** A report older than this is stale: the device should report again. */
+export const EXTENSION_REPORT_STALE_MS = 24 * 60 * 60 * 1000;
+
+export interface ReasonText {
+  /** What happened, in plain words. */
+  text: string;
+  /** The one next step for this reason. */
+  step: string;
+  /** Command for the step, if any; rendered on its own line. */
+  command?: string;
+}
+
+/**
+ * Collector failure codes, from cli/internal/cmd/agents_inventory_extensions.go.
+ * Reports carry only the code, never the affected file, hook or project.
+ */
+export const EXTENSION_REASONS: Record<string, ReasonText> = {
+  extension_hook_unbound: {
+    text: 'A hooks folder holds a script that is not tied to an agent event, so it was not listed as a hook.',
+    step: 'Register the script under an event in the agent settings, or remove it from the hooks folder.',
+  },
+  extension_unreadable: {
+    text: 'Some extension files or folders could not be read, often because of file permissions.',
+    step: 'Check which files fail locally, then fix their permissions.',
+    command: 'preloop agents extensions --project .',
+  },
+  extension_malformed: {
+    text: 'A settings, plugin or hooks file is not valid, or an entry has an unexpected shape, so it was skipped.',
+    step: 'Find the file that fails locally and correct it.',
+    command: 'preloop agents extensions --project .',
+  },
+  extension_project_unscanned: {
+    text: 'A project has project-level extensions that this report did not scan.',
+    step: 'From that project folder, report again with the project included.',
+    command: 'preloop agents discover --report --project .',
+  },
+  extension_symlink: {
+    text: 'An extension path is a symbolic link. Links are not followed, so its contents were not listed.',
+    step: 'Replace the link with the real folder if it should be inventoried.',
+  },
+  extension_unsafe_path: {
+    text: 'A plugin points to an install path outside the home folder, so it was not read.',
+    step: 'Reinstall the plugin in the default location if it should be inventoried.',
+  },
+  extension_file_limit: {
+    text: 'An extension file is larger than the collector reads, so it was skipped.',
+    step: 'Check for an unexpectedly large settings or plugin file.',
+  },
+  extension_limit: {
+    text: 'The collector reached its limit on extensions, folder entries or projects. Some were not listed.',
+    step: 'Remove unused extensions or projects, then report again.',
+  },
+  extension_unsupported_scope: {
+    text: 'A Claude Code plugin is installed with a scope other than user, project or local, so it was not listed.',
+    step: 'Update the Preloop CLI, then report again.',
+    command: 'preloop update',
+  },
+  extension_unsupported_version: {
+    text: 'The Claude Code plugin registry uses a format version this collector does not read, so its plugins were not listed.',
+    step: 'Update the Preloop CLI, then report again.',
+    command: 'preloop update',
+  },
+};
+
+export const COLLECTOR_TOO_OLD: ReasonText = {
+  text: `This collector does not collect extensions. Extension collection needs a Preloop CLI newer than ${EXTENSION_COLLECTOR_VERSION_FLOOR}.`,
+  step: 'Update the Preloop CLI, then report again.',
+  command: 'preloop update',
+};
+
+export function reasonText(code: string): ReasonText {
+  return (
+    EXTENSION_REASONS[code] ?? {
+      text: 'The collector reported a problem this page does not describe yet.',
+      step: 'Contact support with the code below.',
+    }
+  );
+}
+
+/** True when the device never reported a time or reported over a day ago. */
+export function reportStale(
+  device: ExtensionCoverage,
+  now = Date.now()
+): boolean {
+  if (device.reported_at === undefined) return false;
+  if (device.reported_at === null) return true;
+  return now - Date.parse(device.reported_at) > EXTENSION_REPORT_STALE_MS;
 }
 
 const sources: ExtensionSource[] = [
@@ -84,7 +175,12 @@ export class ExtensionInventory extends LitElement {
   @property({ attribute: false }) pinRemover = deleteExtensionPin;
   @property({ attribute: false }) confirmUnpin = (message: string): boolean =>
     window.confirm(message);
+  @property({ attribute: false }) copier = (text: string): Promise<void> =>
+    navigator.clipboard.writeText(text);
   @state() private expanded = '';
+  /** Row whose approval this user just set to Unapproved. */
+  @state() private unapprovedHint = '';
+  @state() private copied = '';
   private expandedRow: ExtensionKey | null = null;
   @state() private pins: ExtensionPin[] = [];
   @state() private page: ExtensionPage | null = null;
@@ -98,6 +194,7 @@ export class ExtensionInventory extends LitElement {
   @state() private stateFilter = '';
   @state() private sourceFilter = '';
   private requestId = 0;
+  private access?: Promise<{ view: boolean; manage: boolean }>;
 
   static styles = [
     tableScrollStyles,
@@ -170,13 +267,113 @@ export class ExtensionInventory extends LitElement {
         gap: 8px;
         align-items: center;
       }
+      .summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        align-items: flex-start;
+        margin-bottom: 16px;
+      }
+      .summary-text {
+        padding-top: 2px;
+      }
+      details > summary {
+        cursor: pointer;
+        list-style-position: inside;
+      }
+      .coverage {
+        flex: 1 1 320px;
+      }
+      .coverage-body {
+        margin-top: 8px;
+        padding: 12px;
+        border: 1px solid var(--console-hairline);
+        border-radius: 6px;
+        max-width: 720px;
+      }
+      .coverage-body p,
+      .steps p {
+        margin: 0 0 8px;
+      }
+      .device + .device {
+        border-top: 1px solid var(--console-hairline);
+        padding-top: 8px;
+      }
+      .device h4 {
+        margin: 0 0 4px;
+        font-size: var(--console-text-body);
+      }
+      .meta.inline {
+        display: inline;
+      }
+      .reasons {
+        list-style: none;
+        padding: 0;
+        margin: 0 0 8px;
+        display: grid;
+        gap: 12px;
+      }
+      .reason p {
+        margin: 0 0 4px;
+      }
+      .reason .code {
+        color: var(--console-meta-color);
+      }
+      .command {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin: 0 0 8px;
+        overflow-x: auto;
+      }
+      .command code {
+        padding: 2px 6px;
+        border: 1px solid var(--console-hairline);
+        border-radius: 4px;
+        white-space: pre;
+      }
+      .how {
+        display: inline-block;
+        font-weight: 400;
+      }
+      .how summary {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+      }
+      .how ul {
+        margin: 4px 0 0;
+        padding-left: 16px;
+        max-width: 320px;
+        font-size: var(--console-text-meta);
+      }
+      .skeleton {
+        display: grid;
+        gap: 12px;
+        padding: 8px 0;
+      }
+      .skeleton sl-skeleton {
+        height: 20px;
+      }
+      .empty-state {
+        padding: 16px 0;
+      }
       .footer {
         display: flex;
         justify-content: space-between;
         align-items: center;
         margin-top: 16px;
       }
+      .how-narrow {
+        display: none;
+      }
+      .how-always {
+        flex-basis: 100%;
+      }
       @media (max-width: 640px) {
+        .how-narrow {
+          display: block;
+          flex-basis: 100%;
+        }
         thead {
           display: none;
         }
@@ -224,9 +421,12 @@ export class ExtensionInventory extends LitElement {
     const id = ++this.requestId;
     this.loading = true;
     this.error = '';
-    if (!append) this.page = null;
+    // Keep the current rows on screen while a refresh loads; the skeleton is
+    // only for a panel that has nothing to show yet.
     try {
-      const access = await this.accessLoader();
+      // Permissions do not change while the panel is open: read them once.
+      this.access ??= this.accessLoader();
+      const access = await this.access;
       if (id !== this.requestId) return;
       this.canView = access.view;
       this.canManage = access.manage;
@@ -262,6 +462,7 @@ export class ExtensionInventory extends LitElement {
         if (id === this.requestId) this.pins = pins;
       }
     } catch (error) {
+      this.access = undefined;
       if (id === this.requestId)
         this.error =
           error instanceof Error ? error.message : 'Could not load extensions';
@@ -282,6 +483,7 @@ export class ExtensionInventory extends LitElement {
     this.error = '';
     try {
       await this.updater(row, next);
+      this.unapprovedHint = next === 'unapproved' ? keyOf(row) : '';
       this.approvalRevision += 1;
       // Decisions are account-wide; refresh every visible occurrence and filter.
       await this.refresh();
@@ -461,7 +663,276 @@ export class ExtensionInventory extends LitElement {
         : constraint === undefined
           ? html`<span class="meta">Version constraint unavailable</span>`
           : nothing
+    }
+    ${
+      this.unapprovedHint === keyOf(row) && row.approval_state === 'unapproved'
+        ? html`<span class="meta unapproved-hint" role="status"
+            >Unapproved is a record only. It does not disable or block the
+            extension. ${this.enforcementLink()}</span
+          >`
+        : nothing
     }`;
+  }
+
+  /** Enforcement is account-wide: only the unfiltered account view has it. */
+  private hasEnforcement(): boolean {
+    return !this.fingerprint && !this.agentKind && this.canManage;
+  }
+
+  private enforcementLink(): TemplateResult {
+    return this.hasEnforcement()
+      ? html`<a
+          href="#extension-enforcement"
+          class="enforcement-link"
+          @click=${(event: Event) => {
+            event.preventDefault();
+            this.renderRoot
+              .querySelector('#extension-enforcement')
+              ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+          >Set up blocking in Enforcement</a
+        >`
+      : html`<span>To block, use Enforcement on the Agents page.</span>`;
+  }
+
+  private async copy(text: string): Promise<void> {
+    try {
+      await this.copier(text);
+      this.copied = text;
+    } catch {
+      this.copied = '';
+    }
+  }
+
+  /** One command per line, with a copy button. */
+  private command(text: string): TemplateResult {
+    return html`<div class="command">
+      <code>${text}</code
+      ><sl-button
+        size="small"
+        variant="text"
+        class="copy"
+        aria-label=${`Copy ${text}`}
+        @click=${() => this.copy(text)}
+        >${this.copied === text ? 'Copied' : 'Copy'}</sl-button
+      >
+    </div>`;
+  }
+
+  private howApprovalsWork(): TemplateResult {
+    return html`<details class="how">
+      <summary>How approvals work</summary>
+      <ul>
+        <li>
+          This list shows what is installed. It does not show what an agent
+          loaded or ran.
+        </li>
+        <li>An approval applies to the whole account, on every device.</li>
+        <li>
+          Unapproved is a record only. It does not disable or block an
+          extension. Use Enforcement to block.
+        </li>
+        <li>
+          Approving a name does not check versions. Stored version constraints
+          are shown read-only.
+        </li>
+      </ul>
+    </details>`;
+  }
+
+  /** Report and sign-in steps, for devices that have not reported recently. */
+  private reportSteps(): TemplateResult {
+    return html`<div class="steps">
+      <p>
+        On the device, sign in to this instance, then report from the
+        repository:
+      </p>
+      ${this.command(`preloop auth login --url ${window.location.origin}`)}
+      ${this.command('preloop agents discover --report --project .')}
+      <p>Reload this page after reporting.</p>
+    </div>`;
+  }
+
+  private reasonItem(reason: ReasonText, code: string): TemplateResult {
+    return html`<li class="reason" data-code=${code}>
+      <p>${reason.text}</p>
+      <p>${reason.step}</p>
+      ${reason.command ? this.command(reason.command) : nothing}
+      <code class="code">${code}</code>
+    </li>`;
+  }
+
+  private coverageStatus(): TemplateResult | typeof nothing {
+    const page = this.page;
+    if (!page) return nothing;
+    const devices = page.coverage ?? [];
+    const label =
+      page.completeness === 'complete'
+        ? 'Complete'
+        : page.completeness === 'partial'
+          ? 'Scan partial'
+          : 'Coverage unknown';
+    // Literal variants per state; computed badge variants are not allowed.
+    const badge =
+      page.completeness === 'complete'
+        ? html`<sl-badge variant="success" pill class="coverage-badge"
+            >${label}</sl-badge
+          >`
+        : page.completeness === 'partial'
+          ? html`<sl-badge variant="warning" pill class="coverage-badge"
+              >${label}</sl-badge
+            >`
+          : html`<sl-badge variant="neutral" pill class="coverage-badge"
+              >${label}</sl-badge
+            >`;
+    const one = devices.length === 1 ? devices[0] : null;
+    return html`<details class="coverage" data-state=${page.completeness}>
+      <summary>
+        ${this.agentKind && !this.fingerprint ? html`<span class="meta">Account coverage (all agent kinds)</span>` : nothing}
+        ${badge}
+        ${
+          one
+            ? html`<span class="meta inline"
+                >Device ${one.fingerprint.slice(0, 8)} · Collector
+                ${one.collector_version || 'unknown'}</span
+              >`
+            : nothing
+        }
+      </summary>
+      <div class="coverage-body">
+        ${
+          page.completeness === 'complete'
+            ? html`<p>
+                Every reporting device scanned all extension locations.
+              </p>`
+            : page.completeness === 'partial'
+              ? html`<p>
+                  Some extensions could not be read. Extensions seen before stay
+                  listed; others may be missing.
+                </p>`
+              : html`<p>
+                  The reports do not show whether every extension was scanned.
+                </p>`
+        }
+        ${devices.map((device) => this.deviceCoverage(device, devices.length > 1))}
+        ${
+          !devices.length
+            ? html`<p>No device has reported extensions yet.</p>
+                ${this.reportSteps()}`
+            : nothing
+        }
+      </div>
+    </details>`;
+  }
+
+  private deviceCoverage(
+    device: ExtensionCoverage,
+    heading: boolean
+  ): TemplateResult {
+    const old = collectorTooOld(device.collector_version);
+    const stale = reportStale(device);
+    const reasons = device.reasons.filter(
+      // Updating fixes these; the too-old item already says so.
+      (code) => !(old && code.startsWith('extension_unsupported'))
+    );
+    return html`<section class="device" data-fingerprint=${device.fingerprint}>
+      ${
+        heading
+          ? html`<h4>
+              Device ${device.fingerprint.slice(0, 8)}
+              <span class="meta inline"
+                >Collector ${device.collector_version || 'unknown'} ·
+                ${label(device.completeness)}</span
+              >
+            </h4>`
+          : nothing
+      }
+      <p class="meta">
+        ${
+          device.reported_at
+            ? html`Last report
+                <span title=${device.reported_at}
+                  >${formatRelativeTime(device.reported_at)}</span
+                >`
+            : 'Report time unknown'
+        }
+      </p>
+      ${
+        old || reasons.length
+          ? html`<ul class="reasons">
+              ${old ? this.reasonItem(COLLECTOR_TOO_OLD, 'collector_too_old') : nothing}
+              ${reasons.map((code) => this.reasonItem(reasonText(code), code))}
+            </ul>`
+          : device.completeness !== 'complete'
+            ? html`<p>This device did not report a reason.</p>`
+            : nothing
+      }
+      ${
+        stale || (device.completeness === 'unknown' && !old)
+          ? html`<p>
+                ${stale ? 'This device has not reported in the last day.' : 'Report again to establish coverage.'}
+              </p>
+              ${this.reportSteps()}`
+          : nothing
+      }
+      ${
+        device.reasons.length && !stale
+          ? html`<p class="meta">
+              Each code above shows the reason, not the file. Run the local
+              check on the device to see which file failed.
+            </p>`
+          : nothing
+      }
+    </section>`;
+  }
+
+  private summary(): TemplateResult | typeof nothing {
+    const page = this.page;
+    if (!page) return nothing;
+    const counts = new Map<string, number>();
+    for (const row of page.items)
+      counts.set(row.extension_kind, (counts.get(row.extension_kind) ?? 0) + 1);
+    const devices = page.coverage ?? [];
+    const times = devices
+      .map((device) => device.reported_at)
+      .filter((value): value is string => !!value)
+      .sort();
+    const last = times[times.length - 1];
+    const kinds = [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(
+        ([kind, count]) =>
+          `${count} ${label(kind).toLowerCase()}${count === 1 ? '' : 's'}`
+      )
+      .join(', ');
+    return html`<div class="summary">
+      <span class="summary-text" aria-live="polite"
+        >${page.items.length}${page.next_cursor ? '+' : ''}
+        extensions${kinds ? html` (${kinds})` : nothing} · ${devices.length}
+        ${devices.length === 1 ? 'device' : 'devices'}
+        reporting${this.agentKind && !this.fingerprint ? ' across all agent kinds' : ''}${
+          last
+            ? html` · Last report
+                <span title=${last}>${formatRelativeTime(last)}</span>`
+            : nothing
+        }</span
+      >
+      ${this.coverageStatus()}
+      <!-- The table heading is hidden on narrow screens; keep the help reachable. -->
+      <div class=${page.items.length ? 'how-narrow' : 'how-always'}>
+        ${this.howApprovalsWork()}
+      </div>
+    </div>`;
+  }
+
+  private skeleton(): TemplateResult {
+    return html`<div
+      class="skeleton"
+      role="status"
+      aria-label="Loading extensions"
+    >
+      ${Array.from({ length: 6 }, () => html`<sl-skeleton effect="pulse"></sl-skeleton>`)}
+    </div>`;
   }
 
   private hash(value: string | null): TemplateResult | typeof nothing {
@@ -517,12 +988,7 @@ export class ExtensionInventory extends LitElement {
   render(): TemplateResult | typeof nothing {
     if (!this.loading && !this.canView && !this.error) return nothing;
     return html`
-      <p class="meta">
-        Installed files do not prove an agent loaded or ran an extension.
-        Approval decisions apply to the whole account. Unapproved does not
-        disable or block an extension. Name approval is not a version-compliance
-        verdict; stored version constraints are shown read-only.
-      </p>
+      ${this.summary()}
       <div class="filters">
         <sl-select
           size="small"
@@ -559,77 +1025,7 @@ export class ExtensionInventory extends LitElement {
         </sl-button>
       </div>
       ${this.error ? html`<p role="alert">${this.error} <sl-button size="small" @click=${() => this.refresh()}>Retry</sl-button></p>` : nothing}
-      ${
-        this.page?.completeness !== 'complete' && this.page
-          ? html`
-              <div class="meta" role="note">
-                <p>
-                  ${
-                    this.page.completeness === 'partial'
-                      ? 'Collection is incomplete. Previously observed extensions are retained; other installed extensions may be missing.'
-                      : 'Extension coverage is unknown. The available reports do not establish complete extension coverage.'
-                  }
-                </p>
-                ${(this.page.coverage ?? [])
-                  .filter((device) => device.completeness !== 'complete')
-                  .map(
-                    (device) => html`
-                      <p>
-                        Device ${device.fingerprint.slice(0, 8)} · Collector
-                        ${device.collector_version || 'unknown'}.
-                        ${device.reasons.length ? html`Reported reasons: ${device.reasons.join(', ')}.` : 'No specific incompleteness reason was reported.'}
-                        ${
-                          device.reasons.includes('extension_project_unscanned')
-                            ? html`
-                                Project roots have not been scanned. From each
-                                affected repository, run
-                                <code
-                                  >preloop agents discover --report --project
-                                  .</code
-                                >.
-                              `
-                            : device.reasons.length
-                              ? html`Check the local scan output with
-                                  <code
-                                    >preloop agents extensions --project .</code
-                                  >
-                                  from the repository, address the reported
-                                  collection failures, then run
-                                  <code
-                                    >preloop agents discover --report --project
-                                    .</code
-                                  >.`
-                              : html`Check <code>preloop version</code> on this
-                                  device and report again to establish its
-                                  extension coverage.`
-                        }
-                        ${
-                          collectorTooOld(device.collector_version)
-                            ? html`
-                                This collector is too old. Extension collection
-                                requires a Preloop CLI newer than
-                                ${EXTENSION_COLLECTOR_VERSION_FLOOR}. Run
-                                <code>preloop update</code>, then check
-                                <code>preloop version</code> and report again.
-                              `
-                            : nothing
-                        }
-                      </p>
-                    `
-                  )}
-                ${!this.page.coverage?.length ? html`<p>No device coverage details are available. On the device, check <code>preloop version</code> and <code>preloop agents extensions --project .</code> from the repository.</p>` : nothing}
-                <p>
-                  Sign in to this instance with
-                  <code>preloop auth login --url ${window.location.origin}</code
-                  >, then report with
-                  <code>preloop agents discover --report --project .</code>
-                  from the repository. Reload this page after reporting.
-                </p>
-              </div>
-            `
-          : nothing
-      }
-      ${this.loading && !this.page ? html`<p role="status">Loading extensions…</p>` : nothing}
+      ${this.loading && !this.page ? this.skeleton() : nothing}
       ${
         this.page?.items.length
           ? html`<div class="table-scroll">
@@ -650,7 +1046,9 @@ export class ExtensionInventory extends LitElement {
                             <th>Versions seen</th>
                             <th>Sources</th>`
                     }
-                    <th>Approval</th>
+                    <th class="approval-heading">
+                      Approval ${this.howApprovalsWork()}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -696,15 +1094,23 @@ export class ExtensionInventory extends LitElement {
               </table>
             </div>`
           : this.page && !this.loading
-            ? html`<p class="empty">
-                ${
-                  this.emptyText || 'No extensions reported for this selection.'
-                }
-              </p>`
+            ? this.emptyText && !this.stateFilter && !this.sourceFilter
+              ? html`<p class="empty">${this.emptyText}</p>
+                  ${this.agentKind || !this.page.coverage?.length ? this.reportSteps() : nothing}`
+              : this.page.coverage?.length ||
+                  this.stateFilter ||
+                  this.sourceFilter
+                ? html`<p class="empty">
+                    No extensions reported for this selection.
+                  </p>`
+                : html`<div class="empty-state">
+                    <p>No extensions reported yet.</p>
+                    ${this.reportSteps()}
+                  </div>`
             : nothing
       }
-      ${this.page ? html`<div class="footer"><span class="meta" aria-live="polite">${this.page.items.length} extensions shown</span>${this.page.next_cursor ? html`<sl-button size="small" ?loading=${this.loading} @click=${() => this.refresh(true)}>Load more</sl-button>` : nothing}</div>` : nothing}
-      ${!this.fingerprint && !this.agentKind && this.canManage ? html`<extension-enforcement .canManage=${this.canManage} .approvalRevision=${this.approvalRevision}></extension-enforcement>` : nothing}
+      ${this.page ? html`<div class="footer"><span class="meta">${this.page.items.length} extensions shown</span>${this.page.next_cursor ? html`<sl-button size="small" ?loading=${this.loading} @click=${() => this.refresh(true)}>Load more</sl-button>` : nothing}</div>` : nothing}
+      ${this.hasEnforcement() ? html`<extension-enforcement id="extension-enforcement" .canManage=${this.canManage} .approvalRevision=${this.approvalRevision}></extension-enforcement>` : nothing}
     `;
   }
 }
