@@ -336,9 +336,17 @@ type managedEnrollmentOptions struct {
 	// prepare each agent before enrolling it, and re-preparing inside the
 	// enrollment made interactive onboarding ask for the agent name twice.
 	AgentPrepared bool
-	Tags          map[string]string
-	Input         io.Reader
-	Output        io.Writer
+	// ForceManual makes onboarding hand the configuration change to the
+	// user even when the files are writable (`--manual`), for setups where
+	// the file is managed elsewhere.
+	ForceManual bool
+	// ManualOutputDir is where manual setup saves its instructions
+	// (`--manual-output`). They contain the agent key, so the directory is
+	// created 0700 and the files 0600.
+	ManualOutputDir string
+	Tags            map[string]string
+	Input           io.Reader
+	Output          io.Writer
 }
 
 type managedLiveValidationOutcome struct {
@@ -510,7 +518,7 @@ func resolveEnrollmentPinModelFamilies(agent AgentConfig, opts managedEnrollment
 	return opts.PinModelFamilies
 }
 
-func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) error {
+func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) (retErr error) {
 	client := opts.Client
 	var err error
 	input := opts.Input
@@ -537,6 +545,16 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 
 	agent = normalizeDiscoveredAgent(agent)
+	// Re-running onboard while a manual setup waits for the local change
+	// finishes that setup instead of issuing a second key.
+	if !opts.DryRun {
+		if pending, loadErr := loadManualResumeState(agent); loadErr == nil {
+			fmt.Fprintf(output, "A manual setup for %s is waiting for the local change; checking it now.\n", resolveAgentDisplayName(agent)) //nolint:errcheck
+			return resumeManualEnrollment(client, pending, manualResumeOptions{
+				SkipLiveValidate: opts.SkipLiveValidate || !opts.LiveValidate,
+			}, output)
+		}
+	}
 	if shouldPromptForEnrollmentName(opts) {
 		agent, err = prepareAgentForEnrollment(bufio.NewReader(input), output, agent, false)
 		if err != nil {
@@ -741,6 +759,15 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	}
 	printEnrollmentPlan(plan, opts.DryRun)
 	if opts.DryRun {
+		dryReport := runWritabilityPreflight(onboardingWriteTargets(agent, opts))
+		if len(dryReport.blocked()) > 0 {
+			printWritabilityReport(output, dryReport)
+			if manualApplySupported(agent) {
+				fmt.Fprintln(output, "Onboarding would continue in manual mode: Preloop prepares the agent and prints the exact change for you to make.") //nolint:errcheck
+			} else {
+				fmt.Fprintln(output, "Onboarding would stop before changing anything: manual setup is not available for this agent yet.") //nolint:errcheck
+			}
+		}
 		fmt.Println("Dry run only: no local files or Preloop account state were changed.")
 		return nil
 	}
@@ -783,9 +810,54 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 
-	if err := preflightClaudeAgentControlNode(agent); err != nil {
+	// Test real writability of every file onboarding would write before
+	// anything changes on the server. An unwritable file switches to manual
+	// mode (or stops here for agent kinds manual mode does not cover).
+	manualDecision, err := decideManualMode(agent, opts, output)
+	if err != nil {
 		return err
 	}
+	if manualDecision.Manual {
+		manualDecision.BundleDir = resolveManualBundleDir(agent, opts, manualDecision.Report, input, output)
+	} else if err := preflightClaudeAgentControlNode(agent); err != nil {
+		return err
+	}
+
+	// From the first server-side change until the enrollment is recorded, a
+	// failure removes what this run created and restores local files.
+	rollback := snapshotOnboardingPriorState(client, agent)
+	if rollback.priorAgent != nil && rollback.priorAgent.OnboardingState == "waiting_for_local_config" {
+		// A setup is pending on the server but this machine holds no resume
+		// state (~/.preloop is not writable): resume it by reading the
+		// configuration back instead of issuing another key.
+		if detail, detailErr := getManagedAgentDetail(client, rollback.priorAgent.ID); detailErr == nil {
+			if waiting := latestPendingEnrollment(detail); waiting != nil {
+				fmt.Fprintf(output, "A manual setup for %s is waiting for the local change; checking it now.\n", resolveAgentDisplayName(agent)) //nolint:errcheck
+				return resumeManualEnrollment(client, &manualResumeState{
+					Version:            1,
+					AgentName:          agent.Name,
+					DisplayName:        resolveAgentDisplayName(agent),
+					ConfigPath:         agent.ConfigPath,
+					RuntimePrincipalID: rollback.priorAgent.SessionSourceID,
+					AgentID:            rollback.priorAgent.ID,
+					EnrollmentID:       waiting.ID,
+					BaseURL:            baseURL,
+				}, manualResumeOptions{SkipLiveValidate: opts.SkipLiveValidate || !opts.LiveValidate}, output)
+			}
+		}
+	}
+	rollback.armed = true
+	defer func() {
+		if retErr == nil || !rollback.armed {
+			return
+		}
+		var pendingErr *manualApplyPendingError
+		if errors.As(retErr, &pendingErr) {
+			return
+		}
+		fmt.Fprintf(output, "Onboarding of %s did not complete: %s\n", resolveAgentDisplayName(agent), firstErrorLine(retErr)) //nolint:errcheck
+		rollback.run(output, retErr)
+	}()
 
 	serverSync, err := ensureDiscoveredRemoteServersWithCustody(client, syncAgent, baseURL, opts.NoCredentialImport)
 	if err != nil {
@@ -826,10 +898,12 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 
+	rollback.agentID = managedAgent.ID
 	credentialResp, err := createDurableManagedCredential(client, managedAgent)
 	if err != nil {
 		return err
 	}
+	rollback.credentialIDs = append(rollback.credentialIDs, credentialResp.Credential.ID)
 
 	var aiModelNotes []string
 	modelBindings := make([]managedAgentModelBindingSyncItem, 0)
@@ -972,6 +1046,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			}
 		}
 	}
+	// From here local files change (the Agent Control file first). Undoing a
+	// failed onboarding also restores them: a configuration pointing at a
+	// key that was removed is worse than the one the user started with.
+	rollback.restoreLocal = snapshotLocalFilesForRollback(agent)
+	plan.ControlFileDeferred = manualDecision.Manual && !manualDecision.Report.writable(writeRoleControl)
 	plan, err = applyManagedAgentControlConfig(
 		plan,
 		baseURL,
@@ -991,6 +1070,30 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	originalBytes, configExisted, err := readExistingAgentConfig(agent.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("failed to read agent config: %w", err)
+	}
+	if manualDecision.Manual {
+		oauthSource := ""
+		if plannedUpstream != nil && plannedUpstream.CredentialType == anthropicClaudeCodeOAuthCredentialType {
+			oauthSource = plannedUpstream.CredentialSource
+		}
+		return runManualApplyEnrollment(&manualEnrollmentInputs{
+			Client:         client,
+			Agent:          agent,
+			Opts:           opts,
+			Input:          input,
+			Output:         output,
+			BaseURL:        baseURL,
+			Plan:           plan,
+			Credential:     credentialResp,
+			ManagedAgent:   managedAgent,
+			RuntimeSession: runtimeSession,
+			Decision:       manualDecision,
+			Rollback:       rollback,
+			OriginalBytes:  originalBytes,
+			ConfigExisted:  configExisted,
+			PinFamilies:    pinModelFamilies,
+			OAuthSource:    oauthSource,
+		})
 	}
 	backupState, err := createLocalEnrollmentBackup(agent, configExisted, originalBytes, plan)
 	if err != nil {
@@ -1143,6 +1246,10 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if err != nil {
 		return err
 	}
+	// The enrollment is recorded and the local configuration is applied:
+	// later failures (a failed probe, a missing launcher) have their own
+	// handling and must not remove a key the configuration now uses.
+	rollback.armed = false
 	backupState.EnrollmentID = enrollment.ID
 	if err := saveLocalEnrollmentState(backupState); err != nil {
 		return err
@@ -1252,6 +1359,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 	if liveValidationErr != nil && validationResult["live_validation_status"] == "credential_repair_required" {
+		for _, line := range rejectedSubscriptionLoginAdvice(agent, loadedClaudeLoginSource(agent)) {
+			fmt.Fprintf(output, "  %s\n", line) //nolint:errcheck
+		}
 		fmt.Fprintf(output, "  Repair: %s\n", subscriptionReconnectCommand(agent)) //nolint:errcheck
 	} else if liveValidationErr != nil && liveValidationKeepsGatewayConfig {
 		// A 429 (or a billing refusal) proves the durable credential
@@ -1320,6 +1430,9 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	)
 	if deferredForParallelRun {
 		completionHeadline = fmt.Sprintf("Configured %s; gateway validation pending", resolveAgentDisplayName(agent))
+	}
+	if unverified := subscriptionUnverifiedHeadline(agent, plannedUpstream, requestedLiveValidation, deferredForParallelRun); unverified != "" {
+		completionHeadline = unverified
 	}
 	fmt.Println(completionHeadline)
 	fmt.Printf("  Managed agent: %s (%s)\n", managedAgent.ID, runtimePrincipalIDForAgent(agent))
@@ -2572,7 +2685,16 @@ func parseClaudeManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 		claudeSubscriptionOAuthDetected = true
 		credentialType = "oauth_anthropic_claude_code"
 		credentialPayload = map[string]interface{}{"access": apiKey}
-		if oauthCredential, oauthNote := resolveClaudeOAuthCredential(); oauthCredential != nil {
+		oauthCredential, oauthNote := resolveClaudeOAuthCredential()
+		envToken := claudeEnvOAuthToken(document)
+		if envToken != "" && envToken == strings.TrimSpace(apiKey) &&
+			(oauthCredential == nil || strings.TrimSpace(oauthCredential.AccessToken) != envToken) {
+			// Claude Code itself prefers CLAUDE_CODE_OAUTH_TOKEN over a
+			// stored login. A credentials file that is also visible (often a
+			// stale copy mounted into a container) must not replace it.
+			credentialSource = claudeOAuthSourceEnv
+			notes = append(notes, "Importing the Claude subscription token from "+claudeOAuthTokenEnvName+" (a stored login that is also present is ignored, as Claude Code does).")
+		} else if oauthCredential != nil {
 			credentialPayload = oauthCredential.Payload()
 			credentialSource = oauthCredential.Source
 			if oauthNote != "" {
@@ -3373,11 +3495,11 @@ func resolveClaudePrimaryAPIKey() string {
 }
 
 func resolveClaudeCredentialFileToken() (string, string) {
-	home, err := os.UserHomeDir()
+	_, err := os.UserHomeDir()
 	if err != nil {
 		return "", ""
 	}
-	path := filepath.Join(home, ".claude", ".credentials.json")
+	path := filepath.Join(claudeConfigHome(), ".credentials.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", ""
@@ -3502,11 +3624,11 @@ func resolveClaudeOAuthCredential() (*claudeOAuthCredential, string) {
 }
 
 func resolveClaudeCredentialFileOAuthCredential() (*claudeOAuthCredential, string) {
-	home, err := os.UserHomeDir()
+	_, err := os.UserHomeDir()
 	if err != nil {
 		return nil, ""
 	}
-	path := filepath.Join(home, ".claude", ".credentials.json")
+	path := filepath.Join(claudeConfigHome(), ".credentials.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, ""
@@ -4458,6 +4580,10 @@ func applyManagedAgentControlConfig(
 		runtimeSession,
 	)
 	applyAgentControlConfigToDocument(plan.Agent, plan.ManagedDocument, control)
+	if plan.ControlFileDeferred {
+		plan.ManagedControlWSURL = lookupString(control, "control_ws_url")
+		return refreshManagedPlanSnapshots(plan)
+	}
 	if runtimeSessionSourceTypeForAgent(plan.Agent.Name) == "claude_code" {
 		if err := writeClaudePreloopControlFile(control); err != nil {
 			return plan, err
@@ -7683,7 +7809,7 @@ func openClawConfigPaths(home string) []string {
 }
 
 func expandAgentConfigPath(home string, path string) string {
-	for _, override := range []struct{ relative, env string }{{".pi/agent", "PI_CODING_AGENT_DIR"}, {".dsh", "DSH_HOME"}} {
+	for _, override := range []struct{ relative, env string }{{".pi/agent", "PI_CODING_AGENT_DIR"}, {".dsh", "DSH_HOME"}, {".claude", "CLAUDE_CONFIG_DIR"}, {".codex", "CODEX_HOME"}} {
 		prefix := filepath.Join(home, override.relative)
 		if dir := os.Getenv(override.env); dir != "" && (path == prefix || strings.HasPrefix(path, prefix+string(filepath.Separator))) {
 			return filepath.Join(dir, strings.TrimPrefix(strings.TrimPrefix(path, prefix), string(filepath.Separator)))

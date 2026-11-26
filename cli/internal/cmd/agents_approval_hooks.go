@@ -122,9 +122,17 @@ func permissionHookCredentialPath(agent AgentConfig) (string, error) {
 	return filepath.Join(dir, runtimePrincipalIDForAgent(agent), permissionHookCredentialFileName), nil
 }
 
+// approvalHookConfigPathOverrides redirects a source's hook configuration to
+// a staged copy. Manual setup uses it to compute the hooks block for a file
+// it cannot write; it is empty otherwise.
+var approvalHookConfigPathOverrides = map[string]string{}
+
 // approvalHookConfigPath returns the agent-specific hook configuration file for
 // the given source.
 func approvalHookConfigPath(source string) (string, error) {
+	if override := approvalHookConfigPathOverrides[source]; override != "" {
+		return override, nil
+	}
 	if source == permissionSourceCopilotCLI {
 		return copilotPreloopHooksPath()
 	}
@@ -136,9 +144,9 @@ func approvalHookConfigPath(source string) (string, error) {
 	case permissionSourceDevinCLI:
 		return devinConfigPath("config.json")
 	case permissionSourceClaudeCode:
-		return filepath.Join(home, ".claude", "settings.json"), nil
+		return filepath.Join(claudeConfigHome(), "settings.json"), nil
 	case permissionSourceCodexCLI:
-		return filepath.Join(home, ".codex", "hooks.json"), nil
+		return filepath.Join(codexConfigHome(), "hooks.json"), nil
 	case permissionSourceCursor:
 		return filepath.Join(home, ".cursor", "hooks.json"), nil
 	case permissionSourceOpenCode:
