@@ -608,9 +608,10 @@ export class ApprovalsView extends AuthedElement {
   @state() private flowGrants: RunnerFlowGrant[] = [];
 
   private async loadFlowGrants(): Promise<void> {
-    this.flowGrants = await listRunnerFlowGrants().catch(
+    const grants = await listRunnerFlowGrants().catch(
       () => [] as RunnerFlowGrant[]
     );
+    this.flowGrants = Array.isArray(grants) ? grants : [];
   }
 
   private async revokeFlowGrant(grant: RunnerFlowGrant): Promise<void> {

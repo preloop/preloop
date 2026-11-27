@@ -150,3 +150,37 @@ def revoke(
         db.commit()
         db.refresh(row)
     return row
+
+
+def names_for(
+    db: Session, rows: list[models.RunnerFlowGrant]
+) -> tuple[dict[UUID, str], dict[UUID, str]]:
+    """Load runner and flow names for a list of grants in two queries.
+
+    Args:
+        db: Database session.
+        rows: Grants to describe.
+
+    Returns:
+        ``(runner_names, flow_names)`` keyed by id.
+    """
+    runner_ids = {row.runner_id for row in rows}
+    flow_ids = {row.flow_id for row in rows}
+    runners = (
+        db.query(models.FlowRunner.id, models.FlowRunner.name)
+        .filter(models.FlowRunner.id.in_(runner_ids))
+        .all()
+        if runner_ids
+        else []
+    )
+    flows = (
+        db.query(models.Flow.id, models.Flow.name)
+        .filter(models.Flow.id.in_(flow_ids))
+        .all()
+        if flow_ids
+        else []
+    )
+    return (
+        {row.id: row.name for row in runners},
+        {row.id: row.name for row in flows},
+    )

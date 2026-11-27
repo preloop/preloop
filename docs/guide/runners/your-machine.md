@@ -36,6 +36,14 @@ stored as the runner's flow execution consent:
 | `always` | Flows that may use this runner run without asking. |
 | `never` | This runner takes no flows. Remote sessions are unaffected. |
 
+With `ask_me`, you can also allow one flow on this runner for good: when you
+approve the request in the console, tick **Always allow <flow> on <runner>
+until revoked**. Later runs of that flow start on this runner without asking.
+The grant is listed under the runner on the **Runners** page and in **Always
+allowed on your runners** on the **Approvals** page; **Revoke** in either place
+makes the next run ask again. Creating and revoking a grant is recorded in the
+audit log.
+
 Your account's runner policy can change the question. `required` installs
 without asking whether to install (you still choose the consent), `forbidden`
 does not install. `--no-runner`, `PRELOOP_NO_RUNNER=1`, `preloop login

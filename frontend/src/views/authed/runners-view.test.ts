@@ -47,6 +47,7 @@ describe('RunnersView', () => {
       failPatch?: boolean;
       deleteConflict?: boolean;
       permissions?: string[] | null;
+      flowGrants?: unknown[];
     } = {}
   ) {
     return sinon
@@ -100,6 +101,10 @@ describe('RunnersView', () => {
         }
         if (url.includes('/api/v1/auth/users/me') && options.permissions) {
           return json({ id: 'user-1', permissions: options.permissions });
+        }
+        if (url.includes('/api/v1/runner-flow-grants')) {
+          if (method === 'DELETE') return json({ id: 'grant-1' });
+          return json(options.flowGrants ?? []);
         }
         if (url.includes('/session-options')) {
           return json(SESSION_OPTIONS);
@@ -219,6 +224,66 @@ describe('RunnersView', () => {
     } finally {
       element.remove();
     }
+  });
+
+  it('lists always-allowed flows for the owner and revokes one', async () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    fetchStub = createFetchStub(
+      [
+        {
+          id,
+          name: 'office-mac',
+          hostname: 'office-mac.local',
+          os: 'darwin',
+          arch: 'arm64',
+          labels: [],
+          status: 'online',
+          last_heartbeat: '2026-08-17T10:00:00Z',
+          current_execution_id: null,
+          registered_by_user_id: 'user-1',
+          flow_execution_consent: 'ask_me',
+        },
+      ],
+      {},
+      {
+        permissions: ['execute_flows'],
+        flowGrants: [
+          {
+            id: 'grant-1',
+            runner_id: id,
+            flow_id: 'flow-1',
+            flow_name: 'Nightly review',
+            created_at: '2026-08-17T10:00:00Z',
+          },
+        ],
+      }
+    );
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !!element.shadowRoot!.querySelector('.flow-grant'),
+      'grant not rendered'
+    );
+    expect(
+      element.shadowRoot!.querySelector('.flow-grant')!.textContent
+    ).to.contain('Nightly review');
+    (
+      element.shadowRoot!.querySelector('.revoke-flow-grant') as HTMLElement
+    ).click();
+    await waitUntil(
+      () => !element.shadowRoot!.querySelector('.flow-grant'),
+      'grant not removed'
+    );
+    expect(
+      fetchStub
+        .getCalls()
+        .some(
+          (c) =>
+            String(c.args[0]).includes('/runner-flow-grants/grant-1') &&
+            (c.args[1] as RequestInit)?.method === 'DELETE'
+        )
+    ).to.equal(true);
   });
 
   it('renders the runners list', async () => {

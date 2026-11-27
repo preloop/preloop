@@ -153,3 +153,32 @@ def test_only_runner_owner_may_grant(db_session, test_user, monkeypatch) -> None
             json={"flow_id": str(flow.id)},
         )
     assert refused.status_code == 403
+
+
+def test_list_loads_names_in_one_batch(db_session, test_user, monkeypatch) -> None:
+    """Listing N grants resolves names once, not once per grant."""
+    monkeypatch.setattr(runners, "emit_runner_updated", lambda *a: None)
+    monkeypatch.setattr(runners, "evaluate_fleet_findings", lambda *a, **k: None)
+    flows = [_flow(db_session, test_user.account_id) for _ in range(3)]
+    calls: list[int] = []
+    real = crud_grant.names_for
+
+    def counting(db: Any, rows: list) -> Any:
+        calls.append(len(rows))
+        return real(db, rows)
+
+    monkeypatch.setattr(crud_grant, "names_for", counting)
+    with _client(db_session, test_user) as client:
+        runner_id = client.post(
+            "/api/v1/runners/register", json={"name": "Example runner"}
+        ).json()["id"]
+        for flow in flows:
+            client.post(
+                f"/api/v1/runners/{runner_id}/flow-grants",
+                json={"flow_id": str(flow.id)},
+            )
+        calls.clear()
+        listed = client.get("/api/v1/runner-flow-grants").json()
+    assert len(listed) == 3
+    assert {row["flow_name"] for row in listed} == {"Daily review"}
+    assert calls == [3]

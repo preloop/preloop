@@ -936,7 +936,7 @@ export class RunnersView extends LitElement {
         listRunnerFlowGrants().catch(() => [] as RunnerFlowGrant[]),
       ]);
       this.runners = runners;
-      this.flowGrants = grants;
+      this.flowGrants = Array.isArray(grants) ? grants : [];
       this.currentUserId = profile?.id ?? null;
       this.permissions = profile?.permissions;
       this.defaultRunnerPool = account?.default_runner_pool ?? null;

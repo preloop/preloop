@@ -482,3 +482,44 @@ def test_oversized_summary_is_clipped_to_budget() -> None:
     assert payload_size(payload) <= PUSH_PAYLOAD_BUDGET_BYTES
     assert payload["type"] == "new_approval_request"
     assert payload["aps"]["alert"]["body"]
+
+
+def test_oversized_question_options_fit_and_keep_first_options() -> None:
+    """ask_user pushes with many long options still fit the APNs limit."""
+    from preloop.services.push_notifications.notification_payloads import (
+        APNS_MAX_PAYLOAD_BYTES,
+        payload_size,
+    )
+
+    options = [f"Option {i} " + "x" * 40 for i in range(100)]
+    payload = NotificationPayloadBuilder.new_approval_request(
+        request_id="00000000-0000-0000-0000-0000000000cc",
+        tool_name="ask_user",
+        tool_args={"is_question": True, "question": "Pick one", "options": options},
+    )
+
+    assert payload_size(payload) < APNS_MAX_PAYLOAD_BYTES
+    kept = payload["data"]["question_options"]
+    assert kept and kept[0].startswith("Option 0")
+    assert payload["data"]["is_question"] is True
+
+
+def test_fit_payload_terminates_when_text_cannot_shrink_enough() -> None:
+    """Text at the floor does not spin; the fallback still fits the budget."""
+    from preloop.services.push_notifications.notification_payloads import (
+        _fit_payload,
+        payload_size,
+    )
+
+    payload = {
+        "aps": {"alert": {"title": "t" * 21, "subtitle": "s" * 21, "body": "b" * 25}},
+        "approval_request_id": "00000000-0000-0000-0000-0000000000dd",
+        "question": "q" * 3000,
+        "data": {"title": "t" * 21, "body": "b" * 25, "question": "q" * 3000},
+    }
+
+    fitted = _fit_payload(payload, 1024)
+
+    assert payload_size(fitted) <= 1024
+    assert fitted["aps"]["alert"]["body"]
+    assert fitted["approval_request_id"].endswith("dd")

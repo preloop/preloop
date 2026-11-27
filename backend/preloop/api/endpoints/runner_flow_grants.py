@@ -44,8 +44,35 @@ class RunnerFlowGrantResponse(BaseModel):
     created_at: datetime
 
 
+def _to_responses(
+    db: Session, rows: List[models.RunnerFlowGrant]
+) -> List[RunnerFlowGrantResponse]:
+    """Render grants with runner and flow names, two queries in total.
+
+    Args:
+        db: Database session.
+        rows: Grant rows.
+
+    Returns:
+        Response models in the same order.
+    """
+    runner_names, flow_names = crud_grant.names_for(db, rows)
+    return [
+        RunnerFlowGrantResponse(
+            id=row.id,
+            runner_id=row.runner_id,
+            runner_name=runner_names.get(row.runner_id),
+            flow_id=row.flow_id,
+            flow_name=flow_names.get(row.flow_id),
+            approval_request_id=row.approval_request_id,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
 def _to_response(db: Session, row: models.RunnerFlowGrant) -> RunnerFlowGrantResponse:
-    """Render a grant with runner and flow names.
+    """Render one grant.
 
     Args:
         db: Database session.
@@ -54,17 +81,7 @@ def _to_response(db: Session, row: models.RunnerFlowGrant) -> RunnerFlowGrantRes
     Returns:
         The response model.
     """
-    runner = crud_flow_runner.get(db, id=row.runner_id)
-    flow = crud_flow.get(db, id=row.flow_id)
-    return RunnerFlowGrantResponse(
-        id=row.id,
-        runner_id=row.runner_id,
-        runner_name=getattr(runner, "name", None),
-        flow_id=row.flow_id,
-        flow_name=getattr(flow, "name", None),
-        approval_request_id=row.approval_request_id,
-        created_at=row.created_at,
-    )
+    return _to_responses(db, [row])[0]
 
 
 def _owned_runner(db: Session, runner_id: UUID, user: models.User) -> models.FlowRunner:
@@ -142,7 +159,7 @@ def list_runner_flow_grants(
     rows = crud_grant.list_active(
         db, owner_user_id=current_user.id, runner_id=runner_id
     )
-    return [_to_response(db, row) for row in rows]
+    return _to_responses(db, rows)
 
 
 @router.get("/runner-flow-grants", response_model=List[RunnerFlowGrantResponse])
@@ -154,7 +171,7 @@ def list_my_runner_flow_grants(
     """List every active grant the current user gave on their runners."""
     ensure_permission_in_oss(db, current_user, "execute_flows")
     rows = crud_grant.list_active(db, owner_user_id=current_user.id)
-    return [_to_response(db, row) for row in rows]
+    return _to_responses(db, rows)
 
 
 @router.post(

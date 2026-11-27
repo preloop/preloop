@@ -1970,7 +1970,8 @@ export class ApprovalView extends AuthedElement {
    */
   /** The runner id of an owner consent request that can carry a flow grant. */
   private runnerFlowGrantTarget(request: ApprovalRequest): string | null {
-    if (request.tool_name !== 'owner_consent') return null;
+    // The signed-out token page cannot create a grant (no session).
+    if (this.publicOnly || request.tool_name !== 'owner_consent') return null;
     if (!request.rule_context?.runner_flow?.flow) return null;
     const runnerId = (request.tool_args as Record<string, unknown> | undefined)
       ?.runner_id;
