@@ -52,7 +52,9 @@ func manualStepPrimaryFile(plan manualApplyPlan) int {
 func writeManualFileHeader(out io.Writer, file manualFileChange, step *manualStep, width int) {
 	writeFileAndReason(out, file.Path, file.Reason, width)
 	if file.HostSource != "" {
-		writeWrapped(out, "  Host:  ", "         ", "probably "+file.HostSource, width)
+		// One line whatever its length: a path split by the CLI cannot be
+		// copied, and a line the terminal wraps takes no more rows.
+		fmt.Fprintf(out, "  Host:  probably %s\n", file.HostSource) //nolint:errcheck
 	}
 	prepared := ""
 	if step.BundleSaved && file.Exists && file.full != nil {
@@ -61,7 +63,7 @@ func writeManualFileHeader(out io.Writer, file manualFileChange, step *manualSte
 	switch {
 	case prepared != "":
 		writeWrapped(out, "  Do:    ", "         ", "replace it with the prepared file, or merge the block below", width)
-		writeWrapped(out, "         ", "         ", prepared, width)
+		writePathLine(out, 9, prepared, width)
 	case file.Exists:
 		writeWrapped(out, "  Do:    ", "         ", "merge the block below into the file and keep everything else", width)
 	default:
@@ -70,6 +72,18 @@ func writeManualFileHeader(out io.Writer, file manualFileChange, step *manualSte
 	if len(file.Remove) > 0 {
 		writeWrapped(out, "         ", "         ", "and remove these keys if present: "+strings.Join(file.Remove, ", "), width)
 	}
+}
+
+// writePathLine prints a path on its own line, indented by indent columns,
+// or by fewer when that is what it takes to keep it on one row.
+func writePathLine(out io.Writer, indent int, path string, width int) {
+	if room := width - len(path); room < indent {
+		indent = room
+	}
+	if indent < 2 {
+		indent = 2
+	}
+	fmt.Fprintf(out, "%s%s\n", strings.Repeat(" ", indent), path) //nolint:errcheck
 }
 
 // writeFileAndReason prints the File: line. The reason follows the path on

@@ -307,7 +307,7 @@ func renderManualRemoval(displayName string, agent AgentConfig, plan localOffboa
 	fmt.Fprintf(&out, "Manual removal for %s\n", displayName)
 	writeFileAndReason(&out, agent.ConfigPath, plan.Probe.Reason, width)
 	if source := plan.Probe.HostSource(); source != "" {
-		writeWrapped(&out, "  Host:  ", "         ", "probably "+source, width)
+		fmt.Fprintf(&out, "  Host:  probably %s\n", source)
 	}
 	if !plan.Readable {
 		writeWrapped(&out, "  ", "  ", "The file cannot be checked: "+plan.ReadProblem, width)
@@ -316,7 +316,7 @@ func renderManualRemoval(displayName string, agent AgentConfig, plan localOffboa
 	}
 	if resultFile != "" {
 		writeWrapped(&out, "  Do:    ", "         ", "replace it with the prepared file, or make the changes below", width)
-		writeWrapped(&out, "         ", "         ", resultFile, width)
+		writePathLine(&out, 9, resultFile, width)
 	} else {
 		writeWrapped(&out, "  Do:    ", "         ", "make the changes below and keep everything else", width)
 	}

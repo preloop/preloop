@@ -1,7 +1,6 @@
 Manual step for Claude Code
   File:  /home/jane/.claude/settings.json (read-only file system)
-  Host:  probably
-         /home/jane/src/preloop/examples/sandboxed-agent-rig/state/ro-settings/claude/settings.json
+  Host:  probably /home/jane/src/preloop/examples/sandboxed-agent-rig/state/ro-settings/claude/settings.json
   Do:    replace it with the prepared file, or merge the block below
          /home/jane/.preloop/manual-setup/claude-code-000000000000/settings.json
 

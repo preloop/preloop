@@ -137,6 +137,14 @@ func TestPlanRenderingKeepsTheRefusalReasonWhole(t *testing.T) {
 	if longest, line := longestLine(text); longest > 80 {
 		t.Errorf("line of %d columns: %q", longest, line)
 	}
+	// A reason longer than the terminal cannot stay whole: it wraps in the
+	// row's column instead of starting at the left edge.
+	plan.Agents[0].ManualReason = "permission denied (owned by uid 1001, running as uid 10001), and the mount is read-only"
+	for _, line := range strings.Split(renderPlan(termCaps{Width: 80}, plan), "\n") {
+		if strings.Contains(line, "permission denied") && !strings.HasPrefix(line, "                   (") {
+			t.Errorf("a long reason left its column: %q", line)
+		}
+	}
 }
 
 // protects=the size of the review; fails_when=one agent needs more than 18
