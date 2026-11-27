@@ -136,6 +136,10 @@ runnerModels:
   idleSeconds: 60
   silentSeconds: 1200
   totalSeconds: 7200
+api:
+  terminationGracePeriodSeconds: 7230
+gateway:
+  terminationGracePeriodSeconds: 7230
 ```
 
 Helm supplies the same settings to API, gateway and workers and automatically
@@ -144,6 +148,9 @@ plus 15 seconds. Explicit ingress annotations still override these defaults;
 remove a shorter override or increase it. For Docker/installer or custom reverse
 proxies, increase every gateway route's `proxy_read_timeout` and
 `proxy_send_timeout` to at least the total plus 15 seconds (defaults: `3615s`).
+For rollouts to drain a full request, also keep API and gateway
+`terminationGracePeriodSeconds` above the total plus 30 seconds (default `3630`),
+as shown in the example. This includes the preStop sleep.
 Apply equivalent settings to any additional load balancer or client in the path.
 A nonstreaming completion can produce no HTTP response until the full request
 finishes, even when the local model is making progress.
