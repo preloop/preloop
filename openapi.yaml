@@ -31630,6 +31630,15 @@ components:
           type: string
           title: Tool Name
           description: Native tool name, e.g. 'Bash'
+        tool_origin:
+          anyOf:
+          - type: string
+            enum:
+            - native
+            - mcp
+          - type: 'null'
+          title: Tool Origin
+          description: Tool origin observed by the harness hook.
         tool_input:
           additionalProperties: true
           type: object
@@ -31728,6 +31737,11 @@ components:
       description: A native tool-call permission check from an onboarded agent.
     AgentPermissionCheckResponse:
       properties:
+        native_hook_released:
+          type: boolean
+          title: Native Hook Released
+          description: Operator released this local hook; defer to host permissions.
+          default: false
         decision:
           type: string
           title: Decision
@@ -33435,6 +33449,11 @@ components:
           - type: 'null'
           title: Avg Response Minutes
           description: Mean request-to-decision time of decided requests.
+        has_native_delivery_warning:
+          type: boolean
+          title: Has Native Delivery Warning
+          description: A native approval lacked a mobile or chat destination.
+          default: false
         tools:
           items:
             type: string
@@ -50894,7 +50913,7 @@ components:
         lifecycle_action:
           anyOf:
           - type: string
-            pattern: ^(suspend|resume|decommission|reenroll)$
+            pattern: ^(suspend|suspend_block|resume|decommission|reenroll)$
           - type: 'null'
           title: Lifecycle Action
         reason:

@@ -389,6 +389,12 @@ func onboardingWriteTargets(agent AgentConfig, opts managedEnrollmentOptions) []
 	}
 	wantsHooks := opts.Approvals ||
 		(!opts.NoUsageHooks && (source == permissionSourceCursor || source == permissionSourceCopilotCLI))
+	// Existing native gates are removed on re-onboarding without --approvals.
+	if hookPath, err := approvalHookConfigPath(source); err == nil {
+		if _, err := os.Stat(hookPath); err == nil {
+			wantsHooks = true
+		}
+	}
 	if wantsHooks && source != "" && !isExtensionHarness(agent) {
 		if hookPath, err := approvalHookConfigPath(source); err == nil && hookPath != "" &&
 			filepath.Clean(hookPath) != filepath.Clean(agent.ConfigPath) {

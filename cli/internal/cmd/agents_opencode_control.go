@@ -38,9 +38,8 @@ const (
 )
 
 // openCodeApprovalControlKeys are the plugin settings onboarding manages on
-// top of the shared Agent Control block. They survive a plain re-enrollment
-// so `preloop agents onboard OpenCode` without --approvals never silently
-// turns approvals off (mirrors Claude Code, whose hook stays installed).
+// top of the shared Agent Control block. Credential refresh preserves these
+// values; onboarding explicitly disables the native gate without --approvals.
 var openCodeApprovalControlKeys = []string{
 	"native_tool_approvals",
 	"approval_timeout_ms",

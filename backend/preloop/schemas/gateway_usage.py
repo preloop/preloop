@@ -1013,7 +1013,7 @@ class ManagedAgentUpdateRequest(BaseModel):
     others_may_start_sessions: Optional[Literal["ask_me", "allow", "deny"]] = None
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     lifecycle_action: Optional[str] = Field(
-        default=None, pattern="^(suspend|resume|decommission|reenroll)$"
+        default=None, pattern="^(suspend|suspend_block|resume|decommission|reenroll)$"
     )
     reason: Optional[str] = None
     tags: Optional[dict[str, str]] = None

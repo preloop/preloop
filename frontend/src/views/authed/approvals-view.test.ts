@@ -78,6 +78,69 @@ describe('ApprovalsView', () => {
     };
   }
 
+  it('shows recovery guidance on the first native delivery warning', async () => {
+    const element = await renderList([
+      baseRequest({
+        tool_args: { _preloop_native_delivery_warning: 'Email only' },
+      }),
+    ]);
+    const banner = element.shadowRoot!.querySelector(
+      '[data-testid="native-delivery-warning"]'
+    );
+    expect(banner).to.exist;
+    expect(banner!.textContent).to.contain('preloop agents pause');
+    expect(banner!.textContent!.replace(/\s+/g, ' ')).to.contain(
+      'Review pending requests'
+    );
+  });
+
+  it('shows historical delivery warnings when the pending list is empty', async () => {
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+      const data = String(input).endsWith('/stats')
+        ? {
+            total: 1,
+            pending: 0,
+            approved: 0,
+            declined: 0,
+            expired: 1,
+            cancelled: 0,
+            human_approved: 0,
+            human_declined: 0,
+            auto_approved_by_bypass: 0,
+            avg_response_minutes: null,
+            tools: [],
+            has_native_delivery_warning: true,
+          }
+        : [];
+      return new Response(JSON.stringify(data), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const element = await fixture<ApprovalsView>(
+      html`<approvals-view></approvals-view>`
+    );
+    await waitUntil(
+      () =>
+        !!element.shadowRoot!.querySelector(
+          '[data-testid="native-delivery-warning"]'
+        )
+    );
+    expect(
+      element.shadowRoot!.querySelector(
+        '[data-testid="native-delivery-warning"]'
+      )
+    ).to.exist;
+  });
+
+  it('does not show a delivery warning for ordinary approvals', async () => {
+    const element = await renderList([baseRequest()]);
+    expect(
+      element.shadowRoot!.querySelector(
+        '[data-testid="native-delivery-warning"]'
+      )
+    ).not.to.exist;
+  });
+
   function questionRequest(overrides: Record<string, unknown> = {}) {
     return baseRequest({
       tool_name: 'ask_user',
