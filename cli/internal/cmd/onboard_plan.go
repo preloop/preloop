@@ -265,6 +265,10 @@ func planManagedEnrollment(
 ) (*enrollmentPlanState, error) {
 	var err error
 	var notices bytes.Buffer
+	// Local prerequisites fail before the first prompt, in --dry-run too.
+	if err := preflightLocalAgentPrerequisites(agent, opts); err != nil {
+		return nil, err
+	}
 	if shouldPromptForEnrollmentName(opts) {
 		agent, err = prepareAgentForEnrollment(input, output, agent, false)
 		if err != nil {

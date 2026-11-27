@@ -228,6 +228,8 @@ func TestNoCredentialImportRechecksMCPReferencesBeforeCreation(t *testing.T) {
 func TestUnattendedOAuthStopsBeforeAnyMutation(t *testing.T) {
 	home := testenv.SetTempHome(t)
 	t.Setenv("PATH", "")
+	// The Node prerequisite runs before custody review; satisfy it here.
+	stubSupportedAgentControlNode(t)
 	path := filepath.Join(home, ".claude", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
@@ -283,6 +285,8 @@ func TestRemoteCredentialCustodyFailureDoesNotLeakResponseBody(t *testing.T) {
 func TestAttendedDiscoverReviewsOAuthCustodyBeforeApply(t *testing.T) {
 	home := testenv.SetTempHome(t)
 	t.Setenv("PATH", "")
+	// The Node prerequisite runs before custody review; satisfy it here.
+	stubSupportedAgentControlNode(t)
 	t.Setenv("PRELOOP_CONFIRM", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat01-synthetic-access")
 	previousTerminal := stdinIsTerminal

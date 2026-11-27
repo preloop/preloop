@@ -116,24 +116,96 @@ var readAgentControlNodeVersion = func(path string) (string, error) {
 	return strings.TrimSpace(string(output)), err
 }
 
+// agentControlNodeCandidates lists cheap, well-known places a Node.js
+// install lives when it is not on PATH: Homebrew prefixes and the shim or
+// default directories of common version managers. Only fixed paths and one
+// nvm glob are checked; nothing is searched recursively.
+var agentControlNodeCandidates = defaultAgentControlNodeCandidates
+
+func defaultAgentControlNodeCandidates() []string {
+	var candidates []string
+	for _, prefix := range []string{"/opt/homebrew", "/usr/local"} {
+		for _, formula := range []string{"node@24", "node@22", "node@20", "node"} {
+			candidates = append(candidates, filepath.Join(prefix, "opt", formula, "bin", "node"))
+		}
+		candidates = append(candidates, filepath.Join(prefix, "bin", "node"))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".volta", "bin", "node"),
+			filepath.Join(home, ".asdf", "shims", "node"),
+			filepath.Join(home, ".local", "share", "mise", "shims", "node"),
+			filepath.Join(home, ".nodenv", "shims", "node"),
+			filepath.Join(home, ".local", "share", "fnm", "aliases", "default", "bin", "node"),
+			filepath.Join(home, ".nvm", "current", "bin", "node"),
+		)
+		if matches, err := filepath.Glob(filepath.Join(home, ".nvm", "versions", "node", "*", "bin", "node")); err == nil {
+			// Newest-looking version last in lexical order; try it first.
+			for i := len(matches) - 1; i >= 0; i-- {
+				candidates = append(candidates, matches[i])
+			}
+		}
+	}
+	return candidates
+}
+
+// agentControlNodeSupported reports whether the node at path runs and is
+// at least the runtime plugin's minimum version.
+func agentControlNodeSupported(path string) bool {
+	version, versionErr := readAgentControlNodeVersion(path)
+	majorText, _, hasMinor := strings.Cut(strings.TrimPrefix(version, "v"), ".")
+	major, parseErr := strconv.Atoi(majorText)
+	// Match runtime-plugins/claude-preloop/package.json engines.node.
+	return versionErr == nil && parseErr == nil && hasMinor && major >= 20
+}
+
+// findAgentControlNodeOffPath returns the first supported node binary in a
+// known location, or "" when there is none.
+func findAgentControlNodeOffPath() string {
+	for _, candidate := range agentControlNodeCandidates() {
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+			continue
+		}
+		if agentControlNodeSupported(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
 func preflightClaudeAgentControlNode(agent AgentConfig) error {
 	if !isClaudeCodeAgent(agent) {
 		return nil
 	}
-	if path, err := lookupAgentControlNode("node"); err == nil {
-		version, versionErr := readAgentControlNodeVersion(path)
-		majorText, _, hasMinor := strings.Cut(strings.TrimPrefix(version, "v"), ".")
-		major, parseErr := strconv.Atoi(majorText)
-		// Match runtime-plugins/claude-preloop/package.json engines.node.
-		if versionErr == nil && parseErr == nil && hasMinor && major >= 20 {
-			return nil
-		}
+	if path, err := lookupAgentControlNode("node"); err == nil && agentControlNodeSupported(path) {
+		return nil
+	}
+	const rerun = "then rerun `preloop agents onboard \"Claude Code\"`"
+	if found := findAgentControlNodeOffPath(); found != "" {
+		return fmt.Errorf("Claude Code Agent Control requires Node.js 20 or newer on PATH. A supported Node.js is installed at %s but is not on PATH. Run `export PATH=\"%s:$PATH\"` in this shell, verify `node --version`, %s", found, filepath.Dir(found), rerun)
 	}
 	repair := "Install Node.js 20 or newer from https://nodejs.org and add its bin directory to PATH"
 	if runtime.GOOS == "darwin" {
 		repair = "Run `brew install node@22` and `export PATH=\"$(brew --prefix node@22)/bin:$PATH\"` in this shell"
 	}
-	return fmt.Errorf("Claude Code Agent Control requires a working Node.js 20 or newer on PATH. %s, verify `node --version`, then rerun `preloop agents onboard \"Claude Code\"`", repair)
+	return fmt.Errorf("Claude Code Agent Control requires a working Node.js 20 or newer on PATH. %s, verify `node --version`, %s", repair, rerun)
+}
+
+// preflightLocalAgentPrerequisites checks the local prerequisites of
+// onboarding before any prompt, so a missing prerequisite fails before the
+// operator answers questions and before anything is written. Manual mode
+// (forced, or chosen because a target is not writable) does not install
+// the runtime plugin, so it skips the Node check, as the apply step does.
+func preflightLocalAgentPrerequisites(agent AgentConfig, opts managedEnrollmentOptions) error {
+	if !isClaudeCodeAgent(agent) || opts.ForceManual || opts.NoAgentControl {
+		// --no-agent-control installs no plugin, so nothing needs Node.
+		return nil
+	}
+	if len(runWritabilityPreflight(onboardingWriteTargets(agent, opts)).blocked()) > 0 {
+		return nil
+	}
+	return preflightClaudeAgentControlNode(agent)
 }
 
 // systemdLogPathUsable reports whether path can be written as a systemd
