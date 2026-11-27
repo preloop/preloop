@@ -80,9 +80,16 @@ generates a random id once and keeps it in the CLI config directory. All-user
 reporting reuses an existing fallback or requires `--device-ref`; it does not
 create an identity file.
 
-## What is never sent
+## What the report never carries
 
-The shipped report serializers omit local profile names, hostnames, home or
+Since the release that added [extension content for review](#extension-content),
+a report from the current user is followed by a second upload: the redacted
+text of the extensions it lists. That upload is on by default and has three
+opt-outs. Read that section before turning reporting on. It replaces the
+earlier statement on this page that no command string and no file content
+leaves the host.
+
+The discovery report itself still omits local profile names, hostnames, home or
 config paths in clear, file bodies, credential files, environment values, MCP
 server names, source URLs, hook command strings and arguments. V4 adds the
 bounded authored metadata described under [Extensions](#extensions), including
@@ -243,7 +250,8 @@ malformed files mark managed configuration incomplete and the control unknown.
 from the managed-config status. The overall report retains its most severe state
 and accumulated error codes. This does not
 inspect higher managed sources or establish the effective policy in the app.
-Commands, file contents, environment values and credentials are never sent.
+All-user reports never upload extension content: commands, file contents,
+environment values and credentials are not sent by this mode.
 Offline profile inventory remains limited to profile configuration.
 
 Offline v2 output also associates probe results with `profile_ref`. Its fresh
@@ -327,7 +335,10 @@ trigger a downgrade. Older CLIs continue to work against the new server.
 
 Extension identifiers (plugin, skill, command, MCP server and hook event names, versions,
 and marketplace names) are sent in clear. Marketplace and git URLs, hook
-commands, file contents and paths are not. Local/git identifiers containing a
+commands, file contents and paths are not part of this inventory record. Hook
+commands and file text are uploaded separately as
+[extension content](#extension-content) unless that is turned off; URLs and
+home paths are not. Local/git identifiers containing a
 profile login or home path segment, and project identifiers with that personal
 information, become `hash:<16 hex characters>` with `id_hashed: true`.
 Marketplace plugin identifiers remain unchanged. Source locations are represented
@@ -518,8 +529,11 @@ preserved so inspecting an extension cannot execute terminal escape sequences.
 ### Content hashes
 
 Every extension record carries `content_hash` and `content_hash_status`
-(`ok`, `too_large` or `unreadable`). Only the final hash of content leaves the device. File lists and bodies never
-do; the descriptive front matter fields above are a separate, bounded class.
+(`ok`, `too_large` or `unreadable`). The inventory record carries only the
+final hash of content, never a file list or a body; the descriptive front
+matter fields above are a separate, bounded class. With
+[extension content](#extension-content) on, the file list and the redacted
+text behind that hash are uploaded separately, addressed by the same hash.
 
 | Kind | Hash input |
 |---|---|
@@ -547,8 +561,9 @@ For hooks the collector hashes each command locally, sorts the `sha256:<hex>`
 values, joins them with newlines (no trailing newline), then hashes that string.
 Neither commands nor intermediate hashes leave the device.
 
-A hash shows that the files changed. It does not show what changed, and it does
-not prove an agent loaded those files.
+A hash shows that the files changed. It does not prove an agent loaded those
+files. What changed is shown by the console's content diff when content is
+stored for both hashes.
 
 ### Pinned approvals
 
@@ -663,3 +678,250 @@ The Agents toolbar offers **Extensions** with the account-wide count in list,
 cards and canvas views. It opens the same inventory without changing view mode;
 closing and reopening keeps the loaded rows. The agent detail section loads on
 first expansion and links directly to this account inventory.
+
+## Extension content
+
+Editions: OSS, Cloud, Enterprise
+
+An approver cannot judge "skill careful" or "hook PreToolUse (1 command)" from
+a name and a hash. So after a current-user `preloop agents discover --report`
+the collector also uploads the text behind each reported content hash. This is
+**on by default** and is a different data class from everything above: it is
+text written by extension authors, and it can contain credentials, internal
+host names and customer data. The sections below say exactly what is sent, what
+is done to it first, how to turn it off and who can read it.
+
+### What is uploaded
+
+| Kind | Uploaded |
+|---|---|
+| Skill | The list of files in the skill directory (relative path, SHA-256, size) and the text of `SKILL.md` and of the other text files beside it |
+| Command | The text of the command file |
+| Hook | Each command string with the matcher it runs under. Both pass through redaction |
+| Plugin | The list of files in the install directory, and the text of the manifest (`plugin.json`) and of everything under `skills/`, `commands/` and `hooks/`. Other files are listed by name only |
+
+Never uploaded, and marked in the file list with the reason:
+
+- a binary file (not valid UTF-8, or containing a NUL byte): `binary`;
+- a symlink, which is never followed: `symlink`;
+- a file over 256 KiB: `too_large`;
+- a file that contains a private key block: `private_key`;
+- a file that changed or could not be read while it was collected: `unreadable`;
+- text beyond the per extension cap: `over_budget`.
+
+All-user reports (`--all-users`) and offline `--inventory` never upload
+content. Extensions whose content hash could not be computed (`too_large`,
+`unreadable`) have no content either.
+
+### Size caps
+
+| Cap | Collector | Server |
+|---|---|---|
+| One file or hook command | 256 KiB | 256 KiB |
+| Text of one extension | 1 MiB and 200 files with text | 1 MiB, 500 listed files, 200 hook commands |
+| One report | 8 MiB, sent in requests of at most 2 MiB and 50 extensions | 8 MiB and 100 extensions per request |
+| One account | | 256 MiB of stored text; uploads past it are refused |
+
+Collector and server upload budgets include UTF-8 file contents, hook commands
+and each incoming matcher once. The account storage budget also includes the
+server's retained matcher history, including its copy of the current assignment.
+A refresh charges
+only the change in stored bytes, so reporting unchanged content remains possible
+at the cap. Rejected updates leave the previously stored content intact.
+
+The numbers were checked against a developer home with 63 skills and 7
+plugins: the largest `SKILL.md` was 85 KiB and the 90th percentile 52 KiB, the
+largest plugin held 612 KiB of text in 61 skill, command and hook files, and
+all `SKILL.md` files together were 1.5 MiB. An extension that does not fit in
+one report is sent by the next one, smallest first. The server enforces its
+own caps and does not trust the collector's.
+
+### Content is addressed by the inventory hash
+
+Content is stored under the `content_hash` the inventory already reports, once
+per account. Before uploading, the collector asks the server which reported
+hashes it lacks (`POST /api/v1/agents/extension-content/missing`) and sends
+only those, so unchanged extensions are uploaded once per account, not once
+per device or per run.
+
+The server recomputes the hash from what it receives: the tree hash from the
+uploaded file list, the command hash from the file digest, the hook hash from
+the per-command hashes. An upload that does not reproduce its hash is refused.
+Text that was not redacted must also match its own SHA-256, and is then shown
+as **Matches its hash**. Text that was redacted cannot be checked (the hash is
+of the original bytes) and is shown as redacted. The first upload of a hash
+wins. A later one replaces it only when it is better evidence and loses
+nothing: it has text where the stored row has none, or it is fully verified
+where the stored row is not and carries at least as many texts, or it carries
+more texts and is at least as well verified. A row that holds no text is asked
+for again on every report. Content is accepted only for a hash that the same
+device's inventory reports, and a credential bound to one device is held to
+that device on both content routes by the same authorizer that checks its
+discovery reports.
+
+#### What a hook hash covers
+
+A hook's content hash is computed from its command strings. The matcher, which
+decides when a command runs, is not in that hash. So a matcher can be widened,
+or differ between two devices, while the hash and any pin on it stay the same.
+The console says this on every hook: **a pin on a hook hash covers the
+commands, not the matchers.** To make a change visible, a hook is asked for
+again on every report (it is small), and every distinct assignment of matchers
+to commands reported for a hash is kept, the newest 10, with the time it was
+last reported. When more than one exists the console lists them all.
+
+### Redaction
+
+Redaction runs in the collector, before upload. It is deterministic: the same
+file always produces the same text. Each finding is replaced by a typed
+placeholder such as `[REDACTED:github-pat]`, and the file record carries the
+count per type. The content hash stays the hash of the original bytes.
+
+| Rule set | What it covers |
+|---|---|
+| gitleaks default rules, version 8.30.1 (the version this repository's own secret scan pins), 221 rules | Known credential formats: cloud provider keys, source forge tokens, chat and payment tokens, JWTs and others, with gitleaks' keyword filters, entropy floors and its value allowlists. Its path allowlists (`node_modules/`, lock files, images) are not applied: a file name never switches a rule off |
+| `authorization-header` | The value of `Authorization`, `Proxy-Authorization`, `X-Api-Key`, `X-Auth-Token`, `X-Access-Token`, `Api-Key`, `Cookie` and `Set-Cookie` headers, after any scheme word (`Bearer`, `Basic`, `OAuth`, a vendor's own) |
+| `url-credentials` | The `user:password` part of any URL, up to the last `@` before the host, and a long token used as the user part |
+| `secret-assignment` | The value assigned (`=`, `:=`, `=>`, `:`) to a name that contains `secret`, `token`, `password`, `passphrase`, `pwd`, `api_key`, `access_key`, `private_key`, `signing_key`, `encryption_key`, `session_key`, `credential`, `authorization`, `auth_key`, `dsn` or `connection_string`, whatever its entropy. Type annotations (`password: str = "..."`), string prefixes (`b"..."`), triple quotes, backticks and escaped quotes are understood |
+| `high-entropy` | A bare token of 24 or more characters with letters and digits and Shannon entropy of at least 4.0, or 32 or more hexadecimal characters |
+| `home-path` | The home directory of the reporting user and any `/Users/<name>`, `/home/<name>` or `C:\Users\<name>` prefix |
+
+A file with a private key block (PEM `-----BEGIN ... PRIVATE KEY`, matched
+loosely so that odd spacing or a wrapped header line still counts, or a PuTTY
+key file) is not uploaded at all, redacted or not. The server refuses such
+text too if a modified collector sends it.
+
+Values that only refer to a secret are kept so the text stays readable:
+`$TOKEN`, `${TOKEN}`, `$(command)`, `<token>`, `{{ template }}`, `%VAR%`,
+`true`, `false`, `null`. Bracketed forms must be closed: `<S3cret` is a value.
+After `name:` alone on a line, words that describe a field are kept too
+(`string`, `required`, `optional` and similar).
+
+**Redaction reduces the chance that a secret is stored; it is not a
+guarantee.** Known limits:
+
+- A secret with no recognisable format, no secret-looking name beside it and
+  low entropy is not found. A password in a sentence is an example.
+- In the middle of a sentence, after a colon and without quotes
+  (`the password: hunter2x is old`), a value is redacted only if it has 8 or
+  more characters and a digit, or 16 or more characters with entropy of at
+  least 3.5. This keeps prose readable. `name: value` alone on a line is
+  always redacted.
+- A value that starts with `$` and looks like a variable name (`$ecret123`)
+  cannot be told from a variable reference and is kept.
+- Secrets that are split across lines, encoded (base64 of a JSON document,
+  for example), or built at run time are not found.
+- Internal host names, customer names and other sensitive text that is not a
+  credential are not redacted.
+- File names are sent as they are.
+- The hash of the original file is sent with the redacted text. Someone who
+  can read both could test guesses for a short, low-entropy redacted value.
+- Redaction can remove text that was not a secret, such as a long checksum.
+
+If any of this is unacceptable for an extension, a device or the account, use
+one of the opt-outs below.
+
+### Turning it off
+
+| Level | How | Effect |
+|---|---|---|
+| Account | **Settings > Account > Extension content > Collect extension content for review** (`PUT /api/v1/account/extension-content/settings`, permission `manage_policies`) | The server refuses content with `409 extension_content_disabled`, tells collectors `collect: false` so they read and send nothing, and deletes every content stored for the account in the same transaction. Both are audited |
+| Device | `--no-extension-content`, `PRELOOP_NO_EXTENSION_CONTENT=1`, or `discovery.extension_content: false` in the CLI config | The collector makes no content request at all |
+| Extension | An empty `.preloop-no-content` file in the skill or plugin directory, or a pattern in `discovery.extension_content_exclude` | The collector sends a marker with no text; the console says the extension is excluded on the device. Excluding a plugin also excludes the skills it bundles |
+
+Exclusion patterns are globs on the extension name, optionally prefixed with
+the kind:
+
+```yaml
+discovery:
+  extension_content: true
+  extension_content_exclude:
+    - "skill:internal-*"
+    - "hook:*"
+    - "plugin:*@private-marketplace"
+```
+
+A `.preloop-no-content` file is part of the directory, so adding it changes the
+content hash once. Commands and hooks have no directory of their own; exclude
+them with a pattern.
+
+### Notice on the device
+
+The first time a device is about to upload content, the collector prints, once
+and before sending, what will be sent, what is redacted, how long it is kept
+and each way to turn it off. With `--json` the notice goes to stderr. The
+notice is recorded in the CLI config directory (`extension-content-notice`).
+A scheduled job sees it in its first run's output.
+
+### Upgrading an account that reported before this release
+
+Nothing is collected retroactively and nothing changes for an existing
+deployment until a collector is upgraded:
+
+- Content is uploaded only by a CLI that has this feature, and that CLI prints
+  the notice above before its first upload. An older CLI keeps sending the
+  report it always sent, and the server accepts it. Its rows have no content.
+- A current CLI against an older server finds no content routes and sends
+  nothing. It does not print the notice and does not fail the report.
+- The console shows account administrators a one-time banner on the
+  Extensions tab that names the setting and links to it. Dismissing it, or
+  changing the setting, is recorded.
+- The migration creates an empty table and touches no existing row.
+
+### Storage, retention and who can read
+
+- **Scope.** One row per account, kind and hash in `extension_content`.
+  Identical hashes in two accounts are two rows; a hash another account holds
+  reads as absent and is uploaded again.
+- **Encryption.** The document (file list, text, hook commands) is encrypted
+  with the deployment's Fernet key (`SECURITY__ENCRYPTION_KEY`), the same key
+  and primitive that protect session artifacts and stored credentials. The
+  plain columns hold counts only.
+- **Retention.** Content is deleted 90 days after the last report that carried
+  its hash, or sooner when the account's plan keeps history for fewer days. It
+  is also deleted as soon as no inventory row and no approval pin of the
+  account refers to its hash, which is what happens when the discovery purge
+  removes the inventory. A pin keeps content only inside the retention window;
+  afterwards the pin remains and the console says the text is gone. Deleting
+  the account deletes its content.
+- **Readers.** `GET /api/v1/agents/extension-content/{kind}/{content_hash}`
+  needs `manage_agents`, the permission that gates approvals. Viewers with
+  `view_agents` see names, hashes and states, not content. A `report_discovery`
+  key can upload and can never read. Every read writes an
+  `extension_content.read` audit row with the reader, kind and hash.
+- **Logs.** No route logs content or returns it in an error. Validation errors
+  on the content routes are a fixed message without the rejected input.
+
+| Method and path | Permission |
+|---|---|
+| `POST /api/v1/agents/extension-content/missing` | `report_discovery` |
+| `POST /api/v1/agents/extension-content` | `report_discovery` |
+| `GET /api/v1/agents/extension-content/{kind}/{content_hash}` | `manage_agents` |
+| `GET /api/v1/account/extension-content/settings` | `view_agents` |
+| `PUT /api/v1/account/extension-content/settings` | `manage_policies` |
+
+Audit actions: `extension_content.read`, `extension_content.settings_updated`,
+`extension_content.deleted`, `extension_content.notice_acknowledged`.
+
+### Reading content in the console
+
+On the **Extensions** tab, **Content hashes** lists the hashes seen for an
+extension. **Read content** on a hash shows what a device uploaded for it:
+
+- a skill or command as rendered Markdown, with **Show raw** for the source;
+- hook commands in a code block, each with its matcher;
+- a plugin as a file tree with a viewer.
+
+Each redaction is stated with its type and count, and each file without text
+says why. A Markdown file whose rendered form would leave something out (an
+HTML comment, a raw HTML element, an image, a link title or a link that is not
+`http`, `https` or `mailto`) opens as raw source with a note that says so: an
+agent reads the whole file, so the reviewer is shown the whole file. When a pinned hash differs from the one being read, **Compare with
+pinned** shows a line diff between the two. **Approve this exact content** pins
+the hash on screen.
+
+Extension text is written by a third party. The console renders it as text, or
+as Markdown through an allowlist: headings, paragraphs, lists, code, tables and
+links to `http`, `https` and `mailto` only. Images, raw HTML, scripts, styles,
+forms and frames are removed, so opening a document cannot run code, load a
+remote resource or draw over the console.

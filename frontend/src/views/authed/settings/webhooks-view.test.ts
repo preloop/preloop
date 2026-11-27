@@ -79,6 +79,7 @@ describe('WebhooksView', () => {
       endpoints?: unknown[];
       deliveries?: unknown[];
       created?: Record<string, unknown>;
+      fleet?: boolean;
     } = {}
   ) {
     calls = [];
@@ -94,7 +95,19 @@ describe('WebhooksView', () => {
             headers: { 'Content-Type': 'application/json' },
           });
         if (url.includes('/event-webhooks/catalogue')) {
-          return json(CATALOGUE);
+          return json({
+            ...CATALOGUE,
+            event_types: options.fleet
+              ? [
+                  ...CATALOGUE.event_types,
+                  {
+                    name: 'fleet.finding',
+                    description:
+                      'A configured fleet alert reports a finding transition.',
+                  },
+                ]
+              : CATALOGUE.event_types,
+          });
         }
         if (url.includes('/event-webhooks/endpoints') && method === 'POST') {
           return json(
@@ -281,6 +294,40 @@ describe('WebhooksView', () => {
       'An approval request was raised'
     );
   });
+
+  for (const fleet of [true, false]) {
+    it(`offers fleet findings only when the server catalogue includes them (${fleet})`, async () => {
+      stubFetch({ fleet });
+      const element = await mount();
+      (element as any).openCreate();
+      await element.updateComplete;
+      const checkbox = [
+        ...element.shadowRoot!.querySelectorAll('sl-checkbox'),
+      ].find((node) => node.textContent?.includes('fleet.finding'));
+      if (!fleet) {
+        expect(checkbox).not.to.exist;
+        return;
+      }
+      expect(checkbox).to.exist;
+      checkbox!.checked = true;
+      checkbox!.dispatchEvent(new Event('sl-change'));
+      const url = element.shadowRoot!.querySelector('sl-input')!;
+      url.value = 'https://receiver.example.com/events';
+      url.dispatchEvent(new Event('sl-input'));
+      await element.updateComplete;
+      const create = [
+        ...element.shadowRoot!.querySelectorAll(
+          'sl-dialog[label="Add webhook endpoint"] sl-button'
+        ),
+      ].find((button) => button.textContent?.includes('Add endpoint'))!;
+      (create as HTMLElement).click();
+      await waitUntil(() => calls.some((call) => call.method === 'POST'));
+      expect(
+        JSON.parse(calls.find((call) => call.method === 'POST')!.body)
+          .event_types
+      ).to.deep.equal(['fleet.finding']);
+    });
+  }
 
   it('offers no edit controls on an approval workflow endpoint', async () => {
     stubFetch({ endpoints: [SHIM_ENDPOINT] });

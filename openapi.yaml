@@ -2682,6 +2682,213 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/extension-content/missing:
+    post:
+      tags:
+      - Agent discovery
+      summary: Query Missing Content
+      description: 'Tell a collector whether to send content and which hashes are
+        lacking.
+
+
+        When the account has turned collection off the answer is ``collect:
+
+        false`` with reason ``account_opt_out`` and an empty list, so a collector
+
+        sends nothing and can say why.'
+      operationId: query_missing_content_api_v1_agents_extension_content_missing_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContentQuery'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContentQueryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/agents/extension-content:
+    post:
+      tags:
+      - Agent discovery
+      summary: Upload Content
+      description: 'Store redacted extension content for hashes the inventory reports.
+
+
+        Each item is checked on its own: a rejected item is listed with a fixed
+
+        reason code and the rest of the batch is still stored.'
+      operationId: upload_content_api_v1_agents_extension_content_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContentUpload'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContentUploadResponse'
+        '409':
+          description: 'extension_content_disabled: the account opted out'
+        '413':
+          description: The batch holds more text than one upload may
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/agents/extension-content/{extension_kind}/{content_hash}:
+    get:
+      tags:
+      - Agent discovery
+      summary: Read Content
+      description: 'Read the stored content of one hash. Every read is audited.
+
+
+        The audit row names the reader, the kind and the hash. It holds no text
+
+        and no file name.'
+      operationId: read_content_api_v1_agents_extension_content__extension_kind___content_hash__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: extension_kind
+        in: path
+        required: true
+        schema:
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          - mcp_server
+          type: string
+          title: Extension Kind
+      - name: content_hash
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+          title: Content Hash
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionContentRead'
+        '404':
+          description: No content stored for this hash
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/account/extension-content/settings:
+    get:
+      tags:
+      - Agent discovery
+      summary: Get Content Settings
+      description: Return the switch, whether the notice is pending, and what is stored.
+      operationId: get_content_settings_api_v1_account_extension_content_settings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionContentSettingsResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Agent discovery
+      summary: Update Content Settings
+      description: 'Turn collection on or off, or acknowledge the one-time notice.
+
+
+        Turning collection off deletes every content stored for the account in
+
+        the same transaction and records how many rows went in the audit row.
+
+        Collectors are told on their next report and send nothing.'
+      operationId: update_content_settings_api_v1_account_extension_content_settings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtensionContentSettingsUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtensionContentSettingsResponse'
+        '403':
+          description: Caller may not manage account policies
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/telemetry/otlp/v1/metrics:
     post:
       tags:
@@ -35064,6 +35271,11 @@ components:
           - type: 'null'
           title: Last Ignored Reason
           description: Most recent scope-related ignored delivery reason.
+        review_requests:
+          additionalProperties: true
+          type: object
+          title: Review Requests
+          description: Last label poll and up to ten recent explicit review outcomes.
         secret:
           type: string
           title: Secret
@@ -35118,6 +35330,11 @@ components:
           - type: 'null'
           title: Last Ignored Reason
           description: Most recent scope-related ignored delivery reason.
+        review_requests:
+          additionalProperties: true
+          type: object
+          title: Review Requests
+          description: Last label poll and up to ten recent explicit review outcomes.
       type: object
       required:
       - callback_configured
@@ -37867,6 +38084,59 @@ components:
           title: Default Flow Id
       type: object
       title: ConnectionUpdate
+    ContentFile:
+      properties:
+        path:
+          type: string
+          maxLength: 1024
+          minLength: 1
+          title: Path
+        sha256:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Sha256
+        size:
+          anyOf:
+          - type: integer
+            maximum: 16777216.0
+            minimum: 0.0
+          - type: 'null'
+          title: Size
+        status:
+          type: string
+          enum:
+          - stored
+          - binary
+          - too_large
+          - symlink
+          - private_key
+          - over_budget
+          - not_selected
+          - unreadable
+          title: Status
+        text:
+          anyOf:
+          - type: string
+            maxLength: 262144
+          - type: 'null'
+          title: Text
+        redactions:
+          patternProperties:
+            ^[a-z0-9][a-z0-9-]{0,63}$:
+              type: integer
+              maximum: 100000.0
+              minimum: 1.0
+          type: object
+          title: Redactions
+      additionalProperties: false
+      type: object
+      required:
+      - path
+      - status
+      title: ContentFile
+      description: One entry of an extension's file list, with text when it was sent.
     ContentHashBucket:
       properties:
         content_hash:
@@ -37896,6 +38166,269 @@ components:
       title: ContentHashBucket
       description: Devices reporting one content hash, or the null bucket with its
         status.
+    ContentHook:
+      properties:
+        matcher:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+          title: Matcher
+        command_hash:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+          title: Command Hash
+        status:
+          type: string
+          enum:
+          - stored
+          - too_large
+          - private_key
+          - over_budget
+          title: Status
+        command:
+          anyOf:
+          - type: string
+            maxLength: 262144
+          - type: 'null'
+          title: Command
+        redactions:
+          patternProperties:
+            ^[a-z0-9][a-z0-9-]{0,63}$:
+              type: integer
+              maximum: 100000.0
+              minimum: 1.0
+          type: object
+          title: Redactions
+        matcher_redactions:
+          patternProperties:
+            ^[a-z0-9][a-z0-9-]{0,63}$:
+              type: integer
+              maximum: 100000.0
+              minimum: 1.0
+          type: object
+          title: Matcher Redactions
+      additionalProperties: false
+      type: object
+      required:
+      - command_hash
+      - status
+      title: ContentHook
+      description: One hook command with the matcher it runs under.
+    ContentItem:
+      properties:
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          - mcp_server
+          title: Extension Kind
+        content_hash:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+          title: Content Hash
+        files:
+          items:
+            $ref: '#/components/schemas/ContentFile'
+          type: array
+          maxItems: 500
+          title: Files
+        hooks:
+          items:
+            $ref: '#/components/schemas/ContentHook'
+          type: array
+          maxItems: 200
+          title: Hooks
+        withheld:
+          anyOf:
+          - type: string
+            enum:
+            - excluded
+            - too_large
+          - type: 'null'
+          title: Withheld
+      additionalProperties: false
+      type: object
+      required:
+      - extension_kind
+      - content_hash
+      title: ContentItem
+      description: The content behind one inventory hash, redacted on the device.
+    ContentLimits:
+      properties:
+        text_bytes:
+          type: integer
+          title: Text Bytes
+          default: 262144
+        item_bytes:
+          type: integer
+          title: Item Bytes
+          default: 1048576
+        item_entries:
+          type: integer
+          title: Item Entries
+          default: 500
+        upload_items:
+          type: integer
+          title: Upload Items
+          default: 100
+        upload_bytes:
+          type: integer
+          title: Upload Bytes
+          default: 8388608
+      type: object
+      title: ContentLimits
+      description: Server-side caps, so a collector can stay under them.
+    ContentPair:
+      properties:
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          - mcp_server
+          title: Extension Kind
+        content_hash:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+          title: Content Hash
+      additionalProperties: false
+      type: object
+      required:
+      - extension_kind
+      - content_hash
+      title: ContentPair
+      description: One extension content, named by kind and inventory hash.
+    ContentQuery:
+      properties:
+        workstation_fingerprint:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Workstation Fingerprint
+        items:
+          items:
+            $ref: '#/components/schemas/ContentPair'
+          type: array
+          maxItems: 1000
+          title: Items
+      additionalProperties: false
+      type: object
+      required:
+      - items
+      title: ContentQuery
+      description: 'Collector question: which of these hashes does the account lack.'
+    ContentQueryResponse:
+      properties:
+        collect:
+          type: boolean
+          title: Collect
+        reason:
+          anyOf:
+          - type: string
+            const: account_opt_out
+          - type: 'null'
+          title: Reason
+        missing:
+          items:
+            $ref: '#/components/schemas/ContentPair'
+          type: array
+          title: Missing
+        retention_days:
+          type: integer
+          title: Retention Days
+        limits:
+          $ref: '#/components/schemas/ContentLimits'
+      type: object
+      required:
+      - collect
+      - missing
+      - retention_days
+      title: ContentQueryResponse
+      description: Whether the account collects content, and which hashes it lacks.
+    ContentRejection:
+      properties:
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          - mcp_server
+          title: Extension Kind
+        content_hash:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+          title: Content Hash
+        reason:
+          type: string
+          title: Reason
+      additionalProperties: false
+      type: object
+      required:
+      - extension_kind
+      - content_hash
+      - reason
+      title: ContentRejection
+      description: An item the server did not store, with a fixed reason code.
+    ContentUpload:
+      properties:
+        workstation_fingerprint:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Workstation Fingerprint
+        collector_version:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          - type: 'null'
+          title: Collector Version
+        redaction_rules:
+          type: string
+          pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          title: Redaction Rules
+        items:
+          items:
+            $ref: '#/components/schemas/ContentItem'
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Items
+      additionalProperties: false
+      type: object
+      required:
+      - workstation_fingerprint
+      - redaction_rules
+      - items
+      title: ContentUpload
+      description: One batch of content from one device.
+    ContentUploadResponse:
+      properties:
+        stored:
+          type: integer
+          title: Stored
+        kept:
+          type: integer
+          title: Kept
+        rejected:
+          items:
+            $ref: '#/components/schemas/ContentRejection'
+          type: array
+          title: Rejected
+      type: object
+      required:
+      - stored
+      - kept
+      - rejected
+      title: ContentUploadResponse
+      description: Counts of what happened to a batch. No text is echoed.
     ContinuationAdoptRequest:
       properties:
         recovery_mode:
@@ -41794,6 +42327,153 @@ components:
       - agents
       title: ExtensionBundleCounts
       description: Observed components within an installed plugin.
+    ExtensionContentRead:
+      properties:
+        extension_kind:
+          type: string
+          enum:
+          - plugin
+          - skill
+          - hook
+          - command
+          - mcp_server
+          title: Extension Kind
+        content_hash:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+          title: Content Hash
+        files:
+          items:
+            $ref: '#/components/schemas/StoredFile'
+          type: array
+          title: Files
+        hooks:
+          items:
+            $ref: '#/components/schemas/StoredHook'
+          type: array
+          title: Hooks
+        matcher_sets:
+          items:
+            $ref: '#/components/schemas/StoredMatcherSet'
+          type: array
+          title: Matcher Sets
+        withheld:
+          anyOf:
+          - type: string
+            enum:
+            - excluded
+            - too_large
+          - type: 'null'
+          title: Withheld
+        verification:
+          type: string
+          enum:
+          - verified
+          - partial
+          - unverified
+          - none
+          title: Verification
+        redacted:
+          type: boolean
+          title: Redacted
+        redaction_count:
+          type: integer
+          title: Redaction Count
+        withheld_count:
+          type: integer
+          title: Withheld Count
+        stored_bytes:
+          type: integer
+          title: Stored Bytes
+        redaction_rules:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Redaction Rules
+        collector_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Collector Version
+        first_stored_at:
+          type: string
+          format: date-time
+          title: First Stored At
+        last_reported_at:
+          type: string
+          format: date-time
+          title: Last Reported At
+        retention_days:
+          type: integer
+          title: Retention Days
+      additionalProperties: false
+      type: object
+      required:
+      - extension_kind
+      - content_hash
+      - files
+      - hooks
+      - verification
+      - redacted
+      - redaction_count
+      - withheld_count
+      - stored_bytes
+      - first_stored_at
+      - last_reported_at
+      - retention_days
+      title: ExtensionContentRead
+      description: Stored content of one hash, decrypted for a permitted reader.
+    ExtensionContentSettingsResponse:
+      properties:
+        collect_enabled:
+          type: boolean
+          title: Collect Enabled
+        notice_pending:
+          type: boolean
+          title: Notice Pending
+        stored_contents:
+          type: integer
+          title: Stored Contents
+        stored_bytes:
+          type: integer
+          title: Stored Bytes
+        retention_days:
+          type: integer
+          title: Retention Days
+        updated_by_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated By User Id
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+      type: object
+      required:
+      - collect_enabled
+      - notice_pending
+      - stored_contents
+      - stored_bytes
+      - retention_days
+      title: ExtensionContentSettingsResponse
+      description: The account switch and what is stored under it.
+    ExtensionContentSettingsUpdate:
+      properties:
+        collect_enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Collect Enabled
+        acknowledge_notice:
+          type: boolean
+          title: Acknowledge Notice
+          default: false
+      additionalProperties: false
+      type: object
+      title: ExtensionContentSettingsUpdate
+      description: Change the switch, acknowledge the one-time notice, or both.
     ExtensionCoverage:
       properties:
         fingerprint:
@@ -60861,6 +61541,142 @@ components:
       type: object
       title: SpendOutlierSettingsResponse
       description: The account's thresholds; defaults when never configured.
+    StoredFile:
+      properties:
+        path:
+          type: string
+          title: Path
+        sha256:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sha256
+        size:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Size
+        status:
+          type: string
+          enum:
+          - stored
+          - binary
+          - too_large
+          - symlink
+          - private_key
+          - over_budget
+          - not_selected
+          - unreadable
+          title: Status
+        text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Text
+        redactions:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Redactions
+        verified:
+          type: boolean
+          title: Verified
+          default: false
+      type: object
+      required:
+      - path
+      - status
+      title: StoredFile
+      description: A file as an approver reads it.
+    StoredHook:
+      properties:
+        matcher:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Matcher
+        command_hash:
+          type: string
+          title: Command Hash
+        status:
+          type: string
+          enum:
+          - stored
+          - too_large
+          - private_key
+          - over_budget
+          title: Status
+        command:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Command
+        redactions:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Redactions
+        matcher_redactions:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Matcher Redactions
+        verified:
+          type: boolean
+          title: Verified
+          default: false
+      type: object
+      required:
+      - command_hash
+      - status
+      title: StoredHook
+      description: A hook command as an approver reads it.
+    StoredMatcher:
+      properties:
+        matcher:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Matcher
+        command_hash:
+          type: string
+          title: Command Hash
+      type: object
+      required:
+      - command_hash
+      title: StoredMatcher
+      description: The matcher one command runs under.
+    StoredMatcherSet:
+      properties:
+        digest:
+          type: string
+          title: Digest
+        matchers:
+          items:
+            $ref: '#/components/schemas/StoredMatcher'
+          type: array
+          title: Matchers
+        first_seen_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: First Seen At
+        last_seen_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Seen At
+      type: object
+      required:
+      - digest
+      - matchers
+      title: StoredMatcherSet
+      description: 'One reported assignment of matchers to a hook''s commands.
+
+
+        The content hash covers commands, not matchers. Every distinct
+
+        assignment a device reports for the hash is kept, newest last.'
     StoredRowRedactionRequest:
       properties:
         dry_run:

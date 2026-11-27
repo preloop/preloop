@@ -129,6 +129,18 @@ preloop auth status                  # Show authentication status
 preloop auth token                   # Print token for scripting
 ```
 
+For local browser login, sign in and choose **Authorize CLI**, then return to the
+terminal. It waits up to five minutes and prints **Successfully authenticated!**
+when the login is saved. If you closed the browser tab, reopen the URL printed
+by the terminal before the wait ends.
+
+For headless login, approve in the browser, copy the one-time code, and paste it
+at **Authorization code:** in the waiting terminal. The terminal has no input
+timeout; the code expires five minutes after approval. Keep the browser tab
+open until the terminal reports success. If you lose the code, reopen the URL
+and approve again. Without an interactive terminal, use
+`preloop login --headless --code <code>` with the same server URL.
+
 The login flow resolves the API URL in this order: `--url`, `PRELOOP_URL`, config file, then the default `https://preloop.ai`.
 
 An interactive login asks whether to install a runner (default no). Skip it with `--no-runner` or `PRELOOP_NO_RUNNER=1`. `preloop runner setup` runs the same step later. Headless login, `--token`, and `PRELOOP_TOKEN` never install a runner.

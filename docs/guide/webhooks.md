@@ -45,6 +45,15 @@ with one-line descriptions, plus the signature header name, the verification
 tolerance and the retry schedule this deployment is running. Read the contract
 from there rather than hard-coding it.
 
+Servers exposing the `fleet_coverage` capability also list `fleet.finding` in the
+catalogue and the console's event selector. Its production and delivery remain
+the fleet provider's responsibility. The workflow compatibility delivery path
+uses the configured default approval workflow's webhook; selecting the event on
+an account endpoint does not replace that provider's delivery configuration.
+Configure the extension rule's enabled state and attention, email, push and
+webhook channels in **Settings → Device fleet → Alert settings**. Saving this
+form preserves the server's channel defaults unless you change the controls.
+
 ## The envelope
 
 Every request body is one JSON object with exactly these keys:
@@ -88,6 +97,16 @@ Every request body is one JSON object with exactly these keys:
 | `agent.discovered` | Opt-in workstation discovery reports an agent tool that was not reported before | `candidate_id`, `agent_kind`, `agent_version`, `workstation_fingerprint` (salted hash), `config_path_hash` (salted hash), `mcp_server_count`, `enrolled`, `os_family`, `status`, `first_seen_at` |
 | `ai_model.credential_rejected` | A provider first rejects a customer model API key for authentication or billing | `ai_model_id`, `model_name`, `reference_id`, `provider`, `code` (`upstream_auth_rejected`, `upstream_billing_rejected`), sanitized `message`, `first_rejected_at`, `remedy` |
 | `agent.onboarded` | A managed-agent enrollment is validated for the first time | `agent_id`, `agent_name`, `agent_kind`, `source_type` (`discovered`, `custom`), `outcome` (`created`, `relinked`, `merged`), `enrollment_id`, `owner_user_id`, `actor_user_id`, `gateway_routed`, `mcp_rewritten`, `mcp_server_count` |
+| `fleet.finding` | A configured fleet alert opens or recovers | Provider-owned compatibility payload, not core v1 `data`; delivered through the default approval workflow's webhook (see below) |
+
+`fleet.finding` is selectable when the server exposes `fleet_coverage`, but its
+payload is owned by the fleet provider and is outside the core v1 envelope
+contract. The existing workflow compatibility path sends a generic HTTP receiver
+a top-level object with `type: "fleet_finding"`, `finding_id`, `rule`, `state`,
+`title`, `detail`, `evidence`, `limitation`, `opened_at`, `last_evaluated_at` and
+`url`; chat webhook targets receive a `text` body instead. It uses the default
+approval workflow's webhook, so selecting `fleet.finding` on an account endpoint
+does not redirect delivery there. The rule's webhook channel must also be enabled.
 
 `agent.discovered` fires once per new candidate row; a workstation that reports
 the same tool again only moves `last_seen_at`. It carries no user name,

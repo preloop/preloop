@@ -114,6 +114,76 @@ def test_telemetry_requires_explicit_ingest_and_preserves_enrollment_confinement
         (["enrollment:provision"], False),
     ],
 )
+def test_extension_content_upload_requires_the_discovery_scope(
+    db_session: Session,
+    test_user: models.User,
+    scopes: list[str],
+    allowed: bool,
+) -> None:
+    """A device key reaches the two collector routes and can never read."""
+    app = create_app()
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    with TestClient(app) as scope_client:
+        _check_extension_content_scope(
+            scope_client, db_session, test_user, scopes, allowed
+        )
+
+
+def _check_extension_content_scope(
+    scope_client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    scopes: list[str],
+    allowed: bool,
+) -> None:
+    crud_account.update(
+        db_session,
+        db_obj=crud_account.get(db_session, id=test_user.account_id),
+        obj_in={"primary_user_id": test_user.id},
+    )
+    headers = {"Authorization": f"Bearer {_key(db_session, test_user, scopes)}"}
+    asked = scope_client.post(
+        "/api/v1/agents/extension-content/missing", headers=headers, json={"items": []}
+    )
+    assert asked.status_code == (200 if allowed else 403), asked.text
+    sent = scope_client.post(
+        "/api/v1/agents/extension-content",
+        headers=headers,
+        json={
+            "workstation_fingerprint": "a" * 64,
+            "redaction_rules": "synthetic-1",
+            "items": [
+                {
+                    "extension_kind": "skill",
+                    "content_hash": "sha256:" + "0" * 64,
+                    "withheld": "excluded",
+                }
+            ],
+        },
+    )
+    assert sent.status_code == (200 if allowed else 403), sent.text
+    if "model_gateway:trusted_upstream" in scopes:
+        # Not a confined key: its owner's role decides the remaining routes.
+        return
+    for method, path in (
+        ("GET", "/api/v1/agents/extension-content/skill/sha256:" + "0" * 64),
+        ("GET", "/api/v1/account/extension-content/settings"),
+        ("PUT", "/api/v1/account/extension-content/settings"),
+    ):
+        refused = scope_client.request(method, path, headers=headers, json={})
+        assert refused.status_code == 403, (method, path, refused.text)
+
+
+@pytest.mark.parametrize(
+    "scopes,allowed",
+    [
+        (["report_discovery"], True),
+        (["model_gateway:trusted_upstream"], False),
+        (["mcp:read"], False),
+        (["telemetry:ingest"], False),
+        (["enrollment:provision"], False),
+    ],
+)
 def test_discovery_requires_its_scope_with_real_authentication(
     scope_client: TestClient,
     db_session: Session,
@@ -296,6 +366,10 @@ def test_all_account_rest_operations_confine_scoped_keys(
     allowed_paths = {
         "/api/v1/agents/discovery-salt",
         "/api/v1/agents/discovery-reports",
+        # Extension content upload, for report_discovery keys only; covered by
+        # test_extension_content_upload_requires_the_discovery_scope below.
+        "/api/v1/agents/extension-content/missing",
+        "/api/v1/agents/extension-content",
         "/api/v1/agents/enrollment/exchange",
         # Accepts only the app's own managed-agent credential and refuses
         # every other key; covered in tests/test_agent_enrollment.py.

@@ -987,6 +987,72 @@ describe('Device fleet', () => {
     [...view.shadowRoot.querySelectorAll('fieldset[data-rule]')].map(
       (f: HTMLElement) => f.dataset.rule as string
     );
+  for (const enabled of [true, false]) {
+    it(`round-trips the extension rule and its account toggle (${enabled})`, async () => {
+      history.replaceState({}, '', '?tab=settings');
+      const extension = {
+        channels: { attention: true, email: false, push: true, webhook: false },
+        exceptions: [
+          {
+            subject_key: 'example-extension',
+            until: '2026-12-01T00:00:00Z',
+            reason: 'owner_exception',
+          },
+        ],
+      };
+      setupFive({
+        ...fiveRules,
+        unapproved_extension_enabled: enabled,
+        rules: { ...fiveRules.rules, unapproved_extension: extension },
+      });
+      const view = await mount();
+      const fieldset = row(view, 'unapproved_extension');
+      expect(fieldset).to.exist;
+      expect(fieldset.textContent).to.include('Opens a finding');
+      const toggle = fieldset.querySelector<HTMLInputElement>(
+        '[data-field="enabled"]'
+      )!;
+      expect(toggle.checked).to.equal(enabled);
+      for (const [channel, checked] of Object.entries(extension.channels)) {
+        expect(
+          fieldset.querySelector<HTMLInputElement>(
+            `[data-channel="${channel}"]`
+          )!.checked
+        ).to.equal(checked);
+      }
+      await submit(view);
+      await waitUntil(
+        () => api.callsTo('/api/v1/fleet/settings', 'PUT').length === 1
+      );
+      const unchanged = api.callsTo('/api/v1/fleet/settings', 'PUT')[0]
+        .body as any;
+      expect(unchanged.unapproved_extension_enabled).to.equal(enabled);
+      expect(unchanged.rules.unapproved_extension).to.deep.equal(extension);
+      await waitUntil(() => !view.saving);
+      toggle.click();
+      await view.updateComplete;
+      for (const channel of Object.keys(extension.channels)) {
+        fieldset
+          .querySelector<HTMLInputElement>(`[data-channel="${channel}"]`)!
+          .click();
+        await view.updateComplete;
+      }
+      await submit(view);
+      await waitUntil(
+        () => api.callsTo('/api/v1/fleet/settings', 'PUT').length === 2
+      );
+      const changed = api.callsTo('/api/v1/fleet/settings', 'PUT')[1]
+        .body as any;
+      expect(changed.unapproved_extension_enabled).to.equal(!enabled);
+      expect(changed.rules.unapproved_extension).to.deep.equal({
+        ...extension,
+        channels: { attention: false, email: true, push: false, webhook: true },
+      });
+      expect(changed.rules.agent_quiet).to.deep.equal(
+        fiveRules.rules.agent_quiet
+      );
+    });
+  }
   const row = (view: any, rule: string): HTMLElement =>
     view.shadowRoot.querySelector(`fieldset[data-rule="${rule}"]`);
   async function input(view: any, el: HTMLInputElement, value: string) {

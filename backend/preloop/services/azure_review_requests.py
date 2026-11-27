@@ -63,6 +63,7 @@ def _project(db: Session, tracker: models.Tracker, repo_id: str) -> Any:
 async def poll_labels(db: Session, service: FlowTriggerService, now: datetime) -> None:
     """Rotate two repositories per tick, reading at most five open PRs each."""
     for project_id, page in requests.claim_projects(db, now=now):
+        tracker = None
         try:
             project = crud_project.get(db, id=project_id)
             tracker = project.organization.tracker
@@ -86,13 +87,13 @@ async def poll_labels(db: Session, service: FlowTriggerService, now: datetime) -
             labels_wanted = {
                 (f.webhook_config or {}).get("azure_review_label", "preloop-review")
                 for f in flows
-                if f.is_enabled
             }
             if not any(labels_wanted):
                 continue
             result = await client.list_pull_requests(
                 limit=5, page=page, repo_full_name=full_name
             )
+            requests.record_status(db, tracker_id=tracker.id)
             for pr in result["items"]:
                 number = pr["number"]
                 async with requests.serialized(
@@ -150,6 +151,8 @@ async def poll_labels(db: Session, service: FlowTriggerService, now: datetime) -
             )
         except Exception:
             db.rollback()
+            if tracker is not None:
+                requests.record_status(db, tracker_id=tracker.id, reason="poll_failed")
             logger.error("Azure review label polling failed for project %s", project_id)
 
 
@@ -180,7 +183,6 @@ async def flush_requests(
                     and flow.is_enabled
                     and flow.trigger_event_source in (None, str(tracker.id))
                     and "pull_request_updated" in (flow.trigger_event_types or [])
-                    and service._matches_trigger_config(flow, event)
                     and (
                         not flow.trigger_project_ids
                         or event["payload"].get("project_id")
@@ -190,9 +192,16 @@ async def flush_requests(
                     and request_enabled(flow, request)
                     and _project(db, tracker, row.repository_id)
                 )
+                if flow and not flow.is_enabled:
+                    service._record_azure_review_outcome(event, "flow_paused", flow)
                 if not done:
                     reason = await service._azure_pull_request_skip_reason(event)
                     done = reason is not None
+                    if reason:
+                        service._record_azure_review_outcome(event, reason, flow)
+                if not done and not service._matches_trigger_config(flow, event):
+                    service._record_azure_review_outcome(event, "filter_mismatch", flow)
+                    done = True
                 if not done and not service.find_active_execution_for_event_object(
                     flow, event, tracker.account_id
                 ):
@@ -208,6 +217,8 @@ async def flush_requests(
                         is not None
                     )
                     dispatched += int(done)
+                    if done:
+                        service._record_azure_review_outcome(event, "run_created", flow)
                 requests.finish(
                     db, row_id=row_id, revision=revision, done=done, now=now
                 )

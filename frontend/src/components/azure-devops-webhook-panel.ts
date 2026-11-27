@@ -159,7 +159,27 @@ export class AzureDevOpsWebhookPanel extends LitElement {
                   <dd class="events">${status.required_events.join(', ')}</dd>
                   <dt>Registration</dt>
                   <dd class="registration">${this.registrationLabel()}</dd>
+                  <dt>Last review label poll</dt>
+                  <dd class="review-poll">
+                    ${status.review_requests?.last_poll_at || 'Not polled yet'}
+                    ${
+                      status.review_requests?.poll_error
+                        ? ' — polling failed; check tracker access and worker logs'
+                        : nothing
+                    }
+                  </dd>
                 </dl>
+                <div class="review-requests" role="status">
+                  ${(status.review_requests?.recent || []).map(
+                    (request) =>
+                      html`<p>
+                        PR #${request.number} (${request.kind}):
+                        ${request.reason.replace(/_/g, ' ')}.
+                        ${request.flow_id ? html`Flow ${request.flow_id}.` : nothing}
+                        <time datetime=${request.at}>${request.at}</time>
+                      </p>`
+                  )}
+                </div>
                 ${
                   status.last_ignored_reason
                     ? html`<p class="last-ignored" role="status">

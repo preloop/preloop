@@ -2,6 +2,8 @@ package cmd
 
 // Extension discovery has a deliberately narrow output type. Parsed files,
 // command strings, source locations and project roots never enter the DTO.
+// Extension text for review is gathered separately, by the content pass of a
+// report, and never through this DTO (agents_extension_content.go).
 import (
 	"crypto/sha256"
 	"encoding/hex"
@@ -49,6 +51,10 @@ type extensionScan struct {
 	hookDetails  map[string][]extensionHookMatcher
 	hookLocal    map[string][]string
 	localDisplay bool
+	// capture is set only by the content pass of a report; see
+	// agents_extension_content.go. A plain scan reads no extension text.
+	capture      *contentCapture
+	hookContent  map[string][]contentHookSource
 	extensions   []inventoryExtension
 	errors       map[string]bool
 	hookHashes   map[string][]string
@@ -306,11 +312,13 @@ func (r *extensionRoot) localFiles(base, scope, project string, skills bool) {
 			// The whole skill directory: scripts and references beside SKILL.md
 			// change behaviour as much as SKILL.md itself does.
 			hash, status = treeHash(r.root, path)
+			r.captureTree(kind, id, path, hash)
 		} else {
 			if !info.Mode().IsRegular() || !strings.EqualFold(filepath.Ext(path), ".md") {
 				continue
 			}
 			hash, status = singleFileHash(r.root, path)
+			r.captureCommand(id, path, hash)
 		}
 		details, local := r.markdownDetails(path, id, skills, "")
 		r.scan.add(inventoryExtension{Details: details, Local: local, Kind: kind, ID: id, SourceKind: "local", Scope: scope, ProjectRefHash: project, ContentHash: hash, HashStatus: status})
@@ -346,6 +354,7 @@ func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string, files 
 		hashes := []string{}
 		matchers := []extensionHookMatcher{}
 		commands := []string{}
+		captured := []contentHookSource{}
 		for _, group := range groups {
 			var obj struct {
 				Matcher string `json:"matcher"`
@@ -360,6 +369,13 @@ func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string, files 
 			}
 			matcher, hidden := r.scan.detailText(obj.Matcher)
 			item := extensionHookMatcher{Matcher: matcher, MatcherWithheld: hidden, Commands: []extensionHookCommand{}}
+			for _, hook := range append([]struct {
+				Command string `json:"command"`
+			}{{Command: obj.Command}}, obj.Hooks...) {
+				if hook.Command != "" && r.scan.capture != nil {
+					captured = append(captured, contentHookSource{Matcher: obj.Matcher, Command: hook.Command})
+				}
+			}
 			if obj.Command != "" {
 				item.Commands = append(item.Commands, r.scan.hookCommand(obj.Command))
 				commands = append(commands, obj.Command)
@@ -396,6 +412,12 @@ func (r *extensionRoot) hooks(raw json.RawMessage, scope, project string, files 
 			continue
 		}
 		r.scan.hookHashes[key] = hashes
+		if r.scan.capture != nil {
+			if r.scan.hookContent == nil {
+				r.scan.hookContent = map[string][]contentHookSource{}
+			}
+			r.scan.hookContent[key] = append(r.scan.hookContent[key], captured...)
+		}
 		r.scan.hookDetails[key] = append(r.scan.hookDetails[key], matchers...)
 		var local *extensionLocalDetail
 		if r.scan.localDisplay {
@@ -529,6 +551,7 @@ func (r *extensionRoot) plugin(id, marketplace string, record map[string]json.Ra
 				ext.Version = version
 			}
 			ext.ContentHash, ext.HashStatus = treeHash(r.root, path)
+			r.captureTree("plugin", id, path, ext.ContentHash)
 			r.pluginDetails(path, manifest, &ext)
 		}
 	}
@@ -556,7 +579,14 @@ func collectDisplayExtensions(home, agent, salt string, profileOnly bool, projec
 }
 
 func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool, explicitProjects ...string) ([]inventoryExtension, []string) {
+	return collectExtensionsWith(nil, home, agent, salt, profileOnly, localDisplay, explicitProjects...)
+}
+
+// collectExtensionsWith runs the scan and, when capture is set, also gathers
+// redacted content for the hashes capture wants.
+func collectExtensionsWith(capture *contentCapture, home, agent, salt string, profileOnly, localDisplay bool, explicitProjects ...string) ([]inventoryExtension, []string) {
 	scan := newExtensionScan(home, agent, salt, localDisplay)
+	scan.capture = capture
 	return scan.collect(profileOnly, explicitProjects...)
 }
 
@@ -742,6 +772,7 @@ func (scan *extensionScan) collect(profileOnly bool, explicitProjects ...string)
 			}
 		}
 	}
+	scan.captureHooks()
 	for _, plugin := range append([]inventoryExtension{}, scan.extensions...) {
 		for _, bundled := range plugin.Bundled {
 			bundled.Scope = plugin.Scope

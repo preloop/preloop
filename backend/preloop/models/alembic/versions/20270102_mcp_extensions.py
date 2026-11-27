@@ -3,7 +3,7 @@
 from alembic import op
 
 revision = "20270102_mcp_extensions"
-down_revision = "20270101_session_prompt"
+down_revision = "20270102_extension_content"
 branch_labels = None
 depends_on = None
 
