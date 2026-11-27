@@ -18,7 +18,10 @@ not, and the runner refuses the lease on a profile without network
 (`cli/internal/cmd/runner_host_exec_network.go`). `agent_git_credential`
 leaves the checkout credential in the checkout's local git config as a
 URL-scoped extraHeader so the agent's own git fetch and push work; it is never
-in the agent environment. After the CLI exits, the runner reads a
+in the agent environment, but it is the tracker credential with its full API
+scope and the agent can read it, so operators pair it with a minimal-scope
+token. Read-only review cannot require network (refused at save, run start
+and on the runner). After the CLI exits, the runner reads a
 `result.json` the agent wrote during the run (execution directory or checkout
 root, regular file, bounded size) and turns a reported failure into FAILED
 with the agent's summary, matching the hosted result-artifact rule.

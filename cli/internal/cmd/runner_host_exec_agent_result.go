@@ -20,18 +20,9 @@ const (
 // during the CLI run, and returns the agent's summary when it reports failure. The CLI's own
 // turn events only say the turn finished; an agent that finished its turn
 // to report "I could not do the work" must not end SUCCEEDED.
-func hostAgentResultFailure(workspace string, checkout *hostExecCheckout, since time.Time) (string, bool) {
-	if workspace == "" {
-		return "", false
-	}
-	dirs := []string{workspace}
-	if checkout != nil {
-		for _, repo := range checkout.Repositories {
-			dirs = append(dirs, filepath.Join(workspace, filepath.FromSlash(repo.Path)))
-		}
-	}
-	for _, dir := range dirs {
-		doc, ok := readHostAgentResult(filepath.Join(dir, hostAgentResultFile), since)
+func hostAgentResultFailure(workspace string, checkout *hostExecCheckout, prior hostAgentResultSnapshot) (string, bool) {
+	for _, path := range hostAgentResultPaths(workspace, checkout) {
+		doc, ok := readHostAgentResult(path, prior[path])
 		if !ok {
 			continue
 		}
@@ -48,12 +39,51 @@ func hostAgentResultFailure(workspace string, checkout *hostExecCheckout, since 
 	return "", false
 }
 
+// hostAgentResultSnapshot records each candidate result.json present before
+// the CLI starts (for example one committed to the repository).
+type hostAgentResultSnapshot map[string]hostAgentResultStamp
+
+type hostAgentResultStamp struct {
+	modTime time.Time
+	size    int64
+}
+
+// hostAgentResultPaths lists where an agent writes result.json: the
+// execution directory and each checkout root.
+func hostAgentResultPaths(workspace string, checkout *hostExecCheckout) []string {
+	if workspace == "" {
+		return nil
+	}
+	paths := []string{filepath.Join(workspace, hostAgentResultFile)}
+	if checkout != nil {
+		for _, repo := range checkout.Repositories {
+			paths = append(paths, filepath.Join(workspace, filepath.FromSlash(repo.Path), hostAgentResultFile))
+		}
+	}
+	return paths
+}
+
+// snapshotHostAgentResults is taken after the checkout and before the CLI
+// starts, so only a file the agent wrote or changed counts as its report.
+func snapshotHostAgentResults(workspace string, checkout *hostExecCheckout) hostAgentResultSnapshot {
+	snapshot := hostAgentResultSnapshot{}
+	for _, path := range hostAgentResultPaths(workspace, checkout) {
+		if info, err := os.Lstat(path); err == nil {
+			snapshot[path] = hostAgentResultStamp{modTime: info.ModTime(), size: info.Size()}
+		}
+	}
+	return snapshot
+}
+
 // readHostAgentResult reads one bounded, regular (non-symlink) JSON object
-// written at or after since, so a result.json committed to the repository
-// is not mistaken for the agent's report.
-func readHostAgentResult(path string, since time.Time) (map[string]any, bool) {
+// that differs from its pre-run stamp, so a result.json committed to the
+// repository and left untouched is not mistaken for the agent's report.
+func readHostAgentResult(path string, prior hostAgentResultStamp) (map[string]any, bool) {
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > hostAgentResultMaxBytes || info.ModTime().Before(since.Truncate(time.Second)) {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > hostAgentResultMaxBytes {
+		return nil, false
+	}
+	if !prior.modTime.IsZero() && info.ModTime().Equal(prior.modTime) && info.Size() == prior.size {
 		return nil, false
 	}
 	file, err := os.Open(path)
@@ -87,11 +117,11 @@ func hostAgentResultFailed(doc map[string]any) bool {
 
 // applyHostAgentResultFile turns a successful outcome into FAILED, carrying
 // the agent's own summary, when the agent's result.json reports failure.
-func applyHostAgentResultFile(outcome *leasedJobOutcome, workspace string, checkout *hostExecCheckout, since time.Time) {
+func applyHostAgentResultFile(outcome *leasedJobOutcome, workspace string, checkout *hostExecCheckout, prior hostAgentResultSnapshot) {
 	if outcome.status != "SUCCEEDED" {
 		return
 	}
-	summary, failed := hostAgentResultFailure(workspace, checkout, since)
+	summary, failed := hostAgentResultFailure(workspace, checkout, prior)
 	if !failed {
 		return
 	}

@@ -738,10 +738,37 @@ def host_exec_requires_network(agent_config: Any) -> bool:
     Returns:
         True when ``agent_config.requires_network`` is ``True``.
     """
-    return (
-        isinstance(agent_config, Mapping)
-        and agent_config.get("requires_network") is True
-    )
+    return _unwrapped_config(agent_config).get("requires_network") is True
+
+
+READ_ONLY_NETWORK_UNAVAILABLE = (
+    "read-only review runs in Codex's read-only sandbox without network; "
+    "remove agent_config.requires_network or use a writable publication mode"
+)
+
+
+def host_exec_network_conflict(
+    agent_config: Any, git_clone_config: Any
+) -> Optional[str]:
+    """Refuse a network requirement the run could not honour.
+
+    Args:
+        agent_config: The flow's agent configuration.
+        git_clone_config: The flow's git clone configuration.
+
+    Returns:
+        ``READ_ONLY_NETWORK_UNAVAILABLE`` when a read-only review requires
+        network, else None.
+    """
+    from preloop.services.read_only_review import read_only_review
+
+    if not host_exec_requires_network(agent_config):
+        return None
+    if hasattr(git_clone_config, "model_dump"):
+        git_clone_config = git_clone_config.model_dump()
+    if read_only_review(git_clone_config):
+        return READ_ONLY_NETWORK_UNAVAILABLE
+    return None
 
 
 def account_has_network_runner(

@@ -22,9 +22,17 @@ func hostExecProfileHasNetwork(profile hostExecProfile, harness string) bool {
 
 // validateHostExecNetworkJob refuses a job that needs network on a profile
 // whose runs have none, instead of letting the agent fail on DNS mid-run.
-func validateHostExecNetworkJob(job map[string]any, profile hostExecProfile, harness string) error {
+// A read-only review never has network (Codex's read-only sandbox), so it
+// cannot require it either.
+func validateHostExecNetworkJob(job map[string]any, profile hostExecProfile, harness string, readOnly bool) error {
 	needs, _ := job["host_exec_network"].(bool)
-	if !needs || hostExecProfileHasNetwork(profile, harness) {
+	if !needs {
+		return nil
+	}
+	if readOnly {
+		return fmt.Errorf("%s: read-only review cannot require network", hostExecNetworkNotAllowed)
+	}
+	if hostExecProfileHasNetwork(profile, harness) {
 		return nil
 	}
 	return fmt.Errorf(

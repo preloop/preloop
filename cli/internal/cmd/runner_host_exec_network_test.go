@@ -42,16 +42,20 @@ func TestHostExecNetworkAdvertisedAndRequired(t *testing.T) {
 	if hostExecProfileHasNetwork(codex, hostExecHarnessCodex) {
 		t.Fatal("codex profile has network without allow_network")
 	}
-	err := validateHostExecNetworkJob(map[string]any{"host_exec_network": true}, codex, hostExecHarnessCodex)
+	err := validateHostExecNetworkJob(map[string]any{"host_exec_network": true}, codex, hostExecHarnessCodex, false)
 	if err == nil || !strings.Contains(err.Error(), hostExecNetworkNotAllowed) || !strings.Contains(err.Error(), `"allow_network": true`) {
 		t.Fatalf("err = %v", err)
 	}
-	if err := validateHostExecNetworkJob(map[string]any{}, codex, hostExecHarnessCodex); err != nil {
+	if err := validateHostExecNetworkJob(map[string]any{}, codex, hostExecHarnessCodex, false); err != nil {
 		t.Fatalf("job without network refused: %v", err)
 	}
 	codex.AllowNetwork = true
-	if err := validateHostExecNetworkJob(map[string]any{"host_exec_network": true}, codex, hostExecHarnessCodex); err != nil {
+	if err := validateHostExecNetworkJob(map[string]any{"host_exec_network": true}, codex, hostExecHarnessCodex, false); err != nil {
 		t.Fatal(err)
+	}
+	err = validateHostExecNetworkJob(map[string]any{"host_exec_network": true}, codex, hostExecHarnessCodex, true)
+	if err == nil || !strings.Contains(err.Error(), "read-only review cannot require network") {
+		t.Fatalf("read-only review accepted a network requirement: %v", err)
 	}
 	if !hostExecProfileHasNetwork(hostExecProfile{Executable: "claude"}, hostExecHarnessClaude) {
 		t.Fatal("unsandboxed harness reported without network")

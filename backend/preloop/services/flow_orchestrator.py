@@ -4394,8 +4394,13 @@ class FlowExecutionOrchestrator:
             from preloop.services.host_exec import (
                 NETWORK_UNAVAILABLE,
                 account_has_network_runner,
+                host_exec_network_conflict,
                 host_exec_requires_network,
             )
+
+            conflict = host_exec_network_conflict(self.flow.agent_config, clone_config)
+            if conflict:
+                raise ValueError(conflict)
 
             if host_exec_requires_network(
                 self.flow.agent_config

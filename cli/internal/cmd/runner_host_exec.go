@@ -87,8 +87,11 @@ type hostExecProfile struct {
 	// AgentGitCredential is the operator's opt-in to leaving the flow's
 	// repository credential configured in each checkout, so the agent's own
 	// git fetch and push work. The credential is an http.<remote>.extraHeader
-	// in the checkout's local .git/config, scoped to the repository URL; it
-	// never enters the agent's environment, but the agent can read the file.
+	// in the checkout's local .git/config, scoped (for git) to the repository
+	// URL; it never enters the agent's environment, but the agent can read
+	// the file. It is the repository's tracker credential (a stored token or
+	// an App installation token) with whatever API scopes that credential
+	// has, so use a dedicated minimal-scope token for such profiles.
 	// Requires allow_checkout. Off by default.
 	AgentGitCredential bool `json:"agent_git_credential,omitempty"`
 }
@@ -754,9 +757,6 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 			hostExecCheckoutNotAllows, profile.Name, hostExecProfilesFileName,
 		)
 	}
-	if err := validateHostExecNetworkJob(job, profile, wantHarness); err != nil {
-		return nil, err
-	}
 	if checkout != nil && profile.AgentGitCredential {
 		checkout.agentCredential = true
 	}
@@ -779,6 +779,9 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 	}
 	readOnly, err := jobHostExecReadOnly(job)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateHostExecNetworkJob(job, profile, wantHarness, readOnly != nil); err != nil {
 		return nil, err
 	}
 	if err := validateHostExecReadOnlyJob(readOnly, wantHarness, profile, checkout, mcpToken, publication, resume, workspaceSpec); err != nil {
@@ -1202,7 +1205,7 @@ func beginHostExecJob(
 				return
 			}
 		}
-		cliStarted := time.Now()
+		priorResults := snapshotHostAgentResults(run.workspace, run.checkout)
 		if err := gate.start(cmd); err != nil {
 			if errors.Is(err, errHostExecHaltedBeforeStart) {
 				failed("STOPPED", "")
@@ -1215,7 +1218,7 @@ func beginHostExecJob(
 			go governance.deliver(cmd)
 		}
 		outcome := waitHostExecJob(cmd, executionID, buffer, halted, timeout, profile)
-		applyHostAgentResultFile(&outcome, run.workspace, run.checkout, cliStarted)
+		applyHostAgentResultFile(&outcome, run.workspace, run.checkout, priorResults)
 		if governance != nil {
 			governance.close()
 			<-governance.delivered

@@ -40,6 +40,8 @@ def test_requires_network_is_an_explicit_true() -> None:
     assert not host_exec_requires_network({"requires_network": "yes"})
     assert not host_exec_requires_network({})
     assert not host_exec_requires_network(None)
+    wrapped = {"agent_config": {"host_exec_profile": "codex", "requires_network": True}}
+    assert host_exec_requires_network(wrapped)
 
 
 def test_registration_keeps_host_network_capability() -> None:
@@ -59,7 +61,12 @@ def test_network_lease_requires_advertised_capability() -> None:
     assert runner_has_host_exec_profile(_runner(), "codex", None, "codex")
 
 
-def _reject(monkeypatch: pytest.MonkeyPatch, runners: list, config: dict) -> None:
+def _reject(
+    monkeypatch: pytest.MonkeyPatch,
+    runners: list,
+    config: dict,
+    clone: object = None,
+) -> None:
     from preloop.api.endpoints.flows import _reject_host_exec_flow
 
     monkeypatch.setattr(
@@ -69,7 +76,7 @@ def _reject(monkeypatch: pytest.MonkeyPatch, runners: list, config: dict) -> Non
         agent_type="codex",
         agent_config={"host_exec_profile": "codex", **config},
         runner_pool="office-mac",
-        git_clone_config=None,
+        git_clone_config=clone,
         db=MagicMock(),
         account_id=uuid4(),
     )
@@ -191,3 +198,20 @@ def test_host_agent_failure_is_classified_agent_reported() -> None:
     error = "Agent reported an explicit failure in result.json. review failed"
     category = derive_failure_category(status="FAILED", error_message=error)
     assert category == "agent_reported_failure"
+
+
+def test_save_rejects_read_only_review_that_requires_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.services.host_exec import READ_ONLY_NETWORK_UNAVAILABLE
+
+    clone = {
+        "enabled": True,
+        "publication_mode": "read_only",
+        "repositories": [{"repository_url": "https://example.com/acme/app.git"}],
+    }
+    with pytest.raises(HTTPException) as caught:
+        _reject(
+            monkeypatch, [_runner("host_network")], {"requires_network": True}, clone
+        )
+    assert caught.value.detail == READ_ONLY_NETWORK_UNAVAILABLE

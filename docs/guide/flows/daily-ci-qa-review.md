@@ -114,11 +114,16 @@ network. Codex's `workspace-write` sandbox has no network by default: add
 network is refused at save and run start when no runner in its pool offers
 it, instead of succeeding with nothing reviewed. To let the agent's own
 `git fetch` and `git push` reach the flow's repository, also set
-`"agent_git_credential": true`: the runner leaves the run's short-lived
-repository token in the checkout's local `.git/config` as an
-`http.<remote>.extraHeader` scoped to that remote URL (redirects refused).
-It never enters the agent's environment, but the agent can read the file,
-so enable it only for profiles you trust with push access. The token is
-not a GitHub API token; use the Preloop MCP tools for tracker reads.
+`"agent_git_credential": true`: the runner leaves the repository's
+credential in the checkout's local `.git/config` as an
+`http.<remote>.extraHeader` that git sends only to that remote URL
+(redirects refused). It never enters the agent's environment, but the agent
+can read the file. The credential is the repository's tracker credential (a
+stored personal access token, which may be long-lived, or an App
+installation token) with every API scope that credential has, so an agent
+that reads it can call the provider's API as that credential. Enable it
+only on profiles you trust with that access, and connect the repository
+with a dedicated minimal-scope token (contents read/write, and actions
+read if the flow reads CI) when you do.
 A run whose agent writes `result.json` with `"status": "failure"` ends
 FAILED with the agent's summary as the error.
