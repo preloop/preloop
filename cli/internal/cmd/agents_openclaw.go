@@ -557,6 +557,10 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			}, output)
 		}
 	}
+	// Local prerequisites fail before the first prompt, in --dry-run too.
+	if err := preflightLocalAgentPrerequisites(agent, opts); err != nil {
+		return err
+	}
 	if shouldPromptForEnrollmentName(opts) {
 		agent, err = prepareAgentForEnrollment(bufio.NewReader(input), output, agent, false)
 		if err != nil {

@@ -378,7 +378,7 @@ Claude Code discovery: the CLI treats `~/.claude.json` or a `claude` binary on `
 ```bash
 preloop policy list [--limit N] [--output table|json|yaml]   # policy versions, newest first
 preloop policy validate <file>
-preloop policy apply <file> [--dry-run] [-r]   # -r: recurse into a directory
+preloop policy apply <file> [--dry-run] [--yes] [-r]   # records a policy version; --yes: skip the removal confirmation; -r: recurse into a directory
 preloop policy diff <file>
 preloop policy export [-o file]
 preloop policy apply-stored [--apply] [--since T] [--until T] [--store NAME] [--json]   # apply current sensitive-data rules to stored rows; dry run without --apply

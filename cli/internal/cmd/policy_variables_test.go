@@ -38,6 +38,11 @@ func TestPolicyApplyVariables(t *testing.T) {
 					}
 					requests := 0
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Path == policiesDiffPath {
+							// Apply previews removals first; no changes here.
+							_, _ = io.WriteString(w, `{"has_changes":false,"summary":""}`)
+							return
+						}
 						requests++
 						wantPath := policiesUploadPath
 						if dryRun {
@@ -229,6 +234,10 @@ func TestPolicyDryRunValidationDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == policiesDiffPath {
+			_, _ = io.WriteString(w, `{"has_changes":false,"summary":""}`)
+			return
+		}
 		if r.URL.Path != policiesValidatePath {
 			t.Errorf("path = %s, want validation", r.URL.Path)
 		}

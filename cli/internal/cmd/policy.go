@@ -99,6 +99,9 @@ type PolicyImportResult struct {
 	ToolsCreated      int      `json:"tools_created"`
 	ToolsUpdated      int      `json:"tools_updated"`
 	ToolsSkipped      int      `json:"tools_skipped"`
+	// PolicyVersion is the version the server recorded for this apply. It
+	// is nil for a dry run, when recording failed, and on older servers.
+	PolicyVersion *int     `json:"policy_version"`
 	Warnings          []string `json:"warnings,omitempty"`
 	Errors            []string `json:"errors,omitempty"`
 }
@@ -132,13 +135,21 @@ var policyApplyCmd = &cobra.Command{
 	Short: "Apply a policy to Preloop",
 	Long: `Apply a policy file to your Preloop organization.
 
-This will upload and activate the policy on the server.
+This will upload and activate the policy on the server, and record the
+resulting configuration as a new policy version ('preloop policy list').
 Variable references such as ${NAME} are resolved from your local environment.
 Unset variables stop the upload. Use --no-resolve-env to keep references literal.
 The same resolution applies with --dry-run.
 
+A tool entry in the file replaces that tool's whole configuration. Before
+applying, the server diff is checked: when the file would remove a tool's
+approval workflow or existing conditions, each removal is printed. On a
+terminal, apply then asks for confirmation. Without a terminal it stops
+without changing anything unless --yes (or PRELOOP_CONFIRM=1) is given.
+
 Examples:
   preloop policy apply my-policy.yaml
+  preloop policy apply my-policy.yaml --yes
   preloop policy apply ./policies/ --recursive`,
 	Args: cobra.ExactArgs(1),
 	RunE: runPolicyApply,
@@ -150,7 +161,10 @@ var policyDiffCmd = &cobra.Command{
 	Short: "Show differences between local and remote policy",
 	Long: `Compare a local policy file with the version currently on the server.
 
-This shows what would change if you applied the local policy.
+This shows what would change if you applied the local policy. A tool entry
+replaces that tool's whole configuration, so an approval workflow or
+condition the file does not repeat is removed; each such removal is
+listed under "Removals".
 Variable references are resolved locally as with apply. Use --no-resolve-env
 to compare the references literally.
 
@@ -234,6 +248,7 @@ func init() {
 	policyApplyCmd.Flags().Bool("dry-run", false, "validate and show what would be applied without making changes")
 	policyApplyCmd.Flags().Bool("no-resolve-env", false, "upload variable references literally without local resolution")
 	policyApplyCmd.Flags().BoolP("recursive", "r", false, "recursively apply policies from directory")
+	policyApplyCmd.Flags().BoolP("yes", "y", false, "apply without asking when the policy removes a tool's approval workflow or conditions")
 	policyDiffCmd.Flags().Bool("no-resolve-env", false, "compare variable references literally without local resolution")
 
 	// Flags for export
@@ -530,6 +545,20 @@ func runPolicyApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not authenticated - run 'preloop login' first")
 	}
 
+	// A tool entry replaces the tool's whole configuration. Preview the
+	// change so removed approval workflows and conditions are never silent.
+	yes, _ := cmd.Flags().GetBool("yes")
+	var removals []policyRemoval
+	if diff, diffErr := diffPolicyContent(client, filepath.Base(filePath), content); diffErr != nil {
+		if !dryRun && !yes {
+			return fmt.Errorf("could not check what the policy would remove: %w (re-run with --yes to apply without the check)", diffErr)
+		}
+		fmt.Printf("Note: could not check what the policy would remove: %v\n", diffErr)
+	} else {
+		removals = policyToolRemovals(diff)
+		printPolicyRemovals(os.Stdout, removals)
+	}
+
 	// Validate the resolved content without requiring permission to apply it.
 	if dryRun {
 		fmt.Printf("Dry run - validating policy: %s\n\n", filePath)
@@ -552,6 +581,12 @@ func runPolicyApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if len(removals) > 0 {
+		if err := confirmPolicyRemovals(cmd, os.Stdout, removals); err != nil {
+			return err
+		}
+	}
+
 	// Upload and apply the policy
 	fmt.Printf("Applying policy: %s\n", filePath)
 
@@ -569,6 +604,11 @@ func runPolicyApply(cmd *cobra.Command, args []string) error {
 		fmt.Printf(", %d skipped", result.ToolsSkipped)
 	}
 	fmt.Println()
+	if result.PolicyVersion != nil {
+		fmt.Printf("  Policy version: v%d recorded (see 'preloop policy list')\n", *result.PolicyVersion)
+	} else {
+		fmt.Println("  Policy version: none recorded by the server")
+	}
 	printPolicyWarnings(result.Warnings)
 
 	return nil
@@ -633,6 +673,7 @@ func runPolicyDiff(cmd *cobra.Command, args []string) error {
 			fmt.Printf("    new: %v\n", change.NewValue)
 		}
 	}
+	printPolicyRemovals(os.Stdout, policyToolRemovals(diff))
 
 	return nil
 }
