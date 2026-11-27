@@ -120,7 +120,7 @@ export function noteModeLine(
 ): string {
   if (reasonCode === 'terminal_session') {
     const base =
-      'Terminal session. Your message is read at its next tool call or when the turn ends.';
+      'Terminal session. The sidecar does not own it, so your message is a note read at its next tool call or when the turn ends.';
     return idle
       ? `${base} It is idle: it reads this with your next prompt in the terminal.`
       : base;

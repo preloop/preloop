@@ -24,7 +24,7 @@ function makeEchoFactory(state) {
       for await (const userMessage of prompt) {
         state.texts.push(userMessage.message.content);
         yield {
-          type: "result",
+          type: "result", user_message_uuids: [userMessage.uuid],
           subtype: "success",
           session_id: "session-1",
           result: `ok: ${userMessage.message.content}`,

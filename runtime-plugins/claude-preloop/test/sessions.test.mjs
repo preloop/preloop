@@ -38,7 +38,7 @@ function makeFakeFactory(state) {
             message: { content: [{ type: "text", text: `echo: ${text}` }] },
           };
           yield {
-            type: "result",
+            type: "result", user_message_uuids: [userMessage.uuid],
             subtype: "success",
             session_id: sessionId,
             result: `echo: ${text}`,
@@ -283,7 +283,7 @@ test("turn progress forwards bounded assistant/tool output and final usage", asy
           },
         };
         yield {
-          type: "result",
+          type: "result", user_message_uuids: [_.uuid],
           result: "done",
           usage: { input_tokens: 3, output_tokens: 2 },
         };
@@ -317,4 +317,55 @@ test("reports the native session before replying, without exposing a temporary i
     await manager.completeTurn({ text: "example", commandId: "command-example", onSessionStarted: (id, cwd) => seen.push({ id, cwd }) });
     assert.deepEqual(seen, [{ id: "session-1", cwd: "/tmp/workspace" }]);
   } finally { manager.stop(); }
+});
+
+
+test("correlates background and combined results without consuming another prompt", async () => {
+  let input;
+  let emit;
+  const messages = [];
+  const waiting = [];
+  const factory = async ({ prompt }) => {
+    input = prompt[Symbol.asyncIterator]();
+    emit = message => {
+      const resolve = waiting.shift();
+      if (resolve) resolve({ value: message, done: false });
+      else messages.push(message);
+    };
+    return {
+      interrupt: async () => {},
+      [Symbol.asyncIterator]() { return this; },
+      next() {
+        if (messages.length) return Promise.resolve({ value: messages.shift(), done: false });
+        return new Promise(resolve => waiting.push(resolve));
+      },
+    };
+  };
+  const manager = new SessionManager(baseConfig, factory);
+  try {
+    const first = manager.sendMessage({ text: "first", targetSessionId: "native-1" });
+    while (!input) await new Promise(resolve => setTimeout(resolve, 0));
+    emit({ type: "system", subtype: "init", session_id: "native-1" });
+    const a = (await input.next()).value;
+    assert.ok(a.uuid, "every prompt needs a correlation id");
+    assert.equal(a.priority, "next");
+    emit({ type: "result", result: "first reply", user_message_uuids: [a.uuid] });
+    assert.equal(await first, "first reply");
+    let settled = false;
+    const second = manager.sendMessage({ text: "second", targetSessionId: "native-1" });
+    void second.then(() => { settled = true; }, () => {});
+    const b = (await input.next()).value;
+    emit({ type: "assistant", message: { content: [{ type: "text", text: "combined reply" }] } });
+    emit({ type: "result", result: "background", user_message_uuids: [a.uuid] });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(settled, false);
+    const third = manager.sendMessage({ text: "third", targetSessionId: "native-1" });
+    const c = (await input.next()).value;
+    assert.equal(b.message.content, "second");
+    assert.equal(c.message.content, "third");
+    emit({ type: "result", user_message_uuids: [b.uuid, c.uuid] });
+    assert.deepEqual(await Promise.all([second, third]), ["combined reply", "combined reply"]);
+  } finally {
+    manager.stop();
+  }
 });

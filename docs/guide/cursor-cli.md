@@ -158,6 +158,10 @@ know this run was spawned from another conversation.
 - `preloop usage hook` ships editor hook lifecycle events with a
   transcript-derived token estimate and stores conversations as runtime
   sessions (installed by `preloop agents onboard Cursor`).
+- Native permission gates are installed only with the explicit `--approvals`
+  flag. Read, Grep, Glob and LS are allowed without a matching approval rule.
+  [Recovery and lifecycle behavior](cli.md#console-lifecycle-and-local-recovery)
+  explains how to remove an earlier gate.
 - `preloop agents onboard Cursor --approvals` installs the permission hook
   for `beforeShellExecution`, `beforeMCPExecution`, and `preToolUse`; the
   `preToolUse` hook answers Shell and MCP tools locally (they are already

@@ -74,6 +74,8 @@ type terminalLocation struct {
 }
 
 type runtimeSessionRow struct {
+	FirstPrompt          string            `json:"first_prompt"`
+	ActivityStatus       string            `json:"activity_status"`
 	SessionReference     string            `json:"session_reference"`
 	TurnState            string            `json:"turn_state"`
 	TerminalLocation     *terminalLocation `json:"terminal_location"`
@@ -131,12 +133,11 @@ var sessionsListCmd = &cobra.Command{
 Each row has the short id (the first 8 characters; --wide shows the full id),
 the agent, when it started and was last active, its state, how many tool and
 model calls it made, how many approvals are waiting on a human, and a title.
-A session the server has not titled yet is labelled with its agent kind, the
-working directory its hook reported and its start time, so two runs that
-started in the same second can still be told apart.
+A session the server has not titled yet shows its opening prompt. If no prompt
+was captured, the agent kind, working directory and start time identify it.
 
-State is live (activity in the last 2 minutes), idle (open but quiet) or
-ended. Every filter is applied by the server across the whole account.
+State is live (recent activity with no recorded turn end), idle (waiting for
+input or quiet) or ended. Every filter is applied by the server across the whole account.
 
 Output is pipe friendly: --json emits the endpoint's items with a computed
 title and state added, and -o id prints one full session id per line.
@@ -474,7 +475,7 @@ func sessionLastObserved(row runtimeSessionRow) api.Time {
 // sessionState is live, idle or ended. Live means activity in the last two
 // minutes; idle is open but quieter than that.
 func sessionState(row runtimeSessionRow, now time.Time) string {
-	if !row.EndedAt.IsZero() {
+	if !row.EndedAt.IsZero() || row.TurnState == "ended" {
 		return "ended"
 	}
 	if row.TerminalLocation != nil && row.TurnState == "working" {
@@ -493,6 +494,9 @@ func sessionState(row runtimeSessionRow, now time.Time) string {
 		case "working", "idle", "done":
 			return loc.State
 		}
+	}
+	if row.TurnState == "your_turn" || row.ActivityStatus == "idle" {
+		return "idle"
 	}
 	last := sessionLastObserved(row)
 	if !last.IsZero() && now.Sub(last.Time) <= sessionLiveWindow {
@@ -530,6 +534,9 @@ func fallbackSessionTitle(row runtimeSessionRow) string {
 	}
 	if title := strings.TrimSpace(row.Title); title != "" {
 		return title
+	}
+	if prompt := strings.TrimSpace(row.FirstPrompt); prompt != "" {
+		return strings.Join(strings.Fields(prompt), " ")
 	}
 	parts := []string{}
 	if kind := sessionKind(row); kind != "" {

@@ -63,6 +63,10 @@ def test_consent_precedes_lease(monkeypatch, mode, status, leased) -> None:
     assert assignment.called is leased
     assert claim.called is leased
     assert gate.called is (mode not in {"always", "never"})
+    if gate.called:
+        # The owner sees what will run; the ids remain the binding.
+        assert callable(gate.call_args.kwargs["describe"])
+        assert set(gate.call_args.kwargs["details"]) == {"execution_id", "runner_id"}
     if mode == "ask_me" and status != "approved":
         assert outcome["consent_status"] == status
 

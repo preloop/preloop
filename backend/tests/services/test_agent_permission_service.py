@@ -25,6 +25,16 @@ from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
 from preloop.services.policy_evaluator import PolicyDecision
 
 
+@pytest.fixture(autouse=True)
+def mock_native_delivery_readiness() -> Any:
+    """Keep permission unit tests independent of notification infrastructure."""
+    with patch(
+        "preloop.services.agent_permission_service.native_delivery_warning",
+        return_value=None,
+    ):
+        yield
+
+
 @pytest.mark.asyncio
 async def test_resolve_workflow_creates_standard_agent_tool_workflow() -> None:
     """Auto-created agent workflows must use the canonical approval type."""
@@ -1478,7 +1488,8 @@ async def test_pre_tool_use_evaluates_rules_without_claiming_host_allow(
             "preloop.services.agent_permission_service.get_async_db_session"
         ) as session,
         patch(
-            "preloop.models.crud.tool_configuration.get_tool_config_by_name_and_source_async",
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
             new=AsyncMock(return_value=None),
         ),
         patch(
@@ -1540,7 +1551,8 @@ async def test_pre_tool_use_require_approval_keeps_human_gate(status: str) -> No
             "preloop.services.agent_permission_service.get_async_db_session"
         ) as session,
         patch(
-            "preloop.models.crud.tool_configuration.get_tool_config_by_name_and_source_async",
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
             new=AsyncMock(return_value=config),
         ),
         patch(
@@ -1659,7 +1671,8 @@ async def _run_native_hook(
             "preloop.services.agent_permission_service.get_async_db_session"
         ) as session,
         patch(
-            "preloop.models.crud.tool_configuration.get_tool_config_by_name_and_source_async",
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
             new=AsyncMock(return_value=tool_config),
         ),
         patch("preloop.services.approval_service.ApprovalService") as service_cls,
@@ -2118,3 +2131,217 @@ async def test_legacy_workflow_outside_native_checks_still_records_require_appro
     assert len(calls) == 1
     assert calls[0]["action"] == "require_approval"
     assert calls[0].get("extra_details") in (None, {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source,tool",
+    [
+        ("cursor", "Read"),
+        ("cursor", "Grep"),
+        ("cursor", "Glob"),
+        ("cursor", "LS"),
+        ("claude_code", "Read"),
+        ("codex_cli", "read_file"),
+        ("copilot_cli", "view"),
+    ],
+)
+@pytest.mark.parametrize("action", [None, "deny", "require_approval"])
+async def test_native_reads_default_allow_but_rules_win(
+    source: str, tool: str, action: str | None
+) -> None:
+    """Native reads need no human by default; explicit rules still govern them."""
+    outcome = None if action is None else (action, "Explicit rule", None, None)
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as session,
+        patch(
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.apply_native_access_rules",
+            new=AsyncMock(return_value=outcome),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.native_tool_approvals_disabled",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.resolve_workflow",
+            new=AsyncMock(side_effect=RuntimeError("approval required")),
+        ) as workflow,
+    ):
+        session.return_value.__aenter__.return_value = AsyncMock()
+        kwargs = _permission_kwargs(
+            source=source,
+            tool_name=tool,
+            client_decision=None if source == "claude_code" else "ask",
+        )
+        if action == "require_approval":
+            with pytest.raises(RuntimeError, match="approval required"):
+                await request_agent_permission(**kwargs)
+            workflow.assert_awaited_once()
+        else:
+            result = await request_agent_permission(**kwargs)
+            assert result[0] == ("deny" if action == "deny" else "allow")
+            assert result[2] is None
+            workflow.assert_not_called()
+
+
+def test_native_read_classification_does_not_trust_shell_or_mcp_names() -> None:
+    """Executable tools and external tools are never silently treated as reads."""
+    from preloop.services.agent_permission_service import is_read_only_native_tool
+
+    for tool in ("Shell", "Bash", "exec_command", "shell", "mcp__server__Read"):
+        assert not is_read_only_native_tool("cursor", tool)
+    assert not is_read_only_native_tool("unknown", "Read")
+    assert not is_read_only_native_tool("cursor", "Read", "beforeMCPExecution")
+    for tool in ("read_file", "list_dir", "Read"):
+        assert not is_read_only_native_tool("cursor", tool, "preToolUse", "mcp")
+
+
+@pytest.mark.asyncio
+async def test_first_native_read_evaluates_scoped_rules() -> None:
+    """A first-use read must not bypass a subject rule just because no row exists."""
+    evaluate = AsyncMock(
+        return_value=PolicyDecision(
+            "deny", None, "Private files", None, source="scoped_rule"
+        )
+    )
+    with patch("preloop.services.policy_evaluator.evaluate_policy_async", evaluate):
+        result = await apply_native_access_rules(
+            AsyncMock(), config=None, **_native_rule_kwargs(tool_name="Read")
+        )
+    assert result is not None and result[0] == "deny"
+    evaluate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required_rule", [False, True])
+async def test_pending_native_approval_without_interactive_destination_returns_guidance(
+    required_rule: bool,
+) -> None:
+    """Persist the banner evidence and return promptly instead of silently polling."""
+    workflow = models.ApprovalWorkflow(id=uuid.uuid4(), timeout_seconds=300)
+    config = MagicMock(id=uuid.uuid4(), is_enabled=True)
+    approval = models.ApprovalRequest(id=uuid.uuid4(), status="pending")
+    warning = "Email only. Open Approvals or run `preloop agents pause`."
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as session,
+        patch(
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=config),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.apply_native_access_rules",
+            new=AsyncMock(
+                return_value=("require_approval", "Explicit rule", None, None)
+                if required_rule
+                else None
+            ),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.native_tool_approvals_disabled",
+            new=AsyncMock(return_value=required_rule),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.resolve_workflow",
+            new=AsyncMock(return_value=workflow),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.native_delivery_warning",
+            return_value=warning,
+        ),
+        patch("preloop.services.approval_service.ApprovalService") as service,
+        patch(
+            "preloop.services.agent_permission_service.asyncio.sleep", new=AsyncMock()
+        ) as sleep,
+    ):
+        session.return_value.__aenter__.return_value = AsyncMock()
+        service.return_value.create_and_notify = AsyncMock(return_value=approval)
+        result = await request_agent_permission(**_permission_kwargs())
+    assert result[0] == "deny" and result[2] == str(approval.id)
+    assert "preloop agents pause" in result[1]
+    assert "/console/approval/" in result[1]
+    assert not result[3]
+    sleep.assert_not_awaited()
+    args = service.return_value.create_and_notify.await_args.kwargs["tool_args"]
+    assert args["_preloop_native_delivery_warning"] == warning
+
+
+@pytest.mark.asyncio
+async def test_claude_explicit_local_ask_for_read_is_not_auto_allowed() -> None:
+    """Claude's ordinary reads send allow; ask denotes a local Ask rule."""
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as session,
+        patch(
+            "preloop.models.crud.tool_configuration."
+            "get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.apply_native_access_rules",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.native_tool_approvals_disabled",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.resolve_workflow",
+            new=AsyncMock(side_effect=RuntimeError("local approval required")),
+        ),
+    ):
+        session.return_value.__aenter__.return_value = AsyncMock()
+        with pytest.raises(RuntimeError, match="local approval required"):
+            await request_agent_permission(
+                **_permission_kwargs(
+                    source="claude_code", tool_name="Read", client_decision="ask"
+                )
+            )
+
+
+@pytest.mark.asyncio
+async def test_cursor_mcp_read_fallback_still_requires_approval() -> None:
+    """A preToolUse MCP event cannot borrow the native read allow default."""
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as session,
+        patch(
+            "preloop.models.crud.tool_configuration.get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.apply_native_access_rules",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.native_tool_approvals_disabled",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.resolve_workflow",
+            new=AsyncMock(side_effect=RuntimeError("approval required")),
+        ) as workflow,
+    ):
+        session.return_value.__aenter__.return_value = AsyncMock()
+        with pytest.raises(RuntimeError, match="approval required"):
+            await request_agent_permission(
+                **_permission_kwargs(
+                    source="cursor",
+                    tool_name="read_file",
+                    client_decision="ask",
+                    hook_event_name="preToolUse",
+                    tool_origin="mcp",
+                )
+            )
+        workflow.assert_awaited_once()

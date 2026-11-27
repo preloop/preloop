@@ -229,6 +229,11 @@ class NotificationPayloadBuilder:
             # Name only. The expression belongs on a surface that can show it
             # in full; a clipped CEL expression reads as a different rule.
             custom_data["rule_name"] = str(rule_name)
+        runner_flow = (rule_context or {}).get("runner_flow")
+        if isinstance(runner_flow, dict):
+            # Runner owner consent: the device, flow and harness the owner
+            # is asked to allow, so the card reads without a fetch.
+            custom_data["runner_flow"] = runner_flow
         if expires_at:
             custom_data["expires_at"] = expires_at.isoformat()
         if is_question:

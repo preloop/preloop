@@ -1,7 +1,7 @@
 """Store redacted extension content for review.
 
 Revision ID: 20270102_extension_content
-Revises: 20270101_extension_details
+Revises: 20270101_session_prompt
 
 Adds ``extension_content``: one encrypted document per account and content
 hash, uploaded by a collector so an approver can read what an extension
@@ -17,7 +17,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision: str = "20270102_extension_content"
-down_revision: Union[str, None] = "20270101_extension_details"
+down_revision: Union[str, None] = "20270101_session_prompt"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

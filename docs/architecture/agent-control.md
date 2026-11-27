@@ -538,16 +538,27 @@ that command, its progress and its result on that one runtime session. Replayed
 results also carry the identity so a reconnect can recover a missed start frame.
 
 Session-targeted prompts and operator notes use the same server decision: an
-active turn receives a note at its next boundary; an idle sidecar-owned or ended
-session resumes its native id in its original directory. Open terminal sessions
+sidecar-owned active turn receives a user prompt. Claude streams it into the
+running query with `priority: "next"`, preserving active work. The SDK consumes
+it after current tools finish, or starts the next turn if the current turn ends
+first. UUIDs correlate results to all prompts they answer, so background results
+cannot settle another prompt. The Codex SDK serializes prompts on the same
+thread and starts each immediately after the previous run. Its receipt says
+"Queued, runs when this step finishes" until execution starts. An idle
+sidecar-owned or ended session resumes its native id in its original directory. Open terminal sessions
 receive notes without starting a second harness process. An unavailable idle
 sidecar session refuses the send and offers its local resume command. A resume
 prompt cancels pending notes on that session as superseded; notes already
 delivered remain in history and are not injected again.
 
 `start_directory` is recorded once and is separate from the latest hook `cwd`.
-Talk offers recent directories, with selection checked by the sidecar against
-its configured workspace and any existing runner directory authorization. The
+Talk offers tracker projects with a known checkout on the agent's host, then
+recent directories and a typed path. Checkout identities come from native cwd
+history, hook repository observations and runner authorized directories, matched
+by tracker host and repository path. Selection never clones a repository. The
+sidecar expands `~` on its host and validates real paths against its configured
+workspace and existing runner authorizations. Without a selection or recorded
+or configured default, Talk asks for a directory rather than using home. The
 session header and `preloop sessions list --wide` / `--json` expose the native
 harness id, original directory and shell-quoted resume command. Existing rows
 with no recorded launch directory do not invent one from a later cwd.
@@ -557,3 +568,20 @@ resumed from its last-seen cwd. An unowned legacy session without recent activit
 is refused with a local recovery instruction instead of accepting a note that
 may never arrive. A fresh session-start hook records process ownership so a
 local terminal resume supersedes stale sidecar ownership.
+
+
+Native sidecars announce their plugin version, `start_directory`,
+`command_session`, `followup_prompts` and `prompt_delivery` capabilities. The
+server stores these in the existing enrollment validation record with the
+connection generation. An older replacement cannot inherit them. The picker
+checks capabilities before a new send, and the server rejects unsupported
+requests before socket delivery. Capabilities are authoritative; a CLI version
+alone does not prove which npm sidecar is running.
+
+The Claude implementation uses Agent SDK 0.3.296 streaming input and result UUIDs;
+see [streaming input](https://platform.claude.com/docs/en/agent-sdk/streaming-vs-single-mode)
+and [message priority](https://platform.claude.com/docs/en/agent-sdk/typescript#sdkusermessage).
+`priority: "now"` can interrupt, so Talk does not use it for ordinary follow-ups.
+Codex SDK 0.156.1 exposes repeated `Thread.run` calls rather than steering input.
+The separate [app-server API](https://developers.openai.com/codex/app-server/)
+exposes `turn/steer`; that does not change ownership of interactive terminals.

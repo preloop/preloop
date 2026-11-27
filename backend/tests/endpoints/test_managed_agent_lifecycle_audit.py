@@ -41,6 +41,9 @@ async def test_removal_records_actor_and_revocation_before_commit(
         "deactivate_runtime_keys_for_managed_agent",
         lambda *a, **k: [object(), object()],
     )
+    release = MagicMock()
+    monkeypatch.setattr(endpoints.crud_api_key, "set_native_hook_lifecycle", release)
+    db.attach_mock(release, "release")
     audit = MagicMock()
     remove = MagicMock()
     monkeypatch.setattr(endpoints.crud_audit_log, "log_action", audit)
@@ -75,7 +78,12 @@ async def test_removal_records_actor_and_revocation_before_commit(
     assert entry["details"]["revoked_credentials"] == 3
     assert entry["details"]["session_history_retained"] is True
     assert entry["details"]["local_configuration_restored"] is False
-    assert [call[0] for call in db.mock_calls] == ["audit", "remove", "commit"]
+    assert [call[0] for call in db.mock_calls] == [
+        "release",
+        "audit",
+        "remove",
+        "commit",
+    ]
     remove.assert_called_once_with(db, agent=agent, commit=False)
 
 

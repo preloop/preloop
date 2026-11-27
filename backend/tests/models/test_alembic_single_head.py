@@ -695,8 +695,10 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert subagent_role.down_revision == terminal_location.revision
     extension_details = script.get_revision("20270101_extension_details")
     assert extension_details.down_revision == subagent_role.revision
+    opening_prompt = script.get_revision("20270101_session_prompt")
+    assert opening_prompt.down_revision == extension_details.revision
     extension_content = script.get_revision("20270102_extension_content")
-    assert extension_content.down_revision == extension_details.revision
+    assert extension_content.down_revision == opening_prompt.revision
     extension_search = script.get_revision("20270103_extension_search")
     assert extension_search.down_revision == extension_content.revision
     assert script.get_heads() == [extension_search.revision]

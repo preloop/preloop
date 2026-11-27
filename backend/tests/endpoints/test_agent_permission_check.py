@@ -77,6 +77,7 @@ def test_permission_check_accepts_source_opencode_and_stamps_marker(client, db_s
     assert response.status_code == 200, response.text
     assert response.json() == {
         "decision": "allow",
+        "native_hook_released": False,
         "reason": "Approved via Preloop.",
         "request_id": "req-1",
         "timed_out": False,
@@ -807,3 +808,105 @@ def test_audit_failure_preserves_permission_denial(
         assert response.json()["decision"] == "deny"
     else:
         assert response.json() == {"detail": "Original refusal"}
+
+
+@pytest.mark.parametrize(
+    "action, released",
+    [("suspend", True), ("suspend_block", False), ("decommission", True)],
+)
+def test_native_hook_lifecycle_sequence(
+    client: TestClient, db_session: Session, test_user: Any, action: str, released: bool
+) -> None:
+    """Onboard, read, suspend, resume and remove without stranding local tools."""
+    from tests.endpoints.test_account_agents import _seed_pauseable_agent
+
+    agent_id, token = _seed_pauseable_agent(
+        client, db_session, test_user, source_id="synthetic-hook-lifecycle"
+    )
+    payload = {"source": "cursor", "tool_name": "Read", "client_decision": "ask"}
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission",
+        new=AsyncMock(return_value=("allow", "Read-only native tool", None, False)),
+    ) as decide:
+        first = _post_permission_check(client, token, payload)
+        assert first.status_code == 200
+        assert first.json()["decision"] == "allow"
+        assert not first.json()["native_hook_released"]
+        decide.reset_mock()
+        changed = client.patch(
+            f"/api/v1/agents/{agent_id}", json={"lifecycle_action": action}
+        )
+        assert changed.status_code == 200, changed.text
+        suspended = _post_permission_check(client, token, payload)
+        assert suspended.status_code == 200, suspended.text
+        assert suspended.json()["native_hook_released"] is released
+        assert suspended.json()["decision"] == ("allow" if released else "deny")
+        decide.assert_not_awaited()
+        if action != "decommission":
+            assert (
+                client.patch(
+                    f"/api/v1/agents/{agent_id}", json={"lifecycle_action": "resume"}
+                ).status_code
+                == 200
+            )
+            resumed = _post_permission_check(client, token, payload)
+            assert resumed.status_code == 200
+            assert not resumed.json()["native_hook_released"]
+            decide.assert_awaited_once()
+            decide.reset_mock()
+        assert client.delete(f"/api/v1/agents/{agent_id}").status_code == 200
+        removed = _post_permission_check(client, token, payload)
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["native_hook_released"]
+        assert "offboard" in removed.json()["reason"]
+        decide.assert_not_awaited()
+
+
+def test_independently_revoked_key_does_not_release_native_hook(
+    client: TestClient, db_session: Session, test_user: Any
+) -> None:
+    """Removing a registry entry must not release an independently revoked key."""
+    from tests.endpoints.test_account_agents import _seed_pauseable_agent
+    from preloop.models.crud import crud_api_key
+
+    agent_id, token = _seed_pauseable_agent(
+        client, db_session, test_user, source_id="synthetic-revoked-hook"
+    )
+    key = crud_api_key.get_by_key(db_session, key=token)
+    crud_api_key.update(db_session, db_obj=key, obj_in={"is_active": False})
+    assert client.delete(f"/api/v1/agents/{agent_id}").status_code == 200
+    response = _post_permission_check(
+        client, token, {"source": "cursor", "tool_name": "Read"}
+    )
+    assert response.status_code == 401
+
+
+def test_explicit_credential_revocation_cancels_prior_lifecycle_release(
+    client: TestClient, db_session: Session, test_user: Any
+) -> None:
+    """A separately revoked key must not retain an earlier local release grant."""
+    from tests.endpoints.test_account_agents import _seed_pauseable_agent
+
+    agent_id, token = _seed_pauseable_agent(
+        client, db_session, test_user, source_id="synthetic-release-revoked"
+    )
+    assert (
+        client.patch(
+            f"/api/v1/agents/{agent_id}", json={"lifecycle_action": "suspend"}
+        ).status_code
+        == 200
+    )
+    credential_id = client.get(f"/api/v1/agents/{agent_id}").json()["credentials"][0][
+        "id"
+    ]
+    assert (
+        client.delete(
+            f"/api/v1/agents/{agent_id}/credentials/{credential_id}"
+        ).status_code
+        == 200
+    )
+    assert client.delete(f"/api/v1/agents/{agent_id}").status_code == 200
+    response = _post_permission_check(
+        client, token, {"source": "cursor", "tool_name": "Read"}
+    )
+    assert response.status_code == 401

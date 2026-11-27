@@ -17,6 +17,8 @@ const execFileAsync = promisify(execFile);
  * loadable without the SDK installed (the real factory imports it lazily).
  */
 export type SdkUserMessage = {
+  uuid: string;
+  priority: "next";
   type: "user";
   message: { role: "user"; content: string };
   parent_tool_use_id: null;
@@ -24,6 +26,8 @@ export type SdkUserMessage = {
 };
 
 export type SdkMessage = {
+  user_message_uuid?: string;
+  user_message_uuids?: string[];
   type: string;
   subtype?: string;
   session_id?: string;
@@ -156,6 +160,7 @@ export type LiveProgressListener = (
 ) => void;
 
 type TurnWaiter = {
+  uuid: string;
   /** Command this turn answers; scopes its live progress on the server. */
   commandId?: string;
   onProgress?: (event: TurnProgress) => void;
@@ -288,15 +293,26 @@ class OwnedSession {
           continue;
         }
         if (message.type === "result") {
+          // A response can consume several prompts, or answer a background
+          // task with no user prompt at all. Never consume a FIFO waiter.
+          const ids = new Set(message.user_message_uuids ??
+            (message.user_message_uuid ? [message.user_message_uuid] : []));
+          const answered = this.turnWaiters.filter(item => ids.has(item.uuid));
+          if (!answered.length) continue;
           const reply = message.result ?? this.turnText.join("\n").trim();
           this.turnText = [];
           this.endLiveTurn(resultIsError(message));
-          if (resultIsError(message)) {
-            this.failNextWaiter(
-              new Error(`Claude Code turn failed: ${resultErrorText(message)}`),
-            );
-          } else {
-            this.settleNextWaiter(reply ?? "", readTurnUsage(message));
+          for (const waiter of answered) {
+            this.turnWaiters.splice(this.turnWaiters.indexOf(waiter), 1);
+            if (waiter.settled) continue;
+            waiter.settled = true;
+            clearTimeout(waiter.timer);
+            if (resultIsError(message)) {
+              waiter.reject(new Error(`Claude Code turn failed: ${resultErrorText(message)}`));
+            } else {
+              const usage = readTurnUsage(message);
+              waiter.resolve(usage ? { text: reply, usage } : { text: reply });
+            }
           }
         }
       }
@@ -328,33 +344,7 @@ class OwnedSession {
     }
   }
 
-  /** Consume exactly one result per waiter in FIFO order. If the front
-   * waiter already timed out, drop this reply so a later waiter cannot
-   * receive the previous turn's text. */
-  private settleNextWaiter(reply: string, usage?: TurnUsage): void {
-    const waiter = this.turnWaiters.shift();
-    if (!waiter) {
-      return;
-    }
-    if (waiter.settled) {
-      return;
-    }
-    waiter.settled = true;
-    clearTimeout(waiter.timer);
-    waiter.resolve(usage ? { text: reply, usage } : { text: reply });
-  }
-
   private endError?: Error;
-
-  private failNextWaiter(error: Error): void {
-    const waiter = this.turnWaiters.shift();
-    if (!waiter || waiter.settled) {
-      return;
-    }
-    waiter.settled = true;
-    clearTimeout(waiter.timer);
-    waiter.reject(error);
-  }
 
   /** Stop the session for good: the SDK kills the Claude Code child. */
   terminate(): void {
@@ -377,8 +367,10 @@ class OwnedSession {
     if (this.ended) {
       return Promise.reject(new Error("Claude Code session ended"));
     }
+    const uuid = randomUUID();
     const reply = new Promise<TurnOutcome>((resolve, reject) => {
       const waiter: TurnWaiter = {
+        uuid,
         resolve,
         reject,
         settled: false,
@@ -404,6 +396,8 @@ class OwnedSession {
       this.turnWaiters.push(waiter);
     });
     this.input.push({
+      uuid,
+      priority: "next",
       type: "user",
       message: { role: "user", content: text },
       parent_tool_use_id: null,

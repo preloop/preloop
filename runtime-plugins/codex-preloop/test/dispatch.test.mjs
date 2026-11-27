@@ -644,7 +644,7 @@ test("presence lists owned threads as reachable", async () => {
   );
   assert.deepEqual(sidecar.reachableSessionIds(), ["thread-1"]);
   // Opening the thread republishes presence without waiting for a heartbeat.
-  const presence = early.filter(frame => frame.name !== "command_session");
+  const presence = early.filter(frame => frame.type === "presence");
   assert.equal(presence.length, 1);
   assert.deepEqual(presence[0].payload.reachable_session_ids, ["thread-1"]);
 

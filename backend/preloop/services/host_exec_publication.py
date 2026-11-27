@@ -1,15 +1,19 @@
-"""Managed legacy publication for native Copilot host profiles (#1069).
+"""Managed legacy publication for native host profiles (#1069).
 
-Scope: one repository, legacy publication, Copilot host profiles whose runner
+Scope: one repository, legacy publication, every native host profile (Codex,
+Claude Code, Cursor, Devin, OpenCode, Copilot, DeepSeek) whose runner
 advertises ``host_publication`` (the local profile sets ``allow_publish`` and
 ``allow_checkout``). The runner commits and pushes the checkout to the
-managed ``preloop/`` branch after the CLI exits successfully and reports a
-receipt on the completion envelope. The control plane then opens the pull
-request with the bound code-host tracker client and binds it through
-``record_opened_pr``. The agent never supplies a pull request URL.
+managed ``preloop/`` branch after the CLI exits successfully, using the
+short-lived repository credential the control plane delivered for the job,
+and reports a receipt on the completion envelope. The control plane then
+opens the pull request with the bound code-host tracker client (GitHub,
+GitLab or Bitbucket Cloud), applies the saved ``publication_approval`` gate, and
+binds it through ``record_opened_pr``. The agent never supplies a pull
+request URL.
 
-Isolated publication, multi-repository publication and Cursor publication
-stay unavailable with explicit validation errors.
+Isolated publication and multi-repository publication stay unavailable with
+explicit validation errors. Read-only review never publishes.
 """
 
 from __future__ import annotations
@@ -28,15 +32,28 @@ HOST_PUBLICATION_RESULT_KEY = "host_publication"
 #: Transient lease key. Persisted leases carry only ``{"mode": "legacy"}``;
 #: delivery replaces it with the runner plan.
 HOST_PUBLICATION_LEASE_KEY = "host_exec_publication"
-HOST_PUBLICATION_AGENT_TYPES = frozenset({"copilot"})
+#: Every native host agent type. Only Copilot also continues a published run
+#: (``host_exec_continuation``); the others publish once per run.
+HOST_PUBLICATION_AGENT_TYPES = frozenset(
+    {"codex", "claude_code", "cursor", "devin", "opencode", "copilot", "deepseek"}
+)
+#: Maximum bytes of a repository pull request template the runner reports.
+HOST_PUBLICATION_MAX_TEMPLATE_BYTES = 65536
 
 MULTI_REPOSITORY_PUBLICATION_UNAVAILABLE = (
     "host publication supports exactly one repository; multi-repository "
     "publication is unavailable on native host profiles"
 )
 PUBLICATION_UNSUPPORTED_TRACKER = (
-    "host publication opens pull requests on Bitbucket Cloud repositories only"
+    "host publication opens pull requests on GitHub, GitLab and Bitbucket "
+    "Cloud repositories only"
 )
+PUBLICATION_READ_ONLY = (
+    "a read_only review flow cannot open a pull request; set publication_mode "
+    "legacy to publish from a private runner"
+)
+#: Tracker kinds the control plane opens a host-published pull request on.
+_PUBLICATION_TRACKERS = frozenset({"github", "gitlab", "bitbucket"})
 
 _RECEIPT_STATUSES = frozenset({"pushed", "no_changes", "failed"})
 _RECEIPT_REASONS = frozenset({"push_conflict", "credential_rejected", "push_failed"})
@@ -69,7 +86,7 @@ def host_publication_config_error(
 
     Returns:
         A reason string, or None when the configuration is the supported
-        Copilot / one repository / legacy shape.
+        native host profile / one repository / legacy shape.
     """
     from preloop.services.host_exec import (
         ISOLATED_PUBLICATION_UNAVAILABLE,
@@ -78,8 +95,8 @@ def host_publication_config_error(
 
     kind = agent_type.strip().lower() if isinstance(agent_type, str) else ""
     if kind not in HOST_PUBLICATION_AGENT_TYPES:
-        # Cursor and callers that do not name the agent keep the original
-        # refusal, so older code paths stay fail-closed.
+        # Callers that do not name a native agent keep the refusal, so older
+        # code paths stay fail-closed.
         return PULL_REQUEST_UNAVAILABLE
     clone = _clone_mapping(git_clone_config)
     mode = (
@@ -87,6 +104,8 @@ def host_publication_config_error(
         if clone is not None
         else getattr(git_clone_config, "publication_mode", None)
     )
+    if mode == "read_only":
+        return PUBLICATION_READ_ONLY
     if mode not in (None, "", "legacy"):
         return ISOLATED_PUBLICATION_UNAVAILABLE
     repositories = (
@@ -116,15 +135,23 @@ def runner_profile_can_publish(runner: Any, profile: str) -> bool:
 
 
 def account_has_publishing_runner(
-    db: Session, *, account_id: Any, runner_pool: Any, profile: str
+    db: Session,
+    *,
+    account_id: Any,
+    runner_pool: Any,
+    profile: str,
+    agent_type: Any = None,
 ) -> bool:
     """True when a registered runner in the pool can publish for ``profile``.
 
     Offline runners count: a saved flow waits for its runner. A runner that
     never advertised the capability (an old CLI or a profile without
-    ``allow_publish``) does not.
+    ``allow_publish``) does not. With ``agent_type`` the profile must also
+    advertise that harness, the same rule lease assignment applies, so a
+    Copilot profile of the same name never admits a Cursor flow.
     """
     from preloop.models.crud import crud_flow_runner
+    from preloop.services.host_exec import runner_has_host_exec_profile
 
     if account_id is None:
         return False
@@ -132,7 +159,14 @@ def account_has_publishing_runner(
     runners = crud_flow_runner.find_matching(
         db, account_id=account_id, pool=pool, online_only=False
     )
-    return any(runner_profile_can_publish(runner, profile) for runner in runners)
+    if agent_type is None:
+        return any(runner_profile_can_publish(runner, profile) for runner in runners)
+    return any(
+        runner_has_host_exec_profile(
+            runner, profile, None, agent_type, require_publication=True
+        )
+        for runner in runners
+    )
 
 
 def trusted_host_publication_receipt(
@@ -163,6 +197,15 @@ def trusted_host_publication_receipt(
         receipt["head_sha"] = head
     if status == "pushed" and "head_sha" not in receipt:
         return None
+    template = raw.get("pr_template")
+    if (
+        status == "pushed"
+        and isinstance(template, str)
+        and template.strip()
+        and len(template.encode()) <= HOST_PUBLICATION_MAX_TEMPLATE_BYTES
+        and "\x00" not in template
+    ):
+        receipt["pr_template"] = template
     if status == "failed":
         reason = raw.get("reason")
         receipt["reason"] = reason if reason in _RECEIPT_REASONS else "push_failed"
@@ -250,7 +293,7 @@ async def open_and_bind_host_pull_request(
     from preloop.sync.trackers.base import BaseTracker
 
     kind = str(getattr(client, "tracker_type", "") or "").lower()
-    if kind != "bitbucket":
+    if kind not in _PUBLICATION_TRACKERS:
         raise ValueError(PUBLICATION_UNSUPPORTED_TRACKER)
 
     async def lookup() -> Optional[Dict[str, Any]]:
@@ -263,7 +306,12 @@ async def open_and_bind_host_pull_request(
         raise ValueError("no open pull request exists for the branch")
     if found is None:
         try:
-            found = await client.create_pull_request(
+            create = (
+                client.create_merge_request
+                if kind == "gitlab"
+                else client.create_pull_request
+            )
+            found = await create(
                 title=title,
                 source_branch=branch,
                 target_branch=base_branch,

@@ -82,8 +82,8 @@ func validateHostExecResume(resume *hostExecResume, profile hostExecProfile, har
 	if resume == nil {
 		return nil
 	}
-	if !hostExecProfileMayPublish(profile, harness) {
-		return fmt.Errorf("%s: host profile %q does not allow publication, so it cannot continue a published run", hostExecResumeUnavailable, profile.Name)
+	if !hostExecProfileMayContinue(profile, harness) {
+		return fmt.Errorf("%s: host profile %q cannot continue a published run; only a publishing Copilot profile resumes its session", hostExecResumeUnavailable, profile.Name)
 	}
 	if publication == nil || !publication.Continuation {
 		return fmt.Errorf("%s: a continuation must publish to the existing pull request branch", hostExecResumeUnavailable)

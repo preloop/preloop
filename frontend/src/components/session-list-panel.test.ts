@@ -1,3 +1,4 @@
+import sinon from 'sinon';
 import { expect, fixture, html } from '@open-wc/testing';
 
 import './session-list-panel.ts';
@@ -507,6 +508,12 @@ describe('subagent session identity', () => {
       }),
       makeSession({ id: 'parent', title: 'Design review' }),
     ]);
+    const disclosure = el.shadowRoot!.querySelector<HTMLButtonElement>(
+      'button[aria-expanded]'
+    )!;
+    expect(disclosure.getAttribute('aria-expanded')).to.equal('false');
+    disclosure.click();
+    await el.updateComplete;
     expect(el.shadowRoot!.textContent).to.contain('Subagent · reviewer');
     expect(el.shadowRoot!.textContent).to.contain('Turn finished');
     const link = el.shadowRoot!.querySelector<HTMLAnchorElement>(
@@ -515,7 +522,51 @@ describe('subagent session identity', () => {
     expect(link.textContent).to.contain('Design review');
     expect(link.href).to.contain('sessionId=parent');
     expect(el.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.contain(
-      '1 child in this list'
+      'Hide 1 subagents'
+    );
+  });
+});
+
+describe('session selection tree', () => {
+  afterEach(() => sinon.restore());
+  it('keeps child rows collapsed until requested, with running counts and opening prompts', async () => {
+    const panel = await renderPanel([
+      makeSession({
+        id: 'parent',
+        title: 'Catalog import',
+        firstPrompt: 'Import the orchard catalog',
+        cwd: '/workspace/catalog',
+      }),
+      makeSession({
+        id: 'child',
+        title: 'Review schema',
+        parentSessionId: 'parent',
+        status: 'active_now',
+      }),
+    ]);
+    const root = panel.shadowRoot!;
+    expect(root.textContent).to.contain('1 running');
+    expect(root.textContent).to.contain('Import the orchard catalog');
+    expect(root.querySelectorAll('.session-select').length).to.equal(1);
+    (root.querySelector('button[aria-expanded]') as HTMLElement).click();
+    await panel.updateComplete;
+    expect(root.querySelectorAll('.session-select').length).to.equal(2);
+    expect(root.textContent).to.contain('Subagent');
+  });
+  it('opens Talk with the row session and agent as the target', async () => {
+    await setViewport({ width: 1024, height: 768 });
+    const opened = sinon
+      .stub(window, 'open')
+      .returns({ focus() {}, location: { href: '' } } as unknown as Window);
+    const panel = await renderPanel([
+      makeSession({ id: 'session-target', agentId: 'agent-target' }),
+    ]);
+    (
+      panel.shadowRoot!.querySelector('[data-session-talk]') as HTMLElement
+    ).click();
+    expect(opened).to.have.been.calledOnce;
+    expect(String(opened.firstCall.args[0])).to.contain(
+      '/console/agents/agent-target/talk?session=session-target'
     );
   });
 });

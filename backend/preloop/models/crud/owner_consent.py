@@ -1,7 +1,7 @@
 """Durable, account-scoped owner consent requests."""
 
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable, Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import or_, select, update
@@ -57,8 +57,15 @@ def get_or_create(
     details: dict[str, Any],
     execution_id: str | None = None,
     managed_agent_id: UUID | None = None,
+    describe: Optional[
+        Callable[[], tuple[Optional[str], Optional[dict[str, Any]]]]
+    ] = None,
 ) -> tuple[models.OwnerConsent, models.ApprovalRequest, bool]:
-    """Serialize intent creation and persist its approval in one transaction."""
+    """Serialize intent creation and persist its approval in one transaction.
+
+    ``describe`` supplies a display summary and ``rule_context`` for a new
+    request only. It is not part of the intent comparison.
+    """
     crud_account_halt.lock_account(db, account_id=account_id)
     consent = (
         db.query(models.OwnerConsent)
@@ -141,6 +148,7 @@ def get_or_create(
         )
         db.add(config)
         db.flush()
+    summary, rule_context = describe() if describe is not None else (None, None)
     approval = models.ApprovalRequest(
         account_id=account_id,
         tool_configuration_id=config.id,
@@ -151,7 +159,9 @@ def get_or_create(
         managed_agent_id=managed_agent_id,
         status="pending",
         expires_at=datetime.utcnow() + timedelta(seconds=timeout),
-        summary=(
+        rule_context=rule_context,
+        summary=summary
+        or (
             "Allow this flow to run on your runner?"
             if action == "runner_flow"
             else "Allow this account member to start a session on your runner?"

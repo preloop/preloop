@@ -118,6 +118,7 @@ export interface PendingTalkMessage {
    * note is `waiting` until the session's hook reads it, then `read`.
    */
   state: 'sending' | 'sent' | 'waiting' | 'read' | 'failed';
+  deliveryMessage?: string;
   error?: string;
   /** Operator note id, when the line went as a note. */
   noteId?: string;
@@ -1199,7 +1200,7 @@ export class SessionChatView extends LitElement {
                   : item.note
                     ? noteRoleLabel(item.note)
                     : item.kind === 'operator'
-                      ? 'Operator'
+                      ? 'You'
                       : 'Agent'
             }
           </span>
@@ -1220,7 +1221,13 @@ export class SessionChatView extends LitElement {
               : nothing
           }
           ${
-            item.queued ? html`<span class="queue-chip">Queued</span>` : nothing
+            item.promptDelivery
+              ? html`<span class="queue-chip"
+                  >${item.promptDelivery === 'queued' ? 'Queued, runs when this step finishes' : 'Sent'}</span
+                >`
+              : item.queued
+                ? html`<span class="queue-chip">Queued</span>`
+                : nothing
           }
           ${
             item.redacted
@@ -1612,6 +1619,11 @@ ${item.text}</pre>`
               : message.state === 'sending'
                 ? html`<sl-badge variant="neutral" pill>Sending</sl-badge>`
                 : nothing
+          }
+          ${
+            message.deliveryMessage && message.state === 'sent'
+              ? html`<span class="queue-chip">${message.deliveryMessage}</span>`
+              : nothing
           }
           ${
             message.state === 'failed'

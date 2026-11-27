@@ -976,3 +976,27 @@ func TestUnsupportedAgentWithReadOnlyStateSaysWhatIsMissing(t *testing.T) {
 		t.Fatalf("nothing may change on the server: %v", mutations)
 	}
 }
+
+func TestManualReonboardReportsUnwritableExistingGate(t *testing.T) {
+	rig := newManualRigServer(t)
+	home := newManualRigHome(t)
+	hookPath := filepath.Join(filepath.Dir(home.settings), "separate-hooks.json")
+	original := `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"preloop agents permission-hook --source claude_code"}]}]}}`
+	if err := os.WriteFile(hookPath, []byte(original), 0400); err != nil {
+		t.Fatal(err)
+	}
+	approvalHookConfigPathOverrides[permissionSourceClaudeCode] = hookPath
+	t.Cleanup(func() { delete(approvalHookConfigPathOverrides, permissionSourceClaudeCode) })
+	output, err := runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{NoUsageHooks: true})
+	var pending *manualApplyPendingError
+	if err != nil && !errors.As(err, &pending) {
+		t.Fatalf("manual setup failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, hookPath) || !strings.Contains(output, "preloop agents pause") {
+		t.Fatalf("missing gate recovery instruction: %s", output)
+	}
+	after, err := os.ReadFile(hookPath)
+	if err != nil || string(after) != original {
+		t.Fatalf("unwritable hook changed: %v", err)
+	}
+}

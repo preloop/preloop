@@ -176,7 +176,7 @@ def test_idle_sidecar_session_resumes_after_reconnect() -> None:
     assert result.mode == "command"
 
 
-def test_busy_sidecar_session_delivers_note_at_boundary() -> None:
+def test_busy_sidecar_session_delivers_prompt() -> None:
     """Routing is based on the turn, not the console control used to send."""
     agent = SimpleNamespace(
         id=uuid4(),
@@ -201,6 +201,10 @@ def test_busy_sidecar_session_delivers_note_at_boundary() -> None:
         session_reference=None,
     )
     with (
+        patch(
+            "preloop.services.talk_capabilities.sidecar_features",
+            return_value={"capabilities": {"followup_prompts": True}},
+        ),
         patch.object(dispatch, "session_managed_agent", return_value=agent),
         patch.object(dispatch, "agent_has_control_config", return_value=True),
         patch(
@@ -211,8 +215,8 @@ def test_busy_sidecar_session_delivers_note_at_boundary() -> None:
         result = dispatch.resolve_session_control_mode(
             MagicMock(), account_id=str(agent.account_id), session=session
         )
-    assert result.mode == "note"
-    assert "next step" in result.reason
+    assert result.mode == "command"
+    assert result.reason is None
 
 
 def test_start_directory_is_write_once() -> None:

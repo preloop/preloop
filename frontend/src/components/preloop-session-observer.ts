@@ -39,6 +39,7 @@ import {
   listRuntimeSessionArtifacts,
   getAccountRuntimeSessionDetail,
   getAccountRuntimeSessions,
+  findRuntimeSessions,
   getAIModels,
   getAIModelRuntimeSessions,
   getApiKeyGatewayUsageSummary,
@@ -692,6 +693,60 @@ export class PreloopSessionObserver extends LitElement {
 
   @state()
   private searchQuery = '';
+  @state() private foundSessions: ObservedSession[] | null = null;
+  @state() private foundSnippets: Record<string, string> = {};
+  @state() private foundTurns: Record<string, string> = {};
+  @state() private searchNotice = '';
+  private finderSequence = 0;
+  private finderDebounce?: ReturnType<typeof setTimeout>;
+
+  private async findSessions(): Promise<void> {
+    const sequence = ++this.finderSequence;
+    const query = this.searchQuery.trim();
+    if (!query) {
+      this.foundSessions = null;
+      this.foundSnippets = {};
+      this.foundTurns = {};
+      this.searchNotice = '';
+      this.searchNotice = '';
+      return;
+    }
+    this.searchNotice = 'Searching...';
+    try {
+      const page = await findRuntimeSessions({
+        query,
+        limit: 100,
+        ...(this.scope === 'managed_agent'
+          ? { agent: this.scopeId }
+          : this.scope === 'account'
+            ? {}
+            : {
+                sessionIds: this.observedSessions
+                  .map((row) => row.id)
+                  .filter((id) => /^[0-9a-f-]{36}$/i.test(id))
+                  .slice(0, 500),
+              }),
+      });
+      if (sequence !== this.finderSequence) return;
+      this.foundSessions = normalizeObservedSessions(
+        [...page.items, ...(page.related_sessions ?? [])],
+        { preserveOrder: true }
+      );
+      this.foundSnippets = page.matching_snippets ?? {};
+      this.foundTurns = page.matching_turns ?? {};
+      const known = new Set(this.observedSessions.map((row) => row.id));
+      this.observedSessions = [
+        ...this.observedSessions,
+        ...this.foundSessions.filter((row) => !known.has(row.id)),
+      ];
+      this.searchNotice =
+        page.search_warning ||
+        (page.has_more ? 'More matches are available in Sessions.' : '');
+    } catch {
+      if (sequence === this.finderSequence)
+        this.searchNotice = 'Search is unavailable. Try again.';
+    }
+  }
 
   @state()
   private optimizeHintDismissed = readOptimizeHintDismissed();
@@ -1120,6 +1175,8 @@ export class PreloopSessionObserver extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    clearTimeout(this.finderDebounce);
+    this.finderSequence++;
     ++this.pinnedSessionRequest;
     this.pinnedSessionPending = null;
     this.clearDesktopRecheck();
@@ -1150,6 +1207,12 @@ export class PreloopSessionObserver extends LitElement {
       if (this.selectedSessionId === null) this.activeSessionId = null;
     }
     if (changed.has('scopeId') && changed.get('scopeId') !== undefined) {
+      this.finderSequence++;
+      this.foundSessions = null;
+      this.foundSnippets = {};
+      this.foundTurns = {};
+      this.searchNotice = '';
+      this.searchQuery = '';
       ++this.pinnedSessionRequest;
       this.pinnedSessionPending = null;
       this.pinnedSessionError = null;
@@ -1449,7 +1512,7 @@ export class PreloopSessionObserver extends LitElement {
       let rows: SessionInput[] = [];
       if (this.scope === 'runtime_session' && this.scopeId) {
         const detail = await getAccountRuntimeSessionDetail(this.scopeId);
-        rows = [detail.session];
+        rows = [detail.session, ...(detail.related_sessions ?? [])];
       } else if (this.scope === 'managed_agent' && this.scopeId) {
         const detail = await getAccountAgent(this.scopeId);
         rows = detail.sessions;
@@ -1549,7 +1612,8 @@ export class PreloopSessionObserver extends LitElement {
       // IDs are a path segment, never an arbitrary API path.
       if (!/^[a-zA-Z0-9_-]+$/.test(sessionId))
         throw new Error('Invalid session');
-      const { session } = await getAccountRuntimeSessionDetail(sessionId);
+      const { session, related_sessions = [] } =
+        await getAccountRuntimeSessionDetail(sessionId);
       if (
         request !== this.pinnedSessionRequest ||
         scopeId !== this.scopeId ||
@@ -1563,7 +1627,7 @@ export class PreloopSessionObserver extends LitElement {
       )
         throw new Error('Session belongs to another agent');
       this.observedSessions = [
-        ...normalizeObservedSessions([session]),
+        ...normalizeObservedSessions([session, ...related_sessions]),
         ...this.observedSessions.filter((row) => row.id !== sessionId),
       ];
       await this.selectSession(sessionId);
@@ -2495,21 +2559,9 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   private get filteredSessions(): ObservedSession[] {
-    const query = this.searchQuery.trim().toLowerCase();
-    if (!query) return this.observedSessions;
-    return this.observedSessions.filter((session) =>
-      [
-        session.title,
-        session.subtitle,
-        session.sessionReference,
-        session.runtimePrincipalName,
-        session.latestModelAlias,
-      ]
-        .filter(Boolean)
-        .join('\n')
-        .toLowerCase()
-        .includes(query)
-    );
+    return this.searchQuery.trim()
+      ? (this.foundSessions ?? [])
+      : this.observedSessions;
   }
 
   private get activeEvents(): FlowGatewayEvent[] {
@@ -3316,7 +3368,31 @@ export class PreloopSessionObserver extends LitElement {
             </div>`
           : nothing
       }
-      ${this.observedSessions.filter((row) => row.parentSessionId === session.id).map((child) => html`<div class="session-identity"><a href=${`/console/runtime-sessions?sessionId=${encodeURIComponent(child.id)}`}>Child: ${child.title}</a>${child.subagentRole || child.spawnLabel || nothing}</div>`)}
+      <details class="session-identity" data-session-family>
+        <summary>Related sessions</summary>
+        <nav aria-label="Related sessions">
+          ${this.observedSessions
+            .filter(
+              (row) =>
+                row.id !== session.id &&
+                (row.id === session.parentSessionId ||
+                  row.parentSessionId === session.id ||
+                  (session.parentSessionId &&
+                    row.parentSessionId === session.parentSessionId))
+            )
+            .map(
+              (row) =>
+                html`<div>
+                  <a
+                    href=${`/console/runtime-sessions?sessionId=${encodeURIComponent(row.id)}`}
+                  >
+                    ${row.id === session.parentSessionId ? 'Parent' : row.parentSessionId === session.id ? 'Subagent' : 'Sibling'}:
+                    ${row.title} </a
+                  >${row.subagentRole ? ` · ${row.subagentRole}` : nothing}
+                </div>`
+            )}
+        </nav>
+      </details>
       ${
         this.sessionRowHasLedger(session)
           ? html`<dl class="session-facts">
@@ -3990,20 +4066,42 @@ export class PreloopSessionObserver extends LitElement {
                               this.searchQuery = (
                                 event.target as HTMLInputElement
                               ).value;
+                              this.finderSequence++;
+                              this.foundSessions = null;
+                              this.foundSnippets = {};
+                              this.foundTurns = {};
+                              this.searchNotice = '';
+                              clearTimeout(this.finderDebounce);
+                              this.finderDebounce = setTimeout(
+                                () => void this.findSessions(),
+                                250
+                              );
                             }}
                             style="margin-bottom: var(--sl-spacing-small);"
                           >
                             <sl-icon name="search" slot="prefix"></sl-icon>
                           </sl-input>`
                     }
+                    ${this.searchNotice ? html`<p role="status">${this.searchNotice}</p>` : nothing}
+                    ${this.searchQuery ? html`<a href=${`/console/runtime-sessions?q=${encodeURIComponent(this.searchQuery)}`}>Search all sessions</a>` : nothing}
                     <session-list-panel
+                      .snippets=${this.foundSnippets}
+                      .matchingTurns=${this.foundTurns}
+                      .matchedIds=${this.searchQuery ? (this.foundSessions?.map((row) => row.id) ?? []) : []}
                       .sessions=${this.filteredSessions}
                       .activeSessionId=${this.activeSessionId}
                       .emptyText=${
-                        this.observedSessions.length === 0 ? this.emptyText : ''
+                        this.searchQuery
+                          ? this.searchNotice ||
+                            'No sessions matched. Searched titles, first prompts, directories, agents, IDs and captured content.'
+                          : this.observedSessions.length === 0
+                            ? this.emptyText
+                            : ''
                       }
                       @session-selected=${(event: CustomEvent) => {
                         event.stopPropagation();
+                        if (event.detail.turnId)
+                          this.focusTurnId = event.detail.turnId;
                         this.openFromList(
                           event.detail.sessionId,
                           event.detail.artifactKind ?? null

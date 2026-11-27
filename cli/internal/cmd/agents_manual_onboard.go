@@ -410,6 +410,26 @@ func buildManualApplyPlan(in *manualEnrollmentInputs) (manualApplyPlan, []string
 	if hookPath, hookErr := approvalHookConfigPath(source); hookErr == nil {
 		hooksInSettings = source != "" && filepath.Clean(hookPath) == filepath.Clean(agent.ConfigPath)
 	}
+	if !in.Opts.Approvals {
+		removalAgent := agent
+		if isExtensionHarness(agent) {
+			removalAgent = staged
+		}
+		if !hooksInSettings && !isExtensionHarness(agent) && !report.writable(writeRoleHooks) {
+			hookPath, _ := approvalHookConfigPath(source)
+			plan.Limitations = append(plan.Limitations, fmt.Sprintf(
+				"An existing native approval gate could not be removed from %s. Make that file writable and run `preloop agents pause %q` on the agent's machine before using it.", hookPath, agent.Name))
+		} else {
+			if hooksInSettings {
+				approvalHookConfigPathOverrides[source] = staged.ConfigPath
+			}
+			hookErr := removeNativeApprovalGates(removalAgent)
+			delete(approvalHookConfigPathOverrides, source)
+			if hookErr != nil {
+				return plan, nil, hookErr
+			}
+		}
+	}
 	approvalsInstalled := false
 	if in.Opts.Approvals && isApprovalHookSupportedAgent(agent) {
 		switch {

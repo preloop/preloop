@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Optional
 from uuid import UUID
 
 from anyio import CancelScope
@@ -39,8 +39,16 @@ def check_owner_consent(
     execution_id: str | None = None,
     managed_agent_id: UUID | None = None,
     requester_user_id: UUID | str | None = None,
+    describe: Optional[
+        Callable[[], tuple[Optional[str], Optional[dict[str, Any]]]]
+    ] = None,
 ) -> OwnerConsentResult:
-    """Create or poll a durable owner request, without ever auto-approving it."""
+    """Create or poll a durable owner request, without ever auto-approving it.
+
+    ``describe`` returns ``(summary, rule_context)`` for the owner. It runs
+    only when the request is created, never on a poll, and its output is
+    display-only: the decision binds to ``details``.
+    """
     intent = dict(details)
     if requester_user_id is not None:
         intent["requester_user_id"] = str(requester_user_id)
@@ -54,6 +62,7 @@ def check_owner_consent(
         details=intent,
         execution_id=execution_id,
         managed_agent_id=managed_agent_id,
+        describe=describe,
     )
     status = "consumed" if consent.consumed_at is not None else approval.status
     return OwnerConsentResult(status, approval.id, created)

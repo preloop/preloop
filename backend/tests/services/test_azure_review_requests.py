@@ -170,8 +170,10 @@ async def test_active_run_gets_exactly_one_pending_followup(
         )
     rows = db_session.query(models.FlowExecution).filter_by(flow_id=flow.id).all()
     assert len(rows) == 2
+    # The query has no ORDER BY, so pick the follow-up by id, not position.
+    (followup,) = [row for row in rows if row.id != active.id]
     assert (
-        rows[-1].trigger_event_details["payload"]["azure_review_request"]["signal"]
+        followup.trigger_event_details["payload"]["azure_review_request"]["signal"]
         == "1:2"
     )
 

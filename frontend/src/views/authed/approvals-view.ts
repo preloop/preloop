@@ -58,6 +58,7 @@ import '../../components/list-selection';
 import '../../components/list-bar-swap';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import '../../components/approval-rule-context-block';
+import '../../components/runner-flow-approval-context';
 import '../../components/attribution-line';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -118,6 +119,7 @@ interface ApprovalStatsResponse {
   auto_approved_by_bypass: number;
   avg_response_minutes: number | null;
   tools: string[];
+  has_native_delivery_warning?: boolean;
 }
 
 function isStatsResponse(value: unknown): value is ApprovalStatsResponse {
@@ -1719,6 +1721,31 @@ export class ApprovalsView extends AuthedElement {
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
+          ${
+            this.serverStats?.has_native_delivery_warning ||
+            this.approvalRequests.some(
+              (request) =>
+                typeof request.tool_args?._preloop_native_delivery_warning ===
+                'string'
+            )
+              ? html`
+                  <sl-alert
+                    open
+                    variant="warning"
+                    data-testid="native-delivery-warning"
+                  >
+                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                    A native tool approval had no mobile or chat destination.
+                    Email alone may leave an agent waiting. Review pending
+                    requests here, configure
+                    <a href="/console/settings/notification-preferences"
+                      >notifications</a
+                    >, or run <code>preloop agents pause</code> on the agent's
+                    machine to temporarily turn off the local gate.
+                  </sl-alert>
+                `
+              : nothing
+          }
           ${this.renderStatStrip()}
 
           <!-- Filters -->
@@ -2168,6 +2195,14 @@ export class ApprovalsView extends AuthedElement {
                         compact
                         .ruleContext=${request.rule_context}
                       ></approval-rule-context-block>
+                      ${
+                        request.rule_context.runner_flow
+                          ? html`<runner-flow-approval-context
+                              compact
+                              .context=${request.rule_context.runner_flow}
+                            ></runner-flow-approval-context>`
+                          : ''
+                      }
                     </div>
                   `
                 : ''
