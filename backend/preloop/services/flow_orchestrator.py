@@ -813,7 +813,7 @@ def _exception_location(exc: BaseException) -> Optional[str]:
     paths = [frame.filename.replace("\\", "/") for frame in frames]
     # Name the innermost Preloop frame: it is the caller worth fixing, and a
     # third-party absolute path would expose the server layout to users.
-    for frame, path in reversed(list(zip(frames, paths))):
+    for frame, path in reversed(list(zip(frames, paths, strict=True))):
         if marker in path:
             path = "preloop/" + path.rsplit(marker, 1)[1]
             return f"{path}:{frame.lineno} in {frame.name}"
