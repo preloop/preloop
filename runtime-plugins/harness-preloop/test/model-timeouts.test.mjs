@@ -1,11 +1,93 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { gatewayTimeoutFetch } from "../../../backend/preloop/agents/harness_model_timeouts.mjs";
+import {
+  apply,
+  gatewayTimeoutFetch,
+} from "../../../backend/preloop/agents/harness_model_timeouts.mjs";
+
+test("production plugin resolves the runtime's transport and restores fetch on disposal", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "preloop-runtime-transport-"));
+  const executable = join(root, "runtime", "bin", "dsh.js");
+  const transportDir = join(root, "runtime", "node_modules", "undici");
+  mkdirSync(join(root, "runtime", "bin"), { recursive: true });
+  mkdirSync(transportDir, { recursive: true });
+  writeFileSync(executable, "");
+  writeFileSync(
+    join(transportDir, "index.js"),
+    `exports.calls = [];
+exports.EnvHttpProxyAgent = class {
+  constructor(options) { exports.calls.push(options); }
+  async close() { exports.calls.push("closed"); }
+};
+exports.fetch = async (url, options) => {
+  exports.calls.push({ url, options });
+  return new Response("runtime transport");
+};`,
+  );
+  const binary = join(root, "dsh");
+  symlinkSync(executable, binary);
+  const previousEnv = { ...process.env };
+  const originalFetch = globalThis.fetch;
+  let dispose;
+  t.after(() => {
+    dispose?.();
+    globalThis.fetch = originalFetch;
+    process.env = previousEnv;
+    rmSync(root, { recursive: true, force: true });
+  });
+  process.env.PRELOOP_HARNESS_BIN = binary;
+  process.env.PRELOOP_URL = "https://example.com";
+  process.env.PRELOOP_HARNESS_MODEL = JSON.stringify({
+    baseUrl: "${PRELOOP_URL}/openai/v1",
+    timeoutMs: 7215000,
+  });
+  const fallback = async () => new Response("unrelated");
+  globalThis.fetch = fallback;
+  apply({
+    on(event, callback) {
+      assert.equal(event, "dispose");
+      dispose = callback;
+    },
+  });
+  assert.notEqual(globalThis.fetch, fallback);
+  const transport = createRequire(executable)("undici");
+  const controller = new AbortController();
+  const url = "https://example.com/openai/v1/chat/completions";
+  assert.equal(
+    await (await fetch(url, { signal: controller.signal })).text(),
+    "runtime transport",
+  );
+  assert.deepEqual(transport.calls[0], {
+    headersTimeout: 7215000,
+    bodyTimeout: 7215000,
+  });
+  assert.equal(transport.calls[1].options.signal, controller.signal);
+  assert.ok(
+    transport.calls[1].options.dispatcher instanceof
+      transport.EnvHttpProxyAgent,
+  );
+  assert.equal(
+    await (await fetch("https://example.com/api/v1/agents")).text(),
+    "unrelated",
+  );
+  dispose();
+  dispose = undefined;
+  assert.equal(globalThis.fetch, fallback);
+  assert.equal(transport.calls.at(-1), "closed");
+});
 
 for (const runtime of ["pi", "deepseek"]) {
   test(`${runtime} gateway client allows the flow's model wait`, () => {

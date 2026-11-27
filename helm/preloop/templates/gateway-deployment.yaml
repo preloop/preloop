@@ -43,7 +43,7 @@ spec:
       # kubelet SIGKILLs the pod. With the k8s default of 30s, rollouts
       # severed multi-minute agent streams ~20s after preStop began. See
       # gateway.terminationGracePeriodSeconds in values.yaml.
-      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ max .Values.gateway.terminationGracePeriodSeconds (add .Values.runnerModels.totalSeconds 30) }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

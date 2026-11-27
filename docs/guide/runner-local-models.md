@@ -122,11 +122,13 @@ transport frames as model output. The total is also capped by the calling flow's
 remaining execution budget, including startup and work before a park/resume.
 Raising the model limits cannot give a request more time than its flow has left.
 
-For example, allow 20 minutes of model silence and two hours per request:
+For example, allow 20 minutes of model silence and two hours per request,
+within a three-hour flow budget:
 
 ```sh
 RUNNER_MODEL_SILENT_SECONDS=1200
 RUNNER_MODEL_TOTAL_SECONDS=7200
+FLOW_EXECUTION_MAX_WAIT_SECONDS=10800
 ```
 
 In the OSS Helm chart, use:
@@ -136,11 +138,14 @@ runnerModels:
   idleSeconds: 60
   silentSeconds: 1200
   totalSeconds: 7200
-api:
-  terminationGracePeriodSeconds: 7230
-gateway:
-  terminationGracePeriodSeconds: 7230
+flowExecution:
+  maxWaitSeconds: 10800
 ```
+
+The default flow budget is 3600 seconds. `FLOW_EXECUTION_MAX_WAIT_SECONDS`
+(Helm: `flowExecution.maxWaitSeconds`) raises that default; an explicit per-flow
+`timeout_seconds` overrides it. Leave enough flow time for startup, earlier model
+requests and tool calls, since each request is capped by the remaining budget.
 
 Helm supplies the same settings to API, gateway and workers and automatically
 raises the ingress and console gateway read/send timeouts to at least the total
@@ -148,9 +153,9 @@ plus 15 seconds. Explicit ingress annotations still override these defaults;
 remove a shorter override or increase it. For Docker/installer or custom reverse
 proxies, increase every gateway route's `proxy_read_timeout` and
 `proxy_send_timeout` to at least the total plus 15 seconds (defaults: `3615s`).
-For rollouts to drain a full request, also keep API and gateway
-`terminationGracePeriodSeconds` above the total plus 30 seconds (default `3630`),
-as shown in the example. This includes the preStop sleep.
+Helm also raises API and gateway `terminationGracePeriodSeconds` to at least
+the total plus 30 seconds (default `3630`), including the preStop sleep. Longer
+explicit grace periods are preserved.
 Apply equivalent settings to any additional load balancer or client in the path.
 A nonstreaming completion can produce no HTTP response until the full request
 finishes, even when the local model is making progress.

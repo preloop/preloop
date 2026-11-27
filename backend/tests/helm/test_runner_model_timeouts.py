@@ -21,6 +21,7 @@ def test_runner_limits_reach_api_and_gateway() -> None:
         assert env["RUNNER_MODEL_IDLE_SECONDS"] == "60"
         assert env["RUNNER_MODEL_SILENT_SECONDS"] == "1200"
         assert env["RUNNER_MODEL_TOTAL_SECONDS"] == "7200"
+        assert doc["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 7230
 
 
 def test_raising_total_also_raises_ingress_and_console_timeouts() -> None:

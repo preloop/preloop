@@ -42,7 +42,7 @@ spec:
       # drain before kubelet SIGKILLs the pod; the k8s default of 30s cuts
       # them off ~20s after preStop. See api.terminationGracePeriodSeconds
       # in values.yaml.
-      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ max .Values.api.terminationGracePeriodSeconds (add .Values.runnerModels.totalSeconds 30) }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

@@ -3,7 +3,13 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -16,8 +22,14 @@ if (!bin)
     "Set PRELOOP_TEST_RUNTIME_BIN to the pinned runtimes bin directory",
   );
 const plugin = fileURLToPath(new URL("../", import.meta.url));
+const timeoutHelper = fileURLToPath(
+  new URL(
+    "../../../backend/preloop/agents/harness_model_timeouts.mjs",
+    import.meta.url,
+  ),
+);
 
-async function run(binary, args, env, cwd, input) {
+async function run(binary, args, env, cwd, input, requireSuccess = true) {
   const child = spawn(binary, args, {
     env,
     cwd,
@@ -37,7 +49,7 @@ async function run(binary, args, env, cwd, input) {
     child.on("error", reject);
   });
   clearTimeout(timer);
-  assert.equal(code, 0, output);
+  if (requireSuccess) assert.equal(code, 0, output);
   return output;
 }
 
@@ -152,6 +164,8 @@ for (const runtime of runtimes) {
             ],
           }
         : { role: "assistant", content: "Harness smoke passed" };
+    // Exercise first-byte and streaming waits through the actual runtime SDK.
+    await new Promise((resolve) => setTimeout(resolve, 100));
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     const base = {
       id: "smoke",
@@ -159,13 +173,17 @@ for (const runtime of runtimes) {
       created: 1,
       model: "test",
     };
-    res.end(
+    res.write(
       "data: " +
         JSON.stringify({
           ...base,
           choices: [{ index: 0, delta, finish_reason: null }],
         }) +
-        "\n\ndata: " +
+        "\n\n",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    res.end(
+      "data: " +
         JSON.stringify({
           ...base,
           choices: [
@@ -185,6 +203,8 @@ for (const runtime of runtimes) {
     const env = {
       ...process.env,
       PRELOOP_HARNESS: runtime,
+      PRELOOP_HARNESS_BIN: join(bin, runtime === "pi" ? "pi" : "dsh"),
+      PRELOOP_URL: api,
       PRELOOP_NATIVE_APPROVALS: "on",
       PRELOOP_API_URL: api,
       PRELOOP_API_TOKEN: "test-token",
@@ -193,8 +213,9 @@ for (const runtime of runtimes) {
       DSH_HOME: root,
       PRELOOP_HARNESS_MODEL: JSON.stringify({
         api: "openai-completions",
-        baseUrl: api + "/v1",
+        baseUrl: "${PRELOOP_URL}/v1",
         models: [{ id: "test" }],
+        timeoutMs: 5000,
       }),
     };
     await run(process.execPath, [join(plugin, "bootstrap.mjs")], env, root, "");
@@ -215,6 +236,35 @@ for (const runtime of runtimes) {
       runtime === "pi"
         ? ["--print", "--mode", "json"]
         : ["--profile", "headless"];
+    if (runtime === "pi") {
+      // A negative control proves the pinned SDK consumes the helper's settings.
+      writeFileSync(
+        join(root, "settings.json"),
+        JSON.stringify({
+          retry: { enabled: false, provider: { maxRetries: 0 } },
+        }),
+      );
+      const shortEnv = {
+        ...env,
+        PRELOOP_HARNESS_MODEL: JSON.stringify({
+          ...JSON.parse(env.PRELOOP_HARNESS_MODEL),
+          timeoutMs: 20,
+        }),
+      };
+      await run(process.execPath, [timeoutHelper], shortEnv, root, "");
+      const timedOut = await run(
+        env.PRELOOP_HARNESS_BIN,
+        args,
+        shortEnv,
+        root,
+        "Run the requested command",
+        false,
+      );
+      assert.match(timedOut, /timed out|timeout/i);
+      assert.doesNotMatch(timedOut, /Harness smoke passed/);
+      assert.equal(approvals, 0);
+    }
+    await run(process.execPath, [timeoutHelper], env, root, "");
     const output = await run(
       join(bin, runtime === "pi" ? "pi" : "dsh"),
       args,
@@ -232,9 +282,10 @@ for (const runtime of runtimes) {
       assert.ok(noteEnded, "native session disposal reports authoritative end");
     }
     console.log(
-      `${runtime}: real runtime, model routing, native approval denial and clean exit passed`,
+      `${runtime}: real runtime, delayed model headers/chunks, native approval denial and clean exit passed`,
     );
   } finally {
     server.close();
+    rmSync(root, { recursive: true, force: true });
   }
 }

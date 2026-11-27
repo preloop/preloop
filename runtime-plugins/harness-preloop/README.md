@@ -133,7 +133,10 @@ PRELOOP_DISABLE_TELEMETRY=true npm test
 ```
 
 The optional keyless integration test runs both real binaries against a local
-mock model and approval server. It verifies a tool is blocked before executing,
+mock model and approval server. It executes the server-delivered timeout helper
+and waits for delayed response headers and chunks; Pi also runs a short-budget
+negative control to verify the pinned SDK honors its timeout settings.
+It verifies a tool is blocked before executing,
 and DeepSeek's logged note reaches model input once, is acknowledged, and posts
 session end on orderly shutdown. Set `PRELOOP_TEST_RUNTIME=deepseek` to run only
 DeepSeek against that runtime's own bin directory:
