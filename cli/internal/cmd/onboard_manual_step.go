@@ -150,13 +150,16 @@ func renderManualStep(step *manualStep, index, total, width int) string {
 		if step.BundleSaved {
 			where = "--explain or INSTRUCTIONS.txt below"
 		}
-		writeWrapped(&out, "  ", "  ", "Other ways to apply it, and their limits: "+where+".", width)
+		if step.BundleError == nil {
+			writeWrapped(&out, "  ", "  ", "Other ways to apply it, and their limits: "+where+".", width)
+		}
 	}
 	switch {
 	case step.BundleSaved:
 		writeWrapped(&out, "  ", "    ", "Saved (mode 0600, contains the agent key): "+step.BundleDir, width)
 	case step.BundleError != nil:
-		writeWrapped(&out, "  ", "    ", fmt.Sprintf("Could not save the instructions to %s: %v. They are shown above only. Copy them now.", step.BundleDir, step.BundleError), width)
+		// Only the block above is on screen: say so, and where the rest is.
+		writeWrapped(&out, "  ", "    ", fmt.Sprintf("Could not save the prepared files to %s: %v. The block above exists only on this screen: copy it now. The other ways to apply it are printed with --explain.", step.BundleDir, step.BundleError), width)
 	}
 	if step.ExpiresAt != "" {
 		writeWrapped(&out, "  ", "  ", fmt.Sprintf("This pending setup expires %s; after that Preloop removes the key and what this run created.", step.ExpiresAt), width)

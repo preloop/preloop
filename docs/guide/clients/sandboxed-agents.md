@@ -28,7 +28,16 @@ Before it changes anything in Preloop, `preloop agents onboard` tests every file
 - files with an immutable flag
 - a read-only root filesystem
 
-When a file is not writable, the output says so, says when it runs inside a container, and names the host path a mounted file probably comes from (read from the mount table):
+When a file is not writable, the review says so for that agent before anything is created in Preloop, with the reason the operating system gave:
+
+```text
+  1  Claude Code   model routing, MCP, Agent Control
+                   model: anthropic/<model> (subscription login)
+                   manual step: settings.json is not writable here
+                   (read-only file system)
+```
+
+The manual step that follows names the file and the host path a mounted file probably comes from (read from the mount table) on its `File:` and `Host:` lines. `preloop agents onboard --explain` prints the full report instead, which also says when the command runs inside a container:
 
 ```text
 Running inside a container (Docker).
@@ -39,6 +48,8 @@ Preloop cannot write these files from here:
     on the host this is probably /home/jane/.claude/settings.json (from the mount table)
 Onboarding continues in manual mode: Preloop prepares the agent and prints the exact change for you to make.
 ```
+
+An agent kind manual setup does not cover gets that full report with its refusal, without `--explain`.
 
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honoured: when they are set, onboarding checks and reports the files under those directories.
 
@@ -207,7 +218,7 @@ Delete the saved instructions afterwards. They contain the agent key.
 If the real request fails, the agent is reported as `NOT onboarded`, the pending setup is kept, and you can fix the cause and resume again.
 
 !!! note "Files inside the container"
-    Files that were writable (for example `~/.claude.json` with the managed MCP server entry, and the Agent Control file) are written by onboarding as usual. In this example they live in the container's own filesystem, so they are lost when the container is recreated. Put them on a volume if you need them to last. When one of them is read-only, it is printed as a further numbered entry. Resume checks those entries and reports them as optional: model routing does not depend on them.
+    Files that were writable (for example `~/.claude.json` with the managed MCP server entry, and the Agent Control file) are written by onboarding as usual. In this example they live in the container's own filesystem, so they are lost when the container is recreated. Put them on a volume if you need them to last. When one of them is read-only too, the manual step names it with the prepared file to use for it (its own numbered entry, with the content, is in `INSTRUCTIONS.txt` and in `--explain`); when nothing could be saved, its content is printed as well. Resume checks those entries and reports them as optional: model routing does not depend on them.
 
 ## Alternative: environment variables
 
@@ -390,13 +401,12 @@ When the configuration is read-only, offboarding does not pretend to have change
 
 ```text
 Manual removal for Claude Code
-------------------------------------------------------------------------
-/home/jane/.claude/settings.json
-   Not writable from here: read-only file system
-   Edit it on the host, probably at: /home/jane/.claude/settings.json
-   Remove these keys:
-     env.ANTHROPIC_BASE_URL
-   Set these keys (to what they were before Preloop):
+  File:  /home/jane/.claude/settings.json (read-only file system)
+  Host:  probably ./state/claude/settings.json
+  Do:    replace it with the prepared file, or make the changes below
+         /home/jane/.preloop/manual-setup/<agent>-offboard/settings.json
+  Remove these keys: env.ANTHROPIC_BASE_URL
+  Set these keys (to what they were before Preloop):
 
 {
   "env": {
@@ -404,16 +414,17 @@ Manual removal for Claude Code
   }
 }
 
-   <your previous value> stands for a credential of yours; its value is in the backup: <backup path>
-   Or replace the file with the complete result: /home/jane/.preloop/manual-setup/<agent>-offboard/settings.json
-Guide: https://docs.preloop.ai/guide/clients/sandboxed-agents/#offboarding
-------------------------------------------------------------------------
-Nothing has been changed in Preloop yet: the agent keeps working until you remove the block.
-To remove the Preloop side now and edit the file later, add --server-only.
+  <your previous value> stands for a credential of yours; its value is in the
+    backup: <backup path>
+  Guide:   https://docs.preloop.ai/guide/clients/sandboxed-agents/#offboarding
+  Nothing has been changed in Preloop yet: the agent keeps working until you
+  remove the block.
+  To remove the Preloop side now and edit the file later, add --server-only.
+  Repeat:  preloop agents offboard "Claude Code"
 ```
 
 - **Your own credentials are never printed.** A placeholder points at the backup that holds the value.
-- In a terminal, offboarding waits (`Press Enter when the block is removed`), reads the file again, and names anything still there (`✗ still present: env.ANTHROPIC_BASE_URL`). Without a terminal it stops with exit status 3. Run the same command again after editing the file.
+- In a terminal, offboarding waits (`Press Enter when the block is removed, or type later`), reads the file again, and names anything still there (`✗ still present: env.ANTHROPIC_BASE_URL`). Without a terminal it stops with exit status 3. Run the same command again after editing the file.
 - `Offboarded` is printed only for a file that no longer points at Preloop. Preloop and the machine are reported on separate lines:
 
 ```text

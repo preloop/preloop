@@ -219,6 +219,20 @@ func TestManualStepPrintsOtherFilesOnlyWhenNothingWasSaved(t *testing.T) {
 	if strings.Contains(printedOnly, "INSTRUCTIONS.txt") {
 		t.Errorf("a file that was not saved is referred to:\n%s", printedOnly)
 	}
+	// A directory was given but could not be written: the person is told
+	// what is and is not on screen, not to copy text that is not there.
+	failed := syntheticManualStep("Claude Code", false)
+	failed.BundleDir = "/home/jane/setup"
+	failed.BundleError = errors.New("synthetic: permission denied")
+	failedText := strings.Join(strings.Fields(unixPaths(renderManualStep(failed, 1, 1, 80))), " ")
+	for _, want := range []string{"Could not save the prepared files to /home/jane/setup: synthetic: permission denied.", "copy it now", "printed with --explain", `"mcpServers"`} {
+		if !strings.Contains(failedText, want) {
+			t.Errorf("a failed save misses %q:\n%s", want, failedText)
+		}
+	}
+	if strings.Contains(failedText, "They are shown above only") || strings.Contains(failedText, "INSTRUCTIONS.txt") {
+		t.Errorf("a failed save refers to text that is not on screen or not saved:\n%s", failedText)
+	}
 	for _, text := range []string{saved, printedOnly} {
 		for _, line := range strings.Split(text, "\n") {
 			if strings.HasPrefix(strings.TrimSpace(line), "Finish:") && !strings.HasSuffix(line, `--resume "Claude Code"`) {
@@ -307,6 +321,7 @@ func TestManualRemovalRendering(t *testing.T) {
 		"replace it with the prepared file, or make the changes below",
 		"Remove these keys: env.ANTHROPIC_API_KEY,",
 		`"ANTHROPIC_BASE_URL": "https://provider.example.com"`,
+		"Guide:   " + manualSetupDocsURL + "#offboarding",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the removal block misses %q:\n%s", want, text)
@@ -314,6 +329,12 @@ func TestManualRemovalRendering(t *testing.T) {
 	}
 	if rows := renderedRows(text, 80); rows > 20 {
 		t.Errorf("the removal block is %d rows:\n%s", rows, text)
+	}
+	// The guide is part of the block for a file that cannot be read too
+	// (the --server-only and abandoned-setup callers print only the block).
+	unreadable := localOffboardPlan{ReadProblem: "synthetic: not readable"}
+	if text := renderManualRemoval("Claude Code", AgentConfig{Name: "Claude Code", ConfigPath: "/home/jane/.claude/settings.json"}, unreadable, "", 80); !strings.Contains(text, "Guide:   "+manualSetupDocsURL+"#offboarding") {
+		t.Errorf("the unreadable-file block has no guide link:\n%s", text)
 	}
 	assertOnboardGolden(t, "manual_removal.golden", text)
 }

@@ -312,6 +312,7 @@ func renderManualRemoval(displayName string, agent AgentConfig, plan localOffboa
 	if !plan.Readable {
 		writeWrapped(&out, "  ", "  ", "The file cannot be checked: "+plan.ReadProblem, width)
 		writeWrapped(&out, "  ", "  ", "Fix that first, then run this command again.", width)
+		fmt.Fprintf(&out, "  Guide:   %s#offboarding\n", manualSetupDocsURL)
 		return out.String()
 	}
 	if resultFile != "" {
@@ -336,6 +337,9 @@ func renderManualRemoval(displayName string, agent AgentConfig, plan localOffboa
 			}
 		}
 	}
+	// Part of the block, so every caller prints it (offboard, --server-only,
+	// and the cleanup after an abandoned setup).
+	fmt.Fprintf(&out, "  Guide:   %s#offboarding\n", manualSetupDocsURL)
 	return out.String()
 }
 
@@ -382,7 +386,6 @@ func runManualOffboardRemoval(
 	writeWrapped(output, "  ", "  ", "Nothing has been changed in Preloop yet: the agent keeps working until you remove the block.", width)
 	writeWrapped(output, "  ", "  ", "To remove the Preloop side now and edit the file later, add --server-only.", width)
 	fmt.Fprintf(output, "  Repeat:  %s\n", command) //nolint:errcheck
-	writeWrapped(output, "  Guide:   ", "           ", manualSetupDocsURL+"#offboarding", width)
 
 	pending := &manualOffboardPendingError{AgentName: displayName, Command: command}
 	interactive := stdinIsTerminal() && !autoApprove && !nonInteractiveAutoConfirm()

@@ -12,3 +12,5 @@ Manual removal for Claude Code
   },
   "model": "claude-sonnet-4-5"
 }
+
+  Guide:   https://docs.preloop.ai/guide/clients/sandboxed-agents/#offboarding
