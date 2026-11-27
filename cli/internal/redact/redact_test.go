@@ -159,6 +159,25 @@ func TestHomePathsBecomePlaceholders(t *testing.T) {
 	}
 }
 
+// protects=a Windows home with a random temporary directory segment is typed
+// as a home path, and a secret below it is still found; fails_when=the
+// entropy rule claims a backslash-delimited segment of the known home.
+func TestWindowsHomeSegmentsStayHomePath(t *testing.T) {
+	home := `C:\Users\RUNNER~1\AppData\Local\Temp\TestUploadCarriesNoSecret3384069211\001`
+	planted := redacttest.PlantedSecrets()[1]
+	input := "cd " + home + "/work && ./run\ntype " + home + `\` + planted.Secret + "\n"
+	result := mustRedact(t, input, Options{Path: "scripts/run.sh", Home: home})
+	if result.Counts[TypeHomePath] != 2 || result.Counts[TypeHighEntropy] != 0 {
+		t.Fatalf("counts = %v, want two home-path and no high-entropy (%s)", result.Counts, result.Text)
+	}
+	if strings.Contains(result.Text, "3384069211") || strings.Contains(result.Text, planted.Secret) {
+		t.Fatalf("home or secret survived: %s", result.Text)
+	}
+	if result.Counts["github-pat"] != 1 {
+		t.Fatalf("secret below the home was not typed: %v (%s)", result.Counts, result.Text)
+	}
+}
+
 func TestOverlappingFindingsCollapse(t *testing.T) {
 	planted := redacttest.PlantedSecrets()[1]
 	input := "GITHUB_TOKEN=" + planted.Secret
