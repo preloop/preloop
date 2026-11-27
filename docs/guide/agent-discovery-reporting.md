@@ -1,13 +1,47 @@
-# Agent discovery reporting (opt-in)
+# Agent discovery reporting
 
 Editions: OSS, Cloud, Enterprise
 
 `preloop agents discover` scans the local machine for known agent tools
 (Claude Code, Cursor, Codex CLI and the rest). By default the scan stays on
 the machine: it only reads `GET /api/v1/agents` to mark which agents are
-already enrolled. Discovery reporting is the opt-in way to tell Preloop which
-agent tools exist on workstations that were never onboarded, so they show up
-in the console under **Agents > Not yet governed**.
+already enrolled. Discovery reporting tells Preloop which agent tools exist on
+a workstation, including ones that were never onboarded, so they show up in
+the console under **Agents > Not yet governed**. `agents discover` reports
+only when asked to. `agents onboard` sends the same report by default.
+
+## Reporting during onboarding (on by default)
+
+When `preloop agents onboard` has set up at least one agent, it sends one
+report for the machine: the same request, with the same contents and limits,
+as `preloop agents discover --report`. The review says so before you confirm,
+in one line, and lists "extension report on" among the options:
+
+```text
+  ! Extension report: sends the names, versions, content hashes, descriptions
+    and authors of installed plugins, skills, hooks and commands, then their
+    redacted text for review. Off: --no-report-extensions
+```
+
+| To | Use |
+| --- | --- |
+| Turn the report off for one run | `preloop agents onboard --no-report-extensions`, or answer `c` in the review |
+| Turn it off for every run on a machine | `PRELOOP_DISCOVERY_REPORT=0` (also `false`, `no`, `off`) in the environment |
+| Keep the report and not upload extension text | `--no-extension-content`, `PRELOOP_NO_EXTENSION_CONTENT=1`, or the account setting (see [Extension content](#extension-content)) |
+
+The default also applies under `--yes` and `PRELOOP_CONFIRM=1`; the plan and
+the line above are printed before anything is applied. `--unattended`
+enrollment does not send the report: it holds an enrollment token, not a
+login, and cannot call the report endpoints.
+
+The report needs the `report_discovery` permission. When the signed-in role
+does not have it, or the request fails for any other reason, onboarding prints
+one line ("extension report not sent: ...") and finishes normally. A failed
+report never fails onboarding and is not retried.
+
+There is no account-wide switch for the report itself. An account can turn off
+the upload of extension text; the collector asks before uploading and honours
+that.
 
 For the per-OS distinction between installed, configured, observed active and
 governed, read the [coverage guide](endpoint-coverage.md#platform-scope).
@@ -16,7 +50,7 @@ includes DPIA inputs and the limits of report-only credentials.
 Reported devices appear on [Device fleet](device-fleet.md), which can alert
 when an enrolled agent goes quiet or an expected control is no longer seen.
 
-## Turning it on
+## Turning it on for discovery
 
 Either pass the flag or set the environment variable:
 
@@ -25,7 +59,7 @@ preloop agents discover --report --json --no-onboard-prompt
 PRELOOP_DISCOVERY_REPORT=1 preloop agents discover --json --no-onboard-prompt
 ```
 
-Without one of them nothing about the scan leaves the machine. With `--json`
+Without one of them `agents discover` sends nothing about the scan. With `--json`
 the report confirmation goes to stderr so stdout stays valid JSON.
 
 With closed or non-terminal stdin, discovery never offers or performs onboarding,

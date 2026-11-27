@@ -25,9 +25,11 @@ curl -fsSL https://preloop.ai/install/cli | sh
 The installer:
 
 1. Downloads the `preloop` binary into `/usr/local/bin` if it is writable, otherwise `~/.local/bin` (set `INSTALL_DIR` to choose another directory).
-2. Runs `preloop agents discover --no-onboard-prompt` so you can see your detected agents **before** signing up.
-3. Asks whether you want to log in (default), sign up, or skip authentication. Picking sign-up routes the browser to `/register` instead of `/login`.
-4. After authentication completes, runs `preloop agents discover` to walk through onboarding for every detected agent (default `Y`).
+2. Runs `preloop agents discover --brief --no-onboard-prompt` so you can see your detected agents, one line each, **before** signing up.
+3. Asks one question: sign in (default), sign up, use a self-hosted URL, or not now. Picking sign-up routes the browser to `/register` instead of `/login`.
+4. After authentication completes, runs `preloop agents onboard`, which shows one review of every detected agent and takes one confirmation. Enter applies it; `n` cancels and changes nothing.
+
+From the installer to onboarded agents that is three interactions: the sign-in question, the browser authorization, and the review.
 
 <figure>
   <video autoplay muted loop playsinline style="width: 100%; border-radius: 8px;">
@@ -101,7 +103,7 @@ preloop signup                 # Same OAuth flow, but lands on the sign-up page
 preloop auth status            # Show the active token + API URL
 preloop auth logout            # Forget local credentials
 
-preloop agents discover        # Detect local agents and walk through onboarding (Y/n per agent)
+preloop agents discover        # Detect local agents, then offer the onboarding review
 preloop agents discover --yes  # Onboard everything found, no prompts
 preloop agents onboard <name>  # Explicitly onboard a known agent
 preloop agents install-plugin <name>  # Install Agent Control runtime plugin (OpenClaw/Hermes)

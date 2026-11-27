@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -314,6 +315,11 @@ func TestRunUnderYesAppliesEveryAgentWithoutAsking(t *testing.T) {
 		}
 		if fake.runners != 0 {
 			t.Fatalf("%s installed the runner", mode)
+		}
+		for _, want := range []string{"already onboarded: refreshes the configuration", "outdated: stale"} {
+			if !strings.Contains(output, want) {
+				t.Fatalf("%s: the review does not say %q:\n%s", mode, want, output)
+			}
 		}
 		plan := strings.Index(output, "Preloop setup on this machine")
 		step := strings.Index(output, "agent and key created in Preloop")
@@ -721,5 +727,30 @@ func TestInteractiveReviewKeepsInstalledApprovalGates(t *testing.T) {
 	}
 	if explicit.appliedOpts["Claude Code"].Approvals {
 		t.Fatal("--approvals=false was overridden")
+	}
+}
+
+// protects=the one-line listing the installer shows; fails_when=`agents
+// discover --brief` prints anything but the count line other tools match
+// and one line per agent, prints an MCP server name, or offers onboarding
+// when told not to; no_claim=one Cursor fixture; the full listing without
+// --brief is covered by the existing discovery tests.
+func TestDiscoverBriefPrintsOneLinePerAgent(t *testing.T) {
+	home := setupDiscoveryHome(t)
+	runtimeExecutableProbe = func(string) (string, error) { return "/fixture/cursor", nil }
+	t.Setenv("PRELOOP_CONFIRM", "")
+	setStdinTerminal(t, true)
+	cmd := newDiscoverTestCmd(t, "--no-onboard-prompt")
+	cmd.Flags().Bool("brief", true, "")
+	output := captureStdout(t, func() error { return runAgentsDiscover(cmd, nil) })
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	if len(lines) != 2 || lines[0] != "Found 1 AI agent(s):" {
+		t.Fatalf("want the count line and one agent line, got %d lines:\n%s", len(lines), output)
+	}
+	if !strings.Contains(lines[1], "Cursor") || !strings.Contains(lines[1], filepath.Join(home, ".cursor", "mcp.json")) || !strings.Contains(lines[1], "(not onboarded)") {
+		t.Fatalf("agent line: %q", lines[1])
+	}
+	if strings.Contains(output, "internal-tracker") || strings.Contains(output, "?") {
+		t.Fatalf("the brief listing says too much:\n%s", output)
 	}
 }

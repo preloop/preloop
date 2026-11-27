@@ -230,10 +230,23 @@ esac
 # they can see what Preloop found and decide whether to log in / sign up to
 # onboard them. The discover command itself is read-only and never mutates
 # local files or the user's account, so it is safe to run unconditionally.
+#
+# A person at a terminal gets one line per agent: the details are in the
+# review that `preloop agents onboard` opens. Unattended runs keep the full
+# listing they have always printed.
+interactive_setup=0
+if [ -t 0 ] && ! preloop_confirm_set; then
+  interactive_setup=1
+fi
 discovered_agents=0
 echo ""
 echo "Looking for AI agents on this machine..."
-if discover_output="$("$PRELOOP_BIN" agents discover --no-onboard-prompt 2>&1)"; then
+if [ "$interactive_setup" = "1" ]; then
+  discover_output="$("$PRELOOP_BIN" agents discover --brief --no-onboard-prompt 2>&1)" && discover_ok=1 || discover_ok=0
+else
+  discover_output="$("$PRELOOP_BIN" agents discover --no-onboard-prompt 2>&1)" && discover_ok=1 || discover_ok=0
+fi
+if [ "$discover_ok" = "1" ]; then
   printf '%s\n' "$discover_output"
   if printf '%s' "$discover_output" | grep -q '^Found '; then
     discovered_agents=1
@@ -258,32 +271,22 @@ run_setup_command() {
   fi
 }
 
-# Step 2: choose the Preloop instance to connect to. The CLI talks to
-# Preloop Cloud (https://preloop.ai) by default, but works identically
-# against a self-hosted open-source instance. Honors a pre-set PRELOOP_URL,
-# otherwise offers the choice interactively. The chosen URL is exported so
-# `preloop login` / `preloop signup` / `preloop agents discover` below all
-# target the same instance (and persist it to ~/.preloop/config.yaml).
+# Step 2: the Preloop instance to connect to. The CLI talks to Preloop Cloud
+# (https://preloop.ai) by default and works identically against a
+# self-hosted open-source instance. A pre-set PRELOOP_URL decides it;
+# otherwise the sign-in question below offers a self-hosted URL as one of
+# its answers. The URL is exported so `preloop login`, `preloop signup` and
+# `preloop agents onboard` all target the same instance (and persist it to
+# ~/.preloop/config.yaml).
 PRELOOP_CLOUD_URL="https://preloop.ai"
 target_url="${PRELOOP_URL:-$PRELOOP_CLOUD_URL}"
+url_from_env=0
 echo ""
 if [ -n "${PRELOOP_URL:-}" ]; then
+  url_from_env=1
   echo "Preloop instance: ${target_url} (from PRELOOP_URL)"
 elif preloop_confirm_set; then
   echo "Preloop instance: ${target_url} (Preloop Cloud)"
-else
-  echo "The CLI connects your agents to a Preloop control plane:"
-  echo "  - Preloop Cloud: ${PRELOOP_CLOUD_URL} (default, requires an account)"
-  echo "  - Self-hosted:   your own open-source instance, e.g. http://localhost:8000"
-  echo "    (install it with: curl -fsSL https://preloop.ai/install/oss | sh)"
-  printf 'Preloop instance URL [%s]: ' "$target_url"
-  if read -r custom_url 2>/dev/null < /dev/tty; then
-    custom_url="$(printf '%s' "$custom_url" | tr -d '[:space:]')"
-    if [ -n "$custom_url" ]; then
-      target_url="$custom_url"
-    fi
-  fi
-  echo "Preloop instance: ${target_url}"
 fi
 PRELOOP_URL="$target_url"
 export PRELOOP_URL
@@ -303,31 +306,37 @@ existing_login_identity() {
   return 0
 }
 
-# Step 3: offer to authenticate — unless this machine already has a verified
-# session, in which case say who it belongs to and go straight to onboarding.
-# If we found local agents we tell the user explicitly that logging in lets us
-# onboard them.
-echo ""
+# onboard_discovered opens the review for the agents found above. The review
+# is the question: it shows the whole plan and takes one confirmation, and
+# cancelling it is the "not now". PRELOOP_CONFIRM is passed on, so an
+# unattended install applies the defaults without a prompt.
+onboard_discovered() {
+  if [ "$discovered_agents" = "1" ]; then
+    echo ""
+    run_setup_command agents onboard || true
+  fi
+}
+
+# Step 3: sign in, unless this machine already has a verified session, in
+# which case say who it belongs to and go straight to the review.
 if identity_lines="$(existing_login_identity "$PRELOOP_BIN")"; then
   echo "Already signed in to ${target_url}:"
   [ -n "$identity_lines" ] && printf '%s\n' "$identity_lines"
   echo "Run 'preloop login --force' to switch accounts."
-  if [ "$discovered_agents" = "1" ]; then
-    echo ""
-    onboard_ans="$(prompt_default_yes "Onboard discovered agents now? [Y/n]")"
-    case "$onboard_ans" in
-      y|yes)
-        run_setup_command agents onboard || true
-        ;;
-    esac
-  fi
+  onboard_discovered
   exit 0
 fi
 
+instance_label="$(printf '%s' "$target_url" | sed -e 's#^[a-zA-Z]*://##' -e 's#/.*$##')"
 if [ "$discovered_agents" = "1" ]; then
-  prompt="Sign in (or sign up) to ${target_url} now to onboard the agents above? [Y/s/n]"
+  prompt="Sign in to ${instance_label} to set up these agents?"
 else
-  prompt="Sign in (or sign up) to ${target_url} now? [Y/s/n]"
+  prompt="Sign in to ${instance_label}?"
+fi
+if [ "$url_from_env" = "1" ]; then
+  prompt="${prompt} [Y] sign in, [s] sign up, [n] not now:"
+else
+  prompt="${prompt} [Y] sign in, [s] sign up, [u] use a self-hosted URL, [n] not now:"
 fi
 
 if preloop_confirm_set; then
@@ -336,7 +345,7 @@ if preloop_confirm_set; then
 else
   printf '%s ' "$prompt"
   if read -r auth_choice 2>/dev/null < /dev/tty; then
-    auth_choice="$(printf '%s' "$auth_choice" | tr '[:upper:]' '[:lower:]')"
+    auth_choice="$(printf '%s' "$auth_choice" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
     [ -z "$auth_choice" ] && auth_choice="y"
   else
     auth_choice="n"
@@ -347,22 +356,36 @@ auth_command=""
 case "$auth_choice" in
   y|yes|l|login) auth_command="login" ;;
   s|signup|register|r) auth_command="signup" ;;
+  u|url|self-hosted)
+    if [ "$url_from_env" = "1" ]; then
+      auth_command="login"
+    else
+      echo "A self-hosted instance is your own open-source Preloop, for example"
+      echo "http://localhost:8000 (install one with: curl -fsSL https://preloop.ai/install/oss | sh)."
+      printf 'Preloop instance URL: '
+      custom_url=""
+      if read -r custom_url 2>/dev/null < /dev/tty; then
+        custom_url="$(printf '%s' "$custom_url" | tr -d '[:space:]')"
+      fi
+      if [ -n "$custom_url" ]; then
+        target_url="$custom_url"
+        PRELOOP_URL="$target_url"
+        export PRELOOP_URL
+        echo "Preloop instance: ${target_url}"
+        auth_command="login"
+      else
+        echo "No URL given."
+      fi
+    fi
+    ;;
   *) auth_command="" ;;
 esac
 
 if [ -n "$auth_command" ]; then
-  if run_setup_command "$auth_command"; then
-    if [ "$discovered_agents" = "1" ]; then
-      echo ""
-      onboard_ans="$(prompt_default_yes "Onboard discovered agents now? [Y/n]")"
-      case "$onboard_ans" in
-        y|yes)
-          # Explicit onboarding preserves PRELOOP_CONFIRM for unattended
-          # installs; discovery itself never enrolls with non-terminal stdin.
-          run_setup_command agents onboard || true
-          ;;
-      esac
-    fi
+  # The runner is one of the rows of the review, so sign-in does not ask
+  # about it separately.
+  if run_setup_command "$auth_command" --no-runner; then
+    onboard_discovered
   else
     echo "Authentication encountered an error or was aborted."
   fi
