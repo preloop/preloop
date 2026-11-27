@@ -823,18 +823,35 @@ def _exception_location(exc: BaseException) -> Optional[str]:
 
 
 def _report_monitor_exception(exc: BaseException) -> None:
-    """Send a monitor failure, with its stack, to error tracking.
+    """Send a monitor failure's stack, and nothing else, to error tracking.
 
-    Application logs stay metadata only (no exception payloads), so the stack
-    goes through the error tracker, whose ``before_send`` hook scrubs events.
+    Application logs stay metadata only (no exception payloads). The event
+    sent here keeps the exception type and each frame's file, line and
+    function, and leaves out frame local variables and the exception message,
+    either of which can hold prompts, tokens or other user data.
 
     Args:
         exc: The exception that failed the monitor.
     """
     try:
         import sentry_sdk
+        from sentry_sdk.utils import event_from_exception
 
-        sentry_sdk.capture_exception(exc)
+        options = {
+            **sentry_sdk.get_client().options,
+            "include_local_variables": False,
+            "include_source_context": False,
+        }
+        event, hint = event_from_exception(
+            exc,
+            client_options=options,
+            mechanism={"type": "flow_monitor", "handled": True},
+        )
+        for entry in event.get("exception", {}).get("values", []):
+            entry.pop("value", None)
+            for frame in (entry.get("stacktrace") or {}).get("frames", []):
+                frame.pop("vars", None)
+        sentry_sdk.capture_event(event, hint=hint)
     except Exception:  # noqa: BLE001 - reporting must never fail the flow
         logger.debug("Could not report the monitor error", exc_info=False)
 

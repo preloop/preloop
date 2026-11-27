@@ -6227,14 +6227,28 @@ def test_exception_location_trims_frames_outside_the_package() -> None:
     assert location == "json/decoder.py:1 in <module>"
 
 
-def test_monitor_exception_is_reported_to_error_tracking(monkeypatch) -> None:
-    """The stack goes to the error tracker, not into application logs."""
+def test_monitor_exception_report_omits_locals_and_message(monkeypatch) -> None:
+    """The tracker gets the type and frames, never locals or the message."""
     import sentry_sdk
 
     from preloop.services.flow_orchestrator import _report_monitor_exception
 
     captured: list = []
-    monkeypatch.setattr(sentry_sdk, "capture_exception", captured.append)
-    error = TypeError("can't subtract offset-naive and offset-aware datetimes")
-    _report_monitor_exception(error)
-    assert captured == [error]
+    monkeypatch.setattr(
+        sentry_sdk, "capture_event", lambda event, hint=None: captured.append(event)
+    )
+    secret = "prompt-text-marker"
+    try:
+        token = secret  # noqa: F841 - a local the event must not carry
+        raise TypeError(f"bad value {secret}")
+    except TypeError as exc:
+        _report_monitor_exception(exc)
+    assert len(captured) == 1
+    assert secret not in repr(captured[0])
+    (entry,) = captured[0]["exception"]["values"]
+    assert entry["type"] == "TypeError"
+    frame = entry["stacktrace"]["frames"][-1]
+    assert frame["function"] == (
+        "test_monitor_exception_report_omits_locals_and_message"
+    )
+    assert frame["lineno"]
