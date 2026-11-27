@@ -43,6 +43,7 @@ from preloop.models.crud.history_policy import (
 )
 from preloop.models.db.session import get_db_session
 from preloop.plugins.base import get_plugin_manager
+from preloop.schemas.agent_discovery import DiscoveryReportRequest
 from preloop.schemas.discovered_extension import HASH_PATTERN, ExtensionKind
 from preloop.schemas.extension_content import (
     ContentPair,
@@ -95,27 +96,53 @@ router = APIRouter(route_class=ContentRoute)
 runner_router = APIRouter(route_class=ContentRoute)
 
 
-def _require_collector_access(db: Session, current_user: Any) -> None:
-    """Enforce ``report_discovery`` and refuse an unenforceable device binding.
+def _require_collector_access(
+    db: Session,
+    current_user: Any,
+    *,
+    account: models.Account | None = None,
+    workstation_fingerprint: str | None = None,
+) -> None:
+    """Enforce ``report_discovery`` and the credential's device binding.
 
     A credential that carries persisted device restrictions is checked by an
     authorization plugin when it posts a discovery report. If that plugin is
     absent the credential must not become an unrestricted content uploader.
-    With the plugin present the binding still holds here, because content is
-    accepted only for hashes the same device's report carries.
+    An upload names the device it speaks for, so it goes through the same
+    plugin as a report from that device: a key bound to one device cannot
+    upload content for another device's fingerprint.
+
+    Args:
+        db: Database session.
+        current_user: The authenticated user, with ``_auth_api_key`` set for
+            an API key.
+        account: The caller's account; required with a fingerprint.
+        workstation_fingerprint: The device the request speaks for, or None
+            for a request that stores nothing for a device.
 
     Raises:
-        HTTPException: 403 without the permission, 503 for a restricted
-            credential whose restrictions cannot be enforced.
+        HTTPException: 403 without the permission or for another device, 503
+            for a restricted credential whose restrictions cannot be enforced.
     """
     _require_report_access(db, current_user)
     key = getattr(current_user, "_auth_api_key", None)
     context = getattr(key, "context_data", None)
-    if isinstance(context, dict) and "device_report" in context:
-        if get_plugin_manager().get_service("discovery_report_authorizer") is None:
+    authorizer = get_plugin_manager().get_service("discovery_report_authorizer")
+    if authorizer is None:
+        if isinstance(context, dict) and "device_report" in context:
             raise HTTPException(
                 status_code=503, detail="Report authorization unavailable"
             )
+        return
+    if workstation_fingerprint is not None and account is not None:
+        authorizer.authorize_report(
+            db,
+            account_id=account.id,
+            current_user=current_user,
+            payload=DiscoveryReportRequest(
+                workstation_fingerprint=workstation_fingerprint
+            ),
+        )
 
 
 def _retention_days(db: Session, account: models.Account) -> int:
@@ -192,7 +219,12 @@ def upload_content(
     Each item is checked on its own: a rejected item is listed with a fixed
     reason code and the rest of the batch is still stored.
     """
-    _require_collector_access(db, current_user)
+    _require_collector_access(
+        db,
+        current_user,
+        account=account,
+        workstation_fingerprint=payload.workstation_fingerprint,
+    )
     return store_collected_content(payload, account, db)
 
 

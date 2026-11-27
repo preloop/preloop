@@ -541,6 +541,28 @@ func reportedContentPairs(report discoveryReportRequest) []contentPair {
 	return pairs
 }
 
+// queryMissingContent asks which reported hashes the server lacks, in
+// requests of at most contentQueryLimit pairs, so a report with more hashes
+// than one request carries still negotiates every one of them. It stops at
+// the first answer that says the account does not collect content.
+func queryMissingContent(client inventoryReportClient, pairs []contentPair) (contentQueryResponse, error) {
+	var combined contentQueryResponse
+	for start := 0; start < len(pairs); start += contentQueryLimit {
+		end := min(start+contentQueryLimit, len(pairs))
+		var query contentQueryResponse
+		if err := client.Post(contentMissingPath, contentQueryRequest{Items: pairs[start:end]}, &query); err != nil {
+			return contentQueryResponse{}, err
+		}
+		if !query.Collect {
+			return query, nil
+		}
+		missing := combined.Missing
+		combined = query
+		combined.Missing = append(missing, query.Missing...)
+	}
+	return combined, nil
+}
+
 type contentOutcome struct {
 	// Uploaded is how many extensions had content stored by this report.
 	Uploaded int
@@ -559,11 +581,8 @@ func sendExtensionContent(client inventoryReportClient, w io.Writer, report disc
 		fmt.Fprintf(w, "Extension content was not sent: turned off on this device (%s).\n", source) //nolint:errcheck
 		return outcome
 	}
-	if len(pairs) > contentQueryLimit {
-		pairs = pairs[:contentQueryLimit]
-	}
-	var query contentQueryResponse
-	if err := client.Post(contentMissingPath, contentQueryRequest{Items: pairs}, &query); err != nil {
+	query, err := queryMissingContent(client, pairs)
+	if err != nil {
 		var apiErr *api.APIError
 		if errors.As(err, &apiErr) && (apiErr.StatusCode == 404 || apiErr.StatusCode == 405) {
 			// A server from before this feature: there is nowhere to send
@@ -616,10 +635,14 @@ func sendExtensionContent(client inventoryReportClient, w io.Writer, report disc
 		// Best effort: a device that cannot record the notice sees it again.
 		_ = config.SetExtensionContentNoticeShown()
 	}
-	redactions, withheld, excluded, rejected := 0, 0, 0, 0
+	redactions, withheld, excluded, rejected, markersStored := 0, 0, 0, 0, 0
 	for start := 0; start < len(sendable); {
+		// Excluded markers travel in their own batches: the server answers
+		// with one stored count per batch, and only this way can the summary
+		// tell stored text from stored markers.
+		marker := sendable[start].Withheld == contentExcluded
 		end, size := start, 0
-		for end < len(sendable) && end-start < contentBatchItems && (end == start || size+sendable[end].bytes <= contentBatchLimit) {
+		for end < len(sendable) && end-start < contentBatchItems && (end == start || size+sendable[end].bytes <= contentBatchLimit) && (sendable[end].Withheld == contentExcluded) == marker {
 			size += sendable[end].bytes
 			end++
 		}
@@ -665,6 +688,9 @@ func sendExtensionContent(client inventoryReportClient, w io.Writer, report disc
 			break
 		}
 		outcome.Uploaded += response.Stored
+		if marker {
+			markersStored += response.Stored
+		}
 		rejected += len(response.Rejected)
 		for _, item := range sendable[start:end] {
 			redactions += item.redactions
@@ -676,7 +702,7 @@ func sendExtensionContent(client inventoryReportClient, w io.Writer, report disc
 		start = end
 	}
 	if outcome.Uploaded > 0 || excluded > 0 {
-		fmt.Fprintf(w, "Extension content: uploaded for %d extension(s) after redaction (%d value(s) redacted, %d file(s) or command(s) withheld, %d extension(s) excluded on this device).\n", outcome.Uploaded-excluded, redactions, withheld, excluded) //nolint:errcheck
+		fmt.Fprintf(w, "Extension content: uploaded for %d extension(s) after redaction (%d value(s) redacted, %d file(s) or command(s) withheld, %d extension(s) excluded on this device).\n", outcome.Uploaded-markersStored, redactions, withheld, excluded) //nolint:errcheck
 	}
 	if rejected > 0 {
 		fmt.Fprintf(w, "Extension content: the server did not store %d extension(s).\n", rejected) //nolint:errcheck

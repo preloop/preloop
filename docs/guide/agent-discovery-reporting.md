@@ -122,8 +122,12 @@ curl -X POST https://preloop.example.com/api/v1/auth/api-keys \
   -d '{"name": "workstation discovery", "scopes": ["report_discovery"]}'
 ```
 
-Such a key can call `GET /api/v1/agents/discovery-salt` and
-`POST /api/v1/agents/discovery-reports` and nothing else: every other REST
+Such a key can call `GET /api/v1/agents/discovery-salt`,
+`POST /api/v1/agents/discovery-reports` and the two
+[extension content](#extension-content) upload routes,
+`POST /api/v1/agents/extension-content/missing` and
+`POST /api/v1/agents/extension-content`, and nothing else: it cannot read
+stored content. Every other REST
 route and every console WebSocket refuses it with `403 api_key_scope_denied`.
 Run the job with `PRELOOP_TOKEN=<key>` and `PRELOOP_DISCOVERY_REPORT=1`.
 
