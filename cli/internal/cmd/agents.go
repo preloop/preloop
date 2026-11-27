@@ -1019,6 +1019,7 @@ func registerOnboardSelectionFlags(cmd *cobra.Command) {
 	flags.BoolVar(&discoveryNoExtensionContent, "no-extension-content", false, "with the extension report: do not upload the redacted text of extensions for review")
 	flags.Bool("runner", false, "also install the Preloop runner service on this machine")
 	flags.Bool("no-runner", false, "do not install the runner (the default unless your organisation requires it)")
+	flags.String("flow-execution-consent", "", "with the runner: whether it asks before running a flow (ask_me, always or never; default: what is stored, else ask_me)")
 	flags.Bool("plain", false, "use no cursor control in the review (also PRELOOP_PLAIN=1; automatic without a terminal)")
 }
 
@@ -1498,6 +1499,12 @@ func onboardSelectionFromFlags(cmd *cobra.Command, args []string) (onboardSelect
 	}
 	if runner || noRunner {
 		selection.Runner = &runner
+	}
+	selection.RunnerConsent, _ = flags.GetString("flow-execution-consent")
+	switch selection.RunnerConsent {
+	case "", "ask_me", "always", "never":
+	default:
+		return selection, nil, fmt.Errorf("--flow-execution-consent must be ask_me, always or never, not %q", selection.RunnerConsent)
 	}
 
 	named, _ := flags.GetStringSlice("agents")

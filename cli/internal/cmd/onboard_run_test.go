@@ -756,3 +756,75 @@ func TestDiscoverBriefPrintsOneLinePerAgent(t *testing.T) {
 		t.Fatalf("the brief listing says too much:\n%s", output)
 	}
 }
+
+// protects=the repeat command carries every choice of the run; fails_when=
+// a run with --no-extension-content prints a command without it (repeating
+// it would upload text the person declined), or names and models chosen
+// per agent in the review are dropped instead of printed as one command
+// per agent; no_claim=stand-in planning.
+func TestAgainCommandKeepsContentOptOutAndPerAgentChoices(t *testing.T) {
+	previous := discoveryNoExtensionContent
+	discoveryNoExtensionContent = true
+	t.Cleanup(func() { discoveryNoExtensionContent = previous })
+	fake := newFakeOnboardRun(t, threeAgents()[:2], defaultOnboardSelection(), "", true)
+	commands, _ := fake.run.againCommands(fake.run.plan())
+	if len(commands) != 1 || commands[0] != "preloop agents onboard --agents claude-code,codex-cli --no-extension-content --yes" {
+		t.Fatalf("commands: %q", commands)
+	}
+
+	fake.run.sel.models = map[string]string{"codex-cli": "example/model-small"}
+	fake.run.sel.names = map[string]string{"claude-code": "Work laptop"}
+	commands, _ = fake.run.againCommands(fake.run.plan())
+	want := []string{
+		`preloop agents onboard --agents claude-code --name "Work laptop" --no-extension-content --yes`,
+		"preloop agents onboard --agents codex-cli --model example/model-small --no-extension-content --yes",
+	}
+	if strings.Join(commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("commands:\n%s\nwant:\n%s", strings.Join(commands, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// protects=what the collector says about extension text reaches the person;
+// fails_when=the notice it shows once per device or a reason the text was
+// not sent is dropped from the default output, the step claims the text
+// was uploaded when the upload failed, or the collector's two routine
+// summary lines are printed as well as the step line; no_claim=the
+// collector's lines are fed in by a stand-in.
+func TestReportPassesOnTheCollectorsNoticesAndFailures(t *testing.T) {
+	fake := newFakeOnboardRun(t, threeAgents()[:1], defaultOnboardSelection(), "", true)
+	fake.run.sendReport = func(w io.Writer) (discoveryReportSummary, error) {
+		fmt.Fprintln(w, "Extension content for review (shown once on this device)")
+		fmt.Fprintln(w, "  Synthetic notice line about retention and redaction.")
+		fmt.Fprintln(w, "Extension content upload did not complete; the next report sends what is still missing.")
+		fmt.Fprintln(w, "Reported 1 agent(s) to Preloop (1 new). Sent inventory metadata; no file bodies, hook arguments or credential files.")
+		return discoveryReportSummary{Agents: 1, Extensions: 3, ContentFailed: true}, nil
+	}
+	if err := fake.run.execute(); err != nil {
+		t.Fatal(err)
+	}
+	output := strings.Join(strings.Fields(fake.out.String()), " ")
+	for _, want := range []string{
+		"Extension content for review (shown once on this device)",
+		"Synthetic notice line about retention and redaction.",
+		"Extension content upload did not complete",
+		"extension report sent: 1 agent, 3 extensions; their text was not uploaded",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output misses %q:\n%s", want, fake.out.String())
+		}
+	}
+	if strings.Contains(output, "Reported 1 agent(s)") {
+		t.Errorf("the routine summary line is printed as well:\n%s", fake.out.String())
+	}
+
+	uploaded := newFakeOnboardRun(t, threeAgents()[:1], defaultOnboardSelection(), "", true)
+	uploaded.run.sendReport = func(io.Writer) (discoveryReportSummary, error) {
+		return discoveryReportSummary{Agents: 1, Extensions: 3, ContentUploaded: 2}, nil
+	}
+	if err := uploaded.run.execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(uploaded.out.String()), " "), "extension report sent: 1 agent, 3 extensions; text of 2 uploaded") {
+		t.Fatalf("output:\n%s", uploaded.out.String())
+	}
+}

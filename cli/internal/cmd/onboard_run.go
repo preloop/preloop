@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/api"
+	"github.com/preloop/preloop/cli/internal/config"
 )
 
 const (
@@ -67,6 +68,24 @@ type onboardRun struct {
 	probeAgents func(agents []AgentConfig, w io.Writer) []deferredLiveValidationResult
 }
 
+// runnerConsentForOnboarding resolves the flow-run choice a runner installed
+// from the review gets without asking: the flag, else what is already
+// stored, else "ask_me" (the runner asks before every flow run). A choice
+// managed by the organisation is left alone.
+func runnerConsentForOnboarding(chosen string) string {
+	if chosen = strings.TrimSpace(chosen); chosen != "" {
+		return chosen
+	}
+	stored, managed, err := config.RunnerFlowExecutionConsent()
+	if err != nil || managed {
+		return ""
+	}
+	if stored != "" {
+		return stored
+	}
+	return "ask_me"
+}
+
 // onboardAgentID is the identifier an agent has in --agents.
 func onboardAgentID(agent AgentConfig) string {
 	return slugifyAgentName(agent.Name)
@@ -104,14 +123,19 @@ func newOnboardRun(
 		return sendDiscoveryReportSummary(client, discovered, w, "")
 	}
 	run.setupRunner = func() error {
-		tty := run.interactive()
+		// The review was the question. The runner's own questions (whether
+		// it asks before a flow run, whether to register local models) are
+		// not asked here: the first has a flag and a safe default, the
+		// second is left to `preloop runner models --register`.
+		noTerminal := false
 		return performRunnerSetup(runnerSetupRequest{
 			Out:      output,
 			In:       input,
 			Yes:      true,
+			Consent:  runnerConsentForOnboarding(run.sel.RunnerConsent),
 			Policy:   run.runnerPolicy,
 			Instance: baseURL,
-			TTY:      &tty,
+			TTY:      &noTerminal,
 			Env:      runnerSetupEnv{OnDemand: true, Force: true},
 		})
 	}
@@ -372,10 +396,22 @@ func (r *onboardRun) plan() onboardPlan {
 	if state := r.runnerState(); state == capabilityStateOn || state == capabilityStateLocked {
 		plan.Disclosures = append(plan.Disclosures, disclosure{
 			ID:    disclosureRunnerService,
-			Short: "Runner: a background service that starts at login and can run flows on this machine.",
+			Short: "Runner: a background service that starts at login and can run flows on this machine. It " + runnerConsentPhrase(runnerConsentForOnboarding(r.sel.RunnerConsent)) + " (--flow-execution-consent).",
 		})
 	}
 	return plan
+}
+
+func runnerConsentPhrase(consent string) string {
+	switch consent {
+	case "always":
+		return "runs flows without asking"
+	case "never":
+		return "never runs flows"
+	case "":
+		return "follows your organisation's setting for flow runs"
+	}
+	return "asks you before each flow run"
 }
 
 func onlyStateBlocked(report writabilityReport) bool {
@@ -406,33 +442,17 @@ func agentCountLabel(count int) string {
 	return fmt.Sprintf("%d agents", count)
 }
 
-// againCommand is the command that repeats the selection without questions.
-func (r *onboardRun) againCommand(plan onboardPlan) (string, bool) {
-	var ids []string
-	subscription := false
-	for _, agent := range plan.Agents {
-		ids = append(ids, onboardAgentID(agent.Agent))
-		for _, item := range agent.Custody {
-			if item.SubscriptionTransfer {
-				subscription = true
-			}
-		}
-	}
-	parts := []string{"preloop agents onboard", "--agents " + strings.Join(ids, ",")}
-	if len(plan.Agents) == 1 {
-		id := onboardAgentID(plan.Agents[0].Agent)
-		if name := strings.TrimSpace(firstNonEmptyString(r.sel.names[id], r.sel.Name)); name != "" {
-			parts = append(parts, "--name "+shellQuoteAgentName(name))
-		}
-	}
-	if model := strings.TrimSpace(r.sel.Model); model != "" {
-		parts = append(parts, "--model "+model)
-	}
+// againCommands are the commands that repeat the run without questions:
+// one for the whole selection, or one per agent when names or models were
+// chosen per agent in the review (a single command cannot carry those).
+// asksOnce is true when a subscription login moves, which --yes never does.
+func (r *onboardRun) againCommands(plan onboardPlan) (commands []string, asksOnce bool) {
+	options := []string{}
 	if !r.sel.ModelRouting {
-		parts = append(parts, "--no-model-routing")
+		options = append(options, "--no-model-routing")
 	}
 	if !r.sel.AgentControl {
-		parts = append(parts, "--no-agent-control")
+		options = append(options, "--no-agent-control")
 	}
 	approvals := false
 	for _, agent := range plan.Agents {
@@ -441,18 +461,77 @@ func (r *onboardRun) againCommand(plan onboardPlan) (string, bool) {
 		}
 	}
 	if approvals {
-		parts = append(parts, "--approvals")
+		options = append(options, "--approvals")
 	}
 	if !r.reportEnabled() {
-		parts = append(parts, "--no-report-extensions")
+		options = append(options, "--no-report-extensions")
+	} else if discoveryNoExtensionContent {
+		// A device opt-out given as a flag lasts one run; repeat it.
+		options = append(options, "--no-extension-content")
 	}
 	if r.runnerState() == capabilityStateOn {
-		parts = append(parts, "--runner")
+		options = append(options, "--runner")
+		if consent := strings.TrimSpace(r.sel.RunnerConsent); consent != "" {
+			options = append(options, "--flow-execution-consent "+consent)
+		}
 	}
-	if !subscription {
-		parts = append(parts, "--yes")
+
+	build := func(agents []agentPlan, name, model string) string {
+		var ids []string
+		subscription := false
+		for _, agent := range agents {
+			ids = append(ids, onboardAgentID(agent.Agent))
+			for _, item := range agent.Custody {
+				if item.SubscriptionTransfer {
+					subscription = true
+				}
+			}
+		}
+		parts := []string{"preloop agents onboard", "--agents " + strings.Join(ids, ",")}
+		if name != "" {
+			parts = append(parts, "--name "+shellQuoteAgentName(name))
+		}
+		if model != "" {
+			parts = append(parts, "--model "+model)
+		}
+		parts = append(parts, options...)
+		if subscription {
+			asksOnce = true
+		} else {
+			parts = append(parts, "--yes")
+		}
+		return strings.Join(parts, " ")
 	}
-	return strings.Join(parts, " "), subscription
+
+	perAgent := false
+	for _, agent := range plan.Agents {
+		id := onboardAgentID(agent.Agent)
+		if strings.TrimSpace(r.sel.names[id]) != "" || strings.TrimSpace(r.sel.models[id]) != "" {
+			perAgent = true
+		}
+	}
+	if len(plan.Agents) == 1 || perAgent {
+		for _, agent := range plan.Agents {
+			id := onboardAgentID(agent.Agent)
+			name := strings.TrimSpace(r.sel.names[id])
+			if name == "" && len(plan.Agents) == 1 {
+				name = strings.TrimSpace(r.sel.Name)
+			}
+			model := strings.TrimSpace(firstNonEmptyString(r.sel.models[id], r.sel.Model))
+			commands = append(commands, build([]agentPlan{agent}, name, model))
+		}
+		return commands, asksOnce
+	}
+	return []string{build(plan.Agents, "", strings.TrimSpace(r.sel.Model))}, asksOnce
+}
+
+// againCommand is the first of againCommands, for callers that print one.
+func (r *onboardRun) againCommand(plan onboardPlan) (string, bool) {
+	commands, asksOnce := r.againCommands(plan)
+	if len(commands) == 0 {
+		return "", asksOnce
+	}
+	return commands[0], asksOnce
 }
 
 // execute runs the whole thing and returns the command's error.
@@ -756,8 +835,14 @@ func (r *onboardRun) finish(plan onboardPlan, outcomes []agentOnboardingOutcome,
 	}
 
 	if applied > 0 {
-		command, asksOnce := r.againCommand(plan)
-		closing = append(closing, closingLine("Again:", command))
+		commands, asksOnce := r.againCommands(plan)
+		for index, command := range commands {
+			label := ""
+			if index == 0 {
+				label = "Again:"
+			}
+			closing = append(closing, closingLine(label, command))
+		}
 		if asksOnce {
 			closing = append(closing, closingLine("", "(asks once: a subscription login is never moved with --yes)"))
 		}
@@ -793,21 +878,43 @@ func (r *onboardRun) finish(plan onboardPlan, outcomes []agentOnboardingOutcome,
 }
 
 // report sends the extension report. It never fails the run: a failure is
-// one line.
+// one line. What the collector says about the upload of extension text (the
+// notice it shows once per device, and any reason the text was not sent) is
+// always passed on; only its two routine summary lines are replaced by the
+// step line.
 func (r *onboardRun) report() []string {
 	var detail bytes.Buffer
 	summary, err := r.sendReport(&detail)
 	if r.sel.Explain {
 		fmt.Fprint(r.output, detail.String()) //nolint:errcheck
+	} else if strings.TrimSpace(detail.String()) != "" {
+		for _, line := range strings.Split(strings.TrimRight(detail.String(), "\n"), "\n") {
+			if strings.HasPrefix(line, "Reported ") || strings.HasPrefix(line, "Extension content: uploaded for ") {
+				continue
+			}
+			if strings.TrimSpace(line) == "" {
+				fmt.Fprintln(r.output) //nolint:errcheck
+				continue
+			}
+			indent := "  " + line[:len(line)-len(strings.TrimLeft(line, " "))]
+			writeWrapped(r.output, indent, indent, line, r.caps.Width)
+		}
 	}
 	if err != nil {
 		// One line: a server's refusal can carry a long body.
 		r.emit(stepEvent{Agent: machineStepName, Step: "report", Status: stepStatusSkipped, Detail: "extension report not sent: " + truncateColumns(firstErrorLine(err), 110)})
 		return nil
 	}
-	sent := fmt.Sprintf("extension report sent: %s, %d extensions", agentCountLabel(summary.Agents), summary.Extensions)
+	extensions := fmt.Sprintf("%d extensions", summary.Extensions)
 	if summary.Extensions == 1 {
-		sent = fmt.Sprintf("extension report sent: %s, 1 extension", agentCountLabel(summary.Agents))
+		extensions = "1 extension"
+	}
+	sent := fmt.Sprintf("extension report sent: %s, %s", agentCountLabel(summary.Agents), extensions)
+	switch {
+	case summary.ContentFailed:
+		sent += "; their text was not uploaded"
+	case summary.ContentUploaded > 0:
+		sent += fmt.Sprintf("; text of %d uploaded", summary.ContentUploaded)
 	}
 	r.emit(stepEvent{Agent: machineStepName, Step: "report", Status: stepStatusOK, Detail: sent})
 	return []string{closingLine("Report:", "extension inventory sent. Stop it: --no-report-extensions")}
