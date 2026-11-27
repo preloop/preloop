@@ -142,8 +142,8 @@ export function reportStale(
   device: ExtensionCoverage,
   now = Date.now()
 ): boolean {
-  if (device.reported_at === undefined) return false;
-  if (device.reported_at === null) return true;
+  // An omitted (older server) or null report time is unknown, not stale.
+  if (!device.reported_at) return false;
   return (
     now - parseUTCDate(device.reported_at).getTime() > EXTENSION_REPORT_STALE_MS
   );
