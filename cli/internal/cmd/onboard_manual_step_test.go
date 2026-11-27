@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -144,7 +145,7 @@ func TestManualStepFitsFortyFiveRows(t *testing.T) {
 	step.Plan.Files[0].Merge = realisticSettingsMerge()
 	step.Plan.Files[0].HostSource = "/home/jane/src/preloop/examples/sandboxed-agent-rig/state/ro-settings/claude/settings.json"
 	step.Plan.Limitations = []string{"synthetic limitation"}
-	text := renderManualStep(step, 1, 1, 80)
+	text := unixPaths(renderManualStep(step, 1, 1, 80))
 	if rows := renderedRows(text, 80); rows > 45 {
 		t.Errorf("the manual step is %d rows, limit 45:\n%s", rows, text)
 	}
@@ -157,6 +158,16 @@ func TestManualStepFitsFortyFiveRows(t *testing.T) {
 		}
 	}
 	assertOnboardGolden(t, "manual_step_realistic.golden", text)
+}
+
+// unixPaths gives rendered text the path separator the goldens were written
+// with: the prepared files are joined to their directory with the
+// platform's separator.
+func unixPaths(text string) string {
+	if runtime.GOOS != "windows" {
+		return text
+	}
+	return strings.ReplaceAll(text, `\`, "/")
 }
 
 func syntheticManualStep(name string, saved bool) *manualStep {
@@ -194,14 +205,14 @@ func syntheticManualStep(name string, saved bool) *manualStep {
 // missing from the output; no_claim=hand-made steps; the paths are not
 // checked to exist.
 func TestManualStepPrintsOtherFilesOnlyWhenNothingWasSaved(t *testing.T) {
-	saved := renderManualStep(syntheticManualStep("Claude Code", true), 1, 1, 80)
+	saved := unixPaths(renderManualStep(syntheticManualStep("Claude Code", true), 1, 1, 80))
 	if got := keyParagraphs(saved, syntheticAgentKey); got != 1 {
 		t.Errorf("with a saved bundle the key appears in %d blocks:\n%s", got, saved)
 	}
 	if !strings.Contains(strings.Join(strings.Fields(saved), " "), "Also create /home/jane/.claude.json from the prepared file: /home/jane/.preloop/manual-setup/claude-code-000000000000/claude.merge.json") {
 		t.Errorf("the second file's prepared copy is not named:\n%s", saved)
 	}
-	printedOnly := renderManualStep(syntheticManualStep("Claude Code", false), 1, 1, 80)
+	printedOnly := unixPaths(renderManualStep(syntheticManualStep("Claude Code", false), 1, 1, 80))
 	if !strings.Contains(printedOnly, `"mcpServers"`) || !strings.Contains(printedOnly, "File:  /home/jane/.claude.json") {
 		t.Errorf("without a saved bundle every file's content must be printed:\n%s", printedOnly)
 	}
