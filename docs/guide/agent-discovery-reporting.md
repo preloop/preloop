@@ -700,8 +700,10 @@ content. Extensions whose content hash could not be computed (`too_large`,
 | One report | 8 MiB, sent in requests of at most 2 MiB and 50 extensions | 8 MiB and 100 extensions per request |
 | One account | | 256 MiB of stored text; uploads past it are refused |
 
-Server text budgets include UTF-8 file contents, hook commands and matchers.
-The account budget also includes retained matcher history. A refresh charges
+Collector and server upload budgets include UTF-8 file contents, hook commands
+and each incoming matcher once. The account storage budget also includes the
+server's retained matcher history, including its copy of the current assignment.
+A refresh charges
 only the change in stored bytes, so reporting unchanged content remains possible
 at the cap. Rejected updates leave the previously stored content intact.
 

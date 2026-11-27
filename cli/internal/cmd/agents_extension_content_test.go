@@ -750,3 +750,43 @@ func TestExtensionContentRedactsHookMatchers(t *testing.T) {
 		t.Fatalf("query did not carry the fingerprint: %+v", server.queries)
 	}
 }
+
+// protects=collector and server budgets count UTF-8 matchers along with commands;
+// fails_when=a near-limit hook is sent over the server's extension cap forever.
+func TestHookContentBudgetReservesAllMatcherBytes(t *testing.T) {
+	command := strings.Repeat("plain words here\n", contentFileLimit/17)
+	matcher := strings.Repeat("é", 128)
+	sources := make([]contentHookSource, 4)
+	hashes := make([]string, 4)
+	for i := range sources {
+		sources[i] = contentHookSource{Matcher: matcher, Command: command}
+		hashes[i] = extensionHash([]byte(command))
+	}
+	pair := contentPair{Kind: "hook", ContentHash: extensionHash([]byte(strings.Join(hashes, "\n")))}
+	capture := newContentCapture(t.TempDir(), []contentPair{pair}, nil)
+	scan := &extensionScan{capture: capture, hookContent: map[string][]contentHookSource{"PreToolUse": sources}}
+	scan.captureHooks()
+	if capture.err != nil {
+		t.Fatal(capture.err)
+	}
+	item := capture.items[pair]
+	if item == nil || len(item.Hooks) != 4 {
+		t.Fatal("hook manifest was not retained")
+	}
+	wireBytes, withheld := 0, 0
+	for _, hook := range item.Hooks {
+		wireBytes += len(hook.Matcher)
+		if hook.Command != nil {
+			wireBytes += len(*hook.Command)
+		}
+		if hook.Status == contentOverBudget {
+			withheld++
+		}
+	}
+	if wireBytes > contentExtensionLimit || withheld == 0 {
+		t.Fatalf("sent %d bytes with %d over-budget commands", wireBytes, withheld)
+	}
+	if item.bytes != wireBytes {
+		t.Fatalf("report/batch accounting = %d, wire text = %d", item.bytes, wireBytes)
+	}
+}

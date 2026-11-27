@@ -234,15 +234,19 @@ def _check_text(text: str, digest_hex: Optional[str], redactions: int) -> bool:
     return True
 
 
-def stored_text_bytes(document: Mapping[str, Any]) -> int:
-    """Count UTF-8 file, command and matcher text, including matcher history."""
+def stored_text_bytes(
+    document: Mapping[str, Any], *, include_matcher_history: bool = True
+) -> int:
+    """Count UTF-8 text, optionally excluding the server's retained history."""
     texts = [entry.get("text") or "" for entry in document.get("files") or []]
     for hook in document.get("hooks") or []:
         texts.extend((hook.get("command") or "", hook.get("matcher") or ""))
-    for assignment in document.get("matcher_sets") or []:
-        texts.extend(
-            matcher.get("matcher") or "" for matcher in assignment.get("matchers") or []
-        )
+    if include_matcher_history:
+        for assignment in document.get("matcher_sets") or []:
+            texts.extend(
+                matcher.get("matcher") or ""
+                for matcher in assignment.get("matchers") or []
+            )
     return sum(len(text.encode("utf-8")) for text in texts)
 
 
@@ -325,7 +329,10 @@ def verify_item(item: Mapping[str, Any]) -> VerifiedItem:
     result.entry_count = len(files) + len(hooks)
     result.withheld_count = result.entry_count - result.stored_count
     result.redacted = result.redaction_count > 0
-    if result.stored_bytes > MAX_ITEM_BYTES:
+    if (
+        stored_text_bytes(result.document, include_matcher_history=False)
+        > MAX_ITEM_BYTES
+    ):
         raise ContentRejectedError(REJECT_TOO_LARGE)
     if result.stored_count == 0:
         result.verification = "none"

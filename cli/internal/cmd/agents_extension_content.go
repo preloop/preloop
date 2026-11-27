@@ -447,6 +447,13 @@ func (s *extensionScan) captureHooks() {
 		for i, source := range sources {
 			entry := contentHook{CommandHash: hashes[i]}
 			entry.Matcher, entry.MatcherRedactions = capture.redactMatcher(source.Matcher)
+			item.bytes += len(entry.Matcher)
+			item.Hooks = append(item.Hooks, entry)
+		}
+		// Reserve every matcher first, including those beside withheld commands.
+		// The same UTF-8 total then governs extension, report and batch limits.
+		for i, source := range sources {
+			entry := &item.Hooks[i]
 			if len(source.Command) > contentFileLimit {
 				entry.Status = contentTooLarge
 			} else {
@@ -464,7 +471,6 @@ func (s *extensionScan) captureHooks() {
 			if entry.Status != contentStored {
 				item.withheld++
 			}
-			item.Hooks = append(item.Hooks, entry)
 		}
 		if capture.err == nil {
 			capture.items[pair] = item

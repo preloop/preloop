@@ -1100,3 +1100,16 @@ def test_upload_budget_includes_utf8_matcher_text(
     monkeypatch.setattr(policy, "MAX_UPLOAD_BYTES", 13)
     assert upload(client, [item]).status_code == 413
     assert read(client, item).status_code == 404
+
+
+def test_hook_upload_limit_counts_each_incoming_matcher_once(
+    client: TestClient,
+) -> None:
+    """Accept the collector's exact upload limit while accounting stored history."""
+    item = hook_item([("é", "x" * (policy.MAX_TEXT_BYTES - 2))] * 4)
+    inventory(client, [item])
+    assert upload(client, [item]).json() == {"stored": 1, "kept": 0, "rejected": []}
+    # The server retains an additional matcher copy in the assignment history.
+    assert read(client, item).json()["stored_bytes"] == policy.MAX_ITEM_BYTES + 8
+    item["hooks"][0]["matcher"] += "x"
+    assert upload(client, [item]).json()["rejected"][0]["reason"] == "too_large"
