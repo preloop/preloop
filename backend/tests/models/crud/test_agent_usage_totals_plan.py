@@ -77,6 +77,8 @@ def vacuumed_usage(db_engine: Engine) -> Iterator[str]:
     ``ix_api_usage_account_principal_ts`` falls to index size and whatever
     statistics earlier tests left behind. Production tables are vacuumed, so
     the rows are committed and vacuumed here and removed afterwards.
+    ``PARALLEL 0``: a parallel vacuum allocates dynamic shared memory, which a
+    small container ``/dev/shm`` cannot provide once the table has grown.
 
     Yields:
         The id of the account that owns the usage rows.
@@ -116,7 +118,7 @@ def vacuumed_usage(db_engine: Engine) -> Iterator[str]:
         with db_engine.connect().execution_options(
             isolation_level="AUTOCOMMIT"
         ) as connection:
-            connection.execute(text("VACUUM (ANALYZE) api_usage"))
+            connection.execute(text("VACUUM (PARALLEL 0, ANALYZE) api_usage"))
         yield account_id
     finally:
         with db_engine.begin() as connection:
