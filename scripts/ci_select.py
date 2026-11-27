@@ -79,10 +79,15 @@ GENERIC_NAMES = {
 }
 GRAPH_CACHE = ROOT / ".ci-import-graph.json"
 SHARDS = 6
-# Backend Fast runs serially under a 15 minute job timeout. Recorded file
-# durations track the real serial runtime closely (a 755 s estimate ran in
-# 824 s), so 240 s keeps the lane near four minutes of tests. The sharded
-# Backend Tests job still runs the whole inventory.
+# Backend Fast runs serially under FAST_TIMEOUT_MINUTES (the job's
+# ``timeout-minutes`` in ci.yml). Setup (checkout, deps, Postgres, schema)
+# takes under a minute; FAST_SETUP_SECONDS leaves room for cold caches.
+# Recorded durations underestimate the real serial run by up to FAST_OVERRUN
+# (a 755 s estimate ran in 824 s). The budget keeps a full lane under half the timeout; every file it leaves out
+# still runs in the sharded Backend Tests job.
+FAST_TIMEOUT_MINUTES = 15
+FAST_SETUP_SECONDS = 120.0
+FAST_OVERRUN = 1.25
 FAST_BUDGET_SECONDS = 240.0
 
 
@@ -280,15 +285,20 @@ def impacted_tests(
     )
 
 
-def estimated_seconds(tests: list[str], durations: dict[str, float]) -> float:
-    """Estimate serial runtime; files without history use the median file."""
+def file_seconds(durations: dict[str, float]) -> Callable[[str], float]:
+    """Return a per-file cost; files without history cost the median file."""
     weights: dict[str, float] = {}
     for node, seconds in durations.items():
         file = node.split("::", 1)[0]
         weights[file] = weights.get(file, 0.0) + seconds
     known = sorted(w for w in weights.values() if w > 0)
     fallback = known[len(known) // 2] if known else 1.0
-    return sum(weights.get(test, fallback) for test in tests)
+    return lambda test: weights.get(test, fallback)
+
+
+def estimated_seconds(tests: list[str], durations: dict[str, float]) -> float:
+    """Estimate serial runtime; files without history use the median file."""
+    return sum(map(file_seconds(durations), tests))
 
 
 def fast_selection(
@@ -305,7 +315,8 @@ def fast_selection(
     shards, so fast feedback narrows to smoke, changed tests and module
     matches. Any selection over ``FAST_BUDGET_SECONDS`` narrows the same way;
     if module importers alone still exceed it, only ``test_<module>*`` files
-    are kept.
+    are kept, and if those still exceed it ``capped_tests`` packs the closest
+    files into the budget.
 
     Args:
         paths: Changed repository paths.
@@ -329,10 +340,52 @@ def fast_selection(
     fast = sorted(set(SMOKE) | set(narrow_tests(paths, inventory, read)))
     if estimated_seconds(fast, durations) <= FAST_BUDGET_SECONDS:
         return fast, f"{why}: smoke, changed tests and module importers"
-    fast = sorted(
-        set(SMOKE) | set(narrow_tests(paths, inventory, read, importers=False))
+    names = narrow_tests(paths, inventory, read, importers=False)
+    fast = sorted(set(SMOKE) | set(names))
+    cost = estimated_seconds(fast, durations)
+    if cost <= FAST_BUDGET_SECONDS:
+        return fast, f"{why}: smoke, changed tests and test_<module> files"
+    fast = capped_tests(paths, inventory, names, durations, read)
+    return fast, (
+        f"{why}: smoke, changed tests and test_<module> files capped at "
+        f"{FAST_BUDGET_SECONDS:.0f}s ({len(fast)} files; the rest run sharded)"
     )
-    return fast, f"{why}: smoke, changed tests and test_<module> files"
+
+
+def capped_tests(
+    paths: list[str],
+    inventory: list[str],
+    names: list[str],
+    durations: dict[str, float],
+    read: Callable[[str], str] = _read_source,
+) -> list[str]:
+    """Pack the closest tests into ``FAST_BUDGET_SECONDS``.
+
+    Smoke always runs. Then, tier by tier, changed test files, ``test_<module>``
+    matches and module importers are added cheapest first while they fit, so
+    a broad diff gets as many of its closest tests as the budget allows.
+
+    Args:
+        paths: Changed repository paths.
+        inventory: Every collectable test file.
+        names: Changed tests plus ``test_<module>`` matches.
+        durations: Recorded per-node durations in seconds.
+        read: Returns a test file's source text.
+
+    Returns:
+        The sorted fast files; only smoke may exceed the budget.
+    """
+    changed = [p for p in paths if p in inventory]
+    tiers = (changed, names, narrow_tests(paths, inventory, read))
+    chosen = set(SMOKE) & set(inventory) or set(SMOKE)
+    cost = file_seconds(durations)
+    spent = sum(map(cost, chosen))
+    for tier in tiers:
+        for test in sorted(set(tier) - chosen, key=lambda t: (cost(t), t)):
+            if spent + cost(test) <= FAST_BUDGET_SECONDS:
+                chosen.add(test)
+                spent += cost(test)
+    return sorted(chosen)
 
 
 def shard_count(

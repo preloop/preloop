@@ -280,3 +280,68 @@ def test_full_suite_fast_lane_fits_budget_on_real_inventory() -> None:
     )
     assert result["full"] and result["candidate_tests"] == INVENTORY
     assert result["fast_estimated_seconds"] <= 240
+
+
+def test_fast_caps_test_module_files_at_budget() -> None:
+    """When even test_<module> files blow the budget, pack the closest ones."""
+    from ci_select import FAST_BUDGET_SECONDS
+
+    durations = {f"{path}::t": 1.0 for path in FAKE_INVENTORY}
+    durations["backend/tests/services/test_widget.py::t"] = 10_000.0
+    changed = "backend/tests/services/test_other.py"
+    result = select(
+        ["backend/tests/conftest.py", WIDGET, changed],
+        POLICY,
+        FAKE_INVENTORY,
+        durations=durations,
+        read=fake_read,
+        graph=FAKE_GRAPH,
+    )
+    assert "capped at" in result["fast_reason"]
+    assert result["fast_estimated_seconds"] <= FAST_BUDGET_SECONDS
+    assert set(SMOKE) & set(FAKE_INVENTORY) <= set(result["fast_tests"])
+    assert changed in result["fast_tests"]
+    assert "backend/tests/services/test_widget_edge.py" in result["fast_tests"]
+    assert "backend/tests/services/test_widget.py" not in result["fast_tests"]
+    # Left-out files still run in the sharded job.
+    assert "backend/tests/services/test_widget.py" in result["candidate_tests"]
+
+
+def test_broad_main_push_fast_lane_fits_budget_on_real_inventory() -> None:
+    """A broad diff that hits a shared root stays within the fast budget."""
+    from ci_select import FAST_BUDGET_SECONDS
+
+    durations = json.loads((ROOT / ".github/pytest-split-durations.json").read_text())
+    sources = sorted(
+        str(p.relative_to(ROOT))
+        for p in (ROOT / "backend/preloop").rglob("*.py")
+        if "models" not in p.parts
+    )
+    result = select(
+        [".github/pr-assets/example.png", *sources, *INVENTORY[::3]],
+        POLICY,
+        INVENTORY,
+        event="push",
+        ref="refs/heads/main",
+        durations=durations,
+    )
+    assert result["candidate_tests"] == INVENTORY
+    assert result["fast_estimated_seconds"] <= FAST_BUDGET_SECONDS
+    assert set(SMOKE) <= set(result["fast_tests"])
+
+
+def test_fast_budget_stays_well_under_job_timeout() -> None:
+    """The budget, with setup and estimate overrun, fits half the timeout."""
+    import re
+
+    import ci_select
+
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    job = workflow.split("\n  backend-fast:\n", 1)[1].split("\n  cli-fast:\n", 1)[0]
+    minutes = int(re.search(r"timeout-minutes: (\d+)", job).group(1))
+    assert minutes == ci_select.FAST_TIMEOUT_MINUTES
+    worst = (
+        ci_select.FAST_SETUP_SECONDS
+        + ci_select.FAST_BUDGET_SECONDS * ci_select.FAST_OVERRUN
+    )
+    assert worst <= ci_select.FAST_TIMEOUT_MINUTES * 60 / 2
