@@ -11,7 +11,11 @@ def test_runner_limits_reach_api_and_gateway() -> None:
         doc = yaml.safe_load(
             helm_template(
                 "templates/" + template,
-                ["runnerModels.silentSeconds=1200", "runnerModels.totalSeconds=7200"],
+                [
+                    "runnerModels.silentSeconds=1200",
+                    "runnerModels.totalSeconds=7200",
+                    "flowExecution.maxWaitSeconds=10800",
+                ],
             )
         )
         env = {
@@ -21,6 +25,7 @@ def test_runner_limits_reach_api_and_gateway() -> None:
         assert env["RUNNER_MODEL_IDLE_SECONDS"] == "60"
         assert env["RUNNER_MODEL_SILENT_SECONDS"] == "1200"
         assert env["RUNNER_MODEL_TOTAL_SECONDS"] == "7200"
+        assert env["FLOW_EXECUTION_MAX_WAIT_SECONDS"] == "10800"
         assert doc["spec"]["template"]["spec"]["terminationGracePeriodSeconds"] == 7230
 
 
