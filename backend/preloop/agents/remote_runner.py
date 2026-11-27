@@ -1023,6 +1023,21 @@ def _record_lease_routing(
     Host profiles run on the runner user's own seat, so a host lease without
     an inventory entry (a #956 profile pin) is billed as ``seat`` too.
     """
+    agent_type = payload.get("agent_type")
+    if leased and isinstance(agent_type, str):
+        from preloop.models.models.flow_execution import (
+            resolve_execution_agent_selection,
+        )
+
+        _, model_id = resolve_execution_agent_selection(
+            getattr(execution, "trigger_event_details", None)
+        )
+        crud_flow_execution.record_runtime_selection(
+            execution,
+            agent_type=agent_type,
+            model_identifier=payload.get("model_identifier"),
+            ai_model_id=model_id,
+        )
     if payload.get("completion_protocol") != "host_exec":
         return
     if not leased:

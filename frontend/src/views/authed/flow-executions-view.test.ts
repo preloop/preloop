@@ -1110,7 +1110,7 @@ describe('FlowExecutionsView', () => {
         'Status',
         'Started',
         'Duration',
-        'Model',
+        'Agent / model',
         'Tool calls',
         // Tokens before cost.
         'Tokens',
@@ -1123,6 +1123,7 @@ describe('FlowExecutionsView', () => {
       const el = await renderRows([
         {
           id: 'exec-multi',
+          agent_type: 'codex',
           flow_id: 'flow-1',
           flow_name: 'Nightly Sync',
           status: 'SUCCEEDED',
@@ -1146,6 +1147,9 @@ describe('FlowExecutionsView', () => {
       ]);
 
       const cell = el.shadowRoot?.querySelector('tbody .model-cell');
+      expect(el.shadowRoot?.querySelector('tbody')?.textContent).to.contain(
+        'Codex CLI'
+      );
       // The list has no provider column, so the cell prints the alias once:
       // "anthropic/claude-sonnet-4 anthropic" said the vendor twice.
       expect(
