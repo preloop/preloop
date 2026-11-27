@@ -263,6 +263,7 @@ class SessionSearchFilters:
     session_source_type: Optional[str] = None
     session_status: Optional[str] = None
     session_has_artifacts: Optional[str] = None
+    session_workspace_id: Optional[str] = None
 
 
 @dataclass
@@ -954,6 +955,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                 active.session_source_type,
                 active.session_status,
                 active.session_has_artifacts,
+                active.session_workspace_id,
             )
         ):
             from preloop.models.crud.session_discovery import selection_ids
@@ -969,6 +971,7 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
                         source_type=active.session_source_type,
                         status=active.session_status,
                         has_artifacts=active.session_has_artifacts,
+                        workspace_id=active.session_workspace_id,
                     )
                 )
             )

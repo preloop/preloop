@@ -261,6 +261,32 @@ describe('RuntimeSessionsView', () => {
     expect(getComputedStyle(searchList).display).not.to.equal('none');
   });
 
+  it('replaces earlier matches with the error when a later search fails', async () => {
+    const element = await renderedSearch();
+    expect(
+      element.shadowRoot!.querySelectorAll('[data-search-kind]').length
+    ).to.be.greaterThan(0);
+    fetchStub
+      .withArgs(SEARCH_URL, sinon.match.any)
+      .rejects(new Error('Failed to find sessions'));
+    await typeQuery(element, 'another query');
+    await waitUntil(
+      () => searchCalls().length === 2,
+      'Second search not sent',
+      {
+        timeout: 3000,
+      }
+    );
+    await waitUntil(() => !(element as any).searchLoading);
+    await element.updateComplete;
+    expect(
+      element.shadowRoot!.querySelector('[data-testid="search-error"]')
+    ).to.not.equal(null);
+    expect(
+      element.shadowRoot!.querySelectorAll('[data-search-kind]')
+    ).to.have.length(0);
+  });
+
   it('keeps identity matches when content search is unavailable (#2424)', async () => {
     stubFinder(
       finderWithIdentity({

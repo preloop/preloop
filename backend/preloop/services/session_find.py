@@ -84,6 +84,7 @@ def find_sessions(
                             session_source_type=payload.session_source_type,
                             session_status=payload.status,
                             session_has_artifacts=payload.has_artifacts,
+                            session_workspace_id=payload.workspace_id,
                         ),
                     ),
                 )

@@ -228,6 +228,7 @@ def _to_crud_filters(request: SessionSearchRequest) -> CrudSessionSearchFilters:
         session_source_type=filters.session_source_type,
         session_status=filters.session_status,
         session_has_artifacts=filters.session_has_artifacts,
+        session_workspace_id=filters.session_workspace_id,
     )
 
 

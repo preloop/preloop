@@ -233,6 +233,7 @@ def selection_ids(
     source_type: str | None = None,
     status: str | None = None,
     has_artifacts: str | None = None,
+    workspace_id: str | None = None,
 ) -> Any:
     """Build the account-bounded selection subquery before content ranking."""
     from preloop.models.crud.runtime_session import crud_runtime_session
@@ -265,4 +266,8 @@ def selection_ids(
             kind=None if has_artifacts == "any" else has_artifacts,
         )
         query = query.filter(session.id.in_(holders))
+    if workspace_id is not None:
+        query = query.filter(
+            session.terminal_location["workspace_id"].astext == workspace_id
+        )
     return query

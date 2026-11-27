@@ -59659,6 +59659,12 @@ components:
           - type: string
           - type: 'null'
           title: Session Has Artifacts
+        session_workspace_id:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+          title: Session Workspace Id
       additionalProperties: false
       type: object
       title: SessionSearchFilters

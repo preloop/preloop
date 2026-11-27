@@ -232,6 +232,7 @@ def test_identity_failure_preserves_content_matches(
         "session_ids",
         "default_window",
         "has_artifacts",
+        "workspace",
     ],
 )
 def test_content_ranking_applies_scope_before_limit(
@@ -270,6 +271,18 @@ def test_content_ranking_applies_scope_before_limit(
             started_at=occurred,
             last_activity_at=occurred,
             ended_at=occurred if index == 0 else None,
+            terminal_location={
+                "device_id": "example-device",
+                "multiplexer": "herdr",
+                "workspace_id": f"workspace-{index}",
+                "workspace_label": f"Workspace {index}",
+                "tab_id": f"tab-{index}",
+                "tab_label": "Example tab",
+                "pane_id": f"pane-{index}",
+                "pane_label": "Example pane",
+                "state": "idle",
+                "observed_at": occurred.isoformat(),
+            },
         )
         db_session.add(row)
         db_session.flush()
@@ -327,6 +340,7 @@ def test_content_ranking_applies_scope_before_limit(
         "session_ids": {"session_ids": [rows[1].id]},
         "default_window": {},
         "has_artifacts": {"has_artifacts": "document"},
+        "workspace": {"workspace_id": "workspace-1"},
     }[scope]
     result = find_sessions(
         db_session,

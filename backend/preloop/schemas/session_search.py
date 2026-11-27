@@ -187,6 +187,7 @@ class SessionSearchFilters(BaseModel):
     session_source_type: Optional[str] = None
     session_status: Optional[Literal["all", "active", "ended"]] = None
     session_has_artifacts: Optional[str] = None
+    session_workspace_id: Optional[str] = Field(None, max_length=256)
 
     @field_validator("label")
     @classmethod

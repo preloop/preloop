@@ -271,7 +271,6 @@ export class RuntimeSessionsView extends LitElement {
   private searchResults: SessionSearchResponse | null = null;
 
   @state()
-  @state()
   private searchLoading = false;
 
   @state()
@@ -1210,6 +1209,7 @@ export class RuntimeSessionsView extends LitElement {
       if (seq !== this.searchSequence) return;
       console.error('Failed to search session content:', error);
       this.searchResults = null;
+      this.foundSessions = null;
       this.searchError =
         error instanceof Error
           ? error.message
