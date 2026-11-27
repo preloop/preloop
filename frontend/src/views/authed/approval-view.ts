@@ -1600,7 +1600,9 @@ export class ApprovalView extends AuthedElement {
             isQuestion
               ? `${requester} is waiting on your answer before it continues`
               : runnerFlow
-                ? 'Decide whether this flow may run on your runner'
+                ? isPending
+                  ? 'Decide whether this flow may run on your runner'
+                  : 'Runner approval for this flow run'
                 : autoApproved
                   ? `${requester}'s tool call ran without review`
                   : isPending

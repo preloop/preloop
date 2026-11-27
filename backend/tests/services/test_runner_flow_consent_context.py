@@ -100,32 +100,120 @@ def test_context_and_summary_describe_a_scheduled_codex_run(monkeypatch) -> None
 
 
 @pytest.mark.parametrize(
-    ("details", "kind", "label"),
+    ("details", "lineage", "kind", "label"),
     [
         (
             {"test_mode": False, "triggered_by": "Jane Doe"},
+            {},
             "manual",
             "Started manually by Jane Doe",
         ),
+        # A retry is a column on the execution, not a trigger detail.
         (
-            {"triggered_by": "Jane Doe", "retry_of_execution_id": "x"},
+            {"test_mode": False, "triggered_by": "Jane Doe"},
+            {"retry_of_execution_id": uuid4()},
             "retry",
             "Retry by Jane Doe",
         ),
         (
             {"source": "github", "type": "pull_request"},
+            {},
             "event",
             "github pull_request event",
         ),
-        ({"parent_execution_id": "x"}, "delegated", "Started by another flow"),
-        ({}, "unknown", "Unknown trigger"),
-        (None, "unknown", "Unknown trigger"),
+        ({}, {}, "unknown", "Unknown trigger"),
+        (None, {}, "unknown", "Unknown trigger"),
     ],
 )
-def test_describe_trigger(details, kind: str, label: str) -> None:
-    trigger = ctx.describe_trigger(details)
+def test_describe_trigger(details, lineage, kind: str, label: str) -> None:
+    trigger = ctx.describe_trigger(details, **lineage)
     assert trigger["kind"] == kind
     assert trigger["label"] == label
+
+
+def test_delegated_child_uses_the_real_trigger_shape() -> None:
+    from preloop.services.flow_delegation_call import _child_trigger_details
+
+    parent_flow = SimpleNamespace(id=uuid4(), name="Release coordinator")
+    decision = SimpleNamespace(
+        parent_execution=SimpleNamespace(id=uuid4()),
+        root_execution_id=uuid4(),
+        parent_flow=parent_flow,
+        depth=1,
+        cost_ceiling_usd=None,
+    )
+    details = _child_trigger_details(
+        decision=decision,
+        payload={"task": "x"},
+        label=None,
+        timeout_seconds=None,
+        correlation_id=None,
+    )
+    # Delegated children also carry triggered_by "flow <name>"; delegation
+    # must win over the manual branch.
+    details["triggered_by"] = "flow Release coordinator"
+    trigger = ctx.describe_trigger(details)
+    assert trigger["kind"] == "delegated"
+    assert trigger["label"] == 'Started by flow "Release coordinator"'
+    assert ctx.describe_trigger({}, parent_execution_id=uuid4())["kind"] == (
+        "delegated"
+    )
+
+
+def test_repository_credentials_never_reach_the_snapshot(monkeypatch) -> None:
+    _patch_rows(
+        monkeypatch,
+        trigger={},
+        flow_overrides={},
+    )
+    payload = {
+        "git_clone_config": {
+            "enabled": True,
+            "repositories": [
+                {
+                    "repository_url": "https://user:secret-token@example.com/acme/app.git",
+                    "clone_path": "app",
+                }
+            ],
+        }
+    }
+    context = ctx.build_runner_flow_context(
+        MagicMock(), runner=_runner(), execution_id=uuid4(), payload=payload
+    )
+    assert context["repositories"] == [
+        {"repository": "https://example.com/acme/app.git"}
+    ]
+    assert "secret-token" not in repr(context)
+
+
+def test_deepseek_and_newer_harness_ids_have_labels() -> None:
+    assert ctx.harness_label({"host_exec": {"harness": "deepseek"}}) == ("DeepSeek CLI")
+    assert ctx.harness_label({"host_exec": {"harness": "gemini_cli"}}) == ("Gemini CLI")
+
+
+def test_public_token_page_gets_only_the_runner_flow_snapshot() -> None:
+    from preloop.api.endpoints.public_approval import _to_public_request
+
+    runner_flow = {"runner": {"name": "Work laptop"}, "scope": "this_run"}
+    approval = SimpleNamespace(
+        id=uuid4(),
+        tool_name="owner_consent",
+        tool_args={"runner_id": "r", "execution_id": "e"},
+        agent_reasoning=None,
+        summary="Allow this flow to run on Work laptop?",
+        rule_context={"runner_flow": runner_flow, "rule_name": "internal"},
+        status="pending",
+        requested_at=None,
+        expires_at=None,
+        resolved_at=None,
+        external_url=None,
+        external_reference=None,
+        external_handoff_state=None,
+    )
+    public = _to_public_request(approval, [])
+    assert public.rule_context == {"runner_flow": runner_flow}
+    approval.rule_context = {"rule_name": "internal", "expression": "x"}
+    assert _to_public_request(approval, []).rule_context is None
 
 
 def test_read_only_review_cannot_push(monkeypatch) -> None:

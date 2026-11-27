@@ -21,6 +21,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_flow, crud_flow_execution
+from preloop.utils.git_credentials import strip_url_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,10 @@ _HARNESS_LABELS = {
     "claude_code": "Claude Code",
     "codex_cli": "Codex CLI",
     "opencode": "OpenCode",
-    "deepseek_cli": "DeepSeek CLI",
+    "deepseek": "DeepSeek CLI",
+    "gemini_cli": "Gemini CLI",
+    "claude_desktop": "Claude Desktop",
+    "vscode_copilot": "VS Code Copilot",
 }
 
 _AGENT_TYPE_LABELS = {
@@ -88,11 +92,19 @@ def harness_label(payload: Mapping[str, Any]) -> Optional[str]:
     return None
 
 
-def describe_trigger(details: Any) -> Dict[str, Any]:
+def describe_trigger(
+    details: Any,
+    *,
+    retry_of_execution_id: Any = None,
+    parent_execution_id: Any = None,
+) -> Dict[str, Any]:
     """Classify what started an execution.
 
     Args:
         details: ``FlowExecution.trigger_event_details``.
+        retry_of_execution_id: ``FlowExecution.retry_of_execution_id``.
+        parent_execution_id: ``FlowExecution.parent_execution_id``. A
+            delegated child also records it under ``details["delegation"]``.
 
     Returns:
         ``{"kind": ..., "label": ...}`` plus ``actor`` for a manual run and
@@ -105,9 +117,21 @@ def describe_trigger(details: Any) -> Dict[str, Any]:
     actor = _text(data.get("triggered_by"))
     if source == "schedule" or data.get("trigger_source") == "schedule":
         return {"kind": "schedule", "label": "Scheduled run"}
-    if data.get("parent_execution_id"):
-        return {"kind": "delegated", "label": "Started by another flow"}
-    if data.get("retry_of_execution_id") and actor:
+    delegation = _as_mapping(data.get("delegation"))
+    if parent_execution_id or delegation.get("parent_execution_id"):
+        parent = _text(delegation.get("parent_flow_name"))
+        delegated: Dict[str, Any] = {
+            "kind": "delegated",
+            "label": "Started by another flow",
+        }
+        if parent:
+            delegated["label"] = f'Started by flow "{parent}"'
+            delegated["parent_flow"] = parent
+        return delegated
+    if retry_of_execution_id:
+        if actor:
+            return {"kind": "retry", "label": f"Retry by {actor}", "actor": actor}
+        return {"kind": "retry", "label": "Retry of an earlier run"}
         return {"kind": "retry", "label": f"Retry by {actor}", "actor": actor}
     if actor:
         return {
@@ -136,7 +160,10 @@ def _repositories(git_clone_config: Mapping[str, Any]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for item in git_clone_config.get("repositories") or []:
         repo = _as_mapping(item)
-        name = _text(repo.get("repository_url")) or _text(repo.get("clone_path"))
+        url = _text(repo.get("repository_url"))
+        # The snapshot reaches the owner, push payloads and the CLI: never
+        # carry userinfo (a token in https://user:token@host/...).
+        name = strip_url_credentials(url) if url else _text(repo.get("clone_path"))
         if not name:
             continue
         row: Dict[str, Any] = {"repository": name}
@@ -246,7 +273,11 @@ def build_runner_flow_context(
             "href": f"{base_url.rstrip('/')}/console/flows/{flow.id}",
         }
     if execution is not None:
-        context["trigger"] = describe_trigger(execution.trigger_event_details)
+        context["trigger"] = describe_trigger(
+            execution.trigger_event_details,
+            retry_of_execution_id=getattr(execution, "retry_of_execution_id", None),
+            parent_execution_id=getattr(execution, "parent_execution_id", None),
+        )
     git_clone_config = _as_mapping(payload.get("git_clone_config")) or _as_mapping(
         getattr(flow, "git_clone_config", None)
     )
