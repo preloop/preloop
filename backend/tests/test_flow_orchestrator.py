@@ -6180,3 +6180,48 @@ def test_monitoring_error_message_names_raising_frame() -> None:
     assert message.startswith("Monitoring error: TypeError: can't subtract")
     assert "test_flow_orchestrator.py:" in message
     assert "in test_monitoring_error_message_names_raising_frame" in message
+
+
+def test_exception_location_prefers_the_preloop_caller() -> None:
+    """A third-party raising frame yields its Preloop caller, not a server path."""
+    from preloop.services.flow_orchestrator import _exception_location
+
+    lib: dict = {}
+    exec(  # noqa: S102 - builds frames with chosen file paths
+        compile(
+            "def fail():\n    raise ValueError('x')",
+            "/usr/lib/python3/json/decoder.py",
+            "exec",
+        ),
+        lib,
+    )
+    caller: dict = {"fail": lib["fail"]}
+    exec(  # noqa: S102
+        compile(
+            "def poll():\n    fail()",
+            "/srv/app/backend/preloop/agents/remote_runner.py",
+            "exec",
+        ),
+        caller,
+    )
+    try:
+        caller["poll"]()
+    except ValueError as exc:
+        location = _exception_location(exc)
+    assert location == "preloop/agents/remote_runner.py:2 in poll"
+
+
+def test_exception_location_trims_frames_outside_the_package() -> None:
+    """Without a Preloop frame only the last two path parts remain."""
+    import types
+
+    from preloop.services.flow_orchestrator import _exception_location
+
+    code = compile("raise ValueError('x')", "/usr/lib/python3/json/decoder.py", "exec")
+    try:
+        exec(code, {})  # noqa: S102 - builds a frame with a third-party path
+    except ValueError as exc:
+        tb = exc.__traceback__
+        assert isinstance(tb, types.TracebackType)
+        location = _exception_location(exc.with_traceback(tb.tb_next))
+    assert location == "json/decoder.py:1 in <module>"

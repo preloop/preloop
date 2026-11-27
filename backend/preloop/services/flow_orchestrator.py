@@ -802,18 +802,24 @@ def _exception_location(exc: BaseException) -> Optional[str]:
         exc: A caught exception.
 
     Returns:
-        The innermost traceback frame, with the path trimmed to the package
-        root, or None when the exception carries no traceback.
+        The innermost Preloop frame with its path trimmed to the package
+        root; else the last two path parts of the innermost frame; None when
+        the exception carries no traceback.
     """
     frames = traceback.extract_tb(exc.__traceback__)
     if not frames:
         return None
-    frame = frames[-1]
-    path = frame.filename.replace("\\", "/")
     marker = "/preloop/"
-    if marker in path:
-        path = "preloop/" + path.rsplit(marker, 1)[1]
-    return f"{path}:{frame.lineno} in {frame.name}"
+    paths = [frame.filename.replace("\\", "/") for frame in frames]
+    # Name the innermost Preloop frame: it is the caller worth fixing, and a
+    # third-party absolute path would expose the server layout to users.
+    for frame, path in reversed(list(zip(frames, paths))):
+        if marker in path:
+            path = "preloop/" + path.rsplit(marker, 1)[1]
+            return f"{path}:{frame.lineno} in {frame.name}"
+    frame = frames[-1]
+    tail = "/".join(paths[-1].split("/")[-2:])
+    return f"{tail}:{frame.lineno} in {frame.name}"
 
 
 def _monitoring_error_message(exc: BaseException) -> str:
