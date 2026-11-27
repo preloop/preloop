@@ -16,7 +16,7 @@ from pydantic import (
     model_validator,
 )
 
-ExtensionKind = Literal["plugin", "skill", "hook", "command"]
+ExtensionKind = Literal["plugin", "skill", "hook", "command", "mcp_server"]
 ApprovalState = Literal["approved", "unapproved", "unknown"]
 EffectiveState = Literal[
     "approved", "unapproved", "unknown", "content_changed", "content_unverified"

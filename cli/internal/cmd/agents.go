@@ -2675,8 +2675,8 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	}
 	// Work out what the local configuration needs before anything changes.
 	// A file that cannot be written is handed to the user first: the agent
-	// keeps working until they have removed the Preloop block, and
-	// "Offboarded" is never printed for a file that still points at Preloop.
+	// keeps working until they have removed the Preloop block. A restored
+	// backup may intentionally contain a pre-existing Preloop route.
 	baseURL := strings.TrimRight(client.BaseURL(), "/")
 	localPlan := planLocalOffboard(agent, state, baseURL)
 	configReadOnly := !localPlan.Probe.Writable
@@ -2839,13 +2839,17 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		}
 	}
 
-	// Whatever path led here, the file decides: "Offboarded" is printed only
-	// when it no longer points at Preloop.
+	// An exact restored baseline is success even if it used Preloop before
+	// this enrollment. Otherwise a remaining managed block is incomplete.
 	if final := planLocalOffboard(agent, nil, baseURL); final.Readable && final.StillManaged && local.Clean {
-		local = localOffboardOutcome{Line: fmt.Sprintf(
-			"This machine: NOT changed. %s still holds the Preloop block; its key no longer works. Run this command again to remove it.",
-			agent.ConfigPath,
-		)}
+		if restoredAgentBackupMatches(agent, state) {
+			local.Line = fmt.Sprintf("Restored config: %s (original bytes, including pre-existing Preloop configuration; that route has not been validated).", agent.ConfigPath)
+		} else {
+			local = localOffboardOutcome{Line: fmt.Sprintf(
+				"This machine: %s still holds a Preloop block after local cleanup. Run this command again to remove it.",
+				agent.ConfigPath,
+			)}
+		}
 	}
 	// The local state carries the backup. It is kept until the file is
 	// clean, so a later run can still restore the user's own values.
@@ -2888,6 +2892,18 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	}
 
 	return nil
+}
+
+func restoredAgentBackupMatches(agent AgentConfig, state *localEnrollmentState) bool {
+	if state == nil || state.RestoredAt == nil {
+		return false
+	}
+	backup, err := os.ReadFile(state.BackupPath)
+	if err != nil {
+		return false
+	}
+	current, err := os.ReadFile(agent.ConfigPath)
+	return err == nil && bytes.Equal(current, backup)
 }
 
 func restoreAgentFromBackup(agent AgentConfig, state *localEnrollmentState) (time.Time, error) {

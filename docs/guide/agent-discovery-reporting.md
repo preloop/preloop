@@ -325,7 +325,7 @@ and evidence records. If the server also rejects v3, the existing v2 retry
 removes extensions and managed configuration. Other validation failures do not
 trigger a downgrade. Older CLIs continue to work against the new server.
 
-Extension identifiers (plugin, skill, command and hook event names, versions,
+Extension identifiers (plugin, skill, command, MCP server and hook event names, versions,
 and marketplace names) are sent in clear. Marketplace and git URLs, hook
 commands, file contents and paths are not. Local/git identifiers containing a
 profile login or home path segment, and project identifiers with that personal
@@ -340,9 +340,17 @@ only by SHA-256 hashes; project references use the config-path hashing scheme
 | Claude Code | Skill | `.claude/skills/<name>/SKILL.md` | Directory identifier, front matter name and description, invocation, script count, tree hash |
 | Claude Code | Hook | `hooks` in `.claude/settings.json`; JSON event mappings in `.claude/hooks/` | Event, matchers, command counts, executable basenames, Preloop classification, aggregate hash |
 | Claude Code | Command | `.claude/commands/*.md` | File stem, front matter description, slash invocation, file hash |
+| Claude Code | MCP server | User `mcpServers` and project-local `projects.<root>.mcpServers` in `.claude.json`; `.mcp.json` in known or explicit project roots | Server identifier, scope, configuration hash; no commands, arguments, environment values, headers or URLs |
 | Codex CLI | Plugin | `.codex/plugins/cache/<marketplace>/<name>/<version>/`, `[plugins]` in `.codex/config.toml` | Name and marketplace, manifest version, description, author name, component counts, source hash, enabled state |
-| Codex CLI | Skill | `.agents/skills/<name>/` and legacy `.codex/skills/<name>/` | Directory identifier, front matter name and description, invocation, script count, tree hash |
+| Codex CLI | Skill | `.agents/skills/<name>/`, legacy `.codex/skills/<name>/`, and `.codex/skills/.system/<name>/` | One row per skill directory, front matter name and description, invocation, script count, tree hash |
 | Codex CLI | Hook | `.codex/hooks.json`, `[hooks]` in `.codex/config.toml` | Event, matchers, command counts, executable basenames, Preloop classification, aggregate hash |
+| Codex CLI | MCP server | `[mcp_servers.<name>]` in `.codex/config.toml`, including explicit project roots | Server identifier, scope, configured enabled state, configuration hash; no commands, arguments, environment values, headers or URLs |
+
+Claude local MCP entries use project scope, matching local plugin reporting.
+A local entry overrides a same-name project entry. User entries retain their
+own rows. Claude MCP enabled state remains unknown unless explicitly disabled;
+configured presence does not prove approval or execution. MCP hashes cover the
+canonical server definition, including private values without exposing them.
 
 The plugin layouts were verified with Claude Code 2.1.332 and Codex CLI 0.172.0
 using their plugin managers. Claude's install registry is authoritative: unused
@@ -489,7 +497,11 @@ and the local file list, within the collector's existing bounded reads. It
 never authenticates, uploads, calls a model, or executes an extension. Use
 `--project .` in the repository for project extensions. The console provides a
 copyable command for each row. Report-hashed identifiers can also be resolved
-locally. A bounded or unreadable scan is reported as incomplete with exit 2.
+locally. Finding and displaying the requested item exits 0 even when another
+part of the inventory scan is incomplete. A note names unscanned project roots
+and the `--project` flag needed to include them. A missing requested item still
+fails. `extensions check` prints the same project notes while retaining exit 2
+for an incomplete scan. MCP `show` prints metadata and file locations only.
 Terminal control characters are displayed as escapes; newlines and tabs are
 preserved so inspecting an extension cannot execute terminal escape sequences.
 

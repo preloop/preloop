@@ -113,6 +113,8 @@ edition extension.
 
 Installed agent extension inventory uses a bounded, metadata-only v4 discovery
 contract. Nullable JSONB `details` carries bounded descriptions and invocation.
+Standalone MCP definitions use the `mcp_server` kind and a configuration hash;
+command arguments, environment values and endpoint URLs stay on the device.
 `discovered_extension` stores presence per account, device, profile and agent;
 `extension_approval` stores account-wide decisions independently of
 inventory retention, and `extension_approval_pin` pins a decision to reviewed

@@ -85,6 +85,7 @@ func (r *extensionRoot) claudePlugins(enabled map[string]bool, profileOnly bool)
 			if scope != "user" {
 				ext.Scope = "project"
 				ext.ProjectRefHash = r.scan.projectHash(projectPath)
+				r.scan.projectPaths[ext.ProjectRefHash] = projectPath
 				project := r.scan.open(projectPath)
 				if project != nil {
 					for _, file := range []string{"settings.json", "settings.local.json"} {
