@@ -36,6 +36,7 @@ from preloop.services.host_exec import (
     HARNESS_FALLBACK_FAIL,
     HARNESS_GENERATED_PROFILES,
     HOST_EXEC_AGENT_TYPE,
+    HOST_EXEC_NETWORK_LEASE_KEY,
     HOST_EXEC_WORKSPACE_KEY,
     ISOLATED_PUBLICATION_UNAVAILABLE,
     OFFLINE_POLICY_MILESTONE,
@@ -48,6 +49,7 @@ from preloop.services.host_exec import (
     host_exec_harness_selector,
     host_exec_profile_name,
     host_exec_model_identifier,
+    host_exec_requires_network,
     host_exec_unavailable_reason,
     host_exec_workspace,
     is_host_exec_agent_type,
@@ -718,7 +720,12 @@ class RemoteRunnerExecutor(AgentExecutor):
                     "profile": profile,
                     "model": payload.get("model_identifier"),
                 }
-            workspace = host_exec_workspace(self._flow_agent_config(flow))
+            flow_agent_config = self._flow_agent_config(flow)
+            if host_exec_requires_network(flow_agent_config):
+                # Data only: assignment requires a host_network profile and
+                # the runner refuses the lease on a profile without network.
+                payload[HOST_EXEC_NETWORK_LEASE_KEY] = True
+            workspace = host_exec_workspace(flow_agent_config)
             if workspace is not None:
                 # Names an authorized directory only. The runner resolves
                 # the id against its own list and re-applies the root, home,

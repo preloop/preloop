@@ -68,6 +68,9 @@ type hostExecCheckout struct {
 	GitUserName  string                 `json:"git_user_name"`
 	GitUserEmail string                 `json:"git_user_email"`
 	ReportKind   string                 `json:"report_kind,omitempty"`
+	// agentCredential is set by the runner from the profile's
+	// agent_git_credential, never by the job.
+	agentCredential bool
 }
 
 // jobHostExecMCPToken returns the delivered MCP token, "" when the flow has
@@ -373,6 +376,32 @@ func runHostExecCheckout(ctx context.Context, workspace string, plan *hostExecCh
 			if err := hostExecGit(ctx, gitBin, dest, env, "config", "--local", key, value); err != nil {
 				return fmt.Errorf("host_checkout_failed: configure %s: %w", key, err)
 			}
+		}
+		if plan.agentCredential && repo.Token != "" {
+			if err := hostExecPersistCheckoutCredential(ctx, gitBin, dest, env, repo); err != nil {
+				return fmt.Errorf("host_checkout_failed: configure credential: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// hostExecPersistCheckoutCredential writes the repository credential into
+// the checkout's local config as an extraHeader scoped to the remote URL, so
+// the agent's git fetch and push reach that remote and no other. Redirects
+// stay refused so the header cannot follow one to another host. The
+// credential is not placed in any environment variable, and the checkout
+// is removed with the execution directory when the job ends.
+func hostExecPersistCheckoutCredential(ctx context.Context, gitBin, dest string, env []string, repo hostExecCheckoutRepo) error {
+	auth := base64.StdEncoding.EncodeToString([]byte(repo.Username + ":" + repo.Token))
+	for _, pair := range [][2]string{
+		{"http.followRedirects", "false"},
+		{"http." + repo.URL + ".extraHeader", "Authorization: Basic " + auth},
+	} {
+		if err := hostExecGit(ctx, gitBin, dest, env, "config", "--local", pair[0], pair[1]); err != nil {
+			// git echoes neither the value nor the key in its errors here,
+			// but keep the message generic regardless.
+			return fmt.Errorf("git config failed")
 		}
 	}
 	return nil

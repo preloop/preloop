@@ -1158,6 +1158,7 @@ def lease_job(
             require_publication=bool(payload.get("host_exec_publication")),
             require_continuation=bool(payload.get("host_exec_resume")),
             require_read_only_review=bool(payload.get("host_exec_read_only")),
+            require_network=bool(payload.get("host_exec_network")),
         ):
             continue
         if workspace_id and not runner_offers_authorized_directory(
