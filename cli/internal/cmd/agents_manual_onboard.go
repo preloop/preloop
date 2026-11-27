@@ -287,9 +287,13 @@ func (e *errConfigNotWritable) Error() string {
 
 // decideManualMode runs the writability preflight. It changes nothing.
 func decideManualMode(agent AgentConfig, opts managedEnrollmentOptions, output io.Writer) (manualModeDecision, error) {
-	decision := manualModeDecision{
-		Report: runWritabilityPreflight(onboardingWriteTargets(agent, opts)),
-	}
+	return decideManualModeForReport(agent, opts, runWritabilityPreflight(onboardingWriteTargets(agent, opts)), output)
+}
+
+// decideManualModeForReport decides from a preflight that already ran (the
+// plan holds one), so apply acts on what the review showed.
+func decideManualModeForReport(agent AgentConfig, opts managedEnrollmentOptions, report writabilityReport, output io.Writer) (manualModeDecision, error) {
+	decision := manualModeDecision{Report: report}
 	blocked := decision.Report.blocked()
 	decision.Manual = opts.ForceManual || len(blocked) > 0
 	if !decision.Manual {

@@ -99,6 +99,7 @@ preloop agents discover --no-onboard-prompt
 preloop agents onboard <agent>           # onboard one agent ("enroll" is an alias)
 preloop agents onboard --all -y          # everything discovered, no prompts
 preloop agents onboard <agent> --dry-run # preview account + config changes
+preloop agents onboard <agent> --explain # full custody and plan text, and the detailed result
 preloop agents onboard <agent> --approvals  # + native action gates (Claude Code, Codex CLI, Cursor, Copilot CLI, OpenCode, Pi, DeepSeek Harness)
 preloop agents onboard <agent> --tags env=prod,team=infra
 preloop agents onboard <agent> --manual     # print the config change instead of writing it
@@ -141,6 +142,46 @@ preloop agents onboard --unattended \
   --apps claude_code,codex \
   --url https://preloop.example.com
 ```
+
+### What onboarding prints
+
+Onboarding works out the whole plan for an agent before it shows anything.
+The review is one row per agent and the disclosures that need your consent:
+
+```text
+  1  Claude Code   model routing, MCP, Agent Control
+                   model: anthropic/<model> (subscription login)
+
+  ! Preloop will hold and rotate the Claude Code subscription login. Offboard
+    returns it.
+  ! While routed, Claude Code does not fetch organisation-managed settings or
+    claude.ai connectors.
+Apply managed Preloop onboarding for Claude Code? (Y/n):
+  ok  Claude Code   agent and key created in Preloop
+  ok  Claude Code   settings.json updated, backup saved
+  ok  Claude Code   Agent Control plugin installed
+  ok  Claude Code   test request through the gateway (1.2 s)
+
+✓ Onboarded Claude Code
+  Gateway validation: passed (route probe; application behavior unverified)
+  Claude Code shows "API Usage Billing"; calls still use your subscription.
+  Status: preloop agents status "Claude Code"
+  Undo:   preloop agents offboard "Claude Code"
+```
+
+Each step is printed once, when it ends. Nothing is redrawn, so the output
+reads the same in a terminal, in a pipe, over ssh and in a screen reader.
+Warnings and failures are printed in full where they happen.
+
+| Need | Use |
+| --- | --- |
+| The full credential custody and plan text before confirming, and the detailed result afterwards | `preloop agents onboard <agent> --explain` |
+| The same text without changing anything | `preloop agents onboard <agent> --dry-run` |
+| The state of an agent later | `preloop agents status <agent>` |
+
+Output is wrapped to the terminal width, between 60 and 100 columns, and to
+80 columns when the width is unknown. Colour is used only for failures, only
+on a terminal, and never when `NO_COLOR` is set or `TERM` is `dumb`.
 
 ### Native approvals are opt-in
 

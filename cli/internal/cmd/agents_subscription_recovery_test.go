@@ -73,6 +73,9 @@ func assertClaudeNodePreflightBeforeMutation(t *testing.T, oldNode bool) {
 		enrollErr = executeManagedEnrollment(agent, managedEnrollmentOptions{
 			Client:         api.NewClientWithToken(server.URL, "synthetic-session"),
 			PreferredModel: "anthropic/claude-haiku-4-5", Input: strings.NewReader("\ny\n"), Output: &out, Approvals: true,
+			// The billing note is part of the full plan text (--explain);
+			// the compact review moves it to the receipt.
+			Explain: true,
 		})
 		return nil
 	})

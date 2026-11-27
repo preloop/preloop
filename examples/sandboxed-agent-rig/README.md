@@ -43,6 +43,21 @@ Lines starting with `host$` are steps a user does on the host, outside the
 sandbox. The script performs them for you by writing the file from outside the
 container.
 
+## Measuring onboarding
+
+`cli/scripts/measure-onboarding.sh` uses the same stack to measure what a
+person goes through: it runs `preloop agents onboard` in a pseudo-terminal 80
+columns wide, answers each prompt with its default, and prints the number of
+interactions, the rows printed before the apply decision, the total rows, the
+longest line and the seconds from the first prompt to the gateway probe
+result. It covers an ordinary writable home (the `agent-writable` container)
+and `ro-settings`.
+
+```bash
+cli/scripts/measure-onboarding.sh
+MAX_INTERACTIONS=4 MAX_ROWS_BEFORE=18 cli/scripts/measure-onboarding.sh writable
+```
+
 ## What is real and what is mocked
 
 Real: the Preloop API, gateway and database from this checkout; the `preloop`

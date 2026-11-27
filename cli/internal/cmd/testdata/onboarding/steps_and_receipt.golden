@@ -1,0 +1,10 @@
+  ok  Claude Code   agent and key created in Preloop
+  ok  Claude Code   settings.json updated, backup saved
+  --  Claude Code   Agent Control plugin: not installed
+  FAILED  Claude Code   test request through the gateway
+
+✓ Onboarded Claude Code
+  Gateway validation: passed (route probe; application behavior unverified)
+  Claude Code shows "API Usage Billing"; calls still use your subscription.
+  Status: preloop agents status "Claude Code"
+  Undo:   preloop agents offboard "Claude Code"

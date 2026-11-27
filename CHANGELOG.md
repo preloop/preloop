@@ -224,6 +224,24 @@ or `curl -fsSL 'https://preloop.ai/install/cli?version=1.1.0-rc.1' | sh`.
 
 ### Changed
 
+- **CLI output:** `preloop agents onboard` prints less by default. Before the
+  confirmation each agent is one row (what will be switched on, the model and
+  where its credential comes from) followed by the disclosures that need
+  consent, at most two lines each: Preloop takes custody of a subscription
+  login, and Claude Code stops fetching organisation-managed settings and
+  claude.ai connectors while routed. After it, each finished step is one line
+  and a short receipt names the status and undo commands. Text is wrapped to
+  the terminal width (60 to 100 columns, 80 when unknown), and no colour is
+  written when `NO_COLOR` is set, `TERM` is `dumb` or the output is not a
+  terminal. The questions asked are unchanged. `--explain` prints the previous
+  text in full: the credential custody block, the plan block with its notes,
+  and the detailed result after each agent. `--dry-run` output, exit statuses,
+  `--json` outputs and the summary table are unchanged, and the lines
+  `✓ Onboarded <agent>` and
+  `Waiting for local configuration: <agent> is NOT onboarded yet.` are kept.
+  Scripts that match other onboarding text should pass `--explain` or use
+  `preloop agents status <agent> --json`.
+  [#2564](https://github.com/preloop/preloop/issues/2564).
 - **API compatibility:** flow reads, writes and presets no longer return
   `webhook_config.webhook_secret`. Rotate a webhook secret to receive its
   value once, then retain it securely. Existing URLs remain valid until
