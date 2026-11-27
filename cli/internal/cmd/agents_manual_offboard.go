@@ -297,44 +297,45 @@ func manualOffboardBundleDir(agent AgentConfig) string {
 }
 
 // renderManualRemoval is the text the user follows to take Preloop out of a
-// file the CLI cannot write.
-func renderManualRemoval(displayName string, agent AgentConfig, plan localOffboardPlan, resultFile string) string {
+// file the CLI cannot write: the file, where it probably lives on the host,
+// the prepared result when one could be saved, and one block.
+func renderManualRemoval(displayName string, agent AgentConfig, plan localOffboardPlan, resultFile string, width int) string {
 	var out strings.Builder
-	rule := strings.Repeat("-", 72)
-	fmt.Fprintf(&out, "Manual removal for %s\n%s\n", displayName, rule)
-	fmt.Fprintf(&out, "%s\n", agent.ConfigPath)
-	fmt.Fprintf(&out, "   Not writable from here: %s\n", plan.Probe.Reason)
+	if width <= 0 {
+		width = onboardDefaultWidth
+	}
+	fmt.Fprintf(&out, "Manual removal for %s\n", displayName)
+	writeFileAndReason(&out, agent.ConfigPath, plan.Probe.Reason, width)
 	if source := plan.Probe.HostSource(); source != "" {
-		fmt.Fprintf(&out, "   Edit it on the host, probably at: %s\n", source)
+		writeWrapped(&out, "  Host:  ", "         ", "probably "+source, width)
 	}
 	if !plan.Readable {
-		fmt.Fprintf(&out, "   The file cannot be checked: %s\n", plan.ReadProblem)
-		fmt.Fprintln(&out, "   Fix that first, then run this command again.")
-		fmt.Fprintf(&out, "%s\n", rule)
+		writeWrapped(&out, "  ", "  ", "The file cannot be checked: "+plan.ReadProblem, width)
+		writeWrapped(&out, "  ", "  ", "Fix that first, then run this command again.", width)
 		return out.String()
 	}
+	if resultFile != "" {
+		writeWrapped(&out, "  Do:    ", "         ", "replace it with the prepared file, or make the changes below", width)
+		writeWrapped(&out, "         ", "         ", resultFile, width)
+	} else {
+		writeWrapped(&out, "  Do:    ", "         ", "make the changes below and keep everything else", width)
+	}
 	if len(plan.Remove) > 0 {
-		fmt.Fprintln(&out, "   Remove these keys:")
-		for _, key := range plan.Remove {
-			fmt.Fprintf(&out, "     %s\n", key)
-		}
+		writeWrapped(&out, "  Remove these keys: ", "    ", strings.Join(plan.Remove, ", "), width)
 	}
 	if len(plan.Merge) > 0 {
-		fmt.Fprintln(&out, "   Set these keys (to what they were before Preloop):")
+		writeWrapped(&out, "  ", "  ", "Set these keys (to what they were before Preloop):", width)
 		merge, _ := hideRestoredSecrets(plan.Merge).(map[string]interface{})
-		fmt.Fprintf(&out, "\n%s\n\n", renderConfigBlock(plan.Format, merge))
-		if strings.Contains(renderConfigBlock(plan.Format, merge), manualRestoreValuePlaceholder) {
+		block := renderConfigBlock(plan.Format, merge)
+		fmt.Fprintf(&out, "\n%s\n\n", block)
+		if strings.Contains(block, manualRestoreValuePlaceholder) {
 			if plan.BackupPath != "" {
-				fmt.Fprintf(&out, "   %s stands for a credential of yours; its value is in the backup: %s\n", manualRestoreValuePlaceholder, plan.BackupPath)
+				writeWrapped(&out, "  ", "    ", fmt.Sprintf("%s stands for a credential of yours; its value is in the backup: %s", manualRestoreValuePlaceholder, plan.BackupPath), width)
 			} else {
-				fmt.Fprintf(&out, "   %s stands for a credential of yours that Preloop does not print.\n", manualRestoreValuePlaceholder)
+				writeWrapped(&out, "  ", "    ", fmt.Sprintf("%s stands for a credential of yours that Preloop does not print.", manualRestoreValuePlaceholder), width)
 			}
 		}
 	}
-	if resultFile != "" {
-		fmt.Fprintf(&out, "   Or replace the file with the complete result: %s\n", resultFile)
-	}
-	fmt.Fprintf(&out, "Guide: %s#offboarding\n%s\n", manualSetupDocsURL, rule)
 	return out.String()
 }
 
@@ -376,11 +377,12 @@ func runManualOffboardRemoval(
 			}
 		}
 	}
-	report := writabilityReport{Container: detectContainerRuntime(), Probes: []configWriteProbe{plan.Probe}}
-	printWritabilityReport(output, report)
-	fmt.Fprint(output, renderManualRemoval(displayName, agent, plan, resultFile)) //nolint:errcheck
-	printManualLine(output, "Nothing has been changed in Preloop yet: the agent keeps working until you remove the block.")
-	printManualLine(output, "To remove the Preloop side now and edit the file later, add --server-only.")
+	width := detectTermCaps(output, false).Width
+	fmt.Fprint(output, renderManualRemoval(displayName, agent, plan, resultFile, width)) //nolint:errcheck
+	writeWrapped(output, "  ", "  ", "Nothing has been changed in Preloop yet: the agent keeps working until you remove the block.", width)
+	writeWrapped(output, "  ", "  ", "To remove the Preloop side now and edit the file later, add --server-only.", width)
+	fmt.Fprintf(output, "  Repeat:  %s\n", command) //nolint:errcheck
+	writeWrapped(output, "  Guide:   ", "           ", manualSetupDocsURL+"#offboarding", width)
 
 	pending := &manualOffboardPendingError{AgentName: displayName, Command: command}
 	interactive := stdinIsTerminal() && !autoApprove && !nonInteractiveAutoConfirm()
@@ -390,7 +392,7 @@ func runManualOffboardRemoval(
 	reader := bufio.NewReader(input)
 	for {
 		answer, err := promptForTextInput(reader, output,
-			"Press Enter when the block is removed (or type 'later' to stop here): ")
+			"Press Enter when the block is removed, or type later: ")
 		if err != nil || strings.EqualFold(strings.TrimSpace(answer), "later") {
 			return pending
 		}
@@ -447,7 +449,7 @@ func cleanLocalAfterAbandonedSetup(state *manualResumeState, output io.Writer) {
 		printManualLine(output, "  This machine: removed the Preloop configuration from %s.", agent.ConfigPath)
 	default:
 		printManualLine(output, "  This machine: %s still holds the Preloop block and cannot be written from here. The key in it no longer works; remove it:", agent.ConfigPath)
-		fmt.Fprint(output, renderManualRemoval(resolveAgentDisplayName(agent), agent, plan, "")) //nolint:errcheck
+		fmt.Fprint(output, renderManualRemoval(resolveAgentDisplayName(agent), agent, plan, "", detectTermCaps(output, false).Width)) //nolint:errcheck
 	}
 	if local != nil {
 		_ = removeLocalEnrollmentState(agent)

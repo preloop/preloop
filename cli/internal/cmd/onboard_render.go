@@ -306,8 +306,13 @@ func agentPlanDetails(agent agentPlan, width int) []planDetailLine {
 	for _, line := range agent.PlanLines {
 		add(line)
 	}
-	if agent.Manual && agent.ManualReason != "" {
-		add("manual step: " + agent.ManualReason)
+	if agent.Manual && agent.ManualFile != "" {
+		add("manual step: " + agent.ManualFile)
+		if agent.ManualReason != "" {
+			// The refusal on its own line, so it reads (and can be
+			// searched for) as the operating system worded it.
+			lines = append(lines, planDetailLine{text: "(" + agent.ManualReason + ")", whole: true})
+		}
 	}
 	if agent.Blocked != "" {
 		add("cannot be applied: " + agent.Blocked)

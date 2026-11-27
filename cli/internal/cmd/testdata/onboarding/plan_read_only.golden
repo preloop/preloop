@@ -1,7 +1,7 @@
   1  Claude Code   model routing, MCP, Agent Control
                    model: example/model-large (subscription login)
-                   manual step: settings.json is not writable here (read-only
-                   file system)
+                   manual step: settings.json is not writable here
+                   (permission denied (owned by uid 0, running as uid 10001))
 
   ! Preloop will hold and rotate the Claude Code subscription login. Offboard
     returns it.

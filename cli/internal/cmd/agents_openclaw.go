@@ -368,6 +368,10 @@ type managedEnrollmentOptions struct {
 	// step lines and the receipts instead of each agent printing its own.
 	stepSink    func(stepEvent)
 	receiptSink func(agentReceipt)
+	// manualSink collects a prepared manual step instead of it being shown
+	// and waited for at once: with several agents the others are set up
+	// first and every manual step is shown at the end.
+	manualSink func(*manualStep)
 }
 
 type managedLiveValidationOutcome struct {

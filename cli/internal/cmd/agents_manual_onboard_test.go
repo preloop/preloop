@@ -41,6 +41,8 @@ type manualRigServer struct {
 	probeKeys       []string
 	// reportStatus, when set, is the status the discovery report gets.
 	reportStatus int
+	// onMutation, when set, is called before each request that is not a GET.
+	onMutation func(request string)
 }
 
 func newManualRigServer(t *testing.T) *manualRigServer {
@@ -99,6 +101,9 @@ func (r *manualRigServer) handle(w http.ResponseWriter, req *http.Request) {
 	}
 	if req.Method != http.MethodGet {
 		r.bodies[key] = append(r.bodies[key], body)
+		if r.onMutation != nil {
+			r.onMutation(key)
+		}
 	}
 	reply := func(status int, value interface{}) {
 		w.Header().Set("Content-Type", "application/json")
@@ -359,7 +364,9 @@ func TestReadOnlySettingsOnboardingGoesManualAndKeepsTheKey(t *testing.T) {
 	home := newManualRigHome(t)
 	home.lockSettings(t)
 
-	output, err := runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{})
+	// The complete instructions (every form of the change and what each does
+	// not enable) are what --explain prints; the default is one block.
+	output, err := runManualRigOnboard(t, rig, home.agent, managedEnrollmentOptions{Explain: true})
 	var pending *manualApplyPendingError
 	if !errors.As(err, &pending) {
 		t.Fatalf("want a pending manual setup, got %v\n%s", err, output)

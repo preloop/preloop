@@ -226,8 +226,8 @@ func TestPlanForReadOnlySettings(t *testing.T) {
 	f := newReadOnlySettingsFixture(t)
 	plan := planFixture(t, f, managedEnrollmentOptions{})
 	agent := plan.Agents[0]
-	if !agent.Manual || !strings.Contains(agent.ManualReason, "settings.json") {
-		t.Fatalf("manual=%v reason=%q", agent.Manual, agent.ManualReason)
+	if !agent.Manual || !strings.Contains(agent.ManualFile, "settings.json") || agent.ManualReason == "" {
+		t.Fatalf("manual=%v file=%q reason=%q", agent.Manual, agent.ManualFile, agent.ManualReason)
 	}
 	if len(f.rig.mutations()) != 0 {
 		t.Fatalf("planning a manual step changed the server: %v", f.rig.mutations())

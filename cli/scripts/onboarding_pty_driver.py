@@ -213,11 +213,21 @@ def main() -> int:
     result = run_without_terminal(args) if args.no_tty else run_in_terminal(args)
     raw = str(result.pop("raw"))
     escapes = raw.count("\x1b")
-    text = redact(ANSI.sub("", raw).replace("\r", "")).rstrip("\n")
-    decision = re.search(args.decision, text)
+    # Rows are counted on what was on screen; only the saved transcript has
+    # its keys replaced.
+    screen = ANSI.sub("", raw).replace("\r", "").rstrip("\n")
+    text = redact(screen)
+    decision = re.search(args.decision, screen)
     before = None
     if decision:
-        before = rows_at(text[: decision.start()].rstrip("\n"), args.columns)
+        before = rows_at(screen[: decision.start()].rstrip("\n"), args.columns)
+    manual_rows = None
+    manual = re.search(r"^Manual step (for|\d+ of)", screen, re.MULTILINE)
+    if manual:
+        end = re.search(r"^Press Enter when the change", screen[manual.start() :], re.MULTILINE)
+        block = screen[manual.start() : manual.start() + end.start()] if end else screen[manual.start() :]
+        manual_rows = rows_at(block.rstrip("\n"), args.columns)
+    key_blocks = sum(1 for block in re.split(r"\n\s*\n", screen) if "agt_" in block)
     lines = text.split("\n")
     result.update(
         {
@@ -227,7 +237,9 @@ def main() -> int:
             "columns": args.columns,
             "interactions": len(result["prompts"]),  # type: ignore[arg-type]
             "rows_before_decision": before,
-            "rows_total": rows_at(text, args.columns),
+            "rows_manual_step": manual_rows,
+            "key_blocks": key_blocks,
+            "rows_total": rows_at(screen, args.columns),
             "lines_total": len(lines),
             "longest_line": max((len(line) for line in lines), default=0),
             "escape_bytes": escapes,

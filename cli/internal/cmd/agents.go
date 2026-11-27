@@ -2527,7 +2527,7 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	// but the file is offboarded only once it no longer points at Preloop.
 	if localPlan.needsManualRemoval() {
 		if offboardServerOnly {
-			fmt.Print(renderManualRemoval(resolveAgentDisplayName(agent), agent, localPlan, ""))
+			fmt.Print(renderManualRemoval(resolveAgentDisplayName(agent), agent, localPlan, "", detectTermCaps(os.Stdout, false).Width))
 			local = localOffboardOutcome{Line: fmt.Sprintf(
 				"This machine: NOT changed. %s still holds the Preloop block (%s). Remove it as printed above; its key no longer works.",
 				agent.ConfigPath, firstNonEmptyString(localPlan.Probe.Reason, localPlan.ReadProblem),

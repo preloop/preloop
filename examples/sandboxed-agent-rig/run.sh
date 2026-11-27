@@ -84,6 +84,34 @@ refute() {
   fi
 }
 
+# expect_key_blocks <n>: the agent key may appear in at most <n> blocks of
+# the transcript (a block is text between blank lines).
+expect_key_blocks() {
+  local blocks
+  blocks=$(awk 'BEGIN { RS = "" } /agt_/ { count++ } END { print count + 0 }' "$TRANSCRIPT")
+  if [ "$blocks" != "$1" ]; then
+    echo "RIG FAILURE ($CURRENT): the agent key appears in $blocks block(s), expected $1" >&2
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# expect_manual_step_rows <max>: the manual step, from its title to the wait
+# prompt, may take at most <max> rows of an 80 column terminal. Keys are
+# redacted in the transcript, which makes one line of the block shorter
+# than it is on screen, so the limit here is one below the product's 45.
+expect_manual_step_rows() {
+  local rows
+  rows=$(awk '
+    /^Manual step for / { counting = 1 }
+    /^Press Enter when the change is in place/ { counting = 0 }
+    counting { n = length($0); rows += (n == 0) ? 1 : int((n + 79) / 80) }
+    END { print rows + 0 }' "$TRANSCRIPT")
+  if [ "$rows" -eq 0 ] || [ "$rows" -gt "$1" ]; then
+    echo "RIG FAILURE ($CURRENT): the manual step is $rows rows, expected 1 to $1" >&2
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
 expect_status() {
   if [ "$LAST_STATUS" != "$1" ]; then
     echo "RIG FAILURE ($CURRENT): expected exit $1, got $LAST_STATUS" >&2
@@ -250,13 +278,24 @@ JSON
   expect "Apply to 1 agent? [Y/n/c/e]:"
   refute "Agent name ["
   refute "Use which model?"
-  expect "Running inside a container"
-  # Linux reports the foreign owner first, Docker Desktop the read-only
-  # mount; the mount line is printed in both cases.
-  expect "mounted read-only at /home/agent/.claude/settings.json"
-  expect "Onboarding continues in manual mode"
-  expect "Merge these keys into the file and keep everything else:"
+  # The review says it before anything is created, and the hand-over is one
+  # step line followed by one block.
+  expect "manual step: settings.json is not writable here"
+  expect ">>  Claude Code   your turn: 1 file to change"
+  expect "Manual step for Claude Code"
+  expect "File:  /home/agent/.claude/settings.json"
+  # Linux reports the foreign owner, Docker Desktop the read-only mount; the
+  # probable host path is printed in both cases.
+  expect "Host:  probably"
+  expect "replace it with the prepared file, or merge the block below"
+  expect "The block holds the agent key. It is shown once."
+  expect "Saved (mode 0600, contains the agent key):"
   expect "Waiting for local configuration: Claude Code is NOT onboarded yet."
+  expect 'Finish:  preloop agents onboard --resume "Claude Code"'
+  refute "Alternative A"
+  refute "export ANTHROPIC_API_KEY"
+  expect_key_blocks 1
+  expect_manual_step_rows 44
   refute "✓ Onboarded"
   server_state | tee -a "$TRANSCRIPT"
 
@@ -306,11 +345,17 @@ PY
   run "$svc" "preloop agents discover --report --no-onboard-prompt"
   run "$svc" "preloop agents status 'Claude Code'"
 
+  note "The complete instructions stay one flag away, and in the saved file."
+  run "$svc" 'grep -c -e "Alternative A" -e "Alternative B" -e "does not enable" "$(ls -d ~/.preloop/manual-setup/* | grep -v -- -offboard | head -1)/INSTRUCTIONS.txt"'
+  expect_status 0
+
   note "Offboard: the file is still read-only, so the removal is printed first."
   run "$svc" "preloop agents offboard 'Claude Code' --yes --remove-model yes --remove-mcp-servers no"
   expect_status 3
   expect "Manual removal for Claude Code"
+  expect "replace it with the prepared file, or make the changes below"
   expect "Nothing has been changed in Preloop yet"
+  expect 'Repeat:  preloop agents offboard "Claude Code"'
   refute "✓ Offboarded"
   host "cp <complete result from the sandbox> state/ro-settings/claude/settings.json"
   compose exec -T "$svc" bash -c 'cat ~/.preloop/manual-setup/*-offboard/settings.json' > "$OUT/.ro-settings.offboard.json"
@@ -336,8 +381,10 @@ variant_ro_everything() {
   run "$svc" "touch ~/.preloop/probe 2>&1 | head -1; touch ~/.claude/probe 2>&1 | head -1"
   run_tty "$svc" '\nlater\n' "preloop agents onboard 'Claude Code' --manual-output /tmp/preloop-setup"
   expect_status 3
-  expect "Preloop state (backup, resume and hook credentials)"
+  expect ">>  Claude Code   your turn: 3 files to change"
+  expect "Also create /home/agent/.claude.json from the prepared file:"
   expect "subscription login from CLAUDE_CODE_OAUTH_TOKEN"
+  expect_key_blocks 1
   expect "Resume token (not a secret; keep it, ~/.preloop is not writable)"
   expect "--resume-token"
 

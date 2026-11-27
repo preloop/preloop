@@ -9,6 +9,8 @@
 #   interactions      answers the person had to give
 #   rows before       rows printed before the apply decision, at 80 columns
 #   rows total        rows printed by the whole command
+#   manual rows       rows of the manual step, when a file is read-only
+#   key blocks        blocks of output that contain the agent key
 #   longest line      in characters
 #   seconds to probe  from the first prompt to the gateway probe result
 #
@@ -19,6 +21,7 @@
 #   RIG_DIR=path/to/sandboxed-agent-rig ...            measure another checkout
 #   MAX_INTERACTIONS=1 MAX_ROWS_BEFORE=18 ...          fail above a threshold
 #   MAX_INTERACTIONS=writable=1,ro-settings=2 ...      one threshold per variant
+#   MAX_MANUAL_ROWS=45 MAX_KEY_BLOCKS=1 ...            the manual step's size
 #
 # It never contacts a real provider or a hosted Preloop, and sends no
 # telemetry.
@@ -137,10 +140,10 @@ for variant in "${VARIANTS[@]}"; do
   measure "$variant" "$service" tty
 done
 
-python3 - "$OUT" "${MAX_INTERACTIONS:-}" "${MAX_ROWS_BEFORE:-}" "${VARIANTS[@]}" <<'PY'
+python3 - "$OUT" "${MAX_INTERACTIONS:-}" "${MAX_ROWS_BEFORE:-}" "${MAX_MANUAL_ROWS:-}" "${MAX_KEY_BLOCKS:-}" "${VARIANTS[@]}" <<'PY'
 import json, sys
 
-out, max_interactions, max_rows = sys.argv[1], sys.argv[2], sys.argv[3]
+out, max_interactions, max_rows, max_manual, max_keys = sys.argv[1:6]
 failures = []
 
 
@@ -158,20 +161,28 @@ def limit(spec, variant):
 
 
 print()
-print("%-12s %12s %12s %10s %12s %16s %5s" % (
+print("%-12s %12s %12s %10s %12s %11s %10s %16s %5s" % (
     "variant", "interactions", "rows before", "rows total", "longest line",
-    "seconds to probe", "exit"))
-for variant in sys.argv[4:]:
+    "manual rows", "key blocks", "seconds to probe", "exit"))
+for variant in sys.argv[6:]:
     with open(f"{out}/{variant}.tty.json") as handle:
         data = json.load(handle)
     with open(f"{out}/{variant}.tty.txt", "w") as handle:
         handle.write(data["transcript"] + "\n")
     seconds = data["seconds_first_prompt_to_probe"]
     before = data["rows_before_decision"]
-    print("%-12s %12d %12s %10d %12d %16s %5d" % (
+    manual = data.get("rows_manual_step")
+    print("%-12s %12d %12s %10d %12d %11s %10d %16s %5d" % (
         variant, data["interactions"], "-" if before is None else before,
         data["rows_total"], data["longest_line"],
+        "-" if manual is None else manual, data.get("key_blocks", 0),
         "-" if seconds is None else seconds, data["exit_status"]))
+    most = limit(max_manual, variant)
+    if most is not None and manual is not None and manual > most:
+        failures.append(f"{variant}: the manual step is {manual} rows, limit {most}")
+    most = limit(max_keys, variant)
+    if most is not None and data.get("key_blocks", 0) > most:
+        failures.append(f"{variant}: the agent key is in {data.get('key_blocks')} blocks, limit {most}")
     most = limit(max_interactions, variant)
     if most is not None and data["interactions"] > most:
         failures.append(f"{variant}: {data['interactions']} interactions, limit {most}")
