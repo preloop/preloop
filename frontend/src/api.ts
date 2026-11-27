@@ -3059,12 +3059,34 @@ export async function getAgentControlCommandStatus(
   runtime_session_id?: string | null;
   terminal: boolean;
   delivery_state: string;
+  prompt_delivery?: 'queued' | 'sent';
   last_error?: string | null;
 }> {
   const response = await fetchWithAuth(
     `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/commands/${encodeURIComponent(commandId)}`
   );
   if (!response.ok) throw new Error('Could not confirm command delivery');
+  return response.json();
+}
+
+export interface TalkStartOptions {
+  capabilities: Record<string, boolean | string>;
+  version?: string;
+  default_directory?: string;
+  projects: { project_id?: string; name: string; path: string }[];
+  recent_directories: string[];
+}
+
+export async function getTalkStartOptions(
+  agentId: string
+): Promise<TalkStartOptions> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/start-options`
+  );
+  if (!response.ok)
+    throw new Error(
+      'Could not check sidecar capabilities. Retry before sending.'
+    );
   return response.json();
 }
 
@@ -6660,6 +6682,7 @@ export interface RuntimeSessionControl {
     | 'herdr_unavailable'
     | 'session_owner_unknown'
     | 'session_directory_unknown'
+    | 'sidecar_update_required'
     | 'session_unavailable'
     | 'runner_away'
     | null;

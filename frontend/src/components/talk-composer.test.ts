@@ -513,7 +513,7 @@ describe('talk-composer per-session routing', () => {
         .textContent!.trim();
 
     expect(mode()).to.equal(
-      'Terminal session. Your message is read at its next tool call or when the turn ends.'
+      'Terminal session. The sidecar does not own it, so your message is a note read at its next tool call or when the turn ends.'
     );
     expect(el.shadowRoot!.textContent).to.not.contain('Queued for delivery');
 
@@ -1234,8 +1234,14 @@ describe('Talk native startup recovery', () => {
     localStorage.setItem('accessToken', 'test-token');
     sinon.stub(window, 'fetch').callsFake(async (input) => {
       const url = String(input);
-      if (url.endsWith('/directories'))
-        return new Response(JSON.stringify(['/tmp/example']));
+      if (url.endsWith('/start-options'))
+        return new Response(
+          JSON.stringify({
+            projects: [],
+            recent_directories: ['/tmp/example'],
+            capabilities: { start_directory: true, command_session: true },
+          })
+        );
       if (url.endsWith('/commands/native-command'))
         return new Response(
           JSON.stringify({
@@ -1259,6 +1265,7 @@ describe('Talk native startup recovery', () => {
         .sessionId=${null}
       ></talk-composer>`
     );
+    await waitUntil(() => el.workingDirectory === '/tmp/example');
     const input = textarea(el);
     input.value = 'Example new task';
     input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
@@ -1282,8 +1289,14 @@ describe('Talk native startup recovery', () => {
     localStorage.setItem('accessToken', 'test-token');
     sinon.stub(window, 'fetch').callsFake(async (input) => {
       const url = String(input);
-      if (url.endsWith('/directories'))
-        return new Response(JSON.stringify(['/tmp/example']));
+      if (url.endsWith('/start-options'))
+        return new Response(
+          JSON.stringify({
+            projects: [],
+            recent_directories: ['/tmp/example'],
+            capabilities: { start_directory: true, command_session: true },
+          })
+        );
       if (url.endsWith('/commands/unbound-command'))
         return new Response(
           JSON.stringify({
@@ -1307,6 +1320,7 @@ describe('Talk native startup recovery', () => {
         .sessionId=${null}
       ></talk-composer>`
     );
+    await waitUntil(() => el.workingDirectory === '/tmp/example');
     const input = textarea(el);
     input.value = 'Example new task';
     input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
@@ -1324,16 +1338,23 @@ describe('Talk native startup recovery', () => {
 
   it('retains a follow-up draft while its new session is still starting', async () => {
     localStorage.setItem('accessToken', 'test-token');
-    const fetchStub = sinon.stub(window, 'fetch').callsFake(
-      async () =>
-        new Response(
-          JSON.stringify({
-            command_id: 'starting-command',
-            runtime_session_id: null,
-            target_session_id: null,
-          }),
-          { status: 202 }
-        )
+    const fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) =>
+      String(input).endsWith('/start-options')
+        ? new Response(
+            JSON.stringify({
+              projects: [],
+              recent_directories: ['/tmp/example'],
+              capabilities: { start_directory: true, command_session: true },
+            })
+          )
+        : new Response(
+            JSON.stringify({
+              command_id: 'starting-command',
+              runtime_session_id: null,
+              target_session_id: null,
+            }),
+            { status: 202 }
+          )
     );
     const el = await fixture<TalkComposer>(
       html`<talk-composer
@@ -1341,6 +1362,7 @@ describe('Talk native startup recovery', () => {
         .sessionId=${null}
       ></talk-composer>`
     );
+    await waitUntil(() => el.workingDirectory === '/tmp/example');
     const input = textarea(el);
     for (const text of ['Example first task', 'Example follow-up']) {
       input.value = text;
@@ -1356,6 +1378,81 @@ describe('Talk native startup recovery', () => {
       .filter((call) => String(call.args[0]).endsWith('/control/commands'));
     expect(sends).to.have.length(1);
     expect(textarea(el).value).to.equal('Example follow-up');
+    el.remove();
+  });
+});
+
+describe('Talk start options recovery', () => {
+  afterEach(() => sinon.restore());
+
+  it('retries a transient options failure before sending a new prompt', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    let loads = 0;
+    let sends = 0;
+    sinon.stub(window, 'fetch').callsFake(async (input) => {
+      if (String(input).endsWith('/start-options')) {
+        if (++loads === 1) throw new Error('Temporary options failure');
+        return new Response(
+          JSON.stringify({
+            projects: [],
+            recent_directories: ['/tmp/recovered'],
+            capabilities: { start_directory: true, command_session: true },
+          })
+        );
+      }
+      sends++;
+      return new Response(JSON.stringify({ command_id: 'recovered-command' }), {
+        status: 202,
+      });
+    });
+    const el = await fixture<TalkComposer>(
+      html`<talk-composer
+        .agent=${agent({ agent_kind: 'claude_code' })}
+        .sessionId=${null}
+      ></talk-composer>`
+    );
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes('Temporary options failure')
+    );
+    const input = textarea(el);
+    input.value = 'Example task';
+    input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    await waitUntil(() => sends === 1, 'start options were not retried');
+    expect(loads).to.equal(2);
+    expect(el.workingDirectory).to.equal('/tmp/recovered');
+    el.remove();
+  });
+
+  it('clears choices and directory when switching agent hosts', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    sinon.stub(window, 'fetch').callsFake(async (input) => {
+      if (String(input).includes('/next-host/'))
+        throw new Error('Next host unavailable');
+      return new Response(
+        JSON.stringify({
+          projects: [],
+          recent_directories: ['/tmp/previous-host'],
+          capabilities: { start_directory: true, command_session: true },
+        })
+      );
+    });
+    const el = await fixture<TalkComposer>(
+      html`<talk-composer
+        .agent=${agent({ agent_kind: 'claude_code' })}
+        .sessionId=${null}
+      ></talk-composer>`
+    );
+    await waitUntil(() => el.workingDirectory === '/tmp/previous-host');
+    el.agent = agent({ id: 'next-host', agent_kind: 'claude_code' });
+    await el.updateComplete;
+    expect(el.workingDirectory).to.equal('');
+    const picker = el.shadowRoot!.querySelector(
+      'talk-start-picker'
+    ) as HTMLElement & { options: unknown };
+    expect(picker.options).to.equal(null);
     el.remove();
   });
 });

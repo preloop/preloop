@@ -422,3 +422,36 @@ PRELOOP_DISABLE_TELEMETRY=true \
 PYTHONPATH=backend:runtime-plugins/nanobot-preloop/src \
 pytest runtime-plugins/nanobot-preloop/tests
 ```
+
+
+## Native Talk capability release
+
+The Talk prompt and start-picker changes require Claude plugin **0.1.2** or
+Codex plugin **0.1.1**, prepared in this tree. Publish these npm versions manually
+after merge; a platform or CLI tag does not publish them. Claude is not included
+in `publish-runtime-plugins.yml`; use the npm build/test/publish fallback. Codex
+has the manual job described above. Do not reuse an already-published version.
+
+Platform tags `v1.1.0-rc.2` and `v1.1.0-rc.3` include #2509's session binding,
+resume and directory implementation, but not the new capability checks and
+busy-turn prompt routing. Those need the platform release containing this
+change. `preloop claude` and `preloop codex` launch the installed npm plugin;
+updating only the CLI does not replace that plugin or restart an existing
+sidecar. Install the corresponding version and restart the sidecar service.
+The new plugin releases also include #2509's runtime changes.
+
+```sh
+npm install -g @preloop-ai/claude-plugin@0.1.2
+# Or, for Codex:
+npm install -g @preloop-ai/codex-plugin@0.1.1
+```
+
+`preloop update` updates the CLI to the release advertised by the server. It
+does not select a release candidate by tag. Until the release containing this
+change is advertised, use the approved release installation process or a local
+`make install-local` build when verifying the CLI.
+
+Claude plugin 0.1.2 requires Claude Code 2.1.330 or newer for prompt UUID
+correlation. This is the verified bundled version. An older or unversioned
+`claude_executable` is refused with an update instruction; remove that override
+to use the bundled executable. Older PATH binaries fall back to the bundle.

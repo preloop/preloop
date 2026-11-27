@@ -616,7 +616,9 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.account_id == account_id,
                 self.model.runtime_principal_type == principal_type,
                 (self.model.runtime_principal_id == principal_id)
-                | self.model.runtime_principal_id.startswith(principal_id + ":"),
+                | self.model.runtime_principal_id.startswith(
+                    principal_id + ":", autoescape=True
+                ),
             )
             .order_by(self.model.last_activity_at.desc())
             .limit(50)
@@ -664,6 +666,37 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         )
         if session is None:
             return
+        if completed:
+            from preloop.models import models
+
+            # One result may arrive while another accepted prompt is still
+            # queued or executing on the same native conversation.
+            outstanding = (
+                db.query(models.AgentControlCommand.id)
+                .filter(
+                    models.AgentControlCommand.runtime_session_id == runtime_session_id,
+                    or_(
+                        models.AgentControlCommand.account_id == account_id,
+                        models.AgentControlCommand.consuming_account_id == account_id,
+                    ),
+                    or_(
+                        models.AgentControlCommand.expires_at > datetime.now(UTC),
+                        and_(
+                            models.AgentControlCommand.expires_at.is_(None),
+                            models.AgentControlCommand.created_at
+                            > datetime.now(UTC) - timedelta(minutes=10),
+                        ),
+                    ),
+                    models.AgentControlCommand.kind == "command",
+                    models.AgentControlCommand.status.in_(
+                        ["pending", "delivered", "acked"]
+                    ),
+                    models.AgentControlCommand.envelope["_result"].is_(None),
+                )
+                .first()
+            )
+            if outstanding is not None:
+                return
         if not completed:
             session.ended_at = None
         apply_activity(session, "turn_end" if completed else "user_prompt")

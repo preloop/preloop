@@ -36,14 +36,14 @@ import {
   getRuntimeSessionControl,
   sendOperatorNote,
   getAgentControlCommandStatus,
-  getAgentWorkingDirectories,
+  getTalkStartOptions,
   sendAgentControlCommand,
   sendAgentControlRelease,
   sendAgentControlTakeover,
   sendAgentControlVoiceTranscript,
   transcribeAudio,
 } from '../api';
-import type { RuntimeSessionControl } from '../api';
+import type { RuntimeSessionControl, TalkStartOptions } from '../api';
 import type { ManagedAgentSummary } from '../types';
 import {
   getAgentControlInstallHint,
@@ -54,6 +54,7 @@ import {
 } from '../utils/agent-control';
 import type { PendingTalkMessage } from './session-chat-view';
 import './talk-command-menu';
+import './talk-start-picker';
 import { TALK_COMMANDS, matchCommands } from './talk-command-menu';
 import type { TalkCommand, TalkCommandName } from './talk-command-menu';
 
@@ -139,18 +140,28 @@ export interface TalkSessionAlternative {
 @customElement('talk-composer')
 export class TalkComposer extends LitElement {
   @property({ attribute: false }) workingDirectory = '';
-  @state() private recentDirectories: string[] = [];
+  @state() private startOptions: TalkStartOptions | null = null;
   private commandTimers = new Map<string, number>();
+  private directoryLoadId = 0;
 
   private async loadDirectories(): Promise<void> {
     const agentId = this.agent?.id;
     if (!agentId) return;
-    const directories = await getAgentWorkingDirectories(agentId).catch(
-      () => []
-    );
-    if (this.agent?.id !== agentId) return;
-    this.recentDirectories = directories;
-    if (!this.workingDirectory) this.workingDirectory = directories[0] ?? '';
+    const loadId = ++this.directoryLoadId;
+    try {
+      const options = await getTalkStartOptions(agentId);
+      if (this.agent?.id !== agentId || loadId !== this.directoryLoadId) return;
+      this.controlError = null;
+      this.startOptions = options;
+      if (!this.workingDirectory)
+        this.workingDirectory =
+          options.recent_directories[0] || options.default_directory || '';
+    } catch (error) {
+      if (this.agent?.id !== agentId || loadId !== this.directoryLoadId) return;
+      this.startOptions = null;
+      this.controlError =
+        error instanceof Error ? error.message : 'Could not load start options';
+    }
   }
 
   private followCommand(
@@ -171,6 +182,21 @@ export class TalkComposer extends LitElement {
           const status = await getAgentControlCommandStatus(agentId, commandId);
           const pending = this.pending.find((item) => item.id === pendingId);
           if (!pending) return;
+          if (status.prompt_delivery) {
+            this.setPending(
+              this.pending.map((item) =>
+                item.id === pendingId
+                  ? {
+                      ...item,
+                      deliveryMessage:
+                        status.prompt_delivery === 'queued' && !status.terminal
+                          ? 'Queued, runs when this step finishes'
+                          : 'Sent',
+                    }
+                  : item
+              )
+            );
+          }
           if (status.runtime_session_id && !pending.targetSessionId) {
             this.setPending(
               this.pending.map((item) =>
@@ -203,6 +229,11 @@ export class TalkComposer extends LitElement {
             status.terminal &&
             (status.delivery_state !== 'finished' || unbound)
           ) {
+            this.controlError =
+              status.last_error ||
+              (unbound
+                ? 'The session finished without reporting its id'
+                : `Command ${status.delivery_state}`);
             this.setPending(
               this.pending.map((item) =>
                 item.id === pendingId
@@ -635,6 +666,11 @@ export class TalkComposer extends LitElement {
   }
 
   willUpdate(changed: PropertyValues<this>): void {
+    if (changed.has('agent') && changed.get('agent')?.id !== this.agent?.id) {
+      this.startOptions = null;
+      this.directoryLoadId++;
+      if (changed.get('agent')) this.workingDirectory = '';
+    }
     if (
       changed.has('sessionId') ||
       (changed.has('sessionEnded') && !this.sessionEnded)
@@ -971,6 +1007,7 @@ export class TalkComposer extends LitElement {
 
   /** The words of the line above the input, also what `/status` says. */
   private get modeLine(): string {
+    if (this.startsNewSession) return 'New session';
     if (this.noteMode)
       return noteModeLine(
         this.sessionControl?.reason_code,
@@ -1185,6 +1222,36 @@ export class TalkComposer extends LitElement {
     }
     if (!text || !this.agent || this.startingSession) return;
     if (!getAgentControlState(this.agent).enabled) return;
+    if (this.sessionControl?.reason_code === 'sidecar_update_required') {
+      this.controlError = this.sessionControl.reason;
+      return;
+    }
+    if (
+      this.startsNewSession &&
+      ['claude_code', 'codex'].includes(this.agent.agent_kind ?? '')
+    ) {
+      const targetAgentId = this.agent.id;
+      if (!this.startOptions) await this.loadDirectories();
+      if (this.agent?.id !== targetAgentId) return;
+      if (!this.startOptions) {
+        this.controlError = 'Could not load start options. Try sending again.';
+        return;
+      }
+      if (
+        !this.startOptions.capabilities.start_directory ||
+        !this.startOptions?.capabilities.command_session
+      ) {
+        this.controlError =
+          'Update the connected sidecar for working directories and session binding. Run preloop update and update the runtime plugin, then restart it.';
+        return;
+      }
+      if (!this.workingDirectory.trim()) {
+        this.controlError =
+          'Choose a project or working directory before starting a session';
+        return;
+      }
+    }
+
     // A turn typed into an ended session would go nowhere the operator can
     // see. Keep the text and ask where it should go instead.
     if (
@@ -1383,6 +1450,12 @@ export class TalkComposer extends LitElement {
             ? {
                 ...item,
                 state: response.note_id ? 'waiting' : 'sent',
+                deliveryMessage:
+                  response.note_id || startNewSession
+                    ? undefined
+                    : this.agent?.agent_kind === 'codex'
+                      ? 'Queued, runs when this step finishes'
+                      : 'Sent',
                 noteId:
                   typeof response.note_id === 'string'
                     ? response.note_id
@@ -1585,24 +1658,17 @@ export class TalkComposer extends LitElement {
       ${
         !this.sendMessage && this.startsNewSession
           ? html`
-              <label class="directory-field"
-                >Working directory
-                <input
-                  aria-label="Working directory"
-                  list="talk-directories"
-                  .value=${this.workingDirectory}
-                  placeholder="Sidecar configured directory"
-                  @focus=${() => void this.loadDirectories()}
-                  @input=${(event: Event) => {
-                    this.workingDirectory = (
-                      event.target as HTMLInputElement
-                    ).value;
-                  }}
-                />
-              </label>
-              <datalist id="talk-directories">
-                ${this.recentDirectories.map((directory) => html`<option value=${directory}></option>`)}
-              </datalist>
+              <talk-start-picker
+                .options=${this.startOptions}
+                .directory=${this.workingDirectory}
+                .runtime=${this.agent?.agent_kind ?? ''}
+                @focusin=${() => {
+                  if (!this.startOptions) void this.loadDirectories();
+                }}
+                @directory-selected=${(event: CustomEvent<string>) => {
+                  this.workingDirectory = event.detail;
+                }}
+              ></talk-start-picker>
             `
           : nothing
       }

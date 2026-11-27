@@ -1048,10 +1048,16 @@ def test_agent_control_existing_session_envelope_includes_native_ids(
     assert "session_source_id" not in parsed.model_dump()
     assert "session_reference" not in parsed.model_dump()
 
-    response = client.post(
-        f"/api/v1/agents/{managed_agent.id}/control/commands",
-        json=request_json,
-    )
+    with patch(
+        "preloop.services.talk_capabilities.sidecar_features",
+        return_value={
+            "capabilities": {"start_directory": True, "command_session": True}
+        },
+    ):
+        response = client.post(
+            f"/api/v1/agents/{managed_agent.id}/control/commands",
+            json=request_json,
+        )
 
     assert response.status_code == 202
     body = response.json()

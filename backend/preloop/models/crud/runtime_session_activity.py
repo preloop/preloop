@@ -776,6 +776,18 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
                 a credential. These attribution fields would otherwise match
                 the generic redactor's sensitive ``auth`` prefix.
         """
+        if metadata and metadata.get("command_id"):
+            from preloop.models.crud import crud_agent_control_command
+
+            command = crud_agent_control_command.get_by_command_id(
+                db, account_id=account_id, command_id=metadata["command_id"]
+            )
+            envelope = getattr(command, "envelope", None)
+            if isinstance(envelope, dict) and envelope.get("_prompt_delivery") in {
+                "queued",
+                "sent",
+            }:
+                metadata = {**metadata, "prompt_delivery": envelope["_prompt_delivery"]}
         metadata = redact_dict(metadata) if metadata else metadata
         if author_display is not None or author_auth_method is not None:
             metadata = dict(metadata or {})

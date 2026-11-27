@@ -253,7 +253,7 @@ function makeSidecar(config) {
       async *[Symbol.asyncIterator]() {
         yield { type: "system", subtype: "init", session_id: "s-1" };
         for await (const message of prompt) {
-          yield { type: "result", subtype: "success", result: `ok: ${message.message.content}` };
+          yield { type: "result", user_message_uuids: [message.uuid], subtype: "success", result: `ok: ${message.message.content}` };
         }
       },
     };

@@ -72,6 +72,7 @@ export type TurnOutcome = {
 };
 
 export type SendMessageParams = {
+  onDelivery?: (state: "queued" | "sent") => void;
   text: string;
   targetSessionId?: string;
   resumeSessionId?: string;
@@ -338,10 +339,15 @@ export class SessionManager {
     // One run at a time per thread. A second send_message waits instead of
     // replacing session.controller (which would hide the first turn from
     // interrupt) or calling thread.run twice on a live SDK thread.
+    params.onDelivery?.("queued");
     const previous = session.tail ?? Promise.resolve();
+    const run = () => {
+      params.onDelivery?.("sent");
+      return this.runTurn(session, params.text, timeoutMs, params.onSessionStarted);
+    };
     const outcome = previous.then(
-      () => this.runTurn(session, params.text, timeoutMs, params.onSessionStarted),
-      () => this.runTurn(session, params.text, timeoutMs, params.onSessionStarted),
+      run,
+      run,
     );
     session.tail = outcome.then(
       () => undefined,

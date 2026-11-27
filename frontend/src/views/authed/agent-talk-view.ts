@@ -328,7 +328,6 @@ export class AgentTalkView extends LitElement {
           : nothing
       }
       <talk-composer
-        .workingDirectory=${this.newSessionDirectory}
         .sendMessage=${this.sendConversationMessage}
         .transportDisabled=${!conversationCanSend(thread) || Boolean(this.error)}
         .transportPlaceholder=${conversationPlaceholder(thread)}
@@ -1513,6 +1512,7 @@ export class AgentTalkView extends LitElement {
           : nothing
       }
       <talk-composer
+        .workingDirectory=${this.newSessionDirectory}
         .agent=${this.agent}
         .sessionId=${this.sessionId}
         .sessionSubject=${this.currentSession ? normalizeObservedSession(this.currentSession).title : ''}

@@ -493,7 +493,10 @@ def _mark_control_verified_from_capabilities(
     commit: bool = True,
 ) -> None:
     """Treat a live capabilities envelope as runtime-plugin verification."""
-    if inbound.type != "presence" or inbound.name != "capabilities":
+    if inbound.type != "presence" or inbound.name not in {
+        "capabilities",
+        "checkout_inventory",
+    }:
         return
 
     agent_kind = str(
@@ -516,6 +519,22 @@ def _mark_control_verified_from_capabilities(
         agent_id=str(context.managed_agent_id),
         enrollment_type="runtime_plugin_control",
     )
+    if inbound.name == "checkout_inventory":
+        if latest_enrollment is not None:
+            previous = latest_enrollment.validation_result or {}
+            if previous.get("talk_connection_id") == context.connection_id:
+                crud_managed_agent_enrollment.mark_validated(
+                    db,
+                    account_id=context.account_id,
+                    agent_id=context.managed_agent_id,
+                    enrollment_id=str(latest_enrollment.id),
+                    validation_result={
+                        **previous,
+                        "talk_checkouts": inbound.payload.get("checkouts", []),
+                    },
+                    commit=commit,
+                )
+        return
     validation_result = {
         **(
             latest_enrollment.validation_result
@@ -523,6 +542,11 @@ def _mark_control_verified_from_capabilities(
             and isinstance(latest_enrollment.validation_result, dict)
             else {}
         ),
+        "talk_connection_id": context.connection_id,
+        "talk_capabilities": inbound.payload.get("capabilities", {}),
+        "talk_version": inbound.payload.get("version"),
+        "talk_default_directory": inbound.payload.get("default_directory"),
+        "talk_checkouts": inbound.payload.get("checkouts", []),
         "control_channel_configured": True,
         "control_plugin_installed": True,
         "control_plugin_verified": True,
@@ -1739,6 +1763,16 @@ def _process_control_message(
     )
     _mark_control_verified_from_capabilities(db, connection, inbound, commit=False)
     _handle_command_ack(db, connection, inbound, commit=False)
+    if getattr(inbound, "name", None) == "prompt_delivery":
+        from preloop.models.crud.talk_delivery import record_prompt_delivery
+
+        record_prompt_delivery(
+            db,
+            account_id=connection.account_id,
+            agent_id=connection.managed_agent_id,
+            command_id=str(inbound.payload.get("command_id") or ""),
+            state=str(inbound.payload.get("state") or ""),
+        )
     _bind_command_session(db, connection, inbound)
     indexed_accounts = {
         _persist_agent_control_result(db, connection, inbound, commit=False),
@@ -2366,6 +2400,33 @@ async def _route_managed_agent_prompt(
         identity["working_directory"] = request.working_directory or (
             directories[0] if directories else None
         )
+    if (
+        agent.session_source_type in {"claude_code", "codex"}
+        and herdr_target is None
+        and not request.interrupt
+    ):
+        from preloop.services.talk_capabilities import (
+            TalkCapabilityError,
+            require_features,
+            sidecar_features,
+        )
+
+        features = sidecar_features(db, agent)
+        required = ["command_session"]
+        if identity.get("working_directory"):
+            required.append("start_directory")
+        if target_session is None and not identity.get("working_directory"):
+            identity["working_directory"] = features.get("default_directory")
+            if not identity["working_directory"]:
+                raise HTTPException(
+                    409,
+                    "Choose a project or working directory before starting a session",
+                )
+            required.append("start_directory")
+        try:
+            require_features(features, required)
+        except TalkCapabilityError as exc:
+            raise HTTPException(409, str(exc)) from exc
     try:
         if herdr_target is not None:
             if (
@@ -2529,6 +2590,40 @@ async def _route_managed_agent_prompt(
     )
 
 
+@router.get("/agents/{agent_id}/control/start-options")
+@require_permission("control_managed_agent")
+def get_agent_start_options(
+    agent_id: str,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Offer known host checkouts, recent directories and current capabilities."""
+    from preloop.services.talk_capabilities import project_choices, sidecar_features
+
+    ensure_permission_in_oss(db, current_user, "control_managed_agent")
+    agent = crud_managed_agent.get_visible_target(
+        db, account_id=str(current_user.account_id), agent_id=agent_id
+    )
+    if agent is None:
+        raise HTTPException(404, "Managed agent not found")
+    from preloop.models.crud.talk_checkouts import observed_checkouts
+
+    features = sidecar_features(db, agent)
+    checkouts = features.pop("checkouts", []) + observed_checkouts(
+        db, account_id=current_user.account_id, agent=agent
+    )
+    return {
+        **features,
+        "projects": project_choices(db, current_user.account_id, checkouts),
+        "recent_directories": crud_runtime_session.recent_directories(
+            db,
+            account_id=current_user.account_id,
+            principal_type=agent.session_source_type,
+            principal_id=agent.session_source_id,
+        ),
+    }
+
+
 @router.get("/agents/{agent_id}/control/directories", response_model=list[str])
 @require_permission("control_managed_agent")
 def get_agent_directories(
@@ -2647,6 +2742,7 @@ def get_managed_agent_command_status(
         delivery_state=delivery_state,
         terminal=delivery_state in TERMINAL_COMMAND_DELIVERY_STATES,
         result_status=result_status,
+        prompt_delivery=(record.envelope or {}).get("_prompt_delivery"),
         last_error=record.last_error,
         created_at=getattr(record, "created_at", None),
         delivered_at=record.delivered_at,
