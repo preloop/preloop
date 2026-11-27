@@ -119,9 +119,9 @@ inventory retention, and `extension_approval_pin` pins a decision to reviewed
 content hashes. CRUD owns reconciliation, approval joins and the single
 `effective_state` derivation (`content_changed` when a pinned approval meets an
 unpinned hash). Only complete
-app scans prove absence; older reports cannot replace newer inventory. Extension
-files, commands and source URLs remain on the device. See the
-[discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions).
+app scans prove absence; older reports cannot replace newer inventory. The
+inventory record carries no extension file, command or source URL. See the
+[discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions). Extension content for review is a separate, on-by-default upload after a report: redacted on the device (`cli/internal/redact`), verified against the inventory hash and stored encrypted per account in `extension_content` ([content contract](docs/guide/agent-discovery-reporting.md#extension-content)).
 It also covers collector versions and coverage gaps; [session identity](docs/architecture/gateway.md#runtime-session-identity) covers subagent lineage.
 Unmatched MCP tool calls read account policy defaults. With approve-once enabled,
 the account-owned `tool_registry_entry` records a decision per proxy server UUID

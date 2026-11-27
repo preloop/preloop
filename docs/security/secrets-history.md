@@ -108,9 +108,9 @@ is the rotation guide for the second one.
 
 ## Scanner false positives: baselined so the history scan stays green
 
-Pairs with `.gitleaksignore` section: `false positive on an unmerged feature branch` (3 fingerprints).
+Pairs with `.gitleaksignore` section: `false positive on an unmerged feature branch` (4 fingerprints).
 
-These three fingerprints exist only in `.gitleaksignore` (they are not among
+These four fingerprints exist only in `.gitleaksignore` (they are not among
 the audit's 11 classified findings) and involve no credential at all:
 
 | Commit | Path | Disposition |
@@ -118,6 +118,7 @@ the audit's 11 classified findings) and involve no credential at all:
 | `480bd991973f8a921d902b0dd3a401e6e11d3724` | `backend/preloop/services/record_signing.py` | a signing-key dataclass field annotated with a cryptography class name; a type name, not key material |
 | `b8970d2a6f8d0354a26b271e65a052876861da2f` | `.gitleaksignore` | an earlier wording of the ignore file itself named the same field and tripped the same rule |
 | `2895962e34089bf789a87fdf4870525cb4f59e8b` | `backend/preloop/models/crud/ci_principal.py` | adjacent Python call arguments interpreted as an API key; source syntax with no credential value, as detailed below |
+| `10e8ef4db8c2eb261770447924862a428e1fb109` | `cli/internal/redact/redacttest/planted.go` | synthetic credential for the redaction tests, assembled from string pieces at run time; two adjacent pieces read as a key and its value. No live credential. The working tree splits the pieces further |
 
 Nothing was live, nothing rotates. They stay baselined because the history
 scan walks every fetched commit and would otherwise fail every PR.

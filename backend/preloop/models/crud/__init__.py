@@ -139,6 +139,7 @@ from .discovered_agent_candidate import (
 from .discovery_observation import crud_discovery_observation
 from .discovered_extension import crud_discovered_extension
 from .extension_approval import crud_extension_approval
+from .extension_content import crud_extension_content
 from .embedding import CRUDEmbeddingModel, CRUDIssueEmbedding
 from .event import CRUDEvent, crud_event
 from .identity_directory import identity_directory
@@ -598,6 +599,7 @@ __all__ = [
     "crud_tool_cost_flag",
     "crud_discovered_extension",
     "crud_extension_approval",
+    "crud_extension_content",
     "CRUDToolOutputFilter",
     "crud_tool_output_filter",
 ]
