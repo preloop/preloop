@@ -362,11 +362,12 @@ def runner_flow_request(
             payload=payload,
             base_url=base_url,
         )
-    except Exception:
+    except Exception as exc:
+        # Metadata only: an exception message or traceback may carry row data.
         logger.warning(
-            "Runner flow approval context unavailable for %s",
+            "Runner flow approval context unavailable for %s (%s)",
             execution_id,
-            exc_info=True,
+            type(exc).__name__,
         )
         return None, None
     return runner_flow_summary(context), {RUNNER_FLOW_CONTEXT_KEY: context}
