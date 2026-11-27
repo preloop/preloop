@@ -90,20 +90,17 @@ docker compose exec agent preloop login --headless
 docker compose exec agent preloop agents onboard "Claude Code"
 ```
 
-Onboarding creates (or reuses) the agent and its key in Preloop, then prints the change instead of writing it. A shortened example (your block can hold more keys, and the directory name differs):
+The review that opens says so before anything is created in Preloop: the agent's row reads `manual step: settings.json is not writable here` with the reason below it. After you confirm, onboarding creates (or reuses) the agent and its key, then hands the change to you as one step. A shortened example (your block holds more keys, and the directory name differs):
 
 ```text
-Manual setup for Claude Code
-------------------------------------------------------------------------
-The agent and its key now exist in Preloop. Nothing works until the
-change below is in place. The key is shown here once: Preloop cannot
-show it again, only issue a new one.
+  ok  Claude Code   agent and key created in Preloop
+  >>  Claude Code   your turn: 1 file to change
 
-1. /home/jane/.claude/settings.json
-   Claude Code configuration
-   Not writable from here: read-only file system
-   Edit it on the host, probably at: /home/jane/.claude/settings.json
-   Merge these keys into the file and keep everything else:
+Manual step for Claude Code
+  File:  /home/jane/.claude/settings.json (read-only file system)
+  Host:  probably ./state/claude/settings.json
+  Do:    replace it with the prepared file, or merge the block below
+         /home/jane/.preloop/manual-setup/<agent>/settings.json
 
 {
   "env": {
@@ -112,45 +109,34 @@ show it again, only issue a new one.
   }
 }
 
-   Or replace the file with the complete result: /home/jane/.preloop/manual-setup/<agent>/settings.json
-
-Alternative A: environment variables instead of the settings file
-export ANTHROPIC_API_KEY='agt_...'
-export ANTHROPIC_BASE_URL='https://preloop.example.com/anthropic'
-   The same values as a Docker Compose env_file: /home/jane/.preloop/manual-setup/<agent>/preloop.env
-
-Alternative B: load the block per session
-claude --settings '/home/jane/.preloop/manual-setup/<agent>/settings.merge.json'
-
-What this setup and each form does not enable:
-  - Environment variables route model traffic through Preloop and nothing else: no approval hooks, no session hooks and no managed MCP server entry, because those live in settings files.
-  - `claude --settings <file>` applies the whole block, hooks included, but only to sessions started with the flag. A plain `claude` stays unmanaged.
-
-When the change is in place, finish with:
-  preloop agents onboard --resume "Claude Code"
-Guide: https://docs.preloop.ai/guide/clients/sandboxed-agents/
-------------------------------------------------------------------------
-Saved (mode 0600, contains the agent key): /home/jane/.preloop/manual-setup/<agent>
-Delete that directory once the change is in place.
-
 Waiting for local configuration: Claude Code is NOT onboarded yet.
-  Managed agent: <agent id>
-  This pending setup expires 2026-11-29T12:00:00Z; after that Preloop removes the key and what this run created.
-  Cancel instead: preloop agents onboard --cancel "Claude Code"
+  The block holds the agent key. It is shown once.
+  Other ways to apply it, and their limits: --explain or INSTRUCTIONS.txt below.
+  Saved (mode 0600, contains the agent key):
+    /home/jane/.preloop/manual-setup/<agent>
+  This pending setup expires 2026-11-29T12:00:00Z; after that Preloop removes
+  the key and what this run created.
+  Finish:  preloop agents onboard --resume "Claude Code"
+  Cancel:  preloop agents onboard --cancel "Claude Code"
+Press Enter when the change is in place, or type later:
 ```
 
 What to read in that output:
 
-- **Each file** gets its own numbered entry. For a file that exists you get the smallest merge (only the keys to add or change). For a file that does not exist you get the whole file.
-- **Keys to remove** are listed on a `Remove these keys if present:` line when the file holds something that must go.
-- **The key is shown once.** Preloop stores only a placeholder. If you lose it, cancel and onboard again.
-- In a terminal, onboarding then waits: `Press Enter when the change is in place (or type 'later' to stop here and resume another time)`. Without a terminal it stops here with exit status 3.
+- **File** is the file inside the container and why it cannot be written. **Host** is where it probably lives on the host, read from the mount table.
+- **One block is printed.** For a file that exists it is the smallest merge (only the keys to add or change); for a file that does not exist it is the whole file. When more than one file needs a change (a read-only root filesystem, for example), the others are named with the prepared file to use for each; without a directory to save them in, every block is printed.
+- **Keys to remove** are listed on the `Do:` lines when the file holds something that must go.
+- **The key is shown once**, in that one block. Preloop stores only a placeholder. If you lose it, cancel and onboard again.
+- **Other ways** to apply the change are the environment-variable form and `claude --settings <file>`. They, and what each does not enable, are printed by `preloop agents onboard --explain` and are always in `INSTRUCTIONS.txt` in the saved directory.
+- In a terminal, onboarding then waits at `Press Enter when the change is in place, or type later:`. Without a terminal it stops here with exit status 3. Delete the saved directory once the change is in place; `--resume` reminds you.
+
+With several agents in one run, the others are set up first and every manual step is printed at the end, numbered `Manual step 1 of 2`, with one wait for all of them. If a step is still waiting when the command ends and nothing failed, the exit status is 3.
 
 The same content is saved, mode 0600, in a private directory (mode 0700):
 
 | File | Content |
 |------|---------|
-| `INSTRUCTIONS.txt` | The text printed above |
+| `INSTRUCTIONS.txt` | The complete instructions: every file, the environment-variable form, the `claude --settings` form, and what each form does not enable |
 | `settings.merge.json` | Only the keys to merge |
 | `settings.json` | The complete resulting file, ready to copy over the host file (only when the file already exists) |
 | `preloop.env` | The environment-variable form, usable as a Compose `env_file` |
