@@ -1,0 +1,33 @@
+Preloop setup on this machine
+
+  1  Claude Code   model routing, MCP, Agent Control
+                   model: example/model-large (subscription login)
+  2  Codex CLI     model routing, MCP, Agent Control
+                   model: example/model-large (API key)
+  3  Cursor        MCP, session reporting
+                   no model routing: not supported for this agent
+
+  ! Preloop will hold and rotate the Claude Code subscription login. Offboard
+    returns it.
+  ! While routed, Claude Code does not fetch organisation-managed settings or
+    claude.ai connectors.
+  ! Extension report: sends the names, versions, content hashes, descriptions
+    and authors of installed plugins, skills, hooks and commands, then their
+    redacted text for review. Off: --no-report-extensions
+
+  Options: approval hooks off, extension report on, runner off
+  c change   e explain everything   n cancel
+Apply to 3 agents? [Y/n/c/e]:
+  ok  Claude Code   agent and key created in Preloop
+  ok  Codex CLI     agent and key created in Preloop
+  ok  Cursor        agent and key created in Preloop
+  ok  machine       extension report sent: 3 agents, 4 extensions
+
+Onboarded 3 agents.
+  Agent        Status     Reason
+  Claude Code  onboarded  -
+  Codex CLI    onboarded  -
+  Cursor       onboarded  -
+  Report: extension inventory sent. Stop it: --no-report-extensions
+  Again:  preloop agents onboard --agents claude-code,codex-cli,cursor
+          (asks once: a subscription login is never moved with --yes)

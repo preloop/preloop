@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `preloop agents onboard --no-model-routing` onboards MCP only: no model
+  credential is read or imported and no AI model is created. It is the way to
+  onboard Claude Code or Codex CLI without moving a subscription login.
+  `--no-agent-control` leaves out the Agent Control file, plugin and sidecar;
+  the enrollment still counts as applied.
+- `preloop agents onboard --agents <id,id>` selects agents by id (for example
+  `claude-code,codex-cli`), `--name` sets the display name for a run over one
+  agent, and `--runner` installs the runner service as part of the run. The
+  receipt ends with the command that repeats the run without questions.
+- `preloop agents discover --brief` prints one line per agent.
+- `preloop login`: while the browser wait runs, Enter opens the page again
+  and a line says the command is still waiting after a minute. In the
+  copy-and-paste flow an empty line prints the link again instead of failing,
+  and a code the server does not accept can be replaced without starting over.
 - Extension content for review. After `preloop agents discover --report` the
   CLI uploads the redacted text behind each reported extension hash (skill and
   command files, hook commands with their matcher, plugin manifests and the
@@ -247,6 +261,49 @@ or `curl -fsSL 'https://preloop.ai/install/cli?version=1.1.0-rc.1' | sh`.
 
 ### Changed
 
+- **Changed default: onboarding reports installed extensions.** After
+  `preloop agents onboard` sets up at least one agent, it sends the same
+  report as `preloop agents discover --report`, once per run. Until now nothing
+  about installed extensions left the machine unless `--report` or
+  `PRELOOP_DISCOVERY_REPORT=1` asked for it. The review states what is sent
+  before you confirm: the names, versions, content hashes, descriptions and
+  authors of installed plugins, skills, hooks and commands (with the salted
+  machine fingerprint, agent kinds and MCP server counts every report carries),
+  followed by their redacted text for review unless the account or the device
+  has turned that off. Not sent: paths in clear, MCP server names, URLs or
+  arguments, hook arguments, environment values, credential files. Turn it off
+  with `--no-report-extensions` or `PRELOOP_DISCOVERY_REPORT=0`; keep the report
+  and skip the text with `--no-extension-content`. The default also applies
+  under `--yes` and `PRELOOP_CONFIRM=1`. `--unattended` enrollment does not
+  send it. A report that fails (for example because the signed-in role lacks
+  `report_discovery`) is one line and never fails onboarding. `agents discover`
+  itself is unchanged: it reports only with `--report`. See
+  `docs/guide/agent-discovery-reporting.md`.
+  [#2569](https://github.com/preloop/preloop/issues/2569).
+- **CLI prompts:** `preloop agents onboard` asks one question for the whole
+  run instead of three or four per agent. It works out the plan for every agent
+  first, shows it once, and asks `Apply to N agents? [Y/n/c/e]`: Enter applies,
+  `n` cancels ("Nothing was changed."), `e` prints everything, `c` changes the
+  agents, the options, and on request names and models. The name and model
+  questions, the per-agent "Onboard ... now?" question and the questions that
+  followed the confirmation are gone from the default path; each has a flag
+  (`--agents`, `--name`, `--model`, `--no-model-routing`, `--no-agent-control`,
+  `--approvals`, `--report-extensions`, `--runner`, `--explain`, `--plain`).
+  The offer at the end of `agents discover` and of `preloop update` is the
+  same review. A script that types answers into `agents onboard` on a
+  pseudo-terminal needs updating: use `--yes` (or `PRELOOP_CONFIRM=1` without a
+  terminal) and the flags. `--yes`, `PRELOOP_CONFIRM=1`, `--dry-run`,
+  `--unattended`, the exit statuses and the summary's columns and status words
+  are unchanged, a subscription login is still never moved without a person,
+  and without a terminal the command now prints the plan before the same
+  error. [#2565](https://github.com/preloop/preloop/issues/2565).
+- **Installer:** `install-cli.sh` asks one question on a terminal: "Sign in to
+  preloop.ai to set up these agents? [Y] sign in, [s] sign up, [u] use a
+  self-hosted URL, [n] not now". The separate instance URL question and
+  "Onboard discovered agents now?" are gone (the review that follows is that
+  question), the agent listing is one line per agent, and sign-in no longer
+  asks about the runner, which is a row in the review. Unattended installs
+  (`PRELOOP_CONFIRM=1`, or no terminal) behave as before.
 - **CLI output:** `preloop agents onboard` prints less by default. Before the
   confirmation each agent is one row (what will be switched on, the model and
   where its credential comes from) followed by the disclosures that need

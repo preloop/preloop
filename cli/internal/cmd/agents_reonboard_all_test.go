@@ -115,82 +115,15 @@ func TestDiscoverWithNoLocalAgentsStillListsServerOnlyDeviceAgents(t *testing.T)
 	}
 }
 
-func TestPromptToOnboardCandidatesAsksPerOnboardedAgent(t *testing.T) {
-	testenv.SetTempHome(t)
-	// Current agent: accept + name. Outdated agent: decline.
-	input := strings.NewReader("y\n\nn\n")
-	output := &bytes.Buffer{}
-	current := AgentConfig{Name: "Cursor", ConfigPath: "/tmp/cursor.json", IsOnboarded: true}
-	outdated := AgentConfig{
-		Name:                 "Gemini CLI",
-		ConfigPath:           "/tmp/gemini.json",
-		IsOnboarded:          true,
-		ReonboardRecommended: true,
-		DriftReasons:         []string{"Agent Control plugin or config is missing or outdated."},
-	}
-	var enrolled []string
-	outcomes, err := promptToOnboardCandidates(input, output, []AgentConfig{current, outdated}, false, false, func(a AgentConfig, _ bool) error {
-		enrolled = append(enrolled, a.Name)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rendered := output.String()
-	for _, want := range []string{
-		"Cursor (Cursor) is onboarded and current. Re-onboard to refresh its MCP config, hooks and plugins, then re-test?",
-		"Gemini CLI is onboarded but outdated:",
-		"  - Agent Control plugin or config is missing or outdated.",
-		"Update Gemini CLI (Gemini CLI): MCP config, hooks and agent-control plugin, then re-test?",
-	} {
-		if !strings.Contains(rendered, want) {
-			t.Fatalf("missing %q in %q", want, rendered)
-		}
-	}
-	if len(enrolled) != 1 || enrolled[0] != "Cursor" {
-		t.Fatalf("only the accepted agent re-onboards, got %v", enrolled)
-	}
-	if len(outcomes) != 2 || outcomes[1].Status != agentOnboardingStatusUnchanged ||
-		!strings.Contains(outcomes[1].Reason, "outdated") {
-		t.Fatalf("declined outdated agent must be reported unchanged/outdated, got %#v", outcomes)
-	}
-}
-
-func TestPromptToOnboardCandidatesYesReonboardsEveryAgent(t *testing.T) {
-	testenv.SetTempHome(t)
-	output := &bytes.Buffer{}
-	agents := []AgentConfig{
-		{Name: "Cursor", ConfigPath: "/tmp/cursor.json", IsOnboarded: true},
-		{Name: "Gemini CLI", ConfigPath: "/tmp/gemini.json", IsOnboarded: true, ReonboardRecommended: true, DriftReasons: []string{"stale"}},
-		{Name: "Codex CLI", ConfigPath: "/tmp/codex.toml"},
-	}
-	count := 0
-	outcomes, err := promptToOnboardCandidates(strings.NewReader(""), output, agents, true, false, func(AgentConfig, bool) error {
-		count++
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 3 || len(outcomes) != 3 {
-		t.Fatalf("--yes must re-onboard all agents, enrolled %d outcomes %#v", count, outcomes)
-	}
-	rendered := output.String()
-	if !strings.Contains(rendered, "Refreshing Cursor (already onboarded).") ||
-		!strings.Contains(rendered, "Updating outdated Gemini CLI: stale") {
-		t.Fatalf("unexpected --yes output %q", rendered)
-	}
-}
-
 func TestOnboardingSummaryListsEveryAgent(t *testing.T) {
 	discovered := []AgentConfig{
 		{Name: "Cursor", ConfigPath: "/tmp/cursor.json"},
 		{Name: "Codex CLI", ConfigPath: "/tmp/codex.toml"},
 	}
-	outcomes := outcomesFromBestEffort(
-		[]AgentConfig{discovered[0]},
-		[]agentOnboardingFailure{{Agent: discovered[1], Err: errors.New("boom\nmore")}},
-	)
+	outcomes := []agentOnboardingOutcome{
+		classifyAgentOnboardingOutcome(discovered[0], nil),
+		classifyAgentOnboardingOutcome(discovered[1], errors.New("boom\nmore")),
+	}
 	all := completeDiscoveryOutcomes(discovered, outcomes)
 	codex := AgentConfig{Name: "Codex CLI", ConfigPath: "/tmp/codex.toml"}
 	items := []managedAgentSummary{

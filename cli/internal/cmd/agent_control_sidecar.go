@@ -198,7 +198,8 @@ func preflightClaudeAgentControlNode(agent AgentConfig) error {
 // (forced, or chosen because a target is not writable) does not install
 // the runtime plugin, so it skips the Node check, as the apply step does.
 func preflightLocalAgentPrerequisites(agent AgentConfig, opts managedEnrollmentOptions) error {
-	if !isClaudeCodeAgent(agent) || opts.ForceManual {
+	if !isClaudeCodeAgent(agent) || opts.ForceManual || opts.NoAgentControl {
+		// --no-agent-control installs no plugin, so nothing needs Node.
 		return nil
 	}
 	if len(runWritabilityPreflight(onboardingWriteTargets(agent, opts)).blocked()) > 0 {

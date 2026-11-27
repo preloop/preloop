@@ -18,6 +18,7 @@
 #   OUT=dir cli/scripts/measure-onboarding.sh          where transcripts go
 #   RIG_DIR=path/to/sandboxed-agent-rig ...            measure another checkout
 #   MAX_INTERACTIONS=1 MAX_ROWS_BEFORE=18 ...          fail above a threshold
+#   MAX_INTERACTIONS=writable=1,ro-settings=2 ...      one threshold per variant
 #
 # It never contacts a real provider or a hosted Preloop, and sends no
 # telemetry.
@@ -141,6 +142,21 @@ import json, sys
 
 out, max_interactions, max_rows = sys.argv[1], sys.argv[2], sys.argv[3]
 failures = []
+
+
+def limit(spec, variant):
+    """A threshold is one number, or variant=number pairs separated by commas."""
+    if not spec:
+        return None
+    if "=" not in spec:
+        return int(spec)
+    for pair in spec.split(","):
+        name, _, value = pair.partition("=")
+        if name.strip() == variant:
+            return int(value)
+    return None
+
+
 print()
 print("%-12s %12s %12s %10s %12s %16s %5s" % (
     "variant", "interactions", "rows before", "rows total", "longest line",
@@ -156,10 +172,12 @@ for variant in sys.argv[4:]:
         variant, data["interactions"], "-" if before is None else before,
         data["rows_total"], data["longest_line"],
         "-" if seconds is None else seconds, data["exit_status"]))
-    if max_interactions and data["interactions"] > int(max_interactions):
-        failures.append(f"{variant}: {data['interactions']} interactions, limit {max_interactions}")
-    if max_rows and before is not None and before > int(max_rows):
-        failures.append(f"{variant}: {before} rows before the decision, limit {max_rows}")
+    most = limit(max_interactions, variant)
+    if most is not None and data["interactions"] > most:
+        failures.append(f"{variant}: {data['interactions']} interactions, limit {most}")
+    most = limit(max_rows, variant)
+    if most is not None and (before is None or before > most):
+        failures.append(f"{variant}: {before} rows before the decision, limit {most}")
 print()
 print(f"Transcripts (keys redacted) and raw measurements: {out}/")
 for failure in failures:

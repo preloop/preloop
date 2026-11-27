@@ -556,19 +556,3 @@ func runManualSetupSubcommand(cmd *cobra.Command, args []string) (bool, error) {
 		SkipLiveValidate: skipLive || !liveValidate,
 	}, os.Stdout)
 }
-
-// splitWaitingForManualSetup separates real failures from agents that only
-// wait for the user's local change.
-func splitWaitingForManualSetup(failures []agentOnboardingFailure) ([]agentOnboardingFailure, int) {
-	var real []agentOnboardingFailure
-	waiting := 0
-	for _, failure := range failures {
-		var pending *manualApplyPendingError
-		if errors.As(failure.Err, &pending) {
-			waiting++
-			continue
-		}
-		real = append(real, failure)
-	}
-	return real, waiting
-}

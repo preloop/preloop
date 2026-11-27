@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -74,94 +73,5 @@ func TestPartitionCandidatesByModelRouting(t *testing.T) {
 	}
 	if len(reasons) != 1 || reasons[0] != mcpOnlySupportLabel {
 		t.Fatalf("expected parallel mcp-only reason, got %#v", reasons)
-	}
-}
-
-func TestPromptToOnboardCandidatesTiered_AutoApproveOrdersVerifiedFirst(t *testing.T) {
-	output := &bytes.Buffer{}
-	// Discovery order deliberately lists the MCP-only agent first.
-	candidates := []AgentConfig{
-		{Name: "Cursor", ConfigPath: "/tmp/mcp.json"},
-		{Name: "OpenClaw", ConfigPath: "/tmp/openclaw.json", AuthState: string(agentAuthStateReady)},
-	}
-
-	var enrolledOrder []string
-	outcomes, err := promptToOnboardCandidatesTiered(
-		strings.NewReader(""),
-		output,
-		nil,
-		candidates,
-		true,
-		false,
-		func(agent AgentConfig, _ bool) error {
-			enrolledOrder = append(enrolledOrder, agent.Name)
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(outcomes) != 2 {
-		t.Fatalf("expected both agents onboarded under --yes, got %#v", outcomes)
-	}
-	if len(enrolledOrder) != 2 || enrolledOrder[0] != "OpenClaw" || enrolledOrder[1] != "Cursor" {
-		t.Fatalf("expected verified agent first, got %v", enrolledOrder)
-	}
-	rendered := output.String()
-	if !strings.Contains(rendered, "lack automatic model-routing support or usable provider credentials") {
-		t.Fatalf("expected tier explanation, got %q", rendered)
-	}
-	if !strings.Contains(rendered, "Cursor: "+mcpOnlySupportLabel) {
-		t.Fatalf("expected per-agent reason, got %q", rendered)
-	}
-	if !strings.Contains(rendered, "Onboarding them as well") {
-		t.Fatalf("expected --yes continuation note, got %q", rendered)
-	}
-	// The explanation must precede the second-tier enrollment, i.e. appear
-	// after the first tier's heading.
-	if strings.Index(rendered, "model-routing support and available credentials first") > strings.Index(rendered, "lack automatic model-routing support or usable provider credentials") {
-		t.Fatalf("expected tier-1 heading before tier-2 explanation, got %q", rendered)
-	}
-}
-
-func TestPromptToOnboardCandidatesTiered_InteractiveTwoStepAsk(t *testing.T) {
-	output := &bytes.Buffer{}
-	candidates := []AgentConfig{
-		{Name: "Cursor", ConfigPath: "/tmp/mcp.json"},
-		{Name: "OpenClaw", ConfigPath: "/tmp/openclaw.json", AuthState: string(agentAuthStateReady)},
-	}
-
-	// OpenClaw (tier 1): confirm yes + keep default name. Cursor (tier 2):
-	// decline after the explanation.
-	input := strings.NewReader("y\n\nn\n")
-	var enrolledOrder []string
-	outcomes, err := promptToOnboardCandidatesTiered(
-		input,
-		output,
-		nil,
-		candidates,
-		false,
-		false,
-		func(agent AgentConfig, _ bool) error {
-			enrolledOrder = append(enrolledOrder, agent.Name)
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(enrolledOrder) != 1 || enrolledOrder[0] != "OpenClaw" {
-		t.Fatalf("expected only the verified agent enrolled, got %v", enrolledOrder)
-	}
-	if len(outcomes) != 2 || outcomes[0].Agent.Name != "OpenClaw" || outcomes[1].Status != "skipped" {
-		t.Fatalf("expected OpenClaw and declined Cursor outcomes, got %#v", outcomes)
-	}
-	rendered := output.String()
-	if !strings.Contains(rendered, "lack automatic model-routing support or usable provider credentials") ||
-		!strings.Contains(rendered, "Onboard anyway?") {
-		t.Fatalf("expected interactive tier-2 explanation, got %q", rendered)
-	}
-	if !strings.Contains(rendered, "Onboard Cursor (Cursor) into managed Preloop access now?") {
-		t.Fatalf("expected tier-2 per-agent prompt after the explanation, got %q", rendered)
 	}
 }

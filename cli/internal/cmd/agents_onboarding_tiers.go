@@ -5,10 +5,6 @@ package cmd
 // A direct gateway route/accounting probe runs separately after onboarding.
 
 import (
-	"bufio"
-	"fmt"
-	"io"
-
 	"github.com/preloop/preloop/cli/internal/api"
 )
 
@@ -56,80 +52,4 @@ func partitionCandidatesByModelRouting(
 		reasons = append(reasons, reason)
 	}
 	return verified, unverified, reasons
-}
-
-// printModelRoutingTierExplanation introduces the tier-2 group once per run,
-// before any of its agents are onboarded or prompted for.
-func printModelRoutingTierExplanation(
-	writer io.Writer,
-	unverified []AgentConfig,
-	reasons []string,
-	autoApprove bool,
-) {
-	if len(unverified) == 0 {
-		return
-	}
-	fmt.Fprintln( //nolint:errcheck
-		writer,
-		"\nThese agents lack automatic model-routing support or usable provider credentials; application behavior unverified:",
-	)
-	for i, agent := range unverified {
-		reason := ""
-		if i < len(reasons) {
-			reason = reasons[i]
-		}
-		if reason == "" {
-			reason = "model-routing credentials are not ready"
-		}
-		fmt.Fprintf(writer, "  - %s: %s\n", resolveAgentDisplayName(agent), reason) //nolint:errcheck
-	}
-	if autoApprove {
-		fmt.Fprintln( //nolint:errcheck
-			writer,
-			"Onboarding them as well: supported integrations will be configured. Only calls routed through the managed MCP entry reach Preloop; application behavior unverified.",
-		)
-		return
-	}
-	fmt.Fprintln( //nolint:errcheck
-		writer,
-		"Onboarding configures supported integrations. Only calls routed through the managed MCP entry reach Preloop; application behavior unverified. Onboard anyway?",
-	)
-}
-
-// promptToOnboardCandidatesTiered wraps promptToOnboardCandidates with the
-// two-tier ordering: verified-model-routing agents first, then the
-// MCP-only/unverified tier behind its explanation. A single buffered reader is
-// shared across both passes so no interactive input is lost between them
-// (bufio.NewReader returns an existing *bufio.Reader unchanged).
-func promptToOnboardCandidatesTiered(
-	reader io.Reader,
-	writer io.Writer,
-	client *api.Client,
-	candidates []AgentConfig,
-	autoApprove bool,
-	askApprovals bool,
-	enroll func(agent AgentConfig, approvals bool) error,
-	preflight ...func(agent AgentConfig) error,
-) ([]agentOnboardingOutcome, error) {
-	verified, unverified, reasons := partitionCandidatesByModelRouting(client, candidates)
-	bufferedReader := bufio.NewReader(reader)
-
-	if len(verified) > 0 && len(unverified) > 0 {
-		fmt.Fprintf( //nolint:errcheck
-			writer,
-			"Onboarding %d agent(s) with model-routing support and available credentials first (application behavior unverified).\n",
-			len(verified),
-		)
-	}
-	outcomes, err := promptToOnboardCandidates(bufferedReader, writer, verified, autoApprove, askApprovals, enroll, preflight...)
-	if err != nil {
-		return outcomes, err
-	}
-	if len(unverified) == 0 {
-		return outcomes, nil
-	}
-	printModelRoutingTierExplanation(writer, unverified, reasons, autoApprove)
-	secondTier, err := promptToOnboardCandidates(bufferedReader, writer, unverified, autoApprove, askApprovals, enroll, preflight...)
-	outcomes = append(outcomes, secondTier...)
-	return outcomes, err
 }

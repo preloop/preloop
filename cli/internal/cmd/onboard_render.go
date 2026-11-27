@@ -257,7 +257,12 @@ func agentPlanSummary(agent agentPlan) string {
 			on = append(on, capabilityLabel(item.ID))
 		}
 	}
-	if len(on) == 0 {
+	switch {
+	case agent.pending != nil:
+		return "finishes the manual setup that is waiting"
+	case agent.planErr != nil:
+		return "cannot be set up"
+	case len(on) == 0:
 		return "nothing to configure"
 	}
 	return strings.Join(on, ", ")
@@ -360,7 +365,8 @@ func (r *plainRenderer) Plan(w io.Writer, plan onboardPlan, sel onboardSelection
 		writeWrapped(w, "  ", "  ", plan.OptionsLine, width)
 	}
 	for _, line := range plan.OptionNotes {
-		writeWrapped(w, "  ", "    ", line, width)
+		// Printed as written: the spacing separates the keys.
+		fmt.Fprintln(w, "  "+line) //nolint:errcheck
 	}
 }
 
@@ -454,11 +460,32 @@ func (r *plainRenderer) Receipt(w io.Writer, plan onboardPlan, outcomes []agentR
 		writeWrapped(w, "  Undo:   ", "          ", "preloop agents offboard "+quoted, width)
 	}
 	for _, line := range plan.ReceiptLines {
-		writeWrapped(w, "  ", "          ", line, width)
+		writeClosingLine(w, line, width)
 	}
 }
 
 const agentTypeLabelForBilling = "Claude Code"
+
+// closingLine builds a labelled line for the end of the receipt.
+func closingLine(label, text string) string {
+	return label + "\t" + text
+}
+
+// writeClosingLine prints a receipt line: the label padded so the texts
+// line up under each other, and long text wrapped under its own start. A
+// command is printed on one line whatever its length: broken across lines
+// it could not be pasted into a shell.
+func writeClosingLine(w io.Writer, line string, width int) {
+	label, text, labelled := strings.Cut(line, "\t")
+	if !labelled {
+		label, text = "", line
+	}
+	if strings.HasPrefix(text, "preloop ") {
+		fmt.Fprintln(w, "  "+padRight(label, 8)+text) //nolint:errcheck
+		return
+	}
+	writeWrapped(w, "  "+padRight(label, 8), strings.Repeat(" ", 10), text, width)
+}
 
 // configFileLabel names a configuration file the way a step line does.
 func configFileLabel(path string) string {

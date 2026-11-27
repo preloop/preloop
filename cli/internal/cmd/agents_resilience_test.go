@@ -12,7 +12,7 @@ import (
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
-func TestPromptToOnboardCandidatesContinuesOnError(t *testing.T) {
+func TestOnboardRunContinuesOnError(t *testing.T) {
 	// The Node prerequisite runs first; satisfy it to reach the checks below.
 	stubSupportedAgentControlNode(t)
 	candidates := []AgentConfig{
@@ -69,22 +69,10 @@ func TestPromptToOnboardCandidatesContinuesOnError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var attempted []string
-			var output bytes.Buffer
-			outcomes, err := promptToOnboardCandidates(
-				bytes.NewBuffer(nil),
-				&output,
-				candidates,
-				true,  // autoApprove: skip interactive prompts
-				false, // askApprovals
-				func(agent AgentConfig, _ bool) error {
-					attempted = append(attempted, agent.Name)
-					return tt.enrollErrors[agent.Name]
-				},
-			)
-			if err != nil {
-				t.Fatalf("expected no loop-level error, got %v", err)
-			}
+			fake := newFakeOnboardRun(t, candidates, defaultOnboardSelection(), "", true)
+			fake.applyErrors = tt.enrollErrors
+			outcomes, _, _ := fake.run.apply(fake.run.plan())
+			attempted := fake.applied
 			if got := strings.Join(attempted, ","); got != "Codex CLI,Claude Code,Gemini CLI" {
 				t.Fatalf("expected all candidates attempted in order, got %v", attempted)
 			}

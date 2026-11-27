@@ -179,7 +179,7 @@ func collectDiscoveryInventoryReport(salt, deviceRef string, allUsers bool, proj
 			return discoveryReportRequest{}, scan, errors.New("could not determine current profile")
 		}
 		ref := inventoryProfileRef(salt, workstationFingerprint(salt, machineID), home)
-		scan.Profiles = []inventoryProfileResult{{ProfileRef: ref, Completeness: scan.Completeness}}
+		scan.Profiles = []inventoryProfileResult{currentProfileResult(ref, scan.Completeness)}
 		for i := range scan.Apps {
 			scan.Apps[i].ProfileRef = ref
 		}
@@ -204,6 +204,19 @@ func collectDiscoveryInventoryReport(salt, deviceRef string, allUsers bool, proj
 	}
 	report.Evidence.EndedAt = inventoryProbes.Now().UTC()
 	return report, scan, nil
+}
+
+// currentProfileResult is the profile entry of a current-user report. The
+// server refuses a profile whose completeness and error code disagree, so a
+// scan that is not complete (a probe that could not finish, as happens in a
+// container) has to say why; without the code the whole report was
+// rejected with a 422.
+func currentProfileResult(ref, completeness string) inventoryProfileResult {
+	result := inventoryProfileResult{ProfileRef: ref, Completeness: completeness}
+	if completeness != "complete" {
+		result.ErrorCode = "probe_incomplete"
+	}
+	return result
 }
 
 func inventoryConfiguredState(app inventoryApp) string {

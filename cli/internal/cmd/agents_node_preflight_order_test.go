@@ -139,53 +139,69 @@ func TestClaudeNodeNotFoundKeepsInstallAdvice(t *testing.T) {
 	}
 }
 
+// withPrerequisiteCheck makes the stand-in planning of a fake run check
+// local prerequisites first, as planManagedEnrollment does.
+func withPrerequisiteCheck(fake *fakeOnboardRun) {
+	plan := fake.run.planAgent
+	fake.run.planAgent = func(agent AgentConfig, opts managedEnrollmentOptions) (*enrollmentPlanState, error) {
+		if err := preflightLocalAgentPrerequisites(agent, opts); err != nil {
+			return nil, err
+		}
+		return plan(agent, opts)
+	}
+}
+
 func TestBatchOnboardNodePreflightRunsBeforePrompts(t *testing.T) {
-	home := testenv.SetTempHome(t)
 	stubNodeOffPath(t)
-	agent := AgentConfig{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}
-	mustWriteRecoveryFile(t, agent.ConfigPath, `{}`)
-	other := AgentConfig{Name: "Example Agent", ConfigPath: filepath.Join(home, ".example", "config.json")}
-	var out bytes.Buffer
-	var enrolled []string
-	outcomes, err := promptToOnboardCandidates(strings.NewReader("y\n\n"), &out, []AgentConfig{agent, other}, false, false,
-		func(a AgentConfig, _ bool) error { enrolled = append(enrolled, a.Name); return nil },
-		func(a AgentConfig) error { return preflightLocalAgentPrerequisites(a, managedEnrollmentOptions{}) })
-	if err != nil {
-		t.Fatal(err)
+	present := string(agentRuntimeStatePresent)
+	fake := newFakeOnboardRun(t, []AgentConfig{
+		{Name: "Claude Code", ConfigPath: "/tmp/synthetic/claude/settings.json", RuntimeState: present, AuthState: string(agentAuthStateReady)},
+		{Name: "Cursor", ConfigPath: "/tmp/synthetic/cursor/mcp.json", RuntimeState: present},
+	}, defaultOnboardSelection(), "\n", false)
+	withPrerequisiteCheck(fake)
+	if err := fake.run.execute(); err != nil {
+		t.Fatalf("the other agent onboarded, so the run succeeds: %v", err)
 	}
-	printed := out.String()
-	if strings.Contains(printed, "Onboard Claude Code") {
-		t.Fatalf("Claude Code was prompted before its failed prerequisite:\n%s", printed)
+	printed := fake.out.String()
+	question := strings.Index(printed, "Apply to 1 agent? [Y/n/c/e]:")
+	prerequisite := strings.Index(printed, "Node.js 20 or newer")
+	if prerequisite < 0 || question < prerequisite {
+		t.Fatalf("the failed prerequisite must be in the review, before the one question:\n%s", printed)
 	}
-	if !strings.Contains(printed, "Node.js 20 or newer") {
-		t.Fatalf("missing prerequisite error:\n%s", printed)
+	if len(fake.applied) != 1 || fake.applied[0] != "Cursor" {
+		t.Fatalf("applied = %v, want only the other agent", fake.applied)
 	}
-	if len(outcomes) != 2 || outcomes[0].Status != agentOnboardingStatusFailed {
-		t.Fatalf("outcomes = %+v", outcomes)
-	}
-	if len(enrolled) != 1 || enrolled[0] != "Example Agent" {
-		t.Fatalf("enrolled = %v, want only the other agent", enrolled)
+	if !strings.Contains(strings.Join(strings.Fields(printed), " "), "Claude Code failed") {
+		t.Fatalf("the summary does not show the failed agent:\n%s", printed)
 	}
 }
 
 func TestBatchOnboardManualSkipsNodePreflight(t *testing.T) {
-	home := testenv.SetTempHome(t)
 	stubNodeOffPath(t)
-	agent := AgentConfig{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}
-	mustWriteRecoveryFile(t, agent.ConfigPath, `{}`)
-	opts := managedEnrollmentOptions{ForceManual: true}
-	var out bytes.Buffer
-	var enrolled []string
-	outcomes, err := promptToOnboardCandidates(strings.NewReader("y\n\n"), &out, []AgentConfig{agent}, false, false,
-		func(a AgentConfig, _ bool) error { enrolled = append(enrolled, a.Name); return nil },
-		func(a AgentConfig) error { return preflightLocalAgentPrerequisites(a, opts) })
-	if err != nil {
+	fake := newFakeOnboardRun(t, []AgentConfig{
+		{Name: "Claude Code", ConfigPath: "/tmp/synthetic/claude/settings.json", RuntimeState: string(agentRuntimeStatePresent), AuthState: string(agentAuthStateReady)},
+	}, defaultOnboardSelection(), "\n", false)
+	fake.run.base.ForceManual = true
+	withPrerequisiteCheck(fake)
+	if err := fake.run.execute(); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), "Node.js") {
-		t.Fatalf("--manual must not require Node:\n%s", out.String())
+	if strings.Contains(fake.out.String(), "Node.js") {
+		t.Fatalf("--manual must not require Node:\n%s", fake.out.String())
 	}
-	if len(enrolled) != 1 || len(outcomes) != 1 || outcomes[0].Status == agentOnboardingStatusFailed {
-		t.Fatalf("manual onboarding did not proceed: enrolled=%v outcomes=%+v", enrolled, outcomes)
+	if len(fake.applied) != 1 {
+		t.Fatalf("manual onboarding did not proceed: applied=%v\n%s", fake.applied, fake.out.String())
+	}
+}
+
+// --no-agent-control installs no plugin, so it does not need Node either.
+func TestNoAgentControlSkipsNodePreflight(t *testing.T) {
+	stubNodeOffPath(t)
+	agent := AgentConfig{Name: "Claude Code", ConfigPath: "/tmp/synthetic/claude/settings.json"}
+	if err := preflightLocalAgentPrerequisites(agent, managedEnrollmentOptions{NoAgentControl: true}); err != nil {
+		t.Fatalf("--no-agent-control must not require Node: %v", err)
+	}
+	if err := preflightLocalAgentPrerequisites(agent, managedEnrollmentOptions{}); err == nil {
+		t.Fatal("the fixture should lack Node without the flag")
 	}
 }

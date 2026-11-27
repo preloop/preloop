@@ -149,10 +149,17 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 	if err != nil {
 		return err
 	}
+	// After a review, the questions that used to follow the confirmation
+	// take the answer they take under --yes.
+	answered := opts.AutoApprove || opts.Reviewed
+	subOpts := opts
+	subOpts.AutoApprove = answered
 	if manualDecision.Manual {
-		manualDecision.BundleDir = resolveManualBundleDir(agent, opts, manualDecision.Report, input, output)
-	} else if err := preflightClaudeAgentControlNode(agent); err != nil {
-		return err
+		manualDecision.BundleDir = resolveManualBundleDir(agent, subOpts, manualDecision.Report, input, output)
+	} else if !opts.NoAgentControl {
+		if err := preflightClaudeAgentControlNode(agent); err != nil {
+			return err
+		}
 	}
 
 	// From the first server-side change until the enrollment is recorded, a
@@ -201,7 +208,7 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 	prepared, existingManaged, err := ensureManagedAgentIdentityReady(
 		client,
 		agent,
-		opts.AutoApprove,
+		answered,
 		agentsNoReuseIdentity,
 		input,
 		output,
@@ -244,7 +251,7 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 
 	var aiModelNotes []string
 	modelBindings := make([]managedAgentModelBindingSyncItem, 0)
-	if strings.EqualFold(strings.TrimSpace(agent.Name), "openclaw") && !selectedOpenClawModel {
+	if strings.EqualFold(strings.TrimSpace(agent.Name), "openclaw") && !selectedOpenClawModel && plannedOpenClaw != nil {
 		parsed := plannedOpenClaw
 		// The reviewed snapshot is the only source of imported credentials.
 
@@ -268,7 +275,7 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 	if err != nil {
 		return err
 	}
-	plan, err = maybeRemoveStaleOpenClawPluginEntries(plan, agent, opts, input, output)
+	plan, err = maybeRemoveStaleOpenClawPluginEntries(plan, agent, subOpts, input, detail)
 	if err != nil {
 		return err
 	}
@@ -391,15 +398,17 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 	// under ~/.preloop, so it is deferred when either cannot be written.
 	plan.ControlFileDeferred = manualDecision.Manual &&
 		(!manualDecision.Report.writable(writeRoleControl) || !manualDecision.Report.writable(writeRoleState))
-	plan, err = applyManagedAgentControlConfig(
-		plan,
-		baseURL,
-		credentialResp,
-		managedAgent,
-		runtimeSession,
-	)
-	if err != nil {
-		return err
+	if !opts.NoAgentControl {
+		plan, err = applyManagedAgentControlConfig(
+			plan,
+			baseURL,
+			credentialResp,
+			managedAgent,
+			runtimeSession,
+		)
+		if err != nil {
+			return err
+		}
 	}
 	if len(modelBindings) > 0 {
 		if _, err := syncManagedAgentModelBindings(client, managedAgent.ID, modelBindings); err != nil {
@@ -478,7 +487,7 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 		if err := seedClaudeDesktopGatewayCredential(client, credentialResp); err != nil {
 			fmt.Fprintf(detail, "  Warning: could not pre-seed the Claude Desktop credential helper: %v\n", err) //nolint:errcheck
 		}
-		routeResult := applyClaudeDesktopModelRoute(input, output, baseURL, opts.AutoApprove)
+		routeResult := applyClaudeDesktopModelRoute(input, output, baseURL, answered)
 		claudeDesktopRoute = &routeResult
 		routeNotes := detail
 		if !routeResult.Routed() {
@@ -539,8 +548,11 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 			fmt.Fprintf(detail, "  Warning: Copilot CLI usage hooks not installed: %v\n", err) //nolint:errcheck
 		}
 	}
-	pluginInstallResult := agentControlRuntimePluginInstaller(agent, detail)
-	maybeEnableCodexSidecarOnOnboard(agent, opts, pluginInstallResult, detail)
+	pluginInstallResult := map[string]interface{}{}
+	if !opts.NoAgentControl {
+		pluginInstallResult = agentControlRuntimePluginInstaller(agent, detail)
+		maybeEnableCodexSidecarOnOnboard(agent, opts, pluginInstallResult, detail)
+	}
 	gatewayRestartResult := restartHermesGatewayAfterReconfig(agent, detail)
 	if err := saveLocalEnrollmentState(backupState); err != nil {
 		return err
@@ -566,6 +578,10 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 		validationResult,
 		defaultManagedLiveValidationResult(agent),
 	)
+	if opts.NoAgentControl && supportsAgentControlChannel(agent) {
+		// Chosen, not broken: the enrollment is complete without the channel.
+		validationResult["control_channel_declined"] = true
+	}
 	if plan.MCPConfigSkipped {
 		// The MCP-config step was deliberately skipped (Claude Desktop
 		// without npx/node for the mcp-remote bridge). Record it so the
@@ -614,7 +630,7 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 		}
 		return controlErr
 	}
-	if supportsAgentControlChannel(agent) {
+	if supportsAgentControlChannel(agent) && !opts.NoAgentControl {
 		switch {
 		case validationResult["control_plugin_verified"] == true:
 			ui.step(stepControl, stepStatusOK, "Agent Control plugin installed")
@@ -635,9 +651,12 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 	// ``--yes``, ``--all``, ``PRELOOP_CONFIRM`` and the discover-driven
 	// onboarding path to silently skip live validation, leaving every
 	// enrollment stuck on "Live check not run" in the UI.
+	// --no-model-routing leaves nothing to probe: no model call goes through
+	// the gateway.
 	requestedLiveValidation := opts.LiveValidate &&
 		!opts.SkipLiveValidate &&
 		!opts.DeferLiveValidate &&
+		!opts.NoModelRouting &&
 		supportsManagedLiveValidation(agent)
 	// When the orchestrator deferred live validation to the post-onboarding
 	// parallel phase we surface a ``pending`` placeholder in the immediate
@@ -648,6 +667,7 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 	deferredForParallelRun := opts.LiveValidate &&
 		!opts.SkipLiveValidate &&
 		opts.DeferLiveValidate &&
+		!opts.NoModelRouting &&
 		supportsManagedLiveValidation(agent)
 	if deferredForParallelRun {
 		validationResult["live_validation_status"] = "pending"
@@ -658,18 +678,23 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 	// live check turns it into an opaque 403. Dry runs returned right after
 	// printing the plan, so only the confirmation flags decide interactivity.
 	if managedGatewayEnabled && strings.TrimSpace(plan.ManagedModelAlias) != "" {
-		interactiveAllowlist := !opts.AutoApprove &&
+		allowlist := allowedModelNote
+		if opts.AddAllowedModel {
+			allowlist = allowedModelAdd
+		} else if !answered &&
 			!opts.SkipConfirmation &&
 			!nonInteractiveAutoConfirm() &&
-			stdinIsTerminal()
-		if err := ensureSelectedModelAllowed(
+			stdinIsTerminal() {
+			allowlist = allowedModelAsk
+		}
+		if err := ensureSelectedModelAllowedMode(
 			client,
 			managedAgent.ID,
 			plan.ManagedModelAlias,
 			gatewayHints.SelectedAIModel,
 			input,
 			output,
-			interactiveAllowlist,
+			allowlist,
 		); err != nil {
 			return err
 		}

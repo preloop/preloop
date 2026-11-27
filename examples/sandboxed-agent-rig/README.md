@@ -12,6 +12,7 @@ Guide for users: [Sandboxed and containerised agents](../../docs/guide/clients/s
 
 | Variant | Settings file | `~/.preloop` | Claude login | Shows |
 | --- | --- | --- | --- | --- |
+| `writable` | writable volume | writable volume | done inside the container (credentials file) | the ordinary case: one review, one Enter, step lines, receipt, extension report, one real request; cancelling changes nothing; no terminal prints the plan and refuses |
 | `ro-settings` | single file bind-mounted read-only from the host | writable volume | done inside the container (credentials file) | manual merge, resume that names what is missing, a trailing comma located by line, one real request, discovery report, offboard with printed removal |
 | `ro-everything` | read-only bind mount, read-only root filesystem | not writable | `CLAUDE_CODE_OAUTH_TOKEN` in the environment | resume token, `--manual-output`, the environment-variable form with `--from-env` |
 | `wrong-owner` | writable mount, file owned by another uid (0644) | writable volume | none (API key upstream) | `permission denied (owned by uid 0, running as uid 10001)` |
@@ -25,7 +26,7 @@ typical host user.
 
 ```bash
 ./run.sh                 # all variants
-./run.sh ro-settings     # one variant
+./run.sh ro-settings     # one variant (writable, ro-settings, ro-everything, wrong-owner, no-login, stale-login)
 KEEP=1 ./run.sh          # leave the stack up to look around
 ```
 
@@ -51,12 +52,16 @@ columns wide, answers each prompt with its default, and prints the number of
 interactions, the rows printed before the apply decision, the total rows, the
 longest line and the seconds from the first prompt to the gateway probe
 result. It covers an ordinary writable home (the `agent-writable` container)
-and `ro-settings`.
+and `ro-settings`. Given thresholds it exits non-zero when onboarding asks
+more questions or the review grows past them, so it can gate a CI job.
 
 ```bash
 cli/scripts/measure-onboarding.sh
-MAX_INTERACTIONS=4 MAX_ROWS_BEFORE=18 cli/scripts/measure-onboarding.sh writable
+MAX_INTERACTIONS=writable=1,ro-settings=2 MAX_ROWS_BEFORE=18 cli/scripts/measure-onboarding.sh
 ```
+
+The `writable` container installs the Agent Control plugin from the npm
+registry, so that variant needs network access to it.
 
 ## What is real and what is mocked
 
