@@ -18,6 +18,29 @@ import { getApprovalRepository } from '../utils/approval-identity';
 import './repository-chip';
 import type { ToolRow } from '../utils/session-turns';
 
+/** How a native hook's recorded decision reads in a tool header. */
+const NATIVE_DECISION_LABELS: Record<
+  NonNullable<SessionTool['decision']>,
+  string
+> = {
+  allowed: 'Allowed',
+  denied: 'Denied',
+  approved: 'Approved',
+  declined: 'Declined',
+  timed_out: 'Timed out',
+};
+
+/**
+ * The state word of a captured tool header. A native hook row records the
+ * policy decision before the harness runs the call, so it says so; the
+ * harness's own row for the same call keeps its lifecycle word (#2561).
+ */
+function capturedStateLabel(captured: SessionTool): string {
+  if (captured.decision)
+    return `Policy decision: ${NATIVE_DECISION_LABELS[captured.decision]}`;
+  return captured.phase === 'requested' ? 'Tool requested' : captured.phase;
+}
+
 /**
  * One tool invocation, in chronological context, without opening anything.
  *
@@ -493,9 +516,9 @@ ${text}</pre>`
     >
       <summary>
         ${captured.name} ·
-        ${captured.phase === 'requested' ? 'Tool requested' : captured.phase}${
+        ${capturedStateLabel(captured)}${
           captured.durationMs !== undefined
-            ? ` · ${(captured.durationMs / 1000).toFixed(1)}s`
+            ? ` · ${formatDuration(captured.durationMs)}`
             : ''
         }
         ${

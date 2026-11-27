@@ -16,7 +16,23 @@ export interface SessionTool {
   truncated: boolean;
   durationMs?: number;
   repositoryArgs?: Record<string, unknown>;
+  /**
+   * The policy decision a native tool hook recorded for this call
+   * (`allowed`, `denied`, `approved`, `declined`, `timed_out`). Set only on
+   * the hook's row; the harness reports the call's execution separately.
+   */
+  decision?: NativeToolDecision;
 }
+
+export type NativeToolDecision =
+  'allowed' | 'denied' | 'approved' | 'declined' | 'timed_out';
+const NATIVE_DECISIONS: ReadonlySet<string> = new Set([
+  'allowed',
+  'denied',
+  'approved',
+  'declined',
+  'timed_out',
+]);
 const record = (v: unknown): Record<string, unknown> | null =>
   v && typeof v === 'object' && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -155,6 +171,13 @@ export function sessionTools(
     else if (status === 'completed' || status === 'success')
       tool.phase = 'completed';
     else if (status === 'failed' || status === 'error') tool.phase = 'failed';
+    else if (
+      m?.origin === 'native_hook' &&
+      status !== undefined &&
+      NATIVE_DECISIONS.has(status)
+    )
+      // A hook row is a policy decision, not an execution lifecycle (#2561).
+      tool.decision = status as NativeToolDecision;
     tool.arguments ??= item.summary || undefined;
     tool.repositoryArgs = m ?? undefined;
     if (typeof m?.duration_ms === 'number') tool.durationMs = m.duration_ms;
