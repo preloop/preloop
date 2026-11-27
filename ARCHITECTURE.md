@@ -111,9 +111,10 @@ See [security architecture](docs/architecture/security.md) and the
 [operator guide](docs/operations/mfa.md). Account policy enforcement is an
 edition extension.
 
-Installed extension inventory uses bounded v4 metadata, with descriptions and
-invocation. A separate content pass uploads redacted text under account, device
-and per-extension opt-outs, shared by manual reports and resident runners.
+Installed extension inventory, including standalone MCP servers, uses bounded v4
+metadata, with descriptions and invocation. A separate content pass uploads
+redacted text under account, device and per-extension opt-outs, shared by manual
+reports and resident runners.
 Content is encrypted per account and hash; reads require approval permission and
 are audited. See [discovery architecture](docs/architecture/discovery.md) for
 inventory reconciliation, approval pins and content storage, and the

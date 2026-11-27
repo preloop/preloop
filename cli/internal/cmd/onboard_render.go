@@ -417,6 +417,8 @@ func (r *plainRenderer) Step(w io.Writer, ev stepEvent) {
 type agentReceipt struct {
 	DisplayName string
 	Headline    string
+	// ControlChannel separates configured Codex control from sidecar availability.
+	ControlChannel string
 	// GatewayValidation is the probe status label; empty when no probe ran.
 	GatewayValidation string
 	// SubscriptionBilling is set for Claude Code routed with a subscription
@@ -437,6 +439,9 @@ func (r *plainRenderer) Receipt(w io.Writer, plan onboardPlan, outcomes []agentR
 		}
 		if receipt.GatewayValidation != "" {
 			writeWrapped(w, "  ", "    ", "Gateway validation: "+receipt.GatewayValidation, width)
+		}
+		if receipt.ControlChannel != "" {
+			writeWrapped(w, "  ", "    ", "Agent Control channel: "+receipt.ControlChannel, width)
 		}
 		for _, warning := range receipt.Warnings {
 			writeWrapped(w, "  ! ", "    ", warning, width)

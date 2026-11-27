@@ -862,7 +862,7 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 		if supportsAgentControlChannel(agent) {
 			fmt.Fprintf(detail, "  Agent Control config: %s\n", boolStatus(validationResult["control_config_written"]))
 			fmt.Fprintf(detail, "  Agent Control runtime plugin: %s\n", agentControlPluginStatus(validationResult))
-			fmt.Fprintf(detail, "  Agent Control channel: %s\n", boolStatus(validationResult["control_channel_configured"]))
+			fmt.Fprintf(detail, "  Agent Control channel: %s\n", onboardingControlChannelStatus(agent, opts, validationResult))
 		}
 		if status, ok := validationResult["live_validation_status"].(string); ok && strings.TrimSpace(status) != "" {
 			fmt.Fprintf(detail, "  Gateway validation: %s\n", gatewayProbeStatusLabel(status))
@@ -880,6 +880,9 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 			Headline:    completionHeadline,
 			Onboarded:   liveValidationErr == nil,
 			Warnings:    append([]string{}, serverSync.Warnings...),
+		}
+		if isCodexCLIAgent(agent) {
+			receipt.ControlChannel = onboardingControlChannelStatus(agent, opts, validationResult)
 		}
 		if status, ok := validationResult["live_validation_status"].(string); ok {
 			receipt.GatewayValidation = receiptGatewayValidationLabel(status)

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -3911,6 +3912,22 @@ func installedOpenClawExtensionIDs() []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func onboardingControlChannelStatus(agent AgentConfig, opts managedEnrollmentOptions, validation map[string]interface{}) string {
+	if isCodexCLIAgent(agent) && validation["control_channel_configured"] == true {
+		// A valid config and installed plugin do not establish a live channel.
+		// Even a listening local sidecar does not prove its remote connection.
+		if conn, err := net.DialTimeout("unix", codexAgentControlSidecarSpec().socketPath(), 200*time.Millisecond); err == nil {
+			_ = conn.Close()
+			return "configured; sidecar listening (connection unverified)"
+		}
+		if opts.NoSidecar {
+			return "configured; sidecar not started (--no-sidecar)"
+		}
+		return "configured; sidecar not listening"
+	}
+	return boolStatus(validation["control_channel_configured"])
 }
 
 func validateAgentControlConfig(

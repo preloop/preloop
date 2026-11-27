@@ -5,7 +5,8 @@ package cmd
 // identities are account-salted hashes; the inventory DTOs keep application
 // configuration and credentials out of reports. The reporting guide documents
 // the extension data classes and their opt-outs.
-// Redacted extension text follows in a separate, opt-out content pass.
+// MCP identifiers and hashes are extension metadata; server definitions are not
+// uploaded. Redacted extension text follows in a separate, opt-out content pass.
 
 import (
 	"crypto/hmac"

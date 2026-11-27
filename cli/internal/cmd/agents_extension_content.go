@@ -559,6 +559,12 @@ func reportedContentPairs(report discoveryReportRequest) []contentPair {
 			continue
 		}
 		for _, ext := range *candidate.Extensions {
+			// MCP servers have inventory hashes but no uploadable content.
+			switch ext.Kind {
+			case "plugin", "skill", "hook", "command":
+			default:
+				continue
+			}
 			pair := contentPair{Kind: ext.Kind, ContentHash: ext.ContentHash}
 			if ext.ContentHash == "" || seen[pair] {
 				continue

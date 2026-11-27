@@ -6,8 +6,10 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from preloop.schemas.agent_discovery import HEX_SHA256_PATTERN
-from preloop.schemas.discovered_extension import HASH_PATTERN, ExtensionKind
+from preloop.schemas.discovered_extension import HASH_PATTERN
 from preloop.services import extension_content as policy
+
+ContentKind = Literal["plugin", "skill", "hook", "command"]
 
 FileStatus = Literal[
     "stored",
@@ -38,7 +40,7 @@ class ContentPair(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    extension_kind: ExtensionKind
+    extension_kind: ContentKind
     content_hash: str = Field(pattern=HASH_PATTERN)
 
 

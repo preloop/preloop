@@ -299,8 +299,9 @@ Provider callback adapters can reuse account-owned encrypted secret references a
 
 ## Extension inventory and content
 
-Installed agent extension inventory uses a bounded, metadata-only v4 discovery
-contract. Nullable JSONB `details` carries bounded descriptions and invocation.
+Installed agent extension inventory, including standalone MCP servers, uses a
+bounded, metadata-only v4 discovery contract. Nullable JSONB `details` carries
+bounded descriptions and invocation.
 `discovered_extension` stores presence per account, device, profile and agent;
 `extension_approval` stores account-wide decisions independently of
 inventory retention, and `extension_approval_pin` pins a decision to reviewed
@@ -312,8 +313,9 @@ inventory record carries no extension file, command or source URL. See the
 [discovery reporting guide](../guide/agent-discovery-reporting.md#extensions).
 
 Extension content for review is a separate, on-by-default upload that follows a
-manual or automatic runner report. The collector redacts text on the device (the vendored
-gitleaks default rules in `cli/internal/redact` plus local rules), asks the
+manual or automatic runner report. MCP servers are inventory-only: their definitions
+are hashed, and their bodies are not uploaded. The collector redacts text on the
+device (the vendored gitleaks default rules in `cli/internal/redact` plus local rules), asks the
 server which reported hashes it lacks and uploads only those. `extension_content`
 stores one Fernet-encrypted document per account, kind and inventory hash; the
 server recomputes the hash from the uploaded manifest and verifies unredacted

@@ -1136,7 +1136,8 @@ export class ExtensionInventory extends LitElement {
     row: InstalledExtension | ExtensionAggregate,
     contentHash: string | null
   ): TemplateResult | typeof nothing {
-    if (!contentHash || !this.canManage) return nothing;
+    if (!contentHash || !this.canManage || row.extension_kind === 'mcp_server')
+      return nothing;
     const reading = this.reading === contentHash;
     return html`<div class="content-reader">
       <code title=${contentHash}>${shortHash(contentHash)}</code>
@@ -1301,7 +1302,9 @@ export class ExtensionInventory extends LitElement {
         ${this.deviceError ? html`<p role="status">${this.deviceError}</p>` : nothing}
         ${this.deviceCursor ? html`<sl-button size="small" @click=${() => this.loadDetailDevices(row, true)}>More devices</sl-button>` : nothing}
         ${
-          hashes.some((hash) => hash) && this.canManage
+          hashes.some((hash) => hash) &&
+          this.canManage &&
+          row.extension_kind !== 'mcp_server'
             ? html`<p>
                 Read the content a device uploaded for a hash. Each read is
                 recorded in the audit log.
@@ -1309,10 +1312,18 @@ export class ExtensionInventory extends LitElement {
             : nothing
         }
         ${hashes.map((hash) => this.renderExtensionContentViewer(row, hash))}
-        <p>
-          Or read the full, unredacted content locally on a device that reported
-          this extension:
-        </p>
+        ${
+          row.extension_kind === 'mcp_server'
+            ? html`<p>
+                MCP server bodies are not collected. Inspect metadata and
+                configuration locations locally on a device that reported this
+                server:
+              </p>`
+            : html`<p>
+                Or read the full, unredacted content locally on a device that
+                reported this extension:
+              </p>`
+        }
         ${this.command(command)}
         <p class="meta">
           For project extensions, run from that repository and append --project

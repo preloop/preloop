@@ -54,7 +54,10 @@ class DiscoveredExtension(Base):
             text("(CAST(details ->> 'description' AS VARCHAR)) gin_trgm_ops"),
             postgresql_using="gin",
         ).ddl_if(dialect="postgresql"),
-        CheckConstraint("extension_kind IN ('plugin','skill','hook','command')"),
+        CheckConstraint(
+            "extension_kind IN ('plugin','skill','hook','command','mcp_server')",
+            name="discovered_extension_extension_kind_check",
+        ),
         CheckConstraint("scope IN ('user','project')"),
         CheckConstraint("enabled IN ('true','false','unknown')"),
         CheckConstraint(

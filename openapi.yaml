@@ -2368,6 +2368,7 @@ paths:
             - skill
             - hook
             - command
+            - mcp_server
             type: string
           - type: 'null'
           title: Extension Kind
@@ -2522,6 +2523,7 @@ paths:
           - skill
           - hook
           - command
+          - mcp_server
           type: string
           title: Extension Kind
       - name: extension_id
@@ -2578,6 +2580,7 @@ paths:
           - skill
           - hook
           - command
+          - mcp_server
           type: string
           title: Extension Kind
       - name: extension_id
@@ -2639,6 +2642,7 @@ paths:
           - skill
           - hook
           - command
+          - mcp_server
           type: string
           title: Extension Kind
       - name: extension_id
@@ -2707,6 +2711,7 @@ paths:
           - skill
           - hook
           - command
+          - mcp_server
           type: string
           title: Extension Kind
       - name: extension_id
@@ -40822,6 +40827,7 @@ components:
           - skill
           - hook
           - command
+          - mcp_server
           title: Extension Kind
         extension_id:
           type: string
@@ -42320,6 +42326,7 @@ components:
           - skill
           - hook
           - command
+          - mcp_server
           title: Extension Kind
         extension_id:
           type: string
@@ -42440,6 +42447,7 @@ components:
           - skill
           - hook
           - command
+          - mcp_server
           title: Extension Kind
         extension_id:
           type: string
@@ -42883,6 +42891,7 @@ components:
           - skill
           - hook
           - command
+          - mcp_server
           title: Kind
         id:
           type: string
@@ -43055,6 +43064,7 @@ components:
           - skill
           - hook
           - command
+          - mcp_server
           title: Extension Kind
         extension_id:
           type: string

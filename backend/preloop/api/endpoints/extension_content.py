@@ -42,8 +42,9 @@ from preloop.models.crud.history_policy import (
 )
 from preloop.models.db.session import get_db_session
 from preloop.plugins.base import get_plugin_manager
-from preloop.schemas.discovered_extension import HASH_PATTERN, ExtensionKind
+from preloop.schemas.discovered_extension import HASH_PATTERN
 from preloop.schemas.extension_content import (
+    ContentKind,
     ContentPair,
     ContentQuery,
     ContentQueryResponse,
@@ -368,7 +369,7 @@ def upload_runner_content(
 def read_content(
     response: Response,
     account: Annotated[models.Account, Depends(get_account_for_user)],
-    extension_kind: ExtensionKind = Path(),
+    extension_kind: ContentKind = Path(),
     content_hash: str = Path(pattern=HASH_PATTERN),
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
