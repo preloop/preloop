@@ -155,7 +155,8 @@ def dedupe_stmt(account_id: str, fingerprint: str):
 
 
 def _allow(tool_input: dict) -> Dict[str, Any]:
-    # updatedInput is required by the contract; we pass the input through
+    # updatedInput keeps the input (Claude Code v2.1.86-v2.1.206 required
+    # it; later versions accept it as optional). We pass the input through
     # unmodified (Preloop approves/denies, it does not rewrite arguments).
     return {"behavior": "allow", "updatedInput": dict(tool_input or {})}
 

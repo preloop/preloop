@@ -222,3 +222,59 @@ describe('session live evidence', () => {
     );
   });
 });
+
+describe('native hook tool decisions (#2561)', () => {
+  // The shape the activity API returns for a call a PreToolUse hook decided.
+  const nativeRecord = (
+    status: string,
+    durationMs: number
+  ): RuntimeSessionActivityItem =>
+    ({
+      activity_id: 'activity-example-1',
+      activity_type: 'tool_call',
+      timestamp: '2026-10-02T10:00:01Z',
+      title: 'Bash',
+      tool_name: 'Bash',
+      status,
+      summary: 'command (12 chars)',
+      metadata: {
+        origin: 'native_hook',
+        source: 'claude_code',
+        decision: status === 'denied' ? 'deny' : 'allow',
+        evaluation_phase: null,
+        duration_ms: durationMs,
+        arguments_summary: 'command (12 chars)',
+      },
+    }) as RuntimeSessionActivityItem;
+
+  for (const status of [
+    'allowed',
+    'denied',
+    'approved',
+    'declined',
+    'timed_out',
+  ]) {
+    it(`keeps the recorded ${status} decision and its duration`, () => {
+      const [tool] = sessionTools([], [nativeRecord(status, 21)]);
+      expect(tool.decision).to.equal(status);
+      expect(tool.durationMs).to.equal(21);
+    });
+  }
+
+  it('does not read a decision into a harness execution row', () => {
+    const [tool] = sessionTools(
+      [],
+      [
+        {
+          activity_type: 'tool_call',
+          timestamp: '2026-10-02T10:00:01Z',
+          tool_name: 'Bash',
+          status: 'completed',
+          metadata: { tool_call_id: 'one' },
+        } as RuntimeSessionActivityItem,
+      ]
+    );
+    expect(tool.decision).to.equal(undefined);
+    expect(tool.phase).to.equal('completed');
+  });
+});

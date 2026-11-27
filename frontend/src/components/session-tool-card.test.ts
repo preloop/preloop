@@ -2,6 +2,8 @@ import { expect, fixture, html } from '@open-wc/testing';
 import './session-tool-card';
 import type { SessionToolCard } from './session-tool-card';
 import type { LiveToolCall } from '../utils/live-session';
+import { sessionTools, type SessionTool } from '../utils/session-live';
+import type { RuntimeSessionActivityItem } from '../types';
 
 /** Synthetic fixture: placeholder tool names, invented call ids. */
 function call(overrides: Partial<LiveToolCall> = {}): LiveToolCall {
@@ -184,5 +186,63 @@ describe('session-tool-card quiet facts (U-07)', () => {
     expect(text).to.not.match(/\b0(\.0)?m?s\b/);
     expect(text).to.not.contain('No central native rule');
     expect(text).to.contain('terminal');
+  });
+});
+
+describe('session-tool-card native policy decision (#2561)', () => {
+  async function renderCaptured(
+    value: SessionTool
+  ): Promise<HTMLElement | null> {
+    const el = await fixture<SessionToolCard>(
+      html`<session-tool-card .tool=${value}></session-tool-card>`
+    );
+    await el.updateComplete;
+    return el.shadowRoot!.querySelector('summary');
+  }
+
+  it('shows the recorded decision and duration of a native hook row', async () => {
+    // Built from the activity record the API returns for a native Bash call.
+    const [tool] = sessionTools(
+      [],
+      [
+        {
+          activity_id: 'activity-example-1',
+          activity_type: 'tool_call',
+          timestamp: '2026-10-02T10:00:01Z',
+          title: 'Bash',
+          tool_name: 'Bash',
+          status: 'allowed',
+          summary: 'command (3 chars)',
+          metadata: {
+            origin: 'native_hook',
+            source: 'claude_code',
+            decision: 'allow',
+            duration_ms: 21,
+          },
+        } as RuntimeSessionActivityItem,
+      ]
+    );
+    const summary = (await renderCaptured(tool))!.textContent!.replace(
+      /\s+/g,
+      ' '
+    );
+    expect(summary).to.contain('Bash · Policy decision: Allowed · 21ms');
+    expect(summary).not.to.contain('unknown');
+    expect(summary).not.to.contain('0.0s');
+  });
+
+  it('keeps the lifecycle label on the execution row', async () => {
+    const summary = (await renderCaptured({
+      id: 'tool:one',
+      callId: 'one',
+      name: 'Bash',
+      timestamp: '2026-10-02T10:00:02Z',
+      phase: 'completed',
+      redacted: false,
+      truncated: false,
+      durationMs: 1200,
+    }))!.textContent!.replace(/\s+/g, ' ');
+    expect(summary).to.contain('Bash · completed · 1.2s');
+    expect(summary).not.to.contain('Policy decision');
   });
 });
