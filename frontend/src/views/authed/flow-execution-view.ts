@@ -1,5 +1,5 @@
 import { ExecutionSequence } from '../../utils/execution-sequence';
-import { randomUuid } from '../../utils/random-uuid';
+import { repeat } from 'lit/directives/repeat.js';
 import { flowRuntimeLabel } from '../../utils/flow-runtime';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { formatUsd } from '../../utils/money';
@@ -148,6 +148,7 @@ interface ExecutionUpstreamRoute {
 }
 
 interface FlowExecution {
+  agent_type?: string | null;
   pull_request?:
     import('../../delivery-reports-api').ExecutionPullRequest | null;
   id: string;
@@ -1255,6 +1256,8 @@ export class FlowExecutionView extends LitElement {
 
   @state()
   private expandedLogGroups: Set<string> = new Set();
+  private expandedGatewayEvents = new Set<string>();
+  private expandedToolEntries = new Set<string>();
 
   private durationTickIntervalId?: number;
   private executionGeneration = 0;
@@ -1375,6 +1378,9 @@ export class FlowExecutionView extends LitElement {
   }
 
   private invalidateExecutionRequests() {
+    this.expandedLogGroups.clear();
+    this.expandedGatewayEvents.clear();
+    this.expandedToolEntries.clear();
     this.resetLogStream();
     this.executionGeneration++;
     this.realtimeSequence = new ExecutionSequence();
@@ -2427,7 +2433,10 @@ export class FlowExecutionView extends LitElement {
       const flow = await getFlow(execution.flow_id);
       if (!current()) return;
       this.flow = flow;
-      if (flow.agent_type === 'copilot' || flow.agent_type === 'cursor') {
+      if (
+        execution.agent_type === 'copilot' ||
+        execution.agent_type === 'cursor'
+      ) {
         void this.loadHostSessions(execution.id, current);
       }
     } catch (error) {
@@ -2975,7 +2984,8 @@ export class FlowExecutionView extends LitElement {
 
   private normalizeToolActivityEntry(
     payload: any,
-    timestamp: string
+    timestamp: string,
+    entryId?: string
   ): ToolActivityEntry | null {
     if (!payload || typeof payload !== 'object') {
       return null;
@@ -3013,14 +3023,13 @@ export class FlowExecutionView extends LitElement {
             : undefined;
 
     return {
-      key: [
-        timestamp || 'no-timestamp',
-        serverName,
-        toolName,
-        payload.status || 'unknown',
-        detail || '',
-        randomUuid(), // Ensure keys are unique even if the same tool is called at the same second
-      ].join(':'),
+      key: String(
+        entryId ||
+          payload.id ||
+          payload.tool_call_id ||
+          payload.call_id ||
+          `legacy:${JSON.stringify([timestamp, serverName, toolName])}`
+      ),
       timestamp,
       toolName,
       serverName,
@@ -3053,13 +3062,23 @@ export class FlowExecutionView extends LitElement {
       }
       const normalized = this.normalizeToolActivityEntry(
         log.payload,
-        log.timestamp
+        log.timestamp,
+        log.log_id
       );
       if (normalized) {
         entries.push(normalized);
       }
     }
 
+    // Older tool logs have no id. Keep repeated calls distinct without
+    // changing their keys on every render or when a later call is appended.
+    const occurrences = new Map<string, number>();
+    for (const entry of entries) {
+      if (!entry.key.startsWith('legacy:')) continue;
+      const occurrence = occurrences.get(entry.key) || 0;
+      occurrences.set(entry.key, occurrence + 1);
+      entry.key += `:${occurrence}`;
+    }
     const seen = new Set<string>();
     return entries
       .sort(
@@ -3077,13 +3096,21 @@ export class FlowExecutionView extends LitElement {
   }
 
   private renderGatewayEvent(event: FlowGatewayEvent, hideBilling = false) {
+    // A live call has no row id yet; its usage id survives the read-back.
+    const key = this.getGatewayEventKey(event);
     return html`
       <preloop-gateway-event
         .event=${{ ...event }}
+        .expanded=${this.expandedGatewayEvents.has(key)}
         hide-timestamp
         ?hide-billing=${hideBilling}
         @gateway-event-expand=${(e: CustomEvent) => {
-          if (e.detail.expanded) {
+          this.setEntryExpanded(
+            this.expandedGatewayEvents,
+            key,
+            e.detail.expanded
+          );
+          if (e.detail.expanded && event.id) {
             this.handleGatewayEventExpand(event.id);
           }
         }}
@@ -3229,12 +3256,23 @@ export class FlowExecutionView extends LitElement {
     }
   }
 
-  private toggleLogGroup(key: string) {
+  private setEntryExpanded(
+    entries: Set<string>,
+    key: string,
+    expanded: boolean
+  ): void {
+    if (expanded) entries.add(key);
+    else entries.delete(key);
+    this.requestUpdate();
+  }
+
+  private toggleLogGroup(logs: FlowExecutionUpdate[]) {
     const next = new Set(this.expandedLogGroups);
-    if (next.has(key)) {
-      next.delete(key);
-    } else {
-      next.add(key);
+    const expanded = logs.some((log) => next.has(executionLogIdentity(log)));
+    for (const log of logs) {
+      const key = executionLogIdentity(log);
+      if (expanded) next.delete(key);
+      else next.add(key);
     }
     this.expandedLogGroups = next;
   }
@@ -3347,13 +3385,13 @@ export class FlowExecutionView extends LitElement {
       });
     }
 
-    this.logs.forEach((log, index) => {
+    this.logs.forEach((log) => {
       // Tool calls get their own row above; repeating them as log lines
       // would double every tool in the stream.
       if (log.type === 'tool_call' || log.type === 'mcp_call') return;
       items.push({
         kind: 'log',
-        key: `log-${index}`,
+        key: `log-${executionLogIdentity(log)}`,
         timestamp: log.timestamp,
         log,
       });
@@ -3432,7 +3470,9 @@ export class FlowExecutionView extends LitElement {
 
   private renderTimelineRow(row: TimelineRow, hideBilling = false) {
     if (row.kind === 'logs') {
-      const expanded = this.expandedLogGroups.has(row.key);
+      const expanded = row.logs.some((log) =>
+        this.expandedLogGroups.has(executionLogIdentity(log))
+      );
       const count = row.logs.length;
       return html`
         <div class="timeline-row timeline-logs">
@@ -3442,7 +3482,7 @@ export class FlowExecutionView extends LitElement {
               class="log-group-toggle"
               type="button"
               aria-expanded=${expanded ? 'true' : 'false'}
-              @click=${() => this.toggleLogGroup(row.key)}
+              @click=${() => this.toggleLogGroup(row.logs)}
             >
               <sl-icon
                 name=${expanded ? 'chevron-down' : 'chevron-right'}
@@ -3483,7 +3523,26 @@ export class FlowExecutionView extends LitElement {
         <div class="timeline-row timeline-tool">
           ${this.renderTimelineTime(row.timestamp)}
           <div class="timeline-body">
-            <sl-details class="timeline-details">
+            <sl-details
+              class="timeline-details"
+              .open=${this.expandedToolEntries.has(tool.key)}
+              @sl-show=${(event: Event) => {
+                if (event.target === event.currentTarget)
+                  this.setEntryExpanded(
+                    this.expandedToolEntries,
+                    tool.key,
+                    true
+                  );
+              }}
+              @sl-hide=${(event: Event) => {
+                if (event.target === event.currentTarget)
+                  this.setEntryExpanded(
+                    this.expandedToolEntries,
+                    tool.key,
+                    false
+                  );
+              }}
+            >
               <div slot="summary" class="timeline-summary">
                 <span class="timeline-title">${tool.toolName}</span>
                 <span class="timeline-meta">${tool.serverName}</span>
@@ -3627,8 +3686,11 @@ export class FlowExecutionView extends LitElement {
               ? html`<div class="panel-empty">
                   Nothing recorded for this run yet.
                 </div>`
-              : visibleRows.map((row) =>
-                  this.renderTimelineRow(row, repeatedBilling.has(row.key))
+              : repeat(
+                  visibleRows,
+                  (row) => row.key,
+                  (row) =>
+                    this.renderTimelineRow(row, repeatedBilling.has(row.key))
                 )
           }
           ${
@@ -4386,8 +4448,8 @@ ${execution.resolved_input_prompt}</pre>
           <span
             class="strip-value"
             data-testid="strip-agent"
-            title=${this.flow?.agent_type || ''}
-            >${this.flow?.agent_type ? flowRuntimeLabel(this.flow.agent_type) : '-'}</span
+            title=${execution.agent_type || ''}
+            >${execution.agent_type ? flowRuntimeLabel(execution.agent_type) : '-'}</span
           >
         </div>
         <div class="strip-item">

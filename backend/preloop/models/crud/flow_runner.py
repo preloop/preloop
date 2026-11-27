@@ -48,6 +48,26 @@ def _runner_visibility_clause(db: Session, account_id: Any) -> Any:
 class CRUDFlowRunner(CRUDBase[FlowRunner]):
     """CRUD helpers for FlowRunner."""
 
+    def bind_discovery_fingerprint(
+        self, db: Session, *, runner_id: UUID, fingerprint: str
+    ) -> bool:
+        """Bind an unreported runner once, or require its existing device identity."""
+        runner = (
+            db.query(models.FlowRunner)
+            .filter(models.FlowRunner.id == runner_id)
+            .with_for_update()
+            .populate_existing()
+            .one_or_none()
+        )
+        if runner is None or (
+            runner.workstation_fingerprint
+            and runner.workstation_fingerprint != fingerprint
+        ):
+            return False
+        runner.workstation_fingerprint = fingerprint
+        db.flush()
+        return True
+
     def create(
         self, db: Session, *, obj_in: Dict[str, Any], commit: bool = True
     ) -> FlowRunner:

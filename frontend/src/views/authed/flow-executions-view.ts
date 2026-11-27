@@ -1,4 +1,5 @@
 import { ConsoleStatus } from '../../controllers/console-status';
+import { flowRuntimeLabel } from '../../utils/flow-runtime';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -142,6 +143,7 @@ interface FlowExecution {
   failure_category?: string | null;
   /** Alias that served most of the run's gateway requests (wave 7). */
   model_alias?: string | null;
+  agent_type?: string | null;
   provider_name?: string | null;
   models_used?: ExecutionModelUsage[] | null;
   runner?: ExecutionRunner | null;
@@ -1055,13 +1057,19 @@ export class FlowExecutionsView extends AuthedElement {
       },
       {
         id: 'model',
-        header: 'Model',
+        header: 'Agent / model',
         width: 150,
         cellClass: 'model-cell',
         value: (row) => text(row.model_alias),
         // No provider column here, so the alias prints once: the cell used to
         // read "deepseek/deepseek-v4-pro deepseek".
-        cell: (row) => renderExecutionModel(row, { aliasOnly: true }),
+        cell: (row) =>
+          renderExecutionModel(row, {
+            aliasOnly: true,
+            harness: row.agent_type
+              ? flowRuntimeLabel(row.agent_type)
+              : undefined,
+          }),
       },
       {
         id: 'tools',

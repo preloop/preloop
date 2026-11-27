@@ -12,9 +12,10 @@ import (
 
 func TestRunnerFingerprintMatchesDiscovery(t *testing.T) {
 	setupDiscoveryHome(t)
-	original := readMachineID
+	original, originalInventory := readMachineID, readInventoryMachineID
 	readMachineID = func() (string, error) { return testMachineID, nil }
-	t.Cleanup(func() { readMachineID = original })
+	readInventoryMachineID = readMachineID
+	t.Cleanup(func() { readMachineID, readInventoryMachineID = original, originalInventory })
 	server, recorder := newDiscoveryServer(t)
 	defer server.Close()
 	client, err := api.NewClient("tok", server.URL)

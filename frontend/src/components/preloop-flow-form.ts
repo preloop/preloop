@@ -8,6 +8,8 @@ import {
   type TemplateResult,
 } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
+import { ref } from 'lit/directives/ref.js';
+import type SlTextarea from '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import {
   getTrackers,
   getAIModels,
@@ -425,6 +427,10 @@ export class PreloopFlowForm extends LitElement {
         overflow: auto;
       }
 
+      sl-textarea.prompt::part(textarea) {
+        height: var(--prompt-resized-height);
+      }
+
       .card-header-title {
         display: flex;
         align-items: center;
@@ -611,6 +617,44 @@ export class PreloopFlowForm extends LitElement {
     }
     this.syncUnloadGuard();
   }
+
+  private promptHeight = '';
+  private promptTextarea?: SlTextarea;
+  private promptResizeObserver?: ResizeObserver;
+  private promptResizeListeners?: AbortController;
+
+  /** Shoelace clears inline height on value/change; keep the manual size in CSS. */
+  private bindPromptResize = (element?: Element): void => {
+    this.promptResizeObserver?.disconnect();
+    this.promptResizeListeners?.abort();
+    const control = element as SlTextarea | undefined;
+    this.promptTextarea = control;
+    if (!control) return;
+    if (this.promptHeight) {
+      control.style.setProperty('--prompt-resized-height', this.promptHeight);
+    }
+    void control.updateComplete.then(() => {
+      if (this.promptTextarea !== control || !control.isConnected) return;
+      const textarea = control.shadowRoot?.querySelector('textarea');
+      if (!textarea) return;
+      const remember = (): void => {
+        // Only the resize handle sets this: do not freeze the default rows
+        // or capture the zero size of a temporarily hidden editor.
+        if (!textarea.style.height) return;
+        this.promptHeight = textarea.style.height;
+        control.style.setProperty('--prompt-resized-height', this.promptHeight);
+      };
+      this.promptResizeObserver = new ResizeObserver(remember);
+      this.promptResizeObserver.observe(textarea);
+      this.promptResizeListeners = new AbortController();
+      for (const type of ['input', 'change']) {
+        textarea.addEventListener(type, remember, {
+          capture: true,
+          signal: this.promptResizeListeners.signal,
+        });
+      }
+    });
+  };
 
   private openEnclosingSections(field: HTMLElement): void {
     for (
@@ -5696,6 +5740,7 @@ export class PreloopFlowForm extends LitElement {
 
           <sl-textarea
             class="prompt"
+            ${ref(this.bindPromptResize)}
             label="Prompt template"
             rows="6"
             placeholder="System instruction that directs the agent's goal..."

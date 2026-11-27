@@ -9,12 +9,15 @@ on the execution row.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
+from sqlalchemy.orm import Session
 
 from preloop.api.endpoints import flows
-from preloop.models import schemas
+from preloop.models import models, schemas
 from preloop.models.crud import (
+    crud_ai_model,
     crud_api_usage,
     crud_flow,
     crud_flow_execution,
@@ -24,6 +27,167 @@ from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 
 from tests.conftest import maybe_await
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("record_key", ["_model_routing", "_matrix", None])
+async def test_execution_keeps_recorded_harness_after_flow_edit(
+    db_session: Session, test_user: models.User, record_key: str | None
+) -> None:
+    """List and detail expose the run's selection, never today's flow default."""
+    flow = _create_flow(db_session, test_user)
+    original, replacement = [
+        crud_ai_model.create(
+            db_session,
+            obj_in={
+                "name": name,
+                "provider_name": "openai",
+                "model_identifier": name,
+                "account_id": test_user.account_id,
+            },
+        )
+        for name in ("example-original", "example-replacement")
+    ]
+    crud_flow.update(
+        db_session,
+        db_obj=flow,
+        flow_in=schemas.FlowUpdate(ai_model_id=original.id),
+        account_id=test_user.account_id,
+    )
+    model_id = str(original.id)
+    details = (
+        {record_key: {"agent_type": "codex", "ai_model_id": model_id}}
+        if record_key
+        else {}
+    )
+    execution = crud_flow_execution.create(
+        db_session,
+        FlowExecutionCreate(
+            flow_id=flow.id, status="SUCCEEDED", trigger_event_details=details
+        ),
+    )
+    _log_row(
+        db_session,
+        test_user,
+        model_alias="example-original",
+        flow_execution_id=execution.id,
+    )
+    crud_flow.update(
+        db_session,
+        db_obj=flow,
+        flow_in=schemas.FlowUpdate(agent_type="opencode", ai_model_id=replacement.id),
+        account_id=test_user.account_id,
+    )
+    # Force fresh reads, including the lightweight list's SQL projection.
+    db_session.expire_all()
+    rows = await maybe_await(
+        flows.read_flow_executions(
+            db=db_session, flow_id=flow.id, current_user=test_user
+        )
+    )
+    detail = await maybe_await(
+        flows.read_flow_execution(
+            db=db_session, execution_id=execution.id, current_user=test_user
+        )
+    )
+    for response in (
+        schemas.FlowExecutionListResponse.model_validate(rows[0]),
+        schemas.FlowExecutionResponse.model_validate(detail),
+    ):
+        assert response.agent_type == ("codex" if record_key else None)
+        assert response.ai_model_id == (UUID(model_id) if record_key else None)
+        assert response.model_alias == "example-original"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["host_exec", "docker"])
+async def test_runner_dispatch_selection_survives_flow_edit(
+    db_session: Session, test_user: models.User, protocol: str
+) -> None:
+    """A released runner's dispatched harness/model remain execution facts."""
+    from preloop.agents.remote_runner import _record_lease_routing
+
+    flow = _create_flow(db_session, test_user)
+    execution = crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="RUNNING")
+    )
+    _record_lease_routing(
+        execution,
+        {
+            "agent_type": "copilot",
+            "completion_protocol": protocol,
+            "model_identifier": "example-seat-model",
+        },
+        {"billing_mode": "seat"},
+        leased=True,
+    )
+    crud_flow_execution.update(
+        db_session,
+        db_obj=execution,
+        obj_in=schemas.FlowExecutionUpdate(status="SUCCEEDED"),
+    )
+    crud_flow.update(
+        db_session,
+        db_obj=flow,
+        flow_in=schemas.FlowUpdate(agent_type="opencode"),
+        account_id=test_user.account_id,
+    )
+    db_session.expire_all()
+    rows = await maybe_await(
+        flows.read_flow_executions(
+            db=db_session, flow_id=flow.id, current_user=test_user
+        )
+    )
+    row = schemas.FlowExecutionListResponse.model_validate(rows[0])
+    assert row.agent_type == "copilot"
+    assert row.model_alias == "example-seat-model"
+    assert row.ai_model_id is None
+    _log_row(
+        db_session,
+        test_user,
+        model_alias="example-served-model",
+        flow_execution_id=execution.id,
+    )
+    detail = await maybe_await(
+        flows.read_flow_execution(
+            db=db_session, execution_id=execution.id, current_user=test_user
+        )
+    )
+    assert (
+        schemas.FlowExecutionResponse.model_validate(detail).model_alias
+        == "example-served-model"
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_fallback_does_not_report_the_admitted_model(
+    db_session: Session, test_user: models.User
+) -> None:
+    """An old fallback has a known harness but an unrecorded replacement id."""
+    flow = _create_flow(db_session, test_user)
+    crud_flow_execution.create(
+        db_session,
+        FlowExecutionCreate(
+            flow_id=flow.id,
+            status="SUCCEEDED",
+            routing_reason="fell_back_to_server",
+            trigger_event_details={
+                "_model_routing": {
+                    "agent_type": "copilot",
+                    "ai_model_id": "00000000-0000-4000-8000-000000000001",
+                }
+            },
+        ),
+    )
+    rows = await maybe_await(
+        flows.read_flow_executions(
+            db=db_session, flow_id=flow.id, current_user=test_user
+        )
+    )
+    row = schemas.FlowExecutionListResponse.model_validate(rows[0])
+    assert row.agent_type == "codex"
+    assert row.ai_model_id is None
+    assert row.model_alias is None
 
 
 def _create_flow(db_session, test_user, name="Model Column Flow"):

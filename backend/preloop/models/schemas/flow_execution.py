@@ -41,20 +41,26 @@ class ExecutionResumeTotals(BaseModel):
 
 
 class ExecutionModelProjection(BaseModel):
-    """Which model(s) ran an execution, derived from gateway usage.
+    """Recorded harness and models for an execution.
 
     Mixed into both the list and the detail response so "what ran this" is
-    answerable without a second call. Every field is None/empty for an
-    execution whose gateway traffic recorded no model alias (a run that never
-    called the gateway, or one that predates alias recording).
+    answerable without a second call. Usage supplies the serving model aliases;
+    dispatch/routing supplies the selection. Missing facts stay None/empty.
     """
 
+    agent_type: Optional[str] = Field(
+        None, description="Execution's recorded harness; null when not recorded."
+    )
+    ai_model_id: Optional[uuid.UUID] = Field(
+        None,
+        description="Execution's recorded catalog model id; not the current flow model.",
+    )
     model_alias: Optional[str] = Field(
         None,
         description=(
             "Alias of the model that served most of this execution's gateway "
-            "requests. Null when the execution has no attributable gateway "
-            "usage."
+            "requests, or the model identifier recorded at dispatch when no "
+            "gateway usage exists. Null when neither was recorded."
         ),
     )
     provider_name: Optional[str] = Field(
