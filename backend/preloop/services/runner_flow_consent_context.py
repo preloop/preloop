@@ -115,6 +115,12 @@ def describe_trigger(
     source = _text(data.get("source"))
     event = _text(data.get("type")) or _text(data.get("trigger_type"))
     actor = _text(data.get("triggered_by"))
+    # A retry copies the original trigger details, so the row's retry link
+    # wins over whatever the original run was started by.
+    if retry_of_execution_id:
+        if actor:
+            return {"kind": "retry", "label": f"Retry by {actor}", "actor": actor}
+        return {"kind": "retry", "label": "Retry of an earlier run"}
     if source == "schedule" or data.get("trigger_source") == "schedule":
         return {"kind": "schedule", "label": "Scheduled run"}
     delegation = _as_mapping(data.get("delegation"))
@@ -128,11 +134,6 @@ def describe_trigger(
             delegated["label"] = f'Started by flow "{parent}"'
             delegated["parent_flow"] = parent
         return delegated
-    if retry_of_execution_id:
-        if actor:
-            return {"kind": "retry", "label": f"Retry by {actor}", "actor": actor}
-        return {"kind": "retry", "label": "Retry of an earlier run"}
-        return {"kind": "retry", "label": f"Retry by {actor}", "actor": actor}
     if actor:
         return {
             "kind": "manual",

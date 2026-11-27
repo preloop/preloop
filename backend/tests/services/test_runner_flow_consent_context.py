@@ -160,6 +160,39 @@ def test_delegated_child_uses_the_real_trigger_shape() -> None:
     )
 
 
+@pytest.mark.parametrize("original", ["schedule", "delegated"])
+def test_retry_wins_over_the_copied_original_trigger(original: str) -> None:
+    from preloop.services.flow_delegation_call import _child_trigger_details
+
+    if original == "schedule":
+        details = {"source": "schedule", "type": "schedule"}
+    else:
+        details = _child_trigger_details(
+            decision=SimpleNamespace(
+                parent_execution=SimpleNamespace(id=uuid4()),
+                root_execution_id=uuid4(),
+                parent_flow=SimpleNamespace(id=uuid4(), name="Coordinator"),
+                depth=1,
+                cost_ceiling_usd=None,
+            ),
+            payload={},
+            label=None,
+            timeout_seconds=None,
+            correlation_id=None,
+        )
+    # The retry endpoint copies the original details and sets triggered_by.
+    details = {**details, "triggered_by": "Jane Doe"}
+    trigger = ctx.describe_trigger(details, retry_of_execution_id=uuid4())
+    assert trigger == {
+        "kind": "retry",
+        "label": "Retry by Jane Doe",
+        "actor": "Jane Doe",
+    }
+    assert ctx.describe_trigger(
+        {"source": "schedule"}, retry_of_execution_id=uuid4()
+    ) == {"kind": "retry", "label": "Retry of an earlier run"}
+
+
 def test_repository_credentials_never_reach_the_snapshot(monkeypatch) -> None:
     _patch_rows(
         monkeypatch,
