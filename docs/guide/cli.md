@@ -215,7 +215,7 @@ Every choice in the review has a flag:
 | Agent Control | `--no-agent-control` | on where supported |
 | Approval hooks | `--approvals`, `--approvals=false` | off; an interactive review of an agent that already has gates keeps them |
 | Extension report | `--no-report-extensions`, `PRELOOP_DISCOVERY_REPORT=0`; `--no-extension-content` keeps the report and skips the text | on |
-| Runner | `--runner`, `--no-runner` | off unless your organisation requires it |
+| Runner | `--runner`, `--no-runner`; `--flow-execution-consent ask_me\|always\|never` for whether it asks before running a flow | off unless your organisation requires it; a runner installed from the review asks before each flow run unless a choice is already stored |
 | Full text | `--explain` | off |
 | No cursor control | `--plain`, `PRELOOP_PLAIN=1` | automatic |
 
@@ -238,7 +238,12 @@ How the command behaves by situation:
 A plan that would move a subscription login is refused under `--yes`,
 `PRELOOP_CONFIRM` and without a terminal: confirming the review is the
 consent, and the line about custody is always above it. For that reason the
-"Again:" command for such a run has no `--yes`.
+"Again:" command for such a run has no `--yes`. When names or models were
+chosen per agent in the review, the receipt prints one command per agent.
+
+A runner chosen in the review is installed without further questions. Local
+model servers are not registered as part of onboarding; run
+`preloop runner models --register` for that.
 
 | Need | Use |
 | --- | --- |

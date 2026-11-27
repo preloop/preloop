@@ -174,6 +174,9 @@ type discoveryReportSummary struct {
 	// ContentUploaded is the number of extensions whose redacted text was
 	// uploaded after the report.
 	ContentUploaded int
+	// ContentFailed is set when the upload of extension text did not
+	// complete; the report itself was accepted.
+	ContentFailed bool
 }
 
 // sendDiscoveryReport fetches the salt and posts the report. Called only
@@ -220,6 +223,7 @@ func sendDiscoveryReportSummary(client *api.Client, agents []AgentConfig, w io.W
 		disclosure = "inventory metadata"
 	}
 	summary.ContentUploaded = content.Uploaded
+	summary.ContentFailed = content.Failed
 	if content.Uploaded > 0 {
 		fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent %s, and the redacted text of %d extension(s) for review; credentials found in that text were replaced before upload.\n", resp.Received, resp.Created, disclosure, content.Uploaded) //nolint:errcheck
 		return summary, nil

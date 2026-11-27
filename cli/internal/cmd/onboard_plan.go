@@ -82,6 +82,10 @@ type onboardSelection struct {
 	ReportExtensions bool
 	// Runner is nil when not chosen: off unless account policy requires it.
 	Runner *bool
+	// RunnerConsent is whether the runner asks before it runs a flow
+	// (--flow-execution-consent: ask_me, always or never). Empty keeps what
+	// is stored, and "ask_me" on a first install.
+	RunnerConsent string
 	// Explain prints the full custody and plan text instead of the compact
 	// review, and the detailed result after each agent.
 	Explain bool
@@ -328,8 +332,13 @@ func planManagedEnrollment(
 		}
 	}
 
-	if err := preflightClaudeSubscriptionLogin(agent, opts, gatewayHints.SelectedAIModel); err != nil {
-		return nil, err
+	// Without model routing no model credential is used, so none is read:
+	// a stale stored login must not block an MCP-only onboarding, and the
+	// keychain must not be asked for one.
+	if !opts.NoModelRouting {
+		if err := preflightClaudeSubscriptionLogin(agent, opts, gatewayHints.SelectedAIModel); err != nil {
+			return nil, err
+		}
 	}
 	if !opts.DryRun && !(isClaudeCodeAgent(agent) && gatewayHints.SelectedAIModel != nil) {
 		printAgentAuthPreflightNotice(&notices, agent)

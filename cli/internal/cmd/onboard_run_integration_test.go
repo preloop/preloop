@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
@@ -413,5 +414,127 @@ func TestRefusedReportIsOneShortLine(t *testing.T) {
 	}
 	if rows == 0 || rows > 3 {
 		t.Fatalf("the refusal takes %d rows:\n%s", rows, fake.out.String())
+	}
+}
+
+// protects=--no-model-routing reads no model credential; fails_when=a
+// stored subscription login that is unreadable or stale blocks an MCP-only
+// onboarding, or is sent anywhere; no_claim=the macOS keychain is not
+// exercised (the fixture has a credentials file); the guard skips the
+// preflight that would ask it.
+func TestNoModelRoutingIgnoresABrokenStoredLogin(t *testing.T) {
+	f := newClaudeSubscriptionFixture(t)
+	f.home.agent.RuntimeState = string(agentRuntimeStatePresent)
+	mustWriteRecoveryFile(t, filepath.Join(f.home.home, ".claude", ".credentials.json"), "not a credentials file")
+
+	sel := defaultOnboardSelection()
+	routed := newRealOnboardRun(t, f, []AgentConfig{f.home.agent}, sel, "", true)
+	routed.run.single = true
+	if err := routed.run.execute(); err == nil {
+		t.Fatal("with model routing a broken stored login must stop onboarding (the fixture is not broken enough)")
+	}
+	if mutations := f.rig.mutations(); len(mutations) != 0 {
+		t.Fatalf("the refusal came after server writes: %v", mutations)
+	}
+
+	sel.ModelRouting = false
+	mcpOnly := newRealOnboardRun(t, f, []AgentConfig{f.home.agent}, sel, "", true)
+	mcpOnly.run.single = true
+	if err := mcpOnly.run.execute(); err != nil {
+		t.Fatalf("an MCP-only onboarding must not look at the stored login: %v\n%s", err, mcpOnly.out.String())
+	}
+	if !strings.Contains(mcpOnly.out.String(), "✓ Onboarded Claude Code") {
+		t.Fatalf("output:\n%s", mcpOnly.out.String())
+	}
+	if models := f.rig.sent(http.MethodPost, "/ai-models"); len(models) != 0 {
+		t.Fatalf("a model was created: %v", models)
+	}
+}
+
+// protects=the review says when it will change an agent's allowed models,
+// and apply then does exactly that; fails_when=for an existing agent whose
+// allowed models exclude the routed model the plan line is missing, the
+// model is not added on apply, a question is asked about it, or under --yes
+// (which never added it) it is added; no_claim=the fake API stores the list
+// it is given without the server's validation.
+func TestReviewAddsTheRoutedModelToAllowedModels(t *testing.T) {
+	for _, underYes := range []bool{false, true} {
+		rig := newManualRigServer(t)
+		home := newManualRigHome(t)
+		previousURL, previousToken := FlagURL, FlagToken
+		FlagURL, FlagToken = "", ""
+		t.Cleanup(func() { FlagURL, FlagToken = previousURL, previousToken })
+		f := onboardFixture{rig: rig, home: home}
+		agent := normalizeDiscoveredAgent(AgentConfig{Name: "Claude Code", ConfigPath: home.settings, RuntimeState: string(agentRuntimeStatePresent)})
+		rig.agents = append(rig.agents, map[string]interface{}{
+			"id": "agent-1", "display_name": "Claude Code", "session_source_type": runtimeSessionSourceTypeForAgent(agent.Name),
+			"session_source_id": runtimePrincipalIDForAgent(agent), "lifecycle_state": "active", "managed_mcp_servers": []string{},
+		})
+		rig.allowedModels = []string{"example/other-model"}
+		typed := "\n"
+		if underYes {
+			typed = ""
+		}
+		real := newRealOnboardRun(t, f, []AgentConfig{agent}, defaultOnboardSelection(), typed, underYes)
+		if err := real.run.execute(); err != nil {
+			t.Fatalf("yes=%v: %v\n%s", underYes, err, real.out.String())
+		}
+		output := strings.Join(strings.Fields(real.out.String()), " ")
+		line := "adds anthropic/claude-sonnet-4-5 to this agent's allowed models"
+		added := containsString(rig.allowedModels, "anthropic/claude-sonnet-4-5")
+		if underYes {
+			if strings.Contains(output, line) || added {
+				t.Fatalf("--yes must only note the mismatch, as before: added=%v\n%s", added, real.out.String())
+			}
+			continue
+		}
+		if !strings.Contains(output, line) {
+			t.Fatalf("the review does not say it will change the allowed models:\n%s", real.out.String())
+		}
+		if !added || !containsString(rig.allowedModels, "example/other-model") {
+			t.Fatalf("allowed models after apply: %v", rig.allowedModels)
+		}
+		if got := promptCount(real.out.String()); got != 1 {
+			t.Fatalf("want only the review's question, got %d prompts:\n%s", got, real.out.String())
+		}
+	}
+}
+
+// protects=a runner chosen in the review is installed without another
+// question; fails_when=the real runner setup, called after the review,
+// prompts for the flow-run choice or for local models, does not store a
+// flow-run choice, or stores another one than the flag asked for; no_claim=
+// the service installer and starter are stand-ins, so no service is
+// installed.
+func TestRunnerFromTheReviewAsksNothing(t *testing.T) {
+	for chosen, want := range map[string]string{"": "ask_me", "never": "never"} {
+		sel := defaultOnboardSelection()
+		yes := true
+		sel.Runner = &yes
+		sel.RunnerConsent = chosen
+		fake := newFakeOnboardRun(t, threeAgents()[:1], sel, "\nUNREAD\n", false)
+		oldInstall, oldStart := setupInstallRunner, setupStartRunner
+		installs := 0
+		setupInstallRunner = func(io.Writer) error {
+			installs++
+			return nil
+		}
+		setupStartRunner = func() error { return errors.New("synthetic: the service stays stopped") }
+		t.Cleanup(func() { setupInstallRunner, setupStartRunner = oldInstall, oldStart })
+		// The real setup, not the harness's stand-in.
+		fake.run.setupRunner = newOnboardRun(nil, fake.run.baseURL, nil, managedEnrollmentOptions{}, sel, fake.run.input, fake.out).setupRunner
+		if err := fake.run.execute(); err != nil {
+			t.Fatalf("consent %q: %v\n%s", chosen, err, fake.out.String())
+		}
+		if installs != 1 {
+			t.Fatalf("consent %q: the runner was installed %d time(s)\n%s", chosen, installs, fake.out.String())
+		}
+		if got := promptCount(fake.out.String()); got != 1 || fake.typed.typed != "UNREAD\n" {
+			t.Fatalf("consent %q: the runner asked something (prompts=%d, unread=%q):\n%s", chosen, got, fake.typed.typed, fake.out.String())
+		}
+		stored, _, err := config.RunnerFlowExecutionConsent()
+		if err != nil || stored != want {
+			t.Fatalf("consent %q: stored %q, want %q (%v)", chosen, stored, want, err)
+		}
 	}
 }

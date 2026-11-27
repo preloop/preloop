@@ -41,6 +41,8 @@ type manualRigServer struct {
 	probeKeys       []string
 	// reportStatus, when set, is the status the discovery report gets.
 	reportStatus int
+	// allowedModels, when set, is the agent governance's allowed models.
+	allowedModels []string
 }
 
 func newManualRigServer(t *testing.T) *manualRigServer {
@@ -231,6 +233,17 @@ func (r *manualRigServer) handle(w http.ResponseWriter, req *http.Request) {
 		reply(200, map[string]interface{}{
 			"removed": map[string]interface{}{"credentials": 1, "ai_models": 0, "agent": "deleted"},
 		})
+	case strings.HasSuffix(path, "/governance") && r.allowedModels != nil:
+		if req.Method == http.MethodPut {
+			if updated, ok := body["allowed_models"].([]interface{}); ok {
+				r.allowedModels = interfaceListToStrings(updated)
+			}
+		}
+		allowed := make([]interface{}, 0, len(r.allowedModels))
+		for _, model := range r.allowedModels {
+			allowed = append(allowed, model)
+		}
+		reply(200, map[string]interface{}{"subject_type": "agent", "config": map[string]interface{}{"allowed_models": allowed}})
 	case req.Method == http.MethodGet && path == prefix+"/agents/discovery-salt":
 		reply(200, map[string]interface{}{"salt": "synthetic-discovery-salt-0123456789abcdef", "algorithm": "hmac-sha256"})
 	case req.Method == http.MethodPost && path == prefix+"/agents/discovery-reports":
