@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Expanded execution log entries keep their state through streamed updates,
+  refreshes, status changes and scrolling. Session history and raw transcript
+  events also retain explicit expand/collapse choices.
 - A manually resized flow prompt keeps its height while typing, leaving the
   field, and refreshing the editor's form state.
 - Execution history shows the recorded harness and model instead of the flow's
