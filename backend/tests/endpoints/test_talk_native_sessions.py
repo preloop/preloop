@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 from fastapi.testclient import TestClient
 
 from preloop.models import models
-from preloop.models.crud import crud_runtime_session, crud_agent_control_command
+from preloop.models.crud import (
+    crud_runtime_session,
+    crud_agent_control_command,
+    crud_managed_agent_enrollment,
+)
 from preloop.services.agent_session_lineage import register_session_start
 from tests.endpoints.test_agent_control_persistence import _setup_controllable_agent
 
@@ -26,6 +30,29 @@ def native_session(
     agent.session_source_type = "claude_code"
     agent.control_last_heartbeat_at = datetime.now(UTC)
     agent.control_reachable_session_ids = []
+    agent.control_connection_id = uuid4()
+    enrollment = crud_managed_agent_enrollment.get_latest_for_agent_by_type(
+        db,
+        account_id=user.account_id,
+        agent_id=agent.id,
+        enrollment_type="runtime_plugin_control",
+    )
+    if enrollment is None:
+        enrollment = crud_managed_agent_enrollment.get_latest_for_agent_by_type(
+            db,
+            account_id=user.account_id,
+            agent_id=agent.id,
+            enrollment_type="cli_managed_config",
+        )
+    enrollment.validation_result = {
+        **enrollment.validation_result,
+        "talk_connection_id": str(agent.control_connection_id),
+        "talk_capabilities": {
+            "start_directory": True,
+            "command_session": True,
+            "followup_prompts": True,
+        },
+    }
     db.commit()
     result = register_session_start(
         db,
@@ -85,7 +112,7 @@ def test_idle_input_resumes_exact_native_session(
 
 
 @pytest.mark.parametrize("state,owned", [("working", True), ("your_turn", False)])
-def test_busy_or_interactive_prompt_becomes_note(
+def test_busy_owned_prompt_and_interactive_note(
     client: TestClient,
     db_session: Session,
     test_user: models.User,
@@ -98,14 +125,19 @@ def test_busy_or_interactive_prompt_becomes_note(
     with patch(
         "preloop.api.endpoints.agent_control.agent_control_manager.send_to_agent",
         new_callable=AsyncMock,
+        return_value=True,
     ) as send:
         response = client.post(
             f"/api/v1/agents/{agent.id}/control/prompts",
             json={"message": "Example follow-up", "target_session_id": str(session.id)},
         )
     assert response.status_code == 202, response.text
-    assert response.json()["note_id"]
-    send.assert_not_called()
+    if owned:
+        assert response.json()["note_id"] is None
+        send.assert_called_once()
+    else:
+        assert response.json()["note_id"]
+        send.assert_not_called()
 
 
 def test_offline_idle_note_refuses_with_local_resume_command(
@@ -413,6 +445,7 @@ def test_prompt_note_does_not_need_a_live_binding(
     agent, session = native_session(client, db_session, test_user)
     agent.runtime_session_id = None
     session.turn_state = "working"
+    session.control_owned = False
     db_session.commit()
     response = client.post(
         f"/api/v1/agents/{agent.id}/control/prompts",
@@ -456,3 +489,119 @@ def test_non_native_terminal_session_is_refused(
     assert response.status_code == 409, response.text
     assert response.json()["detail"]["code"] == "terminal_session"
     send.assert_not_called()
+
+
+def test_old_sidecar_start_directory_is_refused(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """A replaced old process must not start in an ignored directory."""
+    agent, _ = native_session(client, db_session, test_user)
+    agent.control_connection_id = uuid4()
+    db_session.commit()
+    with patch(
+        "preloop.api.endpoints.agent_control.agent_control_manager.send_to_agent",
+        new_callable=AsyncMock,
+    ) as send:
+        response = client.post(
+            f"/api/v1/agents/{agent.id}/control/prompts",
+            json={
+                "message": "Example task",
+                "start_new_session": True,
+                "working_directory": "/tmp/example",
+            },
+        )
+    assert response.status_code == 409
+    assert "working directories" in response.text
+    send.assert_not_called()
+
+
+def test_start_options_exposes_current_sidecar_features(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """The phone picker reads capability and directory choices before a send."""
+    agent, _ = native_session(client, db_session, test_user)
+    response = client.get(f"/api/v1/agents/{agent.id}/control/start-options")
+    assert response.status_code == 200, response.text
+    options = response.json()
+    assert options["capabilities"]["start_directory"] is True
+    assert options["recent_directories"] == ["/tmp/example project"]
+    assert options["projects"] == []
+
+
+def test_prompt_delivery_receipts_update_the_transcript(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """Socket acknowledgement does not pretend a queued SDK prompt has run."""
+    from preloop.models.crud.talk_delivery import record_prompt_delivery
+    from preloop.models.crud import crud_runtime_session_activity
+
+    agent, session = native_session(client, db_session, test_user)
+    with patch(
+        "preloop.api.endpoints.agent_control.agent_control_manager.send_to_agent",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        response = client.post(
+            f"/api/v1/agents/{agent.id}/control/prompts",
+            json={"message": "Example follow-up", "target_session_id": str(session.id)},
+        )
+    assert response.status_code == 202
+    command_id = response.json()["command_id"]
+    for state in ("queued", "sent"):
+        record_prompt_delivery(
+            db_session,
+            account_id=test_user.account_id,
+            agent_id=agent.id,
+            command_id=command_id,
+            state=state,
+        )
+        db_session.commit()
+        status = client.get(f"/api/v1/agents/{agent.id}/control/commands/{command_id}")
+        assert status.json()["prompt_delivery"] == state
+        activity = crud_runtime_session_activity.command_message(
+            db_session, account_id=test_user.account_id, command_id=command_id
+        )
+        assert activity.metadata_["prompt_delivery"] == state
+
+
+def test_one_result_does_not_end_another_queued_prompt(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """Concurrent prompt receipts keep the conversation working until all settle."""
+    agent, session = native_session(client, db_session, test_user)
+    commands = []
+    with patch(
+        "preloop.api.endpoints.agent_control.agent_control_manager.send_to_agent",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        for text in ("Example first prompt", "Example second prompt"):
+            response = client.post(
+                f"/api/v1/agents/{agent.id}/control/prompts",
+                json={"message": text, "target_session_id": str(session.id)},
+            )
+            assert response.status_code == 202
+            command = crud_agent_control_command.get_by_command_id(
+                db_session,
+                account_id=test_user.account_id,
+                command_id=response.json()["command_id"],
+            )
+            command.status = "acked"
+            commands.append(command)
+    session.turn_state = "working"
+    db_session.commit()
+    for index, command in enumerate(commands):
+        crud_agent_control_command.mark_terminal_result(
+            db_session,
+            account_id=test_user.account_id,
+            managed_agent_id=agent.id,
+            command_id=command.command_id,
+            result_payload={"status": "completed"},
+        )
+        crud_runtime_session.record_control_turn(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=session.id,
+            completed=True,
+        )
+        assert session.turn_state == ("working" if index == 0 else "your_turn")

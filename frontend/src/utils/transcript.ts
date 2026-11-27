@@ -88,6 +88,7 @@ export interface TranscriptMessageItem {
   truncated?: boolean;
   failed?: boolean;
   queued?: boolean;
+  promptDelivery?: 'queued' | 'sent';
   /** Set when the operator message is a delivered note. */
   note?: TranscriptNoteDelivery | null;
 }
@@ -849,6 +850,12 @@ export function buildConversation(
           timestamp: item.timestamp || null,
           event: null,
           queued: status === 'queued' || status === 'pending',
+          promptDelivery:
+            metadata.prompt_delivery === 'queued'
+              ? 'queued'
+              : metadata.prompt_delivery === 'sent'
+                ? 'sent'
+                : undefined,
           note: noteDelivery(metadata),
         },
       });

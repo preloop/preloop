@@ -44,7 +44,7 @@ function streamingFactory(state) {
             type: "assistant",
             message: { content: [{ type: "text", text: "Hello" }] },
           };
-          yield { type: "result", subtype: "success", result: `Hello ${userMessage.message.content}` };
+          yield { type: "result", user_message_uuids: [userMessage.uuid], subtype: "success", result: `Hello ${userMessage.message.content}` };
         }
       },
     };

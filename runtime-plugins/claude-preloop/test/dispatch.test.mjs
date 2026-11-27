@@ -31,7 +31,7 @@ function makeEchoFactory(state) {
       for await (const userMessage of prompt) {
         state.texts.push(userMessage.message.content);
         yield {
-          type: "result",
+          type: "result", user_message_uuids: [userMessage.uuid],
           subtype: "success",
           session_id: "session-1",
           result: `ok: ${userMessage.message.content}`,
@@ -77,7 +77,7 @@ test("start_new_session ignores a prior session id so the model is applied", asy
         yield { type: "system", subtype: "init", session_id: "fresh-1" };
         for await (const userMessage of prompt) {
           yield {
-            type: "result",
+            type: "result", user_message_uuids: [userMessage.uuid],
             subtype: "success",
             result: `ok: ${userMessage.message.content}`,
             usage: { input_tokens: 1, output_tokens: 1 },
@@ -245,7 +245,7 @@ test("reconnect replays only outcomes that missed delivery", async () => {
         yield { type: "system", subtype: "init", session_id: "s-1" };
         for await (const userMessage of prompt) {
           yield {
-            type: "result",
+            type: "result", user_message_uuids: [userMessage.uuid],
             subtype: "success",
             result: `ok: ${userMessage.message.content}`,
             usage: { input_tokens: 4, output_tokens: 2 },

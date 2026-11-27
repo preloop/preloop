@@ -522,6 +522,7 @@ async function refuseUnsafeTalkDirectory(dir: string): Promise<void> {
 /** Resolve a Talk directory inside the host owner's configured workspace. */
 export async function resolveWorkingDirectory(config: ControlConfig, directory?: string): Promise<string | undefined> {
   if (!directory) return undefined;
+  if (directory === "~" || directory.startsWith("~/")) directory = path.join(os.homedir(), directory.slice(2));
   if (!path.isAbsolute(directory)) throw new WorkspaceError("Working directory must be absolute");
   let resolved: string;
   try {

@@ -24008,6 +24008,45 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/{agent_id}/control/start-options:
+    get:
+      tags:
+      - Agent Control
+      summary: Get Agent Start Options
+      description: Offer known host checkouts, recent directories and current capabilities.
+      operationId: get_agent_start_options_api_v1_agents__agent_id__control_start_options_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Agent Start Options Api V1 Agents  Agent Id  Control
+                  Start Options Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/agents/{agent_id}/control/directories:
     get:
       tags:
@@ -31133,6 +31172,14 @@ components:
         terminal:
           type: boolean
           title: Terminal
+        prompt_delivery:
+          anyOf:
+          - type: string
+            enum:
+            - queued
+            - sent
+          - type: 'null'
+          title: Prompt Delivery
         result_status:
           anyOf:
           - type: string
@@ -56775,6 +56822,7 @@ components:
             - herdr_unavailable
             - session_owner_unknown
             - session_directory_unknown
+            - sidecar_update_required
             - session_unavailable
             - runner_away
           - type: 'null'

@@ -208,16 +208,22 @@ test("a second turn waits until the in-flight run finishes", async () => {
   const manager = new SessionManager(baseConfig, factory);
   const first = manager.sendMessage({ text: "one", startNewSession: true });
   await new Promise((resolve) => setTimeout(resolve, 20));
+  const delivery = [];
   const second = manager.sendMessage({
+    onDelivery: state => delivery.push(state),
     text: "two",
     targetSessionId: "thread-serial",
   });
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(runs, 1);
+  assert.deepEqual(delivery, ["queued"]);
+  const third = manager.sendMessage({ text: "three", targetSessionId: "thread-serial" });
   releaseFirst();
   assert.equal((await first).reply_text, "echo: one");
   assert.equal((await second).reply_text, "echo: two");
-  assert.equal(runs, 2);
+  assert.equal((await third).reply_text, "echo: three");
+  assert.equal(runs, 3);
+  assert.deepEqual(delivery, ["queued", "sent"]);
   manager.stop();
 });
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { knownCheckouts } from "./checkouts.js";
 
 // Preloop Agent Control sidecar for Claude Code.
 //
@@ -265,7 +266,7 @@ export class PreloopClaudeSidecar {
     }
     this.socket = socket;
 
-    socket.on("open", () => {
+    socket.on("open", async () => {
       this.log("Agent Control: connected; announcing capabilities");
       this.reconnectAttempts = 0;
       this.sendEnvelope({
@@ -276,7 +277,14 @@ export class PreloopClaudeSidecar {
           status: "online",
           protocol: PROTOCOL,
           runtime: this.runtime,
+          version: "0.1.2",
+          default_directory: config.workspace_root,
+          checkouts: await knownCheckouts(config, this.observer?.recentDirectories()),
           capabilities: {
+            start_directory: true,
+            command_session: true,
+            followup_prompts: true,
+            prompt_delivery: "streaming",
             new_session: true,
             existing_session: true,
             text: true,
@@ -648,7 +656,15 @@ export class PreloopClaudeSidecar {
     }
   }
 
+  private observedDirectories = new Set<string>();
+
   private sendSessionActivity(activity: SessionActivity): void {
+    if (activity.cwd && !this.observedDirectories.has(activity.cwd)) {
+      this.observedDirectories.add(activity.cwd);
+      void knownCheckouts(this.verify(), [...this.observedDirectories]).then(checkouts => {
+        this.sendEnvelope({ type: "presence", name: "checkout_inventory", payload: { checkouts } });
+      });
+    }
     this.sendEnvelope({
       type: "event",
       name: "session_activity",

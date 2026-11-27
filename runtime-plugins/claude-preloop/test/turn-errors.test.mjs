@@ -33,7 +33,7 @@ function errorResultFactory(state) {
         yield { type: "system", subtype: "init", session_id: "s-err" };
         for await (const _message of prompt) {
           yield {
-            type: "result",
+            type: "result", user_message_uuids: [_message.uuid],
             subtype: "success",
             is_error: true,
             session_id: "s-err",
@@ -98,7 +98,7 @@ test("turn logs carry the effective model and flow execution id", async () => {
       for await (const _message of prompt) {
         assert.equal(options.model, "anthropic/claude-opus-5-5");
         yield {
-          type: "result",
+          type: "result", user_message_uuids: [_message.uuid],
           subtype: "success",
           result: "ok",
           usage: { input_tokens: 3, output_tokens: 2 },
@@ -141,7 +141,7 @@ test("error subtypes without is_error also fail the turn", async () => {
     async *[Symbol.asyncIterator]() {
       yield { type: "system", subtype: "init", session_id: "s-max" };
       for await (const _message of prompt) {
-        yield { type: "result", subtype: "error_max_turns", errors: ["max turns"] };
+        yield { type: "result", user_message_uuids: [_message.uuid], subtype: "error_max_turns", errors: ["max turns"] };
       }
     },
   });
@@ -202,7 +202,7 @@ test("claude_executable is passed as pathToClaudeCodeExecutable", async () => {
       async interrupt() {},
       async *[Symbol.asyncIterator]() {
         for await (const _message of prompt) {
-          yield { type: "result", subtype: "success", result: "ok" };
+          yield { type: "result", user_message_uuids: [_message.uuid], subtype: "success", result: "ok" };
         }
       },
     };

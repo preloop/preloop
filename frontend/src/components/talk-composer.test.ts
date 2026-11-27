@@ -513,7 +513,7 @@ describe('talk-composer per-session routing', () => {
         .textContent!.trim();
 
     expect(mode()).to.equal(
-      'Terminal session. Your message is read at its next tool call or when the turn ends.'
+      'Terminal session. The sidecar does not own it, so your message is a note read at its next tool call or when the turn ends.'
     );
     expect(el.shadowRoot!.textContent).to.not.contain('Queued for delivery');
 
@@ -1196,8 +1196,14 @@ describe('Talk native startup recovery', () => {
     localStorage.setItem('accessToken', 'test-token');
     sinon.stub(window, 'fetch').callsFake(async (input) => {
       const url = String(input);
-      if (url.endsWith('/directories'))
-        return new Response(JSON.stringify(['/tmp/example']));
+      if (url.endsWith('/start-options'))
+        return new Response(
+          JSON.stringify({
+            projects: [],
+            recent_directories: ['/tmp/example'],
+            capabilities: { start_directory: true, command_session: true },
+          })
+        );
       if (url.endsWith('/commands/native-command'))
         return new Response(
           JSON.stringify({
@@ -1221,6 +1227,7 @@ describe('Talk native startup recovery', () => {
         .sessionId=${null}
       ></talk-composer>`
     );
+    await waitUntil(() => el.workingDirectory === '/tmp/example');
     const input = textarea(el);
     input.value = 'Example new task';
     input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
@@ -1244,8 +1251,14 @@ describe('Talk native startup recovery', () => {
     localStorage.setItem('accessToken', 'test-token');
     sinon.stub(window, 'fetch').callsFake(async (input) => {
       const url = String(input);
-      if (url.endsWith('/directories'))
-        return new Response(JSON.stringify(['/tmp/example']));
+      if (url.endsWith('/start-options'))
+        return new Response(
+          JSON.stringify({
+            projects: [],
+            recent_directories: ['/tmp/example'],
+            capabilities: { start_directory: true, command_session: true },
+          })
+        );
       if (url.endsWith('/commands/unbound-command'))
         return new Response(
           JSON.stringify({
@@ -1269,6 +1282,7 @@ describe('Talk native startup recovery', () => {
         .sessionId=${null}
       ></talk-composer>`
     );
+    await waitUntil(() => el.workingDirectory === '/tmp/example');
     const input = textarea(el);
     input.value = 'Example new task';
     input.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
@@ -1286,16 +1300,23 @@ describe('Talk native startup recovery', () => {
 
   it('retains a follow-up draft while its new session is still starting', async () => {
     localStorage.setItem('accessToken', 'test-token');
-    const fetchStub = sinon.stub(window, 'fetch').callsFake(
-      async () =>
-        new Response(
-          JSON.stringify({
-            command_id: 'starting-command',
-            runtime_session_id: null,
-            target_session_id: null,
-          }),
-          { status: 202 }
-        )
+    const fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) =>
+      String(input).endsWith('/start-options')
+        ? new Response(
+            JSON.stringify({
+              projects: [],
+              recent_directories: ['/tmp/example'],
+              capabilities: { start_directory: true, command_session: true },
+            })
+          )
+        : new Response(
+            JSON.stringify({
+              command_id: 'starting-command',
+              runtime_session_id: null,
+              target_session_id: null,
+            }),
+            { status: 202 }
+          )
     );
     const el = await fixture<TalkComposer>(
       html`<talk-composer
@@ -1303,6 +1324,7 @@ describe('Talk native startup recovery', () => {
         .sessionId=${null}
       ></talk-composer>`
     );
+    await waitUntil(() => el.workingDirectory === '/tmp/example');
     const input = textarea(el);
     for (const text of ['Example first task', 'Example follow-up']) {
       input.value = text;
