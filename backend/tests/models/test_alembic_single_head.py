@@ -699,6 +699,12 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert opening_prompt.down_revision == extension_details.revision
     extension_content = script.get_revision("20270102_extension_content")
     assert extension_content.down_revision == opening_prompt.revision
+    extension_search = script.get_revision("20270103_extension_search")
+    assert extension_search.down_revision == extension_content.revision
+    native_approval_session = script.get_revision("20270103_native_approval_session")
+    assert native_approval_session.down_revision == extension_search.revision
+    mcp_extensions = script.get_revision("20270102_mcp_extensions")
+    assert mcp_extensions.down_revision == native_approval_session.revision
     runner_flow_grant = script.get_revision("20270102_runner_flow_grant")
-    assert runner_flow_grant.down_revision == extension_content.revision
+    assert runner_flow_grant.down_revision == mcp_extensions.revision
     assert script.get_heads() == [runner_flow_grant.revision]

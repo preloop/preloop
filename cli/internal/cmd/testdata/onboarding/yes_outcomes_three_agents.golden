@@ -1,0 +1,3 @@
+Claude Code	failed	unattended subscription OAuth transfer is prohibited before apply; use an existing account-held credential or interactive onboarding
+Codex CLI	onboarded	onboarding completed; application behavior unverified; direct gateway route/accounting probe passed; application behavior unverified
+Cursor	onboarded	model routing unsupported by current Preloop adapter; onboarding completed; application behavior unverified; only calls routed through the managed MCP entry reach Preloop

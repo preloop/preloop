@@ -490,10 +490,12 @@ func printOAuthLoginInstructions(output io.Writer, authURL string, headless bool
 		fmt.Fprintln(output, "  2. Copy the browser's ONE-TIME CODE and paste it below.")                               //nolint:errcheck
 		fmt.Fprintln(output, "Waiting for your code (no terminal timeout; the code expires 5 minutes after approval).") //nolint:errcheck
 		fmt.Fprintln(output, "Closed the browser tab? Reopen the URL above and approve again for a new code.")          //nolint:errcheck
+		fmt.Fprintln(output, "Lost the link? Press Enter on an empty line to print it again.")                          //nolint:errcheck
 	} else {
 		fmt.Fprintln(output, "  2. Return here after approving. Login will finish automatically.")     //nolint:errcheck
 		fmt.Fprintln(output, "Waiting up to 5 minutes for browser approval. Keep this terminal open.") //nolint:errcheck
 		fmt.Fprintln(output, "Closed the browser tab? Reopen the URL above before the wait ends.")     //nolint:errcheck
+		fmt.Fprintln(output, "Enter: open the page again    Ctrl-C: cancel")                           //nolint:errcheck
 	}
 	fmt.Fprint(output, "Login is complete when this terminal says: Successfully authenticated!\n\n") //nolint:errcheck
 }
@@ -535,23 +537,104 @@ func runLoopbackOAuthLogin(baseURL string) error {
 
 	printOAuthLoginInstructions(os.Stdout, authURL, false)
 
-	if err := openBrowser(authURL); err != nil {
+	if err := loginOpenBrowser(authURL); err != nil {
 		fmt.Printf("Warning: Could not open browser: %v\n", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), loginBrowserWait)
 	defer cancel()
 
+	// While waiting, Enter opens the page again: the window may have been
+	// closed, or the browser may have opened somewhere out of sight. The
+	// reader stays the only reader of stdin for the rest of the command, so
+	// a line typed after the callback still reaches the next prompt.
+	var typed <-chan string
+	if stdinIsTerminal() {
+		lines := newSharedLineReader(os.Stdin)
+		loginInput = lines
+		typed = lines.lines
+	}
+	stillWaiting := time.NewTimer(loginStillWaitingAfter)
+	defer stillWaiting.Stop()
+
 	var code string
-	select {
-	case code = <-codeChan:
-	case err := <-errChan:
-		return err
-	case <-ctx.Done():
-		return fmt.Errorf("authentication timed out after 5 minutes; run 'preloop login' again and choose Authorize CLI in the browser")
+	for code == "" {
+		select {
+		case code = <-codeChan:
+		case err := <-errChan:
+			return err
+		case _, open := <-typed:
+			if !open {
+				typed = nil
+				continue
+			}
+			if err := loginOpenBrowser(authURL); err != nil {
+				fmt.Printf("Could not open the browser (%v). Open this URL yourself:\n  %s\n", err, authURL)
+			} else {
+				fmt.Println("Opened the page again.")
+			}
+		case <-stillWaiting.C:
+			fmt.Println("Still waiting. The page must show Authorize CLI; choose it to continue.")
+		case <-ctx.Done():
+			return fmt.Errorf("authentication timed out after 5 minutes; run 'preloop login' again and choose Authorize CLI in the browser")
+		}
 	}
 
 	return finishOAuthLogin(baseURL, code, redirectURI, false)
+}
+
+// Seams and timings of the login wait.
+var (
+	loginOpenBrowser       = openBrowser
+	loginBrowserWait       = 5 * time.Minute
+	loginStillWaitingAfter = 60 * time.Second
+	// loginInput is where prompts that follow the login read from. It is
+	// stdin, unless the browser wait took over reading it.
+	loginInput io.Reader = os.Stdin
+)
+
+// maxEmptyAuthorizationCodes is how often an empty line reprints the link
+// before the login gives up.
+const maxEmptyAuthorizationCodes = 3
+
+// sharedLineReader reads lines from a stream in the background so a wait
+// can react to Enter. A read cannot be cancelled, so it also is an
+// io.Reader: whoever reads the stream afterwards reads through it and gets
+// every line, including one typed while nothing was waiting for it.
+type sharedLineReader struct {
+	lines   chan string
+	pending []byte
+}
+
+func newSharedLineReader(source io.Reader) *sharedLineReader {
+	shared := &sharedLineReader{lines: make(chan string, 16)}
+	go func() {
+		reader := bufio.NewReader(source)
+		for {
+			line, err := reader.ReadString('\n')
+			if line != "" {
+				shared.lines <- line
+			}
+			if err != nil {
+				close(shared.lines)
+				return
+			}
+		}
+	}()
+	return shared
+}
+
+func (s *sharedLineReader) Read(buffer []byte) (int, error) {
+	if len(s.pending) == 0 {
+		line, open := <-s.lines
+		if !open {
+			return 0, io.EOF
+		}
+		s.pending = []byte(line)
+	}
+	n := copy(buffer, s.pending)
+	s.pending = s.pending[n:]
+	return n, nil
 }
 
 func runHeadlessOAuthLogin(baseURL string) error {
@@ -573,10 +656,32 @@ func runHeadlessOAuthLogin(baseURL string) error {
 			)
 		}
 
+		// An empty line prints the link again instead of failing: the page
+		// may have been closed, or the terminal scrolled past the link. A
+		// code the server does not accept (it works once, for a few
+		// minutes) gets the same second chance.
 		reader := bufio.NewReader(os.Stdin)
-		code, err = promptForTextInput(reader, os.Stdout, "Authorization code: ")
-		if err != nil {
-			return fmt.Errorf("failed to read authorization code: %w", err)
+		empty, rejected := 0, 0
+		for {
+			code, err = promptForTextInput(reader, os.Stdout, "Authorization code: ")
+			if err != nil {
+				return fmt.Errorf("failed to read authorization code: %w", err)
+			}
+			if code == "" {
+				empty++
+				if empty > maxEmptyAuthorizationCodes {
+					return fmt.Errorf("authorization code is required")
+				}
+				fmt.Printf("Open this URL, choose Authorize CLI, and paste the ONE-TIME CODE it shows:\n\n     %s\n\n", authURL)
+				continue
+			}
+			loginErr := finishOAuthLogin(baseURL, code, redirectURI, true)
+			var exchange *tokenExchangeError
+			if loginErr == nil || !errors.As(loginErr, &exchange) || rejected >= maxEmptyAuthorizationCodes {
+				return loginErr
+			}
+			rejected++
+			fmt.Printf("That code was not accepted (it works once, for a few minutes). Approve again here for a fresh one:\n\n     %s\n\n", authURL)
 		}
 	}
 	if code == "" {
@@ -590,7 +695,7 @@ func finishOAuthLogin(baseURL, code, redirectURI string, headless bool) error {
 	fmt.Println("Exchanging code for tokens...")
 	tokenResp, err := exchangeCodeForTokens(baseURL, code, redirectURI)
 	if err != nil {
-		return fmt.Errorf("failed to exchange code for tokens: %w", err)
+		return &tokenExchangeError{cause: err}
 	}
 
 	client := api.NewClientWithToken(baseURL, tokenResp.AccessToken)
@@ -633,6 +738,18 @@ func finishOAuthLogin(baseURL, code, redirectURI string, headless bool) error {
 	offerRunnerAfterLogin(os.Stdout, &userInfo, baseURL, headless)
 	return nil
 }
+
+// tokenExchangeError is a code the server did not turn into tokens. The
+// copy-and-paste login offers another try for it; nothing was saved yet.
+type tokenExchangeError struct {
+	cause error
+}
+
+func (e *tokenExchangeError) Error() string {
+	return fmt.Sprintf("failed to exchange code for tokens: %v", e.cause)
+}
+
+func (e *tokenExchangeError) Unwrap() error { return e.cause }
 
 // conversionEventName maps the current auth flow to its analytics conversion
 // (names match the web funnel goals byte-for-byte).

@@ -978,9 +978,9 @@ export class ApiKeysView extends LitElement {
       <div class="column-layout narrow">
         <div class="main-column">
           <p data-agent-keys-hint>
-            Create new agent keys from each agent's page.
-            <a href="/console/agents">Choose an agent</a> to manage its
-            credentials.
+            Create new agent keys in each agent's Credentials tab.
+            <a href="/console/agents">Choose an agent</a>, then open Credentials
+            to manage its keys.
           </p>
           ${renderContent()}
         </div>

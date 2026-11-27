@@ -31,6 +31,8 @@ from preloop.api.common import get_account_for_user
 from preloop.api.endpoints.agent_discovery import (
     REPORT_PERMISSION,
     _require_report_access,
+    _runner_discovery_policy,
+    _runner_report_context,
 )
 from preloop.models import models
 from preloop.models.crud import crud_audit_log, crud_extension_content
@@ -40,8 +42,9 @@ from preloop.models.crud.history_policy import (
 )
 from preloop.models.db.session import get_db_session
 from preloop.plugins.base import get_plugin_manager
-from preloop.schemas.discovered_extension import HASH_PATTERN, ExtensionKind
+from preloop.schemas.discovered_extension import HASH_PATTERN
 from preloop.schemas.extension_content import (
+    ContentKind,
     ContentPair,
     ContentQuery,
     ContentQueryResponse,
@@ -89,6 +92,7 @@ class ContentRoute(APIRoute):
 
 
 router = APIRouter(route_class=ContentRoute)
+runner_router = APIRouter(route_class=ContentRoute)
 
 
 def _require_collector_access(
@@ -156,6 +160,13 @@ def query_missing_content(
     sends nothing and can say why.
     """
     _require_collector_access(db, current_user, account, payload)
+    return query_collected_content(payload, account, db)
+
+
+def query_collected_content(
+    payload: ContentQuery, account: models.Account, db: Session
+) -> ContentQueryResponse:
+    """Negotiate content after the caller has verified reporting authority."""
     retention = _retention_days(db, account)
     if not policy.is_enabled(account):
         return ContentQueryResponse(
@@ -201,6 +212,13 @@ def upload_content(
     reason code and the rest of the batch is still stored.
     """
     _require_collector_access(db, current_user, account, payload)
+    return store_collected_content(payload, account, db)
+
+
+def store_collected_content(
+    payload: ContentUpload, account: models.Account, db: Session
+) -> ContentUploadResponse:
+    """Validate and store content after reporting and device authorization."""
     # Under the account lock: an opt-out cannot slip in between this check and
     # the commit, so nothing is stored for an account that turned it off.
     account = crud_extension_content.lock_account(db, account_id=account.id)
@@ -278,6 +296,70 @@ def upload_content(
     return ContentUploadResponse(stored=stored, kept=kept, rejected=rejected)
 
 
+def _runner_content_context(
+    context: Annotated[
+        tuple[models.FlowRunner, models.Account, models.User],
+        Depends(_runner_report_context),
+    ],
+) -> tuple[models.FlowRunner, models.Account, models.User]:
+    """Keep content uploads under the same automatic-discovery opt-out."""
+    if not _runner_discovery_policy(context[1]).enabled:
+        raise HTTPException(status_code=403, detail="Automatic discovery disabled")
+    return context
+
+
+@runner_router.post(
+    "/runners/{runner_id}/extension-content/missing",
+    response_model=ContentQueryResponse,
+)
+def query_runner_content(
+    payload: ContentQuery,
+    context: Annotated[
+        tuple[models.FlowRunner, models.Account, models.User],
+        Depends(_runner_content_context),
+    ],
+    db: Session = Depends(get_db_session),
+) -> ContentQueryResponse:
+    """Negotiate only hashes already reported by this runner's device."""
+    runner, account, _ = context
+    pairs = crud_extension_content.reported_pairs(
+        db,
+        account_id=account.id,
+        workstation_fingerprint=runner.workstation_fingerprint or "",
+        pairs=[(item.extension_kind, item.content_hash) for item in payload.items],
+    )
+    scoped = payload.model_copy(
+        update={
+            "items": [
+                item
+                for item in payload.items
+                if (item.extension_kind, item.content_hash) in pairs
+            ]
+        }
+    )
+    return query_collected_content(scoped, account, db)
+
+
+@runner_router.post(
+    "/runners/{runner_id}/extension-content", response_model=ContentUploadResponse
+)
+def upload_runner_content(
+    payload: ContentUpload,
+    context: Annotated[
+        tuple[models.FlowRunner, models.Account, models.User],
+        Depends(_runner_content_context),
+    ],
+    db: Session = Depends(get_db_session),
+) -> ContentUploadResponse:
+    """Accept content for the runner's device without any content read access."""
+    runner, account, _ = context
+    if payload.workstation_fingerprint != runner.workstation_fingerprint:
+        raise HTTPException(
+            status_code=403, detail="Content must describe this runner's device"
+        )
+    return store_collected_content(payload, account, db)
+
+
 @router.get(
     "/agents/extension-content/{extension_kind}/{content_hash}",
     response_model=ExtensionContentRead,
@@ -287,7 +369,7 @@ def upload_content(
 def read_content(
     response: Response,
     account: Annotated[models.Account, Depends(get_account_for_user)],
-    extension_kind: ExtensionKind = Path(),
+    extension_kind: ContentKind = Path(),
     content_hash: str = Path(pattern=HASH_PATTERN),
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),

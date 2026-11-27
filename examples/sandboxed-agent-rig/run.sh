@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Sandboxed agent rig driver.
 #
-# Starts a local Preloop stack with a mocked model provider, then walks five
-# sandbox variants through onboarding, the manual change "on the host",
+# Starts a local Preloop stack with a mocked model provider, then walks an
+# ordinary writable home and five sandbox variants through onboarding, the manual change "on the host",
 # resume, one real request, a discovery report and offboarding. Transcripts
 # of what a user sees are written to ./out with every key redacted.
 #
 #   ./run.sh              all variants
-#   ./run.sh ro-settings  one variant (ro-settings, ro-everything,
+#   ./run.sh ro-settings  one variant (writable, ro-settings, ro-everything,
 #                         wrong-owner, no-login, stale-login)
 #   KEEP=1 ./run.sh       leave the stack running afterwards
 #
@@ -18,7 +18,7 @@ cd "$(dirname "$0")"
 export PRELOOP_DISABLE_TELEMETRY=true
 VARIANTS=("$@")
 if [ ${#VARIANTS[@]} -eq 0 ]; then
-  VARIANTS=(ro-settings ro-everything wrong-owner no-login stale-login)
+  VARIANTS=(writable ro-settings ro-everything wrong-owner no-login stale-login)
 fi
 OUT=out
 FAILURES=0
@@ -167,7 +167,7 @@ start_stack() {
   compose build --quiet
   compose up -d --wait postgres nats mock-anthropic preloop
   compose up -d --wait \
-    agent-ro-settings agent-ro-everything agent-wrong-owner agent-no-login agent-stale-login
+    agent-writable agent-ro-settings agent-ro-everything agent-wrong-owner agent-no-login agent-stale-login
 }
 
 begin() {
@@ -178,6 +178,58 @@ begin() {
   # back another variant's route.
   bootstrap_user
   printf '# Variant %s: %s\n' "$1" "$2" | tee -a "$TRANSCRIPT"
+}
+
+# --- The ordinary case ----------------------------------------------------
+variant_writable() {
+  local svc=agent-writable
+  begin writable "nothing is read-only: an ordinary home, login done inside the container"
+  compose exec -T "$svc" bash -c 'umask 077; cat > ~/.claude/settings.json' <<'JSON'
+{
+  "model": "claude-sonnet-4-5",
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://mock-anthropic:8080"
+  }
+}
+JSON
+  compose exec -T "$svc" bash -c 'umask 077; cat > ~/.claude/.credentials.json' <<JSON
+{"claudeAiOauth":{"accessToken":"sk-ant-oat01-rig-synthetic-container-login-0001","refreshToken":"sk-ant-ort01-rig-synthetic-refresh-0001","expiresAt":$(( ($(date +%s) + 86400 * 30) * 1000 )),"scopes":["user:inference"],"subscriptionType":"team"}}
+JSON
+  # No agent named and one key pressed: Enter at the review.
+  run_tty "$svc" '\n' "preloop agents onboard"
+  expect_status 0
+  expect "Preloop setup on this machine"
+  expect "Preloop will hold and rotate the Claude Code subscription login"
+  expect "Options: approval hooks off, extension report on, runner off"
+  expect "Apply to 1 agent? [Y/n/c/e]:"
+  refute "Agent name ["
+  refute "Use which model?"
+  refute "Onboard Claude Code (Claude Code) into managed Preloop access now?"
+  expect "agent and key created in Preloop"
+  expect "extension report sent"
+  expect "✓ Onboarded Claude Code"
+  expect "Gateway validation: passed"
+  expect "Again:  preloop agents onboard --agents claude-code"
+  server_state | tee -a "$TRANSCRIPT"
+
+  note "One real request from the agent itself, through the gateway."
+  run "$svc" "claude -p 'Reply with the single word ACK.' --output-format text"
+
+  note "Cancelling the review changes nothing."
+  run_tty "$svc" 'n\n' "preloop agents onboard"
+  expect_status 0
+  expect "Nothing was changed."
+
+  note "Without a terminal the plan is printed and nothing is applied."
+  run "$svc" "preloop agents onboard --no-report-extensions"
+  expect_status 1
+  expect "onboarding requires a terminal"
+  expect "To apply it without a terminal: PRELOOP_CONFIRM=1 preloop agents onboard --agents claude-code"
+
+  run "$svc" "preloop agents offboard 'Claude Code' --yes --remove-model yes --remove-mcp-servers no"
+  expect_status 0
+  expect "✓ Offboarded Claude Code"
+  server_state | tee -a "$TRANSCRIPT"
 }
 
 # --- Variant 1 ------------------------------------------------------------
@@ -191,10 +243,13 @@ variant_ro_settings() {
 JSON
 
   run "$svc" 'id -u; stat -c "%u %a %n" ~/.claude/settings.json; grep " /home/agent/.claude/settings.json " /proc/self/mountinfo | cut -d" " -f4-6'
-  # Agent name (default), model (default), apply (y), approval hooks (n),
-  # then "later" at the wait prompt: the change is made in a second step.
-  run_tty "$svc" '\n\ny\nn\nlater\n' "preloop agents onboard 'Claude Code'"
+  # Enter at the one review (apply with the defaults), then "later" at the
+  # wait prompt: the change is made in a second step.
+  run_tty "$svc" '\nlater\n' "preloop agents onboard 'Claude Code'"
   expect_status 3
+  expect "Apply to 1 agent? [Y/n/c/e]:"
+  refute "Agent name ["
+  refute "Use which model?"
   expect "Running inside a container"
   # Linux reports the foreign owner first, Docker Desktop the read-only
   # mount; the mount line is printed in both cases.
@@ -279,10 +334,10 @@ variant_ro_everything() {
   local svc=agent-ro-everything
   begin ro-everything "read-only root filesystem and settings, ~/.preloop not writable, login from CLAUDE_CODE_OAUTH_TOKEN"
   run "$svc" "touch ~/.preloop/probe 2>&1 | head -1; touch ~/.claude/probe 2>&1 | head -1"
-  run_tty "$svc" '\n\ny\nn\nlater\n' "preloop agents onboard 'Claude Code' --manual-output /tmp/preloop-setup"
+  run_tty "$svc" '\nlater\n' "preloop agents onboard 'Claude Code' --manual-output /tmp/preloop-setup"
   expect_status 3
   expect "Preloop state (backup, resume and hook credentials)"
-  expect "Importing the Claude subscription token from CLAUDE_CODE_OAUTH_TOKEN"
+  expect "subscription login from CLAUDE_CODE_OAUTH_TOKEN"
   expect "Resume token (not a secret; keep it, ~/.preloop is not writable)"
   expect "--resume-token"
 
@@ -367,7 +422,7 @@ PY
 variant_stale_login() {
   local svc=agent-stale-login
   begin stale-login "read-only settings and a login the provider rejects"
-  run_tty "$svc" '\n\ny\nn\nlater\n' "preloop agents onboard 'Claude Code'"
+  run_tty "$svc" '\nlater\n' "preloop agents onboard 'Claude Code'"
   expect_status 3
   host "cp <complete result from the sandbox> state/stale-login/claude/settings.json"
   compose exec -T "$svc" bash -c 'cat "$(ls -d ~/.preloop/manual-setup/* | grep -v -- -offboard | head -1)/settings.json"' > "$OUT/.stale-login.json"

@@ -234,6 +234,28 @@ def test_upload_then_read_shows_the_bytes_behind_the_hash(
     assert row.details == {"extension_kind": "skill"}
 
 
+@pytest.mark.parametrize("operation", ["negotiate", "upload", "read"])
+def test_mcp_inventory_does_not_enable_content_routes(
+    client: TestClient, operation: str
+) -> None:
+    """Reject inventory-only kinds before content storage can violate its check."""
+    item = {
+        "extension_kind": "mcp_server",
+        "content_hash": "sha256:" + "c" * 64,
+        "withheld": "excluded",
+    }
+    inventory(client, [item])
+    if operation == "negotiate":
+        pair = {key: item[key] for key in ("extension_kind", "content_hash")}
+        response = client.post(MISSING, json={"items": [pair]})
+    elif operation == "upload":
+        response = upload(client, [item])
+    else:
+        response = read(client, item)
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "invalid_request"
+
+
 def test_hook_commands_are_stored_with_their_matcher(client: TestClient) -> None:
     """protects=hook content keeps matcher and command per entry under the hook
     hash; fails_when=the hook hash is not recomputed from command hashes."""

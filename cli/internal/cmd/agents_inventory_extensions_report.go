@@ -76,7 +76,11 @@ func addDiscoveryExtensions(report *discoveryReportRequest, salt, home string, d
 	return nil
 }
 
-func postInventoryReport(client *api.Client, report discoveryReportRequest, response *discoveryReportResponse) error {
+type inventoryReportClient interface {
+	Post(string, interface{}, interface{}) error
+}
+
+func postInventoryReport(client inventoryReportClient, report discoveryReportRequest, response *discoveryReportResponse) error {
 	err := client.Post(discoveryReportPath, report, response)
 	if err == nil || report.Evidence == nil || report.Evidence.SchemaVersion < 3 {
 		return inventoryReportError(err)

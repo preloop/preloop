@@ -31,6 +31,7 @@ export class SessionHistoryWidget extends LitElement {
   @state() private loadedEventDetails: Record<string, FlowGatewayEvent> = {};
   @state() private loadingEventDetails: Set<string> = new Set();
   @state() private errorEventDetails: Record<string, string> = {};
+  @state() private expandedEvents = new Set<string>();
 
   private unsubscribeRealtime?: () => void;
 
@@ -323,12 +324,13 @@ export class SessionHistoryWidget extends LitElement {
     return html`
       <preloop-gateway-event
         .event=${event}
-        .expanded=${
-          this.activeSessionId === sessionId &&
-          (this.loadedEventDetails[event.id] !== undefined ||
-            this.loadingEventDetails.has(String(event.id)))
-        }
+        .expanded=${this.expandedEvents.has(`${sessionId}:${event.id}`)}
         @gateway-event-expand=${(e: CustomEvent) => {
+          const expanded = new Set(this.expandedEvents);
+          const key = `${sessionId}:${event.id}`;
+          if (e.detail.expanded) expanded.add(key);
+          else expanded.delete(key);
+          this.expandedEvents = expanded;
           if (e.detail.expanded) {
             this._handleEventShow(sessionId, String(event.id));
           }
@@ -435,7 +437,9 @@ export class SessionHistoryWidget extends LitElement {
                         <div class="event-list">
                           ${
                             this.loadedEvents[this.activeSessionId].length > 0
-                              ? this.loadedEvents[this.activeSessionId].map(
+                              ? repeat(
+                                  this.loadedEvents[this.activeSessionId],
+                                  (event) => event.id,
                                   (event) =>
                                     this._renderEvent(
                                       this.activeSessionId!,

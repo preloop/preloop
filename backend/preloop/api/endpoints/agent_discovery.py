@@ -15,10 +15,11 @@ without a token that could do anything else in the account.
 from __future__ import annotations
 
 import logging
+import hmac
 from typing import Annotated, Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Header
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.auth.key_scopes import DISCOVERY_REPORT_SCOPE
 from preloop.api.common import get_account_for_user
@@ -26,6 +27,9 @@ from preloop.services.fleet_findings import evaluate_fleet_findings
 from preloop.models import models
 from preloop.models.crud import (
     crud_account_discovery_salt,
+    crud_account,
+    crud_flow_runner,
+    crud_user,
     crud_discovery_observation,
     crud_discovered_extension,
     crud_discovered_agent_candidate,
@@ -48,10 +52,14 @@ from preloop.schemas.agent_discovery import (
 from preloop.services.event_webhooks.emitters import emit_agent_discovered
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 from sqlalchemy.orm import Session
+from pydantic import BaseModel, Field
+from preloop.plugins.account_hooks import resolve_runner_policy
+from preloop.services.runner_service import hash_runner_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+runner_router = APIRouter()
 
 REPORT_PERMISSION = "report_discovery"
 
@@ -125,6 +133,18 @@ def create_discovery_report(
     known rows only get a fresh ``last_seen_at``.
     """
     _require_report_access(db, current_user)
+    return record_discovery_report(db, payload, account, current_user)
+
+
+def record_discovery_report(
+    db: Session,
+    payload: DiscoveryReportRequest,
+    account: models.Account,
+    current_user: models.User,
+    *,
+    source_ref: Optional[UUID] = None,
+) -> DiscoveryReportResponse:
+    """Ingest manual and runner reports with identical events and first-seen rules."""
     manager = get_plugin_manager()
     authorizer = manager.get_service("discovery_report_authorizer")
     key = getattr(current_user, "_auth_api_key", None)
@@ -149,7 +169,8 @@ def create_discovery_report(
                     db,
                     account_id=account.id,
                     workstation_fingerprint=payload.workstation_fingerprint,
-                    source_ref=key.id if key is not None else current_user.id,
+                    source_ref=source_ref
+                    or (key.id if key is not None else current_user.id),
                     evidence=payload.evidence.model_dump(mode="json"),
                 )
                 crud_discovered_extension.upsert_from_report(
@@ -253,3 +274,140 @@ def update_discovery_candidate(
         )
     evaluate_fleet_findings(db, account_id=account.id)
     return _summary(candidate)
+
+
+class RunnerDiscoveryPolicy(BaseModel):
+    """Account controls for automatic discovery; null interval uses device config."""
+
+    enabled: bool = True
+    interval_seconds: Optional[int] = Field(default=None, ge=3600, le=604800)
+
+
+class RunnerDiscoveryConfiguration(RunnerDiscoveryPolicy):
+    """Reporting policy and the salt, present only when reporting is allowed."""
+
+    salt: Optional[str] = None
+
+
+def _runner_discovery_policy(account: models.Account) -> RunnerDiscoveryPolicy:
+    """Read the account's validated discovery policy."""
+    return RunnerDiscoveryPolicy.model_validate(
+        (account.meta_data or {}).get("runner_discovery", {})
+    )
+
+
+def _runner_report_context(
+    runner_id: UUID,
+    authorization: Annotated[str, Header()] = "",
+    db: Session = Depends(get_db_session),
+) -> tuple[models.FlowRunner, models.Account, models.User]:
+    """Grant report_discovery only to an active runner with inventory capability.
+
+    Runner credentials remain separate from user/API-key authentication. Only
+    the two routes below accept them, so they cannot list or read any reports.
+    """
+    runner = crud_flow_runner.get(db, id=runner_id)
+    scheme, _, token = authorization.partition(" ")
+    if (
+        runner is None
+        or scheme.lower() != "bearer"
+        or not token
+        or not hmac.compare_digest(
+            str(runner.token_hash or ""), hash_runner_token(token)
+        )
+    ):
+        raise HTTPException(status_code=401, detail="Invalid runner credentials")
+    account = crud_account.get(db, id=runner.account_id)
+    user = crud_user.get(db, id=runner.registered_by_user_id)
+    if (
+        account is None
+        or not account.is_active
+        or user is None
+        or not user.is_active
+        or user.account_id != account.id
+        or runner.ephemeral
+    ):
+        raise HTTPException(status_code=403, detail="Runner discovery unavailable")
+    policy = resolve_runner_policy(db, user)
+    if policy.get("requirement") == "forbidden" or "inventory" not in policy.get(
+        "capabilities", []
+    ):
+        raise HTTPException(
+            status_code=403, detail="Runner lacks report_discovery capability"
+        )
+    return runner, account, user
+
+
+@runner_router.get(
+    "/runners/{runner_id}/discovery-policy", response_model=RunnerDiscoveryConfiguration
+)
+def get_runner_discovery_configuration(
+    context: Annotated[
+        tuple[models.FlowRunner, models.Account, models.User],
+        Depends(_runner_report_context),
+    ],
+    db: Session = Depends(get_db_session),
+) -> RunnerDiscoveryConfiguration:
+    """Return automatic reporting controls using only the runner credential."""
+    _, account, _ = context
+    policy = _runner_discovery_policy(account)
+    salt = (
+        crud_account_discovery_salt.get_or_create(db, account_id=account.id)
+        if policy.enabled
+        else None
+    )
+    return RunnerDiscoveryConfiguration(**policy.model_dump(), salt=salt)
+
+
+@runner_router.post(
+    "/runners/{runner_id}/discovery-reports",
+    response_model=DiscoveryReportResponse,
+    status_code=202,
+)
+def create_runner_discovery_report(
+    payload: DiscoveryReportRequest,
+    context: Annotated[
+        tuple[models.FlowRunner, models.Account, models.User],
+        Depends(_runner_report_context),
+    ],
+    db: Session = Depends(get_db_session),
+) -> DiscoveryReportResponse:
+    """Accept the runner's device report with no enrollment or read authority."""
+    runner, account, user = context
+    if not _runner_discovery_policy(account).enabled:
+        raise HTTPException(status_code=403, detail="Automatic discovery disabled")
+    if not crud_flow_runner.bind_discovery_fingerprint(
+        db, runner_id=runner.id, fingerprint=payload.workstation_fingerprint
+    ):
+        raise HTTPException(
+            status_code=403, detail="Report must describe this runner's device"
+        )
+    return record_discovery_report(db, payload, account, user, source_ref=runner.id)
+
+
+@router.get("/account/runner-discovery", response_model=RunnerDiscoveryPolicy)
+@require_permission("manage_policies")
+def get_runner_discovery_policy(
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> RunnerDiscoveryPolicy:
+    """Read account-wide automatic reporting controls."""
+    ensure_permission_in_oss(db, current_user, "manage_policies")
+    return _runner_discovery_policy(account)
+
+
+@router.put("/account/runner-discovery", response_model=RunnerDiscoveryPolicy)
+@require_permission("manage_policies")
+def update_runner_discovery_policy(
+    payload: RunnerDiscoveryPolicy,
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> RunnerDiscoveryPolicy:
+    """Set account-wide reporting controls without changing other settings."""
+    ensure_permission_in_oss(db, current_user, "manage_policies")
+    crud_account.set_runner_discovery_policy(
+        db, account_id=account.id, policy=payload.model_dump()
+    )
+    return payload

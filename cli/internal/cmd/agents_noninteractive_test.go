@@ -215,15 +215,16 @@ func TestOnboardBatchPreservesPastedAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Candidate Yes, default name, then decline applying the plan.
-	_, _ = writer.WriteString("y\n\nn\n")
+	// One question for the whole run: decline it. The pasted line after it
+	// must not be consumed as an answer to anything.
+	_, _ = writer.WriteString("n\ny\n")
 	_ = writer.Close()
 	os.Stdin = reader
 	t.Cleanup(func() { os.Stdin = previousStdin; _ = reader.Close() })
 	before := inventorySnapshot(t, home)
 	output := captureStdout(t, func() error { return runAgentsEnroll(&cobra.Command{}, nil) })
-	if !strings.Contains(output, "Aborted without applying onboarding") {
-		t.Fatal("lost the pasted apply-plan answer")
+	if !strings.Contains(output, "Apply to 1 agent? [Y/n/c/e]:") || !strings.Contains(output, "Nothing was changed.") {
+		t.Fatalf("lost the pasted answer to the review: %s", output)
 	}
 	if !reflect.DeepEqual(before, inventorySnapshot(t, home)) {
 		t.Fatal("declined batch enrollment changed home")

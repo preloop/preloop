@@ -295,3 +295,30 @@ fields remain unknown. This in-memory view is not a durable tracker event journa
 ## Provider callbacks
 
 Provider callback adapters can reuse account-owned encrypted secret references and [durable callback receipts](callback-receipts.md) to commit content-free verdicts and audit entries atomically across workers.
+
+
+## Extension inventory and content
+
+Installed agent extension inventory, including standalone MCP servers, uses a
+bounded, metadata-only v4 discovery contract. Nullable JSONB `details` carries
+bounded descriptions and invocation.
+`discovered_extension` stores presence per account, device, profile and agent;
+`extension_approval` stores account-wide decisions independently of
+inventory retention, and `extension_approval_pin` pins a decision to reviewed
+content hashes. CRUD owns reconciliation, approval joins and the single
+`effective_state` derivation (`content_changed` when a pinned approval meets an
+unpinned hash). Only complete
+app scans prove absence; older reports cannot replace newer inventory. The
+inventory record carries no extension file, command or source URL. See the
+[discovery reporting guide](../guide/agent-discovery-reporting.md#extensions).
+
+Extension content for review is a separate, on-by-default upload that follows a
+manual or automatic runner report. MCP servers are inventory-only: their definitions
+are hashed, and their bodies are not uploaded. The collector redacts text on the
+device (the vendored gitleaks default rules in `cli/internal/redact` plus local rules), asks the
+server which reported hashes it lacks and uploads only those. `extension_content`
+stores one Fernet-encrypted document per account, kind and inventory hash; the
+server recomputes the hash from the uploaded manifest and verifies unredacted
+text against its digest. Reads need `manage_agents` and are audited. The account
+setting, the device flag and per-extension exclusions turn it off; see the
+[content contract](../guide/agent-discovery-reporting.md#extension-content).

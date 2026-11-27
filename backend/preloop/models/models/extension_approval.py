@@ -29,7 +29,10 @@ class ExtensionApproval(Base):
             name="uq_extension_approval",
         ),
         CheckConstraint("approval_state IN ('approved','unapproved','unknown')"),
-        CheckConstraint("extension_kind IN ('plugin','skill','hook','command')"),
+        CheckConstraint(
+            "extension_kind IN ('plugin','skill','hook','command','mcp_server')",
+            name="extension_approval_extension_kind_check",
+        ),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

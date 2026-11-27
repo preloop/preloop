@@ -944,6 +944,7 @@ func init() {
 	agentsDiscoverCmd.Flags().Bool("all-users", false, "scan bounded local profiles with elevated rights; requires --inventory or --report")
 	agentsDiscoverCmd.Flags().Bool("inventory", false, "output offline known-app inventory JSON (no auth, network, prompts, or writes)")
 	agentsDiscoverCmd.Flags().Bool("no-onboard-prompt", false, "do not prompt to onboard discovered agents")
+	agentsDiscoverCmd.Flags().Bool("brief", false, "print one line per agent instead of the full listing")
 	agentsDiscoverCmd.Flags().BoolP("yes", "y", false, "auto-approve interactive onboarding prompts")
 	agentsDiscoverCmd.Flags().BoolP("force", "f", false, "alias for --yes")
 	agentsDiscoverCmd.Flags().Bool("skip-live-validate", false, "do not run a direct gateway route/accounting probe after onboarding")
@@ -965,7 +966,6 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("live-validate", true, "after onboarding, run a supported direct gateway route/accounting probe (application behavior unverified) (default: true; pass --skip-live-validate or --live-validate=false to opt out)")
 	agentsEnrollCmd.Flags().Bool("skip-live-validate", false, "do not run a direct gateway route/accounting probe after onboarding (overrides --live-validate)")
 	agentsEnrollCmd.Flags().StringSlice("tags", []string{}, "add key-value tags to the enrolled agent (e.g., --tags ext=true,env=prod)")
-	agentsEnrollCmd.Flags().Bool("approvals", false, "install native action gates for central policy and mobile/watch approvals (Claude Code, Cursor, Codex CLI, Copilot CLI, Devin, OpenCode, Pi, DeepSeek Harness)")
 	agentsEnrollCmd.Flags().Bool("no-usage-hooks", false, "Cursor only: do not install the usage hooks that store conversations as runtime sessions with a token estimate (installed by default)")
 	agentsEnrollCmd.Flags().Bool("no-sidecar", false, "Codex CLI only: do not install and start the Agent Control sidecar service (run preloop codex sidecar enable later)")
 	agentsEnrollCmd.Flags().Bool("store-transcript", false, "Cursor only: have the usage hooks also ship transcript text as session activities (default: counts, title and a short summary only)")
@@ -976,7 +976,7 @@ func init() {
 	agentsEnrollCmd.Flags().String("settings-file", "", "with --resume: check this `claude --settings` file instead of the agent's own settings file")
 	agentsEnrollCmd.Flags().Bool("from-env", false, "with --resume: check the environment-variable form in this shell instead of the settings file")
 	agentsEnrollCmd.Flags().Bool("cancel", false, "cancel a manual setup that is waiting for the local change and remove what it created in Preloop")
-	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
+	registerOnboardSelectionFlags(agentsEnrollCmd)
 	registerClaudeDesktopRouteFlags(agentsEnrollCmd)
 	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the opus/sonnet/haiku family pins and the Fable pair, also on Claude Code 2.1.321+ (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
@@ -1001,6 +1001,26 @@ func init() {
 	agentsStarterPolicyCmd.Flags().Bool("dry-run", false, "when used with --apply, validate without applying changes")
 	agentsStarterPolicyCmd.Flags().Bool("yes", false, "skip the apply confirmation prompt after previewing changes")
 	agentsStarterPolicyCmd.Flags().Bool("no-context", false, "do not include current account config as context for the LLM")
+}
+
+// registerOnboardSelectionFlags registers the flags that decide what an
+// onboarding run does: one for every choice the review offers.
+func registerOnboardSelectionFlags(cmd *cobra.Command) {
+	flags := cmd.Flags()
+	flags.Bool("approvals", false, "install native action gates for central policy and mobile/watch approvals (Claude Code, Cursor, Codex CLI, Copilot CLI, Devin, OpenCode, Pi, DeepSeek Harness)")
+	flags.String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
+	flags.Bool("explain", false, "print the full credential custody and plan text before the confirmation, and the detailed result after it")
+	flags.StringSlice("agents", nil, "agents to onboard, by id (for example claude-code,codex-cli,cursor); default: every onboardable agent found")
+	flags.String("name", "", "display name for the agent in Preloop (a run over one agent only)")
+	flags.Bool("no-model-routing", false, "onboard MCP only: do not route model calls through Preloop and do not read or import a model credential")
+	flags.Bool("no-agent-control", false, "do not install the Agent Control file, plugin or sidecar (remote steer and stop)")
+	flags.Bool("report-extensions", true, "after onboarding, report installed plugins, skills, hooks and commands to your Preloop account (also PRELOOP_DISCOVERY_REPORT; see docs/guide/agent-discovery-reporting.md)")
+	flags.Bool("no-report-extensions", false, "do not send the extension report (also PRELOOP_DISCOVERY_REPORT=0)")
+	flags.BoolVar(&discoveryNoExtensionContent, "no-extension-content", false, "with the extension report: do not upload the redacted text of extensions for review")
+	flags.Bool("runner", false, "also install the Preloop runner service on this machine")
+	flags.Bool("no-runner", false, "do not install the runner (the default unless your organisation requires it)")
+	flags.String("flow-execution-consent", "", "with the runner: whether it asks before running a flow (ask_me, always or never; default: what is stored, else ask_me)")
+	flags.Bool("plain", false, "use no cursor control in the review (also PRELOOP_PLAIN=1; automatic without a terminal)")
 }
 
 // runAgentsDiscover scans for AI agents on the machine.
@@ -1091,6 +1111,15 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	brief, _ := cmd.Flags().GetBool("brief")
+	if brief {
+		printBriefDiscovery(os.Stdout, discovered)
+		if noOnboardPrompt {
+			return nil
+		}
+		return promptToOnboardDiscoveredAgents(discovered, autoApprove, skipLiveValidate)
+	}
+
 	fmt.Printf("Found %d AI agent(s):\n\n", len(discovered))
 
 	totalServers := 0
@@ -1162,7 +1191,6 @@ func promptToOnboardDiscoveredAgents(
 func promptToOnboardDiscoveredAgentsWithIO(
 	discovered []AgentConfig, autoApprove, skipLiveValidate bool, input io.Reader, output io.Writer,
 ) error {
-	input = bufio.NewReader(input)
 	client, err := api.NewClient(FlagToken, FlagURL)
 	if err != nil {
 		return fmt.Errorf("failed to create API client: %w", err)
@@ -1171,213 +1199,51 @@ func promptToOnboardDiscoveredAgentsWithIO(
 		fmt.Fprintln(output, "Tip: Run 'preloop login' to onboard discovered agents.")
 		return nil
 	}
-
-	// Every discovered agent is a candidate, including already-onboarded
-	// ones: a re-run must refresh their hooks, plugins and MCP config.
-	candidates := selectOnboardingRunCandidates(client, discovered)
-	var outcomes []agentOnboardingOutcome
-	defer func() {
-		printAgentOnboardingSummary(output, appendServerOnlyDeviceAgents(client, discovered, completeDiscoveryOutcomes(discovered, outcomes)))
-	}()
-	if len(candidates) == 0 {
-		fmt.Fprintln(output, "No agents discovered.")
-		return nil
-	}
-
-	// Config-only agents (runtime uninstalled, config files left behind) are
-	// never onboarded by the discover-driven batch — neither under --yes nor
-	// via the interactive prompts. Explicit `preloop agents onboard <name>`
-	// still works, with a warning.
-	candidates, configOnly := splitRuntimeMissingCandidates(candidates)
-	printRuntimeMissingOnboardingSkips(output, configOnly)
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	// We defer live validation so that all agents in the discover-driven batch
-	// are onboarded first, then their live checks run concurrently in a single
-	// post-onboarding phase (see runDeferredLiveValidationsParallel). This
-	// means the wall clock for "discover + onboard" is no longer dominated by
-	// per-agent live-validate latency (e.g. Codex' chatgpt.com backend can
-	// take ~5s) and a slow upstream for one agent never blocks subsequent
-	// agents from being touched.
-	deferLiveValidate := !skipLiveValidate
-	outcomes, err = promptToOnboardCandidatesTiered(input, output, client, candidates, autoApprove, true, func(agent AgentConfig, approvals bool) error {
-		return executeManagedEnrollment(agent, managedEnrollmentOptions{
-			Client: client,
-			// AutoApprove carries the -y flag so per-agent sub-prompts
-			// (e.g. stale OpenClaw plugin cleanup) auto-accept under -y.
-			AutoApprove:       autoApprove,
-			SkipConfirmation:  true,
-			AgentPrepared:     true,
-			LiveValidate:      true,
-			SkipLiveValidate:  skipLiveValidate,
-			DeferLiveValidate: deferLiveValidate,
-			Approvals:         approvals,
-			Input:             input,
-			Output:            output,
-		})
-	})
+	baseURL, err := resolveConfiguredAPIURL()
 	if err != nil {
 		return err
 	}
-	// Fully and partially onboarded agents both have live enrollments worth
-	// validating; only failed agents are excluded.
-	var enrolled []AgentConfig
-	for _, outcome := range outcomes {
-		if outcome.Status == agentOnboardingStatusOnboarded || outcome.Status == agentOnboardingStatusPartial {
-			enrolled = append(enrolled, outcome.Agent)
-		}
+	// The offer at the end of discovery is the same review `agents onboard`
+	// opens: every discovered agent, one confirmation.
+	run := newOnboardRun(client, baseURL, discovered, managedEnrollmentOptions{
+		AutoApprove:      autoApprove,
+		LiveValidate:     true,
+		SkipLiveValidate: skipLiveValidate,
+	}, defaultOnboardSelection(), bufio.NewReader(input), output)
+	run.gather()
+	if err := run.selectCandidates(nil); err != nil {
+		return err
 	}
-	if deferLiveValidate && len(enrolled) > 0 {
-		liveResults := runDeferredLiveValidationsParallel(client, enrolled, output)
-		applyLiveValidationOutcomesToSummary(outcomes, liveResults)
+	if len(discovered) == 0 {
+		fmt.Fprintln(output, "No agents discovered.")
+		return nil
 	}
-	return agentOnboardingSummaryError(outcomes)
+	if len(run.candidates) == 0 {
+		printRuntimeMissingOnboardingSkips(output, run.configOnly)
+		printAgentOnboardingSummary(output, appendServerOnlyDeviceAgents(client, discovered, completeDiscoveryOutcomes(discovered, nil)))
+		return nil
+	}
+	fmt.Fprintln(output) //nolint:errcheck
+	return run.execute()
 }
 
-// promptToOnboardCandidates walks the candidate agents, prompting per agent
-// unless autoApprove is set, and enrolls each approved agent. An error from
-// one agent's enrollment is recorded as a failed/partial outcome and the loop
-// continues with the remaining agents; only prompt I/O failures abort the
-// loop. Outcomes include explicitly declined agents as skipped.
-func promptToOnboardCandidates(
-	reader io.Reader,
-	writer io.Writer,
-	candidates []AgentConfig,
-	autoApprove bool,
-	askApprovals bool,
-	enroll func(agent AgentConfig, approvals bool) error,
-) ([]agentOnboardingOutcome, error) {
-	bufferedReader := bufio.NewReader(reader)
-	var outcomes []agentOnboardingOutcome
-
-	for _, agent := range candidates {
-		if !autoApprove {
-			prompt := fmt.Sprintf("Onboard %s (%s) into managed Preloop access now? (Y/n): ", agent.Name, resolveAgentDisplayName(agent))
-			if agent.IsOnboarded {
-				prompt = reonboardPrompt(writer, agent)
-			}
-			confirmed, err := confirmActionDefaultYes(bufferedReader, writer, prompt)
-			if err != nil {
-				return outcomes, fmt.Errorf("failed to read onboarding confirmation: %w", err)
-			}
-			if !confirmed {
-				outcomes = append(outcomes, declinedOnboardingOutcome(agent))
-				continue
-			}
-		} else {
-			announceAutoReonboard(writer, agent)
-		}
-		agent, err := prepareAgentForEnrollment(bufferedReader, writer, agent, autoApprove)
-		if err != nil {
-			return outcomes, err
-		}
-		// Discovery never opts into native gates. Only onboard --approvals does.
-		approvals := false
-		outcome := classifyAgentOnboardingOutcome(agent, enroll(agent, approvals))
-		if outcome.Status == agentOnboardingStatusFailed {
-			// Keep the batch going: one broken agent environment must not
-			// block the remaining agents from being onboarded.
-			fmt.Fprintf( //nolint:errcheck
-				writer,
-				"  Error onboarding %s: %s\n",
-				resolveAgentDisplayName(agent),
-				outcome.Reason,
-			)
-			if outcome.MissingExecutable {
-				if hint := wslMissingExecutableHint(); hint != "" {
-					fmt.Fprintf(writer, "  %s\n", hint) //nolint:errcheck
-				}
-			}
-		}
-		outcomes = append(outcomes, outcome)
-	}
-
-	return outcomes, nil
-}
-
-func onboardCandidatesBestEffort(
-	reader io.Reader,
-	writer io.Writer,
-	candidates []AgentConfig,
-	opts managedEnrollmentOptions,
-	deferLiveValidate bool,
-	enroll func(AgentConfig, managedEnrollmentOptions) error,
-) ([]AgentConfig, []agentOnboardingFailure) {
-	bufferedReader := bufio.NewReader(reader)
-	var enrolled []AgentConfig
-	var failures []agentOnboardingFailure
-
-	for _, agent := range candidates {
-		prepared, err := prepareAgentForEnrollment(
-			bufferedReader,
-			writer,
-			agent,
-			true,
-		)
-		if err != nil {
-			failures = append(failures, agentOnboardingFailure{
-				Agent: agent,
-				Err:   err,
-			})
-			continue
-		}
-
-		agentOpts := opts
-		agentOpts.AutoApprove = true
-		agentOpts.SkipConfirmation = true
-		agentOpts.AgentPrepared = true
-		agentOpts.DeferLiveValidate = deferLiveValidate
-		if err := enroll(prepared, agentOpts); err != nil {
-			// A skipped managed launcher is a partial success (MCP and
-			// model routing applied); count the agent as enrolled.
-			if ignoreLauncherSkipped(err) == nil {
-				enrolled = append(enrolled, prepared)
-				continue
-			}
-			failures = append(failures, agentOnboardingFailure{
-				Agent: prepared,
-				Err:   err,
-			})
-			continue
-		}
-		enrolled = append(enrolled, prepared)
-	}
-
-	return enrolled, failures
-}
-
-func printAgentOnboardingFailures(
-	writer io.Writer,
-	failures []agentOnboardingFailure,
-) {
-	if len(failures) == 0 {
-		return
-	}
-	fmt.Fprintln(writer, "\nSome agents could not be onboarded:") //nolint:errcheck
-	missingExecutable := false
-	for _, failure := range failures {
-		fmt.Fprintf( //nolint:errcheck
-			writer,
-			"  - %s: %v\n",
-			resolveAgentDisplayName(failure.Agent),
-			failure.Err,
-		)
-		if errors.Is(failure.Err, exec.ErrNotFound) {
-			missingExecutable = true
+// printBriefDiscovery is `agents discover --brief`: the count line other
+// tools match, then one line per agent.
+func printBriefDiscovery(w io.Writer, discovered []AgentConfig) {
+	fmt.Fprintf(w, "Found %d AI agent(s):\n", len(discovered)) //nolint:errcheck
+	nameWidth := 0
+	for _, agent := range discovered {
+		if n := len(resolveAgentDisplayName(agent)); n > nameWidth {
+			nameWidth = n
 		}
 	}
-	if missingExecutable {
-		if hint := wslMissingExecutableHint(); hint != "" {
-			fmt.Fprintf(writer, "  %s\n", hint) //nolint:errcheck
+	for _, agent := range discovered {
+		state := "not onboarded"
+		if agent.IsOnboarded {
+			state = "onboarded"
 		}
+		fmt.Fprintf(w, "  %-*s  %s  (%s)\n", nameWidth, resolveAgentDisplayName(agent), agent.ConfigPath, state) //nolint:errcheck
 	}
-	fmt.Fprintln( //nolint:errcheck
-		writer,
-		"Re-run `preloop agents onboard <agent> -y` after fixing the listed agent environment.",
-	)
-	printTroubleshootingFooter(writer)
 }
 
 // shouldPromptForEnrollmentName reports whether executeManagedEnrollment must
@@ -1454,9 +1320,10 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	// The model-route path does not implement --dry-run.
-	if (!dryRun || modelRouteRequested(cmd)) && !stdinIsTerminal() && !nonInteractiveAutoConfirm() {
-		return errors.New("onboarding requires a terminal; run 'preloop agents onboard' interactively or set PRELOOP_CONFIRM=1 to accept defaults unattended")
+	// The model-route path does not implement --dry-run and prints no plan.
+	// Onboarding itself prints the plan first and refuses afterwards.
+	if modelRouteRequested(cmd) && !stdinIsTerminal() && !nonInteractiveAutoConfirm() {
+		return errors.New(noTerminalOnboardingError)
 	}
 	for _, flag := range []string{"enrollment-token-file", "apps", "target-user", "device-ref"} {
 		if cmd.Flags().Changed(flag) {
@@ -1485,6 +1352,10 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	preferredModel, _ := cmd.Flags().GetString("model")
 	pinModelFamilies, _ := cmd.Flags().GetBool("pin-model-families")
 	pinModelFamiliesSet := cmd.Flags().Changed("pin-model-families")
+	selection, namedAgents, err := onboardSelectionFromFlags(cmd, args)
+	if err != nil {
+		return err
+	}
 
 	tags := make(map[string]string)
 	for _, kv := range tagsInput {
@@ -1517,163 +1388,139 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		ForceManual:         forceManual,
 		ManualOutputDir:     strings.TrimSpace(manualOutputDir),
 		Tags:                tags,
+		Explain:             selection.Explain,
+		NoModelRouting:      !selection.ModelRouting,
+		NoAgentControl:      !selection.AgentControl,
 		SkipConfirmation:    false,
 		Input:               input,
 		Output:              os.Stdout,
 	}
 
-	if len(args) == 0 {
-		client, err := api.NewClient(FlagToken, FlagURL)
-		if err != nil {
-			return err
-		}
-		// Every discovered agent is a candidate, including already-onboarded
-		// ones, so a re-run refreshes hooks, plugins and MCP config.
-		candidates := selectOnboardingRunCandidates(client, discovered)
-		// Batch onboarding (with or without --all/--yes) never touches
-		// config-only agents whose runtime is reliably missing; they need an
-		// explicit `preloop agents onboard <name>`.
-		var configOnly []AgentConfig
-		candidates, configOnly = splitRuntimeMissingCandidates(candidates)
-		printRuntimeMissingOnboardingSkips(os.Stdout, configOnly)
-		if len(candidates) == 0 {
-			if runAll {
-				if err := ensureAgentControlOnboarding(client, discovered, opts); err != nil {
-					return err
-				}
-			}
-			fmt.Println("No onboardable agents found.")
-			printAgentOnboardingSummary(os.Stdout, appendServerOnlyDeviceAgents(client, discovered, completeDiscoveryOutcomes(discovered, nil)))
-			return nil
-		}
-
-		if dryRun {
-			for _, candidate := range candidates {
-				if err := executeManagedEnrollment(candidate, opts); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-
-		// Live validation is deferred to a single parallel post-onboarding
-		// phase whenever we are touching multiple agents in one invocation
-		// (both the explicit ``--all`` path and the implicit "no args, multiple
-		// candidates" path). This keeps onboarding strictly sequential — so
-		// state-mutating steps (config rewrites, backups, durable credential
-		// creation) stay deterministic — while collapsing the live-validate
-		// wall clock from O(N) to ~max(individual checks). See
-		// runDeferredLiveValidationsParallel for the implementation.
-		deferLiveValidate := liveValidate && !skipLiveValidate
-
-		if runAll {
-			if !autoApprove {
-				var names []string
-				for _, a := range candidates {
-					names = append(names, resolveAgentDisplayName(a))
-				}
-				confirmed, err := confirmActionDefaultYes(
-					input,
-					os.Stdout,
-					fmt.Sprintf("Onboard agents %s into managed Preloop access now? (Y/n): ", strings.Join(names, ", ")),
-				)
-				if err != nil {
-					return err
-				}
-				if !confirmed {
-					return nil
-				}
-			}
-			// Validate-first ordering: agents with verified model routing
-			// onboard first; the MCP-only/unverified tier follows its printed
-			// explanation. --all keeps onboarding everything.
-			verified, unverified, reasons := partitionCandidatesByModelRouting(client, candidates)
-			enrolled, failures := onboardCandidatesBestEffort(
-				input,
-				os.Stdout,
-				verified,
-				opts,
-				deferLiveValidate,
-				executeManagedEnrollment,
-			)
-			if len(unverified) > 0 {
-				printModelRoutingTierExplanation(os.Stdout, unverified, reasons, true)
-				secondTier, secondFailures := onboardCandidatesBestEffort(
-					input,
-					os.Stdout,
-					unverified,
-					opts,
-					deferLiveValidate,
-					executeManagedEnrollment,
-				)
-				enrolled = append(enrolled, secondTier...)
-				failures = append(failures, secondFailures...)
-			}
-			outcomes := outcomesFromBestEffort(enrolled, failures)
-			if deferLiveValidate && len(enrolled) > 0 {
-				liveResults := runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
-				applyLiveValidationOutcomesToSummary(outcomes, liveResults)
-			}
-			if err := ensureAgentControlOnboarding(client, discovered, opts); err != nil {
-				return err
-			}
-			printAgentOnboardingSummary(os.Stdout, appendServerOnlyDeviceAgents(client, discovered, completeDiscoveryOutcomes(discovered, outcomes)))
-			// An agent waiting for a manual change is not a failure.
-			failures, waiting := splitWaitingForManualSetup(failures)
-			if len(failures) > 0 {
-				printAgentOnboardingFailures(os.Stdout, failures)
-				if len(enrolled) == 0 && waiting == 0 {
-					return fmt.Errorf("failed to onboard all discovered agents")
-				}
-			}
-			return nil
-		}
-
-		// The explicit --approvals choice is carried in opts.
-		outcomes, err := promptToOnboardCandidatesTiered(input, os.Stdout, client, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
-			agentOpts := opts
-			agentOpts.SkipConfirmation = autoApprove
-			agentOpts.DeferLiveValidate = deferLiveValidate
-			// promptToOnboardCandidates already ran
-			// prepareAgentForEnrollment (name prompt) for this agent; the
-			// enrollment must keep its plan/apply confirmation but not ask
-			// for the agent name a second time.
-			agentOpts.AgentPrepared = true
-			return executeManagedEnrollment(a, agentOpts)
-		})
-		if err != nil {
-			return err
-		}
-		var enrolled []AgentConfig
-		for _, outcome := range outcomes {
-			if outcome.Status == agentOnboardingStatusOnboarded || outcome.Status == agentOnboardingStatusPartial {
-				enrolled = append(enrolled, outcome.Agent)
-			}
-		}
-		if deferLiveValidate && len(enrolled) > 0 {
-			liveResults := runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
-			applyLiveValidationOutcomesToSummary(outcomes, liveResults)
-		}
-		printAgentOnboardingSummary(os.Stdout, appendServerOnlyDeviceAgents(client, discovered, completeDiscoveryOutcomes(discovered, outcomes)))
-		return agentOnboardingSummaryError(outcomes)
-	}
-
-	agent, err := findDiscoveredAgent(discovered, strings.Join(args, " "))
+	client, err := api.NewClient(FlagToken, FlagURL)
 	if err != nil {
 		return err
 	}
-
-	// Explicitly named config-only agents may still be onboarded, but say up
-	// front that the runtime is missing so the result is not mistaken for a
-	// working enrollment.
-	printRuntimeMissingOnboardingWarning(os.Stdout, agent)
-
-	// A skipped managed launcher (missing agent binary) is a partial success:
-	// the warning has been printed and the command exits 0.
-	if err := ignoreLauncherSkipped(executeManagedEnrollment(agent, opts)); err != nil {
-		return manualAwareOnboardError(os.Stdout, err)
+	if !stdinIsTerminal() && !nonInteractiveAutoConfirm() && !dryRun && !client.IsAuthenticated() {
+		// Nothing can be planned without a login; say what was always said.
+		return errors.New(noTerminalOnboardingError)
 	}
-	return nil
+
+	if dryRun {
+		// A dry run prints the full preview for each agent and changes nothing.
+		run := newOnboardRun(client, "", discovered, opts, selection, input, os.Stdout)
+		run.gather()
+		if err := run.selectCandidates(namedAgents); err != nil {
+			return err
+		}
+		if len(run.candidates) == 0 {
+			fmt.Println("No onboardable agents found.")
+			return nil
+		}
+		for _, candidate := range run.candidates {
+			agentOpts := opts
+			if len(run.candidates) == 1 && strings.TrimSpace(selection.Name) != "" {
+				candidate.DisplayName = strings.TrimSpace(selection.Name)
+				agentOpts.AgentPrepared = true
+			}
+			printRuntimeMissingOnboardingWarning(os.Stdout, candidate)
+			if err := executeManagedEnrollment(candidate, agentOpts); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	baseURL, err := resolveConfiguredAPIURL()
+	if err != nil {
+		return err
+	}
+	run := newOnboardRun(client, baseURL, discovered, opts, selection, input, os.Stdout)
+	run.runAll = runAll
+	run.gather()
+	if err := run.selectCandidates(namedAgents); err != nil {
+		return err
+	}
+	if len(run.candidates) > 0 && !client.IsAuthenticated() {
+		return fmt.Errorf("not authenticated - run 'preloop login' first")
+	}
+	if len(run.candidates) == 0 {
+		for _, agent := range run.configOnly {
+			printRuntimeMissingOnboardingSkips(os.Stdout, []AgentConfig{agent})
+		}
+		if runAll {
+			if err := ensureAgentControlOnboarding(client, discovered, opts); err != nil {
+				return err
+			}
+		}
+		fmt.Println("No onboardable agents found.")
+		printAgentOnboardingSummary(os.Stdout, appendServerOnlyDeviceAgents(client, discovered, completeDiscoveryOutcomes(discovered, nil)))
+		return nil
+	}
+	for _, candidate := range run.candidates {
+		if run.single {
+			// Explicitly named config-only agents may still be onboarded, but
+			// say up front that the runtime is missing.
+			printRuntimeMissingOnboardingWarning(os.Stdout, candidate)
+		}
+	}
+	return run.execute()
+}
+
+// onboardSelectionFromFlags reads every choice a flag can make. namedAgents
+// are the agents the person named: --agents, or the positional name (which
+// may be several words, as in `onboard Claude Code`).
+func onboardSelectionFromFlags(cmd *cobra.Command, args []string) (onboardSelection, []string, error) {
+	selection := defaultOnboardSelection()
+	flags := cmd.Flags()
+	selection.Explain, _ = flags.GetBool("explain")
+	selection.Plain, _ = flags.GetBool("plain")
+	selection.Name, _ = flags.GetString("name")
+	selection.Model, _ = flags.GetString("model")
+	if off, _ := flags.GetBool("no-model-routing"); off {
+		selection.ModelRouting = false
+	}
+	if off, _ := flags.GetBool("no-agent-control"); off {
+		selection.AgentControl = false
+	}
+	if flags.Changed("approvals") {
+		approvals, _ := flags.GetBool("approvals")
+		selection.Approvals = &approvals
+	}
+	report, _ := flags.GetBool("report-extensions")
+	noReport, _ := flags.GetBool("no-report-extensions")
+	if flags.Changed("report-extensions") && noReport && report {
+		return selection, nil, errors.New("--report-extensions and --no-report-extensions cannot be combined")
+	}
+	selection.ReportExtensions = reportExtensionsDefault(flags.Changed("report-extensions") || noReport, report && !noReport)
+	runner, _ := flags.GetBool("runner")
+	noRunner, _ := flags.GetBool("no-runner")
+	if runner && noRunner {
+		return selection, nil, errors.New("--runner and --no-runner cannot be combined")
+	}
+	if runner || noRunner {
+		selection.Runner = &runner
+	}
+	selection.RunnerConsent, _ = flags.GetString("flow-execution-consent")
+	switch selection.RunnerConsent {
+	case "", "ask_me", "always", "never":
+	default:
+		return selection, nil, fmt.Errorf("--flow-execution-consent must be ask_me, always or never, not %q", selection.RunnerConsent)
+	}
+
+	named, _ := flags.GetStringSlice("agents")
+	var cleaned []string
+	for _, name := range named {
+		if strings.TrimSpace(name) != "" {
+			cleaned = append(cleaned, strings.TrimSpace(name))
+		}
+	}
+	if len(args) > 0 {
+		if len(cleaned) > 0 {
+			return selection, nil, errors.New("name the agents either as an argument or with --agents, not both")
+		}
+		cleaned = []string{strings.Join(args, " ")}
+	}
+	return selection, cleaned, nil
 }
 
 func ensureAgentControlOnboarding(
@@ -2676,8 +2523,8 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	}
 	// Work out what the local configuration needs before anything changes.
 	// A file that cannot be written is handed to the user first: the agent
-	// keeps working until they have removed the Preloop block, and
-	// "Offboarded" is never printed for a file that still points at Preloop.
+	// keeps working until they have removed the Preloop block. A restored
+	// backup may intentionally contain a pre-existing Preloop route.
 	baseURL := strings.TrimRight(client.BaseURL(), "/")
 	localPlan := planLocalOffboard(agent, state, baseURL)
 	configReadOnly := !localPlan.Probe.Writable
@@ -2840,13 +2687,17 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		}
 	}
 
-	// Whatever path led here, the file decides: "Offboarded" is printed only
-	// when it no longer points at Preloop.
+	// An exact restored baseline is success even if it used Preloop before
+	// this enrollment. Otherwise a remaining managed block is incomplete.
 	if final := planLocalOffboard(agent, nil, baseURL); final.Readable && final.StillManaged && local.Clean {
-		local = localOffboardOutcome{Line: fmt.Sprintf(
-			"This machine: NOT changed. %s still holds the Preloop block; its key no longer works. Run this command again to remove it.",
-			agent.ConfigPath,
-		)}
+		if restoredAgentBackupMatches(agent, state) {
+			local.Line = fmt.Sprintf("Restored config: %s (original bytes, including pre-existing Preloop configuration; that route has not been validated).", agent.ConfigPath)
+		} else {
+			local = localOffboardOutcome{Line: fmt.Sprintf(
+				"This machine: %s still holds a Preloop block after local cleanup. Run this command again to remove it.",
+				agent.ConfigPath,
+			)}
+		}
 	}
 	// The local state carries the backup. It is kept until the file is
 	// clean, so a later run can still restore the user's own values.
@@ -2889,6 +2740,18 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	}
 
 	return nil
+}
+
+func restoredAgentBackupMatches(agent AgentConfig, state *localEnrollmentState) bool {
+	if state == nil || state.RestoredAt == nil {
+		return false
+	}
+	backup, err := os.ReadFile(state.BackupPath)
+	if err != nil {
+		return false
+	}
+	current, err := os.ReadFile(agent.ConfigPath)
+	return err == nil && bytes.Equal(current, backup)
 }
 
 func restoreAgentFromBackup(agent AgentConfig, state *localEnrollmentState) (time.Time, error) {
@@ -4333,37 +4196,39 @@ func completeDiscoveredAgentArgs(
 	return suggestions, cobra.ShellCompDirectiveNoFileComp
 }
 
-func printEnrollmentPlan(plan managedMCPEnrollmentPlan, dryRun bool) {
+// printEnrollmentPlan writes the full plan block for one agent. It is the
+// text --explain and --dry-run show.
+func printEnrollmentPlan(w io.Writer, plan managedMCPEnrollmentPlan, dryRun bool) {
 	mode := "Apply"
 	if dryRun {
 		mode = "Preview"
 	}
-	fmt.Printf("%s managed MCP onboarding for %s\n", mode, resolveAgentDisplayName(plan.Agent))
-	fmt.Printf("  Agent type: %s\n", plan.Agent.Name)
-	fmt.Printf("  Config: %s\n", plan.Agent.ConfigPath)
+	fmt.Fprintf(w, "%s managed MCP onboarding for %s\n", mode, resolveAgentDisplayName(plan.Agent))
+	fmt.Fprintf(w, "  Agent type: %s\n", plan.Agent.Name)
+	fmt.Fprintf(w, "  Config: %s\n", plan.Agent.ConfigPath)
 	if plan.MCPConfigSkipped {
-		fmt.Printf("  Managed server: skipped — npx/Node.js not found (see notes)\n")
+		fmt.Fprintf(w, "  Managed server: skipped — npx/Node.js not found (see notes)\n")
 	} else {
-		fmt.Printf("  Managed server: %s -> %s\n", plan.ManagedServerName, plan.ManagedServerURL)
+		fmt.Fprintf(w, "  Managed server: %s -> %s\n", plan.ManagedServerName, plan.ManagedServerURL)
 	}
 	if plan.ManagedControlWSURL != "" {
-		fmt.Printf("  Agent Control config target: %s\n", plan.ManagedControlWSURL)
-		fmt.Println("  Agent Control runtime plugin: install/verify when supported")
+		fmt.Fprintf(w, "  Agent Control config target: %s\n", plan.ManagedControlWSURL)
+		fmt.Fprintln(w, "  Agent Control runtime plugin: install/verify when supported")
 	}
-	fmt.Println("  " + inventoryRouteSummary(plan.MCPRoutes))
+	fmt.Fprintln(w, "  "+inventoryRouteSummary(plan.MCPRoutes))
 	discoveredNames := sortedServerNames(plan.Agent.MCPServers)
 	if len(discoveredNames) > 0 {
-		fmt.Printf("  Existing MCP servers: %s\n", strings.Join(discoveredNames, ", "))
+		fmt.Fprintf(w, "  Existing MCP servers: %s\n", strings.Join(discoveredNames, ", "))
 	}
-	fmt.Printf("  Runtime principal: %s\n", runtimePrincipalIDForAgent(plan.Agent))
+	fmt.Fprintf(w, "  Runtime principal: %s\n", runtimePrincipalIDForAgent(plan.Agent))
 	if plan.ManagedProviderName != "" && plan.ManagedModelAlias != "" {
-		fmt.Printf("  Managed model: %s/%s\n", plan.ManagedProviderName, plan.ManagedModelAlias)
+		fmt.Fprintf(w, "  Managed model: %s/%s\n", plan.ManagedProviderName, plan.ManagedModelAlias)
 	}
 	for _, note := range plan.Notes {
 		// Notes are operator-facing status strings (never secret values);
 		// print via a dedicated helper so taint from companion return
 		// values in upstream resolvers does not flow into logging sinks.
-		fmt.Printf("  Note: %s\n", publicPlanNote(note))
+		fmt.Fprintf(w, "  Note: %s\n", publicPlanNote(note))
 	}
 }
 

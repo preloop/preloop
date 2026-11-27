@@ -2198,6 +2198,63 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/account/runner-discovery:
+    get:
+      tags:
+      - Agent discovery
+      summary: Get Runner Discovery Policy
+      description: Read account-wide automatic reporting controls.
+      operationId: get_runner_discovery_policy_api_v1_account_runner_discovery_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerDiscoveryPolicy'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Agent discovery
+      summary: Update Runner Discovery Policy
+      description: Set account-wide reporting controls without changing other settings.
+      operationId: update_runner_discovery_policy_api_v1_account_runner_discovery_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunnerDiscoveryPolicy'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerDiscoveryPolicy'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/discovery-extensions/count:
     get:
       tags:
@@ -2311,6 +2368,7 @@ paths:
             - skill
             - hook
             - command
+            - mcp_server
             type: string
           - type: 'null'
           title: Extension Kind
@@ -2465,6 +2523,7 @@ paths:
           - skill
           - hook
           - command
+          - mcp_server
           type: string
           title: Extension Kind
       - name: extension_id
@@ -2521,6 +2580,7 @@ paths:
           - skill
           - hook
           - command
+          - mcp_server
           type: string
           title: Extension Kind
       - name: extension_id
@@ -2582,6 +2642,7 @@ paths:
           - skill
           - hook
           - command
+          - mcp_server
           type: string
           title: Extension Kind
       - name: extension_id
@@ -2650,6 +2711,7 @@ paths:
           - skill
           - hook
           - command
+          - mcp_server
           type: string
           title: Extension Kind
       - name: extension_id
@@ -2882,6 +2944,201 @@ paths:
           description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/runners/{runner_id}/discovery-policy:
+    get:
+      tags:
+      - Runner discovery
+      summary: Get Runner Discovery Configuration
+      description: Return automatic reporting controls using only the runner credential.
+      operationId: get_runner_discovery_configuration_api_v1_runners__runner_id__discovery_policy_get
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerDiscoveryConfiguration'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - runnerToken: []
+      x-restricted-ci: deny
+  /api/v1/runners/{runner_id}/discovery-reports:
+    post:
+      tags:
+      - Runner discovery
+      summary: Create Runner Discovery Report
+      description: Accept the runner's device report with no enrollment or read authority.
+      operationId: create_runner_discovery_report_api_v1_runners__runner_id__discovery_reports_post
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscoveryReportRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveryReportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - runnerToken: []
+      x-restricted-ci: deny
+  /api/v1/runners/{runner_id}/extension-content/missing:
+    post:
+      tags:
+      - Runner discovery
+      summary: Query Runner Content
+      description: Negotiate only hashes already reported by this runner's device.
+      operationId: query_runner_content_api_v1_runners__runner_id__extension_content_missing_post
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContentQuery'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContentQueryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - runnerToken: []
+      x-restricted-ci: deny
+  /api/v1/runners/{runner_id}/extension-content:
+    post:
+      tags:
+      - Runner discovery
+      summary: Upload Runner Content
+      description: Accept content for the runner's device without any content read
+        access.
+      operationId: upload_runner_content_api_v1_runners__runner_id__extension_content_post
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContentUpload'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContentUploadResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - runnerToken: []
       x-restricted-ci: deny
   /api/v1/telemetry/otlp/v1/metrics:
     post:
@@ -35587,13 +35844,28 @@ components:
         release.
     BatchExecutionListItem:
       properties:
+        agent_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Type
+          description: Execution's recorded harness; null when not recorded.
+        ai_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Ai Model Id
+          description: Execution's recorded catalog model id; not the current flow
+            model.
         model_alias:
           anyOf:
           - type: string
           - type: 'null'
           title: Model Alias
           description: Alias of the model that served most of this execution's gateway
-            requests. Null when the execution has no attributable gateway usage.
+            requests, or the model identifier recorded at dispatch when no gateway
+            usage exists. Null when neither was recorded.
         provider_name:
           anyOf:
           - type: string
@@ -38134,15 +38406,15 @@ components:
       - simple
       - cel
       title: ConditionType
-      description: "Type of condition expression.\n\nThis enum supports the open core\
-        \ licensing model:\n\n- SIMPLE (open source): Basic comparisons using Python-like\
-        \ syntax.\n  Supports operators: ==, !=, >, <, >=, <=\n  Examples:\n    -\
-        \ \"args.amount > 500\"\n    - \"args.recipient == 'bob'\"\n    - \"args.priority\
-        \ != 'low'\"\n\n- CEL (enterprise): Full CEL (Common Expression Language)\
-        \ expressions\n  with advanced functions and capabilities.\n  Examples:\n\
-        \    - \"args.command.contains('rm -rf')\"\n    - \"args.path.startsWith('/etc/')\"\
-        \n    - \"args.tags.exists(t, t == 'production')\"\n    - \"args.amount >\
-        \ 1000 && args.approved == false\""
+      description: "Type of condition expression.\n\nEvery edition evaluates both\
+        \ types. Cloud and Enterprise additionally\nreject invalid CEL syntax when\
+        \ a policy is uploaded.\n\n- SIMPLE: Basic comparisons using Python-like syntax.\n\
+        \  Supports operators: ==, !=, >, <, >=, <=\n  Examples:\n    - \"args.amount\
+        \ > 500\"\n    - \"args.recipient == 'bob'\"\n    - \"args.priority != 'low'\"\
+        \n\n- CEL: Full CEL (Common Expression Language) expressions\n  with advanced\
+        \ functions and capabilities.\n  Examples:\n    - \"args.command.contains('rm\
+        \ -rf')\"\n    - \"args.path.startsWith('/etc/')\"\n    - \"args.tags.exists(t,\
+        \ t == 'production')\"\n    - \"args.amount > 1000 && args.approved == false\""
     ConfirmedEnrollment:
       properties:
         recovery_codes:
@@ -40709,6 +40981,7 @@ components:
           - skill
           - hook
           - command
+          - mcp_server
           title: Extension Kind
         extension_id:
           type: string
@@ -41810,13 +42083,28 @@ components:
       description: 'List-row runner: kind and name only.'
     ExecutionTreeNode:
       properties:
+        agent_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Type
+          description: Execution's recorded harness; null when not recorded.
+        ai_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Ai Model Id
+          description: Execution's recorded catalog model id; not the current flow
+            model.
         model_alias:
           anyOf:
           - type: string
           - type: 'null'
           title: Model Alias
           description: Alias of the model that served most of this execution's gateway
-            requests. Null when the execution has no attributable gateway usage.
+            requests, or the model identifier recorded at dispatch when no gateway
+            usage exists. Null when neither was recorded.
         provider_name:
           anyOf:
           - type: string
@@ -42192,6 +42480,7 @@ components:
           - skill
           - hook
           - command
+          - mcp_server
           title: Extension Kind
         extension_id:
           type: string
@@ -42312,6 +42601,7 @@ components:
           - skill
           - hook
           - command
+          - mcp_server
           title: Extension Kind
         extension_id:
           type: string
@@ -42755,6 +43045,7 @@ components:
           - skill
           - hook
           - command
+          - mcp_server
           title: Kind
         id:
           type: string
@@ -42927,6 +43218,7 @@ components:
           - skill
           - hook
           - command
+          - mcp_server
           title: Extension Kind
         extension_id:
           type: string
@@ -44425,13 +44717,28 @@ components:
       title: FlowExecutionCommand
     FlowExecutionListResponse:
       properties:
+        agent_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Type
+          description: Execution's recorded harness; null when not recorded.
+        ai_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Ai Model Id
+          description: Execution's recorded catalog model id; not the current flow
+            model.
         model_alias:
           anyOf:
           - type: string
           - type: 'null'
           title: Model Alias
           description: Alias of the model that served most of this execution's gateway
-            requests. Null when the execution has no attributable gateway usage.
+            requests, or the model identifier recorded at dispatch when no gateway
+            usage exists. Null when neither was recorded.
         provider_name:
           anyOf:
           - type: string
@@ -44658,13 +44965,28 @@ components:
       description: Lightweight flow execution row for list views.
     FlowExecutionResponse:
       properties:
+        agent_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Type
+          description: Execution's recorded harness; null when not recorded.
+        ai_model_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Ai Model Id
+          description: Execution's recorded catalog model id; not the current flow
+            model.
         model_alias:
           anyOf:
           - type: string
           - type: 'null'
           title: Model Alias
           description: Alias of the model that served most of this execution's gateway
-            requests. Null when the execution has no attributable gateway usage.
+            requests, or the model identifier recorded at dispatch when no gateway
+            usage exists. Null when neither was recorded.
         provider_name:
           anyOf:
           - type: string
@@ -53927,6 +54249,13 @@ components:
           title: Sensitive Data Applied
           description: Whether the sensitive_data block was applied
           default: false
+        policy_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Policy Version
+          description: Version number recorded for this apply; null for a dry run
+            or when no version could be recorded
         warnings:
           items:
             type: string
@@ -56595,6 +56924,44 @@ components:
       - id
       title: RunnerDeleteResponse
       description: Outcome of deleting a runner; its token is rejected from now on.
+    RunnerDiscoveryConfiguration:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+        interval_seconds:
+          anyOf:
+          - type: integer
+            maximum: 604800.0
+            minimum: 3600.0
+          - type: 'null'
+          title: Interval Seconds
+        salt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Salt
+      type: object
+      title: RunnerDiscoveryConfiguration
+      description: Reporting policy and the salt, present only when reporting is allowed.
+    RunnerDiscoveryPolicy:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+        interval_seconds:
+          anyOf:
+          - type: integer
+            maximum: 604800.0
+            minimum: 3600.0
+          - type: 'null'
+          title: Interval Seconds
+      type: object
+      title: RunnerDiscoveryPolicy
+      description: Account controls for automatic discovery; null interval uses device
+        config.
     RunnerFleetSummary:
       properties:
         runner_count:
@@ -63088,7 +63455,7 @@ components:
           default: require_approval
         condition_type:
           $ref: '#/components/schemas/ConditionType'
-          description: 'Expression type: ''simple'' (open source) or ''cel'' (enterprise)'
+          description: 'Expression type: ''simple'' or ''cel'''
           default: simple
         description:
           anyOf:
@@ -63101,20 +63468,20 @@ components:
       - expression
       title: ToolCondition
       description: "Condition for when to apply actions to tool invocations.\n\nSupports\
-        \ two types of conditions for the open core model:\n\nSimple conditions (open\
-        \ source):\n    Basic comparisons using Python-like syntax. These are evaluated\n\
-        \    using a lightweight parser that supports basic operators.\n\n    Supported\
+        \ two types of conditions, both evaluated in every edition:\n\nSimple conditions:\n\
+        \    Basic comparisons using Python-like syntax. These are evaluated\n   \
+        \ using a lightweight parser that supports basic operators.\n\n    Supported\
         \ operators: ==, !=, >, <, >=, <=\n\n    Examples:\n        - \"args.amount\
         \ > 500\"\n        - \"args.recipient == 'bob'\"\n        - \"args.count <=\
-        \ 10\"\n\nCEL conditions (enterprise):\n    Full CEL (Common Expression Language)\
-        \ expressions with advanced\n    functions like contains(), startsWith(),\
-        \ endsWith(), exists(), etc.\n\n    Examples:\n        - \"args.command.contains('rm\
-        \ -rf')\"\n        - \"args.path.startsWith('/etc/')\"\n        - \"args.environment\
+        \ 10\"\n\nCEL conditions:\n    Full CEL (Common Expression Language) expressions\
+        \ with advanced\n    functions like contains(), startsWith(), endsWith(),\
+        \ exists(), etc.\n\n    Examples:\n        - \"args.command.contains('rm -rf')\"\
+        \n        - \"args.path.startsWith('/etc/')\"\n        - \"args.environment\
         \ == 'production' && args.force == true\"\n        - \"args.tags.exists(t,\
         \ t == 'sensitive')\"\n\nAttributes:\n    expression: Expression to evaluate\
         \ against tool arguments.\n    action: Action to take when condition matches.\n\
-        \    condition_type: Type of expression - 'simple' (open source) or 'cel'\
-        \ (enterprise).\n    description: Optional human-readable description."
+        \    condition_type: Type of expression, 'simple' or 'cel'.\n    description:\
+        \ Optional human-readable description."
     ToolConfigurationCreate:
       properties:
         tool_name:
@@ -66036,3 +66403,7 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: JWT token for authentication
+    runnerToken:
+      type: http
+      scheme: bearer
+      description: Registered runner token, limited to its own device reporting routes

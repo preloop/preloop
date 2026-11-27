@@ -24,107 +24,6 @@ import (
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
 
-func TestOnboardCandidatesBestEffortContinuesPastLauncherFailures(t *testing.T) {
-	candidates := []AgentConfig{
-		{
-			Name:        "Gemini CLI",
-			DisplayName: "Gemini CLI",
-			ConfigPath:  "/tmp/gemini/settings.json",
-		},
-		{
-			Name:        "Codex CLI",
-			DisplayName: "Codex CLI",
-			ConfigPath:  "/tmp/codex/config.toml",
-		},
-		{
-			Name:        "OpenClaw",
-			DisplayName: "Mini",
-			ConfigPath:  "/tmp/openclaw/openclaw.json",
-		},
-		{
-			Name:        "Hermes",
-			DisplayName: "Hermes",
-			ConfigPath:  "/tmp/hermes/config.yaml",
-		},
-	}
-	var attempted []string
-
-	enrolled, failures := onboardCandidatesBestEffort(
-		bytes.NewBuffer(nil),
-		io.Discard,
-		candidates,
-		managedEnrollmentOptions{},
-		true,
-		func(agent AgentConfig, opts managedEnrollmentOptions) error {
-			attempted = append(attempted, agent.Name)
-			switch agent.Name {
-			case "Gemini CLI":
-				return fmt.Errorf(
-					"failed to locate gemini executable for managed launcher: %w",
-					exec.ErrNotFound,
-				)
-			case "Codex CLI":
-				return fmt.Errorf(
-					"failed to locate codex executable for managed launcher: %w",
-					exec.ErrNotFound,
-				)
-			}
-			if !opts.AutoApprove || !opts.SkipConfirmation || !opts.DeferLiveValidate {
-				t.Fatalf("expected auto-approved deferred opts, got %+v", opts)
-			}
-			return nil
-		},
-	)
-
-	if got := strings.Join(attempted, ","); got != "Gemini CLI,Codex CLI,OpenClaw,Hermes" {
-		t.Fatalf("expected all candidates to be attempted in order, got %v", attempted)
-	}
-	if len(enrolled) != 2 ||
-		enrolled[0].Name != "OpenClaw" ||
-		enrolled[1].Name != "Hermes" {
-		t.Fatalf("expected OpenClaw and Hermes to enroll after launcher failures, got %+v", enrolled)
-	}
-	if len(failures) != 2 ||
-		failures[0].Agent.Name != "Gemini CLI" ||
-		failures[1].Agent.Name != "Codex CLI" {
-		t.Fatalf("expected Gemini and Codex failures to be recorded, got %+v", failures)
-	}
-}
-
-func TestPrintAgentOnboardingFailuresReportsRecordedFailures(t *testing.T) {
-	failures := []agentOnboardingFailure{
-		{
-			Agent: AgentConfig{Name: "Gemini CLI", DisplayName: "Gemini CLI"},
-			Err: fmt.Errorf(
-				"failed to locate gemini executable for managed launcher: %w",
-				exec.ErrNotFound,
-			),
-		},
-		{
-			Agent: AgentConfig{Name: "Codex CLI", DisplayName: "Codex CLI"},
-			Err: fmt.Errorf(
-				"failed to locate codex executable for managed launcher: %w",
-				exec.ErrNotFound,
-			),
-		},
-	}
-
-	var output bytes.Buffer
-	printAgentOnboardingFailures(&output, failures)
-
-	report := output.String()
-	for _, expected := range []string{
-		"Some agents could not be onboarded:",
-		"Gemini CLI: failed to locate gemini executable for managed launcher",
-		"Codex CLI: failed to locate codex executable for managed launcher",
-		"preloop agents onboard <agent> -y",
-	} {
-		if !strings.Contains(report, expected) {
-			t.Fatalf("expected failure report to contain %q, got:\n%s", expected, report)
-		}
-	}
-}
-
 func TestFailureFootersPointAtTroubleshootingDocs(t *testing.T) {
 	t.Run("summary with a failed agent links the docs once", func(t *testing.T) {
 		var output bytes.Buffer
@@ -148,14 +47,17 @@ func TestFailureFootersPointAtTroubleshootingDocs(t *testing.T) {
 		}
 	})
 
-	t.Run("batch failure report links the docs once", func(t *testing.T) {
-		var output bytes.Buffer
-		printAgentOnboardingFailures(&output, []agentOnboardingFailure{
-			{Agent: AgentConfig{Name: "Codex CLI"}, Err: fmt.Errorf("boom")},
-			{Agent: AgentConfig{Name: "Gemini CLI"}, Err: fmt.Errorf("also boom")},
-		})
-		if strings.Count(output.String(), troubleshootingDocsURL) != 1 {
-			t.Fatalf("expected exactly one troubleshooting link, got:\n%s", output.String())
+	t.Run("a run with a failed agent links the docs once", func(t *testing.T) {
+		fake := newFakeOnboardRun(t, []AgentConfig{
+			{Name: "Codex CLI", ConfigPath: "/tmp/synthetic/codex.toml", RuntimeState: string(agentRuntimeStatePresent), AuthState: string(agentAuthStateReady)},
+			{Name: "Gemini CLI", ConfigPath: "/tmp/synthetic/gemini.json", RuntimeState: string(agentRuntimeStatePresent), AuthState: string(agentAuthStateReady)},
+		}, defaultOnboardSelection(), "", true)
+		fake.applyErrors = map[string]error{"Gemini CLI": fmt.Errorf("boom")}
+		if err := fake.run.execute(); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(fake.out.String(), troubleshootingDocsURL) != 1 {
+			t.Fatalf("expected exactly one troubleshooting link, got:\n%s", fake.out.String())
 		}
 	})
 }
@@ -1638,74 +1540,6 @@ func TestGetManagedAgentForDiscoveredFallsBackToLegacyDesktopAgentSourceType(
 				t.Fatalf("expected legacy desktop agent match, got %#v", managed)
 			}
 		})
-	}
-}
-
-func TestPromptToOnboardCandidates_DeclineContinuesToNextAgent(t *testing.T) {
-	input := strings.NewReader("n\ny\n\n")
-	output := &bytes.Buffer{}
-	candidates := []AgentConfig{
-		{Name: "OpenClaw", ConfigPath: "/tmp/openclaw.json"},
-		{Name: "Codex CLI", ConfigPath: "/tmp/codex.json"},
-	}
-
-	var enrolled []AgentConfig
-	_, err := promptToOnboardCandidates(
-		input,
-		output,
-		candidates,
-		false,
-		false,
-		func(agent AgentConfig, _ bool) error {
-			enrolled = append(enrolled, agent)
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(enrolled) != 1 || enrolled[0].Name != "Codex CLI" {
-		t.Fatalf("expected only the second agent to be enrolled, got %#v", enrolled)
-	}
-	if enrolled[0].DisplayName != "Codex CLI" {
-		t.Fatalf("expected default confirmed name for second agent, got %#v", enrolled[0])
-	}
-	rendered := output.String()
-	if !strings.Contains(rendered, "Onboard OpenClaw (OpenClaw) into managed Preloop access now?") {
-		t.Fatalf("expected first prompt in output, got %q", rendered)
-	}
-	if !strings.Contains(rendered, "Onboard Codex CLI (Codex CLI) into managed Preloop access now?") {
-		t.Fatalf("expected second prompt in output, got %q", rendered)
-	}
-	if !strings.Contains(rendered, "Agent name [Codex CLI]: ") {
-		t.Fatalf("expected name prompt in output, got %q", rendered)
-	}
-}
-
-func TestDiscoveryNeverEnablesNativeApprovals(t *testing.T) {
-	for _, auto := range []bool{false, true} {
-		for _, name := range []string{"Cursor", "Claude Code", "Codex CLI", "Copilot CLI"} {
-			t.Run(fmt.Sprintf("%s/auto=%t", name, auto), func(t *testing.T) {
-				var output bytes.Buffer
-				called := false
-				_, err := promptToOnboardCandidates(strings.NewReader("y\n\n"), &output,
-					[]AgentConfig{{Name: name, ConfigPath: "/tmp/synthetic-config"}}, auto, true,
-					func(agent AgentConfig, approvals bool) error {
-						called = true
-						if approvals {
-							t.Fatal("discovery opted into native approvals without --approvals")
-						}
-						return nil
-					})
-				if err != nil || !called {
-					t.Fatalf("called=%t err=%v", called, err)
-				}
-				if strings.Contains(output.String(), "through Preloop approvals?") {
-					t.Fatal("unexpected approval opt-in prompt")
-				}
-			})
-		}
 	}
 }
 

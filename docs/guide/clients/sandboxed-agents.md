@@ -356,9 +356,9 @@ If a container is stuck because every tool call is refused, run `preloop agents 
 
 ## In the console
 
-While the setup waits, the agent's page shows **Waiting for local configuration**, with the expiry time, the resume command, and a **Cancel setup** button.
+While the setup waits, the agent's page shows **Waiting for local configuration**. **View setup** opens the **Credentials** tab (`?tab=credentials`), where the expiry time, resume command, and **Cancel setup** button appear.
 
-The **Set up manually** panel on the same page shows the instructions again, with the placeholder `<AGENT_KEY>` where the key goes. Preloop does not keep the key, so it cannot show the one the CLI printed. The panel can issue a new key, shown once and filled into the instructions while you stay on the page.
+Below the credentials card, **Set up manually** shows the instructions directly, with the placeholder `<AGENT_KEY>` where the key goes. Preloop does not keep the key, so it cannot show the one the CLI printed. The panel can issue a new key, shown once and filled into the instructions while you stay on the page.
 
 !!! note "Which key a pending setup accepts"
     `preloop agents onboard --resume` expects the key the CLI printed for that setup. A different key for the same agent, such as one issued from the console panel, is accepted only when the real request made by resume succeeds with it. With `--skip-live-validate`, or for an agent with no model route, nothing can prove a different key, and resume reports that the key in place is not the one issued for this setup. If you lost the printed key, issue one in the console and resume without skipping the request, or cancel the setup and onboard again.

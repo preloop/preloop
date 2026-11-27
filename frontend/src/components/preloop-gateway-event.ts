@@ -486,6 +486,7 @@ ${previewText}</pre>
   }
 
   private handleExpand(e: Event) {
+    if (e.target !== e.currentTarget) return;
     const details = e.target as HTMLDetailsElement;
     this.expanded = details.open;
     this.dispatchEvent(

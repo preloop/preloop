@@ -494,6 +494,8 @@ func TestUpdateDiscoversAndOffersMissingAgentIntegrationsEveryTime(t *testing.T)
 	}))
 	defer server.Close()
 	saveRunnerSetupClient(t, server.URL)
+	// `preloop update` only makes the offer on a terminal.
+	setStdinTerminal(t, true)
 	for i := 0; i < 3; i++ {
 		if i == 2 {
 			// A previously enrolled Hermes with a missing plugin must also be offered.
@@ -505,18 +507,21 @@ func TestUpdateDiscoversAndOffersMissingAgentIntegrationsEveryTime(t *testing.T)
 		var out bytes.Buffer
 		cmd := &cobra.Command{}
 		cmd.SetOut(&out)
-		cmd.SetIn(strings.NewReader("n\nn\n"))
+		// The offer is one review of every agent; decline it.
+		cmd.SetIn(strings.NewReader("n\n"))
 		if err := updateAgentIntegrations(cmd); err != nil {
 			t.Fatal(err)
 		}
+		if !strings.Contains(out.String(), "Apply to 2 agents? [Y/n/c/e]:") || !strings.Contains(out.String(), "Nothing was changed.") {
+			t.Fatalf("update %d did not offer the review: %s", i, out.String())
+		}
 		for _, name := range []string{"Codex CLI", "Hermes"} {
-			prompt := "Onboard " + name
-			if i == 2 && name == "Hermes" {
-				prompt = "Update Hermes"
-			}
-			if !strings.Contains(out.String(), prompt) {
+			if !strings.Contains(out.String(), name+" ") {
 				t.Fatalf("update %d did not explicitly offer %s: %s", i, name, out.String())
 			}
+		}
+		if i == 2 && !strings.Contains(out.String(), "already onboarded") {
+			t.Fatalf("update %d did not say Hermes is already onboarded: %s", i, out.String())
 		}
 	}
 	for _, path := range []string{".codex/config.toml", ".hermes/config.yaml"} {

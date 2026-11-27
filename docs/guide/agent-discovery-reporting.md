@@ -1,13 +1,48 @@
-# Agent discovery reporting (opt-in)
+# Agent discovery reporting
 
 Editions: OSS, Cloud, Enterprise
 
 `preloop agents discover` scans the local machine for known agent tools
 (Claude Code, Cursor, Codex CLI and the rest). By default the scan stays on
 the machine: it only reads `GET /api/v1/agents` to mark which agents are
-already enrolled. Discovery reporting is the opt-in way to tell Preloop which
-agent tools exist on workstations that were never onboarded, so they show up
-in the console under **Agents > Not yet governed**.
+already enrolled. Discovery reporting tells Preloop which agent tools exist on
+a workstation, including ones that were never onboarded, so they show up in
+the console under **Agents > Not yet governed**. A manual `agents discover`
+reports only when asked to. `agents onboard` sends the same report by default,
+and an installed resident runner also reports automatically.
+
+## Reporting during onboarding (on by default)
+
+When `preloop agents onboard` has set up at least one agent, it sends one
+report for the machine: the same request, with the same contents and limits,
+as `preloop agents discover --report`. The review says so before you confirm,
+in one line, and lists "extension report on" among the options:
+
+```text
+  ! Extension report: sends the names, versions, content hashes, descriptions
+    and authors of installed plugins, skills, hooks and commands, then their
+    redacted text for review. Off: --no-report-extensions
+```
+
+| To | Use |
+| --- | --- |
+| Turn the report off for one run | `preloop agents onboard --no-report-extensions`, or answer `c` in the review |
+| Turn it off for every run on a machine | `PRELOOP_DISCOVERY_REPORT=0` (also `false`, `no`, `off`) in the environment |
+| Keep the report and not upload extension text | `--no-extension-content`, `PRELOOP_NO_EXTENSION_CONTENT=1`, or the account setting (see [Extension content](#extension-content)) |
+
+The default also applies under `--yes` and `PRELOOP_CONFIRM=1`; the plan and
+the line above are printed before anything is applied. `--unattended`
+enrollment does not send the report: it holds an enrollment token, not a
+login, and cannot call the report endpoints.
+
+The report needs the `report_discovery` permission. When the signed-in role
+does not have it, or the request fails for any other reason, onboarding prints
+one line ("extension report not sent: ...") and finishes normally. A failed
+report never fails onboarding and is not retried.
+
+There is no account-wide switch for the report itself. An account can turn off
+the upload of extension text; the collector asks before uploading and honours
+that.
 
 For the per-OS distinction between installed, configured, observed active and
 governed, read the [coverage guide](endpoint-coverage.md#platform-scope).
@@ -16,7 +51,7 @@ includes DPIA inputs and the limits of report-only credentials.
 Reported devices appear on [Device fleet](device-fleet.md), which can alert
 when an enrolled agent goes quiet or an expected control is no longer seen.
 
-## Turning it on
+## Turning it on for discovery
 
 Either pass the flag or set the environment variable:
 
@@ -25,7 +60,7 @@ preloop agents discover --report --json --no-onboard-prompt
 PRELOOP_DISCOVERY_REPORT=1 preloop agents discover --json --no-onboard-prompt
 ```
 
-Without one of them nothing about the scan leaves the machine. With `--json`
+Without one of them the manual scan sends no discovery report. With `--json`
 the report confirmation goes to stderr so stdout stays valid JSON.
 
 With closed or non-terminal stdin, discovery never offers or performs onboarding,
@@ -33,6 +68,80 @@ including with `--report`, `--yes` or `PRELOOP_CONFIRM=1`. Text output explains
 that onboarding was skipped and directs you to run `preloop agents onboard`
 from a terminal. JSON and inventory output retain their machine-readable format.
 Use `--no-onboard-prompt` to suppress onboarding in an interactive terminal too.
+
+## Automatic runner reports
+
+A resident runner reports once after a randomized 30-second to five-minute startup
+delay, then about every 24 hours with up to 10% jitter. A successful report is
+remembered across restarts, so restarting a service does not immediately report
+again. One-shot ephemeral runners do not collect discovery.
+
+Automatic reports use the same read-only collector and privacy rules as manual
+reports. They include installed agents, including agents not onboarded, and their
+extensions. They never prompt, enroll an agent, install an extension, execute an
+agent, or rewrite an application's configuration. The only local writes are
+runner scheduling and status records and the one-time content-notice marker.
+
+Configure the device in the Preloop config file:
+
+```yaml
+runner:
+  discovery:
+    enabled: true
+    interval: 24h
+```
+
+Extension description opt-out applies to manual and automatic reports alike:
+
+```yaml
+discovery:
+  no_extension_details: true
+```
+
+The equivalent foreground flag is `preloop runner fg --no-extension-details`.
+Content follows the [extension content contract](#extension-content), including
+redaction and all account, device and per-extension opt-outs. Use
+`discovery.extension_content: false`, `PRELOOP_NO_EXTENSION_CONTENT=1`, or
+`preloop runner fg --no-extension-content` to omit content. The first upload
+prints its disclosure in the runner service log before sending. A failed content
+query or upload uses the same retry schedule; already stored hashes are not resent.
+
+Set `enabled: false` to stop automatic discovery on that device. An explicit
+`PRELOOP_DISCOVERY_REPORT=0` (also `false`, `no` or `off`) in the service environment
+also opts out. The runner reads
+this setting every minute. Intervals are bounded to one hour through seven days;
+an invalid duration uses 24 hours. `preloop runner status` shows the last attempt,
+last successful report, result, and the opt-out instruction, even while offline.
+
+Administrators with `manage_policies` can read or replace account controls at
+`GET` / `PUT /api/v1/account/runner-discovery`:
+
+```json
+{"enabled": false, "interval_seconds": null}
+```
+
+`enabled: false` also rejects incoming automatic reports. A non-null
+`interval_seconds` overrides device intervals and must be 3600 through 604800.
+Null lets devices use their configured interval. Policy is refreshed every five
+minutes; a failed policy fetch prevents collection and retries with backoff.
+Device opt-out always wins. These controls leave explicitly requested manual
+reports available.
+
+Failures retry after one minute, doubling with jitter up to one hour. The runner
+does not spool inventories on disk. It collects fresh evidence on a retry and
+keeps the last successful timestamp. An older server without runner reporting
+support fails closed and is retried; it never falls back to a user's login token.
+
+The runner uses its own credential. Its inventory capability grants only
+`report_discovery` on its policy, inventory and content upload routes, scoped to
+its account and workstation. Content negotiation is limited to hashes this device
+has already reported. It has no content read permission. It cannot list candidates or read another device's reports. Token
+rotation and removal revoke this reporting access too.
+
+The standard launchd agent, systemd user service and Windows logon task scan the
+user who runs them. An administrator-installed elevated service scans all local
+profiles through the existing bounded all-users collector. Unreadable profiles,
+probe failures and scan limits remain incomplete evidence, never proof of absence.
 
 ## Device-scoped token for scheduled runs
 
@@ -48,8 +157,12 @@ curl -X POST https://preloop.example.com/api/v1/auth/api-keys \
   -d '{"name": "workstation discovery", "scopes": ["report_discovery"]}'
 ```
 
-Such a key can call `GET /api/v1/agents/discovery-salt` and
-`POST /api/v1/agents/discovery-reports` and nothing else: every other REST
+Such a key can call `GET /api/v1/agents/discovery-salt`,
+`POST /api/v1/agents/discovery-reports` and the two
+[extension content](#extension-content) upload routes,
+`POST /api/v1/agents/extension-content/missing` and
+`POST /api/v1/agents/extension-content`, and nothing else: it cannot read
+stored content. Every other REST
 route and every console WebSocket refuses it with `403 api_key_scope_denied`.
 Run the job with `PRELOOP_TOKEN=<key>` and `PRELOOP_DISCOVERY_REPORT=1`.
 
@@ -75,10 +188,8 @@ report builder does not populate it. Optional evidence fields and the exact
 hash inputs are documented in the [collector field inventory](endpoint-coverage.md#fields-and-data-paths).
 
 The machine id is `/etc/machine-id` on Linux, `IOPlatformUUID` on macOS and
-`MachineGuid` on Windows. When none is available current-user reporting
-generates a random id once and keeps it in the CLI config directory. All-user
-reporting reuses an existing fallback or requires `--device-ref`; it does not
-create an identity file.
+`MachineGuid` on Windows. When none is available, reporting reuses an existing fallback identity or requires
+`--device-ref`. The read-only collector never creates an identity file.
 
 ## What the report never carries
 
@@ -90,8 +201,10 @@ earlier statement on this page that no command string and no file content
 leaves the host.
 
 The discovery report itself still omits local profile names, hostnames, home or
-config paths in clear, file bodies, credential files, environment values, MCP
-server names, source URLs, hook command strings and arguments. V4 adds the
+config paths in clear, file bodies, credential files, environment values,
+headers, source URLs, hook command strings and arguments. MCP server identifiers
+are sent in clear like other extension identifiers; their definitions are hashed,
+and MCP bodies are not uploaded by the content pass. V4 adds the
 bounded authored metadata described under [Extensions](#extensions), including
 descriptions, author names, hook matchers and executable basenames. This is a
 new data class: an extension author could put sensitive text in a description.
@@ -110,7 +223,10 @@ agent kind, config path hash), with `first_seen_at`, `last_seen_at` and a
 status: `new`, `onboarded` or `ignored`.
 
 - A new row fires the [`agent.discovered`](webhooks.md) webhook once. A
-  re-report of the same tool only moves `last_seen_at` and emits nothing.
+  re-report of the same tool updates `last_seen_at` and its reported enrollment
+  state, preserves `first_seen_at`, and emits no new discovery event. The console
+  shows **First seen** and a **New this week** badge for candidates first seen
+  within seven days that are still not onboarded.
 - For current-user discovery, every enrollment write for an agent from the
   same workstation (applied, validated or failing validation, for any agent
   kind including MCP-only and IDE-config agents) carries the same two hashes,
@@ -143,6 +259,11 @@ status: `new`, `onboarded` or `ignored`.
 | --- | --- |
 | `GET /api/v1/agents/discovery-salt` | `report_discovery` |
 | `POST /api/v1/agents/discovery-reports` | `report_discovery` |
+| `GET /api/v1/runners/{id}/discovery-policy` | Runner token with inventory capability |
+| `POST /api/v1/runners/{id}/discovery-reports` | Runner token, own device only |
+| `POST /api/v1/runners/{id}/extension-content/missing` | Runner token, own reported hashes only |
+| `POST /api/v1/runners/{id}/extension-content` | Runner token, own device only |
+| `GET` / `PUT /api/v1/account/runner-discovery` | `manage_policies` |
 | `GET /api/v1/agents/discovery-candidates?status=new` | `view_agents` |
 | `PATCH /api/v1/agents/discovery-candidates/{id}` (`{"status": "ignored"}`) | `manage_agents` |
 
@@ -250,8 +371,9 @@ malformed files mark managed configuration incomplete and the control unknown.
 from the managed-config status. The overall report retains its most severe state
 and accumulated error codes. This does not
 inspect higher managed sources or establish the effective policy in the app.
-All-user reports never upload extension content: commands, file contents,
-environment values and credentials are not sent by this mode.
+The inventory envelope contains no file bodies or command strings. All-user
+reports can upload redacted extension content in the separate content pass,
+subject to the same account, device and per-extension opt-outs.
 Offline profile inventory remains limited to profile configuration.
 
 Offline v2 output also associates probe results with `profile_ref`. Its fresh
@@ -333,7 +455,7 @@ and evidence records. If the server also rejects v3, the existing v2 retry
 removes extensions and managed configuration. Other validation failures do not
 trigger a downgrade. Older CLIs continue to work against the new server.
 
-Extension identifiers (plugin, skill, command and hook event names, versions,
+Extension identifiers (plugin, skill, command, MCP server and hook event names, versions,
 and marketplace names) are sent in clear. Marketplace and git URLs, hook
 commands, file contents and paths are not part of this inventory record. Hook
 commands and file text are uploaded separately as
@@ -351,9 +473,27 @@ only by SHA-256 hashes; project references use the config-path hashing scheme
 | Claude Code | Skill | `.claude/skills/<name>/SKILL.md` | Directory identifier, front matter name and description, invocation, script count, tree hash |
 | Claude Code | Hook | `hooks` in `.claude/settings.json`; JSON event mappings in `.claude/hooks/` | Event, matchers, command counts, executable basenames, Preloop classification, aggregate hash |
 | Claude Code | Command | `.claude/commands/*.md` | File stem, front matter description, slash invocation, file hash |
+| Claude Code | MCP server | User `mcpServers` and project-local `projects.<root>.mcpServers` in `.claude.json`; `.mcp.json` in known or explicit project roots | Server identifier, scope, configuration hash; no commands, arguments, environment values, headers or URLs |
 | Codex CLI | Plugin | `.codex/plugins/cache/<marketplace>/<name>/<version>/`, `[plugins]` in `.codex/config.toml` | Name and marketplace, manifest version, description, author name, component counts, source hash, enabled state |
-| Codex CLI | Skill | `.agents/skills/<name>/` and legacy `.codex/skills/<name>/` | Directory identifier, front matter name and description, invocation, script count, tree hash |
+| Codex CLI | Skill | `.agents/skills/<name>/`, legacy `.codex/skills/<name>/`, and `.codex/skills/.system/<name>/` | One row per skill directory, front matter name and description, invocation, script count, tree hash |
 | Codex CLI | Hook | `.codex/hooks.json`, `[hooks]` in `.codex/config.toml` | Event, matchers, command counts, executable basenames, Preloop classification, aggregate hash |
+| Codex CLI | MCP server | `[mcp_servers.<name>]` in `.codex/config.toml`, including explicit project roots | Server identifier, scope, configured enabled state, configuration hash; no commands, arguments, environment values, headers or URLs |
+
+Claude local MCP entries use project scope, matching local plugin reporting.
+A local entry overrides a same-name project entry. User entries retain their
+own rows. Claude MCP enabled state remains unknown unless explicitly disabled;
+configured presence does not prove approval or execution. MCP hashes cover the
+canonical server definition, including private values without sending them in clear.
+
+MCP content hashes use the same unkeyed SHA-256 comparison scheme as hook
+commands and skill files, so offline policy checks and pins agree across
+devices without fetching an account key. They do not send cleartext definitions,
+but they are not encryption: someone with the rest of a definition and its hash
+can test guesses for a low-entropy password or token. Treat exported hashes as
+sensitive metadata. Rotating a credential in `env`, an argument, a header or a
+URL changes the hash and makes an existing content pin report `content_changed`.
+Account-keyed hashes would require a different offline-policy contract; the
+current contract intentionally retains portable content hashes.
 
 The plugin layouts were verified with Claude Code 2.1.332 and Codex CLI 0.172.0
 using their plugin managers. Claude's install registry is authoritative: unused
@@ -500,7 +640,11 @@ and the local file list, within the collector's existing bounded reads. It
 never authenticates, uploads, calls a model, or executes an extension. Use
 `--project .` in the repository for project extensions. The console provides a
 copyable command for each row. Report-hashed identifiers can also be resolved
-locally. A bounded or unreadable scan is reported as incomplete with exit 2.
+locally. Finding and displaying the requested item exits 0 even when another
+part of the inventory scan is incomplete. A note names unscanned project roots
+and the `--project` flag needed to include them. A missing requested item still
+fails. `extensions check` prints the same project notes while retaining exit 2
+for an incomplete scan. MCP `show` prints metadata and file locations only.
 Terminal control characters are displayed as escapes; newlines and tabs are
 preserved so inspecting an extension cannot execute terminal escape sequences.
 
@@ -639,9 +783,9 @@ content_hash, version, note, pinned_by_user_id, pinned_by, pinned_at}]`.
 
 In the console, the Agents toolbar's **Extensions** entry lists distinct extensions
 with device counts and versions seen. A managed agent's detail page has an
-**Extensions** section with the same list filtered to that agent's kind (for
+**Extensions** tab (`?tab=extensions`) with the same list filtered to that agent's kind (for
 example `claude_code`) across the account, not to one device, and the count in
-its heading after first opening. Device detail shows per-profile inventory,
+its tab label after first opening. Device detail shows per-profile inventory,
 source/project hash prefixes, scope and enabled state. Both views filter by
 effective state (including **Content changed** and **Content unverified**) and
 source. A pinned approval shows **Pinned (n)**; **Content hashes** expands the
@@ -654,16 +798,16 @@ is partial or unknown, and **Load more** follows the server's cursor.
 
 The Agents toolbar offers **Extensions** with the account-wide count in list,
 cards and canvas views. It opens the same inventory without changing view mode;
-closing and reopening keeps the loaded rows. The agent detail section loads on
-first expansion and links directly to this account inventory.
+closing and reopening keeps the loaded rows. The agent detail tab loads on
+first selection, retains its rows between tab switches, and links directly to
+this account inventory.
 
 ## Extension content
 
 Editions: OSS, Cloud, Enterprise
 
 An approver cannot judge "skill careful" or "hook PreToolUse (1 command)" from
-a name and a hash. So after a current-user `preloop agents discover --report`
-the collector also uploads the text behind each reported content hash. This is
+a name and a hash. After a manual or automatic runner report, the collector also uploads the text behind each reported content hash. This is
 **on by default** and is a different data class from everything above: it is
 text written by extension authors, and it can contain credentials, internal
 host names and customer data. The sections below say exactly what is sent, what
@@ -687,8 +831,9 @@ Never uploaded, and marked in the file list with the reason:
 - a file that changed or could not be read while it was collected: `unreadable`;
 - text beyond the per extension cap: `over_budget`.
 
-All-user reports (`--all-users`) and offline `--inventory` never upload
-content. Extensions whose content hash could not be computed (`too_large`,
+All-user reports (`--all-users`) collect content only from the local profiles
+covered by their inventory, with profile-local scope and the same opt-outs.
+Offline `--inventory` never uploads content. Extensions whose content hash could not be computed (`too_large`,
 `unreadable`) have no content either.
 
 ### Size caps

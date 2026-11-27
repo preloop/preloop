@@ -1071,12 +1071,12 @@ async def _agent_permission_check(
         account_id=identity.account_id,
         user_id=identity.user_id,
         managed_agent_id=identity.managed_agent_id,
-        # A runner-hosted session's approvals belong on that session, where
-        # the console and `preloop sessions attach` show them (#1482).
+        # The verified origin session owns the approval, as it owns the
+        # native tool activity below: the session filter and `preloop
+        # sessions attach` find a pending request there (#1482 for hosted
+        # harnesses, #2560 for local ones).
         runtime_session_id=(
-            UUID(origin_id)
-            if hosted_origin and origin_id
-            else identity.runtime_session_id
+            UUID(origin_id) if origin_id else identity.runtime_session_id
         ),
         managed_agent_name=identity.managed_agent_name,
         api_key_id=identity.api_key_id,

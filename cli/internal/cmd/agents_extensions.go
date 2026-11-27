@@ -39,7 +39,7 @@ var (
 var agentsExtensionsCmd = &cobra.Command{
 	Use:   "extensions",
 	Short: "List installed agent extensions on this machine",
-	Long: `List plugins, skills, hooks and commands found in known local locations.
+	Long: `List plugins, skills, hooks, commands and MCP servers found in known local locations.
 
 The command is read-only: it does not authenticate, use the network, or write
 a file. Identifiers stay in clear, including names an inventory report would
@@ -87,9 +87,9 @@ Examples:
 func init() {
 	agentsExtensionsCmd.PersistentFlags().StringArray("agent", nil, "app id to scan (repeatable; default claude-code and codex-cli)")
 	agentsExtensionsCmd.PersistentFlags().Bool("json", false, "print JSON instead of text")
-	agentsExtensionsCmd.PersistentFlags().StringArray("project", nil, "include a Claude project root (repeatable; use . for the current directory)")
+	agentsExtensionsCmd.PersistentFlags().StringArray("project", nil, "include a project root (repeatable; use . for the current directory)")
 	agentsExtensionsCmd.PersistentFlags().Bool("all-users", false, "scan bounded local profiles; requires elevated administrator rights")
-	agentsExtensionsCmd.Flags().StringArray("kind", nil, "extension kind to show: plugin, skill, hook, or command (repeatable)")
+	agentsExtensionsCmd.Flags().StringArray("kind", nil, "extension kind to show: plugin, skill, hook, command, or mcp_server (repeatable)")
 	agentsExtensionsCheckCmd.Flags().String("policy-file", "", "path to an offline extension policy file")
 	agentsExtensionsCheckCmd.Flags().Bool("online", false, "fetch the account policy; sends no local inventory")
 	agentsExtensionsCheckCmd.Flags().String("fail-on", "unapproved", "failure threshold: unapproved or unknown")
@@ -105,6 +105,7 @@ type extensionGroup struct {
 	profileRef   string
 	profileLabel string
 	extensions   []inventoryExtension
+	scanNotes    []string
 }
 
 type extensionRule struct {
@@ -269,6 +270,9 @@ func runAgentsExtensionsCheck(cmd *cobra.Command, _ []string) error {
 		err = writeExtensionJSON(cmd, extensionCheckDocumentFrom(findings, counts, reasons, failOn))
 	} else {
 		err = writeExtensionCheck(cmd.OutOrStdout(), findings, counts, reasons, allUsers)
+		if err == nil {
+			err = writeExtensionScanNotes(cmd.OutOrStdout(), groups)
+		}
 	}
 	if err != nil {
 		return err
@@ -352,7 +356,7 @@ func selectedExtensionKinds(cmd *cobra.Command) (map[string]bool, error) {
 	if len(values) == 0 {
 		return nil, nil
 	}
-	allowed := map[string]bool{"plugin": true, "skill": true, "hook": true, "command": true}
+	allowed := map[string]bool{"plugin": true, "skill": true, "hook": true, "command": true, "mcp_server": true}
 	kinds := map[string]bool{}
 	for _, value := range values {
 		if !allowed[value] {
@@ -410,9 +414,14 @@ func scanCurrentUserExtensions(apps []extensionApp, kinds map[string]bool, proje
 	groups := make([]extensionGroup, 0, len(apps))
 	reasons := []string{}
 	for _, app := range apps {
-		found, errs := collectDisplayExtensions(home, app.id, "", false, projects...)
+		scan := newExtensionScan(home, app.id, "", true)
+		found, errs := scan.collect(false, projects...)
 		reasons = append(reasons, errs...)
-		groups = append(groups, extensionGroup{app: app, profileRef: "current", profileLabel: "current user", extensions: filterExtensionKinds(found, kinds)})
+		notes := []string{}
+		for path, reason := range scan.unscanned {
+			notes = append(notes, fmt.Sprintf("%s: project root %s was not scanned (%s). Include it with --project %s; if unavailable, restore access to that root first.", app.id, extensionDisplayText(path), reason, extensionDisplayText(shellQuoteArg(path))))
+		}
+		groups = append(groups, extensionGroup{app: app, profileRef: "current", profileLabel: "current user", extensions: filterExtensionKinds(found, kinds), scanNotes: uniqueSorted(notes)})
 	}
 	return groups, uniqueSorted(reasons), nil
 }
@@ -540,6 +549,9 @@ func writeExtensionTables(w io.Writer, groups []extensionGroup, reasons []string
 		}
 	}
 	_, err := io.WriteString(w, extensionSummary(count, reasons))
+	if err == nil {
+		err = writeExtensionScanNotes(w, groups)
+	}
 	return err
 }
 
@@ -552,6 +564,18 @@ func extensionSummary(count int, reasons []string) string {
 		return fmt.Sprintf("%d %s. Scan complete.\n", count, noun)
 	}
 	return fmt.Sprintf("%d %s.\nScan incomplete: %s\n", count, noun, strings.Join(reasons, ", "))
+}
+
+// Scan notes are local diagnostics. Raw project roots never enter reports.
+func writeExtensionScanNotes(w io.Writer, groups []extensionGroup) error {
+	for _, group := range groups {
+		for _, note := range group.scanNotes {
+			if _, err := fmt.Fprintln(w, "Note: "+note); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func writeAlignedRows(w io.Writer, header []string, rows [][]string) error {
@@ -777,7 +801,7 @@ func policyIdentity(entry policyEntryJSON) (string, string, string, string, stri
 		return "", "", "", "", "missing extension_kind"
 	}
 	switch *entry.ExtensionKind {
-	case "plugin", "skill", "hook", "command":
+	case "plugin", "skill", "hook", "command", "mcp_server":
 	default:
 		return "", "", "", "", "invalid extension_kind"
 	}

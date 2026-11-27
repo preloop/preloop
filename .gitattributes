@@ -13,3 +13,6 @@ cli/internal/cmd/testdata/extension-overlay/** text eol=lf
 
 # The Go/Python profile report wire fixture is byte-exact LF on every OS.
 cli/internal/cmd/testdata/profile-inventory/** text eol=lf
+
+# Onboarding output goldens are compared byte for byte: LF on every OS.
+cli/internal/cmd/testdata/onboarding/** text eol=lf

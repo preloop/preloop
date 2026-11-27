@@ -33,7 +33,7 @@ func extensionDisplayText(value string) string {
 }
 
 func runAgentsExtensionsShow(cmd *cobra.Command, args []string) error {
-	if !map[string]bool{"skill": true, "command": true, "plugin": true, "hook": true}[args[0]] {
+	if !map[string]bool{"skill": true, "command": true, "plugin": true, "hook": true, "mcp_server": true}[args[0]] {
 		return extensionUsage(cmd, "unknown extension kind")
 	}
 	apps, err := selectedExtensionApps(cmd)
@@ -80,13 +80,13 @@ func runAgentsExtensionsShow(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if len(reasons) > 0 {
-		fmt.Fprintln(cmd.ErrOrStderr(), "Scan incomplete: "+strings.Join(reasons, ", "))
+		fmt.Fprintln(cmd.ErrOrStderr(), "Note: inventory scan incomplete: "+strings.Join(reasons, ", "))
+		if err := writeExtensionScanNotes(cmd.ErrOrStderr(), groups); err != nil {
+			return err
+		}
 	}
 	if !found {
 		return errors.New("extension not found; select its agent with --agent and include its project with --project")
-	}
-	if len(reasons) > 0 {
-		return &exitCodeError{code: 2}
 	}
 	return nil
 }

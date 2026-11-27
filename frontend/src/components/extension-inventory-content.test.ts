@@ -95,6 +95,7 @@ interface Calls {
 
 async function mount(options: {
   approval: ExtensionAggregate['approval_state'];
+  kind?: ExtensionKey['extension_kind'];
   manage?: boolean;
   admin?: boolean;
   settings?: ExtensionContentSettings;
@@ -102,7 +103,9 @@ async function mount(options: {
 }): Promise<[ExtensionInventory, Calls]> {
   const calls: Calls = { reads: [], updates: [], pinned: [], acknowledged: 0 };
   const page: ExtensionPage = {
-    items: [row(options.approval)],
+    items: [
+      { ...row(options.approval), extension_kind: options.kind ?? 'skill' },
+    ],
     next_cursor: null,
     completeness: 'complete',
   };
@@ -168,6 +171,19 @@ async function read(
 }
 
 describe('extension inventory content', () => {
+  it('explains that MCP bodies are not collected and offers no content read', async () => {
+    const [element, calls] = await mount({
+      approval: 'approved',
+      kind: 'mcp_server',
+    });
+    await expand(element);
+    expect(element.shadowRoot!.querySelector('.read-content')).to.equal(null);
+    expect(element.shadowRoot!.textContent).to.contain(
+      'MCP server bodies are not collected'
+    );
+    expect(calls.reads).to.deep.equal([]);
+  });
+
   // protects=content is read only on an explicit click, for the row's hash;
   // fails_when=expanding a row reads content (an audited read) by itself.
   it('reads the content of a hash only when asked', async () => {

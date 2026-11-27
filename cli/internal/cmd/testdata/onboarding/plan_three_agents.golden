@@ -1,0 +1,11 @@
+  1  Claude Code   model routing, MCP, Agent Control
+                   model: example/model-large (subscription login)
+  2  Codex CLI     model routing, MCP, Agent Control
+                   model: example/model-large (subscription login)
+  3  Cursor        MCP, session reporting
+                   no model routing: not supported for this agent
+
+  ! Preloop will hold and rotate 2 subscription logins (Claude Code, Codex CLI).
+    Offboard returns them.
+  ! While routed, Claude Code does not fetch organisation-managed settings or
+    claude.ai connectors.

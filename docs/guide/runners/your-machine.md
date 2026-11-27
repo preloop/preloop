@@ -62,6 +62,33 @@ A decline is remembered, so the prompt does not come back on every login.
 `preloop login --force` asks again. The consent text the prompt links to is in
 [Personal runners: threat model and controls](../../security/personal-runners.md).
 
+## Daily discovery
+
+The resident runner also reports installed agents and extensions, including agents
+that have never been onboarded. It uses the read-only discovery collector, with a
+30-second to five-minute startup delay and a default daily interval with 10%
+jitter. Restarts reuse the last successful report time. Offline reports retry
+with bounded backoff and never prompt or change an application's configuration.
+
+```yaml
+runner:
+  discovery:
+    enabled: false  # opt out on this device
+    interval: 24h
+```
+
+`preloop runner status` shows discovery's last attempt, last success and result.
+The setting is reread every minute. The shared device privacy setting
+`discovery.no_extension_details: true` omits extension descriptions from both
+manual and automatic reports. Account administrators can also disable
+automatic reporting or set an interval from one hour through seven days. See
+[discovery reporting](../agent-discovery-reporting.md#automatic-runner-reports)
+for the payload, account controls and permission boundary.
+
+The usual user service scans its own profile. An elevated system service uses
+all-user collection and reports incomplete coverage when profiles cannot be read.
+A runner's ordinary harness heartbeat continues independently of daily discovery.
+
 ## Inventory: what is reported and what is not
 
 The runner reports the agent harnesses installed for your user when it starts,
@@ -258,3 +285,11 @@ within seconds and ends that harness's live sessions with `stopped_on_host`.
 For all harnesses at once, set `"sessions": {"enabled": false}` in
 `~/.preloop/runner.json`. Removing the runner with `preloop runner disable`
 also ends them.
+
+
+Automatic reports also follow the extension content privacy controls:
+`discovery.extension_content: false` or `PRELOOP_NO_EXTENSION_CONTENT=1` turns
+content off on the device. Per-extension marker files and exclusion patterns
+apply across scanned profiles. The account setting **Collect extension content
+for review** is enforced before collection and again on upload. The first
+content upload prints its disclosure in the service log; it never prompts.

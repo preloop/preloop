@@ -50,6 +50,9 @@ func assertClaudeNodePreflightBeforeMutation(t *testing.T, oldNode bool) {
 		t.Setenv("PATH", bin)
 	}
 	t.Setenv("PRELOOP_CONFIRM", "")
+	previousCandidates := agentControlNodeCandidates
+	agentControlNodeCandidates = func() []string { return nil }
+	t.Cleanup(func() { agentControlNodeCandidates = previousCandidates })
 	agent := AgentConfig{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}
 	original := `{"model":"claude-haiku-4-5"}`
 	mustWriteRecoveryFile(t, agent.ConfigPath, original)
@@ -73,6 +76,9 @@ func assertClaudeNodePreflightBeforeMutation(t *testing.T, oldNode bool) {
 		enrollErr = executeManagedEnrollment(agent, managedEnrollmentOptions{
 			Client:         api.NewClientWithToken(server.URL, "synthetic-session"),
 			PreferredModel: "anthropic/claude-haiku-4-5", Input: strings.NewReader("\ny\n"), Output: &out, Approvals: true,
+			// The billing note is part of the full plan text (--explain);
+			// the compact review moves it to the receipt.
+			Explain: true,
 		})
 		return nil
 	})
@@ -89,8 +95,8 @@ func assertClaudeNodePreflightBeforeMutation(t *testing.T, oldNode bool) {
 	if err != nil || string(after) != original {
 		t.Fatal("preflight changed local settings")
 	}
-	if !strings.Contains(printed+out.String(), `"API billing"`) {
-		t.Fatal("subscription billing label must be explained before applying settings")
+	if strings.Contains(printed+out.String(), "Apply managed Preloop onboarding") {
+		t.Fatal("Node prerequisite must fail before the confirmation prompt")
 	}
 	if _, err := loadLocalEnrollmentState(agent); err == nil {
 		t.Fatal("preflight created enrollment state")

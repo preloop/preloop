@@ -193,7 +193,7 @@ func offerRunnerAfterLogin(out io.Writer, user *UserInfo, instance string, headl
 	tty := loginTerminal()
 	if err := performRunnerSetup(runnerSetupRequest{
 		Out:      out,
-		In:       os.Stdin,
+		In:       loginInput,
 		Policy:   policy,
 		Instance: instance,
 		TTY:      &tty,

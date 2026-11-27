@@ -1,7 +1,7 @@
 """Add durable per-flow runner grants.
 
 Revision ID: 20270102_runner_flow_grant
-Revises: 20270102_extension_content
+Revises: 20270102_mcp_extensions
 """
 
 import sqlalchemy as sa
@@ -9,7 +9,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20270102_runner_flow_grant"
-down_revision: str = "20270102_extension_content"
+down_revision: str = "20270102_mcp_extensions"
 branch_labels: None = None
 depends_on: None = None
 

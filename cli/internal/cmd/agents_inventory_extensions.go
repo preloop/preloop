@@ -53,11 +53,13 @@ type extensionScan struct {
 	localDisplay bool
 	// capture is set only by the content pass of a report; see
 	// agents_extension_content.go. A plain scan reads no extension text.
-	capture     *contentCapture
-	hookContent map[string][]contentHookSource
-	extensions  []inventoryExtension
-	errors      map[string]bool
-	hookHashes  map[string][]string
+	capture      *contentCapture
+	hookContent  map[string][]contentHookSource
+	extensions   []inventoryExtension
+	errors       map[string]bool
+	hookHashes   map[string][]string
+	projectPaths map[string]string
+	unscanned    map[string]string
 }
 
 type extensionRoot struct {
@@ -71,6 +73,13 @@ func extensionHash(data []byte) string {
 }
 
 func (s *extensionScan) fail(code string) { s.errors[code] = true }
+
+func (s *extensionScan) skipProject(path, reason string) {
+	s.fail(reason)
+	if s.localDisplay {
+		s.unscanned[path] = reason
+	}
+}
 
 func (s *extensionScan) open(path string) *extensionRoot {
 	info, err := os.Lstat(path)
@@ -292,6 +301,11 @@ func (r *extensionRoot) localFiles(base, scope, project string, skills bool) {
 		var hash, status string
 		if skills {
 			if !info.IsDir() {
+				continue
+			}
+			// Codex's .system is a container, not a skill itself.
+			if r.scan.agent == "codex-cli" && base == filepath.Join(".codex", "skills") && entry.Name() == ".system" {
+				r.localFiles(path, scope, project, true)
 				continue
 			}
 			kind, id = "skill", entry.Name()
@@ -571,7 +585,17 @@ func collectExtensions(home, agent, salt string, profileOnly, localDisplay bool,
 // collectExtensionsWith runs the scan and, when capture is set, also gathers
 // redacted content for the hashes capture wants.
 func collectExtensionsWith(capture *contentCapture, home, agent, salt string, profileOnly, localDisplay bool, explicitProjects ...string) ([]inventoryExtension, []string) {
-	scan := &extensionScan{home: home, salt: salt, agent: agent, localDisplay: localDisplay, capture: capture, extensions: []inventoryExtension{}, errors: map[string]bool{}}
+	scan := newExtensionScan(home, agent, salt, localDisplay)
+	scan.capture = capture
+	return scan.collect(profileOnly, explicitProjects...)
+}
+
+func newExtensionScan(home, agent, salt string, localDisplay bool) *extensionScan {
+	return &extensionScan{home: home, salt: salt, agent: agent, localDisplay: localDisplay, extensions: []inventoryExtension{}, errors: map[string]bool{}, projectPaths: map[string]string{}, unscanned: map[string]string{}}
+}
+
+func (scan *extensionScan) collect(profileOnly bool, explicitProjects ...string) ([]inventoryExtension, []string) {
+	home, agent := scan.home, scan.agent
 	if agent != "claude-code" && agent != "codex-cli" {
 		return scan.extensions, nil
 	}
@@ -594,8 +618,9 @@ func collectExtensionsWith(capture *contentCapture, home, agent, salt string, pr
 		root.localFiles(filepath.Join(".claude", "commands"), "user", "", false)
 		root.hooks(settings["hooks"], "user", "", ".claude/settings.json")
 		root.hookDirectory(filepath.Join(".claude", "hooks"), "user", "")
+		doc := root.document(".claude.json")
+		root.mcpServers(doc["mcpServers"], "user", "", ".claude.json")
 		if !profileOnly {
-			doc := root.document(".claude.json")
 			var projects map[string]json.RawMessage
 			if raw := doc["projects"]; raw != nil && json.Unmarshal(raw, &projects) != nil {
 				scan.fail("extension_malformed")
@@ -606,7 +631,9 @@ func collectExtensionsWith(capture *contentCapture, home, agent, salt string, pr
 				projects = map[string]json.RawMessage{}
 			}
 			for _, path := range explicitProjects {
-				projects[path] = nil
+				if _, known := projects[path]; !known {
+					projects[path] = nil
+				}
 			}
 			// The user root has already been scanned. Recognize filesystem
 			// aliases too, without following them for a second content walk.
@@ -621,7 +648,7 @@ func collectExtensionsWith(capture *contentCapture, home, agent, salt string, pr
 			}
 			for _, plugin := range plugins {
 				if plugin.Scope == "project" && !projectHashes[plugin.ProjectRefHash] {
-					scan.fail("extension_project_unscanned")
+					scan.skipProject(scan.projectPaths[plugin.ProjectRefHash], "extension_project_unscanned")
 				}
 			}
 			// Detect a local project omitted from the registry without walking
@@ -629,10 +656,12 @@ func collectExtensionsWith(capture *contentCapture, home, agent, salt string, pr
 			if cwd, err := os.Getwd(); err != nil {
 				scan.fail("extension_unreadable")
 			} else if !isHome(cwd) && !projectHashes[scan.projectHash(cwd)] {
-				if _, err := os.Lstat(filepath.Join(cwd, ".claude")); err == nil {
-					scan.fail("extension_project_unscanned")
-				} else if !os.IsNotExist(err) {
-					scan.fail("extension_unreadable")
+				for _, name := range []string{".claude", ".mcp.json"} {
+					if _, err := os.Lstat(filepath.Join(cwd, name)); err == nil {
+						scan.skipProject(cwd, "extension_project_unscanned")
+					} else if !os.IsNotExist(err) {
+						scan.skipProject(cwd, "extension_unreadable")
+					}
 				}
 			}
 			paths := make([]string, 0, len(projects))
@@ -644,20 +673,31 @@ func collectExtensionsWith(capture *contentCapture, home, agent, salt string, pr
 			}
 			sort.Strings(paths)
 			if len(paths) > 100 {
+				for _, path := range paths[100:] {
+					scan.skipProject(path, "extension_limit")
+				}
 				paths = paths[:100]
 				scan.fail("extension_limit")
 			}
 			for _, path := range paths {
 				if !filepath.IsAbs(path) {
-					scan.fail("extension_unsafe_path")
-					continue
-				}
-				project := scan.open(path)
-				if project == nil {
-					scan.fail("extension_unreadable")
+					scan.skipProject(path, "extension_unsafe_path")
 					continue
 				}
 				hash := scan.projectHash(path)
+				var local map[string]json.RawMessage
+				if raw := projects[path]; raw != nil {
+					if json.Unmarshal(raw, &local) != nil || local == nil {
+						scan.fail("extension_malformed")
+					}
+				}
+				project := scan.open(path)
+				if project == nil {
+					// Local-scope definitions live in the readable user registry.
+					root.mcpServers(local["mcpServers"], "project", hash, ".claude.json")
+					scan.skipProject(path, "extension_unreadable")
+					continue
+				}
 				settings := project.document(filepath.Join(".claude", "settings.json"))
 				overrides := project.extensionEnabled(settings)
 				localSettings := project.document(filepath.Join(".claude", "settings.local.json"))
@@ -683,6 +723,11 @@ func collectExtensionsWith(capture *contentCapture, home, agent, salt string, pr
 				project.hooks(settings["hooks"], "project", hash, ".claude/settings.json")
 				project.hooks(localSettings["hooks"], "project", hash, ".claude/settings.local.json")
 				project.hookDirectory(filepath.Join(".claude", "hooks"), "project", hash)
+				mcp := project.document(".mcp.json")
+				project.mcpServers(mcp["mcpServers"], "project", hash, ".mcp.json")
+				// Claude's local scope is project-bound, as for local plugins.
+				// Local definitions override same-name project definitions.
+				root.mcpServers(local["mcpServers"], "project", hash, ".claude.json")
 				project.root.Close()
 			}
 		}
@@ -694,12 +739,13 @@ func collectExtensionsWith(capture *contentCapture, home, agent, salt string, pr
 			for _, path := range explicitProjects {
 				project := scan.open(path)
 				if project == nil {
-					scan.fail("extension_unreadable")
+					scan.skipProject(path, "extension_unreadable")
 					continue
 				}
 				hash := scan.projectHash(path)
 				project.localFiles(filepath.Join(".codex", "skills"), "project", hash, true)
 				project.localFiles(filepath.Join(".agents", "skills"), "project", hash, true)
+				project.codexMCPConfig(filepath.Join(".codex", "config.toml"), "project", hash)
 				project.root.Close()
 			}
 		}
@@ -714,9 +760,15 @@ func collectExtensionsWith(capture *contentCapture, home, agent, salt string, pr
 			var doc map[string]any
 			if toml.Unmarshal(data, &doc) != nil {
 				scan.fail("extension_malformed")
-			} else if hooks, ok := doc["hooks"]; ok {
-				raw, _ := json.Marshal(hooks)
-				root.hooks(raw, "user", "", ".codex/config.toml")
+			} else {
+				if hooks, ok := doc["hooks"]; ok {
+					raw, _ := json.Marshal(hooks)
+					root.hooks(raw, "user", "", ".codex/config.toml")
+				}
+				if servers, ok := doc["mcp_servers"]; ok {
+					raw, _ := json.Marshal(servers)
+					root.mcpServers(raw, "user", "", ".codex/config.toml")
+				}
 			}
 		}
 	}

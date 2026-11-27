@@ -9,7 +9,7 @@ import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
 import './extension-enforcement';
 import './extension-content';
 import { tableScrollStyles } from '../styles/table-scroll';
-import { formatRelativeTime } from '../utils/date';
+import { formatRelativeTime, parseUTCDate } from '../utils/date';
 import { fleetHref } from '../device-fleet-api';
 import { downloadText } from '../utils/records-format';
 import {
@@ -58,8 +58,8 @@ export function collectorTooOld(version: string | null): boolean {
   return true;
 }
 
-/** A report older than this is stale: the device should report again. */
-export const EXTENSION_REPORT_STALE_MS = 24 * 60 * 60 * 1000;
+/** Seven-day maximum runner interval plus one day of grace. */
+export const EXTENSION_REPORT_STALE_MS = 8 * 24 * 60 * 60 * 1000;
 
 export interface ReasonText {
   /** What happened, in plain words. */
@@ -137,14 +137,16 @@ export function reasonText(code: string): ReasonText {
   );
 }
 
-/** True when the device never reported a time or reported over a day ago. */
+/** Missing timestamps are unknown; healthy multi-day schedules stay current. */
 export function reportStale(
   device: ExtensionCoverage,
   now = Date.now()
 ): boolean {
-  if (device.reported_at === undefined) return false;
-  if (device.reported_at === null) return true;
-  return now - Date.parse(device.reported_at) > EXTENSION_REPORT_STALE_MS;
+  // An omitted (older server) or null report time is unknown, not stale.
+  if (!device.reported_at) return false;
+  return (
+    now - parseUTCDate(device.reported_at).getTime() > EXTENSION_REPORT_STALE_MS
+  );
 }
 
 const sources: ExtensionSource[] = [
@@ -1007,7 +1009,7 @@ export class ExtensionInventory extends LitElement {
       ${
         stale || (device.completeness === 'unknown' && !old)
           ? html`<p>
-                ${stale ? 'This device has not reported in the last day.' : 'Report again to establish coverage.'}
+                ${stale ? 'This device has not reported in eight days (the longest schedule plus one day of grace).' : 'Report again to establish coverage.'}
               </p>
               ${this.reportSteps()}`
           : nothing
@@ -1134,7 +1136,8 @@ export class ExtensionInventory extends LitElement {
     row: InstalledExtension | ExtensionAggregate,
     contentHash: string | null
   ): TemplateResult | typeof nothing {
-    if (!contentHash || !this.canManage) return nothing;
+    if (!contentHash || !this.canManage || row.extension_kind === 'mcp_server')
+      return nothing;
     const reading = this.reading === contentHash;
     return html`<div class="content-reader">
       <code title=${contentHash}>${shortHash(contentHash)}</code>
@@ -1299,7 +1302,9 @@ export class ExtensionInventory extends LitElement {
         ${this.deviceError ? html`<p role="status">${this.deviceError}</p>` : nothing}
         ${this.deviceCursor ? html`<sl-button size="small" @click=${() => this.loadDetailDevices(row, true)}>More devices</sl-button>` : nothing}
         ${
-          hashes.some((hash) => hash) && this.canManage
+          hashes.some((hash) => hash) &&
+          this.canManage &&
+          row.extension_kind !== 'mcp_server'
             ? html`<p>
                 Read the content a device uploaded for a hash. Each read is
                 recorded in the audit log.
@@ -1307,10 +1312,18 @@ export class ExtensionInventory extends LitElement {
             : nothing
         }
         ${hashes.map((hash) => this.renderExtensionContentViewer(row, hash))}
-        <p>
-          Or read the full, unredacted content locally on a device that reported
-          this extension:
-        </p>
+        ${
+          row.extension_kind === 'mcp_server'
+            ? html`<p>
+                MCP server bodies are not collected. Inspect metadata and
+                configuration locations locally on a device that reported this
+                server:
+              </p>`
+            : html`<p>
+                Or read the full, unredacted content locally on a device that
+                reported this extension:
+              </p>`
+        }
         ${this.command(command)}
         <p class="meta">
           For project extensions, run from that repository and append --project

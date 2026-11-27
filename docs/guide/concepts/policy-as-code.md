@@ -128,6 +128,29 @@ Configure individual tool behaviors.
 | `conditions` | list | n/a | List of conditional rules |
 | `description` | string | n/a | Override tool description |
 
+A tool entry replaces that tool's whole configuration, so an existing
+`approval_workflow` or condition that the entry does not repeat is removed.
+To add a `deny` rule to a tool that already requires approval through a
+workflow, repeat the workflow and the existing condition:
+
+```yaml
+tools:
+  - name: Bash
+    source: builtin
+    approval_workflow: high-risk          # existing: keep it
+    conditions:
+      - expression: "args.command == 'deploy'"
+        action: require_approval          # existing: keep it
+      - expression: "args.command == 'rm'"
+        action: deny                      # new
+```
+
+`preloop policy export` prints the current entries to start from.
+`preloop policy diff` and `preloop policy apply` list every workflow or
+condition a file would remove (`! REMOVES ...`). On a terminal `apply` then
+asks for confirmation; without a terminal it stops without applying unless
+you pass `--yes` (or set `PRELOOP_CONFIRM=1`).
+
 #### Tool Conditions
 
 Each condition evaluates against tool arguments:
@@ -227,6 +250,9 @@ preloop policy apply my-policy.yaml
 # Dry-run (preview without applying)
 preloop policy apply my-policy.yaml --dry-run
 
+# Apply without the confirmation for removed workflows or conditions
+preloop policy apply my-policy.yaml --yes
+
 # Keep variable references literal
 preloop policy apply my-policy.yaml --no-resolve-env
 
@@ -262,6 +288,10 @@ See [Policy Generation](../tools/policy-generation.md) for `preloop policy gener
 ## Versioning & Rollback
 
 Preloop maintains a history of policy changes, allowing you to rollback to any previous version.
+Every successful `preloop policy apply` (and `POST /api/v1/policies/upload`
+without `dry_run`) records the resulting configuration as a new, active
+version; `apply` prints its number and `preloop policy list` shows it.
+A dry run records nothing.
 
 ```bash
 # List policy versions

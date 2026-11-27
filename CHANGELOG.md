@@ -9,12 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `preloop agents onboard --no-model-routing` onboards MCP only: no model
+  credential is read or imported and no AI model is created. It is the way to
+  onboard Claude Code or Codex CLI without moving a subscription login.
+  `--no-agent-control` leaves out the Agent Control file, plugin and sidecar;
+  the enrollment still counts as applied.
+- `preloop agents onboard --agents <id,id>` selects agents by id (for example
+  `claude-code,codex-cli`), `--name` sets the display name for a run over one
+  agent, and `--runner` installs the runner service as part of the run. The
+  receipt ends with the command that repeats the run without questions.
+- `preloop agents discover --brief` prints one line per agent.
+- `preloop login`: while the browser wait runs, Enter opens the page again
+  and a line says the command is still waiting after a minute. In the
+  copy-and-paste flow an empty line prints the link again instead of failing,
+  and a code the server does not accept can be replaced without starting over.
 - Runner owners can always allow one flow on one runner until they revoke it.
   Tick "Always allow <flow> on <runner> until revoked" when approving a runner
   flow request; later runs of that flow on that runner start without a new
   owner request. Grants are listed and revocable on the Runners page and the
   Approvals list, and creating, using and revoking one is audited.
-
 - Extension content for review. After `preloop agents discover --report` the
   CLI uploads the redacted text behind each reported extension hash (skill and
   command files, hook commands with their matcher, plugin manifests and the
@@ -61,6 +74,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `preloop policy apply` now records a policy version for every successful
+  apply, prints its number, and `preloop policy list` and rollback can use it.
+  Previously only an explicit `POST /api/v1/policies/versions` created one
+  (#2557).
+- `preloop policy diff` and `apply` list every approval workflow or condition
+  a file would remove from a tool (`! REMOVES ...`), since a tool entry
+  replaces the whole tool. `apply` asks for confirmation on a terminal and
+  stops without a terminal unless `--yes` or `PRELOOP_CONFIRM=1` is given.
+  `validate` warns about a missing workflow only when a `require_approval`
+  condition needs one (#2558).
+- `preloop agents onboard "Claude Code"` checks for Node.js before the first
+  prompt and in `--dry-run`. When a supported Node.js is installed in a
+  known location (Homebrew, common version managers) but is not on PATH, the
+  message says so and prints only the PATH fix (#2562).
+
+- Expanded execution log entries keep their state through streamed updates,
+  refreshes, status changes and scrolling. Session history and raw transcript
+  events also retain explicit expand/collapse choices.
+- A manually resized flow prompt keeps its height while typing, leaving the
+  field, and refreshing the editor's form state.
+- Execution history shows the recorded harness and model instead of the flow's
+  current harness. Runs without recorded selection remain unknown; runner leases
+  retain the dispatched model after the lease is released.
 - Mobile push for runner flow approvals failed with APNs `PayloadTooLarge`
   because the full runner flow snapshot was copied twice into the payload.
   Push now carries only the flow, runner, harness and model, and every
@@ -234,6 +270,67 @@ or `curl -fsSL 'https://preloop.ai/install/cli?version=1.1.0-rc.1' | sh`.
 
 ### Changed
 
+- **Changed default: onboarding reports installed extensions.** After
+  `preloop agents onboard` sets up at least one agent, it sends the same
+  report as `preloop agents discover --report`, once per run. Until now nothing
+  about installed extensions left the machine unless `--report` or
+  `PRELOOP_DISCOVERY_REPORT=1` asked for it. The review states what is sent
+  before you confirm: the names, versions, content hashes, descriptions and
+  authors of installed plugins, skills, hooks and commands (with the salted
+  machine fingerprint, agent kinds and MCP server counts every report carries),
+  followed by their redacted text for review unless the account or the device
+  has turned that off. Not sent: paths in clear, MCP server names, URLs or
+  arguments, hook arguments, environment values, credential files. Turn it off
+  with `--no-report-extensions` or `PRELOOP_DISCOVERY_REPORT=0`; keep the report
+  and skip the text with `--no-extension-content`. The default also applies
+  under `--yes` and `PRELOOP_CONFIRM=1`. `--unattended` enrollment does not
+  send it. A report that fails (for example because the signed-in role lacks
+  `report_discovery`) is one line and never fails onboarding. `agents discover`
+  itself is unchanged: it reports only with `--report`. See
+  `docs/guide/agent-discovery-reporting.md`.
+  [#2569](https://github.com/preloop/preloop/issues/2569).
+- **CLI prompts:** `preloop agents onboard` asks one question for the whole
+  run instead of three or four per agent. It works out the plan for every agent
+  first, shows it once, and asks `Apply to N agents? [Y/n/c/e]`: Enter applies,
+  `n` cancels ("Nothing was changed."), `e` prints everything, `c` changes the
+  agents, the options, and on request names and models. The name and model
+  questions, the per-agent "Onboard ... now?" question and the questions that
+  followed the confirmation are gone from the default path; each has a flag
+  (`--agents`, `--name`, `--model`, `--no-model-routing`, `--no-agent-control`,
+  `--approvals`, `--report-extensions`, `--runner`, `--explain`, `--plain`).
+  The offer at the end of `agents discover` and of `preloop update` is the
+  same review. A script that types answers into `agents onboard` on a
+  pseudo-terminal needs updating: use `--yes` (or `PRELOOP_CONFIRM=1` without a
+  terminal) and the flags. `--yes`, `PRELOOP_CONFIRM=1`, `--dry-run`,
+  `--unattended`, the exit statuses and the summary's columns and status words
+  are unchanged, a subscription login is still never moved without a person,
+  and without a terminal the command now prints the plan before the same
+  error. [#2565](https://github.com/preloop/preloop/issues/2565).
+- **Installer:** `install-cli.sh` asks one question on a terminal: "Sign in to
+  preloop.ai to set up these agents? [Y] sign in, [s] sign up, [u] use a
+  self-hosted URL, [n] not now". The separate instance URL question and
+  "Onboard discovered agents now?" are gone (the review that follows is that
+  question), the agent listing is one line per agent, and sign-in no longer
+  asks about the runner, which is a row in the review. Unattended installs
+  (`PRELOOP_CONFIRM=1`, or no terminal) behave as before.
+- **CLI output:** `preloop agents onboard` prints less by default. Before the
+  confirmation each agent is one row (what will be switched on, the model and
+  where its credential comes from) followed by the disclosures that need
+  consent, at most two lines each: Preloop takes custody of a subscription
+  login, and Claude Code stops fetching organisation-managed settings and
+  claude.ai connectors while routed. After it, each finished step is one line
+  and a short receipt names the status and undo commands. Text is wrapped to
+  the terminal width (60 to 100 columns, 80 when unknown), and no colour is
+  written when `NO_COLOR` is set, `TERM` is `dumb` or the output is not a
+  terminal. The questions asked are unchanged. `--explain` prints the previous
+  text in full: the credential custody block, the plan block with its notes,
+  and the detailed result after each agent. `--dry-run` output, exit statuses,
+  `--json` outputs and the summary table are unchanged, and the lines
+  `✓ Onboarded <agent>` and
+  `Waiting for local configuration: <agent> is NOT onboarded yet.` are kept.
+  Scripts that match other onboarding text should pass `--explain` or use
+  `preloop agents status <agent> --json`.
+  [#2564](https://github.com/preloop/preloop/issues/2564).
 - **API compatibility:** flow reads, writes and presets no longer return
   `webhook_config.webhook_secret`. Rotate a webhook secret to receive its
   value once, then retain it securely. Existing URLs remain valid until

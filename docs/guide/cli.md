@@ -96,9 +96,18 @@ preloop agents discover --inventory --all-users # elevated, offline local-profil
 preloop agents discover --report --all-users    # elevated, opt-in local-profile report
 preloop agents discover --report --no-extension-content   # report without uploading extension text
 preloop agents discover --no-onboard-prompt
+preloop agents discover --brief --no-onboard-prompt   # one line per agent
+preloop agents onboard                   # every agent found: one review, one confirmation
 preloop agents onboard <agent>           # onboard one agent ("enroll" is an alias)
+preloop agents onboard --agents claude-code,codex-cli   # choose agents by id
 preloop agents onboard --all -y          # everything discovered, no prompts
+preloop agents onboard <agent> --name "Work laptop"     # display name in Preloop
+preloop agents onboard <agent> --no-model-routing       # MCP only, no model credential moved
+preloop agents onboard <agent> --no-agent-control       # no remote steer and stop
+preloop agents onboard --no-report-extensions           # do not report installed extensions
+preloop agents onboard --runner          # also install the runner service
 preloop agents onboard <agent> --dry-run # preview account + config changes
+preloop agents onboard <agent> --explain # full custody and plan text, and the detailed result
 preloop agents onboard <agent> --approvals  # + native action gates (Claude Code, Codex CLI, Cursor, Copilot CLI, OpenCode, Pi, DeepSeek Harness)
 preloop agents onboard <agent> --tags env=prod,team=infra
 preloop agents onboard <agent> --manual     # print the config change instead of writing it
@@ -141,6 +150,111 @@ preloop agents onboard --unattended \
   --apps claude_code,codex \
   --url https://preloop.example.com
 ```
+
+### What onboarding prints
+
+Onboarding gathers everything first and asks once. It works out the plan for
+every agent, shows it as one review, takes one confirmation, then prints one
+line per step and a short receipt:
+
+```text
+$ preloop agents onboard
+Preloop setup on this machine                signed in as jane@example.com
+
+  1  Claude Code   model routing, MCP, Agent Control
+                   model: anthropic/<model> (subscription login)
+
+  ! Preloop will hold and rotate the Claude Code subscription login. Offboard
+    returns it.
+  ! While routed, Claude Code does not fetch organisation-managed settings or
+    claude.ai connectors.
+  ! Extension report: sends the names, versions, content hashes, descriptions
+    and authors of installed plugins, skills, hooks and commands, then their
+    redacted text for review. Off: --no-report-extensions
+
+  Options: approval hooks off, extension report on, runner off
+  c change   e explain everything   n cancel
+Apply to 1 agent? [Y/n/c/e]:
+  ok  Claude Code   agent and key created in Preloop
+  ok  Claude Code   settings.json updated, backup saved
+  ok  Claude Code   Agent Control plugin installed
+  ok  Claude Code   test request through the gateway (1.2 s)
+  ok  machine       extension report sent: 1 agent, 12 extensions
+
+✓ Onboarded Claude Code
+  Gateway validation: passed (route probe; application behavior unverified)
+  Claude Code shows "API Usage Billing"; calls still use your subscription.
+  Status: preloop agents status "Claude Code"
+  Undo:   preloop agents offboard "Claude Code"
+  Report: extension inventory sent. Stop it: --no-report-extensions
+  Again:  preloop agents onboard --agents claude-code
+          (asks once: a subscription login is never moved with --yes)
+```
+
+| Answer | Effect |
+| --- | --- |
+| Enter or `y` | Apply the plan as shown. Nothing else is asked. |
+| `n` | Cancel. Prints "Nothing was changed." and exits 0. |
+| `e` | Print everything the review leaves out (the credential custody and plan text of each agent, what the extension report sends), then ask again. |
+| `c` | Change something, one line each with the current value as the default: which agents, model routing, Agent Control, approval hooks, the extension report, the runner, and on request the name and model of each agent. The plan is then shown again. |
+
+With several agents the receipt is the summary table (same columns and status
+words as before) followed by the same closing lines. Each step is printed
+once, when it ends. Nothing is redrawn, so the output reads the same in a
+terminal, in a pipe, over ssh and in a screen reader. Warnings and failures
+are printed in full where they happen.
+
+Every choice in the review has a flag:
+
+| Choice | Flag | Default |
+| --- | --- | --- |
+| Which agents | `--agents <id,id>`, or one agent's name as the argument, or `--all` | every onboardable agent found |
+| Display name | `--name <text>` (a run over one agent) | inferred |
+| Model | `--model <alias>` | inferred |
+| Model routing | `--no-model-routing` | on where supported |
+| Agent Control | `--no-agent-control` | on where supported |
+| Approval hooks | `--approvals`, `--approvals=false` | off; an interactive review of an agent that already has gates keeps them |
+| Extension report | `--no-report-extensions`, `PRELOOP_DISCOVERY_REPORT=0`; `--no-extension-content` keeps the report and skips the text | on |
+| Runner | `--runner`, `--no-runner`; `--flow-execution-consent ask_me\|always\|never` for whether it asks before running a flow | off unless your organisation requires it; a runner installed from the review asks before each flow run unless a choice is already stored |
+| Full text | `--explain` | off |
+| No cursor control | `--plain`, `PRELOOP_PLAIN=1` | automatic |
+
+`--no-model-routing` onboards MCP only: no model credential is read or
+imported and no AI model is created, so a subscription login stays where it
+is. It does not undo routing on an agent that is already routed; offboard that
+agent first. `--no-agent-control` writes no Agent Control file and installs no
+plugin or sidecar; the enrollment still counts as applied.
+
+How the command behaves by situation:
+
+| Situation | Review | Confirmation |
+| --- | --- | --- |
+| A terminal | printed | one |
+| `--yes`, or `PRELOOP_CONFIRM=1` | printed | none; every agent, approval hooks off, Agent Control on, no runner, the inferred model, the extension report on |
+| No terminal and no `PRELOOP_CONFIRM` | printed | none: the command exits 1 with the same error as before, followed by the command that would apply the plan |
+| `--dry-run` | the full preview per agent, unchanged | none |
+| `--unattended` | unchanged | unchanged |
+
+A plan that would move a subscription login is refused under `--yes`,
+`PRELOOP_CONFIRM` and without a terminal: confirming the review is the
+consent, and the line about custody is always above it. For that reason the
+"Again:" command for such a run has no `--yes`. When names or models were
+chosen per agent in the review, the receipt prints one command per agent.
+
+A runner chosen in the review is installed without further questions. Local
+model servers are not registered as part of onboarding; run
+`preloop runner models --register` for that.
+
+| Need | Use |
+| --- | --- |
+| The full credential custody and plan text before confirming, and the detailed result afterwards | `e` in the review, or `preloop agents onboard --explain` |
+| The same text without changing anything | `preloop agents onboard <agent> --dry-run` |
+| The state of an agent later | `preloop agents status <agent>` |
+| What the extension report sends | [Agent discovery reporting](agent-discovery-reporting.md) |
+
+Output is wrapped to the terminal width, between 60 and 100 columns, and to
+80 columns when the width is unknown. Colour is used only for failures, only
+on a terminal, and never when `NO_COLOR` is set or `TERM` is `dumb`.
 
 ### Native approvals are opt-in
 
@@ -378,7 +492,7 @@ Claude Code discovery: the CLI treats `~/.claude.json` or a `claude` binary on `
 ```bash
 preloop policy list [--limit N] [--output table|json|yaml]   # policy versions, newest first
 preloop policy validate <file>
-preloop policy apply <file> [--dry-run] [-r]   # -r: recurse into a directory
+preloop policy apply <file> [--dry-run] [--yes] [-r]   # records a policy version; --yes: skip the removal confirmation; -r: recurse into a directory
 preloop policy diff <file>
 preloop policy export [-o file]
 preloop policy apply-stored [--apply] [--since T] [--until T] [--store NAME] [--json]   # apply current sensitive-data rules to stored rows; dry run without --apply

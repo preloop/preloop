@@ -29,7 +29,9 @@ from preloop.models.crud import (
 from preloop.schemas.agent_discovery import DiscoveryReportRequest
 from preloop.schemas.discovered_extension import (
     ExtensionApprovalUpdate,
+    ExtensionMetadata,
     ExtensionPinCreate,
+    ExtensionPolicyEntry,
 )
 from preloop.schemas.discovery_evidence import DiscoveryEvidence
 
@@ -37,6 +39,34 @@ NOW = datetime(2026, 11, 16, tzinfo=UTC)
 REPORTS = "/api/v1/agents/discovery-reports"
 EXTENSIONS = "/api/v1/agents/discovery-extensions"
 APPROVAL = "/api/v1/agents/extension-approvals/claude_code/plugin/reviewer@community"
+
+
+def test_standalone_mcp_metadata_and_policy_contract() -> None:
+    """Accept standalone servers without allowing raw configuration fields."""
+    metadata = {
+        "kind": "mcp_server",
+        "id": "example-server",
+        "source_kind": "local",
+        "scope": "project",
+        "project_ref_hash": "sha256:" + "a" * 64,
+        "content_hash": "sha256:" + "b" * 64,
+    }
+    assert ExtensionMetadata.model_validate(metadata).kind == "mcp_server"
+    accepted = DiscoveryReportRequest.model_validate(report([metadata]))
+    assert accepted.candidates[0].extensions is not None
+    assert accepted.candidates[0].extensions[0].kind == "mcp_server"
+    policy = ExtensionPolicyEntry.model_validate(
+        {
+            "agent_kind": "claude_code",
+            "extension_kind": "mcp_server",
+            "extension_id": "example-server",
+            "approval_state": "approved",
+        }
+    )
+    assert policy.extension_kind == "mcp_server"
+    for key in ("command", "args", "env", "url"):
+        with pytest.raises(ValidationError):
+            ExtensionMetadata.model_validate({**metadata, key: "private-value"})
 
 
 def extension(**changes: Any) -> dict[str, Any]:
@@ -273,6 +303,39 @@ def test_http_ingest_approval_and_aggregate(client: TestClient) -> None:
         client.get(EXTENSIONS, params={"source_kind": "builtin"}).json()["items"] == []
     )
     assert len(client.get("/api/v1/agents/extension-approvals").json()["items"]) == 1
+
+
+def test_http_mcp_inventory_approval_and_pin_round_trip(client: TestClient) -> None:
+    """Persist standalone MCP rows and decisions through migrated constraints."""
+    metadata = extension(
+        kind="mcp_server",
+        id="example-server",
+        source_kind="local",
+        content_hash="sha256:" + "c" * 64,
+    )
+    response = client.post(REPORTS, json=report([metadata]))
+    assert response.status_code == 202, response.text
+    approval = (
+        "/api/v1/agents/extension-approvals/claude_code/mcp_server/example-server"
+    )
+    response = client.put(
+        approval,
+        json={
+            "approval_state": "approved",
+            "pin": {"content_hash": metadata["content_hash"]},
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["extension_kind"] == "mcp_server"
+    response = client.get(EXTENSIONS, params={"extension_kind": "mcp_server"})
+    assert response.status_code == 200, response.text
+    row = response.json()["items"][0]
+    assert row["extension_id"] == "example-server"
+    assert row["effective_state"] == "approved"
+    exported = client.get("/api/v1/agents/extension-approvals/export")
+    assert exported.status_code == 200, exported.text
+    assert exported.json()["entries"][0]["extension_kind"] == "mcp_server"
+    assert exported.json()["entries"][0]["content_hashes"] == [metadata["content_hash"]]
 
 
 def test_http_permissions(
@@ -1064,6 +1127,28 @@ def test_extension_sort_uses_display_name_across_pages(client: TestClient) -> No
                 break
             params["cursor"] = page["next_cursor"]
         assert seen == ["plugin", "z-directory", "a-directory"]
+
+
+def test_extension_search_has_usable_trigram_indexes(db_session: Session) -> None:
+    """The database can use indexed substring search across all three fields."""
+    from sqlalchemy import text
+
+    db_session.execute(text("SET LOCAL enable_seqscan = off"))
+    plan = (
+        db_session.execute(
+            text("""
+        EXPLAIN SELECT id FROM discovered_extension
+        WHERE extension_id ILIKE '%fixture%'
+           OR CAST(details->>'name' AS VARCHAR) ILIKE '%fixture%'
+           OR CAST(details->>'description' AS VARCHAR) ILIKE '%fixture%'
+    """)
+        )
+        .scalars()
+        .all()
+    )
+    output = "\n".join(plan)
+    for field in ("id", "name", "description"):
+        assert f"ix_discovered_extension_{field}_search" in output
 
 
 @pytest.mark.parametrize("name", ["a" * 129, "\U0001f600" * 300])
