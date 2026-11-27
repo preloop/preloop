@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Extension content for review. After `preloop agents discover --report` the
+  CLI uploads the redacted text behind each reported extension hash (skill and
+  command files, hook commands with their matcher, plugin manifests and the
+  text of their skills, commands and hooks), and the console's Extensions tab
+  shows it with a diff against the pinned hash. On by default. Turn it off for
+  the account (Settings > Account > Collect extension content for review), for
+  a device (`--no-extension-content`) or for one extension
+  (`.preloop-no-content`). Credentials are redacted on the device with the
+  gitleaks 8.30.1 rule set and additional rules; redaction reduces the chance
+  that a secret is stored and is not a guarantee. This changes the discovery
+  reporting privacy contract: see `docs/guide/agent-discovery-reporting.md`.
 - `preloop agents onboard` tests whether it can write every file it needs
   before it changes anything in Preloop, so read-only bind mounts, files owned
   by another user, immutable files and a read-only root filesystem are
@@ -52,6 +63,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Execution history shows the recorded harness and model instead of the flow's
   current harness. Runs without recorded selection remain unknown; runner leases
   retain the dispatched model after the lease is released.
+- Runner-proxied local models can load and reason beyond the former 60-second
+  silence and 600-second request limits. Server settings now default to 600
+  seconds of model silence and 3600 seconds total, capped by the flow's remaining
+  budget. Updated runners send liveness keepalives, honor server-provided limits,
+  and cancel local work on expiry. Errors name the limit; OSS Helm proxy settings
+  and hosted harness client waits accommodate long requests. Upgrade the CLI
+  alongside the server for the full fix. See
+  [long model requests](docs/guide/runner-local-models.md#long-model-requests).
 
 - The "Allow this flow to run on your runner?" approval now says what it
   allows: the runner and its device (hostname, OS), the harness and model, the

@@ -24,9 +24,13 @@ Registration never grants the backend arbitrary access to the host network.
 The existing authenticated runner websocket carries a message pair:
 
 * `model_request`: `request_id`, `operation` (`start`, `next`, `cancel`),
-  and, for start, `model_id`, `base_url`, `body` (JSON chat completion).
+  and, for start, `model_id`, `base_url`, `body` (JSON chat completion), and
+  optional `timeouts` (`idle_seconds`, `silent_seconds`, `total_seconds`).
 * `model_response`: `request_id`, `status` (HTTP status), `data` (one JSON
   completion or one SSE line), `done`, and an optional bounded `error` code.
+  New runners also send `keepalive: true` frames every 10 seconds, with
+  `model_activity: true` only if upstream bytes arrived since the previous
+  keepalive. Timeout errors include `timeout: idle | silent | total`.
 
 Start performs exactly `POST {registered_base}/chat/completions`. Each `next`
 permits one more response frame. Cancel terminates the upstream HTTP request.
@@ -81,7 +85,17 @@ One response frame is outstanding per request. The runner reads upstream only
 when the gateway requests the next frame, keeping buffers bounded and leaving
 heartbeats and job traffic responsive. Limits: four active requests per runner,
 1 MiB request JSON, 64 KiB SSE line or nonstream completion, 16 MiB total response, 5 second local connect,
-60 second idle/first response, and 10 minute overall lifetime. Registration and
+60 second runner liveness, 600 second model silence, and 3600 second overall
+lifetime by default. All three server settings are configurable; the server sends
+them in start frames, with the total capped by the flow's remaining budget.
+Keepalives do not consume pull credit, NATS replies or model response bytes.
+They refresh the socket bridge's liveness clock while its RPC remains pending.
+The NATS wait and gateway thread wait cover the remaining total plus small
+transport margins; the socket owner enforces the shorter liveness/silence clocks.
+An independent per-request timer releases abandoned slots and cancels upstream
+work, so a sweep never evicts a valid request at the old 600-second boundary.
+Old peers keep their original 60/600 limits; keepalives require timeout fields
+from the server. See [long requests](../guide/runner-local-models.md#long-model-requests). Registration and
 discovery inventories are bounded. Slow or abandoned consumers are cancelled;
 transport shutdown closes upstream response bodies and releases slots.
 

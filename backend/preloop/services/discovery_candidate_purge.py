@@ -16,6 +16,7 @@ from typing import Optional
 from preloop.models.crud import (
     crud_discovered_agent_candidate,
     crud_discovery_observation,
+    crud_extension_content,
 )
 from preloop.models.db.session import get_db_session
 from preloop.services.service_roles import (
@@ -39,14 +40,19 @@ def run_discovery_candidate_purge_once() -> int:
     try:
         deleted = int(crud_discovered_agent_candidate.purge_stale(db))
         observations_deleted = int(crud_discovery_observation.purge_all_expired(db))
+        # After the inventory purge: content whose last inventory row just
+        # went is deleted in the same pass.
+        contents_deleted = int(crud_extension_content.purge(db))
         db.commit()
+        if contents_deleted:
+            logger.info("Purged %s extension content row(s)", contents_deleted)
         if observations_deleted:
             logger.info(
                 "Purged %s expired discovery observation(s)", observations_deleted
             )
         if deleted:
             logger.info("Purged %s stale discovery candidate(s)", deleted)
-        return deleted + observations_deleted
+        return deleted + observations_deleted + contents_deleted
     finally:
         db.close()
 

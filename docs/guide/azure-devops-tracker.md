@@ -234,9 +234,36 @@ can change or disable the label and disable the comment command independently.
 The flow must subscribe to **Pull Request Updated** for this repository.
 
 Azure accepts free-form PR labels, but label changes do not emit a service hook.
-Preloop polls imported, included repositories in bounded pages; discovery can
-take several polling cycles on larger accounts. Comments use the **Pull request
-commented on** hook (`ms.vss-code.git-pullrequest-comment-event`). Add that comment
+The sync scheduler publishes a review-request tick every 15 seconds; a sync
+worker must be running to consume it. Hook registration alone does not start
+label discovery. Each tick leases at most two imported repositories and reads
+five active PRs per repository, rotating pages. A repository is eligible again
+after 30 seconds. A matching flow can name the tracker or use any source, and
+must belong to the same account and include the repository in its project scope.
+Paused flows are polled too, so a request can report **flow paused**.
+
+With a stable set of `R` active imported repositories with matching flows across
+the installation (including candidates skipped by scope checks) and `N` active
+PRs in the requested repository, the worst-case discovery interval is
+`15 × max(2, ceil(R / 2)) × max(1, ceil(N / 5))` seconds, plus API/worker processing
+time. For one or two repositories with at most five active PRs each, this is
+30 seconds plus processing time. After acceptance, allow up to another 30
+seconds for the 15-second quiet window and next scheduler tick. An existing
+review must finish before its follow-up starts. These bounds assume the
+scheduler and worker keep up and Azure responds successfully; outages, rate
+limits, and a changing PR list can extend them.
+
+On the tracker page, **Azure DevOps service hooks** shows the last label poll,
+poll failures, and the ten most recent request outcomes (with PR, flow and time).
+Use **Check** to refresh it. **Not polled yet** means no label discovery attempt
+has been recorded: check that the scheduler/worker run and that an imported,
+included repository has a flow subscribed to Pull Request Updated. **Filter mismatch**,
+**flow paused**, and **pull request not active** explain requests that were seen
+but did not run. A rejected label stays attached. Both request paths refresh
+`draft`, `state`, author and branch filters from the live PR, so `draft=false`
+still excludes drafts and `state=open` still excludes closed PRs.
+
+Comments use the **Pull request commented on** hook (`ms.vss-code.git-pullrequest-comment-event`). Add that comment
 subscription using the same repository, callback and secret settings. Verify
 it with a real command; the canned Test support covers created/updated only.
 
@@ -245,7 +272,7 @@ to edit the PR. If removal is denied, remove the label, allow a polling cycle to
 observe its absence, then re-add it for another request. A label left attached
 does not continually start reviews. Repeated commands and labels are coalesced
 for a short quiet window; while a review runs, at most one follow-up is pending
-per flow and PR. Closed PRs and requests whose head has changed are skipped.
+per flow and PR. Closed PRs are skipped; explicit requests use the current head when dispatched.
 
 Preloop's own comments and review threads never request another review.
 Title/description edits, votes, reviewer changes and unrelated labels do not

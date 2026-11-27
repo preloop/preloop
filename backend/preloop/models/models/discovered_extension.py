@@ -1,4 +1,4 @@
-"""Installed extension metadata, never extension contents or configuration."""
+"""Installed extension metadata. Content for review lives in extension_content."""
 
 from datetime import datetime
 from uuid import UUID

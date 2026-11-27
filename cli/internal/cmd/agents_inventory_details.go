@@ -319,6 +319,7 @@ func (r *extensionRoot) pluginDetails(path string, manifest map[string]json.RawM
 			id := filepath.Base(skillPath)
 			d, local := r.markdownDetails(skillPath, id, true, ext.ID)
 			hash, status := treeHash(r.root, skillPath)
+			r.captureBundledSkill(ext.ID, path, strings.Split(ext.ID, "@")[0]+":"+id, skillPath, hash)
 			ext.Bundled = append(ext.Bundled, inventoryExtension{Kind: "skill", ID: strings.Split(ext.ID, "@")[0] + ":" + id, Details: d, Local: local, ContentHash: hash, HashStatus: status})
 		}
 		if strings.HasSuffix(rel, ".md") && componentContains(rel, commands, false) {

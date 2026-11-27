@@ -1006,6 +1006,7 @@ def _register_control_plane_routes(
         desktop,
         agent_deployments,
         agent_discovery,
+        extension_content,
         extension_inventory,
         agent_permission,
         ai_models,
@@ -1130,6 +1131,12 @@ def _register_control_plane_routes(
     )
     app.include_router(
         extension_inventory.router,
+        prefix="/api/v1",
+        tags=["Agent discovery"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        extension_content.router,
         prefix="/api/v1",
         tags=["Agent discovery"],
         dependencies=[Depends(get_current_active_user)],

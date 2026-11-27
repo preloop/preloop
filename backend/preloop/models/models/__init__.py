@@ -473,6 +473,7 @@ __all__ = [
     "DiscoveredExtension",
     "ExtensionApproval",
     "ExtensionApprovalPin",
+    "ExtensionContent",
     "ExtensionEnforcementPolicy",
 ]
 
@@ -520,6 +521,7 @@ from .mfa import UserMfaFactor, UserMfaRecoveryCode
 from .discovered_extension import DiscoveredExtension
 from .extension_approval import ExtensionApproval
 from .extension_approval_pin import ExtensionApprovalPin
+from .extension_content import ExtensionContent
 from .tool_registry_entry import ToolRegistryEntry
 from .flow_conversation import FlowConversation, FlowConversationMessage
 

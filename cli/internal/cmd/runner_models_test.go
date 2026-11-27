@@ -328,3 +328,163 @@ func TestRunnerModelIdleDeadlineMidstream(t *testing.T) {
 		t.Fatal("upstream remained open")
 	}
 }
+
+func TestRunnerModelConfiguredSlowUpstream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		for _, line := range []string{"data: first\n", "data: second\n", "data: [DONE]\n"} {
+			select {
+			case <-time.After(60 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
+			fmt.Fprint(w, line)
+			w.(http.Flusher).Flush()
+		}
+	}))
+	defer server.Close()
+	proxy := newRunnerModelProxy([]runnerLocalModel{{ID: "model-1", BaseURL: server.URL + "/v1", Model: "example"}})
+	defer proxy.cancel()
+	// Scale the legacy silence limit; server-provided limits must override it.
+	proxy.idleTimeout = 20 * time.Millisecond
+	proxy.keepaliveInterval = 10 * time.Millisecond
+	var request runnerModelRequest
+	raw := fmt.Sprintf(`{"request_id":"slow","operation":"start","model_id":"model-1","base_url":%q,"body":{"model":"example","stream":true},"timeouts":{"idle_seconds":0.04,"silent_seconds":0.15,"total_seconds":1}}`, server.URL+"/v1")
+	if err := json.Unmarshal([]byte(raw), &request); err != nil {
+		t.Fatal(err)
+	}
+	proxy.handle(request)
+	frames := 0
+	keepalives := 0
+	for {
+		frame := nextModelFrame(t, proxy)
+		if frame["keepalive"] == true {
+			keepalives++
+			continue
+		}
+		if frame["error"] != nil {
+			t.Fatalf("configured slow request failed: %v", frame)
+		}
+		frames++
+		if frame["done"] == true {
+			break
+		}
+		proxy.handle(runnerModelRequest{RequestID: "slow", Operation: "next"})
+	}
+	if frames != 3 {
+		t.Fatalf("got %d data frames", frames)
+	}
+	if keepalives < 3 {
+		t.Fatalf("missing keepalives during headers/chunks: %d", keepalives)
+	}
+}
+
+func TestRunnerModelConfiguredDeadlinesCancelUpstream(t *testing.T) {
+	for _, kind := range []string{"silent", "total"} {
+		t.Run(kind, func(t *testing.T) {
+			cancelled := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				io.Copy(io.Discard, r.Body)
+				<-r.Context().Done()
+				close(cancelled)
+			}))
+			defer server.Close()
+			proxy := newRunnerModelProxy([]runnerLocalModel{{ID: "model-1", BaseURL: server.URL + "/v1", Model: "example"}})
+			defer proxy.cancel()
+			proxy.keepaliveInterval = 10 * time.Millisecond
+			limits := &runnerModelTimeouts{SilentSeconds: 0.08, TotalSeconds: 1}
+			if kind == "total" {
+				limits.SilentSeconds, limits.TotalSeconds = 1, 0.08
+			}
+			proxy.handle(runnerModelRequest{RequestID: "one", Operation: "start", ModelID: "model-1", BaseURL: server.URL + "/v1", Body: json.RawMessage(`{"model":"example","stream":true}`), Timeouts: limits})
+			for {
+				frame := nextModelFrame(t, proxy)
+				if frame["keepalive"] == true {
+					continue
+				}
+				if frame["timeout"] != kind || frame["error"] != "runner_proxy_timeout" || frame["status"] != 504 {
+					t.Fatalf("wrong timeout: %v", frame)
+				}
+				break
+			}
+			select {
+			case <-cancelled:
+			case <-time.After(time.Second):
+				t.Fatal("upstream not cancelled")
+			}
+			deadline := time.After(time.Second)
+			for {
+				proxy.mu.Lock()
+				active := len(proxy.calls)
+				proxy.mu.Unlock()
+				if active == 0 {
+					break
+				}
+				select {
+				case <-deadline:
+					t.Fatal("active slot not freed")
+				case <-time.After(time.Millisecond):
+				}
+			}
+		})
+	}
+}
+
+func TestRunnerModelPartialBodyProgress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for i := 0; i < 5; i++ {
+			select {
+			case <-time.After(30 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
+			fmt.Fprint(w, "x")
+			w.(http.Flusher).Flush()
+		}
+	}))
+	defer server.Close()
+	proxy := newRunnerModelProxy([]runnerLocalModel{{ID: "m", BaseURL: server.URL + "/v1", Model: "example"}})
+	defer proxy.cancel()
+	proxy.keepaliveInterval = 10 * time.Millisecond
+	proxy.handle(runnerModelRequest{RequestID: "one", Operation: "start", ModelID: "m", BaseURL: server.URL + "/v1", Body: json.RawMessage(`{"model":"example"}`), Timeouts: &runnerModelTimeouts{SilentSeconds: 0.1, TotalSeconds: 1}})
+	progress := false
+	for {
+		frame := nextModelFrame(t, proxy)
+		if frame["keepalive"] == true {
+			progress = progress || frame["model_activity"] == true
+			continue
+		}
+		if frame["data"] != "xxxxx" || frame["done"] != true || !progress {
+			t.Fatalf("byte progress did not survive silence limit: %v, progress=%v", frame, progress)
+		}
+		break
+	}
+}
+
+func TestRunnerModelTimeoutFreesSlotWithBlockedSocket(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	proxy := newRunnerModelProxy([]runnerLocalModel{{ID: "m", BaseURL: server.URL + "/v1", Model: "example"}})
+	defer proxy.cancel()
+	for i := 0; i < cap(proxy.frames); i++ {
+		proxy.frames <- map[string]any{}
+	}
+	proxy.handle(runnerModelRequest{RequestID: "one", Operation: "start", ModelID: "m", BaseURL: server.URL + "/v1", Body: json.RawMessage(`{"model":"example"}`), Timeouts: &runnerModelTimeouts{SilentSeconds: 1, TotalSeconds: 0.05}})
+	deadline := time.After(time.Second)
+	for {
+		proxy.mu.Lock()
+		active := len(proxy.calls)
+		proxy.mu.Unlock()
+		if active == 0 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout retained slot behind full frame queue")
+		case <-time.After(time.Millisecond):
+		}
+	}
+}

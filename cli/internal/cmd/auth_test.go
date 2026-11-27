@@ -723,3 +723,81 @@ func TestRunAuthLogoutAllOfflineStillClears(t *testing.T) {
 		t.Fatalf("expected offline warning, got %q", output)
 	}
 }
+
+func TestOAuthLoginInstructions(t *testing.T) {
+	for _, headless := range []bool{false, true} {
+		var output bytes.Buffer
+		printOAuthLoginInstructions(&output, "https://example.com/oauth/authorize?state=example", headless)
+		text := output.String()
+		for _, want := range []string{"Authorize CLI", "https://example.com/oauth/authorize?state=example", "Closed the browser tab?", "Successfully authenticated!"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("headless=%v: missing %q in %q", headless, want, text)
+			}
+		}
+		if strings.Contains(text, "\x1b") {
+			t.Fatal("instructions must remain readable when piped")
+		}
+		if headless {
+			for _, want := range []string{"ONE-TIME CODE", "paste", "no terminal timeout", "5 minutes after approval"} {
+				if !strings.Contains(text, want) {
+					t.Errorf("missing %q in %q", want, text)
+				}
+			}
+		} else if !strings.Contains(text, "Waiting up to 5 minutes") {
+			t.Errorf("missing loopback timeout: %q", text)
+		}
+	}
+}
+
+func TestHeadlessLoginWithoutTerminalPrintsRecovery(t *testing.T) {
+	restore := snapshotLoginFlags()
+	defer restore()
+	loginCode = ""
+	originalStdinIsTerminal := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	t.Cleanup(func() { stdinIsTerminal = originalStdinIsTerminal })
+	var loginErr error
+	output := captureStdout(t, func() error {
+		loginErr = runHeadlessOAuthLogin("https://example.com")
+		return nil
+	})
+	if loginErr == nil || !strings.Contains(loginErr.Error(), "--code <value>") {
+		t.Fatalf("expected actionable noninteractive error, got %v", loginErr)
+	}
+	if !strings.Contains(output, "ONE-TIME CODE") || !strings.Contains(output, "Closed the browser tab?") {
+		t.Fatalf("missing recovery instructions: %q", output)
+	}
+}
+
+func TestHeadlessLoginWithSuppliedCodeDoesNotPrompt(t *testing.T) {
+	testenv.SetTempHome(t)
+	restore := snapshotLoginFlags()
+	defer restore()
+	loginCode = "synthetic-authorization-code"
+	server := fakeOSSServer(t, nil)
+	defer server.Close()
+	originalStdinIsTerminal := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	t.Cleanup(func() { stdinIsTerminal = originalStdinIsTerminal })
+	output := captureStdout(t, func() error { return runHeadlessOAuthLogin(server.URL) })
+	if !strings.Contains(output, "Successfully authenticated!") {
+		t.Fatalf("expected successful noninteractive login, got %q", output)
+	}
+	if strings.Contains(output, loginCode) || strings.Contains(output, "oss-access") || strings.Contains(output, "Authorization code:") {
+		t.Fatal("noninteractive login must not echo secrets or prompt for input")
+	}
+}
+
+func TestHandleOAuthCallbackRejectsInvalidResponses(t *testing.T) {
+	for _, query := range []string{"code=example-code&state=wrong", "state=expected-state", "error=access_denied&state=expected-state"} {
+		t.Run(query, func(t *testing.T) {
+			codes := make(chan string, 1)
+			errors := make(chan error, 1)
+			response := httptest.NewRecorder()
+			handleOAuthCallback(response, httptest.NewRequest("GET", "/callback?"+query, nil), "expected-state", "https://example.com/console", codes, errors)
+			if response.Code != http.StatusBadRequest || len(codes) != 0 || len(errors) != 1 {
+				t.Fatalf("invalid callback accepted: status=%d codes=%d errors=%d", response.Code, len(codes), len(errors))
+			}
+		})
+	}
+}
