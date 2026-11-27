@@ -1253,6 +1253,13 @@ func promptToOnboardCandidates(
 	var outcomes []agentOnboardingOutcome
 
 	for _, agent := range candidates {
+		// A missing local prerequisite (Claude Code needs Node.js) fails
+		// this agent before any of its prompts; the batch continues.
+		if err := preflightLocalAgentPrerequisites(agent, managedEnrollmentOptions{}); err != nil {
+			fmt.Fprintf(writer, "  Cannot onboard %s: %s\n", resolveAgentDisplayName(agent), err) //nolint:errcheck
+			outcomes = append(outcomes, classifyAgentOnboardingOutcome(agent, err))
+			continue
+		}
 		if !autoApprove {
 			prompt := fmt.Sprintf("Onboard %s (%s) into managed Preloop access now? (Y/n): ", agent.Name, resolveAgentDisplayName(agent))
 			if agent.IsOnboarded {

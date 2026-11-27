@@ -44,6 +44,24 @@ const keepDiffBody = `{
   }]
 }`
 
+// celKeepDiffBody keeps a condition but the file spells condition_type: cel,
+// which export omits; that is not a removal.
+const celKeepDiffBody = `{
+  "has_changes": true,
+  "summary": "1 modified",
+  "changes": [{
+    "path": "$.tools[name=Bash]",
+    "operation": "modify",
+    "old_value": {"name": "Bash", "approval_workflow": "high-risk",
+      "conditions": [{"expression": "args.command.contains('deploy')", "action": "require_approval", "condition_type": "simple"}]},
+    "new_value": {"name": "Bash", "approval_workflow": "high-risk",
+      "conditions": [{"expression": "args.command.contains('deploy')", "action": "require_approval", "condition_type": "cel", "description": "Deploys"}]}
+  }]
+}`
+
+// policyDiffFails makes the test server answer the diff preview with 500.
+const policyDiffFails = "<fail>"
+
 type policyTestServer struct {
 	uploads int
 }
@@ -58,6 +76,11 @@ func startPolicyTestServer(t *testing.T, diffBody string) *policyTestServer {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case policiesDiffPath:
+			if diffBody == policyDiffFails {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = io.WriteString(w, `{"detail":"synthetic failure"}`)
+				return
+			}
 			_, _ = io.WriteString(w, diffBody)
 		case policiesUploadPath:
 			state.uploads++
@@ -139,6 +162,7 @@ func TestPolicyApplyRemovalConfirmation(t *testing.T) {
 		terminal bool
 		yes      bool
 		input    string
+		confirm  string
 		applied  bool
 		errText  string
 	}{
@@ -147,9 +171,11 @@ func TestPolicyApplyRemovalConfirmation(t *testing.T) {
 		{name: "interactive empty answer", terminal: true, input: "\n", errText: "apply cancelled"},
 		{name: "non-interactive", terminal: false, errText: "--yes"},
 		{name: "non-interactive with --yes", terminal: false, yes: true, applied: true},
+		{name: "non-interactive with PRELOOP_CONFIRM", terminal: false, confirm: "1", applied: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := startPolicyTestServer(t, removalDiffBody)
+			t.Setenv("PRELOOP_CONFIRM", tc.confirm)
 			setPolicyTestTerminal(t, tc.terminal)
 			file := writePolicyTestFile(t)
 			var runErr error
@@ -201,5 +227,60 @@ func TestPolicyApplyDryRunPrintsRemovals(t *testing.T) {
 	assertRemovalLines(t, output)
 	if state.uploads != 0 {
 		t.Fatal("dry run uploaded the policy")
+	}
+}
+
+func TestPolicyRemovalsIgnoreConditionTypeAndDescription(t *testing.T) {
+	startPolicyTestServer(t, celKeepDiffBody)
+	file := writePolicyTestFile(t)
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("no-resolve-env", false, "")
+	output := captureStdout(t, func() error { return runPolicyDiff(cmd, []string{file}) })
+	if strings.Contains(output, "REMOVES") {
+		t.Fatalf("an explicit condition_type: cel condition was reported as removed:\n%s", output)
+	}
+}
+
+func TestPolicyApplyDiffPreviewFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		yes     bool
+		dryRun  bool
+		uploads int
+		fails   bool
+	}{
+		{name: "apply stops", fails: true},
+		{name: "apply with --yes proceeds", yes: true, uploads: 1},
+		{name: "dry run notes it", dryRun: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := startPolicyTestServer(t, policyDiffFails)
+			setPolicyTestTerminal(t, false)
+			file := writePolicyTestFile(t)
+			cmd := newPolicyApplyTestCmd(tc.yes, "")
+			if tc.dryRun {
+				_ = cmd.Flags().Set("dry-run", "true")
+			}
+			var runErr error
+			output := captureStdout(t, func() error {
+				runErr = runPolicyApply(cmd, []string{file})
+				return nil
+			})
+			if tc.fails {
+				if runErr == nil || !strings.Contains(runErr.Error(), "--yes") {
+					t.Fatalf("err = %v, want a stop that names --yes", runErr)
+				}
+			} else {
+				if runErr != nil {
+					t.Fatal(runErr)
+				}
+				if !strings.Contains(output, "could not check what the policy would remove") {
+					t.Fatalf("missing preview-failure note:\n%s", output)
+				}
+			}
+			if state.uploads != tc.uploads {
+				t.Fatalf("uploads = %d, want %d", state.uploads, tc.uploads)
+			}
+		})
 	}
 }

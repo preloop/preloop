@@ -138,3 +138,31 @@ func TestClaudeNodeNotFoundKeepsInstallAdvice(t *testing.T) {
 		t.Fatalf("install advice missing: %v", err)
 	}
 }
+
+func TestBatchOnboardNodePreflightRunsBeforePrompts(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	stubNodeOffPath(t)
+	agent := AgentConfig{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}
+	mustWriteRecoveryFile(t, agent.ConfigPath, `{}`)
+	other := AgentConfig{Name: "Example Agent", ConfigPath: filepath.Join(home, ".example", "config.json")}
+	var out bytes.Buffer
+	var enrolled []string
+	outcomes, err := promptToOnboardCandidates(strings.NewReader("y\n\n"), &out, []AgentConfig{agent, other}, false, false,
+		func(a AgentConfig, _ bool) error { enrolled = append(enrolled, a.Name); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	printed := out.String()
+	if strings.Contains(printed, "Onboard Claude Code") {
+		t.Fatalf("Claude Code was prompted before its failed prerequisite:\n%s", printed)
+	}
+	if !strings.Contains(printed, "Node.js 20 or newer") {
+		t.Fatalf("missing prerequisite error:\n%s", printed)
+	}
+	if len(outcomes) != 2 || outcomes[0].Status != agentOnboardingStatusFailed {
+		t.Fatalf("outcomes = %+v", outcomes)
+	}
+	if len(enrolled) != 1 || enrolled[0] != "Example Agent" {
+		t.Fatalf("enrolled = %v, want only the other agent", enrolled)
+	}
+}

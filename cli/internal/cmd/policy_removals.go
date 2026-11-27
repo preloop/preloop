@@ -54,10 +54,10 @@ func policyToolRemovals(diff *PolicyDiff) []policyRemoval {
 		}
 		kept := map[string]bool{}
 		for _, condition := range policyConditions(newTool) {
-			kept[policyCanonicalJSON(condition)] = true
+			kept[policyConditionKey(condition)] = true
 		}
 		for _, condition := range policyConditions(oldTool) {
-			if !kept[policyCanonicalJSON(condition)] {
+			if !kept[policyConditionKey(condition)] {
 				removals = append(removals, policyRemoval{Tool: tool, Condition: describePolicyCondition(condition)})
 			}
 		}
@@ -81,6 +81,23 @@ func policyCanonicalJSON(value interface{}) string {
 		return fmt.Sprintf("%v", value)
 	}
 	return string(data)
+}
+
+// policyConditionKey identifies a condition by the fields that define the
+// rule: its expression and action. Export does not carry the stored
+// condition_type or description, so comparing those would report a kept
+// condition as removed.
+func policyConditionKey(condition interface{}) string {
+	fields, ok := condition.(map[string]interface{})
+	if !ok {
+		return policyCanonicalJSON(condition)
+	}
+	expression, _ := fields["expression"].(string)
+	action, _ := fields["action"].(string)
+	if action == "" {
+		action = "require_approval"
+	}
+	return policyCanonicalJSON([]string{strings.TrimSpace(expression), action})
 }
 
 func describePolicyCondition(condition interface{}) string {

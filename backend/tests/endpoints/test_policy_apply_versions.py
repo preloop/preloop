@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from fastapi.testclient import TestClient
+from pytest_mock import MockerFixture
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -94,3 +95,25 @@ def test_dry_run_records_no_version(client: TestClient) -> None:
     assert response.json()["policy_version"] is None
     listed = client.get("/api/v1/policies/versions")
     assert listed.json()["total"] == 0
+
+
+def test_snapshot_failure_keeps_apply_successful(
+    client: TestClient, mocker: MockerFixture
+) -> None:
+    """A failed snapshot reports a warning; the committed apply still succeeds."""
+    assert _upload(client, _policy("deny")).json()["policy_version"] == 1
+    mocker.patch.object(
+        PolicyVersionService, "create_snapshot", side_effect=RuntimeError("boom")
+    )
+    response = _upload(client, _policy("allow"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["success"] is True
+    assert body["policy_version"] is None
+    assert any("no policy version was recorded" in w for w in body["warnings"])
+    exported = client.get("/api/v1/policies/export", params={"format": "json"})
+    assert exported.json()["tools"][0]["conditions"][0]["action"] == "allow"
+    mocker.stopall()
+    listed = client.get("/api/v1/policies/versions").json()
+    assert listed["total"] == 1
+    assert listed["versions"][0]["is_active"] is True
