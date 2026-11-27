@@ -148,7 +148,8 @@ func TestBatchOnboardNodePreflightRunsBeforePrompts(t *testing.T) {
 	var out bytes.Buffer
 	var enrolled []string
 	outcomes, err := promptToOnboardCandidates(strings.NewReader("y\n\n"), &out, []AgentConfig{agent, other}, false, false,
-		func(a AgentConfig, _ bool) error { enrolled = append(enrolled, a.Name); return nil })
+		func(a AgentConfig, _ bool) error { enrolled = append(enrolled, a.Name); return nil },
+		func(a AgentConfig) error { return preflightLocalAgentPrerequisites(a, managedEnrollmentOptions{}) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,5 +165,27 @@ func TestBatchOnboardNodePreflightRunsBeforePrompts(t *testing.T) {
 	}
 	if len(enrolled) != 1 || enrolled[0] != "Example Agent" {
 		t.Fatalf("enrolled = %v, want only the other agent", enrolled)
+	}
+}
+
+func TestBatchOnboardManualSkipsNodePreflight(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	stubNodeOffPath(t)
+	agent := AgentConfig{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}
+	mustWriteRecoveryFile(t, agent.ConfigPath, `{}`)
+	opts := managedEnrollmentOptions{ForceManual: true}
+	var out bytes.Buffer
+	var enrolled []string
+	outcomes, err := promptToOnboardCandidates(strings.NewReader("y\n\n"), &out, []AgentConfig{agent}, false, false,
+		func(a AgentConfig, _ bool) error { enrolled = append(enrolled, a.Name); return nil },
+		func(a AgentConfig) error { return preflightLocalAgentPrerequisites(a, opts) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "Node.js") {
+		t.Fatalf("--manual must not require Node:\n%s", out.String())
+	}
+	if len(enrolled) != 1 || len(outcomes) != 1 || outcomes[0].Status == agentOnboardingStatusFailed {
+		t.Fatalf("manual onboarding did not proceed: enrolled=%v outcomes=%+v", enrolled, outcomes)
 	}
 }
