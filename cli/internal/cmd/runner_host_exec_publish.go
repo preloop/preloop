@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -30,17 +31,27 @@ const (
 	hostExecMaxPRTemplateBytes    = 65536
 )
 
-// hostExecPRTemplatePaths mirrors the hosted template discovery order
-// (pr_metadata.repository_template): GitHub conventions, then GitLab.
-var hostExecPRTemplatePaths = []string{
-	".github/pull_request_template.md",
-	".github/PULL_REQUEST_TEMPLATE.md",
-	"pull_request_template.md",
-	"PULL_REQUEST_TEMPLATE.md",
-	"docs/pull_request_template.md",
-	"docs/PULL_REQUEST_TEMPLATE.md",
-	".gitlab/merge_request_templates/Default.md",
-	".gitlab/merge_request_templates/default.md",
+// Pull request template conventions per code host, in the order the hosted
+// discovery uses (pr_metadata.discover_template): the provider's default
+// files, then the lexically first *.md in its template directory.
+var hostExecPRTemplatePaths = map[string][]string{
+	"github": {
+		".github/pull_request_template.md",
+		".github/PULL_REQUEST_TEMPLATE.md",
+		"pull_request_template.md",
+		"PULL_REQUEST_TEMPLATE.md",
+		"docs/pull_request_template.md",
+		"docs/PULL_REQUEST_TEMPLATE.md",
+	},
+	"gitlab": {
+		".gitlab/merge_request_templates/Default.md",
+		".gitlab/merge_request_templates/default.md",
+	},
+}
+
+var hostExecPRTemplateDirs = map[string]string{
+	"github": ".github/PULL_REQUEST_TEMPLATE",
+	"gitlab": ".gitlab/merge_request_templates",
 }
 
 // Failure reasons reported in host_publication.reason. Every failure is
@@ -57,6 +68,9 @@ type hostExecPublication struct {
 	CommitMessage string `json:"commit_message"`
 	// Template is the flow's configured repository-relative PR template.
 	Template string `json:"pull_request_template"`
+	// Provider is the bound tracker's code host ("github" or "gitlab"); it
+	// selects the template conventions. Anything else uses GitHub's.
+	Provider string `json:"pull_request_provider"`
 	// Continuation pushes onto the existing pull request branch, which is
 	// also the branch the checkout cloned.
 	Continuation bool `json:"continuation"`
@@ -208,7 +222,7 @@ func publishHostExecWork(ctx context.Context, workspace string, plan *hostExecPu
 	logf(fmt.Sprintf("preloop runner: pushing %s to %s", head[:12], plan.Branch))
 	receipt, err := pushHostPublication(ctx, gitBin, dir, plan, head)
 	if err == nil && receipt != nil {
-		if template := hostPublicationTemplate(ctx, gitBin, dir, localEnv, head, plan.Template); template != "" {
+		if template := hostPublicationTemplate(ctx, gitBin, dir, localEnv, head, plan.Provider, plan.Template); template != "" {
 			receipt["pr_template"] = template
 		}
 	}
@@ -219,32 +233,58 @@ func publishHostExecWork(ctx context.Context, workspace string, plan *hostExecPu
 // the pushed commit, never the working tree, so a symlink or an untracked
 // file the CLI wrote cannot substitute another file. Only regular blobs up
 // to hostExecMaxPRTemplateBytes count. It returns "" when none applies.
-func hostPublicationTemplate(ctx context.Context, gitBin, dir string, env []string, head, configured string) string {
-	candidates := hostExecPRTemplatePaths
+func hostPublicationTemplate(ctx context.Context, gitBin, dir string, env []string, head, provider, configured string) string {
+	if provider != "gitlab" {
+		provider = "github"
+	}
 	if configured != "" {
 		clean := filepath.ToSlash(filepath.Clean(configured))
 		if filepath.IsAbs(configured) || clean == ".." || strings.HasPrefix(clean, "../") {
 			return ""
 		}
-		candidates = []string{clean}
+		return hostPublicationTemplateBlob(ctx, gitBin, dir, env, head, clean)
 	}
-	for _, path := range candidates {
-		entry, err := hostPublishGitOutput(ctx, gitBin, dir, env, "ls-tree", "-l", head, "--", path)
-		fields := strings.Fields(entry)
-		if err != nil || len(fields) < 5 || fields[0] != "100644" || fields[1] != "blob" {
-			continue
+	for _, path := range hostExecPRTemplatePaths[provider] {
+		if text := hostPublicationTemplateBlob(ctx, gitBin, dir, env, head, path); text != "" {
+			return text
 		}
-		var size int
-		if _, err := fmt.Sscanf(fields[3], "%d", &size); err != nil || size <= 0 || size > hostExecMaxPRTemplateBytes {
-			continue
+	}
+	listing, err := hostPublishGitOutput(ctx, gitBin, dir, env, "ls-tree", "--name-only", head, "--", hostExecPRTemplateDirs[provider]+"/")
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, name := range strings.Split(listing, "\n") {
+		if strings.HasSuffix(strings.ToLower(name), ".md") {
+			names = append(names, name)
 		}
-		text, err := hostPublishGitOutput(ctx, gitBin, dir, env, "cat-file", "blob", fields[2])
-		if err != nil || strings.TrimSpace(text) == "" || strings.ContainsRune(text, 0) {
-			continue
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if text := hostPublicationTemplateBlob(ctx, gitBin, dir, env, head, name); text != "" {
+			return text
 		}
-		return text
 	}
 	return ""
+}
+
+// hostPublicationTemplateBlob returns one regular, bounded, non-empty text
+// blob at path in head, or "".
+func hostPublicationTemplateBlob(ctx context.Context, gitBin, dir string, env []string, head, path string) string {
+	entry, err := hostPublishGitOutput(ctx, gitBin, dir, env, "ls-tree", "-l", head, "--", path)
+	fields := strings.Fields(entry)
+	if err != nil || len(fields) < 5 || fields[0] != "100644" || fields[1] != "blob" {
+		return ""
+	}
+	var size int
+	if _, err := fmt.Sscanf(fields[3], "%d", &size); err != nil || size <= 0 || size > hostExecMaxPRTemplateBytes {
+		return ""
+	}
+	text, err := hostPublishGitOutput(ctx, gitBin, dir, env, "cat-file", "blob", fields[2])
+	if err != nil || strings.TrimSpace(text) == "" || strings.ContainsRune(text, 0) {
+		return ""
+	}
+	return text
 }
 
 // hostPublishIsolatedEnv is the environment of git processes in the

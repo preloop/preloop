@@ -656,7 +656,7 @@ successfully the runner commits the work and pushes a managed `preloop/`
 branch with the short-lived repository token Preloop issued for the job;
 your own git credentials are never used and the token is never printed.
 Preloop then opens the pull request through the account's GitHub, GitLab or
-Bitbucket connection, with the same title, description, template and
+Bitbucket Cloud connection, with the same title, description, template and
 `publication_approval` handling as hosted flows. `publication_mode:
 isolated` stays unavailable on host profiles, and `read_only` review flows
 never publish.

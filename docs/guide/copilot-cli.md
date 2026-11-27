@@ -162,7 +162,7 @@ A host profile can run a PR Reviewer or an implementation flow end to end:
   `~/.gitconfig` (a proxy, CA file, URL rewrite or credential helper) can
   reach the credential. The control
   plane then opens the pull request through the bound GitHub, GitLab or
-  Bitbucket tracker
+  Bitbucket Cloud tracker
   and binds it to the execution; the agent never supplies a pull request
   URL. Saving such a flow, or starting it, fails with an error naming
   `allow_checkout` and `allow_publish` when no runner in the pool

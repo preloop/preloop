@@ -182,7 +182,16 @@ def test_save_keeps_review_only_flows_without_runner_lookup(monkeypatch):
 
 
 def test_save_accepts_cursor_publication_with_capable_runner(monkeypatch):
-    _reject(monkeypatch, [_runner(*PUBLISHING_RUNNER)], agent_type="cursor")
+    _reject(
+        monkeypatch, [_runner("cursor_cli", "host_publication")], agent_type="cursor"
+    )
+
+
+def test_save_rejects_cursor_flow_when_only_copilot_profile_publishes(monkeypatch):
+    """Save matches the advertised harness, as lease assignment does."""
+    with pytest.raises(HTTPException) as caught:
+        _reject(monkeypatch, [_runner(*PUBLISHING_RUNNER)], agent_type="cursor")
+    assert caught.value.detail == PULL_REQUEST_UNAVAILABLE
 
 
 def test_save_rejects_cursor_publication_without_capable_runner(monkeypatch):

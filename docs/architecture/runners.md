@@ -32,7 +32,7 @@ working tree) with the hosted discovery order. The completion path keeps only th
 (agent JSON cannot author it) and fails a publishing run without a pushed branch.
 The orchestrator verifies the branch against its own plan, looks up an open pull
 request for it before creating one through the bound GitHub, GitLab or Bitbucket
-tracker, and binds it with `record_opened_pr`, so a lost create response never
+Cloud tracker (Bitbucket Data Center is not supported here), and binds it with `record_opened_pr`, so a lost create response never
 yields a second pull request. Title and body follow the hosted precedence (agent
 result, configured `pull_request_title`/`pull_request_description`, the
 repository template, then a default). When `git_clone_config.publication_approval`

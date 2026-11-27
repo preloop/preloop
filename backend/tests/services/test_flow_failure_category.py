@@ -16,6 +16,7 @@ from preloop.services.host_exec import (
     ISOLATED_PUBLICATION_UNAVAILABLE,
     PULL_REQUEST_UNAVAILABLE,
 )
+from preloop.services.host_exec_publication import PUBLICATION_READ_ONLY
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORIES,
     FAILURE_CATEGORY_MAX_LENGTH,
@@ -548,6 +549,7 @@ def test_refused_resume_checkpoint_is_resume_failed(message: str) -> None:
         ("host execution profiles cannot run on hosted compute", "flow_config"),
         (PULL_REQUEST_UNAVAILABLE, "flow_config"),
         (ISOLATED_PUBLICATION_UNAVAILABLE, "flow_config"),
+        (PUBLICATION_READ_ONLY, "flow_config"),
         (
             "Host profiles do not support remote workspace seeds or native resume",
             "flow_config",

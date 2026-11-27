@@ -250,7 +250,11 @@ def _reject_host_exec_flow(
         if host_publication_requested(git_clone_config) and (
             db is None
             or not account_has_publishing_runner(
-                db, account_id=account_id, runner_pool=runner_pool, profile=profile
+                db,
+                account_id=account_id,
+                runner_pool=runner_pool,
+                profile=profile,
+                agent_type=agent_type,
             )
         ):
             raise HTTPException(status_code=400, detail=PULL_REQUEST_UNAVAILABLE)

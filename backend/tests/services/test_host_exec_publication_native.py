@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from preloop.services.host_exec import (
+    HOST_EXEC_HARNESSES,
     ISOLATED_PUBLICATION_UNAVAILABLE,
     PULL_REQUEST_UNAVAILABLE,
     host_exec_unavailable_reason,
@@ -25,7 +26,6 @@ from preloop.services.host_exec_publication import (
 from .test_host_exec_publication import (  # noqa: F401 - fixture import
     HEAD,
     ONE_REPO,
-    PUBLISHING_RUNNER,
     FakeBitbucket,
     _jira_context,
     _orchestrator,
@@ -123,9 +123,10 @@ def test_read_only_review_without_publication_is_unchanged():
 
 @pytest.mark.parametrize("agent_type", NATIVE_AGENT_TYPES)
 def test_save_needs_a_publishing_runner_for_each_harness(monkeypatch, agent_type):
-    _reject(monkeypatch, [_runner(*PUBLISHING_RUNNER)], agent_type=agent_type)
+    harness = HOST_EXEC_HARNESSES[agent_type]
+    _reject(monkeypatch, [_runner(harness, "host_publication")], agent_type=agent_type)
     with pytest.raises(HTTPException) as caught:
-        _reject(monkeypatch, [_runner("host_exec")], agent_type=agent_type)
+        _reject(monkeypatch, [_runner(harness)], agent_type=agent_type)
     assert caught.value.detail == PULL_REQUEST_UNAVAILABLE
     assert "allow_publish" in PULL_REQUEST_UNAVAILABLE
 
@@ -143,6 +144,15 @@ def test_plan_carries_configured_template():
         pull_request_template=".github/PULL_REQUEST_TEMPLATE/feature.md",
     )
     assert plan["pull_request_template"] == ".github/PULL_REQUEST_TEMPLATE/feature.md"
+    assert plan["pull_request_provider"] == "github"
+    gitlab = build_host_exec_publication(
+        checkout,
+        target_branch=BRANCH,
+        flow_name="f",
+        execution_id=str(uuid4()),
+        template_provider="gitlab",
+    )
+    assert gitlab["pull_request_provider"] == "gitlab"
     plain = build_host_exec_publication(
         checkout, target_branch=BRANCH, flow_name="f", execution_id=str(uuid4())
     )
@@ -342,3 +352,72 @@ async def test_publication_approval_binds_the_exact_pushed_head(
         }
     ]
     assert len(forge.prs) == 1
+
+
+# --- Continuation base -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_continuation_binds_approval_to_the_pull_request_base(
+    monkeypatch,
+    bound,  # noqa: F811
+):
+    """A continuation clones the PR head; the base is the open PR's target."""
+    import preloop.services.product_provenance as provenance
+
+    seen = []
+    monkeypatch.setattr(
+        provenance,
+        "enforce_saved_publication_approval",
+        lambda db, **kwargs: seen.append(kwargs),
+    )
+    execution_id = uuid4()
+    branch = f"preloop/issue-PROJ-7-{str(execution_id)[:8]}"
+    context = _github_context(execution_id, publication_approval="required")
+    context["git_clone_config"]["repositories"][0]["branch"] = branch
+    context["trigger_event_data"]["_resume"] = {"source_branch": branch}
+    forge = FakeGitHub()
+    forge.prs.append(
+        {
+            "url": "https://github.com/acme/app/pull/9",
+            "source_branch": branch,
+            "target_branch": "release",
+        }
+    )
+    orch = _orchestrate(monkeypatch, execution_id, context, forge, _complete(branch))
+    orch.trigger_event_data = context["trigger_event_data"]
+
+    async def resume_context():
+        return context
+
+    monkeypatch.setattr(orch, "prepare_host_exec_checkout_context", resume_context)
+    monkeypatch.setattr(
+        "preloop.services.host_exec_delivery.build_host_exec_checkout",
+        lambda ctx: {
+            "repositories": [
+                {"url": "https://github.com/acme/app.git", "branch": branch}
+            ]
+        },
+    )
+    assert await orch._open_host_published_pr("SUCCEEDED") is None
+    assert seen[0]["candidates"][0]["base"] == "release"
+    assert forge.creates == 0
+    assert orch._opened_pr["url"] == "https://github.com/acme/app/pull/9"
+
+
+@pytest.mark.asyncio
+async def test_base_falls_back_to_default_when_checkout_is_the_pushed_branch():
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    base = await FlowExecutionOrchestrator._host_publication_base(
+        FakeGitHub(),
+        BRANCH,
+        branch=BRANCH,
+        configured={"repositories": [{"default_branch": "develop"}]},
+        is_continuation=False,
+    )
+    assert base == "develop"
+    first = await FlowExecutionOrchestrator._host_publication_base(
+        FakeGitHub(), "main", branch=BRANCH, configured={}, is_continuation=False
+    )
+    assert first == "main"

@@ -8,7 +8,7 @@ managed ``preloop/`` branch after the CLI exits successfully, using the
 short-lived repository credential the control plane delivered for the job,
 and reports a receipt on the completion envelope. The control plane then
 opens the pull request with the bound code-host tracker client (GitHub,
-GitLab or Bitbucket), applies the saved ``publication_approval`` gate, and
+GitLab or Bitbucket Cloud), applies the saved ``publication_approval`` gate, and
 binds it through ``record_opened_pr``. The agent never supplies a pull
 request URL.
 
@@ -46,7 +46,7 @@ MULTI_REPOSITORY_PUBLICATION_UNAVAILABLE = (
 )
 PUBLICATION_UNSUPPORTED_TRACKER = (
     "host publication opens pull requests on GitHub, GitLab and Bitbucket "
-    "repositories only"
+    "Cloud repositories only"
 )
 PUBLICATION_READ_ONLY = (
     "a read_only review flow cannot open a pull request; set publication_mode "
@@ -135,15 +135,23 @@ def runner_profile_can_publish(runner: Any, profile: str) -> bool:
 
 
 def account_has_publishing_runner(
-    db: Session, *, account_id: Any, runner_pool: Any, profile: str
+    db: Session,
+    *,
+    account_id: Any,
+    runner_pool: Any,
+    profile: str,
+    agent_type: Any = None,
 ) -> bool:
     """True when a registered runner in the pool can publish for ``profile``.
 
     Offline runners count: a saved flow waits for its runner. A runner that
     never advertised the capability (an old CLI or a profile without
-    ``allow_publish``) does not.
+    ``allow_publish``) does not. With ``agent_type`` the profile must also
+    advertise that harness, the same rule lease assignment applies, so a
+    Copilot profile of the same name never admits a Cursor flow.
     """
     from preloop.models.crud import crud_flow_runner
+    from preloop.services.host_exec import runner_has_host_exec_profile
 
     if account_id is None:
         return False
@@ -151,7 +159,14 @@ def account_has_publishing_runner(
     runners = crud_flow_runner.find_matching(
         db, account_id=account_id, pool=pool, online_only=False
     )
-    return any(runner_profile_can_publish(runner, profile) for runner in runners)
+    if agent_type is None:
+        return any(runner_profile_can_publish(runner, profile) for runner in runners)
+    return any(
+        runner_has_host_exec_profile(
+            runner, profile, None, agent_type, require_publication=True
+        )
+        for runner in runners
+    )
 
 
 def trusted_host_publication_receipt(

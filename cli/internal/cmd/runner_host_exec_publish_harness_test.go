@@ -91,7 +91,7 @@ func TestHostPublishIgnoresSymlinkedTemplate(t *testing.T) {
 }
 
 func TestHostPublishConfiguredTemplateOutsideRepositoryIgnored(t *testing.T) {
-	if got := hostPublicationTemplate(context.Background(), "git", t.TempDir(), nil, "HEAD", "../etc/passwd"); got != "" {
+	if got := hostPublicationTemplate(context.Background(), "git", t.TempDir(), nil, "HEAD", "github", "../etc/passwd"); got != "" {
 		t.Fatalf("template = %q", got)
 	}
 }
@@ -134,5 +134,58 @@ func TestBeginHostExecJobPublishesAfterClaudeSucceeds(t *testing.T) {
 	logs := strings.Join(outcome.logBuffer.pending, "\n")
 	if strings.Contains(logs, hostPublishTestToken) {
 		t.Fatalf("credential leaked in logs")
+	}
+}
+
+// publishWithTemplateFiles writes files into the checkout, publishes and returns
+// the reported template.
+func publishWithTemplateFiles(t *testing.T, provider string, files map[string]string) any {
+	t.Helper()
+	s := hostPublishTestServer(t)
+	workspace, plan := preparePublish(t, s, hostPublishTestToken, "preloop/issue-PROJ-7-1a2b3c4d")
+	plan.Provider = provider
+	dir := filepath.Join(workspace, "workspace")
+	for name, body := range files {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receipt, err := publishHostExecWork(context.Background(), workspace, plan, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receipt["pr_template"]
+}
+
+func TestHostPublishTemplateUsesGitLabConventionsForGitLab(t *testing.T) {
+	got := publishWithTemplateFiles(t, "gitlab", map[string]string{
+		".github/pull_request_template.md":           "stale github",
+		".gitlab/merge_request_templates/Default.md": "gitlab default",
+	})
+	if got != "gitlab default" {
+		t.Fatalf("template = %#v", got)
+	}
+}
+
+func TestHostPublishTemplateFallsBackToTemplateDirectory(t *testing.T) {
+	got := publishWithTemplateFiles(t, "github", map[string]string{
+		".github/PULL_REQUEST_TEMPLATE/feature.md": "feature",
+		".github/PULL_REQUEST_TEMPLATE/bugfix.md":  "bugfix",
+		".github/PULL_REQUEST_TEMPLATE/notes.txt":  "not markdown",
+	})
+	if got != "bugfix" {
+		t.Fatalf("template = %#v, want the lexically first .md", got)
+	}
+}
+
+func TestHostPublishTemplateIgnoresGitLabFilesForGitHub(t *testing.T) {
+	got := publishWithTemplateFiles(t, "github", map[string]string{
+		".gitlab/merge_request_templates/Default.md": "gitlab default",
+	})
+	if got != nil {
+		t.Fatalf("template = %#v", got)
 	}
 }
