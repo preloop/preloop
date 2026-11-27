@@ -93,6 +93,11 @@ def project_choices(
         account_id=account_id,
         tracker_types=["github", "gitlab", "bitbucket", "bitbucket_dc", "azure_devops"],
     )
+    # Current sidecar inventory precedes newest-first hook history. A path
+    # names one checkout, even if an older observation has a different origin.
+    by_path: dict[str, dict[str, str]] = {}
+    for checkout in checkouts:
+        by_path.setdefault(checkout.get("path", ""), checkout)
     choices = []
     seen: set[tuple[str, str]] = set()
     for project in projects:
@@ -108,7 +113,7 @@ def project_choices(
         if host == "api.bitbucket.org":
             host = "bitbucket.org"
         identity = f"{host}/{project.slug}".lower()
-        for checkout in checkouts:
+        for checkout in by_path.values():
             directory = checkout.get("path", "")
             if (
                 not directory.startswith("/")
