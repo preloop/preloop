@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Iterator
 
-from sqlalchemy import event, text
+import pytest
+
+from sqlalchemy import Engine, event, text
 from sqlalchemy.orm import Session
 
+from preloop.models.crud import crud_account
 from preloop.models.crud.managed_agent import _usage_aggregates_for_principals
 
 INDEX = "ix_api_usage_principal_totals"
@@ -63,41 +66,80 @@ def test_gateway_predicate_is_a_literal(db_session: Session) -> None:
     assert "model_gateway" not in parameters.values()
 
 
+@pytest.fixture
+def vacuumed_usage(db_engine: Engine) -> Iterator[str]:
+    """Commit a principal's usage history and vacuum it, as production is.
+
+    An index-only scan is only cheaper than a plain index scan when the
+    visibility map says the heap pages are all-visible. Rows inserted inside
+    the test transaction never are, so ``relallvisible`` stays 0 and the
+    planner's choice between the covering index and the narrower
+    ``ix_api_usage_account_principal_ts`` falls to index size and whatever
+    statistics earlier tests left behind. Production tables are vacuumed, so
+    the rows are committed and vacuumed here and removed afterwards.
+
+    Yields:
+        The id of the account that owns the usage rows.
+    """
+    with Session(bind=db_engine) as session:
+        account_id = str(
+            crud_account.create(
+                session, obj_in={"organization_name": "Usage plan account"}
+            ).id
+        )
+        session.execute(
+            text(
+                """
+                INSERT INTO api_usage (
+                    id, account_id, endpoint, method, status_code, duration,
+                    action_type, runtime_principal_type, runtime_principal_id,
+                    cost_source,
+                    prompt_tokens, completion_tokens, total_tokens,
+                    estimated_cost, model_alias, provider_name, timestamp
+                )
+                SELECT gen_random_uuid(), :account, '/v1/messages', 'POST',
+                       CASE WHEN n % 20 = 0 THEN 500 ELSE 200 END, 0.1,
+                       CASE WHEN n % 5 = 0 THEN 'api_request'
+                            ELSE 'model_gateway' END,
+                       (ARRAY['claude_code', 'codex', 'flow_execution'])[n % 3 + 1],
+                       'principal-' || (n % 7),
+                       CASE WHEN n % 4 = 0 THEN 'subscription' ELSE NULL END,
+                       10, 5, 15, 0.001, 'model', 'provider',
+                       now() - n * interval '1 minute'
+                FROM generate_series(1, 5000) AS n
+                """
+            ),
+            {"account": account_id},
+        )
+        session.commit()
+    try:
+        with db_engine.connect().execution_options(
+            isolation_level="AUTOCOMMIT"
+        ) as connection:
+            connection.execute(text("VACUUM (ANALYZE) api_usage"))
+        yield account_id
+    finally:
+        with db_engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM api_usage WHERE account_id = :account"),
+                {"account": account_id},
+            )
+            connection.execute(
+                text("DELETE FROM account WHERE id = :account"),
+                {"account": account_id},
+            )
+
+
 def test_principal_totals_plan_is_index_only(
-    db_session: Session, create_account: Callable[..., Any]
+    db_session: Session, vacuumed_usage: str
 ) -> None:
     """The planner picks the covering index over every valid competitor.
 
     All ``api_usage`` indexes stay valid, including the principal-keyed
     ``ix_api_usage_account_principal_ts`` and ``..._principal_id_ts``, on a
-    populated, analysed table; only sequential and bitmap scans are off.
+    populated, vacuumed table; only sequential and bitmap scans are off.
     """
-    account = create_account()
-    db_session.execute(
-        text(
-            """
-            INSERT INTO api_usage (
-                id, account_id, endpoint, method, status_code, duration,
-                action_type, runtime_principal_type, runtime_principal_id,
-                cost_source,
-                prompt_tokens, completion_tokens, total_tokens,
-                estimated_cost, model_alias, provider_name, timestamp
-            )
-            SELECT gen_random_uuid(), :account, '/v1/messages', 'POST',
-                   CASE WHEN n % 20 = 0 THEN 500 ELSE 200 END, 0.1,
-                   CASE WHEN n % 5 = 0 THEN 'api_request' ELSE 'model_gateway' END,
-                   (ARRAY['claude_code', 'codex', 'flow_execution'])[n % 3 + 1],
-                   'principal-' || (n % 7),
-                   CASE WHEN n % 4 = 0 THEN 'subscription' ELSE NULL END,
-                   10, 5, 15, 0.001, 'model', 'provider',
-                   now() - n * interval '1 minute'
-            FROM generate_series(1, 5000) AS n
-            """
-        ),
-        {"account": str(account.id)},
-    )
-    db_session.execute(text("ANALYZE api_usage"))
-    statement, parameters = _captured_usage_select(db_session, str(account.id))
+    statement, parameters = _captured_usage_select(db_session, vacuumed_usage)
     inlined = re.sub(
         r"%\(([^)]+)\)s", lambda m: _literal(parameters[m.group(1)]), statement
     )
