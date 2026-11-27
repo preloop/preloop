@@ -344,6 +344,9 @@ class RemoteRunnerExecutor(AgentExecutor):
                 if execution and execution.start_time
                 else datetime.now(timezone.utc)
             )
+            if started.tzinfo is None:
+                # flow_execution.start_time is a naive UTC column.
+                started = started.replace(tzinfo=timezone.utc)
             harness_routed = (
                 host_exec_harness_selector(self.agent_type, self._flow_agent_config())
                 is not None

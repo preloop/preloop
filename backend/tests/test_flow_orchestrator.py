@@ -6165,3 +6165,18 @@ async def test_monitor_queue_deadline_does_not_cancel_unleased_run(
     assert "180 seconds" in result["error_message"]
     assert "timeout_seconds" not in result["error_message"]
     executor.stop.assert_not_called()
+
+
+def test_monitoring_error_message_names_raising_frame() -> None:
+    """A monitor failure names the exception type and where it was raised."""
+    from datetime import datetime, timezone
+
+    from preloop.services.flow_orchestrator import _monitoring_error_message
+
+    try:
+        datetime.now(timezone.utc) - datetime.now(timezone.utc).replace(tzinfo=None)
+    except TypeError as exc:
+        message = _monitoring_error_message(exc)
+    assert message.startswith("Monitoring error: TypeError: can't subtract")
+    assert "test_flow_orchestrator.py:" in message
+    assert "in test_monitoring_error_message_names_raising_frame" in message

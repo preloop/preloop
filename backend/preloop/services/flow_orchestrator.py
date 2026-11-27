@@ -4,6 +4,7 @@ import json
 import asyncio
 import shlex
 import time
+import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
@@ -792,6 +793,34 @@ def _make_json_serializable(obj: Any) -> Any:
 def _exception_message(exc: BaseException) -> str:
     """Return a useful message for exceptions whose str() is empty."""
     return str(exc) or exc.__class__.__name__
+
+
+def _exception_location(exc: BaseException) -> Optional[str]:
+    """Return ``path:line in func`` for the frame that raised ``exc``.
+
+    Args:
+        exc: A caught exception.
+
+    Returns:
+        The innermost traceback frame, with the path trimmed to the package
+        root, or None when the exception carries no traceback.
+    """
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return None
+    frame = frames[-1]
+    path = frame.filename.replace("\\", "/")
+    marker = "/preloop/"
+    if marker in path:
+        path = "preloop/" + path.rsplit(marker, 1)[1]
+    return f"{path}:{frame.lineno} in {frame.name}"
+
+
+def _monitoring_error_message(exc: BaseException) -> str:
+    """Name the monitor failure and where it was raised."""
+    location = _exception_location(exc)
+    message = f"Monitoring error: {type(exc).__name__}: {_exception_message(exc)}"
+    return f"{message} (at {location})" if location else message
 
 
 def repository_path_from_git_url(url: str) -> Optional[str]:
@@ -9596,7 +9625,6 @@ class FlowExecutionOrchestrator:
                         logger.info(f"Status check recovered: {status.value}")
                         consecutive_failures = 0  # Reset on successful retry
                     except Exception as retry_error:
-                        retry_error_message = _exception_message(retry_error)
                         logger.error(
                             f"Status check retry failed: {type(retry_error).__name__}"
                         )
@@ -9604,16 +9632,26 @@ class FlowExecutionOrchestrator:
 
                         # Fail execution if too many consecutive failures
                         if consecutive_failures >= max_consecutive_failures:
+                            # exc_info sends the stack to error tracking.
                             logger.error(
-                                f"Agent monitoring failed after {consecutive_failures} consecutive failures"
+                                "Agent monitoring failed after %s consecutive "
+                                "failures at %s",
+                                consecutive_failures,
+                                _exception_location(retry_error),
+                                exc_info=retry_error,
                             )
                             self.execution_logger.log_milestone(
                                 "agent_monitoring_failed",
-                                {"consecutive_failures": consecutive_failures},
+                                {
+                                    "consecutive_failures": consecutive_failures,
+                                    "location": _exception_location(retry_error),
+                                },
                             )
                             return {
                                 "status": "FAILED",
-                                "error_message": f"Monitoring error: {retry_error_message}",
+                                "error_message": _monitoring_error_message(
+                                    retry_error
+                                ),
                                 "actions_taken": self.execution_logger.get_actions_taken(),
                                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                                 # Best-effort: the daemon may be the very
@@ -10148,16 +10186,20 @@ class FlowExecutionOrchestrator:
             return timeout_result
 
         except Exception as e:
-            error_message = _exception_message(e)
-            logger.error(
-                f"Error monitoring agent execution {session_reference}: {type(e).__name__}"
+            error_message = _monitoring_error_message(e)
+            # logger.exception sends the stack to error tracking.
+            logger.exception(
+                "Error monitoring agent execution %s at %s",
+                session_reference,
+                _exception_location(e),
             )
             self.execution_logger.log_milestone(
-                "agent_execution_error", {"error": error_message}
+                "agent_execution_error",
+                {"error": error_message, "location": _exception_location(e)},
             )
             return {
                 "status": "FAILED",
-                "error_message": f"Monitoring error: {error_message}",
+                "error_message": error_message,
                 "actions_taken": self.execution_logger.get_actions_taken(),
                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                 # _capture_result_artifact never raises; best-effort capture
