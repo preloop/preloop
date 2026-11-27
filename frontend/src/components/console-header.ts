@@ -1453,8 +1453,8 @@ export class ConsoleHeader extends LitElement {
           attention
             ? html`<div class="empty-state-detail">${attention}</div>
                 <div class="empty-state-detail">
-                  Open findings remain in Needs attention until resolved or
-                  dismissed.
+                  Needs attention tracks items separately from this session's
+                  notifications.
                 </div>`
             : ''
         }

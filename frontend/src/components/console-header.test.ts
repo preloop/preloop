@@ -279,6 +279,10 @@ describe('console-header bell empty state', () => {
     expect(dropdownText(el)).to.contain(
       '2 items need attention: 1 flow, 1 pricing'
     );
+    expect(dropdownText(el)).to.contain(
+      "Needs attention tracks items separately from this session's notifications."
+    );
+    expect(dropdownText(el)).not.to.contain('Open findings');
   });
 
   it('explains why durable extension findings can coexist with an empty session feed', async () => {
@@ -302,7 +306,7 @@ describe('console-header bell empty state', () => {
     const text = dropdownText(el);
     expect(text).to.contain('No new notifications this session');
     expect(text).to.contain(
-      'Open findings remain in Needs attention until resolved or dismissed.'
+      "Needs attention tracks items separately from this session's notifications."
     );
     expect(text).to.contain('1 item needs attention: 1 extension');
     expect(el.shadowRoot!.querySelector('a[href="/console/attention"]')).to
