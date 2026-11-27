@@ -86,3 +86,35 @@ def test_unbound_report_keeps_legacy_behavior_without_plugin() -> None:
         assert result.received == 0
         candidates.record_report.assert_called_once()
         db.commit.assert_called_once()
+
+
+def test_content_upload_is_authorized_for_the_device_it_names() -> None:
+    """protects=a device-bound key uploads content only for its own device;
+    fails_when=the upload's fingerprint skips the report authorizer, so a key
+    bound to one device can store content for another device's hashes."""
+    from preloop.api.endpoints import extension_content
+    from preloop.schemas.extension_content import ContentUpload
+
+    account = SimpleNamespace(id=uuid4())
+    user = SimpleNamespace(
+        _auth_api_key=SimpleNamespace(context_data={"device_report": {}})
+    )
+    payload = ContentUpload.model_construct(
+        workstation_fingerprint="b" * 64, redaction_rules="r1", items=[]
+    )
+    authorizer = MagicMock()
+    authorizer.authorize_report.side_effect = HTTPException(403, "device mismatch")
+    with (
+        patch.object(extension_content, "_require_report_access"),
+        patch.object(extension_content, "get_plugin_manager") as manager,
+        patch.object(extension_content, "store_collected_content") as store,
+    ):
+        manager.return_value.get_service.return_value = authorizer
+        with pytest.raises(HTTPException) as exc:
+            extension_content.upload_content(payload, account, user, MagicMock())
+        assert exc.value.status_code == 403
+        kwargs = authorizer.authorize_report.call_args.kwargs
+        assert kwargs["account_id"] == account.id
+        assert kwargs["current_user"] is user
+        assert kwargs["payload"].workstation_fingerprint == "b" * 64
+        store.assert_not_called()

@@ -105,3 +105,25 @@ harness, runner, model and publication settings can all be changed later
 with a flow update; the flow does not have to be recreated. A pinned flow
 is only leased to a runner that advertises that harness for flows, so
 check `preloop runner inventory` first.
+
+This review reads CI runs and fetches from the repository, so it needs
+network. Codex's `workspace-write` sandbox has no network by default: add
+`"requires_network": true` to the flow's `agent_config` and
+`"allow_network": true` to the host profile. The profile then advertises
+`host_network` (shown in `preloop runner inventory`); a flow that requires
+network is refused at save and run start when no runner in its pool offers
+it, instead of succeeding with nothing reviewed. To let the agent's own
+`git fetch` and `git push` reach the flow's repository, also set
+`"agent_git_credential": true`: the runner leaves the repository's
+credential in the checkout's local `.git/config` as an
+`http.<remote>.extraHeader` that git sends only to that remote URL
+(redirects refused). It never enters the agent's environment, but the agent
+can read the file. The credential is the repository's tracker credential (a
+stored personal access token, which may be long-lived, or an App
+installation token) with every API scope that credential has, so an agent
+that reads it can call the provider's API as that credential. Enable it
+only on profiles you trust with that access, and connect the repository
+with a dedicated minimal-scope token (contents read/write, and actions
+read if the flow reads CI) when you do.
+A run whose agent writes `result.json` with `"status": "failure"` ends
+FAILED with the agent's summary as the error.

@@ -431,3 +431,42 @@ To roll back delivery, have the endpoint policy owner remove only
 bundle and other managed sources. Reverting Preloop or downgrading the policy
 migration does not remove files already deployed to devices. Registered extension
 bundle revisions then remain inert metadata.
+
+
+## Daily reporting from an installed runner
+
+A resident runner now supplies recurring discovery without a second MDM task.
+It reports agents and extensions with its own reporting capability after a short
+random startup delay and then daily with jitter. An elevated service uses the
+all-users collector; the supplied per-user runner installations scan only their
+own user. Partial profile coverage stays explicit in each report.
+
+Deploy these keys in the service identity's Preloop config to change the device
+interval or disable the automatic report:
+
+```yaml
+runner:
+  discovery:
+    enabled: true
+    interval: 24h
+```
+
+Set `enabled: false` to opt out. An account administrator can also use
+`PUT /api/v1/account/runner-discovery` with
+`{"enabled": false, "interval_seconds": null}` to disable automatic reporting
+across the account. A non-null interval is in seconds, from 3600 to 604800, and
+supersedes the device interval. Device opt-out always wins.
+
+Check `preloop runner status` under the same service identity to see discovery's
+last attempt, result and last success. No extra report token is required. Reports
+never enroll agents or modify application files; installation and enrollment stay
+separate MDM actions. See the [automatic reporting contract](../guide/agent-discovery-reporting.md#automatic-runner-reports)
+for retries, disclosure and privacy controls.
+
+
+Automatic reports also follow the extension content privacy controls:
+`discovery.extension_content: false` or `PRELOOP_NO_EXTENSION_CONTENT=1` turns
+content off on the device. Per-extension marker files and exclusion patterns
+apply across scanned profiles. The account setting **Collect extension content
+for review** is enforced before collection and again on upload. The first
+content upload prints its disclosure in the service log; it never prompts.

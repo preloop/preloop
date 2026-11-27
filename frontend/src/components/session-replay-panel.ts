@@ -425,6 +425,9 @@ export class SessionReplayPanel extends LitElement {
   private expandedMessageKeys = new Set<string>();
 
   @state()
+  private rawEventExpansion = new Map<string, boolean>();
+
+  @state()
   private fullTextEventIds = new Set<string>();
 
   // Progressive reveal length (in characters) for very large message bodies,
@@ -2905,6 +2908,19 @@ export class SessionReplayPanel extends LitElement {
     );
   }
 
+  private renderRawGatewayEvent(event: FlowGatewayEvent) {
+    return html`<preloop-gateway-event
+      .event=${event}
+      .expanded=${this.rawEventExpansion.get(event.id) ?? true}
+      @gateway-event-expand=${(e: CustomEvent) => {
+        this.rawEventExpansion = new Map(this.rawEventExpansion).set(
+          event.id,
+          e.detail.expanded
+        );
+      }}
+    ></preloop-gateway-event>`;
+  }
+
   private renderProgressiveEvent(event: FlowGatewayEvent) {
     const messages = getGatewayEventPreviewMessages(event);
     const userRequest = getGatewayEventUserRequest(event);
@@ -3083,10 +3099,7 @@ export class SessionReplayPanel extends LitElement {
                   detail
                     ? html`
                         <div class="raw-event-container">
-                          <preloop-gateway-event
-                            .event=${detail}
-                            expanded
-                          ></preloop-gateway-event>
+                          ${this.renderRawGatewayEvent(detail)}
                         </div>
                       `
                     : nothing
@@ -5622,10 +5635,7 @@ export class SessionReplayPanel extends LitElement {
           this.rawPayloads
             ? html`
                 <div class="raw-event-container">
-                  <preloop-gateway-event
-                    .event=${detail}
-                    expanded
-                  ></preloop-gateway-event>
+                  ${this.renderRawGatewayEvent(detail)}
                 </div>
               `
             : nothing

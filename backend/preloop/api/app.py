@@ -1141,6 +1141,13 @@ def _register_control_plane_routes(
         tags=["Agent discovery"],
         dependencies=[Depends(get_current_active_user)],
     )
+    # Runner tokens authenticate on their own routes without user credentials.
+    app.include_router(
+        agent_discovery.runner_router, prefix="/api/v1", tags=["Runner discovery"]
+    )
+    app.include_router(
+        extension_content.runner_router, prefix="/api/v1", tags=["Runner discovery"]
+    )
     # OTLP/HTTP receiver (#1412). Authenticates its own telemetry:ingest key
     # (Bearer or x-api-key), so no user dependency here.
     from preloop.api.endpoints import telemetry_otlp
@@ -1910,7 +1917,12 @@ def create_app() -> FastAPI:
                 "scheme": "bearer",
                 "bearerFormat": "JWT",
                 "description": "JWT token for authentication",
-            }
+            },
+            "runnerToken": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": "Registered runner token, limited to its own device reporting routes",
+            },
         }
 
         # Apply security to all endpoints except auth endpoints, landing page, health checks, and docs
@@ -1944,8 +1956,14 @@ def create_app() -> FastAPI:
 
                 for method in openapi_schema["paths"][path]:
                     if method.lower() != "options":  # Skip OPTIONS method
+                        runner_reporting = path in {
+                            "/api/v1/runners/{runner_id}/discovery-policy",
+                            "/api/v1/runners/{runner_id}/discovery-reports",
+                            "/api/v1/runners/{runner_id}/extension-content/missing",
+                            "/api/v1/runners/{runner_id}/extension-content",
+                        }
                         openapi_schema["paths"][path][method]["security"] = [
-                            {"bearerAuth": []}
+                            {"runnerToken" if runner_reporting else "bearerAuth": []}
                         ]
 
         from preloop.api.middleware.ci_auth import CI_ROUTE_POLICIES

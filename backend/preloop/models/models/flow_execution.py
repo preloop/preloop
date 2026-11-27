@@ -14,11 +14,11 @@ from sqlalchemy import (
     String,
     Text,
 )
-from sqlalchemy import event, select
+from sqlalchemy import case, event, func, select
 from sqlalchemy import false as sa_false
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, query_expression, relationship
+from sqlalchemy.orm import Mapped, column_property, query_expression, relationship
 
 from preloop.models.db.encrypted_types import SecretFieldsJSON
 
@@ -81,6 +81,9 @@ STOP_COVERAGE_KEY = "_stop_coverage"
 # from webhook bodies, tracker payloads, or an unvalidated trigger body.
 # Shape: {"schema_version": 1, "ai_model_id", "agent_type", "source",
 # "rule_id"?, "label_snapshot", "reason"}.
+# Optional "executed" records dispatch facts after a runner lease or hosted
+# fallback: {"agent_type", "ai_model_id", "model_identifier"}. This preserves
+# the admission decision while reporting the selection that was dispatched.
 ROUTING_RECORD_KEY = "_model_routing"
 
 # Reserved key under which a persistent Agent Control execution binds the
@@ -339,6 +342,42 @@ class FlowExecution(Base):
     # the runner's harness inventory at lease time; NULL is a gateway run.
     routing_reason = Column(String(64), nullable=True)
     billing_mode = Column(String(16), nullable=True)
+
+    # Read only execution facts. Project JSON scalars so list/tree reads do
+    # not load the trigger body or consult the flow's mutable configuration.
+    # The dispatched selection wins over the initial routing decision (a
+    # native lease or hosted fallback can select a different model).
+    agent_type = column_property(
+        func.coalesce(
+            trigger_event_details[ROUTING_RECORD_KEY]["executed"]["agent_type"].astext,
+            case((routing_reason == "fell_back_to_server", "codex")),
+            trigger_event_details[MATRIX_OVERRIDES_KEY]["agent_type"].astext,
+            trigger_event_details[ROUTING_RECORD_KEY]["agent_type"].astext,
+            cli_session["agent_type"].astext,
+        )
+    )
+    ai_model_id = column_property(
+        case(
+            (
+                trigger_event_details[ROUTING_RECORD_KEY]["executed"].has_key(
+                    "ai_model_id"
+                ),
+                trigger_event_details[ROUTING_RECORD_KEY]["executed"][
+                    "ai_model_id"
+                ].astext,
+            ),
+            # Older hosted fallbacks recorded their reason but not the
+            # replacement catalog id. The admission id is not that model.
+            (routing_reason == "fell_back_to_server", None),
+            else_=func.coalesce(
+                trigger_event_details[MATRIX_OVERRIDES_KEY]["ai_model_id"].astext,
+                trigger_event_details[ROUTING_RECORD_KEY]["ai_model_id"].astext,
+            ),
+        )
+    )
+    recorded_model_identifier = column_property(
+        trigger_event_details[ROUTING_RECORD_KEY]["executed"]["model_identifier"].astext
+    )
 
     # Stale-claim reaper backoff. How many times the reaper has re-published
     # a task for this execution without it ever being claimed, and when it

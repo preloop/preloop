@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/version"
 )
 
@@ -33,6 +34,9 @@ type inventoryMCPCounts struct {
 }
 
 type inventoryApp struct {
+	// configPath is local correlation data and never appears in inventory JSON.
+	configPath    string
+	enrolled      bool
 	Extensions    []inventoryExtension `json:"extensions"`
 	Completeness  string               `json:"completeness"`
 	AppID         string               `json:"app_id"`
@@ -124,13 +128,27 @@ func runAgentsInventory(cmd *cobra.Command) error {
 	if allUsers {
 		return runAllUsersInventory(cmd.OutOrStdout(), false)
 	}
-	deps := inventoryProbes
-	deps.NoExtensionDetails = inventoryNoExtensionDetails
-	deps.ExtensionProjects = projects
+	deps, err := discoveryInventoryProbes(projects)
+	if err != nil {
+		return err
+	}
 	return enc.Encode(collectAgentInventory(deps))
 }
 
 var inventoryNoExtensionDetails bool
+
+// discoveryInventoryProbes applies command and device opt-outs once, before
+// either current-user or all-users collection. Scheduled reports use it too.
+func discoveryInventoryProbes(projects []string) (inventoryProbeDependencies, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return inventoryProbeDependencies{}, errors.New("could not load discovery privacy settings")
+	}
+	deps := inventoryProbes
+	deps.NoExtensionDetails = inventoryNoExtensionDetails || cfg.Discovery.NoExtensionDetails
+	deps.ExtensionProjects = projects
+	return deps, nil
+}
 
 func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 	result := inventoryEnvelope{
@@ -174,6 +192,8 @@ func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 			result.Apps = append(result.Apps, app)
 			continue
 		}
+		app.configPath = expandAgentConfigPath(home, filepath.Join(home, spec.BootstrapConfigPath))
+		configFound := false
 		paths := configPathsForAgentSpec
 		if deps.ConfigPaths != nil {
 			paths = func(_ string, s agentSpec) []string { return deps.ConfigPaths(s) }
@@ -181,6 +201,10 @@ func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 		for _, path := range paths(home, spec) {
 			status, code := inventoryStat(deps, path)
 			if status == "present" {
+				if !configFound {
+					app.configPath = path
+					configFound = true
+				}
 				// Config existence is evidence even when its contents cannot be
 				// inspected; the separate error makes this a partial inventory.
 				addProbe("config", "present", "")
@@ -222,6 +246,7 @@ func collectAgentInventory(deps inventoryProbeDependencies) inventoryEnvelope {
 		} else if app.MCPRoutes.Completeness == "complete" && app.MCPRoutes.Unknown == 0 {
 			inventorySetConfigured(app.Controls, "managed_mcp", "false")
 		}
+		app.enrolled = inventoryEnrollmentObserved(home, spec.Name, app.configPath)
 		extensionErrors := []string{}
 		app.Extensions, extensionErrors = collectInventoryExtensions(home, id, deps.ExtensionSalt, deps.ProfileOnly, deps.ExtensionProjects...)
 		if deps.NoExtensionDetails {

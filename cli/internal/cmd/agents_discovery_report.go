@@ -1,21 +1,11 @@
 package cmd
 
-// Opt-in discovery reporting for `preloop agents discover --report`.
-//
-// Nothing here runs unless the user passes --report or sets
-// PRELOOP_DISCOVERY_REPORT=1. When it does run, the report carries only:
-//   - a workstation fingerprint: HMAC-SHA256 of the machine id, keyed with
-//     the account's discovery salt from the server (the raw id never leaves);
-//   - per agent: its kind, an HMAC of its home-relative config path under the
-//     same salt, the number of MCP servers, and whether it is enrolled;
-//   - the CLI version and the OS family.
-//
-// Never sent: user names, hostnames, clear paths, prompts, keys, env vars,
-// MCP server names, URLs or args.
-//
-// After the report, and unless it is turned off, the redacted text of the
-// reported extensions is uploaded for review. That is a separate request with
-// its own contract; see agents_extension_content.go.
+// Discovery reporting for manual commands and resident runners. Both use the
+// same read-only collector and privacy controls. Workstation and profile
+// identities are account-salted hashes; the inventory DTOs keep application
+// configuration and credentials out of reports. The reporting guide documents
+// the extension data classes and their opt-outs.
+// Redacted extension text follows in a separate, opt-out content pass.
 
 import (
 	"crypto/hmac"
@@ -187,27 +177,17 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	if err != nil {
 		return err
 	}
-	machineID := strings.TrimSpace(deviceRef)
-	if machineID == "" {
-		machineID, err = readMachineID()
-		if err != nil {
-			return fmt.Errorf("could not determine a workstation id: %w", err)
-		}
-	}
-	home, _ := os.UserHomeDir()
-	report := buildDiscoveryReport(salt, machineID, home, agents)
-	deps := inventoryProbes
-	deps.NoExtensionDetails = inventoryNoExtensionDetails
-	deps.ExtensionProjects = projects
-	if err := addDiscoveryExtensions(&report, salt, home, deps); err != nil {
+	report, _, err := collectDiscoveryInventoryReport(salt, deviceRef, false, projects...)
+	if err != nil {
 		return err
 	}
-	var resp discoveryReportResponse
-	if err := postInventoryReport(client, report, &resp); err != nil {
+	resp, content, err := sendInventoryReportWithContent(client, w, report, salt, false, projects)
+	if err != nil {
 		return fmt.Errorf("failed to send discovery report: %w", err)
 	}
 	disclosure := "inventory metadata, extension identifiers, descriptions and hashes"
-	if resp.DetailsOmitted || inventoryNoExtensionDetails {
+	deps, _ := discoveryInventoryProbes(projects)
+	if resp.DetailsOmitted || deps.NoExtensionDetails {
 		disclosure = "inventory metadata, extension identifiers and hashes"
 	}
 	if resp.DetailsOmitted && !resp.LegacyEvidence {
@@ -216,12 +196,6 @@ func sendDiscoveryReport(client *api.Client, agents []AgentConfig, w io.Writer, 
 	if resp.LegacyEvidence {
 		fmt.Fprintln(w, legacyInventoryNotice)
 		disclosure = "inventory metadata"
-	}
-	content := contentOutcome{}
-	if !resp.LegacyEvidence {
-		// Only after the report: the server takes content for hashes this
-		// device has reported, and tells the collector which ones it lacks.
-		content = sendExtensionContent(client, w, report, salt, home, projects)
 	}
 	if content.Uploaded > 0 {
 		fmt.Fprintf(w, "Reported %d agent(s) to Preloop (%d new). Sent %s, and the redacted text of %d extension(s) for review; credentials found in that text were replaced before upload.\n", resp.Received, resp.Created, disclosure, content.Uploaded) //nolint:errcheck

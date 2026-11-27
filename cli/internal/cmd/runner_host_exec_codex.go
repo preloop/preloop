@@ -77,6 +77,11 @@ func prepareCodexHostExecSandbox(p hostExecProfile, job map[string]any, workspac
 		sandbox = hostExecReadOnlySandbox
 	}
 	args := []string{"exec", "--json", "--color", "never", "--sandbox", sandbox, "--skip-git-repo-check", "-C", workspace, "-c", `approval_policy="never"`}
+	if !readOnly && p.AllowNetwork {
+		// Operator opt-in: Codex's workspace-write sandbox has no network
+		// by default.
+		args = append(args, "-c", "sandbox_workspace_write.network_access=true")
+	}
 	args = append(args, "-c", `shell_environment_policy.exclude=["*TOKEN*","*KEY*","*SECRET*","*PASSWORD*","*CREDENTIAL*","*CAPABILITY*","MCP_CONFIG_JSON"]`)
 	if model := jobModelIdentifier(job); model != "" {
 		alias := p.ModelMap[model]

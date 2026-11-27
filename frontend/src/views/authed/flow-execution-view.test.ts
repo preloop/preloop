@@ -187,6 +187,7 @@ describe('FlowExecutionView', () => {
             JSON.stringify({
               id: 'exec-1',
               flow_id: 'flow-1',
+              agent_type: 'codex',
               status: 'COMPLETED',
               start_time: '2026-03-09T10:00:00Z',
               end_time: '2026-03-09T10:02:00Z',
@@ -1275,6 +1276,22 @@ describe('FlowExecutionView', () => {
   });
 
   describe('wave 7 execution page', () => {
+    it('uses the recorded harness and leaves legacy runs unknown after a flow edit', async () => {
+      const element = await load('exec-1');
+      (element as any).flow = {
+        ...(element as any).flow,
+        agent_type: 'opencode',
+      };
+      await element.updateComplete;
+      expect(stripValue(element, 'strip-agent')).to.equal('Codex CLI');
+      (element as any).execution = {
+        ...(element as any).execution,
+        agent_type: null,
+      };
+      await element.updateComplete;
+      expect(stripValue(element, 'strip-agent')).to.equal('-');
+    });
+
     it('replaces the five stat cards with one hairline summary strip', async () => {
       const element = await load('exec-1');
 
@@ -2718,6 +2735,7 @@ describe('FlowExecutionView', () => {
         return json({
           id: 'exec-cost',
           flow_id: 'flow-1',
+          agent_type: 'codex',
           status: 'SUCCEEDED',
           start_time: '2026-03-09T10:00:00Z',
           end_time: '2026-03-09T10:02:00Z',
@@ -2728,7 +2746,11 @@ describe('FlowExecutionView', () => {
         });
       }
       if (url.endsWith('/api/v1/flows/flow-1')) {
-        return json({ id: 'flow-1', name: 'Cost Flow', agent_type: 'codex' });
+        return json({
+          id: 'flow-1',
+          name: 'Cost Flow',
+          agent_type: 'opencode',
+        });
       }
       return json({ logs: [], items: [], total: 0 });
     });
