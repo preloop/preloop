@@ -9649,9 +9649,7 @@ class FlowExecutionOrchestrator:
                             )
                             return {
                                 "status": "FAILED",
-                                "error_message": _monitoring_error_message(
-                                    retry_error
-                                ),
+                                "error_message": _monitoring_error_message(retry_error),
                                 "actions_taken": self.execution_logger.get_actions_taken(),
                                 "mcp_usage_logs": self.execution_logger.get_mcp_usage_logs(),
                                 # Best-effort: the daemon may be the very
