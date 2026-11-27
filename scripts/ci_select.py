@@ -301,12 +301,40 @@ def estimated_seconds(tests: list[str], durations: dict[str, float]) -> float:
     return sum(map(file_seconds(durations), tests))
 
 
+def fast_seconds(
+    durations: dict[str, float], file_durations: dict[str, float]
+) -> Callable[[str], float]:
+    """Return a conservative per-file cost for packing the fast lane.
+
+    The fast lane must not overrun its timeout, so each file costs the larger
+    of its per-node total and its per-file shard timing, and a file with
+    neither costs the 90th percentile known file. A median fallback would let
+    the cheapest-first packer favour exactly the files nobody has measured.
+
+    Args:
+        durations: Recorded per-node durations in seconds.
+        file_durations: Recorded per-file shard durations in seconds.
+
+    Returns:
+        A function from test file to estimated seconds.
+    """
+    weights: dict[str, float] = dict(file_durations)
+    for node, seconds in durations.items():
+        file = node.split("::", 1)[0]
+        weights[file] = weights.get(file, 0.0) + seconds
+    for file, seconds in file_durations.items():
+        weights[file] = max(weights[file] - seconds, seconds)
+    known = sorted(w for w in weights.values() if w > 0)
+    fallback = known[len(known) * 9 // 10] if known else 1.0
+    return lambda test: weights.get(test, fallback)
+
+
 def fast_selection(
     paths: list[str],
     inventory: list[str],
     tests: list[str],
     impact_reason: str,
-    durations: dict[str, float],
+    cost: Callable[[str], float],
     read: Callable[[str], str] = _read_source,
 ) -> tuple[list[str], str]:
     """Choose Backend Fast files within the serial time budget.
@@ -323,7 +351,7 @@ def fast_selection(
         inventory: Every collectable test file.
         tests: The impact selection for the heavy tier.
         impact_reason: Why ``tests`` was chosen.
-        durations: Recorded per-node durations in seconds.
+        cost: Conservative per-file seconds (``fast_seconds``).
         read: Returns a test file's source text.
 
     Returns:
@@ -333,19 +361,18 @@ def fast_selection(
     if tests == inventory:
         why = impact_reason
     else:
-        cost = estimated_seconds(fast, durations)
-        if cost <= FAST_BUDGET_SECONDS:
+        total = sum(map(cost, fast))
+        if total <= FAST_BUDGET_SECONDS:
             return fast, impact_reason
-        why = f"over fast budget ({cost:.0f}s > {FAST_BUDGET_SECONDS:.0f}s)"
+        why = f"over fast budget ({total:.0f}s > {FAST_BUDGET_SECONDS:.0f}s)"
     fast = sorted(set(SMOKE) | set(narrow_tests(paths, inventory, read)))
-    if estimated_seconds(fast, durations) <= FAST_BUDGET_SECONDS:
+    if sum(map(cost, fast)) <= FAST_BUDGET_SECONDS:
         return fast, f"{why}: smoke, changed tests and module importers"
     names = narrow_tests(paths, inventory, read, importers=False)
     fast = sorted(set(SMOKE) | set(names))
-    cost = estimated_seconds(fast, durations)
-    if cost <= FAST_BUDGET_SECONDS:
+    if sum(map(cost, fast)) <= FAST_BUDGET_SECONDS:
         return fast, f"{why}: smoke, changed tests and test_<module> files"
-    fast = capped_tests(paths, inventory, names, durations, read)
+    fast = capped_tests(paths, inventory, names, cost, read)
     return fast, (
         f"{why}: smoke, changed tests and test_<module> files capped at "
         f"{FAST_BUDGET_SECONDS:.0f}s ({len(fast)} files; the rest run sharded)"
@@ -356,7 +383,7 @@ def capped_tests(
     paths: list[str],
     inventory: list[str],
     names: list[str],
-    durations: dict[str, float],
+    cost: Callable[[str], float],
     read: Callable[[str], str] = _read_source,
 ) -> list[str]:
     """Pack the closest tests into ``FAST_BUDGET_SECONDS``.
@@ -369,7 +396,7 @@ def capped_tests(
         paths: Changed repository paths.
         inventory: Every collectable test file.
         names: Changed tests plus ``test_<module>`` matches.
-        durations: Recorded per-node durations in seconds.
+        cost: Conservative per-file seconds (``fast_seconds``).
         read: Returns a test file's source text.
 
     Returns:
@@ -378,7 +405,6 @@ def capped_tests(
     changed = [p for p in paths if p in inventory]
     tiers = (changed, names, narrow_tests(paths, inventory, read))
     chosen = set(SMOKE) & set(inventory) or set(SMOKE)
-    cost = file_seconds(durations)
     spent = sum(map(cost, chosen))
     for tier in tiers:
         for test in sorted(set(tier) - chosen, key=lambda t: (cost(t), t)):
@@ -423,6 +449,7 @@ def select(
     durations: dict[str, float] | None = None,
     read: Callable[[str], str] = _read_source,
     graph: ci_import_graph.Graph | None = None,
+    file_durations: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Return job and backend test decisions with their reasons.
 
@@ -438,12 +465,15 @@ def select(
         durations: Recorded per-node durations in seconds.
         read: Returns a file's source text.
         graph: Backend import graph; built from the checkout when omitted.
+        file_durations: Recorded per-file shard durations in seconds, used
+            with ``durations`` to price the fast lane conservatively.
 
     Returns:
         The receipt: job outputs (``live``), the backend test files, their
         reason, count and shard plan, and the fast-lane selection.
     """
     durations = durations or {}
+    fast_cost = fast_seconds(durations, file_durations or {})
     main_push = event == "push" and ref == "refs/heads/main"
     legacy = {k: relevant(paths, v) for k, v in policy["legacy"].items()}
     reason = ""
@@ -492,7 +522,7 @@ def select(
     fast_reason = "backend not selected"
     if live["backend"]:
         fast, fast_reason = fast_selection(
-            paths, inventory, tests, impact_reason, durations, read
+            paths, inventory, tests, impact_reason, fast_cost, read
         )
     regular = [path for path in backend if path not in SERIAL_FILES]
     regular_inventory = [path for path in inventory if path not in SERIAL_FILES]
@@ -516,7 +546,7 @@ def select(
         "backend_jobs": jobs,
         "fast_tests": fast,
         "fast_reason": fast_reason,
-        "fast_estimated_seconds": round(estimated_seconds(fast, durations), 1),
+        "fast_estimated_seconds": round(sum(map(fast_cost, fast)), 1),
     }
 
 
@@ -648,6 +678,9 @@ def main() -> int:
         base_ref=pr.get("base", {}).get("ref", "main"),
         attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),
         durations=durations,
+        file_durations=json.loads(
+            (ROOT / ".github/backend-shard-durations.json").read_text()
+        ),
     )
     receipt.update(
         head_sha=head,

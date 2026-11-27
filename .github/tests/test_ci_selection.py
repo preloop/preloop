@@ -307,27 +307,52 @@ def test_fast_caps_test_module_files_at_budget() -> None:
     assert "backend/tests/services/test_widget.py" in result["candidate_tests"]
 
 
-def test_broad_main_push_fast_lane_fits_budget_on_real_inventory() -> None:
-    """A broad diff that hits a shared root stays within the fast budget."""
-    from ci_select import FAST_BUDGET_SECONDS
+def test_broad_main_push_fast_lane_fits_job_timeout_on_real_inventory() -> None:
+    """A broad diff stays in budget when priced from either duration file."""
+    import ci_select
 
     durations = json.loads((ROOT / ".github/pytest-split-durations.json").read_text())
+    shard = json.loads((ROOT / ".github/backend-shard-durations.json").read_text())
     sources = sorted(
         str(p.relative_to(ROOT))
         for p in (ROOT / "backend/preloop").rglob("*.py")
         if "models" not in p.parts
     )
-    result = select(
-        [".github/pr-assets/example.png", *sources, *INVENTORY[::3]],
-        POLICY,
-        INVENTORY,
-        event="push",
-        ref="refs/heads/main",
-        durations=durations,
-    )
-    assert result["candidate_tests"] == INVENTORY
-    assert result["fast_estimated_seconds"] <= FAST_BUDGET_SECONDS
-    assert set(SMOKE) <= set(result["fast_tests"])
+    for extra in ([], INVENTORY):
+        result = select(
+            [".github/pr-assets/example.png", *sources, *extra],
+            POLICY,
+            INVENTORY,
+            event="push",
+            ref="refs/heads/main",
+            durations=durations,
+            file_durations=shard,
+        )
+        fast = result["fast_tests"]
+        assert result["candidate_tests"] == INVENTORY
+        assert set(SMOKE) <= set(fast)
+        assert result["fast_estimated_seconds"] <= ci_select.FAST_BUDGET_SECONDS
+        # Re-price from the committed per-file shard timings alone; files
+        # they do not measure cost the slowest known file.
+        worst = max(shard.values())
+        priced = sum(shard.get(test, worst) for test in fast)
+        timeout = ci_select.FAST_TIMEOUT_MINUTES * 60
+        assert (
+            ci_select.FAST_SETUP_SECONDS + priced * ci_select.FAST_OVERRUN
+            <= timeout / 2
+        )
+
+
+def test_fast_lane_prices_unmeasured_files_conservatively() -> None:
+    """Unmeasured files cost a high percentile, and shard timings count."""
+    from ci_select import fast_seconds
+
+    durations = {f"backend/tests/t{i}.py::x": float(i) for i in range(1, 11)}
+    cost = fast_seconds(durations, {"backend/tests/t1.py": 30.0, "new.py": 5.0})
+    assert cost("backend/tests/t1.py") == 30.0
+    assert cost("backend/tests/t9.py") == 9.0
+    assert cost("new.py") == 5.0
+    assert cost("backend/tests/unmeasured.py") >= 10.0
 
 
 def test_fast_budget_stays_well_under_job_timeout() -> None:
