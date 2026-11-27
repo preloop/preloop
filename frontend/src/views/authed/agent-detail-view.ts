@@ -196,6 +196,9 @@ export class AgentDetailView extends LitElement {
   private extensionsOpened = false;
 
   @state()
+  private credentialsOpened = false;
+
+  @state()
   private extensionCount: { count: number; more: boolean } | null = null;
 
   @state()
@@ -247,6 +250,8 @@ export class AgentDetailView extends LitElement {
     | 'ssh'
     | 'dashboard'
     | 'associated-flows'
+    | 'extensions'
+    | 'credentials'
     | 'notes' = 'sessions';
 
   /**
@@ -322,16 +327,12 @@ export class AgentDetailView extends LitElement {
   private actionLoading = false;
 
   /**
-   * The agent whose manual setup panel stays at the top of the page. Set when
+   * The agent whose manual setup panel stays in the Credentials tab. Set when
    * a pending setup ends while the page is open, so the panel's own report of
    * what happened is not lost when the agent reloads without the pending state.
    */
   @state()
   private manualSetupPinnedFor: string | null = null;
-
-  /** The "Set up manually" disclosure was opened, so its panel is loaded. */
-  @state()
-  private manualSetupOpened = false;
 
   @state()
   private liveActivity = {
@@ -787,12 +788,12 @@ export class AgentDetailView extends LitElement {
       .agent-settings {
         margin: 8px 0;
       }
-      .manual-setup-pending {
-        margin: var(--sl-spacing-small) 0 var(--sl-spacing-medium);
-      }
-      .agent-settings agent-manual-setup {
-        margin: 8px 0 var(--sl-spacing-medium);
+      .manual-setup {
+        margin-top: var(--sl-spacing-large);
         max-width: 60rem;
+      }
+      .manual-setup h3 {
+        font-size: var(--console-text-card-title);
       }
       .agent-settings p {
         margin: 8px 0;
@@ -844,6 +845,8 @@ export class AgentDetailView extends LitElement {
       'dashboard',
       'associated-flows',
       'notes',
+      'extensions',
+      'credentials',
     ];
     if (requestedTab && validTabs.includes(requestedTab)) {
       this.activeTab = requestedTab as typeof this.activeTab;
@@ -860,11 +863,23 @@ export class AgentDetailView extends LitElement {
       this.associatedFlowsLoaded = false;
       this.associatedFlowsError = null;
       this.associatedFlows = [];
-      this.extensionCount = null;
-      this.extensionsOpened = false;
       this.loading = true;
       void this.loadData();
     }
+  }
+
+  protected willUpdate(changed: PropertyValues): void {
+    super.willUpdate(changed);
+    if (changed.has('agentId')) {
+      this.extensionCount = null;
+      this.extensionsOpened = false;
+      this.credentialsOpened = false;
+      this.manualSetupPinnedFor = null;
+    }
+    // Mount each inventory on first use and retain it between tab switches.
+    // This also preserves one-time keys and an in-progress setup on this page.
+    if (this.activeTab === 'extensions') this.extensionsOpened = true;
+    if (this.activeTab === 'credentials') this.credentialsOpened = true;
   }
 
   connectedCallback(): void {
@@ -1942,6 +1957,28 @@ export class AgentDetailView extends LitElement {
           >${status.label}</sl-badge
         >
       </sl-tooltip>
+      ${
+        this.agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG
+          ? html`<a
+              data-manual-setup-link
+              href=${`/console/agents/${encodeURIComponent(this.agent.id)}?tab=credentials`}
+              @click=${(event: MouseEvent) => {
+                if (
+                  event.button ||
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey
+                )
+                  return;
+                event.preventDefault();
+                this.activeTab = 'credentials';
+                this.rememberTab('credentials');
+              }}
+              >View setup</a
+            >`
+          : nothing
+      }
       ${this.renderDesktopBadge()}
       ${
         liveCount > 0
@@ -1980,13 +2017,9 @@ export class AgentDetailView extends LitElement {
 
   /**
    * The change a user applies by hand when the CLI cannot write the agent's
-   * config. A setup that is waiting for it is shown open, above the tabs, so
-   * it cannot be missed; otherwise the panel sits behind a disclosure and is
-   * only loaded when opened.
+   * config. The Credentials tab shows the instructions open below its keys.
    */
-  private renderManualSetup(
-    slot: 'banner' | 'entry'
-  ): TemplateResult | typeof nothing {
+  private renderManualSetup(): TemplateResult | typeof nothing {
     const agent = this.agent;
     if (!agent) return nothing;
     const readOnly = !!(agent.read_only || agent.is_shared);
@@ -2000,30 +2033,15 @@ export class AgentDetailView extends LitElement {
     const pinned =
       agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG ||
       this.manualSetupPinnedFor === agent.id;
-    if (slot === 'banner') {
-      if (!pinned) return nothing;
-      return html`<div class="manual-setup-pending" data-manual-setup-banner>
-        ${panel}
-      </div>`;
-    }
-    if (pinned) return nothing;
-    if (agent.lifecycle_state === 'decommissioned') return nothing;
-    return html`<details
-      class="agent-settings"
-      data-manual-setup-entry
-      @toggle=${(event: Event) => {
-        if ((event.currentTarget as HTMLDetailsElement).open) {
-          this.manualSetupOpened = true;
-        }
-      }}
-    >
-      <summary>Set up manually</summary>
+    if (!pinned && agent.lifecycle_state === 'decommissioned') return nothing;
+    return html`<section class="manual-setup" data-manual-setup-entry>
+      <h3>Set up manually</h3>
       <p>
         For an agent whose config file is read-only or managed for you, for
         example in a container: the change to apply by hand.
       </p>
-      ${this.manualSetupOpened ? panel : nothing}
-    </details>`;
+      ${panel}
+    </section>`;
   }
 
   private handleManualSetupCancelled = (
@@ -4004,6 +4022,9 @@ export class AgentDetailView extends LitElement {
 
   /** Shared action for setup panels that need a freshly created agent key. */
   async openCreateCredential(): Promise<ManagedAgentCredentialCreateResult | null> {
+    if (this.agent?.is_shared) return null;
+    this.activeTab = 'credentials';
+    this.rememberTab('credentials');
     await this.updateComplete;
     return (
       this.renderRoot
@@ -4025,38 +4046,26 @@ export class AgentDetailView extends LitElement {
     const kind =
       this.agent?.agent_kind || this.agent?.session_source_type || '';
     if (!kind) return nothing;
-    const count = this.extensionCount;
-    return html`<details
-      class="agent-settings"
+    return html`<section
       data-testid="agent-extensions"
-      @toggle=${(event: Event) => {
-        if ((event.currentTarget as HTMLDetailsElement).open)
-          this.extensionsOpened = true;
-      }}
+      ?hidden=${this.activeTab !== 'extensions'}
     >
-      <summary>
-        Extensions${count ? ` (${count.count}${count.more ? '+' : ''})` : ''}
-      </summary>
       <p data-testid="agent-extensions-caption">
         Extensions reported for ${kind} agents in this account.
         <a href="/console/agents?section=extensions"
           >Open the account inventory</a
         >.
       </p>
-      ${
-        this.extensionsOpened
-          ? html`<extension-inventory
-              .agentKind=${kind}
-              emptyText=${`No device has reported extensions for ${kind} agents.`}
-              @extensions-loaded=${(
-                event: CustomEvent<{ count: number; more: boolean }>
-              ) => {
-                this.extensionCount = event.detail;
-              }}
-            ></extension-inventory>`
-          : nothing
-      }
-    </details>`;
+      <extension-inventory
+        .agentKind=${kind}
+        emptyText=${`No device has reported extensions for ${kind} agents.`}
+        @extensions-loaded=${(
+          event: CustomEvent<{ count: number; more: boolean }>
+        ) => {
+          this.extensionCount = event.detail;
+        }}
+      ></extension-inventory>
+    </section>`;
   }
 
   render() {
@@ -4166,7 +4175,6 @@ export class AgentDetailView extends LitElement {
               `
             : nothing
         }
-        ${this.renderManualSetup('banner')}
         <details class="agent-settings">
           <summary>
             ${this.agent.is_shared ? nothing : html`Session permissions: ${SESSION_CONSENT_OPTIONS.find((option) => option.value === (this.agent?.others_may_start_sessions ?? 'ask_me'))?.label} ·`}
@@ -4177,15 +4185,6 @@ export class AgentDetailView extends LitElement {
           </p>
           ${this.renderSessionConsent()} ${this.renderIdentityHistory()}
         </details>
-        ${this.renderManualSetup('entry')} ${this.renderExtensions()}
-        ${
-          this.agent.is_shared
-            ? nothing
-            : html`<agent-credentials-card
-                .agentId=${this.agent.id}
-                .lifecycleState=${this.agent.lifecycle_state}
-              ></agent-credentials-card>`
-        }
 
         <!-- Sub-view Tab Navigation -->
         ${(() => {
@@ -4302,6 +4301,22 @@ export class AgentDetailView extends LitElement {
                       >`
                     : nothing
                 }
+                ${
+                  this.agent?.agent_kind || this.agent?.session_source_type
+                    ? html`<sl-tab
+                        slot="nav"
+                        panel="extensions"
+                        ?active=${this.activeTab === 'extensions'}
+                        >Extensions${this.extensionCount ? ` (${this.extensionCount.count}${this.extensionCount.more ? '+' : ''})` : ''}</sl-tab
+                      >`
+                    : nothing
+                }
+                <sl-tab
+                  slot="nav"
+                  panel="credentials"
+                  ?active=${this.activeTab === 'credentials'}
+                  >Credentials</sl-tab
+                >
               </sl-tab-group>
             </div>
 
@@ -4831,6 +4846,25 @@ export class AgentDetailView extends LitElement {
                 : nothing
             }
             ${this.activeTab === 'notes' ? this.renderNotesTab() : nothing}
+            ${this.extensionsOpened ? this.renderExtensions() : nothing}
+            ${
+              this.credentialsOpened
+                ? html`<section
+                    data-credentials-tab
+                    ?hidden=${this.activeTab !== 'credentials'}
+                  >
+                    ${
+                      this.agent?.is_shared
+                        ? nothing
+                        : html`<agent-credentials-card
+                            .agentId=${this.agent!.id}
+                            .lifecycleState=${this.agent!.lifecycle_state}
+                          ></agent-credentials-card>`
+                    }
+                    ${this.renderManualSetup()}
+                  </section>`
+                : nothing
+            }
           `;
         })()}
       </div>

@@ -443,6 +443,16 @@ describe('AgentDetailView', () => {
     localStorage.clear();
   });
 
+  async function showTab(element: AgentDetailView, tab: string): Promise<void> {
+    const button = element.shadowRoot!.querySelector<HTMLElement>(
+      `sl-tab[panel="${tab}"]`
+    )!;
+    expect(button, `${tab} tab`).to.exist;
+    button.click();
+    await element.updateComplete;
+    expect(new URL(window.location.href).searchParams.get('tab')).to.equal(tab);
+  }
+
   it('honors a pinned session deep link and clears it when the next agent has no session parameter', async () => {
     window.history.replaceState(
       null,
@@ -555,7 +565,7 @@ describe('AgentDetailView', () => {
       );
     }
 
-    it('shows a pending setup above the tabs, and as the status chip', async () => {
+    it('links the waiting status to setup in Credentials and preserves the cancel report', async () => {
       const state = { onboarding: 'waiting_for_local_config', pending: true };
       serveAgent(state);
       const el = await fixture<AgentDetailView>(
@@ -564,16 +574,23 @@ describe('AgentDetailView', () => {
       await waitUntil(() => !(el as any).loading && !!(el as any).agent);
       await el.updateComplete;
 
-      const banner = el.shadowRoot!.querySelector(
-        '[data-manual-setup-banner]'
+      expect(el.shadowRoot!.querySelector('agent-manual-setup')).to.not.exist;
+      const link = el.shadowRoot!.querySelector<HTMLAnchorElement>(
+        '[data-manual-setup-link]'
       )!;
-      expect(banner, 'pending banner').to.exist;
-      const tabs = el.shadowRoot!.querySelector('sl-tab-group')!;
-      expect(
-        banner.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING,
-        'banner comes before the tabs'
-      ).to.be.greaterThan(0);
-      const panel = banner.querySelector('agent-manual-setup')!;
+      expect(link.getAttribute('href')).to.equal(
+        '/console/agents/agent-1?tab=credentials'
+      );
+      link.click();
+      await el.updateComplete;
+      expect(new URL(window.location.href).searchParams.get('tab')).to.equal(
+        'credentials'
+      );
+      const credentials = el.shadowRoot!.querySelector(
+        '[data-credentials-tab]'
+      )!;
+      expect(credentials.hasAttribute('hidden')).to.equal(false);
+      const panel = credentials.querySelector('agent-manual-setup')!;
       await waitUntil(
         () => panel.shadowRoot?.querySelector('[data-manual-setup-pending]'),
         'pending notice'
@@ -582,8 +599,7 @@ describe('AgentDetailView', () => {
       expect(
         el.shadowRoot!.querySelector('.status-chip')!.textContent!.trim()
       ).to.equal('Waiting for local configuration');
-      // The collapsed entry point is not offered next to the open panel.
-      expect(el.shadowRoot!.querySelector('[data-manual-setup-entry]')).to.not
+      expect(el.shadowRoot!.querySelector('[data-manual-setup-banner]')).to.not
         .exist;
 
       // Cancelling reloads the agent and keeps the panel's report on screen.
@@ -604,15 +620,13 @@ describe('AgentDetailView', () => {
       );
       await el.updateComplete;
       const report = el
-        .shadowRoot!.querySelector(
-          '[data-manual-setup-banner] agent-manual-setup'
-        )!
+        .shadowRoot!.querySelector('[data-credentials-tab] agent-manual-setup')!
         .shadowRoot!.querySelector('[data-manual-setup-cancelled]');
       expect(report, 'cancel report').to.exist;
       expect(report!.textContent).to.include('The agent was kept.');
     });
 
-    it('offers manual setup behind a disclosure and loads it only when opened', async () => {
+    it('loads credentials and open manual setup only inside Credentials, retaining them between tabs', async () => {
       const state = { onboarding: 'fully_onboarded', pending: false };
       serveAgent(state);
       const el = await fixture<AgentDetailView>(
@@ -623,68 +637,196 @@ describe('AgentDetailView', () => {
 
       expect(el.shadowRoot!.querySelector('[data-manual-setup-banner]')).to.not
         .exist;
-      const entry = el.shadowRoot!.querySelector<HTMLDetailsElement>(
-        '[data-manual-setup-entry]'
-      )!;
-      expect(entry.querySelector('summary')!.textContent!.trim()).to.equal(
-        'Set up manually'
-      );
       const lookups = () =>
         fetchStub
           .getCalls()
           .filter((call) => String(call.args[0]).includes('/manual-setup'));
-      expect(entry.querySelector('agent-manual-setup')).to.not.exist;
+      expect(el.shadowRoot!.querySelector('agent-manual-setup')).to.not.exist;
+      expect(el.shadowRoot!.querySelector('agent-credentials-card')).to.not
+        .exist;
       expect(lookups()).to.have.length(0);
 
-      entry.open = true;
+      await showTab(el, 'credentials');
+      const entry = el.shadowRoot!.querySelector('[data-manual-setup-entry]')!;
+      expect(entry.tagName).to.equal('SECTION');
+      expect(entry.querySelector('h3')!.textContent!.trim()).to.equal(
+        'Set up manually'
+      );
+      const card = el.shadowRoot!.querySelector('agent-credentials-card')!;
+      expect(
+        card.compareDocumentPosition(entry) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).to.be.greaterThan(0);
       await waitUntil(
         () => entry.querySelector('agent-manual-setup'),
         'panel after opening'
       );
       await waitUntil(() => lookups().length === 1, 'manual setup lookup');
+      const panel = entry.querySelector('agent-manual-setup');
+      await showTab(el, 'sessions');
+      expect(
+        el
+          .shadowRoot!.querySelector('[data-credentials-tab]')!
+          .hasAttribute('hidden')
+      ).to.equal(true);
+      await showTab(el, 'credentials');
+      expect(el.shadowRoot!.querySelector('agent-credentials-card')).to.equal(
+        card
+      );
+      expect(entry.querySelector('agent-manual-setup')).to.equal(panel);
+      expect(lookups()).to.have.length(1);
     });
   });
 
-  it('shows extensions reported for this agent kind with the stated scope', async () => {
-    const element = document.createElement(
-      'agent-detail-view'
-    ) as AgentDetailView;
-    element.onBeforeEnter({ params: { agentId: 'agent-1' } });
-    await fixture(element);
-    await waitUntil(
-      () =>
-        !!element.shadowRoot?.querySelector('[data-testid="agent-extensions"]')
-    );
-    const section = element.shadowRoot!.querySelector(
-      '[data-testid="agent-extensions"]'
-    )!;
-    expect(
-      section.querySelector('[data-testid="agent-extensions-caption"]')!
-        .textContent
-    ).to.contain('Extensions reported for claude_code agents in this account');
-    expect(section.querySelector('extension-inventory')).to.equal(null);
-    (section as HTMLDetailsElement).open = true;
-    section.dispatchEvent(new Event('toggle'));
-    await element.updateComplete;
-    const inventory = section.querySelector('extension-inventory') as any;
-    (section as HTMLDetailsElement).open = false;
-    section.dispatchEvent(new Event('toggle'));
-    await element.updateComplete;
-    expect(section.querySelector('extension-inventory')).to.equal(inventory);
-    expect(inventory.agentKind).to.equal('claude_code');
-    inventory.dispatchEvent(
-      new CustomEvent('extensions-loaded', {
-        detail: { count: 63, more: false },
-      })
-    );
-    await element.updateComplete;
-    expect(section.querySelector('summary')!.textContent).to.contain(
-      'Extensions (63)'
-    );
-    window.history.replaceState(null, '', '/console/agents/agent-2');
-    element.onBeforeEnter({ params: { agentId: 'agent-2' } });
-    expect((element as any).extensionCount).to.equal(null);
-    expect((element as any).extensionsOpened).to.equal(false);
+  describe('Credentials and Extensions tabs', () => {
+    beforeEach(() => {
+      fetchStub.callsFake(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          if (url === '/api/v1/auth/users/me') {
+            return new Response(
+              JSON.stringify({ id: 'user-1', permissions: ['view_agents'] })
+            );
+          }
+          if (url.includes('/discovery-extensions?')) {
+            return new Response(
+              JSON.stringify({
+                items: [],
+                next_cursor: null,
+                completeness: 'complete',
+              })
+            );
+          }
+          if (url.includes('/extension-approvals?')) {
+            return new Response(
+              JSON.stringify({ items: [], next_cursor: null })
+            );
+          }
+          if (url.startsWith('/api/v1/agents/agent-2?')) {
+            const body = await (
+              await defaultFetch(url.replace('agent-2', 'agent-1'), init)
+            ).json();
+            body.agent = { ...body.agent, id: 'agent-2', agent_kind: 'codex' };
+            return new Response(JSON.stringify(body));
+          }
+          return defaultFetch(input, init);
+        }
+      );
+    });
+
+    const extensionReads = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) =>
+          String(call.args[0]).includes('/discovery-extensions?')
+        );
+
+    for (const tab of ['credentials', 'extensions'] as const) {
+      it(`opens a ${tab} deep link and selects its navigation tab`, async () => {
+        const element = document.createElement(
+          'agent-detail-view'
+        ) as AgentDetailView;
+        element.onBeforeEnter({
+          params: { agentId: 'agent-1' },
+          search: `?tab=${tab}`,
+        });
+        await fixture(element);
+        await waitUntil(() => !(element as any).loading);
+        await element.updateComplete;
+        const selected = element.shadowRoot!.querySelector(
+          `sl-tab[panel="${tab}"]`
+        ) as any;
+        expect(selected.active).to.equal(true);
+        const content = element.shadowRoot!.querySelector(
+          tab === 'credentials'
+            ? '[data-credentials-tab]'
+            : '[data-testid="agent-extensions"]'
+        )!;
+        expect(content, 'tab content').to.exist;
+        expect(content.hasAttribute('hidden')).to.equal(false);
+        if (tab === 'credentials') {
+          expect(content.querySelector('agent-credentials-card')).to.exist;
+          expect(content.querySelector('agent-manual-setup')).to.exist;
+          expect(extensionReads()).to.have.length(0);
+        } else {
+          await waitUntil(() => extensionReads().length === 1);
+          expect(String(extensionReads()[0].args[0])).to.include(
+            'agent_kind=claude_code'
+          );
+        }
+      });
+    }
+
+    it('loads the kind inventory only on first show, retains it and shows known counts', async () => {
+      const element = await fixture<AgentDetailView>(
+        html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      await element.updateComplete;
+      const tab = element.shadowRoot!.querySelector(
+        'sl-tab[panel="extensions"]'
+      )!;
+      expect(tab.textContent!.trim()).to.equal('Extensions');
+      expect(element.shadowRoot!.querySelector('extension-inventory')).to.not
+        .exist;
+      expect(extensionReads()).to.have.length(0);
+      const tabs = [...element.shadowRoot!.querySelectorAll('sl-tab')];
+      expect(
+        tabs.slice(-2).map((item) => item.getAttribute('panel'))
+      ).to.deep.equal(['extensions', 'credentials']);
+      await showTab(element, 'extensions');
+      const section = element.shadowRoot!.querySelector(
+        '[data-testid="agent-extensions"]'
+      )!;
+      expect(section.tagName).to.equal('SECTION');
+      expect(section.textContent).to.include(
+        'Extensions reported for claude_code agents in this account'
+      );
+      expect(section.querySelector('a')!.getAttribute('href')).to.equal(
+        '/console/agents?section=extensions'
+      );
+      const inventory = section.querySelector('extension-inventory') as any;
+      expect(inventory.agentKind).to.equal('claude_code');
+      await waitUntil(() => tab.textContent!.includes('Extensions (0)'));
+      expect(extensionReads()).to.have.length(1);
+      for (const [count, more, label] of [
+        [63, false, 'Extensions (63)'],
+        [200, true, 'Extensions (200+)'],
+      ] as const) {
+        inventory.dispatchEvent(
+          new CustomEvent('extensions-loaded', { detail: { count, more } })
+        );
+        await element.updateComplete;
+        expect(tab.textContent!.trim()).to.equal(label);
+      }
+      await showTab(element, 'sessions');
+      expect(section.hasAttribute('hidden')).to.equal(true);
+      await showTab(element, 'extensions');
+      expect(section.hasAttribute('hidden')).to.equal(false);
+      expect(section.querySelector('extension-inventory')).to.equal(inventory);
+      expect(extensionReads()).to.have.length(1);
+
+      element.onBeforeEnter({
+        params: { agentId: 'agent-2' },
+        search: '?tab=sessions',
+      });
+      await waitUntil(
+        () =>
+          !(element as any).loading && (element as any).agent?.id === 'agent-2'
+      );
+      await element.updateComplete;
+      expect(element.shadowRoot!.querySelector('extension-inventory')).to.not
+        .exist;
+      expect(
+        element
+          .shadowRoot!.querySelector('sl-tab[panel="extensions"]')!
+          .textContent!.trim()
+      ).to.equal('Extensions');
+      await showTab(element, 'extensions');
+      await waitUntil(() => extensionReads().length === 2);
+      expect(String(extensionReads()[1].args[0])).to.include(
+        'agent_kind=codex'
+      );
+    });
   });
 
   it('distinguishes never-run, failed and unsupported checks without claiming they are disabled', async () => {
@@ -3612,13 +3754,16 @@ describe('AgentDetailView', () => {
     const el = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
     );
-    await waitUntil(
-      () => !!el.shadowRoot?.querySelector('agent-credentials-card')
-    );
+    await waitUntil(() => !(el as any).loading);
+    await showTab(el, 'credentials');
     const card = el.shadowRoot!.querySelector('agent-credentials-card') as any;
     const open = sinon.stub(card, 'openCreate').resolves(null);
     expect(card.agentId).to.equal('agent-1');
+    await showTab(el, 'sessions');
     await el.openCreateCredential();
+    expect(new URL(window.location.href).searchParams.get('tab')).to.equal(
+      'credentials'
+    );
     expect(open.calledOnce).to.equal(true);
     (el as any).agent = { ...(el as any).agent, is_shared: true };
     await el.updateComplete;

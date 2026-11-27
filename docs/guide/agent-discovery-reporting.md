@@ -783,9 +783,9 @@ content_hash, version, note, pinned_by_user_id, pinned_by, pinned_at}]`.
 
 In the console, the Agents toolbar's **Extensions** entry lists distinct extensions
 with device counts and versions seen. A managed agent's detail page has an
-**Extensions** section with the same list filtered to that agent's kind (for
+**Extensions** tab (`?tab=extensions`) with the same list filtered to that agent's kind (for
 example `claude_code`) across the account, not to one device, and the count in
-its heading after first opening. Device detail shows per-profile inventory,
+its tab label after first opening. Device detail shows per-profile inventory,
 source/project hash prefixes, scope and enabled state. Both views filter by
 effective state (including **Content changed** and **Content unverified**) and
 source. A pinned approval shows **Pinned (n)**; **Content hashes** expands the
@@ -798,8 +798,9 @@ is partial or unknown, and **Load more** follows the server's cursor.
 
 The Agents toolbar offers **Extensions** with the account-wide count in list,
 cards and canvas views. It opens the same inventory without changing view mode;
-closing and reopening keeps the loaded rows. The agent detail section loads on
-first expansion and links directly to this account inventory.
+closing and reopening keeps the loaded rows. The agent detail tab loads on
+first selection, retains its rows between tab switches, and links directly to
+this account inventory.
 
 ## Extension content
 
