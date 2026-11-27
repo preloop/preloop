@@ -175,6 +175,9 @@ class CRUDManagedAgentCredential(CRUDBase[ManagedAgentCredential]):
         db_obj.revoked_reason = reason
         if db_obj.api_key is not None:
             db_obj.api_key.is_active = False
+            context = dict(db_obj.api_key.context_data or {})
+            context.pop("native_hook_lifecycle", None)
+            db_obj.api_key.context_data = context
             db.add(db_obj.api_key)
         db.add(db_obj)
         if commit:

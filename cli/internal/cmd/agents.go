@@ -1272,31 +1272,8 @@ func promptToOnboardCandidates(
 		if err != nil {
 			return outcomes, err
 		}
-		// Offer the native tool-approvals hook for supported agents when the
-		// caller's enrollment flow skips its own interactive prompts (the
-		// discover-driven path); callers whose enrollment prompts interactively
-		// pass askApprovals=false so the user is only asked once.
+		// Discovery never opts into native gates. Only onboard --approvals does.
 		approvals := false
-		if askApprovals {
-			if autoApprove || nonInteractiveAutoConfirm() {
-				// --yes / non-interactive accepts the prompt's default answer
-				// (Yes) for supported agents — previously it silently skipped
-				// the hook, so `onboard --all -y` onboarded without approvals.
-				approvals = isApprovalHookSupportedAgent(agent)
-				if approvals {
-					fmt.Fprintf(
-						writer,
-						"Routing %s's native tool calls through Preloop approvals (accepted default; offboard and re-onboard to remove the hook).\n",
-						resolveAgentDisplayName(agent),
-					)
-				}
-			} else {
-				approvals, err = promptForApprovalsOptIn(bufferedReader, writer, agent)
-				if err != nil {
-					return outcomes, fmt.Errorf("failed to read approvals confirmation: %w", err)
-				}
-			}
-		}
 		outcome := classifyAgentOnboardingOutcome(agent, enroll(agent, approvals))
 		if outcome.Status == agentOnboardingStatusFailed {
 			// Keep the batch going: one broken agent environment must not
@@ -1651,8 +1628,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
-		// askApprovals=false: executeManagedEnrollment prompts for the
-		// approvals hook itself when this path runs interactively.
+		// The explicit --approvals choice is carried in opts.
 		outcomes, err := promptToOnboardCandidatesTiered(input, os.Stdout, client, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
 			agentOpts := opts
 			agentOpts.SkipConfirmation = autoApprove
@@ -2690,7 +2666,8 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	}
 
 	if state != nil && state.OffboardArchived && detail == nil {
-		return fmt.Errorf("offboard partially completed; cannot resolve managed record for remaining cleanup; enrollment retry state retained")
+		// A console removal must not strand a partially completed local restore.
+		state.OffboardArchived = false
 	}
 	recovery := subscriptionRestoreNotApplicable
 	partial := func(err error) error {

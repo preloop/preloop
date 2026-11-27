@@ -1644,3 +1644,58 @@ func TestFlowCredentialOverridesBroadHookCredentialAndFailsClosed(t *testing.T) 
 		t.Fatalf("flow credential failure allowed tool: %#v", decision)
 	}
 }
+
+func TestLifecycleReleaseDefersToHostAndOutageStillDenies(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"decision":"allow","native_hook_released":true,"reason":"Agent removed; run preloop agents offboard Cursor"}`))
+	}))
+	agent := AgentConfig{Name: "Cursor", ConfigPath: filepath.Join(home, ".cursor", "mcp.json")}
+	writeTestPermissionCredential(t, home, runtimePrincipalIDForAgent(agent), permissionHookCredential{BaseURL: server.URL, Token: "agt_synthetic", Source: permissionSourceCursor})
+	raw := []byte(`{"hook_event_name":"preToolUse","tool_name":"Read","tool_input":{"path":"example.txt"}}`)
+	decision := resolvePermissionDecision(permissionSourceCursor, raw, false)
+	if decision.Behavior != hookBehaviorPass || !strings.Contains(decision.Reason, "offboard Cursor") {
+		t.Fatalf("unexpected release: %#v", decision)
+	}
+	server.Close()
+	decision = resolvePermissionDecision(permissionSourceCursor, raw, false)
+	if decision.Behavior != "deny" {
+		t.Fatalf("outage must still deny: %#v", decision)
+	}
+}
+
+func TestRemoveNativeGatesPreservesSessionReporting(t *testing.T) {
+	for _, name := range []string{"Cursor", "Claude Code", "Codex CLI", "Copilot CLI"} {
+		t.Run(name, func(t *testing.T) {
+			home := testenv.SetTempHome(t)
+			agent := AgentConfig{Name: name, ConfigPath: filepath.Join(home, "synthetic-config.json")}
+			if err := installApprovalHooks(agent, "http://127.0.0.1:1", "agt_synthetic", nil); err != nil {
+				t.Fatal(err)
+			}
+			path, err := approvalHookConfigPath(permissionSourceForAgent(agent))
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := removeNativeApprovalGates(agent); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"preToolUse", "PreToolUse", "PermissionRequest", "beforeShellExecution", "beforeMCPExecution"} {
+				if strings.Contains(string(after), `"`+key+`"`) {
+					t.Fatalf("gate %s remains", key)
+				}
+			}
+			if !strings.Contains(string(before), "session") || !strings.Contains(string(after), "session") {
+				t.Fatal("session hooks must survive")
+			}
+		})
+	}
+}

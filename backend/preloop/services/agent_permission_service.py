@@ -10,12 +10,10 @@ return a simple allow/deny the adapter maps back into the agent's hook format.
 Policy: a client ``deny`` is honoured before native access rules so a
 Preloop allow cannot widen the host agent's policy. Matching rules then
 run before the hook's ``client_decision`` ``allow`` is honoured. Only when
-no rule matches does the client's own allow stand, and only ``ask`` or
-an absent decision escalates to a human (unless a require_approval rule
-already decided).
+no rule matches does the client's own allow stand. Recognized native reads
+also proceed without approval; other ``ask`` or absent decisions escalate
+to a human (unless a require_approval rule already decided).
 """
-
-from preloop.services.external_approval import agent_visible_comment
 
 import asyncio
 import logging
@@ -31,7 +29,12 @@ from preloop.schemas.subject_governance import (
     NATIVE_TOOL_APPROVALS_ENFORCE,
     NATIVE_TOOL_APPROVALS_OFF,
 )
+from preloop.services.approval_readiness import (
+    NATIVE_DELIVERY_WARNING,
+    native_delivery_warning,
+)
 from preloop.services.approval_workflow_service import DEFAULT_APPROVAL_TYPE
+from preloop.services.external_approval import agent_visible_comment
 from preloop.services.subject_governance import (
     SUBJECT_TYPE_FLOWS,
     SUBJECT_TYPE_MANAGED_AGENTS,
@@ -51,6 +54,39 @@ AGENT_TOOL_APPROVALS_WORKFLOW_NAME = "Agent Tool Approvals"
 NATIVE_RULES_OVERRIDE_CLIENT_DECISION = True
 
 BLOCKED_TOOL_REASON = "Tool blocked in Preloop"
+
+
+# Exact native names only: never classify shell commands or MCP tool suffixes.
+READ_ONLY_NATIVE_TOOLS = {
+    "cursor": frozenset(
+        {
+            "Read",
+            "Grep",
+            "Glob",
+            "LS",
+            "read_file",
+            "list_dir",
+            "ripgrep",
+            "glob_file_search",
+            "codebase_search",
+        }
+    ),
+    "claude_code": frozenset({"Read", "Grep", "Glob", "LS"}),
+    "codex_cli": frozenset({"read_file", "list_dir", "grep_files"}),
+    "copilot_cli": frozenset(
+        {"view", "grep", "glob", "ls", "read_file", "list_directory"}
+    ),
+}
+
+
+def is_read_only_native_tool(
+    source: str | None, tool_name: str, hook_event_name: str | None = None
+) -> bool:
+    """Recognize native reads without treating arbitrary shell or MCP calls as safe."""
+    return (
+        hook_event_name != "beforeMCPExecution"
+        and tool_name in READ_ONLY_NATIVE_TOOLS.get(source or "", ())
+    )
 
 
 def _managed_agent_governance_field(managed_agent_id: uuid.UUID, field: str):
@@ -510,9 +546,6 @@ async def apply_native_access_rules(
     if config is not None and not bool(config.is_enabled):
         return ("deny", BLOCKED_TOOL_REASON, None, None)
     mcp_identity = parse_mcp_tool_name(tool_name)
-    if config is None and mcp_identity is None:
-        return None
-
     tool_source = "mcp" if mcp_identity else AGENT_TOOL_SOURCE
     decision = await evaluate_policy_async(
         db,
@@ -576,6 +609,7 @@ async def request_agent_permission(
     agent_reasoning: Optional[str],
     client_decision: Optional[str],
     evaluation_phase: str = "permission_request",
+    hook_event_name: str | None = None,
     flow_id: Optional[uuid.UUID] = None,
     flow_policy_label: Optional[str] = None,
     approval_request_id: Optional[uuid.UUID] = None,
@@ -588,9 +622,10 @@ async def request_agent_permission(
     :data:`NATIVE_RULES_OVERRIDE_CLIENT_DECISION` is true (founder decision
     2026-09-05). A matching rule wins over ``client_decision`` ``allow``.
     A blocked (``is_enabled=false``) configuration denies the call. When
-    no rule matches, ``client_decision`` ``allow`` is honoured; otherwise
-    an approval request is created, human approvers are notified, and this
-    function polls until decided or timed out.
+    no rule matches, ``client_decision`` ``allow`` and recognized native reads
+    proceed. Other calls create an approval. With an interactive notification
+    destination this function polls until decided or timed out; otherwise it
+    returns a denial explaining console approval and local recovery.
 
     Escalation can be disabled per agent: when the managed agent's
     subject-governance config sets ``native_tool_approvals`` to ``"off"``,
@@ -632,6 +667,7 @@ async def request_agent_permission(
             parks the execution instead of holding the hook (see
             :mod:`preloop.services.native_flow_park`), and the decision is
             returned as ``"park"``, which callers must send as a deny.
+        hook_event_name: Harness event; Cursor MCP calls never get native read defaults.
         evaluation_phase: ``pre_tool_use`` checks central native rules before
             the host permission decision, skipping no-rule automatic escalation.
             The default ``permission_request`` preserves remote host prompts.
@@ -646,6 +682,11 @@ async def request_agent_permission(
         required central approval with a local prompt.
     """
     decision = (client_decision or "").strip().lower()
+    # Claude already marks its ordinary reads allow. An ask for a read means
+    # an explicit local Ask rule matched; preserve that operator decision.
+    native_read_default = is_read_only_native_tool(
+        source, tool_name, hook_event_name
+    ) and not (source == "claude_code" and decision == "ask")
     # A client deny is never widened by a Preloop allow rule.
     if decision == "deny":
         return ("deny", "Denied by client policy", None, False)
@@ -707,7 +748,9 @@ async def request_agent_permission(
             flow_execution_id=flow_execution_id,
             api_key_id=api_key_id,
             record_unapplied_approval_as_allow=(
-                evaluation_phase == "pre_tool_use" or decision == "allow"
+                evaluation_phase == "pre_tool_use"
+                or decision == "allow"
+                or native_read_default
             ),
         )
         from preloop.services.audit.async_writer import outbox_enabled
@@ -730,6 +773,14 @@ async def request_agent_permission(
         # leave native permission processing intact. Never infer client allow.
         if matched_require is None and evaluation_phase == "pre_tool_use":
             return ("allow", "No central native rule requires approval", None, False)
+
+        if matched_require is None and native_read_default:
+            return (
+                "allow",
+                "Read-only native tool; no rule requires approval",
+                None,
+                False,
+            )
 
         if matched_require is not None and flow_execution_id is not None:
             # A run resumed after approval spends that approval once, for
@@ -802,6 +853,19 @@ async def request_agent_permission(
             park_window_seconds: Optional[int] = None
             approval_tool_args = dict(tool_input or {})
             approval_tool_args.pop(native_flow_park.NATIVE_PARK_MARKER, None)
+            approval_tool_args.pop(NATIVE_DELIVERY_WARNING, None)
+            delivery_warning = None
+            if flow_execution_id is None and (
+                matched_require is not None or not (approvals_off or flow_policy_label)
+            ):
+                workflow_id = workflow.id
+                delivery_warning = await run_db_off_loop(
+                    lambda: native_delivery_warning(
+                        account_id, workflow_id, managed_agent_id
+                    )
+                )
+                if delivery_warning:
+                    approval_tool_args[NATIVE_DELIVERY_WARNING] = delivery_warning
             if flow_execution_id is not None:
                 workflow_for_window = workflow
                 window = await run_db_off_loop(
@@ -915,6 +979,16 @@ async def request_agent_permission(
             comment or f"Approval {status}",
             request_id,
             status == "expired",
+        )
+
+    if delivery_warning:
+        return (
+            "deny",
+            f"Approval required. {delivery_warning} "
+            f"Open {base_url.rstrip('/')}/console/approval/{request_id}. "
+            "The tool has not run.",
+            request_id,
+            False,
         )
 
     if flow_execution_id is not None:

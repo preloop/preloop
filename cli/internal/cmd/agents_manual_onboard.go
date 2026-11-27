@@ -410,6 +410,16 @@ func buildManualApplyPlan(in *manualEnrollmentInputs) (manualApplyPlan, []string
 	if hookPath, hookErr := approvalHookConfigPath(source); hookErr == nil {
 		hooksInSettings = source != "" && filepath.Clean(hookPath) == filepath.Clean(agent.ConfigPath)
 	}
+	if !in.Opts.Approvals {
+		if hooksInSettings {
+			approvalHookConfigPathOverrides[source] = staged.ConfigPath
+		}
+		hookErr := removeNativeApprovalGates(agent)
+		delete(approvalHookConfigPathOverrides, source)
+		if hookErr != nil {
+			return plan, nil, hookErr
+		}
+	}
 	approvalsInstalled := false
 	if in.Opts.Approvals && isApprovalHookSupportedAgent(agent) {
 		switch {

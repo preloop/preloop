@@ -120,10 +120,11 @@ type permissionCheckRequest struct {
 
 // permissionCheckResponse is the (blocking) response from permissionCheckPath.
 type permissionCheckResponse struct {
-	Decision     string  `json:"decision"`
-	Reason       string  `json:"reason"`
-	RequestID    string  `json:"request_id"`
-	OperatorNote *string `json:"operator_note,omitempty"`
+	NativeHookReleased bool    `json:"native_hook_released,omitempty"`
+	Decision           string  `json:"decision"`
+	Reason             string  `json:"reason"`
+	RequestID          string  `json:"request_id"`
+	OperatorNote       *string `json:"operator_note,omitempty"`
 	// TimedOut distinguishes unanswered approval expiry from explicit denial.
 	// Both remain deny: a local prompt cannot replace required central approval.
 	TimedOut bool `json:"timed_out,omitempty"`
@@ -434,6 +435,11 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 			err,
 			permissionHookRemediation(source),
 		))
+	}
+
+	if resp.NativeHookReleased && resp.Decision == "allow" && os.Getenv("PRELOOP_FLOW_CREDENTIAL_REQUIRED") != "1" {
+		_, _ = fmt.Fprintln(permissionHookStderr, resp.Reason)
+		return hookDecision{Behavior: hookBehaviorPass, Reason: resp.Reason, SystemMessage: resp.Reason}
 	}
 
 	behavior := "deny"
@@ -1017,6 +1023,7 @@ func callPermissionCheck(
 		"decision": &decoded.Decision, "reason": &decoded.Reason, "timed_out": &decoded.TimedOut,
 		"request_id": &decoded.RequestID, "operator_note": &decoded.OperatorNote,
 		"decided_by": &decoded.DecidedBy, "parked": &decoded.Parked,
+		"native_hook_released": &decoded.NativeHookReleased,
 	}
 	for name, destination := range destinations {
 		raw, present := fields[name]

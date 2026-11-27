@@ -3229,6 +3229,7 @@ async def update_account_managed_agent(
     ):
         lifecycle_map = {
             "suspend": "suspended",
+            "suspend_block": "suspended",
             "resume": "active",
             "decommission": "decommissioned",
             "reenroll": "active",
@@ -3277,6 +3278,19 @@ async def update_account_managed_agent(
     if updated is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
+        )
+    if lifecycle_state is not None:
+        crud_api_key.set_native_hook_lifecycle(
+            db,
+            account_id=account.id,
+            managed_agent_id=str(agent.id),
+            action=(
+                None
+                if lifecycle_state == "active"
+                else "block"
+                if update.lifecycle_action == "suspend_block"
+                else lifecycle_state
+            ),
         )
     revoked_managed_credentials = 0
     if should_revoke_runtime_access:
@@ -3426,6 +3440,9 @@ async def delete_account_managed_agent(
     # Revokes only this agent's keys (plus legacy keys with no agent binding).
     # Shared with the onboarding cleanup, which removes an agent an unfinished
     # onboarding created.
+    crud_api_key.set_native_hook_lifecycle(
+        db, account_id=account.id, managed_agent_id=str(agent.id), action="removed"
+    )
     revoked_keys = onboarding_cleanup.deactivate_agent_keys(
         db, account_id=account.id, agent=agent
     )

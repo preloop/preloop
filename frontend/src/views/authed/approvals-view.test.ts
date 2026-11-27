@@ -78,6 +78,29 @@ describe('ApprovalsView', () => {
     };
   }
 
+  it('shows recovery guidance on the first native delivery warning', async () => {
+    const element = await renderList([
+      baseRequest({
+        tool_args: { _preloop_native_delivery_warning: 'Email only' },
+      }),
+    ]);
+    const banner = element.shadowRoot!.querySelector(
+      '[data-testid="native-delivery-warning"]'
+    );
+    expect(banner).to.exist;
+    expect(banner!.textContent).to.contain('preloop agents pause');
+    expect(banner!.textContent).to.contain('Review pending requests');
+  });
+
+  it('does not show a delivery warning for ordinary approvals', async () => {
+    const element = await renderList([baseRequest()]);
+    expect(
+      element.shadowRoot!.querySelector(
+        '[data-testid="native-delivery-warning"]'
+      )
+    ).not.to.exist;
+  });
+
   function questionRequest(overrides: Record<string, unknown> = {}) {
     return baseRequest({
       tool_name: 'ask_user',

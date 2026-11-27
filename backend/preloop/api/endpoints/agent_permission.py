@@ -764,6 +764,10 @@ class AgentPermissionCheckRequest(BaseModel):
 class AgentPermissionCheckResponse(BaseModel):
     """Allow/deny decision for the agent's native tool call."""
 
+    native_hook_released: bool = Field(
+        False,
+        description="Operator released this local hook; defer to host permissions.",
+    )
     decision: str = Field(..., description="'allow' or 'deny'")
     reason: str = ""
     request_id: Optional[str] = None
@@ -911,6 +915,27 @@ async def _audit_permission_denial_safely(
         logger.warning("Permission denial audit unavailable: %s", type(exc).__name__)
 
 
+def _native_hook_lifecycle(token: str) -> str | None:
+    """Read only the operator's hook instruction, even after key revocation.
+
+    This grants no remote access. Unknown, independently revoked and flow
+    credentials still take the normal authentication path and fail closed.
+    """
+    with get_session_factory()() as db:
+        key = crud_api_key.get_by_key(db, key=token)
+        if key is None:
+            return None
+        context = key.context_data if isinstance(key.context_data, dict) else {}
+        if not context.get("managed_agent_id") or context.get("flow_execution_id"):
+            return None
+        action = context.get("native_hook_lifecycle")
+        return (
+            action
+            if action in ("suspended", "decommissioned", "removed", "block")
+            else None
+        )
+
+
 async def _agent_permission_check(
     payload: AgentPermissionCheckRequest, authorization: Optional[str]
 ) -> AgentPermissionCheckResponse:
@@ -923,11 +948,38 @@ async def _agent_permission_check(
         )
     token = authorization.split(" ", 1)[1].strip()
 
-    # Preserve the existing credential/binding checks, but keep all ORM access
-    # and pool waits off the event loop. No session survives this await.
-    identity = await run_db_off_loop(
-        lambda: _resolve_permission_identity(token, allow_read_only_review=True)
-    )
+    # Authenticate normally first. Only an explicit lifecycle instruction may
+    # release the local hook after authentication refuses its retired key.
+    try:
+        identity = await run_db_off_loop(
+            lambda: _resolve_permission_identity(token, allow_read_only_review=True)
+        )
+    except HTTPException:
+        lifecycle = await run_db_off_loop(lambda: _native_hook_lifecycle(token))
+        if not lifecycle:
+            raise
+        if (
+            lifecycle == "block"
+            or (payload.client_decision or "").strip().lower() == "deny"
+        ):
+            return AgentPermissionCheckResponse(
+                decision="deny",
+                reason=(
+                    "This agent is suspended with native tools blocked. "
+                    "Ask an administrator to resume it in Preloop."
+                ),
+            )
+        return AgentPermissionCheckResponse(
+            decision="allow",
+            native_hook_released=True,
+            reason=(
+                f"This agent is {lifecycle} in Preloop; "
+                "its local approval gate is released. "
+                "Run `preloop agents offboard <agent>` to restore your configuration. "
+                "A suspended agent's gate resumes when an administrator resumes it."
+            ),
+        )
+
     if identity.runtime_session_id is None and identity.managed_agent_id is not None:
         # A durable hook credential names the agent but no session. Without a
         # session, a note sent to the agent's session is never claimed here,
@@ -1031,6 +1083,7 @@ async def _agent_permission_check(
         agent_reasoning=payload.agent_reasoning,
         client_decision=payload.client_decision,
         evaluation_phase=payload.evaluation_phase,
+        hook_event_name=payload.hook_event_name,
         flow_id=identity.flow_id,
         flow_policy_label=flow_policy_label,
         approval_request_id=payload.approval_request_id,

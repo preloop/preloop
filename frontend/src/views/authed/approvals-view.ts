@@ -1720,6 +1720,30 @@ export class ApprovalsView extends AuthedElement {
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
+          ${
+            this.approvalRequests.some(
+              (request) =>
+                typeof request.tool_args?._preloop_native_delivery_warning ===
+                'string'
+            )
+              ? html`
+                  <sl-alert
+                    open
+                    variant="warning"
+                    data-testid="native-delivery-warning"
+                  >
+                    <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+                    A native tool approval had no mobile or chat destination.
+                    Email alone may leave an agent waiting. Review pending
+                    requests here, configure
+                    <a href="/console/settings/notification-preferences"
+                      >notifications</a
+                    >, or run <code>preloop agents pause</code> on the agent's
+                    machine to temporarily turn off the local gate.
+                  </sl-alert>
+                `
+              : nothing
+          }
           ${this.renderStatStrip()}
 
           <!-- Filters -->

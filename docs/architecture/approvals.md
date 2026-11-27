@@ -215,6 +215,19 @@ the read-only sandbox, whose shell is disabled, excepted).
 
 **Desktop control (`desktop_control`).** Taking control of a live desktop view (`POST /api/v1/desktop/views/{view_id}/control`) raises an approval with `tool_name="desktop_control"` when the account has another active user holding `decide_approvals`. `tool_args` carries the view, endpoint, agent, reason and `requested_by`. It is created with `create_approval_request` plus `send_notifications`, not `create_and_notify`, so no AI or bypass decision can stand in for a person, and `approve_request` (and the auto-approve paths) refuse it without a named user or from the requester. `update_approval_request` hands every settled request to `apply_control_decision` in `api/endpoints/desktop.py`: approved grants control for `min(view expiry, now + 600 s)` and publishes the relay's `mode` message; declined, cancelled or expired writes `desktop.control.denied`. Approvals expire lazily, so the requester's `GET /desktop/views/{view_id}` poll expires an overdue one. A single-admin account keeps the self-confirm with a reason.
 
+**Local native defaults and lifecycle:** CLI onboarding installs permission hooks only with
+`--approvals`. With no matching rule, recognized native reads return allow before
+creating an approval; subject rules are evaluated even without a tool configuration.
+The auto-created native workflow is not a first-use policy or a starter rule.
+Email-only or absent interactive notification destinations produce immediate denial
+with console/pause guidance and a stored warning for the Approvals page. Explicit
+operator lifecycle changes stamp `native_hook_lifecycle` on the agent's bound API
+keys in the same transaction: suspend releases reversibly, decommission/remove
+release after revocation, and `suspend_block` keeps the gate blocking. Authentication
+failures consult only this narrowly scoped instruction; they grant no MCP or gateway
+access. Unknown keys and outages continue to fail closed. See
+[local recovery](../guide/cli.md#console-lifecycle-and-local-recovery).
+
 **Managed-agent linkage:** `ApprovalRequest` carries optional `managed_agent_id`, `runtime_session_id`, and `managed_agent_name` fields, populated from the runtime token context so approval surfaces can show which agent is asking. The endpoint and these identity columns are part of the open-source core. The per-agent native-tool interception adapters (Claude Code, Codex CLI, Cursor, OpenCode, OpenClaw, Hermes) and any future central per-agent/global policy UI live in Preloop Enterprise / the CLI.
 
 **Workflow resolution.** Every account gets a default approval workflow seeded at signup with the account owner as approver (a startup repair pass heals legacy defaults and seeds accounts that missed it). Operators can additionally pin a specific approval workflow per managed agent from the Console's agent detail view (Tools & Governance → Native tool approvals); the pin is stored in the agent's subject-governance config (`approval_workflow_id`) and wins over the account default when the permission-check endpoint resolves a workflow.

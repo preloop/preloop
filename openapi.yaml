@@ -31728,6 +31728,11 @@ components:
       description: A native tool-call permission check from an onboarded agent.
     AgentPermissionCheckResponse:
       properties:
+        native_hook_released:
+          type: boolean
+          title: Native Hook Released
+          description: Operator released this local hook; defer to host permissions.
+          default: false
         decision:
           type: string
           title: Decision
@@ -50894,7 +50899,7 @@ components:
         lifecycle_action:
           anyOf:
           - type: string
-            pattern: ^(suspend|resume|decommission|reenroll)$
+            pattern: ^(suspend|suspend_block|resume|decommission|reenroll)$
           - type: 'null'
           title: Lifecycle Action
         reason:
