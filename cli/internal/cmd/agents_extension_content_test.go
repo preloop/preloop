@@ -183,6 +183,37 @@ func runContent(t *testing.T, server *contentServer, home string, report discove
 // no private key, no binary, no oversize file, no symlink target and no home
 // path reaches a request body; fails_when=any of them appears in what the
 // collector sends; no_claim=synthetic secrets and a synthetic home.
+// protects=metadata-only MCP inventory does not break supported content uploads;
+// fails_when=the content query includes a kind the content API cannot store.
+func TestExtensionContentSkipsInventoryOnlyKinds(t *testing.T) {
+	home, _ := contentHome(t)
+	writeInventoryFixture(t, home, ".claude.json", `{"mcpServers":{"example-server":{"command":"example-command"}}}`)
+	report := contentReport(t, home)
+	foundMCP := false
+	for _, candidate := range report.Candidates {
+		if candidate.Extensions != nil {
+			for _, ext := range *candidate.Extensions {
+				foundMCP = foundMCP || ext.Kind == "mcp_server"
+			}
+		}
+	}
+	if !foundMCP {
+		t.Fatal("MCP metadata disappeared from inventory")
+	}
+	server := newContentServer(t)
+	outcome, _ := runContent(t, server, home, report)
+	if outcome.Uploaded == 0 || server.items()["skill"] == nil {
+		t.Fatal("supported extension content was not uploaded")
+	}
+	for _, query := range server.queries {
+		for _, pair := range query.Items {
+			if pair.Kind == "mcp_server" {
+				t.Fatal("MCP inventory was included in the content query")
+			}
+		}
+	}
+}
+
 func TestExtensionContentUploadCarriesNoPlantedSecret(t *testing.T) {
 	home, secrets := contentHome(t)
 	report := contentReport(t, home)

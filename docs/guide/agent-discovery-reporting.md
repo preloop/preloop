@@ -90,8 +90,10 @@ earlier statement on this page that no command string and no file content
 leaves the host.
 
 The discovery report itself still omits local profile names, hostnames, home or
-config paths in clear, file bodies, credential files, environment values, MCP
-server names, source URLs, hook command strings and arguments. V4 adds the
+config paths in clear, file bodies, credential files, environment values,
+headers, source URLs, hook command strings and arguments. MCP server identifiers
+are sent in clear like other extension identifiers; their definitions are hashed,
+and MCP bodies are not uploaded by the content pass. V4 adds the
 bounded authored metadata described under [Extensions](#extensions), including
 descriptions, author names, hook matchers and executable basenames. This is a
 new data class: an extension author could put sensitive text in a description.

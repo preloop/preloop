@@ -11,7 +11,8 @@ package cmd
 //   - the CLI version and the OS family.
 //
 // Never sent: user names, hostnames, clear paths, prompts, keys, env vars,
-// MCP server names, URLs or args.
+// configuration URLs or args. MCP identifiers and hashes are extension metadata;
+// server definitions are not uploaded.
 //
 // After the report, and unless it is turned off, the redacted text of the
 // reported extensions is uploaded for review. That is a separate request with
