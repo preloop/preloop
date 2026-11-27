@@ -307,6 +307,11 @@ func TestApplyDoesWhatThePlanShowed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("apply failed: %v\n%s", err, output)
 			}
+			if name == "cursor" && !strings.Contains(strings.Join(strings.Fields(output), " "), "MCP servers not imported into Preloop (local or unsupported): docs") {
+				// The plan says the server stays as it is; the receipt
+				// says it was not imported.
+				t.Fatalf("the receipt does not name the MCP server that was not imported:\n%s", output)
+			}
 			if enrollments[0]["status"] != "applied" {
 				t.Fatalf("writable plan recorded %v", enrollments[0]["status"])
 			}

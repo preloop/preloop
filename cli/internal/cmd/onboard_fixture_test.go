@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -153,6 +154,10 @@ func (f onboardFixture) normalize(text string) string {
 	if resolved, err := filepath.EvalSymlinks(f.home.home); err == nil {
 		text = strings.ReplaceAll(text, resolved, "/home/jane")
 	}
+	if runtime.GOOS == "windows" {
+		// Paths under the home are printed with the platform's separator.
+		text = strings.ReplaceAll(text, `\`, "/")
+	}
 	return fixturePrincipalPattern.ReplaceAllString(text, "$1-000000000000")
 }
 
@@ -211,11 +216,13 @@ func assertOnboardGolden(t *testing.T, name, got string) {
 // earlier behaviour and is therefore never rewritten by a test run.
 func assertRecordedGolden(t *testing.T, name, got string) {
 	t.Helper()
-	want, err := os.ReadFile(onboardGoldenPath(name))
+	data, err := os.ReadFile(onboardGoldenPath(name))
 	if err != nil {
 		t.Fatalf("golden %s: %v", name, err)
 	}
-	if string(want) != got {
+	// Git may check the golden file out with CRLF on Windows.
+	want := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if want != got {
 		t.Fatalf("%s differs from the golden file.\n--- want\n%s\n--- got\n%s", name, want, got)
 	}
 }

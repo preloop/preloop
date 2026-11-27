@@ -884,6 +884,10 @@ func applyManagedEnrollment(state *enrollmentPlanState, input *bufio.Reader, ui 
 		if status, ok := validationResult["live_validation_status"].(string); ok {
 			receipt.GatewayValidation = receiptGatewayValidationLabel(status)
 		}
+		if len(serverSync.Skipped) > 0 {
+			// They stay in the agent's configuration and bypass Preloop.
+			receipt.Warnings = append(receipt.Warnings, "MCP servers not imported into Preloop (local or unsupported): "+strings.Join(serverSync.Skipped, ", "))
+		}
 		if plan.MCPConfigSkipped {
 			receipt.Warnings = append(receipt.Warnings, publicPlanNote(claudeDesktopBridgeSkippedNote(plan.ManagedServerURL)))
 		}

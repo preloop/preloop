@@ -249,6 +249,78 @@ func TestNoticeWriterKeepsOnlyWhatNeedsAction(t *testing.T) {
 	}
 }
 
+// protects=a helper's failure is never hidden by the compact output;
+// fails_when=one of the failure lines the apply helpers print without a
+// "Warning:" prefix (Codex sidecar, harness plugin, approvals policy, Agent
+// Control setup and install) is dropped, or the routine lines beside them
+// get through; no_claim=the lines are copied from the helpers; a helper
+// that words a new failure without any of the problem words would still be
+// dropped, and --explain shows everything.
+func TestNoticeWriterKeepsHelperFailuresWithoutAPrefix(t *testing.T) {
+	failures := []string{
+		"  Codex Agent Control sidecar service not installed: the Codex plugin did not install. Fix the plugin, then: preloop codex sidecar enable",
+		"  Codex Agent Control sidecar service not installed: synthetic cause. preloop codex sidecar enable",
+		"Preloop harness plugin installation failed: synthetic npm output",
+		"Preloop harness registration failed: synthetic cause",
+		"  Mobile approvals: failed to load Claude policy: synthetic cause",
+		"  Mobile approvals: failed to load Cursor policy: synthetic cause",
+		"  Agent Control setup incomplete: node --version reported an unsupported runtime",
+		"  Agent Control plugin installation skipped: npm global prefix is not writable",
+	}
+	routine := []string{
+		"  Codex Agent Control sidecar service already installed (synthetic path)",
+		"  Mobile approvals: loaded Claude Code policy",
+		"  Pre-approved the gateway key in the user config.",
+		"  Started managed Agent Control sidecar for Claude Code.",
+	}
+	var out bytes.Buffer
+	notices := newNoticeWriter(&out, 100)
+	for _, line := range append(append([]string{}, failures...), routine...) {
+		_, _ = notices.Write([]byte(line + "\n"))
+	}
+	notices.Flush()
+	got := strings.Join(strings.Fields(out.String()), " ")
+	for _, line := range failures {
+		if want := strings.Join(strings.Fields(line), " "); !strings.Contains(got, want) {
+			t.Errorf("failure dropped: %q\n%s", line, out.String())
+		}
+	}
+	for _, line := range routine {
+		if strings.Contains(got, strings.TrimSpace(line)) {
+			t.Errorf("routine line kept: %q", line)
+		}
+	}
+}
+
+// protects=the receipt fits the narrowest supported terminal; fails_when=at
+// 60 columns any receipt line is longer than 60 characters, including for
+// a long agent name, or wrapping loses the commands; no_claim=does not
+// cover a name longer than the terminal is wide.
+func TestReceiptWrapsAtSixtyColumns(t *testing.T) {
+	var out bytes.Buffer
+	newPlainRenderer(termCaps{Width: 60}).Receipt(&out, onboardPlan{}, []agentReceipt{{
+		DisplayName:         "Claude Code on the shared build machine",
+		Headline:            "✓ Onboarded Claude Code on the shared build machine",
+		GatewayValidation:   receiptGatewayValidationLabel("passed"),
+		SubscriptionBilling: true,
+		Warnings:            []string{"MCP servers not imported into Preloop (local or unsupported): docs"},
+	}}, onboardSelection{})
+	if longest, line := longestLine(out.String()); longest > 60 {
+		t.Errorf("line of %d columns: %q\n%s", longest, line, out.String())
+	}
+	flat := strings.Join(strings.Fields(out.String()), " ")
+	for _, want := range []string{
+		"Gateway validation: passed (route probe; application behavior unverified)",
+		`Status: preloop agents status "Claude Code on the shared build machine"`,
+		`Undo: preloop agents offboard "Claude Code on the shared build machine"`,
+		"MCP servers not imported into Preloop (local or unsupported): docs",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("receipt lost %q:\n%s", want, out.String())
+		}
+	}
+}
+
 // protects=the default output of a real onboarding run before the person
 // decides; fails_when=more than 18 rows are printed before the apply
 // confirmation at 80 columns, a line is longer than 80 characters, or an
