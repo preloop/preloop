@@ -12,6 +12,10 @@ from preloop.services import flow_failure_messages
 
 from preloop.agents.errors import AgentStartError
 from preloop.agents.failure_analysis import analyze_agent_failure
+from preloop.services.host_exec import (
+    ISOLATED_PUBLICATION_UNAVAILABLE,
+    PULL_REQUEST_UNAVAILABLE,
+)
 from preloop.services.flow_failure_category import (
     FAILURE_CATEGORIES,
     FAILURE_CATEGORY_MAX_LENGTH,
@@ -542,6 +546,8 @@ def test_refused_resume_checkpoint_is_resume_failed(message: str) -> None:
         ("Read-only review requires its admitted commit", "flow_config"),
         ("Write API tokens cannot enter an isolated agent", "flow_config"),
         ("host execution profiles cannot run on hosted compute", "flow_config"),
+        (PULL_REQUEST_UNAVAILABLE, "flow_config"),
+        (ISOLATED_PUBLICATION_UNAVAILABLE, "flow_config"),
         (
             "Host profiles do not support remote workspace seeds or native resume",
             "flow_config",

@@ -1,4 +1,4 @@
-"""Managed legacy publication for Copilot host profiles (#1069)."""
+"""Managed legacy publication for native host profiles (#1069)."""
 
 import json
 import logging
@@ -78,7 +78,7 @@ def test_copilot_legacy_single_repository_publication_is_admitted():
 @pytest.mark.parametrize(
     ("agent_type", "clone", "mode", "expected"),
     [
-        ("cursor", ONE_REPO, None, PULL_REQUEST_UNAVAILABLE),
+        ("hosted_agent", ONE_REPO, None, PULL_REQUEST_UNAVAILABLE),
         (None, ONE_REPO, None, PULL_REQUEST_UNAVAILABLE),
         (
             "copilot",
@@ -181,9 +181,13 @@ def test_save_keeps_review_only_flows_without_runner_lookup(monkeypatch):
     )
 
 
-def test_save_rejects_cursor_publication_even_with_capable_runner(monkeypatch):
+def test_save_accepts_cursor_publication_with_capable_runner(monkeypatch):
+    _reject(monkeypatch, [_runner(*PUBLISHING_RUNNER)], agent_type="cursor")
+
+
+def test_save_rejects_cursor_publication_without_capable_runner(monkeypatch):
     with pytest.raises(HTTPException) as caught:
-        _reject(monkeypatch, [_runner(*PUBLISHING_RUNNER)], agent_type="cursor")
+        _reject(monkeypatch, [_runner(*OLD_RUNNER)], agent_type="cursor")
     assert caught.value.detail == PULL_REQUEST_UNAVAILABLE
 
 
@@ -567,9 +571,9 @@ async def test_create_failure_without_pr_raises_and_binds_nothing(bound):
 
 
 @pytest.mark.asyncio
-async def test_non_bitbucket_tracker_is_refused(bound):
+async def test_non_code_host_tracker_is_refused(bound):
     forge = FakeBitbucket()
-    forge.tracker_type = "github"
+    forge.tracker_type = "azure_devops"
     with pytest.raises(ValueError, match=PUBLICATION_UNSUPPORTED_TRACKER):
         await _open(forge, uuid4())
     assert forge.creates == 0

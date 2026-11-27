@@ -223,7 +223,7 @@ def _reject_host_exec_flow(
 ) -> None:
     """Reject hosted Cursor / publication / invalid host-exec combinations.
 
-    A publishing Copilot flow additionally needs a registered runner whose
+    A publishing host flow additionally needs a registered runner whose
     profile advertises ``host_publication``; without one the original
     publication refusal is returned before any job can start.
     """

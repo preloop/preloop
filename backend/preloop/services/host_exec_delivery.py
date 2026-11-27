@@ -199,6 +199,7 @@ def build_host_exec_publication(
     flow_name: str,
     execution_id: str,
     continuation: bool = False,
+    pull_request_template: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The runner publication plan for a single-repository checkout.
 
@@ -209,6 +210,8 @@ def build_host_exec_publication(
         execution_id: Execution id for the commit message.
         continuation: Feedback continuation; the branch is the existing
             pull request branch, which is also the checked out branch.
+        pull_request_template: The flow's configured repository-relative
+            pull request template, when set.
 
     Returns:
         ``{"path", "branch", "commit_message"}``.
@@ -248,11 +251,17 @@ def build_host_exec_publication(
             "Host publication pushes only managed preloop/ branches; clear "
             "the flow's target_branch"
         )
-    return {
+    plan: Dict[str, Any] = {
         "path": repo["path"],
         "branch": branch,
         "commit_message": f"Preloop: {flow_name} ({execution_id[:8]})"[:200],
     }
+    if pull_request_template:
+        # The runner reads this repository-relative file from the pushed
+        # commit and reports it, so the control plane fills the PR body the
+        # way hosted runs do.
+        plan["pull_request_template"] = str(pull_request_template)[:512]
+    return plan
 
 
 async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, Any]:
@@ -392,6 +401,7 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
                 flow_name=str(getattr(flow, "name", None) or "flow"),
                 execution_id=str(execution.id),
                 continuation=continuation,
+                pull_request_template=clone.get("pull_request_template"),
             )
         if checkout:
             hydrated["host_exec_checkout"] = checkout

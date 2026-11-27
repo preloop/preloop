@@ -12,7 +12,8 @@ import (
 	"time"
 )
 
-// Managed legacy publication for native Copilot host profiles (#1069).
+// Managed legacy publication for native host profiles (#1069): Codex,
+// Claude Code, Cursor, Devin, OpenCode, Copilot and DeepSeek.
 //
 // The control plane delivers host_exec_publication only when the flow opens a
 // pull request, the profile advertised host_publication and the lease is
@@ -26,7 +27,21 @@ const (
 	hostExecPublishNotAllowed     = "host_publication_not_allowed"
 	hostExecPublishTimeout        = 10 * time.Minute
 	hostExecMaxCommitMessageBytes = 4096
+	hostExecMaxPRTemplateBytes    = 65536
 )
+
+// hostExecPRTemplatePaths mirrors the hosted template discovery order
+// (pr_metadata.repository_template): GitHub conventions, then GitLab.
+var hostExecPRTemplatePaths = []string{
+	".github/pull_request_template.md",
+	".github/PULL_REQUEST_TEMPLATE.md",
+	"pull_request_template.md",
+	"PULL_REQUEST_TEMPLATE.md",
+	"docs/pull_request_template.md",
+	"docs/PULL_REQUEST_TEMPLATE.md",
+	".gitlab/merge_request_templates/Default.md",
+	".gitlab/merge_request_templates/default.md",
+}
 
 // Failure reasons reported in host_publication.reason. Every failure is
 // recoverable: the committed work stays in the execution directory.
@@ -40,6 +55,8 @@ type hostExecPublication struct {
 	Path          string `json:"path"`
 	Branch        string `json:"branch"`
 	CommitMessage string `json:"commit_message"`
+	// Template is the flow's configured repository-relative PR template.
+	Template string `json:"pull_request_template"`
 	// Continuation pushes onto the existing pull request branch, which is
 	// also the branch the checkout cloned.
 	Continuation bool `json:"continuation"`
@@ -189,7 +206,45 @@ func publishHostExecWork(ctx context.Context, workspace string, plan *hostExecPu
 		return map[string]any{"status": "no_changes", "branch": plan.Branch}, nil
 	}
 	logf(fmt.Sprintf("preloop runner: pushing %s to %s", head[:12], plan.Branch))
-	return pushHostPublication(ctx, gitBin, dir, plan, head)
+	receipt, err := pushHostPublication(ctx, gitBin, dir, plan, head)
+	if err == nil && receipt != nil {
+		if template := hostPublicationTemplate(ctx, gitBin, dir, localEnv, head, plan.Template); template != "" {
+			receipt["pr_template"] = template
+		}
+	}
+	return receipt, err
+}
+
+// hostPublicationTemplate reads the repository's pull request template from
+// the pushed commit, never the working tree, so a symlink or an untracked
+// file the CLI wrote cannot substitute another file. Only regular blobs up
+// to hostExecMaxPRTemplateBytes count. It returns "" when none applies.
+func hostPublicationTemplate(ctx context.Context, gitBin, dir string, env []string, head, configured string) string {
+	candidates := hostExecPRTemplatePaths
+	if configured != "" {
+		clean := filepath.ToSlash(filepath.Clean(configured))
+		if filepath.IsAbs(configured) || clean == ".." || strings.HasPrefix(clean, "../") {
+			return ""
+		}
+		candidates = []string{clean}
+	}
+	for _, path := range candidates {
+		entry, err := hostPublishGitOutput(ctx, gitBin, dir, env, "ls-tree", "-l", head, "--", path)
+		fields := strings.Fields(entry)
+		if err != nil || len(fields) < 5 || fields[0] != "100644" || fields[1] != "blob" {
+			continue
+		}
+		var size int
+		if _, err := fmt.Sscanf(fields[3], "%d", &size); err != nil || size <= 0 || size > hostExecMaxPRTemplateBytes {
+			continue
+		}
+		text, err := hostPublishGitOutput(ctx, gitBin, dir, env, "cat-file", "blob", fields[2])
+		if err != nil || strings.TrimSpace(text) == "" || strings.ContainsRune(text, 0) {
+			continue
+		}
+		return text
+	}
+	return ""
 }
 
 // hostPublishIsolatedEnv is the environment of git processes in the
@@ -289,10 +344,28 @@ func hostPublicationFailureReceipt(err error, plan *hostExecPublication) (map[st
 	return receipt, failure.Error()
 }
 
-// hostExecProfileMayPublish is true for a Copilot profile that opted in to
-// both checkout and publication. Cursor publication stays unsupported.
+// hostExecPublishingHarnesses are the native harnesses whose profiles may
+// publish. Every one of them runs the same runner-side commit and push.
+var hostExecPublishingHarnesses = map[string]bool{
+	hostExecHarnessCodex:    true,
+	hostExecHarnessClaude:   true,
+	hostExecHarnessCursor:   true,
+	hostExecHarnessDevin:    true,
+	hostExecHarnessOpenCode: true,
+	hostExecHarnessCopilot:  true,
+	hostExecHarnessDeepSeek: true,
+}
+
+// hostExecProfileMayPublish is true for a native profile that opted in to
+// both checkout and publication.
 func hostExecProfileMayPublish(profile hostExecProfile, harness string) bool {
-	return profile.AllowPublish && profile.AllowCheckout && harness == hostExecHarnessCopilot
+	return profile.AllowPublish && profile.AllowCheckout && hostExecPublishingHarnesses[harness]
+}
+
+// hostExecProfileMayContinue is true for a publishing profile that can also
+// resume its native session on review feedback. Only Copilot does today.
+func hostExecProfileMayContinue(profile hostExecProfile, harness string) bool {
+	return hostExecProfileMayPublish(profile, harness) && harness == hostExecHarnessCopilot
 }
 
 // publishHostExecOutcome runs the publish step after a successful CLI exit

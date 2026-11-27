@@ -7591,18 +7591,32 @@ class FlowExecutionOrchestrator:
                     configured.get("pull_request_description"), trigger
                 ),
                 commit_title=str(self.flow.name or ""),
+                # The runner reads the repository's PR template from its
+                # checkout with the hosted discovery rules.
+                commit_body=str(receipt.get("pr_template") or ""),
             )
+            base_branch = str(
+                checkout["repositories"][0].get("branch")
+                or _first_repository_default_branch(configured)
+                or "main"
+            )
+            approval_error = self._host_publication_approval_error(
+                configured,
+                repository_url=str(checkout["repositories"][0].get("url") or ""),
+                branch=branch,
+                base_branch=base_branch,
+                head_sha=str(receipt.get("head_sha") or ""),
+                creates=receipt.get("status") == "pushed",
+            )
+            if approval_error:
+                return f"{failed}: {approval_error}"
             found = await open_and_bind_host_pull_request(
                 self.db,
                 execution_id=self.execution_log.id,
                 client=clients[0],
                 allow_create=receipt.get("status") == "pushed",
                 branch=branch,
-                base_branch=str(
-                    checkout["repositories"][0].get("branch")
-                    or _first_repository_default_branch(configured)
-                    or "main"
-                ),
+                base_branch=base_branch,
                 title=title,
                 description=body,
             )
@@ -7615,6 +7629,65 @@ class FlowExecutionOrchestrator:
         self._opened_pr = {"url": found["url"], "branch": branch}
         self._opened_pr_bound = True
         self.execution_logger.log_milestone("pull_request_opened", dict(found))
+        return None
+
+    def _host_publication_approval_error(
+        self,
+        configured: Mapping[str, Any],
+        *,
+        repository_url: str,
+        branch: str,
+        base_branch: str,
+        head_sha: str,
+        creates: bool,
+    ) -> Optional[str]:
+        """Apply the saved ``publication_approval`` gate to a host-pushed head.
+
+        The same human approval hosted publication requires: an approved,
+        unexpired, human-decided ``request_approval`` whose candidates name
+        this repository, branch, base and head SHA. Binding an existing pull
+        request after a continuation that pushed nothing opens nothing, so it
+        is not gated.
+
+        Args:
+            configured: The flow's ``git_clone_config``.
+            repository_url: Checkout repository URL (no credentials).
+            branch: Managed branch the runner pushed.
+            base_branch: Branch the pull request merges into.
+            head_sha: Commit the runner pushed.
+            creates: True when this call may open a new pull request.
+
+        Returns:
+            An actionable refusal, or None when publication may proceed.
+        """
+        from preloop.services.product_provenance import (
+            ProductProvenanceError,
+            enforce_saved_publication_approval,
+            publication_approval_required,
+        )
+
+        if not creates or not publication_approval_required(configured):
+            return None
+        try:
+            enforce_saved_publication_approval(
+                self.db,
+                flow=self.flow,
+                account_id=str(getattr(self.flow, "account_id", "") or ""),
+                execution_id=str(self.execution_log.id),
+                candidates=[
+                    {
+                        "repository_url": repository_url,
+                        "branch": branch,
+                        "base": base_branch,
+                        "head_sha": head_sha,
+                    }
+                ],
+            )
+        except ProductProvenanceError:
+            return (
+                "publication_approval requires a human approval for "
+                f"{branch} at {head_sha or 'the pushed head'} onto {base_branch}"
+            )
         return None
 
     @staticmethod
