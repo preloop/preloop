@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Execution history shows the recorded harness and model instead of the flow's
+  current harness. Runs without recorded selection remain unknown; runner leases
+  retain the dispatched model after the lease is released.
+
 - The "Allow this flow to run on your runner?" approval now says what it
   allows: the runner and its device (hostname, OS), the harness and model, the
   flow (linked), what triggered the run, the repositories and directory it

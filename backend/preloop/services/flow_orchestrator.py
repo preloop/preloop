@@ -4205,6 +4205,12 @@ class FlowExecutionOrchestrator:
         self.ai_model = model
         self._harness_fell_back = True
         if self.execution_log is not None:
+            crud_flow_execution.record_runtime_selection(
+                self.execution_log,
+                agent_type=HARNESS_SERVER_FALLBACK_AGENT_TYPE,
+                model_identifier=model.model_identifier,
+                ai_model_id=model.id,
+            )
             self.execution_log.routing_reason = ROUTING_FELL_BACK_TO_SERVER
             self.execution_log.billing_mode = BILLING_MODE_METERED
             self.db.add(self.execution_log)

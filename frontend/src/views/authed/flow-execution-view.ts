@@ -148,6 +148,7 @@ interface ExecutionUpstreamRoute {
 }
 
 interface FlowExecution {
+  agent_type?: string | null;
   pull_request?:
     import('../../delivery-reports-api').ExecutionPullRequest | null;
   id: string;
@@ -2427,7 +2428,10 @@ export class FlowExecutionView extends LitElement {
       const flow = await getFlow(execution.flow_id);
       if (!current()) return;
       this.flow = flow;
-      if (flow.agent_type === 'copilot' || flow.agent_type === 'cursor') {
+      if (
+        execution.agent_type === 'copilot' ||
+        execution.agent_type === 'cursor'
+      ) {
         void this.loadHostSessions(execution.id, current);
       }
     } catch (error) {
@@ -4386,8 +4390,8 @@ ${execution.resolved_input_prompt}</pre>
           <span
             class="strip-value"
             data-testid="strip-agent"
-            title=${this.flow?.agent_type || ''}
-            >${this.flow?.agent_type ? flowRuntimeLabel(this.flow.agent_type) : '-'}</span
+            title=${execution.agent_type || ''}
+            >${execution.agent_type ? flowRuntimeLabel(execution.agent_type) : '-'}</span
           >
         </div>
         <div class="strip-item">

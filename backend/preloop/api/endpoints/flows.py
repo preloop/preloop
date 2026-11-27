@@ -1340,8 +1340,8 @@ def _project_models_used(
 ) -> None:
     """Attach the model projection to each execution row in one query.
 
-    "Which model ran this" is answered from gateway usage, which the
-    execution row itself does not carry. One grouped aggregate covers the
+    "Which model ran this" is answered from gateway usage, falling back to
+    the identifier recorded at dispatch for native runs. One aggregate covers the
     whole page (see ``crud_api_usage.get_models_used_for_executions``); doing
     it per row would put a query behind every line of the table.
     """
@@ -1357,7 +1357,14 @@ def _project_models_used(
         execution.models_used = models
         # The alias that served most requests leads; the rest stay in
         # models_used so the console can render "+N".
-        execution.model_alias = models[0]["model_alias"] if models else None
+        recorded = getattr(execution, "recorded_model_identifier", None)
+        execution.model_alias = (
+            models[0]["model_alias"]
+            if models
+            else recorded
+            if isinstance(recorded, str)
+            else None
+        )
         execution.provider_name = models[0]["provider_name"] if models else None
 
 

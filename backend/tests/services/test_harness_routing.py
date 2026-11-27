@@ -664,6 +664,14 @@ def test_orchestrator_falls_back_to_server_pool(monkeypatch, nested) -> None:
     assert orchestrator._harness_fell_back is True
     assert orchestrator.execution_log.routing_reason == "fell_back_to_server"
     assert orchestrator.execution_log.billing_mode == "metered"
+    recorded = orchestrator.execution_log.trigger_event_details["_model_routing"][
+        "executed"
+    ]
+    assert recorded == {
+        "agent_type": "codex",
+        "ai_model_id": str(model.id),
+        "model_identifier": "gpt-5.2",
+    }
 
 
 def test_orchestrator_keeps_harness_when_a_runner_is_eligible(monkeypatch) -> None:
