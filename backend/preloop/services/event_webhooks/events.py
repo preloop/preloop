@@ -36,6 +36,7 @@ EVENT_AGENT_DISCOVERED = "agent.discovered"
 # A managed-agent enrollment reached a validated state: the agent is now
 # governed. One event per enrollment, never on row creation.
 EVENT_AGENT_ONBOARDED = "agent.onboarded"
+EVENT_FLEET_FINDING = "fleet.finding"
 
 # Everything an endpoint may subscribe to.
 EVENT_TYPES_V1: tuple[str, ...] = (
@@ -53,6 +54,7 @@ EVENT_TYPES_V1: tuple[str, ...] = (
     EVENT_CRA_REPORTABLE_VULNERABILITY,
     EVENT_AGENT_DISCOVERED,
     EVENT_AGENT_ONBOARDED,
+    EVENT_FLEET_FINDING,
 )
 
 # One line per event, rendered in the console's create form and in the
@@ -96,6 +98,7 @@ EVENT_TYPE_DESCRIPTIONS: dict[str, str] = {
         "An agent enrollment was validated and the agent came under "
         "governance: created, re-linked or merged."
     ),
+    EVENT_FLEET_FINDING: "A configured fleet alert reports a finding transition.",
 }
 
 # Produced only by the console/API test button. It is not subscribable: an

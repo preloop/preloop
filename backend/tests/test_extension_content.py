@@ -811,3 +811,305 @@ def test_upload_and_opt_out_take_the_account_lock(
         assert upload(client, [item]).status_code == 409
     finally:
         event.remove(db_engine, "before_cursor_execute", record)
+
+
+class _Authorizer:
+    """Stand-in for the device credential plugin: one key, one device."""
+
+    def __init__(self, bound_fingerprint: str) -> None:
+        self.bound = bound_fingerprint
+        self.calls: list[str | None] = []
+
+    def authorize_report(
+        self, db: Any, *, account_id: Any, current_user: Any, payload: Any
+    ) -> None:
+        """Refuse a payload that names another device, as the plugin does."""
+        from fastapi import HTTPException
+
+        self.calls.append(payload.workstation_fingerprint)
+        if payload.workstation_fingerprint != self.bound:
+            raise HTTPException(403, "Report device mismatch")
+
+
+def _bind_key(
+    app: FastAPI,
+    user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    authorizer: _Authorizer | None,
+) -> None:
+    """Authenticate as a device-bound reporting key with the given plugin."""
+    from types import SimpleNamespace
+
+    user._auth_api_key = SimpleNamespace(  # type: ignore[attr-defined]
+        id=uuid4(),
+        scopes=["report_discovery"],
+        context_data={"device_report": {"workstation_fingerprint": FINGERPRINT}},
+    )
+    app.dependency_overrides[get_current_active_user] = lambda: user
+    manager = SimpleNamespace(get_service=lambda name: authorizer)
+    monkeypatch.setattr(
+        "preloop.api.endpoints.extension_content.get_plugin_manager", lambda: manager
+    )
+
+
+def test_a_device_bound_key_cannot_upload_for_another_device(
+    client: TestClient,
+    app: FastAPI,
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """protects=the content routes enforce a credential's device binding the
+    way the report route does; fails_when=a key bound to device A stores, or
+    asks about, content under device B's fingerprint, or a bound key works
+    with no plugin to enforce it; no_claim=a stand-in authorizer."""
+    other = "b" * 64
+    item = default_skill()
+    pair = {k: item[k] for k in ("extension_kind", "content_hash")}
+    inventory(client, [item], fingerprint=other)
+    inventory(client, [item])
+    authorizer = _Authorizer(FINGERPRINT)
+    _bind_key(app, test_user, monkeypatch, authorizer)
+
+    refused = upload(client, [item], fingerprint=other)
+    assert refused.status_code == 403, refused.text
+    assert db_session.scalar(select(models.ExtensionContent.id)) is None
+    asked = client.post(
+        MISSING, json={"workstation_fingerprint": other, "items": [pair]}
+    )
+    assert asked.status_code == 403
+    # A bound key must say which device it speaks for.
+    assert client.post(MISSING, json={"items": [pair]}).status_code == 422
+
+    asked = client.post(
+        MISSING, json={"workstation_fingerprint": FINGERPRINT, "items": [pair]}
+    )
+    assert asked.status_code == 200 and asked.json()["missing"] == [pair]
+    assert upload(client, [item]).json()["stored"] == 1
+    assert authorizer.calls == [other, other, FINGERPRINT, FINGERPRINT]
+
+    _bind_key(app, test_user, monkeypatch, None)
+    assert upload(client, [item]).status_code == 503
+    assert client.post(MISSING, json={"items": [pair]}).status_code == 503
+
+
+def test_hook_matchers_are_tracked_beside_the_hash(client: TestClient) -> None:
+    """protects=a matcher is not in the hook hash, so it is never presented
+    as covered by it: every distinct matcher assignment reported for a hash is
+    kept and a hook is asked for again on every report; fails_when=a changed
+    or different matcher is invisible because the first upload won."""
+    narrow = hook_item([("Bash", "preloop hook pre-tool")])
+    broad = hook_item([(None, "preloop hook pre-tool")])
+    assert narrow["content_hash"] == broad["content_hash"]
+    pair = {k: narrow[k] for k in ("extension_kind", "content_hash")}
+    inventory(client, [narrow])
+    assert upload(client, [narrow]).json()["stored"] == 1
+    data = read(client, narrow).json()
+    assert [s["matchers"][0]["matcher"] for s in data["matcher_sets"]] == ["Bash"]
+
+    # Stored, and still asked for: only a new upload can show a changed matcher.
+    assert client.post(MISSING, json={"items": [pair]}).json()["missing"] == [pair]
+    assert upload(client, [narrow]).json() == {"stored": 0, "kept": 1, "rejected": []}
+    assert len(read(client, narrow).json()["matcher_sets"]) == 1
+
+    # The matcher is widened to every tool call; the hash does not move. The
+    # row is kept (no bytes are added), only its matcher sets change.
+    assert upload(client, [broad]).json() == {"stored": 0, "kept": 1, "rejected": []}
+    data = read(client, narrow).json()
+    assert [s["matchers"][0]["matcher"] for s in data["matcher_sets"]] == ["Bash", None]
+    # The matcher shown beside the stored command follows the latest report.
+    assert data["hooks"][0]["matcher"] is None
+    assert all(s["digest"].startswith("sha256:") for s in data["matcher_sets"])
+    assert data["matcher_sets"][0]["digest"] != data["matcher_sets"][1]["digest"]
+    assert data["hooks"][0]["command"] == "preloop hook pre-tool"
+
+    # Seeing the first assignment again moves it to the end, without a copy.
+    assert upload(client, [narrow]).json()["kept"] == 1
+    data = read(client, narrow).json()
+    assert [s["matchers"][0]["matcher"] for s in data["matcher_sets"]] == [None, "Bash"]
+
+
+def test_matcher_redactions_are_counted(client: TestClient) -> None:
+    """protects=a redacted matcher is recorded as redacted."""
+    item = hook_item([("[REDACTED:url-credentials]", "bash lint")])
+    item["hooks"][0]["matcher_redactions"] = {"url-credentials": 1}
+    inventory(client, [item])
+    assert upload(client, [item]).json()["stored"] == 1
+    data = read(client, item).json()
+    assert data["hooks"][0]["matcher_redactions"] == {"url-credentials": 1}
+    assert data["redaction_count"] == 1 and data["redacted"] is True
+    # The command itself was not redacted, so it is still verified.
+    assert data["hooks"][0]["verified"] is True
+
+
+def test_matcher_only_update_does_not_spend_the_account_budget(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """protects=the account byte budget; fails_when=a matcher-only update is
+    counted as a new store, so its bytes are added again and a later item in
+    the same batch is refused although the account is under the cap."""
+    narrow = hook_item([("Bash", "preloop hook pre-tool")])
+    broad = hook_item([(None, "preloop hook pre-tool")])
+    skill = default_skill()
+    inventory(client, [narrow, skill])
+    assert upload(client, [narrow]).json()["stored"] == 1
+    hook_bytes = client.get(SETTINGS).json()["stored_bytes"]
+    skill_bytes = policy.verify_item(skill).stored_bytes
+    # Room for exactly what is stored plus the skill, nothing more.
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", hook_bytes + skill_bytes)
+    result = upload(client, [broad, skill]).json()
+    assert result == {"stored": 1, "kept": 1, "rejected": []}
+
+
+def test_matcher_update_refreshes_the_row_redaction_totals(
+    client: TestClient,
+) -> None:
+    """protects=the overall redaction badge; fails_when=a later matcher that
+    was redacted leaves the row reported as not redacted."""
+    plain = hook_item([("Bash", "bash lint")])
+    secret = hook_item([("[REDACTED:url-credentials]", "bash lint")])
+    secret["hooks"][0]["matcher_redactions"] = {"url-credentials": 1}
+    inventory(client, [plain])
+    assert upload(client, [plain]).json()["stored"] == 1
+    data = read(client, plain).json()
+    assert data["redaction_count"] == 0 and data["redacted"] is False
+
+    assert upload(client, [secret]).json()["kept"] == 1
+    data = read(client, plain).json()
+    assert data["hooks"][0]["matcher_redactions"] == {"url-credentials": 1}
+    assert data["redaction_count"] == 1 and data["redacted"] is True
+
+    # The matcher goes back to plain text; the badge follows it.
+    assert upload(client, [plain]).json()["kept"] == 1
+    data = read(client, plain).json()
+    assert data["redaction_count"] == 0 and data["redacted"] is False
+
+
+def test_hook_budget_counts_utf8_matchers_and_history(client: TestClient) -> None:
+    """Count every stored matcher alongside command text, including history."""
+    first = hook_item([("é", "echo example")])
+    second = hook_item([("工具", "echo example")])
+    inventory(client, [first])
+    assert upload(client, [first]).json()["stored"] == 1
+    assert read(client, first).json()["stored_bytes"] == 12 + 2 + 2
+    assert upload(client, [second]).json()["kept"] == 1
+    # Latest matcher is also present in the history displayed by the console.
+    assert read(client, first).json()["stored_bytes"] == 12 + 6 + 2 + 6
+    assert client.get(SETTINGS).json()["stored_bytes"] == 26
+
+
+def test_same_hook_can_refresh_at_the_account_cap(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A report that adds no text must still refresh a full account's hook."""
+    item = hook_item([("Bash", "echo example")])
+    inventory(client, [item])
+    assert upload(client, [item]).json()["stored"] == 1
+    used = client.get(SETTINGS).json()["stored_bytes"]
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", used)
+    assert upload(client, [item]).json() == {"stored": 0, "kept": 1, "rejected": []}
+    assert client.get(SETTINGS).json()["stored_bytes"] == used
+
+
+def test_matcher_growth_obeys_budget_without_partial_update(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reject excess matcher history without changing the readable document."""
+    first = hook_item([("Bash", "echo example")])
+    second = hook_item([("Longer matcher", "echo example")])
+    inventory(client, [first])
+    assert upload(client, [first]).json()["stored"] == 1
+    before = read(client, first).json()
+    # Enough for a second command under the old accounting, but not its matchers.
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", before["stored_bytes"] + 12)
+    result = upload(client, [second]).json()
+    assert result["rejected"][0]["reason"] == "account_budget_exhausted"
+    after = read(client, first).json()
+    assert after["hooks"] == before["hooks"]
+    assert after["matcher_sets"] == before["matcher_sets"]
+    assert after["stored_bytes"] == before["stored_bytes"]
+
+
+def test_matcher_growth_spends_only_its_delta_within_a_batch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retained commands are not charged again when matcher text grows."""
+    first = hook_item([("A", "echo example")])
+    second = hook_item([("BC", "echo example")])
+    skill = default_skill()
+    inventory(client, [first, skill])
+    assert upload(client, [first]).json()["stored"] == 1
+    skill_bytes = policy.verify_item(skill).stored_bytes
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", 12 + 2 + 1 + 2 + skill_bytes)
+    assert upload(client, [second, skill]).json() == {
+        "stored": 1,
+        "kept": 1,
+        "rejected": [],
+    }
+    assert client.get(SETTINGS).json()["stored_bytes"] == policy.MAX_ACCOUNT_BYTES
+
+
+def test_better_evidence_replaces_content_using_only_the_byte_delta(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Improving evidence must not charge for a second copy of the same row."""
+    original = "Readable example instructions"
+    initial = skill_item([redacted_file("SKILL.md", original, "[REDACTED]", example=1)])
+    verified = skill_item([stored_file("SKILL.md", original)])
+    inventory(client, [verified])
+    assert upload(client, [initial]).json()["stored"] == 1
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", len(original.encode()))
+    assert upload(client, [verified]).json() == {"stored": 1, "kept": 0, "rejected": []}
+    assert read(client, verified).json()["verification"] == "verified"
+    assert client.get(SETTINGS).json()["stored_bytes"] == len(original.encode())
+
+
+def test_matcher_history_eviction_releases_budget_for_later_items(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bounded history can shrink and make room for another item in the batch."""
+    from preloop.models.crud import extension_content as content_crud
+
+    monkeypatch.setattr(content_crud, "MAX_MATCHER_SETS", 2)
+    first = hook_item([("A" * 100, "echo example")])
+    second = hook_item([("B", "echo example")])
+    third = hook_item([("C", "echo example")])
+    skill = skill_item([stored_file("SKILL.md", "# Example\n")])
+    inventory(client, [first, skill])
+    assert upload(client, [first]).json()["stored"] == 1
+    assert upload(client, [second]).json()["kept"] == 1
+    used = client.get(SETTINGS).json()["stored_bytes"]
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", used)
+    assert upload(client, [third, skill]).json() == {
+        "stored": 1,
+        "kept": 1,
+        "rejected": [],
+    }
+    assert read(client, first).json()["stored_bytes"] == 12 + 1 + 1 + 1
+    assert client.get(SETTINGS).json()["stored_bytes"] == (
+        15 + policy.verify_item(skill).stored_bytes
+    )
+
+
+def test_upload_budget_includes_utf8_matcher_text(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The request byte cap includes matcher text as well as commands."""
+    item = hook_item([("é", "echo example")])
+    inventory(client, [item])
+    monkeypatch.setattr(policy, "MAX_UPLOAD_BYTES", 13)
+    assert upload(client, [item]).status_code == 413
+    assert read(client, item).status_code == 404
+
+
+def test_hook_upload_limit_counts_each_incoming_matcher_once(
+    client: TestClient,
+) -> None:
+    """Accept the collector's exact upload limit while accounting stored history."""
+    item = hook_item([("é", "x" * (policy.MAX_TEXT_BYTES - 2))] * 4)
+    inventory(client, [item])
+    assert upload(client, [item]).json() == {"stored": 1, "kept": 0, "rejected": []}
+    # The server retains an additional matcher copy in the assignment history.
+    assert read(client, item).json()["stored_bytes"] == policy.MAX_ITEM_BYTES + 8
+    item["hooks"][0]["matcher"] += "x"
+    assert upload(client, [item]).json()["rejected"][0]["reason"] == "too_large"

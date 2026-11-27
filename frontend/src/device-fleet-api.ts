@@ -87,7 +87,8 @@ export type FleetRuleName =
   | 'discovered_not_onboarded'
   | 'agent_quiet'
   | 'control_drift'
-  | 'stale_inventory';
+  | 'stale_inventory'
+  | 'unapproved_extension';
 /**
  * Rules whose thresholds are set per reporter source. Stale inventory also
  * stores per-source values; the page keeps them unchanged and edits only its
@@ -255,17 +256,19 @@ export async function replaceFleetRosterCsv(
 }
 
 type RuleSettings = Record<string, unknown> & {
-  enabled: boolean;
+  enabled?: boolean;
   channels: Record<string, boolean>;
 };
 interface Settings {
   schema_version: 1;
   rules: Partial<Record<FleetRuleName, RuleSettings>>;
+  unapproved_extension_enabled?: boolean;
 }
 const KNOWN_RULES: readonly FleetRuleName[] = [
   'traffic_without_runner',
   'discovered_not_onboarded',
   ...EVIDENCE_RULES,
+  'unapproved_extension',
 ];
 /** Fields edited on this page; everything else round-trips untouched. */
 const EDITED = new Set([
@@ -284,7 +287,7 @@ function optionalNumber(value: unknown): number | undefined {
 function ruleFromSettings(rule: FleetRuleName, value: RuleSettings): FleetRule {
   const result: FleetRule = {
     rule,
-    enabled: value.enabled,
+    enabled: value.enabled === true,
     channels: Object.keys(value.channels).filter(
       (channel) => value.channels[channel]
     ),
@@ -320,7 +323,12 @@ function rulesFromSettings(settings: Settings): FleetRuleSet {
   // Rules this page does not know, or the server does not return, stay hidden.
   return {
     items: KNOWN_RULES.filter((rule) => settings.rules[rule]).map((rule) =>
-      ruleFromSettings(rule, settings.rules[rule] as RuleSettings)
+      ruleFromSettings(rule, {
+        ...(settings.rules[rule] as RuleSettings),
+        ...(rule === 'unapproved_extension'
+          ? { enabled: settings.unapproved_extension_enabled }
+          : {}),
+      })
     ),
     unknown: Object.fromEntries(
       Object.entries(settings.rules).filter(
@@ -332,7 +340,7 @@ function rulesFromSettings(settings: Settings): FleetRuleSet {
 function settingsFromRule(rule: FleetRule): Record<string, unknown> {
   const body: Record<string, unknown> = {
     ...(rule.passthrough || {}),
-    enabled: rule.enabled,
+    ...(rule.rule === 'unapproved_extension' ? {} : { enabled: rule.enabled }),
     channels: Object.fromEntries(
       FLEET_CHANNELS.map((channel) => [
         channel,
@@ -340,6 +348,7 @@ function settingsFromRule(rule: FleetRule): Record<string, unknown> {
       ])
     ),
   };
+  if (rule.rule === 'unapproved_extension') return body;
   if (!EVIDENCE_RULES.includes(rule.rule))
     return {
       ...body,
@@ -387,8 +396,13 @@ export async function saveFleetRules(
       items.map((rule) => [rule.rule, settingsFromRule(rule)])
     ),
   };
+  const extension = items.find((rule) => rule.rule === 'unapproved_extension');
   return rulesFromSettings(
-    await request<Settings>('/settings', signal, { schema_version: 1, rules })
+    await request<Settings>('/settings', signal, {
+      schema_version: 1,
+      rules,
+      ...(extension ? { unapproved_extension_enabled: extension.enabled } : {}),
+    })
   );
 }
 /** Device credentials are the reporter sources a freshness threshold names. */
@@ -402,7 +416,9 @@ export async function getFleetDeviceCredentials(
   return Array.isArray(result.items) ? result.items : [];
 }
 /** Name the installed extension and the evaluator's reason when available. */
-export function fleetFindingTitle(finding: FleetFinding): string {
+export function fleetFindingTitle(
+  finding: Pick<FleetFinding, 'rule' | 'evidence' | 'title'>
+): string {
   if (finding.rule === 'unapproved_extension') {
     const text = (value: unknown): string =>
       typeof value === 'string' ? value.trim() : '';

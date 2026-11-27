@@ -43,7 +43,7 @@ spec:
       # kubelet SIGKILLs the pod. With the k8s default of 30s, rollouts
       # severed multi-minute agent streams ~20s after preStop began. See
       # gateway.terminationGracePeriodSeconds in values.yaml.
-      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ max .Values.gateway.terminationGracePeriodSeconds (add .Values.runnerModels.totalSeconds 30) }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -59,6 +59,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
             {{- include "preloop.executionEnv" . | nindent 12 }}
+            # Runner requests use the same default flow budget as the workers.
+            - name: FLOW_EXECUTION_MAX_WAIT_SECONDS
+              value: {{ .Values.flowExecution.maxWaitSeconds | default 3600 | quote }}
             - name: PRELOOP_URL
               value: {{ .Values.environment.preloopUrl | quote }}
             - name: HOST

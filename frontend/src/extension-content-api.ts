@@ -31,7 +31,17 @@ export interface ExtensionContentHook {
   status: 'stored' | 'too_large' | 'private_key' | 'over_budget';
   command: string | null;
   redactions: Record<string, number>;
+  /** What was replaced in the matcher itself. */
+  matcher_redactions?: Record<string, number>;
   verified: boolean;
+}
+
+/** One reported assignment of matchers to a hook's commands. */
+export interface ExtensionContentMatcherSet {
+  digest: string;
+  matchers: Array<{ matcher: string | null; command_hash: string }>;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
 }
 
 export interface ExtensionContent {
@@ -39,6 +49,11 @@ export interface ExtensionContent {
   content_hash: string;
   files: ExtensionContentFile[];
   hooks: ExtensionContentHook[];
+  /**
+   * Matcher assignments reported for a hook hash, newest last. The hash
+   * covers the commands only, so a pin does not cover the matchers.
+   */
+  matcher_sets?: ExtensionContentMatcherSet[];
   /** Set when the device sent no text for the whole extension. */
   withheld: 'excluded' | 'too_large' | null;
   verification: 'verified' | 'partial' | 'unverified' | 'none';

@@ -95,6 +95,10 @@ type contentHook struct {
 	Status      string         `json:"status"`
 	Command     *string        `json:"command,omitempty"`
 	Redactions  map[string]int `json:"redactions,omitempty"`
+	// MatcherRedactions counts what was replaced in the matcher. It is kept
+	// apart from Redactions so that a command sent unredacted can still be
+	// verified against its hash.
+	MatcherRedactions map[string]int `json:"matcher_redactions,omitempty"`
 }
 
 type contentItem struct {
@@ -204,6 +208,32 @@ func (c *contentCapture) redactInto(data []byte, name string, budget int, status
 		*counts = result.Counts
 	}
 	return len(result.Text)
+}
+
+// redactMatcher passes a hook matcher through the same redactor as every
+// other text. A matcher is authored text like a command is, and is shown to
+// an approver, so a credential placed in one must not be uploaded either.
+func (c *contentCapture) redactMatcher(matcher string) (string, map[string]int) {
+	if matcher == "" {
+		return "", nil
+	}
+	result, err := redact.Text(matcher, redact.Options{Home: c.home})
+	if err != nil {
+		c.err = err
+		return "", nil
+	}
+	text := result.Text
+	counts := result.Counts
+	if result.Withheld != "" {
+		text, counts = redact.Placeholder("private-key"), map[string]int{"private-key": 1}
+	}
+	if runes := []rune(text); len(runes) > 256 {
+		text = string(runes[:256])
+	}
+	if len(counts) == 0 {
+		counts = nil
+	}
+	return text, counts
 }
 
 // pluginTextSelected limits plugin text to what an approver reviews: the
@@ -416,43 +446,39 @@ func (s *extensionScan) captureHooks() {
 		}
 		for i, source := range sources {
 			entry := contentHook{CommandHash: hashes[i]}
-			matcher, err := redact.Text(source.Matcher, redact.Options{Home: capture.home})
-			if err != nil {
-				capture.err = err
-				return
-			}
-			if matcher.Withheld != "" {
+			if redact.HasPrivateKey(source.Matcher) {
 				entry.Status = contentPrivateKey
-			} else if len(source.Command) > contentFileLimit {
+			} else {
+				entry.Matcher, entry.MatcherRedactions = capture.redactMatcher(source.Matcher)
+			}
+			item.bytes += len(entry.Matcher)
+			item.Hooks = append(item.Hooks, entry)
+		}
+		// Reserve every matcher first, including those beside withheld commands.
+		// The same UTF-8 total then governs extension, report and batch limits.
+		for i, source := range sources {
+			entry := &item.Hooks[i]
+			if entry.Status == contentPrivateKey {
+				item.withheld++
+				continue
+			}
+			if len(source.Command) > contentFileLimit {
 				entry.Status = contentTooLarge
 			} else {
-				// Redact before truncating so a bound cannot split a secret.
-				bounded := []rune(matcher.Text)
-				if len(bounded) > 256 {
-					bounded = bounded[:256]
-				}
-				entry.Matcher = string(bounded)
-				item.bytes += len(entry.Matcher)
 				item.bytes += capture.redactInto([]byte(source.Command), "", contentExtensionLimit-item.bytes, &entry.Status, &entry.Command, &entry.Redactions)
 				if entry.Status == contentBinary || entry.Status == contentUnreadable {
 					entry.Status = contentTooLarge
-				}
-				if matcher.Total > 0 {
-					if entry.Redactions == nil {
-						entry.Redactions = map[string]int{}
-					}
-					for kind, count := range matcher.Counts {
-						entry.Redactions[kind] += count
-					}
 				}
 			}
 			for _, count := range entry.Redactions {
 				item.redactions += count
 			}
+			for _, count := range entry.MatcherRedactions {
+				item.redactions += count
+			}
 			if entry.Status != contentStored {
 				item.withheld++
 			}
-			item.Hooks = append(item.Hooks, entry)
 		}
 		if capture.err == nil {
 			capture.items[pair] = item
@@ -461,7 +487,10 @@ func (s *extensionScan) captureHooks() {
 }
 
 type contentQueryRequest struct {
-	Items []contentPair `json:"items"`
+	// WorkstationFingerprint lets the server hold a device-bound credential
+	// to its own device for this question too.
+	WorkstationFingerprint string        `json:"workstation_fingerprint,omitempty"`
+	Items                  []contentPair `json:"items"`
 }
 
 type contentQueryResponse struct {
@@ -545,12 +574,12 @@ func reportedContentPairs(report discoveryReportRequest) []contentPair {
 // requests of at most contentQueryLimit pairs, so a report with more hashes
 // than one request carries still negotiates every one of them. It stops at
 // the first answer that says the account does not collect content.
-func queryMissingContent(client inventoryReportClient, pairs []contentPair) (contentQueryResponse, error) {
+func queryMissingContent(client inventoryReportClient, fingerprint string, pairs []contentPair) (contentQueryResponse, error) {
 	var combined contentQueryResponse
 	for start := 0; start < len(pairs); start += contentQueryLimit {
 		end := min(start+contentQueryLimit, len(pairs))
 		var query contentQueryResponse
-		if err := client.Post(contentMissingPath, contentQueryRequest{Items: pairs[start:end]}, &query); err != nil {
+		if err := client.Post(contentMissingPath, contentQueryRequest{WorkstationFingerprint: fingerprint, Items: pairs[start:end]}, &query); err != nil {
 			return contentQueryResponse{}, err
 		}
 		if !query.Collect {
@@ -581,7 +610,7 @@ func sendExtensionContent(client inventoryReportClient, w io.Writer, report disc
 		fmt.Fprintf(w, "Extension content was not sent: turned off on this device (%s).\n", source) //nolint:errcheck
 		return outcome
 	}
-	query, err := queryMissingContent(client, pairs)
+	query, err := queryMissingContent(client, report.WorkstationFingerprint, pairs)
 	if err != nil {
 		var apiErr *api.APIError
 		if errors.As(err, &apiErr) && (apiErr.StatusCode == 404 || apiErr.StatusCode == 405) {

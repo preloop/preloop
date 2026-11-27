@@ -480,6 +480,24 @@ func buildAuthorizationURL(baseURL, redirectURI, state string) string {
 	return fmt.Sprintf("%s%s?%s", baseURL, authorizePath, values.Encode())
 }
 
+// printOAuthLoginInstructions keeps the browser action and waiting terminal
+// together in plain text, including when stdout is redirected.
+func printOAuthLoginInstructions(output io.Writer, authURL string, headless bool) {
+	fmt.Fprintln(output, "Complete login in your browser:")                        //nolint:errcheck
+	fmt.Fprintln(output, "  1. Open this URL, sign in, and choose Authorize CLI:") //nolint:errcheck
+	fmt.Fprintf(output, "\n     %s\n\n", authURL)                                  //nolint:errcheck
+	if headless {
+		fmt.Fprintln(output, "  2. Copy the browser's ONE-TIME CODE and paste it below.")                               //nolint:errcheck
+		fmt.Fprintln(output, "Waiting for your code (no terminal timeout; the code expires 5 minutes after approval).") //nolint:errcheck
+		fmt.Fprintln(output, "Closed the browser tab? Reopen the URL above and approve again for a new code.")          //nolint:errcheck
+	} else {
+		fmt.Fprintln(output, "  2. Return here after approving. Login will finish automatically.")     //nolint:errcheck
+		fmt.Fprintln(output, "Waiting up to 5 minutes for browser approval. Keep this terminal open.") //nolint:errcheck
+		fmt.Fprintln(output, "Closed the browser tab? Reopen the URL above before the wait ends.")     //nolint:errcheck
+	}
+	fmt.Fprint(output, "Login is complete when this terminal says: Successfully authenticated!\n\n") //nolint:errcheck
+}
+
 func runLoopbackOAuthLogin(baseURL string) error {
 	state, err := generateState()
 	if err != nil {
@@ -515,14 +533,11 @@ func runLoopbackOAuthLogin(baseURL string) error {
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", addr.Port)
 	authURL := buildAuthorizationURL(baseURL, redirectURI, state)
 
-	fmt.Println("Opening browser for authentication...")
-	fmt.Printf("If the browser doesn't open, please visit:\n%s\n\n", authURL)
+	printOAuthLoginInstructions(os.Stdout, authURL, false)
 
 	if err := openBrowser(authURL); err != nil {
 		fmt.Printf("Warning: Could not open browser: %v\n", err)
 	}
-
-	fmt.Println("Waiting for authentication...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -533,7 +548,7 @@ func runLoopbackOAuthLogin(baseURL string) error {
 	case err := <-errChan:
 		return err
 	case <-ctx.Done():
-		return fmt.Errorf("authentication timed out")
+		return fmt.Errorf("authentication timed out after 5 minutes; run 'preloop login' again and choose Authorize CLI in the browser")
 	}
 
 	return finishOAuthLogin(baseURL, code, redirectURI, false)
@@ -550,10 +565,7 @@ func runHeadlessOAuthLogin(baseURL string) error {
 
 	code := strings.TrimSpace(loginCode)
 	if code == "" {
-		fmt.Println("Open this URL in a browser to sign in:")
-		fmt.Println(authURL)
-		fmt.Println()
-		fmt.Println("After approving access, copy the one-time code shown by Preloop and paste it here.")
+		printOAuthLoginInstructions(os.Stdout, authURL, true)
 
 		if !stdinIsTerminal() {
 			return fmt.Errorf(

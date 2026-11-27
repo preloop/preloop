@@ -1,0 +1,10 @@
+Open this URL in a browser to sign in:
+http://127.0.0.1:8000/oauth/authorize?client_id=cli&redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob&response_type=code&state=SYNTHETIC-STATE
+
+After approving access, copy the one-time code shown by Preloop and paste it here.
+Authorization code: [pasted one-time code]
+Exchanging code for tokens...
+
+Successfully authenticated!
+Logged in as: Jane Doe (jane@example.com)
+API URL: http://127.0.0.1:8000

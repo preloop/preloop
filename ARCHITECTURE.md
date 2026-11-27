@@ -96,7 +96,7 @@ graph LR
 | [Subscription credential recovery](docs/guide/clients/subscription-recovery.md) | Shared OAuth lineage repair, healthy-secret preservation, onboarding validation, and local-store recovery before offboarding. |
 | [Managed tracker OAuth storage](docs/architecture/managed-oauth-storage.md) | Provider-neutral storage contract for managed tracker OAuth credentials. |
 | [Runners and remote sessions](docs/architecture/runners.md) | Private runner capabilities, daily read-only discovery with scoped reporting and opt-outs, owner consent, native host-profile publication and continuation, remote harness sessions and workspace policy. |
-| [Runner-proxied local models](docs/architecture/runner-local-models.md) | Local models proxied through a private runner (#1833). |
+| [Runner-proxied local models](docs/architecture/runner-local-models.md) | Local models proxied through a private runner (#1833), with request keepalives and configurable deadlines bounded by the flow. |
 | [Identity, membership and SSO](docs/architecture/identity.md) | Canonical person identities, users, teams, edition overlays, enterprise sign-on persistence, session assurance and offboarding. |
 | [Chat connections](docs/architecture/chat.md) | Chat provider setup (including single-tenant Teams REST transport), authenticated operations, durable chat-triggered flow replies, and bindings to shared interactive conversations. |
 | [Discovery source observations](docs/architecture/discovery.md) | Versioned discovery evidence: storage, correlation boundary and presentation. |
@@ -111,12 +111,20 @@ See [security architecture](docs/architecture/security.md) and the
 [operator guide](docs/operations/mfa.md). Account policy enforcement is an
 edition extension.
 
-Installed extension inventory uses bounded v4 metadata, with descriptions and
-invocation. A separate content pass uploads redacted text under account, device
-and per-extension opt-outs, shared by manual reports and resident runners.
-Content is encrypted per account and hash; reads require approval permission and
-are audited. See [discovery architecture](docs/architecture/discovery.md) and the
-[content contract](docs/guide/agent-discovery-reporting.md#extension-content).
+Installed agent extension inventory uses a bounded, metadata-only v4 discovery
+contract. Nullable JSONB `details` carries bounded descriptions and invocation.
+`discovered_extension` stores presence per account, device, profile and agent;
+`extension_approval` stores account-wide decisions independently of
+inventory retention, and `extension_approval_pin` pins a decision to reviewed
+content hashes. CRUD owns reconciliation, approval joins and the single
+`effective_state` derivation (`content_changed` when a pinned approval meets an
+unpinned hash). Only complete
+app scans prove absence; older reports cannot replace newer inventory. The
+inventory record carries no extension file, command or source URL. See the
+[discovery reporting guide](docs/guide/agent-discovery-reporting.md#extensions). Extension content for review is a separate, on-by-default upload after a report: redacted on the device (`cli/internal/redact`), verified against the inventory hash and stored encrypted per account in `extension_content` ([content contract](docs/guide/agent-discovery-reporting.md#extension-content)).
+Manual reports and resident runners share the content pass and its account, device
+and per-extension opt-outs. Content reads require approval permission and are audited.
+See [discovery architecture](docs/architecture/discovery.md).
 It also covers collector versions and coverage gaps; [session identity](docs/architecture/gateway.md#runtime-session-identity) covers subagent lineage.
 Unmatched MCP tool calls read account policy defaults. With approve-once enabled,
 the account-owned `tool_registry_entry` records a decision per proxy server UUID

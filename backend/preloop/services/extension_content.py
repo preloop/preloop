@@ -187,6 +187,22 @@ def hook_hash(command_hashes: list[str]) -> str:
     return "sha256:" + _sha256_hex("\n".join(sorted(command_hashes)).encode())
 
 
+def matcher_set(hooks: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Describe which matcher each command of a hook runs under.
+
+    The hook content hash covers the command strings only, because that is
+    what the inventory hash covers. The matcher decides when a command runs
+    and is not in that hash, so it is recorded beside the content as a set
+    with its own digest. A pin on the content hash does not cover it.
+    """
+    pairs = sorted((hook.get("matcher") or "", hook["command_hash"]) for hook in hooks)
+    digest = _sha256_hex("\n".join(f"{m}\x00{h}" for m, h in pairs).encode("utf-8"))
+    return {
+        "digest": "sha256:" + digest,
+        "matchers": [{"matcher": m or None, "command_hash": h} for m, h in pairs],
+    }
+
+
 def _safe_path(path: str) -> bool:
     if not path or path.startswith("/") or "\\" in path or len(path.encode()) > 1024:
         return False
@@ -216,6 +232,22 @@ def _check_text(text: str, digest_hex: Optional[str], redactions: int) -> bool:
     if digest_hex is None or _sha256_hex(raw) != digest_hex:
         raise ContentRejectedError(REJECT_TEXT_MISMATCH)
     return True
+
+
+def stored_text_bytes(
+    document: Mapping[str, Any], *, include_matcher_history: bool = True
+) -> int:
+    """Count UTF-8 text, optionally excluding the server's retained history."""
+    texts = [entry.get("text") or "" for entry in document.get("files") or []]
+    for hook in document.get("hooks") or []:
+        texts.extend((hook.get("command") or "", hook.get("matcher") or ""))
+    if include_matcher_history:
+        for assignment in document.get("matcher_sets") or []:
+            texts.extend(
+                matcher.get("matcher") or ""
+                for matcher in assignment.get("matchers") or []
+            )
+    return sum(len(text.encode("utf-8")) for text in texts)
 
 
 def verify_item(item: Mapping[str, Any]) -> VerifiedItem:
@@ -281,14 +313,26 @@ def verify_item(item: Mapping[str, Any]) -> VerifiedItem:
         record = _record(hook, hook.get("command"), digest, result)
         if "text" in record:
             record["command"] = record.pop("text")
-        record.update(matcher=hook.get("matcher"), command_hash=hook["command_hash"])
+        matcher_redactions = dict(hook.get("matcher_redactions") or {})
+        record.update(
+            matcher=hook.get("matcher"),
+            command_hash=hook["command_hash"],
+            matcher_redactions=matcher_redactions,
+        )
+        result.redaction_count += sum(matcher_redactions.values())
         redacted_texts += int(record["redactions_total"] > 0 and "command" in record)
         record.pop("redactions_total")
         result.document["hooks"].append(record)
+    if hooks:
+        result.document["matcher_sets"] = [matcher_set(hooks)]
+    result.stored_bytes = stored_text_bytes(result.document)
     result.entry_count = len(files) + len(hooks)
     result.withheld_count = result.entry_count - result.stored_count
     result.redacted = result.redaction_count > 0
-    if result.stored_bytes > MAX_ITEM_BYTES:
+    if (
+        stored_text_bytes(result.document, include_matcher_history=False)
+        > MAX_ITEM_BYTES
+    ):
         raise ContentRejectedError(REJECT_TOO_LARGE)
     if result.stored_count == 0:
         result.verification = "none"

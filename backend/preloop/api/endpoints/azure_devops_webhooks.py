@@ -93,6 +93,10 @@ class AzureDevOpsWebhookStatus(BaseModel):
     last_ignored_reason: Optional[str] = Field(
         None, description="Most recent scope-related ignored delivery reason."
     )
+    review_requests: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Last label poll and up to ten recent explicit review outcomes.",
+    )
 
 
 class AzureDevOpsWebhookSecret(AzureDevOpsWebhookStatus):
@@ -144,6 +148,9 @@ def _status(
         ),
         "registration": registration,
         "instructions": SETUP_INSTRUCTIONS,
+        "review_requests": (getattr(tracker, "meta_data", None) or {}).get(
+            "azure_review_status", {}
+        ),
         "last_ignored_reason": (
             (getattr(tracker, "meta_data", None) or {}).get("last_ignored_webhook")
             or {}

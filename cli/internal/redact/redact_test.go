@@ -270,3 +270,13 @@ func TestReadableShapesStayAfterTheStricterRules(t *testing.T) {
 		t.Fatalf("readable text was altered (%v):\n%s", result.Counts, result.Text)
 	}
 }
+
+func TestHomePathNamesThePlaceholderOverEntropy(t *testing.T) {
+	// A home directory with a long random-looking segment is still a home
+	// path: the more specific type names the placeholder.
+	home := `C:\Users\runner\AppData\Local\Temp\TestUpload4079860713Zq9xK2mV7pLr\001\jane`
+	result := mustRedact(t, "cd "+home+"/work && ./run", Options{Home: home})
+	if result.Counts[TypeHomePath] != 1 || result.Total != 1 || strings.Contains(result.Text, "jane") {
+		t.Fatalf("counts %v in %q", result.Counts, result.Text)
+	}
+}

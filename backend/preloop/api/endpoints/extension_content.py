@@ -25,7 +25,6 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
 
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_for_user
@@ -43,7 +42,6 @@ from preloop.models.crud.history_policy import (
 )
 from preloop.models.db.session import get_db_session
 from preloop.plugins.base import get_plugin_manager
-from preloop.schemas.agent_discovery import DiscoveryReportRequest
 from preloop.schemas.discovered_extension import HASH_PATTERN, ExtensionKind
 from preloop.schemas.extension_content import (
     ContentPair,
@@ -97,52 +95,45 @@ runner_router = APIRouter(route_class=ContentRoute)
 
 
 def _require_collector_access(
-    db: Session,
-    current_user: Any,
-    *,
-    account: models.Account | None = None,
-    workstation_fingerprint: str | None = None,
+    db: Session, current_user: Any, account: models.Account, payload: Any
 ) -> None:
     """Enforce ``report_discovery`` and the credential's device binding.
 
-    A credential that carries persisted device restrictions is checked by an
-    authorization plugin when it posts a discovery report. If that plugin is
-    absent the credential must not become an unrestricted content uploader.
-    An upload names the device it speaks for, so it goes through the same
-    plugin as a report from that device: a key bound to one device cannot
-    upload content for another device's fingerprint.
-
-    Args:
-        db: Database session.
-        current_user: The authenticated user, with ``_auth_api_key`` set for
-            an API key.
-        account: The caller's account; required with a fingerprint.
-        workstation_fingerprint: The device the request speaks for, or None
-            for a request that stores nothing for a device.
+    The discovery report route hands its payload to the report authorizer,
+    which refuses a device-bound credential that names another device's
+    fingerprint. The content routes run the same authorizer on their own
+    payload: a credential bound to device A cannot ask about, or upload
+    content for, device B.
 
     Raises:
-        HTTPException: 403 without the permission or for another device, 503
-            for a restricted credential whose restrictions cannot be enforced.
+        HTTPException: 403 without the permission or for another device's
+            fingerprint, 422 when a bound credential names no fingerprint,
+            503 when the credential is bound and nothing can enforce it.
     """
     _require_report_access(db, current_user)
     key = getattr(current_user, "_auth_api_key", None)
     context = getattr(key, "context_data", None)
+    bound = isinstance(context, dict) and "device_report" in context
     authorizer = get_plugin_manager().get_service("discovery_report_authorizer")
     if authorizer is None:
-        if isinstance(context, dict) and "device_report" in context:
+        if bound:
+            # A credential with persisted identity restrictions must not
+            # become an unrestricted uploader when its plugin is absent.
             raise HTTPException(
                 status_code=503, detail="Report authorization unavailable"
             )
         return
-    if workstation_fingerprint is not None and account is not None:
-        authorizer.authorize_report(
-            db,
-            account_id=account.id,
-            current_user=current_user,
-            payload=DiscoveryReportRequest(
-                workstation_fingerprint=workstation_fingerprint
-            ),
+    if bound and getattr(payload, "workstation_fingerprint", None) is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_request",
+                "message": "A device credential must name its workstation.",
+            },
         )
+    authorizer.authorize_report(
+        db, account_id=account.id, current_user=current_user, payload=payload
+    )
 
 
 def _retention_days(db: Session, account: models.Account) -> int:
@@ -167,7 +158,7 @@ def query_missing_content(
     false`` with reason ``account_opt_out`` and an empty list, so a collector
     sends nothing and can say why.
     """
-    _require_collector_access(db, current_user)
+    _require_collector_access(db, current_user, account, payload)
     return query_collected_content(payload, account, db)
 
 
@@ -219,12 +210,7 @@ def upload_content(
     Each item is checked on its own: a rejected item is listed with a fixed
     reason code and the rest of the batch is still stored.
     """
-    _require_collector_access(
-        db,
-        current_user,
-        account=account,
-        workstation_fingerprint=payload.workstation_fingerprint,
-    )
+    _require_collector_access(db, current_user, account, payload)
     return store_collected_content(payload, account, db)
 
 
@@ -252,6 +238,7 @@ def store_collected_content(
         for entry in item.files
     ) + sum(
         len((hook.command or "").encode("utf-8"))
+        + len((hook.matcher or "").encode("utf-8"))
         for item in payload.items
         for hook in item.hooks
     )
@@ -285,24 +272,23 @@ def store_collected_content(
             continue
         try:
             verified = policy.verify_item(item.model_dump(mode="json"))
+            was_stored, byte_delta = crud_extension_content.store(
+                db,
+                account_id=account.id,
+                extension_kind=item.extension_kind,
+                content_hash=item.content_hash,
+                item=verified,
+                workstation_fingerprint=payload.workstation_fingerprint,
+                collector_version=payload.collector_version,
+                redaction_rules=payload.redaction_rules,
+                available_bytes=policy.MAX_ACCOUNT_BYTES - used,
+            )
         except policy.ContentRejectedError as exc:
             reject(item, exc.code)
             continue
-        if used + verified.stored_bytes > policy.MAX_ACCOUNT_BYTES:
-            reject(item, policy.REJECT_BUDGET)
-            continue
-        if crud_extension_content.store(
-            db,
-            account_id=account.id,
-            extension_kind=item.extension_kind,
-            content_hash=item.content_hash,
-            item=verified,
-            workstation_fingerprint=payload.workstation_fingerprint,
-            collector_version=payload.collector_version,
-            redaction_rules=payload.redaction_rules,
-        ):
+        used += byte_delta
+        if was_stored:
             stored += 1
-            used += verified.stored_bytes
         else:
             kept += 1
     db.commit()
@@ -413,6 +399,7 @@ def read_content(
         content_hash=row.content_hash,
         files=document.get("files") or [],
         hooks=document.get("hooks") or [],
+        matcher_sets=document.get("matcher_sets") or [],
         withheld=document.get("withheld"),
         verification=row.verification,  # type: ignore[arg-type]
         redacted=row.redacted,
@@ -508,9 +495,7 @@ def update_content_settings(
     )
     if not switched and not acknowledged:
         return _settings_response(db, account)
-    account.meta_data = updated
-    flag_modified(account, "meta_data")
-    db.add(account)
+    crud_extension_content.save_settings(db, account=account, meta_data=updated)
     if switched:
         deleted = 0
         if not after.collect_enabled:

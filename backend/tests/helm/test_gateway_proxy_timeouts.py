@@ -53,6 +53,14 @@ def _render_with_default_values(template_text: str) -> str:
 
     def _replace(match: re.Match) -> str:
         expression = match.group(1).strip()
+        for kind in ("Read", "Send"):
+            if expression == f'include "preloop.gateway{kind}Timeout" .':
+                return str(
+                    max(
+                        values["gateway"]["proxy"][kind.lower() + "Timeout"],
+                        values["runnerModels"]["totalSeconds"] + 15,
+                    )
+                )
         values_ref = re.fullmatch(r"\.Values\.([\w.]+)", expression)
         if values_ref:
             resolved = resolve_values_path(values, values_ref.group(1))

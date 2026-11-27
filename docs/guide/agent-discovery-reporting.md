@@ -737,6 +737,11 @@ approval to a name approval). A device row whose content is not approved offers
 other viewers see the decision and badges without an editor or pin actions. The table warns when collection
 is partial or unknown, and **Load more** follows the server's cursor.
 
+The Agents toolbar offers **Extensions** with the account-wide count in list,
+cards and canvas views. It opens the same inventory without changing view mode;
+closing and reopening keeps the loaded rows. The agent detail section loads on
+first expansion and links directly to this account inventory.
+
 ## Extension content
 
 Editions: OSS, Cloud, Enterprise
@@ -754,7 +759,7 @@ is done to it first, how to turn it off and who can read it.
 |---|---|
 | Skill | The list of files in the skill directory (relative path, SHA-256, size) and the text of `SKILL.md` and of the other text files beside it |
 | Command | The text of the command file |
-| Hook | Each command string with the matcher it runs under |
+| Hook | Each command string with the matcher it runs under. Both pass through redaction |
 | Plugin | The list of files in the install directory, and the text of the manifest (`plugin.json`) and of everything under `skills/`, `commands/` and `hooks/`. Other files are listed by name only |
 
 Never uploaded, and marked in the file list with the reason:
@@ -779,6 +784,13 @@ Offline `--inventory` never uploads content. Extensions whose content hash could
 | Text of one extension | 1 MiB and 200 files with text | 1 MiB, 500 listed files, 200 hook commands |
 | One report | 8 MiB, sent in requests of at most 2 MiB and 50 extensions | 8 MiB and 100 extensions per request |
 | One account | | 256 MiB of stored text; uploads past it are refused |
+
+Collector and server upload budgets include UTF-8 file contents, hook commands
+and each incoming matcher once. The account storage budget also includes the
+server's retained matcher history, including its copy of the current assignment.
+A refresh charges
+only the change in stored bytes, so reporting unchanged content remains possible
+at the cap. Rejected updates leave the previously stored content intact.
 
 The numbers were checked against a developer home with 63 skills and 7
 plugins: the largest `SKILL.md` was 85 KiB and the 90th percentile 52 KiB, the
@@ -806,7 +818,20 @@ nothing: it has text where the stored row has none, or it is fully verified
 where the stored row is not and carries at least as many texts, or it carries
 more texts and is at least as well verified. A row that holds no text is asked
 for again on every report. Content is accepted only for a hash that the same
-device's inventory reports.
+device's inventory reports, and a credential bound to one device is held to
+that device on both content routes by the same authorizer that checks its
+discovery reports.
+
+#### What a hook hash covers
+
+A hook's content hash is computed from its command strings. The matcher, which
+decides when a command runs, is not in that hash. So a matcher can be widened,
+or differ between two devices, while the hash and any pin on it stay the same.
+The console says this on every hook: **a pin on a hook hash covers the
+commands, not the matchers.** To make a change visible, a hook is asked for
+again on every report (it is small), and every distinct assignment of matchers
+to commands reported for a hash is kept, the newest 10, with the time it was
+last reported. When more than one exists the console lists them all.
 
 ### Redaction
 
@@ -963,8 +988,3 @@ as Markdown through an allowlist: headings, paragraphs, lists, code, tables and
 links to `http`, `https` and `mailto` only. Images, raw HTML, scripts, styles,
 forms and frames are removed, so opening a document cannot run code, load a
 remote resource or draw over the console.
-
-The Agents toolbar offers **Extensions** with the account-wide count in list,
-cards and canvas views. It opens the same inventory without changing view mode;
-closing and reopening keeps the loaded rows. The agent detail section loads on
-first expansion and links directly to this account inventory.

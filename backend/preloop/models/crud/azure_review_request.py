@@ -24,6 +24,54 @@ RETENTION_DAYS = 90
 class CRUDAzureReviewRequest:
     """Own Azure request persistence; callers never issue database statements."""
 
+    def record_status(
+        self,
+        db: Session,
+        *,
+        tracker_id: Any,
+        event: dict[str, Any] | None = None,
+        reason: str | None = None,
+        flow_id: Any = None,
+    ) -> None:
+        """Keep bounded, payload-free polling and request outcomes for the UI."""
+        tracker = db.get(
+            models.Tracker,
+            UUID(str(tracker_id)),
+            populate_existing=True,
+            with_for_update=True,
+        )
+        if tracker is None:
+            return
+        data = copy.deepcopy((tracker.meta_data or {}).get("azure_review_status") or {})
+        now = datetime.now(timezone.utc).isoformat()
+        if event is None:
+            data.update(last_poll_at=now, poll_error=reason)
+        else:
+            payload = event.get("payload") or {}
+            request = payload.get("azure_review_request")
+            if not request:
+                return
+            item = {
+                "repository_id": (payload.get("repository") or {}).get("id"),
+                "number": (payload.get("pull_request") or {}).get("number"),
+                "kind": request.get("kind"),
+                "flow_id": str(flow_id) if flow_id else None,
+                "reason": reason,
+                "at": now,
+            }
+            keys = ("repository_id", "number", "kind", "flow_id")
+            recent = [
+                row
+                for row in data.get("recent", [])
+                if any(row.get(key) != item[key] for key in keys)
+            ]
+            data["recent"] = [item, *recent][:10]
+        tracker.meta_data = {
+            **dict(tracker.meta_data or {}),
+            "azure_review_status": data,
+        }
+        db.commit()
+
     @asynccontextmanager
     async def serialized(
         self, db: Session, tracker_id: Any, repository_id: str, number: int
@@ -216,7 +264,7 @@ class CRUDAzureReviewRequest:
     def claim_projects(
         self, db: Session, *, now: datetime, limit: int = 2
     ) -> list[tuple[UUID, int]]:
-        """Rotate through imported Azure repositories that have enabled PR flows.
+        """Rotate imported Azure repositories with a matching PR flow.
 
         The existing project metadata holds the polling cursor. Each claim
         advances its timestamp before I/O, so failing projects cannot starve
@@ -226,9 +274,23 @@ class CRUDAzureReviewRequest:
         has_flow = (
             select(models.Flow.id)
             .where(
-                models.Flow.trigger_event_source == cast(models.Tracker.id, String),
-                models.Flow.is_enabled.is_(True),
+                models.Flow.account_id == models.Tracker.account_id,
+                models.Flow.is_preset.is_(False),
+                or_(
+                    models.Flow.trigger_event_source == cast(models.Tracker.id, String),
+                    models.Flow.trigger_event_source.is_(None),
+                ),
                 models.Flow.trigger_event_types.any("pull_request_updated"),
+                or_(
+                    models.Flow.trigger_project_ids.is_(None),
+                    func.coalesce(
+                        func.array_length(models.Flow.trigger_project_ids, 1), 0
+                    )
+                    == 0,
+                    models.Flow.trigger_project_ids.any(
+                        cast(models.Project.id, String)
+                    ),
+                ),
             )
             .exists()
         )
@@ -245,7 +307,7 @@ class CRUDAzureReviewRequest:
                 has_flow,
                 or_(
                     last_poll.is_(None),
-                    last_poll < (now - timedelta(seconds=30)).isoformat(),
+                    last_poll <= (now - timedelta(seconds=30)).isoformat(),
                 ),
             )
             .order_by(func.coalesce(last_poll, ""), models.Project.id)

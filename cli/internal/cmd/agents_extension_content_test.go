@@ -748,14 +748,16 @@ func TestExtensionContentOneBadItemDoesNotBlockTheRest(t *testing.T) {
 }
 
 type chunkedQueryClient struct {
-	sizes   []int
-	collect []bool
+	fingerprints []string
+	sizes        []int
+	collect      []bool
 }
 
 func (c *chunkedQueryClient) Post(path string, body interface{}, out interface{}) error {
 	request := body.(contentQueryRequest)
 	call := len(c.sizes)
 	c.sizes = append(c.sizes, len(request.Items))
+	c.fingerprints = append(c.fingerprints, request.WorkstationFingerprint)
 	response := out.(*contentQueryResponse)
 	response.Collect = call >= len(c.collect) || c.collect[call]
 	if response.Collect {
@@ -773,19 +775,24 @@ func TestMissingContentQueryCoversEveryReportedHash(t *testing.T) {
 		pairs[i] = contentPair{Kind: "skill", ContentHash: fmt.Sprintf("sha256:%064x", i)}
 	}
 	client := &chunkedQueryClient{}
-	query, err := queryMissingContent(client, pairs)
+	query, err := queryMissingContent(client, "synthetic-device", pairs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fmt.Sprint(client.sizes) != fmt.Sprint([]int{contentQueryLimit, contentQueryLimit, 1}) {
 		t.Fatalf("request sizes = %v", client.sizes)
 	}
+	for _, fingerprint := range client.fingerprints {
+		if fingerprint != "synthetic-device" {
+			t.Fatalf("query chunk omitted device binding: %q", fingerprint)
+		}
+	}
 	if !query.Collect || len(query.Missing) != 3 || query.Missing[2] != pairs[len(pairs)-1] {
 		t.Fatalf("combined answer = %+v", query)
 	}
 
 	optOut := &chunkedQueryClient{collect: []bool{true, false}}
-	query, err = queryMissingContent(optOut, pairs)
+	query, err = queryMissingContent(optOut, "synthetic-device", pairs)
 	if err != nil || query.Collect || len(optOut.sizes) != 2 {
 		t.Fatalf("an opt-out answer must stop the query: %+v %v %v", query, optOut.sizes, err)
 	}
@@ -828,5 +835,97 @@ func TestExtensionContentSummaryNeverGoesNegative(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), fmt.Sprintf("uploaded for %d extension(s)", outcome.Uploaded)) || !strings.Contains(out.String(), "3 extension(s) excluded") {
 		t.Fatalf("summary = %q", out.String())
+	}
+}
+
+// protects=a hook matcher passes through the redactor like every other text;
+// fails_when=a credential written into a matcher reaches a request body, or
+// the redaction is not recorded on the hook.
+func TestExtensionContentRedactsHookMatchers(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "fixture-person")
+	var matchers []map[string]any
+	var secrets []string
+	for _, planted := range redacttest.PlantedSecrets() {
+		matchers = append(matchers, map[string]any{"matcher": planted.Line, "hooks": []map[string]any{{"type": "command", "command": "echo ok"}}})
+		secrets = append(secrets, planted.Secret)
+	}
+	matchers = append(matchers, map[string]any{"matcher": "Bash", "hooks": []map[string]any{{"type": "command", "command": "echo plain"}}})
+	settings, _ := json.Marshal(map[string]any{"hooks": map[string]any{"PreToolUse": matchers}})
+	writeInventoryFixture(t, home, ".claude/settings.json", string(settings))
+	deps := inventoryTestDependencies(t, home)
+	report := buildDiscoveryReport("synthetic-salt", "synthetic-device", home, []AgentConfig{{Name: "Claude Code", ConfigPath: filepath.Join(home, ".claude", "settings.json")}})
+	if err := addDiscoveryExtensions(&report, "synthetic-salt", home, deps); err != nil {
+		t.Fatal(err)
+	}
+	server := newContentServer(t)
+	runContent(t, server, home, report)
+	sent := server.all()
+	for i, secret := range secrets {
+		if bytes.Contains(sent, []byte(secret)) {
+			t.Errorf("planted secret %d (%s) in a matcher reached a request body", i, redacttest.PlantedSecrets()[i].Class)
+		}
+	}
+	hook := server.items()["hook"]
+	if hook == nil || len(hook.Hooks) != len(secrets)+1 {
+		t.Fatalf("hook item = %+v", hook)
+	}
+	redacted, plain := 0, 0
+	for _, entry := range hook.Hooks {
+		if len(entry.MatcherRedactions) > 0 {
+			redacted++
+			if !strings.Contains(entry.Matcher, "[REDACTED:") {
+				t.Errorf("matcher counted as redacted but not replaced: %q", entry.Matcher)
+			}
+		}
+		if entry.Matcher == "Bash" && len(entry.MatcherRedactions) == 0 && len(entry.Redactions) == 0 {
+			plain++
+		}
+	}
+	if redacted != len(secrets) || plain != 1 {
+		t.Fatalf("redacted matchers = %d of %d, plain = %d", redacted, len(secrets), plain)
+	}
+	// The query names the device, so a device-bound credential can be held to it.
+	if len(server.queries) != 1 || server.queries[0].WorkstationFingerprint != report.WorkstationFingerprint {
+		t.Fatalf("query did not carry the fingerprint: %+v", server.queries)
+	}
+}
+
+// protects=collector and server budgets count UTF-8 matchers along with commands;
+// fails_when=a near-limit hook is sent over the server's extension cap forever.
+func TestHookContentBudgetReservesAllMatcherBytes(t *testing.T) {
+	command := strings.Repeat("plain words here\n", contentFileLimit/17)
+	matcher := strings.Repeat("é", 128)
+	sources := make([]contentHookSource, 4)
+	hashes := make([]string, 4)
+	for i := range sources {
+		sources[i] = contentHookSource{Matcher: matcher, Command: command}
+		hashes[i] = extensionHash([]byte(command))
+	}
+	pair := contentPair{Kind: "hook", ContentHash: extensionHash([]byte(strings.Join(hashes, "\n")))}
+	capture := newContentCapture(t.TempDir(), []contentPair{pair}, nil)
+	scan := &extensionScan{capture: capture, hookContent: map[string][]contentHookSource{"PreToolUse": sources}}
+	scan.captureHooks()
+	if capture.err != nil {
+		t.Fatal(capture.err)
+	}
+	item := capture.items[pair]
+	if item == nil || len(item.Hooks) != 4 {
+		t.Fatal("hook manifest was not retained")
+	}
+	wireBytes, withheld := 0, 0
+	for _, hook := range item.Hooks {
+		wireBytes += len(hook.Matcher)
+		if hook.Command != nil {
+			wireBytes += len(*hook.Command)
+		}
+		if hook.Status == contentOverBudget {
+			withheld++
+		}
+	}
+	if wireBytes > contentExtensionLimit || withheld == 0 {
+		t.Fatalf("sent %d bytes with %d over-budget commands", wireBytes, withheld)
+	}
+	if item.bytes != wireBytes {
+		t.Fatalf("report/batch accounting = %d, wire text = %d", item.bytes, wireBytes)
 	}
 }

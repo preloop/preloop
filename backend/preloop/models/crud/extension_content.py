@@ -17,6 +17,7 @@ from cryptography.fernet import InvalidToken
 from sqlalchemy import and_, delete, exists, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from preloop.models import models
 from preloop.models.crud.history_policy import (
@@ -27,6 +28,8 @@ from preloop.services import extension_content as policy
 from preloop.utils.encryption import _get_fernet
 
 Pair = tuple[str, str]
+#: Distinct matcher assignments kept for one hook hash, newest last.
+MAX_MATCHER_SETS = 10
 _VERIFICATION_RANK = {"none": 0, "unverified": 1, "partial": 2, "verified": 3}
 
 
@@ -77,7 +80,11 @@ class CRUDExtensionContent:
         complete = {
             (row.extension_kind, row.content_hash)
             for row in rows
-            if row.withheld_reason is None and row.stored_count > 0
+            if row.withheld_reason is None
+            and row.stored_count > 0
+            # A hook is always asked for again: its matchers are not part of
+            # the hash, so only a fresh upload shows whether they changed.
+            and row.extension_kind != "hook"
         }
         seen: set[Pair] = set()
         result: list[Pair] = []
@@ -131,6 +138,19 @@ class CRUDExtensionContent:
             .execution_options(populate_existing=True)
         ).scalar_one()
 
+    def save_settings(
+        self, db: Session, *, account: models.Account, meta_data: dict[str, Any]
+    ) -> None:
+        """Write the account's metadata with the content setting applied.
+
+        The caller holds the account lock from :meth:`lock_account` and owns
+        the commit, so the switch, the deletion and the audit rows stay one
+        transaction.
+        """
+        account.meta_data = meta_data
+        flag_modified(account, "meta_data")
+        db.add(account)
+
     def account_bytes(self, db: Session, *, account_id: UUID) -> int:
         """Stored text bytes of one account."""
         model = models.ExtensionContent
@@ -165,8 +185,9 @@ class CRUDExtensionContent:
         collector_version: str | None,
         redaction_rules: str | None,
         now: datetime | None = None,
-    ) -> bool:
-        """Encrypt and store one verified item. The caller owns the commit.
+        available_bytes: int | None = None,
+    ) -> tuple[bool, int]:
+        """Store one item under the caller's account lock and transaction.
 
         The first upload of a hash wins. A later upload replaces it only when
         it is strictly better evidence and loses nothing:
@@ -180,10 +201,16 @@ class CRUDExtensionContent:
         replace a fuller row with one that lists files as unreadable.
 
         Returns:
-            True when the row was inserted or replaced, False when the
-            existing row was kept.
+            Whether content was inserted or replaced, and the signed change
+            in stored text bytes. A kept hook can still change matcher bytes.
+
+        Raises:
+            policy.ContentRejectedError: When the change exceeds available_bytes.
         """
         moment = now or datetime.now(UTC)
+        for entry in item.document.get("matcher_sets") or []:
+            entry.setdefault("first_seen_at", moment.isoformat())
+            entry["last_seen_at"] = moment.isoformat()
         document = json.dumps(item.document, separators=(",", ":"), sort_keys=True)
         values: dict[str, Any] = {
             "ciphertext": _get_fernet().encrypt(document.encode("utf-8")),
@@ -201,21 +228,6 @@ class CRUDExtensionContent:
             "last_reported_at": moment,
         }
         model = models.ExtensionContent
-        inserted = db.execute(
-            insert(model)
-            .values(
-                id=model.generate_id(),
-                account_id=account_id,
-                extension_kind=extension_kind,
-                content_hash=content_hash,
-                created_at=moment,
-                **values,
-            )
-            .on_conflict_do_nothing(constraint="uq_extension_content_account_hash")
-            .returning(model.id)
-        ).first()
-        if inserted is not None:
-            return True
         existing = db.execute(
             select(model)
             .where(
@@ -224,7 +236,24 @@ class CRUDExtensionContent:
                 model.content_hash == content_hash,
             )
             .with_for_update()
-        ).scalar_one()
+        ).scalar_one_or_none()
+        if existing is None:
+            if available_bytes is not None and item.stored_bytes > max(
+                0, available_bytes
+            ):
+                raise policy.ContentRejectedError(policy.REJECT_BUDGET)
+            # The account lock serializes inserts as well as budget decisions.
+            db.execute(
+                insert(model).values(
+                    id=model.generate_id(),
+                    account_id=account_id,
+                    extension_kind=extension_kind,
+                    content_hash=content_hash,
+                    created_at=moment,
+                    **values,
+                )
+            )
+            return True, item.stored_bytes
         old_rank = _VERIFICATION_RANK.get(existing.verification, 0)
         new_rank = _VERIFICATION_RANK.get(item.verification, 0)
         gains_text = existing.stored_count == 0 and item.stored_count > 0
@@ -236,13 +265,102 @@ class CRUDExtensionContent:
         gains_entries = item.stored_count > existing.stored_count and (
             new_rank >= old_rank
         )
-        if not (gains_text or gains_proof or gains_entries):
+        replace = gains_text or gains_proof or gains_entries
+        merged = self._merge_matcher_sets(existing, item, replace)
+        next_document = merged[0] if merged is not None else item.document
+        next_bytes = (
+            policy.stored_text_bytes(next_document)
+            if replace or merged is not None
+            else existing.stored_bytes
+        )
+        byte_delta = next_bytes - existing.stored_bytes
+        if available_bytes is not None and byte_delta > max(0, available_bytes):
+            raise policy.ContentRejectedError(policy.REJECT_BUDGET)
+        if not replace:
+            # A matcher-only update keeps the commands. Its byte delta still
+            # spends or releases budget. Row-level redaction totals follow the
+            # matchers now shown beside the stored commands.
             existing.last_reported_at = moment
-            return False
+            if merged is not None:
+                document, delta = merged
+                existing.ciphertext = self._encrypt(document)
+                existing.stored_bytes = next_bytes
+                existing.redaction_count = max(0, existing.redaction_count + delta)
+                existing.redacted = existing.redaction_count > 0
+                db.flush()
+            return False, byte_delta
+        if merged is not None:
+            values["ciphertext"] = self._encrypt(merged[0])
+        values["stored_bytes"] = next_bytes
         for key, value in values.items():
             setattr(existing, key, value)
         db.flush()
-        return True
+        return True, byte_delta
+
+    def _encrypt(self, document: dict[str, Any]) -> bytes:
+        text = json.dumps(document, separators=(",", ":"), sort_keys=True)
+        return bytes(_get_fernet().encrypt(text.encode("utf-8")))
+
+    def _merge_matcher_sets(
+        self,
+        existing: models.ExtensionContent,
+        item: policy.VerifiedItem,
+        replace: bool,
+    ) -> tuple[dict[str, Any], int] | None:
+        """Fold an upload's matcher set into a stored hook's sets.
+
+        The same commands can run under different matchers on two devices, or
+        under a changed matcher later, without the content hash moving. Each
+        distinct assignment is kept (the newest :data:`MAX_MATCHER_SETS`), so
+        a reader sees that the matchers differ or changed.
+
+        Returns:
+            None when nothing about matchers changed, else the document to
+            store and the change in matcher redactions shown beside the
+            stored commands (always 0 when ``replace`` is set, because the
+            replacing upload's own counts are stored).
+        """
+        incoming = item.document.get("matcher_sets") or []
+        if existing.extension_kind != "hook" or not incoming:
+            return None
+        try:
+            stored = self.document(existing)
+        except ValueError:
+            return None
+        sets = list(stored.get("matcher_sets") or [])
+        if not sets and stored.get("hooks"):
+            derived = policy.matcher_set(stored["hooks"])
+            derived["first_seen_at"] = existing.created_at.isoformat()
+            derived["last_seen_at"] = existing.created_at.isoformat()
+            sets = [derived]
+        fresh = incoming[0]
+        known = next((s for s in sets if s.get("digest") == fresh["digest"]), None)
+        if known is not None:
+            known["last_seen_at"] = fresh["last_seen_at"]
+            sets.remove(known)
+            sets.append(known)
+        else:
+            sets.append(fresh)
+        sets = sets[-MAX_MATCHER_SETS:]
+        document = dict(item.document if replace else stored)
+        document["matcher_sets"] = sets
+        delta = 0
+        if not replace:
+            # The stored commands keep their text; the matcher shown beside
+            # each one follows the latest report.
+            latest: dict[str, list[dict[str, Any]]] = {}
+            for hook in item.document.get("hooks") or []:
+                latest.setdefault(hook["command_hash"], []).append(hook)
+            for hook in document.get("hooks") or []:
+                queue = latest.get(hook.get("command_hash")) or []
+                if queue:
+                    source = queue.pop(0)
+                    before = hook.get("matcher_redactions") or {}
+                    after = source.get("matcher_redactions") or {}
+                    delta += sum(after.values()) - sum(before.values())
+                    hook["matcher"] = source.get("matcher")
+                    hook["matcher_redactions"] = after
+        return document, delta
 
     def get(
         self, db: Session, *, account_id: UUID, extension_kind: str, content_hash: str

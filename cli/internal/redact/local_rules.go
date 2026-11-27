@@ -167,18 +167,18 @@ func localSpans(text string, opts Options) []span {
 		}
 		if hexPattern.MatchString(token) {
 			if len(token) >= 32 && shannonEntropy(token) >= 3.0 {
-				spans = append(spans, span{start: loc[0], end: loc[1], kind: TypeHighEntropy, priority: 3})
+				spans = append(spans, span{start: loc[0], end: loc[1], kind: TypeHighEntropy, priority: 4})
 			}
 			continue
 		}
 		letters := strings.IndexFunc(token, unicode.IsLetter) >= 0
 		if letters && containsDigit(token) && shannonEntropy(token) >= 4.0 {
-			spans = append(spans, span{start: loc[0], end: loc[1], kind: TypeHighEntropy, priority: 3})
+			spans = append(spans, span{start: loc[0], end: loc[1], kind: TypeHighEntropy, priority: 4})
 		}
 	}
 	spans = append(spans, homes...)
 	for _, loc := range homePattern.FindAllStringSubmatchIndex(text, -1) {
-		spans = append(spans, span{start: loc[0], end: loc[3], kind: TypeHomePath, priority: 4})
+		spans = append(spans, span{start: loc[0], end: loc[3], kind: TypeHomePath, priority: 3})
 	}
 	return spans
 }
@@ -203,7 +203,7 @@ func homeSpans(text, home string) []span {
 			return spans
 		}
 		start := offset + index
-		spans = append(spans, span{start: start, end: start + len(home), kind: TypeHomePath, priority: 4})
+		spans = append(spans, span{start: start, end: start + len(home), kind: TypeHomePath, priority: 3})
 		offset = start + len(home)
 	}
 }
