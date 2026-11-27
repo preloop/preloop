@@ -12,6 +12,8 @@ import '../../components/view-header.ts';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import './attention-view';
 import type { AttentionView } from './attention-view';
+import { fleetExtensionFindings } from '../../test-helpers/fleet-extension-findings';
+import { prepareExtensionAttentionItem } from '../../utils/attention-extension';
 
 describe('AttentionView', () => {
   let fetchStub: sinon.SinonStub;
@@ -160,6 +162,102 @@ describe('AttentionView', () => {
     await waitUntil(() => !el.shadowRoot?.querySelector('sl-spinner'));
     expect(el.shadowRoot?.querySelector('#extensions')).not.to.exist;
   });
+
+  for (const scenario of [
+    'available',
+    'no capability',
+    'no permission',
+    'unavailable',
+  ] as const) {
+    it(`names fleet extension findings with gated evidence: ${scenario}`, async () => {
+      extensionItemsResponse = fleetExtensionFindings.map((finding) => ({
+        id: finding.id,
+        source: 'fleet_evidence:findings',
+        title: finding.title,
+        detail: finding.detail,
+        href: finding.href,
+        severity: 'action',
+        opened_at: finding.opened_at,
+      }));
+      fetchStub
+        .withArgs(
+          sinon.match((input: unknown) => String(input).includes('/features'))
+        )
+        .callsFake(async () =>
+          json({ features: { fleet_coverage: scenario !== 'no capability' } })
+        );
+      fetchStub
+        .withArgs(
+          sinon.match((input: unknown) => String(input).includes('/users/me'))
+        )
+        .callsFake(async () =>
+          json({
+            permissions:
+              scenario === 'no permission' ? [] : ['view_device_fleet'],
+          })
+        );
+      fetchStub
+        .withArgs(
+          sinon.match((input: unknown) =>
+            String(input).includes('/fleet/findings')
+          )
+        )
+        .callsFake(async () =>
+          scenario === 'unavailable'
+            ? new Response('', { status: 503 })
+            : json({
+                items: [
+                  ...fleetExtensionFindings,
+                  {
+                    ...fleetExtensionFindings[0],
+                    id: '00000000-0000-4000-8000-000000000099',
+                    evidence: {
+                      extension_id: 'outside-attention',
+                      kind: 'skill',
+                      reason: 'unapproved',
+                    },
+                  },
+                ],
+              })
+        );
+      const el = await fixture<AttentionView>(
+        html`<attention-view></attention-view>`
+      );
+      await waitUntil(() => !(el as any).loading);
+      await el.updateComplete;
+      const titles = [
+        ...el.shadowRoot!.querySelectorAll('#extensions .attention-row'),
+      ].map((row) => row.textContent);
+      expect(titles).to.have.length(3);
+      if (scenario === 'available') {
+        for (const title of [
+          'review-helper (skill): Unapproved',
+          'release-check (hook): Content changed',
+          'build-tools (plugin): Version outside constraint',
+        ]) {
+          expect(titles.some((text) => text?.includes(title))).to.equal(true);
+        }
+        const original = await prepareExtensionAttentionItem(
+          extensionItemsResponse[0]
+        );
+        expect((el as any).extensionItems[0].fingerprint).to.equal(
+          original.fingerprint
+        );
+      } else {
+        expect(
+          titles.every((text) =>
+            text?.includes(fleetExtensionFindings[0].title)
+          )
+        ).to.equal(true);
+      }
+      const reads = fetchStub
+        .getCalls()
+        .filter((call) => String(call.args[0]).includes('/fleet/findings'));
+      expect(reads).to.have.length(
+        scenario === 'available' || scenario === 'unavailable' ? 1 : 0
+      );
+    });
+  }
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');

@@ -26,11 +26,12 @@ answers 403.
 
 ## Alert rules
 
-Every rule is off until an administrator turns it on. Saving replaces the
-whole settings document through `PUT /api/v1/fleet/settings`; the server
-validates every rule before storing any. Rules this page does not know are
-sent back unchanged. A server that predates the three
-evidence rules returns only the first two, and the page shows only those.
+The extension rule is enabled by default on servers that provide it; the other
+rules are opt-in. The console displays the server's enabled and channel values.
+Saving replaces the whole settings document through `PUT /api/v1/fleet/settings`;
+the server validates every rule before storing any. Rules this page does not
+know are sent back unchanged. Only rules returned by the server are shown, so
+older servers can offer fewer rows.
 
 Each row shows one sentence on what the rule cannot show. Agent quiet and
 control drift take a report freshness per reporter source. Sources are picked from the account's device credentials
@@ -83,14 +84,33 @@ be enabled.
 Settings: inventory fresh for (minutes). The page does not edit per-source
 values for this rule; any already stored are kept unchanged on save.
 
+### Extension needs approval
+
+Rule: `unapproved_extension`.
+
+| Opens | Resolves | Does not establish recovery |
+|---|---|---|
+| Reported inventory needs approval, changes approved pinned content, or cannot satisfy a version constraint | Fresh, complete inventory confirms that the approval, content or version violation is gone, or explicitly confirms removal of the extension | Stale, incomplete or unverifiable inventory: the finding becomes unknown rather than resolved |
+
+The row provides **Enabled**, **attention**, **email**, **push** and **webhook**
+controls. Enabled reads and writes the top-level `unapproved_extension_enabled`
+field of `/fleet/settings`; channels and exceptions live under
+`rules.unapproved_extension`. Disabling the rule or applying an unexpired subject
+exception suppresses the finding. The console preserves exceptions and channel
+values on save unless their controls are changed; it does not edit exceptions.
+Inventory proves files are present in a known location, not that an agent loaded
+or executed them.
+
 ## Delivery channels
 
 Each rule has its own channels:
 
 - **Attention**: a finding on the Attention page. It does not send a message.
-- **Email**, **push** and **webhook**: sent to eligible owners and admins,
-  honoring their notification preferences. Webhooks use the account's
-  [outbound webhooks](webhooks.md).
+- **Email** and **push**: sent to eligible owners and admins, honoring their
+  notification preferences.
+- **Webhook**: the fleet provider's existing compatibility path uses the default
+  approval workflow's webhook. The `fleet.finding` catalogue filter does not
+  change that routing; see [outbound webhooks](webhooks.md).
 
 ## What this page can and cannot prove
 
