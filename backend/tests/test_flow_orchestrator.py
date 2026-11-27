@@ -6225,3 +6225,16 @@ def test_exception_location_trims_frames_outside_the_package() -> None:
         assert isinstance(tb, types.TracebackType)
         location = _exception_location(exc.with_traceback(tb.tb_next))
     assert location == "json/decoder.py:1 in <module>"
+
+
+def test_monitor_exception_is_reported_to_error_tracking(monkeypatch) -> None:
+    """The stack goes to the error tracker, not into application logs."""
+    import sentry_sdk
+
+    from preloop.services.flow_orchestrator import _report_monitor_exception
+
+    captured: list = []
+    monkeypatch.setattr(sentry_sdk, "capture_exception", captured.append)
+    error = TypeError("can't subtract offset-naive and offset-aware datetimes")
+    _report_monitor_exception(error)
+    assert captured == [error]

@@ -822,6 +822,23 @@ def _exception_location(exc: BaseException) -> Optional[str]:
     return f"{tail}:{frame.lineno} in {frame.name}"
 
 
+def _report_monitor_exception(exc: BaseException) -> None:
+    """Send a monitor failure, with its stack, to error tracking.
+
+    Application logs stay metadata only (no exception payloads), so the stack
+    goes through the error tracker, whose ``before_send`` hook scrubs events.
+
+    Args:
+        exc: The exception that failed the monitor.
+    """
+    try:
+        import sentry_sdk
+
+        sentry_sdk.capture_exception(exc)
+    except Exception:  # noqa: BLE001 - reporting must never fail the flow
+        logger.debug("Could not report the monitor error", exc_info=False)
+
+
 def _monitoring_error_message(exc: BaseException) -> str:
     """Name the monitor failure and where it was raised."""
     location = _exception_location(exc)
@@ -9638,14 +9655,14 @@ class FlowExecutionOrchestrator:
 
                         # Fail execution if too many consecutive failures
                         if consecutive_failures >= max_consecutive_failures:
-                            # exc_info sends the stack to error tracking.
                             logger.error(
                                 "Agent monitoring failed after %s consecutive "
-                                "failures at %s",
+                                "failures: %s at %s",
                                 consecutive_failures,
+                                type(retry_error).__name__,
                                 _exception_location(retry_error),
-                                exc_info=retry_error,
                             )
+                            _report_monitor_exception(retry_error)
                             self.execution_logger.log_milestone(
                                 "agent_monitoring_failed",
                                 {
@@ -10191,12 +10208,13 @@ class FlowExecutionOrchestrator:
 
         except Exception as e:
             error_message = _monitoring_error_message(e)
-            # logger.exception sends the stack to error tracking.
-            logger.exception(
-                "Error monitoring agent execution %s at %s",
+            logger.error(
+                "Error monitoring agent execution %s: %s at %s",
                 session_reference,
+                type(e).__name__,
                 _exception_location(e),
             )
+            _report_monitor_exception(e)
             self.execution_logger.log_milestone(
                 "agent_execution_error",
                 {"error": error_message, "location": _exception_location(e)},
