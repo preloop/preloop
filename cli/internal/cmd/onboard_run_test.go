@@ -84,11 +84,15 @@ func newFakeOnboardRun(t *testing.T, agents []AgentConfig, sel onboardSelection,
 	return fake
 }
 
+// threeAgents are synthetic agents that count as installed and signed in on
+// every machine: without the stamped states the test would depend on what
+// the machine running it has installed.
 func threeAgents() []AgentConfig {
+	present := string(agentRuntimeStatePresent)
 	return []AgentConfig{
-		{Name: "Claude Code", ConfigPath: "/tmp/synthetic/claude/settings.json", AuthState: string(agentAuthStateReady)},
-		{Name: "Codex CLI", ConfigPath: "/tmp/synthetic/codex/config.toml", AuthState: string(agentAuthStateReady)},
-		{Name: "Cursor", ConfigPath: "/tmp/synthetic/cursor/mcp.json"},
+		{Name: "Claude Code", ConfigPath: "/tmp/synthetic/claude/settings.json", AuthState: string(agentAuthStateReady), RuntimeState: present},
+		{Name: "Codex CLI", ConfigPath: "/tmp/synthetic/codex/config.toml", AuthState: string(agentAuthStateReady), RuntimeState: present},
+		{Name: "Cursor", ConfigPath: "/tmp/synthetic/cursor/mcp.json", RuntimeState: present},
 	}
 }
 
@@ -284,9 +288,9 @@ func TestRunOrdersAgentsWithModelRoutingFirst(t *testing.T) {
 // the previous CLI is TestYesOutcomesMatchThePreviousCLI.
 func TestRunUnderYesAppliesEveryAgentWithoutAsking(t *testing.T) {
 	agents := []AgentConfig{
-		{Name: "Cursor", ConfigPath: "/tmp/synthetic/cursor.json", IsOnboarded: true},
-		{Name: "Gemini CLI", ConfigPath: "/tmp/synthetic/gemini.json", IsOnboarded: true, ReonboardRecommended: true, DriftReasons: []string{"stale"}},
-		{Name: "Codex CLI", ConfigPath: "/tmp/synthetic/codex.toml"},
+		{Name: "Cursor", ConfigPath: "/tmp/synthetic/cursor.json", IsOnboarded: true, RuntimeState: string(agentRuntimeStatePresent)},
+		{Name: "Gemini CLI", ConfigPath: "/tmp/synthetic/gemini.json", IsOnboarded: true, ReonboardRecommended: true, DriftReasons: []string{"stale"}, RuntimeState: string(agentRuntimeStatePresent), AuthState: string(agentAuthStateReady)},
+		{Name: "Codex CLI", ConfigPath: "/tmp/synthetic/codex.toml", RuntimeState: string(agentRuntimeStatePresent), AuthState: string(agentAuthStateReady)},
 	}
 	for _, mode := range []string{"--yes", "PRELOOP_CONFIRM"} {
 		fake := newFakeOnboardRun(t, agents, defaultOnboardSelection(), "", mode == "--yes")
@@ -604,10 +608,12 @@ func TestAgainCommandReproducesThePlan(t *testing.T) {
 	if err := first.run.execute(); err != nil {
 		t.Fatal(err)
 	}
-	// The command may wrap at 80 columns; it is the last thing printed.
-	_, again, found := strings.Cut(strings.Join(strings.Fields(first.out.String()), " "), "Again: ")
-	if !found {
-		t.Fatalf("no Again line:\n%s", first.out.String())
+	// The command is one line whatever its length, so it can be pasted.
+	var again string
+	for _, line := range strings.Split(first.out.String(), "\n") {
+		if rest, found := strings.CutPrefix(strings.TrimSpace(line), "Again:"); found {
+			again = strings.TrimSpace(rest)
+		}
 	}
 	if again != "preloop agents onboard --agents codex-cli,cursor --no-agent-control --approvals --no-report-extensions --yes" {
 		t.Fatalf("again command: %q\n%s", again, first.out.String())
@@ -619,11 +625,7 @@ func TestAgainCommandReproducesThePlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	present := threeAgents()
-	for i := range present {
-		present[i].RuntimeState = string(agentRuntimeStatePresent)
-	}
-	second := newFakeOnboardRun(t, present, parsed, "", true)
+	second := newFakeOnboardRun(t, threeAgents(), parsed, "", true)
 	if err := second.run.selectCandidates(named); err != nil {
 		t.Fatal(err)
 	}
@@ -670,7 +672,7 @@ func TestRunNeverEnablesApprovalsWithoutTheFlag(t *testing.T) {
 			if auto {
 				typed = ""
 			}
-			fake := newFakeOnboardRun(t, []AgentConfig{{Name: name, ConfigPath: "/tmp/synthetic-config"}}, defaultOnboardSelection(), typed, auto)
+			fake := newFakeOnboardRun(t, []AgentConfig{{Name: name, ConfigPath: "/tmp/synthetic-config", RuntimeState: string(agentRuntimeStatePresent), AuthState: string(agentAuthStateReady)}}, defaultOnboardSelection(), typed, auto)
 			if err := fake.run.execute(); err != nil {
 				t.Fatalf("%s auto=%v: %v", name, auto, err)
 			}
@@ -690,7 +692,7 @@ func TestRunNeverEnablesApprovalsWithoutTheFlag(t *testing.T) {
 // on, or an explicit --approvals=false is overridden; no_claim=the hook
 // file is written by hand in the shape the installer uses.
 func TestInteractiveReviewKeepsInstalledApprovalGates(t *testing.T) {
-	agent := AgentConfig{Name: "Claude Code", ConfigPath: "/tmp/synthetic/settings.json", IsOnboarded: true}
+	agent := AgentConfig{Name: "Claude Code", ConfigPath: "/tmp/synthetic/settings.json", IsOnboarded: true, RuntimeState: string(agentRuntimeStatePresent), AuthState: string(agentAuthStateReady)}
 	install := func(t *testing.T) {
 		t.Helper()
 		path, err := approvalHookConfigPath(permissionSourceClaudeCode)
