@@ -352,16 +352,17 @@ MODEL_IO_ONLY_ACTIONS = frozenset(
 class ConditionType(str, Enum):
     """Type of condition expression.
 
-    This enum supports the open core licensing model:
+    Every edition evaluates both types. Cloud and Enterprise additionally
+    reject invalid CEL syntax when a policy is uploaded.
 
-    - SIMPLE (open source): Basic comparisons using Python-like syntax.
+    - SIMPLE: Basic comparisons using Python-like syntax.
       Supports operators: ==, !=, >, <, >=, <=
       Examples:
         - "args.amount > 500"
         - "args.recipient == 'bob'"
         - "args.priority != 'low'"
 
-    - CEL (enterprise): Full CEL (Common Expression Language) expressions
+    - CEL: Full CEL (Common Expression Language) expressions
       with advanced functions and capabilities.
       Examples:
         - "args.command.contains('rm -rf')"
@@ -386,9 +387,9 @@ def references_grant(expression: str) -> bool:
 class ToolCondition(BaseModel):
     """Condition for when to apply actions to tool invocations.
 
-    Supports two types of conditions for the open core model:
+    Supports two types of conditions, both evaluated in every edition:
 
-    Simple conditions (open source):
+    Simple conditions:
         Basic comparisons using Python-like syntax. These are evaluated
         using a lightweight parser that supports basic operators.
 
@@ -399,7 +400,7 @@ class ToolCondition(BaseModel):
             - "args.recipient == 'bob'"
             - "args.count <= 10"
 
-    CEL conditions (enterprise):
+    CEL conditions:
         Full CEL (Common Expression Language) expressions with advanced
         functions like contains(), startsWith(), endsWith(), exists(), etc.
 
@@ -412,7 +413,7 @@ class ToolCondition(BaseModel):
     Attributes:
         expression: Expression to evaluate against tool arguments.
         action: Action to take when condition matches.
-        condition_type: Type of expression - 'simple' (open source) or 'cel' (enterprise).
+        condition_type: Type of expression, 'simple' or 'cel'.
         description: Optional human-readable description.
     """
 
@@ -422,7 +423,7 @@ class ToolCondition(BaseModel):
     )
     condition_type: ConditionType = Field(
         ConditionType.SIMPLE,
-        description="Expression type: 'simple' (open source) or 'cel' (enterprise)",
+        description="Expression type: 'simple' or 'cel'",
     )
     description: Optional[str] = Field(
         None, description="Human-readable description of this condition"
@@ -1490,6 +1491,13 @@ class PolicyImportResult(BaseModel):
     )
     sensitive_data_applied: bool = Field(
         False, description="Whether the sensitive_data block was applied"
+    )
+    policy_version: Optional[int] = Field(
+        None,
+        description=(
+            "Version number recorded for this apply; null for a dry run or when "
+            "no version could be recorded"
+        ),
     )
     warnings: List[str] = Field(default_factory=list, description="Non-fatal warnings")
     errors: List[str] = Field(default_factory=list, description="Errors that occurred")

@@ -337,10 +337,14 @@ def load_policy_from_string(
     # Add warnings for deprecated or unusual configurations
     if policy.tools:
         for tool in policy.tools:
-            if tool.conditions and not tool.approval_workflow:
+            requires_approval = any(
+                condition.action == ConditionAction.REQUIRE_APPROVAL
+                for condition in (tool.conditions or [])
+            )
+            if requires_approval and not tool.approval_workflow:
                 warnings.append(
-                    f"Tool '{tool.name}' has conditions but no approval_workflow set. "
-                    "Conditions with 'require_approval' action will have no effect."
+                    f"Tool '{tool.name}' has a 'require_approval' condition but no "
+                    "approval_workflow set. That condition will have no effect."
                 )
 
     if policy.model_io:

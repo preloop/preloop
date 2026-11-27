@@ -13,6 +13,8 @@ import (
 )
 
 func TestOnboardRunContinuesOnError(t *testing.T) {
+	// The Node prerequisite runs first; satisfy it to reach the checks below.
+	stubSupportedAgentControlNode(t)
 	candidates := []AgentConfig{
 		{Name: "Codex CLI", DisplayName: "Codex CLI", ConfigPath: "/tmp/codex/config.toml"},
 		{Name: "Claude Code", DisplayName: "Claude Code", ConfigPath: "/tmp/claude/settings.json"},
