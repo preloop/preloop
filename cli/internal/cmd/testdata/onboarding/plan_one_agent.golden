@@ -1,0 +1,7 @@
+  1  Claude Code   model routing, MCP, Agent Control
+                   model: example/model-large (subscription login)
+
+  ! Preloop will hold and rotate the Claude Code subscription login. Offboard
+    returns it.
+  ! While routed, Claude Code does not fetch organisation-managed settings or
+    claude.ai connectors.

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -157,6 +158,53 @@ func contentHome(t *testing.T) (string, []string) {
 	writeInventoryFixture(t, home, plugin+"/hooks/hooks.json", `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo done"}]}]}}`)
 	writeInventoryFixture(t, home, plugin+"/src/index.js", "module.exports = 'not-selected-marker'\n")
 	return home, secrets
+}
+
+func TestHookMatcherContentPrivacy(t *testing.T) {
+	planted := redacttest.PlantedSecrets()[0]
+	for _, mode := range []string{"plain", "secret", "private-key"} {
+		t.Run(mode, func(t *testing.T) {
+			matcher, command := "Bash", "echo checked"
+			if mode == "secret" {
+				matcher, command = planted.Line, planted.Line
+			} else if mode == "private-key" {
+				matcher = redacttest.PlantedPrivateKey()
+			}
+			commandHash := extensionHash([]byte(command))
+			pair := contentPair{Kind: "hook", ContentHash: extensionHash([]byte(commandHash))}
+			capture := newContentCapture(t.TempDir(), []contentPair{pair}, nil)
+			scan := extensionScan{capture: capture, hookContent: map[string][]contentHookSource{
+				"PreToolUse": {{Matcher: matcher, Command: command}},
+			}}
+			scan.captureHooks()
+			item := capture.items[pair]
+			if capture.err != nil || item == nil || len(item.Hooks) != 1 {
+				t.Fatal("hook capture failed")
+			}
+			hook := item.Hooks[0]
+			if hook.CommandHash != commandHash {
+				t.Fatal("redaction changed the command hash")
+			}
+			switch mode {
+			case "plain":
+				if hook.Matcher != matcher || hook.Command == nil || *hook.Command != command {
+					t.Fatal("ordinary hook content changed")
+				}
+			case "secret":
+				wire, err := json.Marshal(item)
+				if err != nil || bytes.Contains(wire, []byte(planted.Secret)) {
+					t.Fatal("hook matcher or command retained a secret")
+				}
+				if item.redactions != 2 {
+					t.Fatalf("matcher and command redaction count = %d, want 2", item.redactions)
+				}
+			case "private-key":
+				if hook.Matcher != "" || hook.Command != nil || hook.Status != contentPrivateKey {
+					t.Fatal("private-key matcher was not withheld")
+				}
+			}
+		})
+	}
 }
 
 func contentReport(t *testing.T, home string) discoveryReportRequest {
@@ -727,6 +775,97 @@ func TestExtensionContentOneBadItemDoesNotBlockTheRest(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "did not store 1 extension(s)") {
 		t.Fatalf("the refused item was not reported: %s", out.String())
+	}
+}
+
+type chunkedQueryClient struct {
+	fingerprints []string
+	sizes        []int
+	collect      []bool
+}
+
+func (c *chunkedQueryClient) Post(path string, body interface{}, out interface{}) error {
+	request := body.(contentQueryRequest)
+	call := len(c.sizes)
+	c.sizes = append(c.sizes, len(request.Items))
+	c.fingerprints = append(c.fingerprints, request.WorkstationFingerprint)
+	response := out.(*contentQueryResponse)
+	response.Collect = call >= len(c.collect) || c.collect[call]
+	if response.Collect {
+		response.Missing = request.Items[len(request.Items)-1:]
+	}
+	return nil
+}
+
+// protects=every reported hash is negotiated, however many a report holds;
+// fails_when=hashes past the first contentQueryLimit are never asked about,
+// so their content is silently never sent.
+func TestMissingContentQueryCoversEveryReportedHash(t *testing.T) {
+	pairs := make([]contentPair, 2*contentQueryLimit+1)
+	for i := range pairs {
+		pairs[i] = contentPair{Kind: "skill", ContentHash: fmt.Sprintf("sha256:%064x", i)}
+	}
+	client := &chunkedQueryClient{}
+	query, err := queryMissingContent(client, "synthetic-device", pairs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(client.sizes) != fmt.Sprint([]int{contentQueryLimit, contentQueryLimit, 1}) {
+		t.Fatalf("request sizes = %v", client.sizes)
+	}
+	for _, fingerprint := range client.fingerprints {
+		if fingerprint != "synthetic-device" {
+			t.Fatalf("query chunk omitted device binding: %q", fingerprint)
+		}
+	}
+	if !query.Collect || len(query.Missing) != 3 || query.Missing[2] != pairs[len(pairs)-1] {
+		t.Fatalf("combined answer = %+v", query)
+	}
+
+	optOut := &chunkedQueryClient{collect: []bool{true, false}}
+	query, err = queryMissingContent(optOut, "synthetic-device", pairs)
+	if err != nil || query.Collect || len(optOut.sizes) != 2 {
+		t.Fatalf("an opt-out answer must stop the query: %+v %v %v", query, optOut.sizes, err)
+	}
+}
+
+// keptMarkerClient answers the content query with every reported hash and
+// keeps every excluded marker it is sent, as the server does for a marker
+// that is already stored, while storing text.
+type keptMarkerClient struct{}
+
+func (keptMarkerClient) Post(path string, body interface{}, out interface{}) error {
+	switch request := body.(type) {
+	case contentQueryRequest:
+		*out.(*contentQueryResponse) = contentQueryResponse{Collect: true, Missing: request.Items}
+	case contentUploadRequest:
+		response := out.(*contentUploadResponse)
+		for _, item := range request.Items {
+			if item.Withheld == contentExcluded {
+				response.Kept++
+			} else {
+				response.Stored++
+			}
+		}
+	}
+	return nil
+}
+
+// protects=the summary counts extensions whose text was stored; fails_when=a
+// repeat report of excluded extensions, whose markers the server keeps,
+// prints a negative upload count.
+func TestExtensionContentSummaryNeverGoesNegative(t *testing.T) {
+	home, _ := contentHome(t)
+	writeInventoryFixture(t, home, ".claude/skills/deploy/"+contentMarkerFile, "")
+	writeInventoryFixture(t, home, ".preloop/config.yaml", "discovery:\n  extension_content_exclude:\n    - \"hook:Pre*\"\n    - \"command:release\"\n")
+	report := contentReport(t, home)
+	var out bytes.Buffer
+	outcome := sendExtensionContent(keptMarkerClient{}, &out, report, "synthetic-salt", home, nil)
+	if outcome.Uploaded == 0 {
+		t.Fatalf("nothing uploaded: %s", out.String())
+	}
+	if !strings.Contains(out.String(), fmt.Sprintf("uploaded for %d extension(s)", outcome.Uploaded)) || !strings.Contains(out.String(), "3 extension(s) excluded") {
+		t.Fatalf("summary = %q", out.String())
 	}
 }
 

@@ -228,6 +228,8 @@ func TestNoCredentialImportRechecksMCPReferencesBeforeCreation(t *testing.T) {
 func TestUnattendedOAuthStopsBeforeAnyMutation(t *testing.T) {
 	home := testenv.SetTempHome(t)
 	t.Setenv("PATH", "")
+	// The Node prerequisite runs before custody review; satisfy it here.
+	stubSupportedAgentControlNode(t)
 	path := filepath.Join(home, ".claude", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
@@ -283,6 +285,8 @@ func TestRemoteCredentialCustodyFailureDoesNotLeakResponseBody(t *testing.T) {
 func TestAttendedDiscoverReviewsOAuthCustodyBeforeApply(t *testing.T) {
 	home := testenv.SetTempHome(t)
 	t.Setenv("PATH", "")
+	// The Node prerequisite runs before custody review; satisfy it here.
+	stubSupportedAgentControlNode(t)
 	t.Setenv("PRELOOP_CONFIRM", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "sk-ant-oat01-synthetic-access")
 	previousTerminal := stdinIsTerminal
@@ -315,7 +319,9 @@ func TestAttendedDiscoverReviewsOAuthCustodyBeforeApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attended discover was misclassified: %v", err)
 	}
-	summary := strings.Index(out.String(), "Credential custody")
+	// The compact review states the custody decision in one disclosure; the
+	// full custody block is behind --explain.
+	summary := strings.Index(out.String(), "Preloop will hold and rotate the Claude Code subscription login")
 	confirmation := strings.Index(out.String(), "Apply managed Preloop onboarding")
 	if summary < 0 || confirmation <= summary || mutations != 0 {
 		t.Fatalf("custody approval ordering failed: mutations=%d output=%s", mutations, out.String())

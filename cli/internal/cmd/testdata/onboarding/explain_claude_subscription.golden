@@ -1,0 +1,21 @@
+  Credential custody (metadata only):
+    Apply issues a durable agent credential stored in local managed configuration; offboard revokes it.
+    subscription OAuth: local agent configuration, environment or credential store -> Preloop account model credential; import required: true
+    Claude Code gateway disclosure (observed with v2.1.332): the banner says 'API Usage Billing' and, with a local login, warns that both claude.ai and ANTHROPIC_API_KEY are set. The API key here authenticates to Preloop.
+    Your subscription usage still pays for model calls through this subscription-backed gateway route.
+    With a custom ANTHROPIC_BASE_URL, /status reports that remote managed settings and organization policy are not fetched. claude.ai connectors are disabled under custom authentication. Team and Enterprise users: review this loss of cloud-delivered controls and connectors with your administrator before confirming enrollment.
+    Preloop holds and rotates the live subscription refresh-token lineage. A config backup alone cannot restore subscription login. Offboard must write back the latest live lineage before cleanup; recovery failure stops cleanup. Run preloop agents offboard for the enrolled app while credential recovery is available.
+Apply managed MCP onboarding for Claude Code
+  Agent type: Claude Code
+  Config: /home/jane/.claude/settings.json
+  Managed server: preloop -> https://preloop.example.com/mcp/v1
+  Agent Control config target: wss://preloop.example.com/api/v1/agents/control/ws
+  Agent Control runtime plugin: install/verify when supported
+  Configured MCP routes: managed=1, direct remote=0, direct local stdio=0, unknown=0 (complete). Existing direct entries are preserved; they bypass Preloop MCP policy. Only calls through the managed entry are checked. Configured routes do not establish observed usage.
+  Runtime principal: claude-code-000000000000
+  Managed model: preloop/anthropic/claude-sonnet-4-5
+  Note: Claude Code uses subscription billing. If the gateway rejects the subscription login, run `preloop agents reconnect "Claude Code" --from-local` from a working local login.
+  Note: Claude Code will display "API billing" for the gateway token after onboarding; model calls still use your Anthropic subscription and appear at $0 spend in the Preloop Console.
+  Note: Resolved Claude Code OAuth credentials from /home/jane/.claude/.credentials.json.
+  Note: Preloop will let Claude Code pick its own stock family defaults (opus/sonnet/haiku). Automatic registration of new Anthropic ids requires subscription OAuth and enabled family autoregistration. API-key accounts should use --pin-model-families or run preloop models sync before selecting new ids.
+  Note: Model traffic will route through Preloop using anthropic/claude-sonnet-4-5.

@@ -1,0 +1,23 @@
+Agent name [Claude Code]:
+Select the managed model for Claude Code before onboarding:
+  1) anthropic/claude-sonnet-4-5 [inferred from agent; subscription/OAuth]
+     (default)
+Use which model? [1-1, blank=anthropic/claude-sonnet-4-5]:
+  1  Claude Code   model routing, MCP, Agent Control
+                   model: anthropic/claude-sonnet-4-5 (subscription login)
+
+  ! Preloop will hold and rotate the Claude Code subscription login. Offboard
+    returns it.
+  ! While routed, Claude Code does not fetch organisation-managed settings or
+    claude.ai connectors.
+Apply managed Preloop onboarding for Claude Code? (Y/n): y
+  ok  Claude Code   agent and key created in Preloop
+  ok  Claude Code   settings.json updated, backup saved
+  ok  Claude Code   Agent Control plugin installed
+  ok  Claude Code   test request through the gateway (0.0 s)
+
+✓ Onboarded Claude Code
+  Gateway validation: passed (route probe; application behavior unverified)
+  Claude Code shows "API Usage Billing"; calls still use your subscription.
+  Status: preloop agents status "Claude Code"
+  Undo:   preloop agents offboard "Claude Code"

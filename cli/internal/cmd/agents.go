@@ -977,6 +977,7 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("from-env", false, "with --resume: check the environment-variable form in this shell instead of the settings file")
 	agentsEnrollCmd.Flags().Bool("cancel", false, "cancel a manual setup that is waiting for the local change and remove what it created in Preloop")
 	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
+	agentsEnrollCmd.Flags().Bool("explain", false, "print the full credential custody and plan text before the confirmation, and the detailed result after it")
 	registerClaudeDesktopRouteFlags(agentsEnrollCmd)
 	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the opus/sonnet/haiku family pins and the Fable pair, also on Claude Code 2.1.321+ (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
@@ -1217,6 +1218,9 @@ func promptToOnboardDiscoveredAgentsWithIO(
 			Input:             input,
 			Output:            output,
 		})
+	}, func(agent AgentConfig) error {
+		// Discovery enrolls with default options (no --manual, no approvals).
+		return preflightLocalAgentPrerequisites(agent, managedEnrollmentOptions{})
 	})
 	if err != nil {
 		return err
@@ -1241,6 +1245,10 @@ func promptToOnboardDiscoveredAgentsWithIO(
 // one agent's enrollment is recorded as a failed/partial outcome and the loop
 // continues with the remaining agents; only prompt I/O failures abort the
 // loop. Outcomes include explicitly declined agents as skipped.
+//
+// preflight, when given, checks each agent's local prerequisites with the
+// caller's enrollment options before any prompt for that agent; a failure
+// is recorded as that agent's failed outcome.
 func promptToOnboardCandidates(
 	reader io.Reader,
 	writer io.Writer,
@@ -1248,11 +1256,19 @@ func promptToOnboardCandidates(
 	autoApprove bool,
 	askApprovals bool,
 	enroll func(agent AgentConfig, approvals bool) error,
+	preflight ...func(agent AgentConfig) error,
 ) ([]agentOnboardingOutcome, error) {
 	bufferedReader := bufio.NewReader(reader)
 	var outcomes []agentOnboardingOutcome
 
 	for _, agent := range candidates {
+		// A missing local prerequisite (Claude Code needs Node.js) fails
+		// this agent before any of its prompts; the batch continues.
+		if err := runOnboardPreflight(preflight, agent); err != nil {
+			fmt.Fprintf(writer, "  Cannot onboard %s: %s\n", resolveAgentDisplayName(agent), err) //nolint:errcheck
+			outcomes = append(outcomes, classifyAgentOnboardingOutcome(agent, err))
+			continue
+		}
 		if !autoApprove {
 			prompt := fmt.Sprintf("Onboard %s (%s) into managed Preloop access now? (Y/n): ", agent.Name, resolveAgentDisplayName(agent))
 			if agent.IsOnboarded {
@@ -1295,6 +1311,19 @@ func promptToOnboardCandidates(
 	}
 
 	return outcomes, nil
+}
+
+// runOnboardPreflight runs each optional preflight check for agent.
+func runOnboardPreflight(preflight []func(agent AgentConfig) error, agent AgentConfig) error {
+	for _, check := range preflight {
+		if check == nil {
+			continue
+		}
+		if err := check(agent); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func onboardCandidatesBestEffort(
@@ -1485,6 +1514,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	preferredModel, _ := cmd.Flags().GetString("model")
 	pinModelFamilies, _ := cmd.Flags().GetBool("pin-model-families")
 	pinModelFamiliesSet := cmd.Flags().Changed("pin-model-families")
+	explain, _ := cmd.Flags().GetBool("explain")
 
 	tags := make(map[string]string)
 	for _, kv := range tagsInput {
@@ -1517,6 +1547,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		ForceManual:         forceManual,
 		ManualOutputDir:     strings.TrimSpace(manualOutputDir),
 		Tags:                tags,
+		Explain:             explain,
 		SkipConfirmation:    false,
 		Input:               input,
 		Output:              os.Stdout,
@@ -1640,6 +1671,10 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			// for the agent name a second time.
 			agentOpts.AgentPrepared = true
 			return executeManagedEnrollment(a, agentOpts)
+		}, func(a AgentConfig) error {
+			// The same options as the enrollment, so --manual skips the
+			// Node check and --approvals targets join the writability probe.
+			return preflightLocalAgentPrerequisites(a, opts)
 		})
 		if err != nil {
 			return err
@@ -4349,37 +4384,39 @@ func completeDiscoveredAgentArgs(
 	return suggestions, cobra.ShellCompDirectiveNoFileComp
 }
 
-func printEnrollmentPlan(plan managedMCPEnrollmentPlan, dryRun bool) {
+// printEnrollmentPlan writes the full plan block for one agent. It is the
+// text --explain and --dry-run show.
+func printEnrollmentPlan(w io.Writer, plan managedMCPEnrollmentPlan, dryRun bool) {
 	mode := "Apply"
 	if dryRun {
 		mode = "Preview"
 	}
-	fmt.Printf("%s managed MCP onboarding for %s\n", mode, resolveAgentDisplayName(plan.Agent))
-	fmt.Printf("  Agent type: %s\n", plan.Agent.Name)
-	fmt.Printf("  Config: %s\n", plan.Agent.ConfigPath)
+	fmt.Fprintf(w, "%s managed MCP onboarding for %s\n", mode, resolveAgentDisplayName(plan.Agent))
+	fmt.Fprintf(w, "  Agent type: %s\n", plan.Agent.Name)
+	fmt.Fprintf(w, "  Config: %s\n", plan.Agent.ConfigPath)
 	if plan.MCPConfigSkipped {
-		fmt.Printf("  Managed server: skipped — npx/Node.js not found (see notes)\n")
+		fmt.Fprintf(w, "  Managed server: skipped — npx/Node.js not found (see notes)\n")
 	} else {
-		fmt.Printf("  Managed server: %s -> %s\n", plan.ManagedServerName, plan.ManagedServerURL)
+		fmt.Fprintf(w, "  Managed server: %s -> %s\n", plan.ManagedServerName, plan.ManagedServerURL)
 	}
 	if plan.ManagedControlWSURL != "" {
-		fmt.Printf("  Agent Control config target: %s\n", plan.ManagedControlWSURL)
-		fmt.Println("  Agent Control runtime plugin: install/verify when supported")
+		fmt.Fprintf(w, "  Agent Control config target: %s\n", plan.ManagedControlWSURL)
+		fmt.Fprintln(w, "  Agent Control runtime plugin: install/verify when supported")
 	}
-	fmt.Println("  " + inventoryRouteSummary(plan.MCPRoutes))
+	fmt.Fprintln(w, "  "+inventoryRouteSummary(plan.MCPRoutes))
 	discoveredNames := sortedServerNames(plan.Agent.MCPServers)
 	if len(discoveredNames) > 0 {
-		fmt.Printf("  Existing MCP servers: %s\n", strings.Join(discoveredNames, ", "))
+		fmt.Fprintf(w, "  Existing MCP servers: %s\n", strings.Join(discoveredNames, ", "))
 	}
-	fmt.Printf("  Runtime principal: %s\n", runtimePrincipalIDForAgent(plan.Agent))
+	fmt.Fprintf(w, "  Runtime principal: %s\n", runtimePrincipalIDForAgent(plan.Agent))
 	if plan.ManagedProviderName != "" && plan.ManagedModelAlias != "" {
-		fmt.Printf("  Managed model: %s/%s\n", plan.ManagedProviderName, plan.ManagedModelAlias)
+		fmt.Fprintf(w, "  Managed model: %s/%s\n", plan.ManagedProviderName, plan.ManagedModelAlias)
 	}
 	for _, note := range plan.Notes {
 		// Notes are operator-facing status strings (never secret values);
 		// print via a dedicated helper so taint from companion return
 		// values in upstream resolvers does not flow into logging sinks.
-		fmt.Printf("  Note: %s\n", publicPlanNote(note))
+		fmt.Fprintf(w, "  Note: %s\n", publicPlanNote(note))
 	}
 }
 

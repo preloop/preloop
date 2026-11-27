@@ -1,0 +1,7 @@
+  1  Claude Code   model routing, MCP, Agent Control
+                   model: example/model-large
+                   credential: subscription login held by Preloop
+                   already onboarded: refreshes the configuration
+
+  ! While routed, Claude Code does not fetch organisation-managed settings or
+    claude.ai connectors.

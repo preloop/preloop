@@ -664,6 +664,14 @@ def test_orchestrator_falls_back_to_server_pool(monkeypatch, nested) -> None:
     assert orchestrator._harness_fell_back is True
     assert orchestrator.execution_log.routing_reason == "fell_back_to_server"
     assert orchestrator.execution_log.billing_mode == "metered"
+    recorded = orchestrator.execution_log.trigger_event_details["_model_routing"][
+        "executed"
+    ]
+    assert recorded == {
+        "agent_type": "codex",
+        "ai_model_id": str(model.id),
+        "model_identifier": "gpt-5.2",
+    }
 
 
 def test_orchestrator_keeps_harness_when_a_runner_is_eligible(monkeypatch) -> None:
@@ -938,3 +946,22 @@ def test_inventory_entry_keeps_setup_step() -> None:
     )
     parsed = HarnessInventory.model_validate(inventory)
     assert parsed.entries[-1].setup_step == step
+
+
+@pytest.mark.asyncio
+async def test_queue_timeout_accepts_naive_db_start_time(monkeypatch) -> None:
+    """``flow_execution.start_time`` is a naive UTC column in PostgreSQL."""
+    naive = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=700)
+    execution = _execution(naive)
+    monkeypatch.setattr(
+        "preloop.agents.remote_runner.crud_flow_execution.get",
+        lambda *a, **k: execution,
+    )
+    executor = _executor(
+        {"harness": "copilot_cli", "harness_queue_timeout_seconds": 600}
+    )
+    expire = MagicMock(return_value=True)
+    monkeypatch.setattr(executor, "fail_if_unleased", expire)
+    status = await executor.get_status(execution.agent_session_reference)
+    assert status == AgentStatus.FAILED
+    assert 700 <= expire.call_args.args[1] < 760

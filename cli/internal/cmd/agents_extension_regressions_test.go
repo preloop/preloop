@@ -163,7 +163,7 @@ func TestCodexOffboardRestoresPriorPreloopBaseline(t *testing.T) {
 	if readErr != nil || string(got) != baseline || f.archives != 1 || f.modelDeleted {
 		t.Fatal("offboard must revoke and restore the original bytes")
 	}
-	if strings.Contains(out, "NOT changed") || !strings.Contains(out, "Restored config:") || !strings.Contains(out, "pre-existing Preloop") {
+	if strings.Contains(out, "NOT changed") || !strings.Contains(out, "Restored config:") || !strings.Contains(out, "pre-existing Preloop") || !strings.Contains(out, "route has not been validated") || !strings.Contains(out, "✓ Offboarded Codex CLI") {
 		t.Errorf("restoration summary is misleading: %s", out)
 	}
 	if _, err := loadLocalEnrollmentState(f.agent); !errors.Is(err, os.ErrNotExist) {
@@ -176,6 +176,35 @@ func TestCodexOnboardingControlSummaryNoSidecar(t *testing.T) {
 	got := onboardingControlChannelStatus(AgentConfig{Name: "Codex CLI"}, managedEnrollmentOptions{NoSidecar: true}, map[string]interface{}{"control_channel_configured": true})
 	if got == "yes" || !strings.Contains(got, "--no-sidecar") || !strings.Contains(got, "not started") {
 		t.Fatalf("no-sidecar summary claims a live channel: %q", got)
+	}
+}
+
+// The real plan/apply path must carry the channel result into both output
+// modes; testing the status helper alone cannot detect a renderer dropping it.
+// The fake API and plugin installer do not verify a remote control connection.
+func TestCodexOnboardingRendersControlChannelStatus(t *testing.T) {
+	for _, explain := range []bool{false, true} {
+		name := "compact"
+		if explain {
+			name = "explain"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newCodexAPIKeyFixture(t)
+			stubAgentControlInstalled(t)
+			setStdinTerminal(t, false)
+			out, err := runOnboardFixture(t, f, managedEnrollmentOptions{
+				AutoApprove: true,
+				NoSidecar:   true,
+				Explain:     explain,
+			}, "")
+			if err != nil {
+				t.Fatalf("onboarding failed: %v\n%s", err, out)
+			}
+			text := strings.Join(strings.Fields(out), " ")
+			if !strings.Contains(text, "Agent Control channel: configured; sidecar not started (--no-sidecar)") || strings.Contains(text, "Agent Control channel: yes") {
+				t.Fatalf("onboarding omitted or overstated channel availability:\n%s", out)
+			}
+		})
 	}
 }
 

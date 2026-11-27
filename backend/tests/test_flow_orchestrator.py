@@ -6165,3 +6165,90 @@ async def test_monitor_queue_deadline_does_not_cancel_unleased_run(
     assert "180 seconds" in result["error_message"]
     assert "timeout_seconds" not in result["error_message"]
     executor.stop.assert_not_called()
+
+
+def test_monitoring_error_message_names_raising_frame() -> None:
+    """A monitor failure names the exception type and where it was raised."""
+    from datetime import datetime, timezone
+
+    from preloop.services.flow_orchestrator import _monitoring_error_message
+
+    try:
+        datetime.now(timezone.utc) - datetime.now(timezone.utc).replace(tzinfo=None)
+    except TypeError as exc:
+        message = _monitoring_error_message(exc)
+    assert message.startswith("Monitoring error: TypeError: can't subtract")
+    assert "test_flow_orchestrator.py:" in message
+    assert "in test_monitoring_error_message_names_raising_frame" in message
+
+
+def test_exception_location_prefers_the_preloop_caller() -> None:
+    """A third-party raising frame yields its Preloop caller, not a server path."""
+    from preloop.services.flow_orchestrator import _exception_location
+
+    lib: dict = {}
+    exec(  # noqa: S102 - builds frames with chosen file paths
+        compile(
+            "def fail():\n    raise ValueError('x')",
+            "/usr/lib/python3/json/decoder.py",
+            "exec",
+        ),
+        lib,
+    )
+    caller: dict = {"fail": lib["fail"]}
+    exec(  # noqa: S102
+        compile(
+            "def poll():\n    fail()",
+            "/srv/app/backend/preloop/agents/remote_runner.py",
+            "exec",
+        ),
+        caller,
+    )
+    try:
+        caller["poll"]()
+    except ValueError as exc:
+        location = _exception_location(exc)
+    assert location == "preloop/agents/remote_runner.py:2 in poll"
+
+
+def test_exception_location_trims_frames_outside_the_package() -> None:
+    """Without a Preloop frame only the last two path parts remain."""
+    import types
+
+    from preloop.services.flow_orchestrator import _exception_location
+
+    code = compile("raise ValueError('x')", "/usr/lib/python3/json/decoder.py", "exec")
+    try:
+        exec(code, {})  # noqa: S102 - builds a frame with a third-party path
+    except ValueError as exc:
+        tb = exc.__traceback__
+        assert isinstance(tb, types.TracebackType)
+        location = _exception_location(exc.with_traceback(tb.tb_next))
+    assert location == "json/decoder.py:1 in <module>"
+
+
+def test_monitor_exception_report_omits_locals_and_message(monkeypatch) -> None:
+    """The tracker gets the type and frames, never locals or the message."""
+    import sentry_sdk
+
+    from preloop.services.flow_orchestrator import _report_monitor_exception
+
+    captured: list = []
+    monkeypatch.setattr(
+        sentry_sdk, "capture_event", lambda event, hint=None: captured.append(event)
+    )
+    secret = "prompt-text-marker"
+    try:
+        token = secret  # noqa: F841 - a local the event must not carry
+        raise TypeError(f"bad value {secret}")
+    except TypeError as exc:
+        _report_monitor_exception(exc)
+    assert len(captured) == 1
+    assert secret not in repr(captured[0])
+    (entry,) = captured[0]["exception"]["values"]
+    assert entry["type"] == "TypeError"
+    frame = entry["stacktrace"]["frames"][-1]
+    assert frame["function"] == (
+        "test_monitor_exception_report_omits_locals_and_message"
+    )
+    assert frame["lineno"]

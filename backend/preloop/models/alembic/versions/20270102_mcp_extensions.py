@@ -3,7 +3,7 @@
 from alembic import op
 
 revision = "20270102_mcp_extensions"
-down_revision = "20270102_extension_content"
+down_revision = "20270103_native_approval_session"
 branch_labels = None
 depends_on = None
 

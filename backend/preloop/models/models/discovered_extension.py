@@ -38,6 +38,22 @@ class DiscoveredExtension(Base):
             name="uq_discovered_extension",
             postgresql_nulls_not_distinct=True,
         ),
+        Index(
+            "ix_discovered_extension_id_search",
+            "extension_id",
+            postgresql_using="gin",
+            postgresql_ops={"extension_id": "gin_trgm_ops"},
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "ix_discovered_extension_name_search",
+            text("(CAST(details ->> 'name' AS VARCHAR)) gin_trgm_ops"),
+            postgresql_using="gin",
+        ).ddl_if(dialect="postgresql"),
+        Index(
+            "ix_discovered_extension_description_search",
+            text("(CAST(details ->> 'description' AS VARCHAR)) gin_trgm_ops"),
+            postgresql_using="gin",
+        ).ddl_if(dialect="postgresql"),
         CheckConstraint(
             "extension_kind IN ('plugin','skill','hook','command','mcp_server')",
             name="discovered_extension_extension_kind_check",

@@ -36,6 +36,7 @@ from preloop.services.host_exec import (
     HARNESS_FALLBACK_FAIL,
     HARNESS_GENERATED_PROFILES,
     HOST_EXEC_AGENT_TYPE,
+    HOST_EXEC_NETWORK_LEASE_KEY,
     HOST_EXEC_WORKSPACE_KEY,
     ISOLATED_PUBLICATION_UNAVAILABLE,
     OFFLINE_POLICY_MILESTONE,
@@ -48,6 +49,7 @@ from preloop.services.host_exec import (
     host_exec_harness_selector,
     host_exec_profile_name,
     host_exec_model_identifier,
+    host_exec_requires_network,
     host_exec_unavailable_reason,
     host_exec_workspace,
     is_host_exec_agent_type,
@@ -344,6 +346,9 @@ class RemoteRunnerExecutor(AgentExecutor):
                 if execution and execution.start_time
                 else datetime.now(timezone.utc)
             )
+            if started.tzinfo is None:
+                # flow_execution.start_time is a naive UTC column.
+                started = started.replace(tzinfo=timezone.utc)
             harness_routed = (
                 host_exec_harness_selector(self.agent_type, self._flow_agent_config())
                 is not None
@@ -718,7 +723,12 @@ class RemoteRunnerExecutor(AgentExecutor):
                     "profile": profile,
                     "model": payload.get("model_identifier"),
                 }
-            workspace = host_exec_workspace(self._flow_agent_config(flow))
+            flow_agent_config = self._flow_agent_config(flow)
+            if host_exec_requires_network(flow_agent_config):
+                # Data only: assignment requires a host_network profile and
+                # the runner refuses the lease on a profile without network.
+                payload[HOST_EXEC_NETWORK_LEASE_KEY] = True
+            workspace = host_exec_workspace(flow_agent_config)
             if workspace is not None:
                 # Names an authorized directory only. The runner resolves
                 # the id against its own list and re-applies the root, home,
@@ -1016,6 +1026,21 @@ def _record_lease_routing(
     Host profiles run on the runner user's own seat, so a host lease without
     an inventory entry (a #956 profile pin) is billed as ``seat`` too.
     """
+    agent_type = payload.get("agent_type")
+    if leased and isinstance(agent_type, str):
+        from preloop.models.models.flow_execution import (
+            resolve_execution_agent_selection,
+        )
+
+        _, model_id = resolve_execution_agent_selection(
+            getattr(execution, "trigger_event_details", None)
+        )
+        crud_flow_execution.record_runtime_selection(
+            execution,
+            agent_type=agent_type,
+            model_identifier=payload.get("model_identifier"),
+            ai_model_id=model_id,
+        )
     if payload.get("completion_protocol") != "host_exec":
         return
     if not leased:

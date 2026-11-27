@@ -110,10 +110,14 @@ from preloop.services.flow_delegation import (
 )
 from preloop.services.host_exec import (
     HARNESS_FALLBACK_SERVER,
+    NETWORK_UNAVAILABLE,
+    account_has_network_runner,
     harness_fallback_mode,
     harness_pinned_runner_id,
     host_exec_effective_profile,
     host_exec_flow_error,
+    host_exec_network_conflict,
+    host_exec_requires_network,
     host_exec_unavailable_reason,
     PULL_REQUEST_UNAVAILABLE,
 )
@@ -258,6 +262,19 @@ def _reject_host_exec_flow(
             )
         ):
             raise HTTPException(status_code=400, detail=PULL_REQUEST_UNAVAILABLE)
+        conflict = host_exec_network_conflict(agent_config, git_clone_config)
+        if conflict:
+            raise HTTPException(status_code=400, detail=conflict)
+        if host_exec_requires_network(agent_config) and not (
+            account_has_network_runner(
+                db,
+                account_id=account_id,
+                runner_pool=runner_pool,
+                profile=profile,
+                agent_type=agent_type,
+            )
+        ):
+            raise HTTPException(status_code=400, detail=NETWORK_UNAVAILABLE)
 
 
 def _caller_may_use_runner(
@@ -1340,8 +1357,8 @@ def _project_models_used(
 ) -> None:
     """Attach the model projection to each execution row in one query.
 
-    "Which model ran this" is answered from gateway usage, which the
-    execution row itself does not carry. One grouped aggregate covers the
+    "Which model ran this" is answered from gateway usage, falling back to
+    the identifier recorded at dispatch for native runs. One aggregate covers the
     whole page (see ``crud_api_usage.get_models_used_for_executions``); doing
     it per row would put a query behind every line of the table.
     """
@@ -1357,7 +1374,14 @@ def _project_models_used(
         execution.models_used = models
         # The alias that served most requests leads; the rest stay in
         # models_used so the console can render "+N".
-        execution.model_alias = models[0]["model_alias"] if models else None
+        recorded = getattr(execution, "recorded_model_identifier", None)
+        execution.model_alias = (
+            models[0]["model_alias"]
+            if models
+            else recorded
+            if isinstance(recorded, str)
+            else None
+        )
         execution.provider_name = models[0]["provider_name"] if models else None
 
 
