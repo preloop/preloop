@@ -221,6 +221,7 @@ def upload_content(
         for entry in item.files
     ) + sum(
         len((hook.command or "").encode("utf-8"))
+        + len((hook.matcher or "").encode("utf-8"))
         for item in payload.items
         for hook in item.hooks
     )
@@ -254,24 +255,23 @@ def upload_content(
             continue
         try:
             verified = policy.verify_item(item.model_dump(mode="json"))
+            was_stored, byte_delta = crud_extension_content.store(
+                db,
+                account_id=account.id,
+                extension_kind=item.extension_kind,
+                content_hash=item.content_hash,
+                item=verified,
+                workstation_fingerprint=payload.workstation_fingerprint,
+                collector_version=payload.collector_version,
+                redaction_rules=payload.redaction_rules,
+                available_bytes=policy.MAX_ACCOUNT_BYTES - used,
+            )
         except policy.ContentRejectedError as exc:
             reject(item, exc.code)
             continue
-        if used + verified.stored_bytes > policy.MAX_ACCOUNT_BYTES:
-            reject(item, policy.REJECT_BUDGET)
-            continue
-        if crud_extension_content.store(
-            db,
-            account_id=account.id,
-            extension_kind=item.extension_kind,
-            content_hash=item.content_hash,
-            item=verified,
-            workstation_fingerprint=payload.workstation_fingerprint,
-            collector_version=payload.collector_version,
-            redaction_rules=payload.redaction_rules,
-        ):
+        used += byte_delta
+        if was_stored:
             stored += 1
-            used += verified.stored_bytes
         else:
             kept += 1
     db.commit()

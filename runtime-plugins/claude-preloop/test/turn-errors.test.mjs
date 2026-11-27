@@ -33,7 +33,7 @@ function errorResultFactory(state) {
         yield { type: "system", subtype: "init", session_id: "s-err" };
         for await (const _message of prompt) {
           yield {
-            type: "result",
+            type: "result", user_message_uuids: [_message.uuid],
             subtype: "success",
             is_error: true,
             session_id: "s-err",
@@ -70,7 +70,7 @@ test("an error result fails the turn with the error text", async () => {
   const lines = [];
   const manager = new SessionManager(config, errorResultFactory(state), {
     log: (line) => lines.push(line),
-    resolveExecutable: async () => ({ source: "bundled", version: "2.1.296" }),
+    resolveExecutable: async () => ({ source: "bundled", version: "2.1.330" }),
   });
   await assert.rejects(
     manager.sendMessage({ text: "go" }),
@@ -82,7 +82,7 @@ test("an error result fails the turn with the error text", async () => {
       (line) =>
         line.startsWith("turn error") &&
         line.includes("outcome=failed") &&
-        line.includes("version=2.1.296"),
+        line.includes("version=2.1.330"),
     ),
     lines.join("\n"),
   );
@@ -98,7 +98,7 @@ test("turn logs carry the effective model and flow execution id", async () => {
       for await (const _message of prompt) {
         assert.equal(options.model, "anthropic/claude-opus-5-5");
         yield {
-          type: "result",
+          type: "result", user_message_uuids: [_message.uuid],
           subtype: "success",
           result: "ok",
           usage: { input_tokens: 3, output_tokens: 2 },
@@ -109,7 +109,7 @@ test("turn logs carry the effective model and flow execution id", async () => {
   });
   const manager = new SessionManager(config, factory, {
     log: (line) => lines.push(line),
-    resolveExecutable: async () => ({ source: "bundled", version: "2.1.296" }),
+    resolveExecutable: async () => ({ source: "bundled", version: "2.1.330" }),
   });
   const executionId = "6fdedd35-1111-2222-3333-444444444444";
   const outcome = await manager.completeTurn({
@@ -141,7 +141,7 @@ test("error subtypes without is_error also fail the turn", async () => {
     async *[Symbol.asyncIterator]() {
       yield { type: "system", subtype: "init", session_id: "s-max" };
       for await (const _message of prompt) {
-        yield { type: "result", subtype: "error_max_turns", errors: ["max turns"] };
+        yield { type: "result", user_message_uuids: [_message.uuid], subtype: "error_max_turns", errors: ["max turns"] };
       }
     },
   });
@@ -202,7 +202,7 @@ test("claude_executable is passed as pathToClaudeCodeExecutable", async () => {
       async interrupt() {},
       async *[Symbol.asyncIterator]() {
         for await (const _message of prompt) {
-          yield { type: "result", subtype: "success", result: "ok" };
+          yield { type: "result", user_message_uuids: [_message.uuid], subtype: "success", result: "ok" };
         }
       },
     };
@@ -218,22 +218,22 @@ test("claude_executable is passed as pathToClaudeCodeExecutable", async () => {
 });
 
 test("resolveClaudeExecutable prefers config, then a newer PATH claude", async () => {
-  const probe = async (exe) => (exe === "/usr/local/bin/claude" ? "2.1.400" : "2.1.100");
+  const probe = async (exe) => (exe === "/usr/local/bin/claude" ? "2.1.400" : exe === "/opt/claude" ? "2.1.330" : "2.1.100");
   assert.deepEqual(
     await resolveClaudeExecutable(
       { claude_executable: "/opt/claude" },
       {
         probe,
-        bundledVersion: () => "2.1.296",
+        bundledVersion: () => "2.1.330",
         findClaude: () => "/usr/local/bin/claude",
         isExecutable: () => true,
       },
     ),
     {
       path: "/opt/claude",
-      version: "2.1.100",
+      version: "2.1.330",
       source: "config",
-      warning: "Claude Code 2.1.100 is older than 2.1.251; the model upstream may reject it",
+      warning: undefined,
     },
   );
   await assert.rejects(
@@ -250,23 +250,23 @@ test("resolveClaudeExecutable prefers config, then a newer PATH claude", async (
   assert.deepEqual(
     await resolveClaudeExecutable(
       {},
-      { probe, bundledVersion: () => "2.1.296", findClaude: () => "/usr/local/bin/claude" },
+      { probe, bundledVersion: () => "2.1.330", findClaude: () => "/usr/local/bin/claude" },
     ),
     { path: "/usr/local/bin/claude", version: "2.1.400", source: "path" },
   );
   assert.deepEqual(
     await resolveClaudeExecutable(
       {},
-      { probe, bundledVersion: () => "2.1.296", findClaude: () => "/usr/bin/claude" },
+      { probe, bundledVersion: () => "2.1.330", findClaude: () => "/usr/bin/claude" },
     ),
-    { version: "2.1.296", source: "bundled", warning: undefined },
+    { version: "2.1.330", source: "bundled", warning: undefined },
   );
   assert.deepEqual(
     await resolveClaudeExecutable(
       {},
-      { probe, bundledVersion: () => "2.1.296", findClaude: () => undefined },
+      { probe, bundledVersion: () => "2.1.330", findClaude: () => undefined },
     ),
-    { version: "2.1.296", source: "bundled", warning: undefined },
+    { version: "2.1.330", source: "bundled", warning: undefined },
   );
 });
 
@@ -312,4 +312,14 @@ test("a bad claude_executable fails the turn with its reason", async () => {
   });
   await assert.rejects(manager.sendMessage({ text: "go" }), /claude_executable \/nope/);
   manager.stop();
+});
+
+
+test("rejects configured binaries without verified prompt UUID support", async () => {
+  for (const version of ["2.1.251", undefined]) {
+    await assert.rejects(resolveClaudeExecutable(
+      { claude_executable: "/opt/claude" },
+      { probe: async () => version, isExecutable: () => true, bundledVersion: () => "2.1.330" },
+    ), /update Claude Code.*2\.1\.330/i);
+  }
 });

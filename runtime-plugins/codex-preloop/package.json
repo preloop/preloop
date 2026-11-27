@@ -1,6 +1,6 @@
 {
   "name": "@preloop-ai/codex-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "See your live Codex CLI sessions from the Preloop console or your phone, send them a turn, and interrupt them from anywhere. Prototype.",
   "license": "Apache-2.0",
   "type": "module",

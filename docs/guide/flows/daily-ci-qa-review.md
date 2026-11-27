@@ -95,10 +95,12 @@ and [Host execution profiles](../runners/quickstart-linux.md#host-execution-prof
 }
 ```
 
-Codex host execution cannot publish pull requests yet, so the flow is
-refused when it pins `codex_cli` with `create_pull_request: true`. Until it
-can, a pinned flow uses `publication_mode: read_only`: it still produces
-the report and its local commit, but the commit is not published. The
+A pinned Codex flow can open its pull request: set
+`create_pull_request: true` (legacy publication) and add `"allow_publish":
+true` next to `"allow_checkout": true` on the runner's host profile. The
+runner pushes the managed branch with the repository token Preloop issues
+for the run, and Preloop opens the pull request, so the prompt does not need
+its own publishing steps. The
 harness, runner, model and publication settings can all be changed later
 with a flow update; the flow does not have to be recreated. A pinned flow
 is only leased to a runner that advertises that harness for flows, so

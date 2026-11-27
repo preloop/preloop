@@ -87,6 +87,17 @@ export class TranscriptObserver {
     this.primed = true;
   }
 
+  /** Bounded checkout candidates from the host's recent native session history. */
+  recentDirectories(): string[] {
+    const files = this.listTranscripts().flatMap(file => {
+      try { return [{ file, stat: fs.statSync(file) }]; } catch { return []; }
+    }).sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs).slice(0, 50);
+    return [...new Set(files.flatMap(({ file, stat }) => {
+      const cwd = this.summarize(file, stat)?.cwd;
+      return cwd ? [cwd] : [];
+    }))];
+  }
+
   private listTranscripts(): string[] {
     const results: string[] = [];
     let projects: string[];

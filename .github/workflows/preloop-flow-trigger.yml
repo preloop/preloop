@@ -225,9 +225,16 @@ jobs:
           done
           echo "head=$head" >> "$GITHUB_OUTPUT"
           # A completed review of this exact head is the durable dedup receipt.
-          # Only preloop[bot]'s reviews count (CodeQL and humans also review; a
-          # head is not a Preloop review), and a manual dispatch always runs.
-          reviewed=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/reviews" --jq ".[] | select(.commit_id == \"$head\" and .user.login == \"preloop[bot]\" and (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\" or .state == \"COMMENTED\")) | .id")
+          # Inline replies also create COMMENTED reviews under the bot identity,
+          # but with an empty body. Those are discussion, not a review verdict.
+          # Only this bot counts; manual dispatch always runs.
+          reviewed=$(gh api --paginate "repos/$GH_REPO/pulls/$PR_NUMBER/reviews" --jq "
+            .[] | select(
+              .commit_id == \"$head\" and .user.login == \"preloop[bot]\" and
+              (.state == \"APPROVED\" or .state == \"CHANGES_REQUESTED\" or
+                (.state == \"COMMENTED\" and
+                  ((.body // \"\") | test(\"[^[:space:]]\"))))
+            ) | .id")
           if [ -n "$reviewed" ] && [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then
             echo "reviewed=true" >> "$GITHUB_OUTPUT"
           fi

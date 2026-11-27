@@ -24,20 +24,6 @@ func TestClaudeSubscriptionCustodyDisclosesGatewayEffects(t *testing.T) {
 	}
 }
 
-func TestClaudeApprovalPromptExplainsWaitWithoutChangingDefault(t *testing.T) {
-	testenv.SetTempHome(t)
-	var output bytes.Buffer
-	yes, err := promptForApprovalsOptIn(strings.NewReader("\n"), &output, AgentConfig{Name: "Claude Code"})
-	if err != nil || !yes {
-		t.Fatalf("default changed: yes=%t err=%v", yes, err)
-	}
-	for _, want := range []string{"Enforce", "Skill", "ToolSearch", "Agent", "Approvals", "570", "585", "600", "Off: auto-approve (recorded)", "workflow"} {
-		if !strings.Contains(output.String(), want) {
-			t.Errorf("missing approval consequence %q", want)
-		}
-	}
-}
-
 func TestClaudeControlOffboardOwnership(t *testing.T) {
 	for _, existing := range []bool{false, true} {
 		t.Run(map[bool]string{false: "created", true: "preexisting"}[existing], func(t *testing.T) {

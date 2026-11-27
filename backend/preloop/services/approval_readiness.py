@@ -181,3 +181,41 @@ def describe_readiness(
             f"This workflow requires {required} approvals, but only {len(deciders)} active members can decide in the console."
         )
     return result
+
+
+NATIVE_DELIVERY_WARNING = "_preloop_native_delivery_warning"
+
+
+def native_delivery_warning(
+    account_id: str, workflow_id: UUID, agent_id: UUID | None
+) -> str | None:
+    """Describe a native approval with no mobile, chat or external destination.
+
+    Email alone is not an interactive approver. Leave the request in the
+    console, but return guidance immediately instead of holding the editor.
+    """
+    from preloop.models.crud import crud_account
+    from preloop.models.db.session import get_session_factory
+
+    with get_session_factory()() as db:
+        account = crud_account.get(db, id=account_id)
+        workflow = crud_approval_workflow.get(db, id=workflow_id, account_id=account_id)
+        if account is None or workflow is None:
+            return None
+        readiness = describe_readiness(
+            db, account=account, workflow=workflow, agent_id=agent_id
+        )
+        if workflow.approval_mode == "ai_driven" or readiness.external:
+            return None
+        if set(readiness.destinations) - {"Email"}:
+            return None
+        return (
+            "No mobile or chat approval destination is configured. "
+            + (
+                "Email is the only notification channel. "
+                if "Email" in readiness.destinations
+                else "No notification channel is available. "
+            )
+            + "Review the request in Preloop Console > Approvals, or run "
+            "`preloop agents pause` to temporarily turn off the local gate."
+        )

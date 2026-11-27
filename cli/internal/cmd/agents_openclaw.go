@@ -798,18 +798,6 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			fmt.Println("Aborted without applying onboarding.")
 			return nil
 		}
-		// Offer the native tool-approvals hook even when the user did not
-		// pass --approvals, so interactive onboarding surfaces the feature
-		// for the agents that support it. Non-interactive runs
-		// (PRELOOP_CONFIRM) stay flag-driven: hooks change tool-call behavior
-		// and must not be installed by an auto-answered prompt.
-		if !opts.Approvals && !nonInteractiveAutoConfirm() {
-			optIn, approvalsErr := promptForApprovalsOptIn(input, output, agent)
-			if approvalsErr != nil {
-				return fmt.Errorf("failed to read approvals confirmation: %w", approvalsErr)
-			}
-			opts.Approvals = optIn
-		}
 	}
 
 	// Test real writability of every file onboarding would write before
@@ -1149,6 +1137,11 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 		if routeResult.Routed() {
 			backupState.ClaudeDesktopModelRoutePath = routeResult.Path
+		}
+	}
+	if !opts.Approvals {
+		if err := removeNativeApprovalGates(agent); err != nil {
+			return err
 		}
 	}
 	if opts.Approvals && isApprovalHookSupportedAgent(agent) {

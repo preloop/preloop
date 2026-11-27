@@ -641,6 +641,7 @@ export interface TerminalLocation {
 }
 
 export interface RuntimeSessionSummary {
+  first_prompt?: string | null;
   parent_session_id?: string | null;
   subagent_role?: string | null;
   terminal_location?: TerminalLocation | null;
@@ -720,12 +721,21 @@ export interface AccountRuntimeSessionListResponse {
   limit: number;
   offset: number;
   items: RuntimeSessionSummary[];
+  related_sessions?: RuntimeSessionSummary[];
+  related_truncated?: boolean;
+  matching_snippets?: Record<string, string>;
+  matching_turns?: Record<string, string>;
+  content_search?: SessionSearchResponse | null;
+  search_warning?: string | null;
+  next_offset?: number | null;
 }
 
 export interface AccountRuntimeSessionDetailResponse {
   period_start: string;
   period_end: string;
   session: RuntimeSessionSummary;
+  related_sessions?: RuntimeSessionSummary[];
+  related_truncated?: boolean;
   usage_by_model: GatewayUsageByModel[];
   interactions: AccountGatewayUsageSearchResponse;
   activity_timeline: RuntimeSessionActivityItem[];
@@ -1116,7 +1126,8 @@ export interface ManagedAgentUpdateRequest {
   owner_user_id?: string | null;
   display_name?: string | null;
   tags?: Record<string, string> | null;
-  lifecycle_action?: 'suspend' | 'resume' | 'decommission' | 'reenroll';
+  lifecycle_action?:
+    'suspend' | 'suspend_block' | 'resume' | 'decommission' | 'reenroll';
   reason?: string | null;
   /** Owner only: whether other members need approval to start a session. */
   others_may_start_sessions?: 'ask_me' | 'allow' | 'deny';
@@ -2885,6 +2896,37 @@ export interface ApprovalRuleContext {
   also_matched_rule_ids?: string[];
   /** Detector attributes for model I/O holds (never a full prompt). */
   detector_summary?: Record<string, unknown>;
+  /** Runner owner consent: what the owner is asked to let run. */
+  runner_flow?: RunnerFlowApprovalContext;
+}
+
+/**
+ * Snapshot behind "Allow this flow to run on your runner?", built by
+ * `services/runner_flow_consent_context.py`. Every field is optional:
+ * missing facts are omitted, never guessed.
+ */
+export interface RunnerFlowApprovalContext {
+  runner?: {
+    name?: string;
+    device?: { hostname?: string; os?: string; arch?: string };
+  };
+  harness?: string;
+  model?: string;
+  flow?: { id?: string; name?: string; href?: string };
+  trigger?: {
+    kind?: string;
+    label?: string;
+    actor?: string;
+    source?: string;
+    event?: string;
+  };
+  repositories?: Array<{ repository: string; branch?: string }>;
+  directory?: string;
+  publication?: { can_push?: boolean; label?: string };
+  limits?: { timeout_seconds?: number };
+  /** `this_run` today: one approval admits one execution. */
+  scope?: string;
+  scope_label?: string;
 }
 
 /** Mode of a time-boxed approval bypass. */

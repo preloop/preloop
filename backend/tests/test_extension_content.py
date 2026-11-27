@@ -983,3 +983,120 @@ def test_matcher_update_refreshes_the_row_redaction_totals(
     assert upload(client, [plain]).json()["kept"] == 1
     data = read(client, plain).json()
     assert data["redaction_count"] == 0 and data["redacted"] is False
+
+
+def test_hook_budget_counts_utf8_matchers_and_history(client: TestClient) -> None:
+    """Count every stored matcher alongside command text, including history."""
+    first = hook_item([("é", "echo example")])
+    second = hook_item([("工具", "echo example")])
+    inventory(client, [first])
+    assert upload(client, [first]).json()["stored"] == 1
+    assert read(client, first).json()["stored_bytes"] == 12 + 2 + 2
+    assert upload(client, [second]).json()["kept"] == 1
+    # Latest matcher is also present in the history displayed by the console.
+    assert read(client, first).json()["stored_bytes"] == 12 + 6 + 2 + 6
+    assert client.get(SETTINGS).json()["stored_bytes"] == 26
+
+
+def test_same_hook_can_refresh_at_the_account_cap(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A report that adds no text must still refresh a full account's hook."""
+    item = hook_item([("Bash", "echo example")])
+    inventory(client, [item])
+    assert upload(client, [item]).json()["stored"] == 1
+    used = client.get(SETTINGS).json()["stored_bytes"]
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", used)
+    assert upload(client, [item]).json() == {"stored": 0, "kept": 1, "rejected": []}
+    assert client.get(SETTINGS).json()["stored_bytes"] == used
+
+
+def test_matcher_growth_obeys_budget_without_partial_update(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reject excess matcher history without changing the readable document."""
+    first = hook_item([("Bash", "echo example")])
+    second = hook_item([("Longer matcher", "echo example")])
+    inventory(client, [first])
+    assert upload(client, [first]).json()["stored"] == 1
+    before = read(client, first).json()
+    # Enough for a second command under the old accounting, but not its matchers.
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", before["stored_bytes"] + 12)
+    result = upload(client, [second]).json()
+    assert result["rejected"][0]["reason"] == "account_budget_exhausted"
+    after = read(client, first).json()
+    assert after["hooks"] == before["hooks"]
+    assert after["matcher_sets"] == before["matcher_sets"]
+    assert after["stored_bytes"] == before["stored_bytes"]
+
+
+def test_matcher_growth_spends_only_its_delta_within_a_batch(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retained commands are not charged again when matcher text grows."""
+    first = hook_item([("A", "echo example")])
+    second = hook_item([("BC", "echo example")])
+    skill = default_skill()
+    inventory(client, [first, skill])
+    assert upload(client, [first]).json()["stored"] == 1
+    skill_bytes = policy.verify_item(skill).stored_bytes
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", 12 + 2 + 1 + 2 + skill_bytes)
+    assert upload(client, [second, skill]).json() == {
+        "stored": 1,
+        "kept": 1,
+        "rejected": [],
+    }
+    assert client.get(SETTINGS).json()["stored_bytes"] == policy.MAX_ACCOUNT_BYTES
+
+
+def test_better_evidence_replaces_content_using_only_the_byte_delta(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Improving evidence must not charge for a second copy of the same row."""
+    original = "Readable example instructions"
+    initial = skill_item([redacted_file("SKILL.md", original, "[REDACTED]", example=1)])
+    verified = skill_item([stored_file("SKILL.md", original)])
+    inventory(client, [verified])
+    assert upload(client, [initial]).json()["stored"] == 1
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", len(original.encode()))
+    assert upload(client, [verified]).json() == {"stored": 1, "kept": 0, "rejected": []}
+    assert read(client, verified).json()["verification"] == "verified"
+    assert client.get(SETTINGS).json()["stored_bytes"] == len(original.encode())
+
+
+def test_matcher_history_eviction_releases_budget_for_later_items(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bounded history can shrink and make room for another item in the batch."""
+    from preloop.models.crud import extension_content as content_crud
+
+    monkeypatch.setattr(content_crud, "MAX_MATCHER_SETS", 2)
+    first = hook_item([("A" * 100, "echo example")])
+    second = hook_item([("B", "echo example")])
+    third = hook_item([("C", "echo example")])
+    skill = skill_item([stored_file("SKILL.md", "# Example\n")])
+    inventory(client, [first, skill])
+    assert upload(client, [first]).json()["stored"] == 1
+    assert upload(client, [second]).json()["kept"] == 1
+    used = client.get(SETTINGS).json()["stored_bytes"]
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", used)
+    assert upload(client, [third, skill]).json() == {
+        "stored": 1,
+        "kept": 1,
+        "rejected": [],
+    }
+    assert read(client, first).json()["stored_bytes"] == 12 + 1 + 1 + 1
+    assert client.get(SETTINGS).json()["stored_bytes"] == (
+        15 + policy.verify_item(skill).stored_bytes
+    )
+
+
+def test_upload_budget_includes_utf8_matcher_text(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The request byte cap includes matcher text as well as commands."""
+    item = hook_item([("é", "echo example")])
+    inventory(client, [item])
+    monkeypatch.setattr(policy, "MAX_UPLOAD_BYTES", 13)
+    assert upload(client, [item]).status_code == 413
+    assert read(client, item).status_code == 404

@@ -148,9 +148,9 @@ A host profile can run a PR Reviewer or an implementation flow end to end:
   https (plain http is accepted only for a loopback tracker). Clone
   `setup_commands` are
   refused.
-- **Publication (one Bitbucket Cloud repository, opt-in).** A flow whose
-  `git_clone_config` sets `create_pull_request` runs on a Copilot profile
-  only when that profile sets both `"allow_checkout": true` and
+- **Publication (one repository, opt-in).** A flow whose
+  `git_clone_config` sets `create_pull_request` runs on a host profile
+  (Copilot or any other native harness) only when that profile sets both `"allow_checkout": true` and
   `"allow_publish": true`. The runner then advertises `host_publication`
   for the profile. After Copilot exits successfully the runner stages and
   commits any changes (repository hooks are disabled), and pushes the
@@ -161,13 +161,14 @@ A host profile can run a PR Reviewer or an implementation flow end to end:
   checkout git config, so nothing Copilot writes to `.git/config` or
   `~/.gitconfig` (a proxy, CA file, URL rewrite or credential helper) can
   reach the credential. The control
-  plane then opens the pull request through the bound Bitbucket tracker
+  plane then opens the pull request through the bound GitHub, GitLab or
+  Bitbucket Cloud tracker
   and binds it to the execution; the agent never supplies a pull request
-  URL. Saving such a flow, or starting it, fails with the original
-  "cannot publish pull requests" error when no runner in the pool
+  URL. Saving such a flow, or starting it, fails with an error naming
+  `allow_checkout` and `allow_publish` when no runner in the pool
   advertises `host_publication` (an older CLI or a profile without
   `allow_publish`), and those runners never take the lease. Isolated
-  publication, more than one repository and Cursor profiles stay refused.
+  publication and more than one repository stay refused.
 - **Feedback continuation.** Review or CI feedback on a pull request that
   a Copilot host run published continues the same run: the existing
   feedback thread queues a continuation, and the control plane pins it to
@@ -250,7 +251,7 @@ Named errors:
 | `copilot_approval_hook_missing` | `allow_all_tools` is set but the approval hook is not installed. |
 | `host_checkout_not_allowed` | The flow clones repositories but the profile does not set `allow_checkout`. |
 | `host_checkout_failed` | `git` could not clone or check out the planned commit. The error carries git's last line; the credential is never logged. |
-| `host_publication_not_allowed` | The flow opens a pull request but the profile does not set `allow_publish` (and `allow_checkout`), or is not a Copilot profile. |
+| `host_publication_not_allowed` | The flow opens a pull request but the profile does not set `allow_publish` (and `allow_checkout`), or the harness is not a native host harness. |
 | `publication_failed: push_conflict` | The managed branch already exists on the remote with other commits. Nothing was force-pushed; the commit stays in the run directory. |
 | `publication_failed: credential_rejected` | The repository refused the tracker credential for the push. Reconnect the code-host tracker with write access and run again. |
 | `resume_unavailable` | A feedback continuation cannot resume: the Copilot session is not on the originating runner, that runner is gone or lacks `host_continuation`, the profile or model changed, or the original pull request is not confirmed. Nothing restarts. |
@@ -261,7 +262,7 @@ Named errors:
 
 This path does not run custom commands or clone setup commands, and
 does not resume sessions. Pull requests are opened only through the
-opt-in managed publication above (one Bitbucket Cloud repository, legacy
+opt-in managed publication above (one repository, legacy
 mode). Other requests are refused before the run with a message naming
 the missing capability; they are not silently dropped. See
 [host execution profiles](runners/quickstart-linux.md#host-execution-profiles-advanced-override-private-only)

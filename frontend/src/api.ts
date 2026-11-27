@@ -1380,6 +1380,8 @@ export interface GatewayUsageSearchParams extends GatewayUsageSummaryParams {
 }
 
 export interface RuntimeSessionListParams extends GatewayUsageSummaryParams {
+  includeRelated?: boolean;
+  sessionIds?: string[];
   workspaceId?: string;
   sort?: 'last_activity' | 'started' | 'cost' | 'requests';
   query?: string;
@@ -1523,6 +1525,7 @@ function buildRuntimeSessionListQuery(
     queryParams.set('offset', String(params.offset));
   }
 
+  if (params.includeRelated) queryParams.set('include_related', 'true');
   const queryString = queryParams.toString();
   return queryString ? `?${queryString}` : '';
 }
@@ -2637,6 +2640,31 @@ export async function getAccountRuntimeSessions(
   return response.json();
 }
 
+/** Find by identity and captured content, returning family context in one read. */
+export async function findRuntimeSessions(
+  params: RuntimeSessionListParams = {}
+): Promise<AccountRuntimeSessionListResponse> {
+  const body = Object.fromEntries(
+    new URLSearchParams(buildRuntimeSessionListQuery(params))
+  );
+  delete body.include_related;
+  if (params.sessionIds)
+    (body as Record<string, unknown>).session_ids = params.sessionIds;
+  for (const key of ['limit', 'offset']) {
+    if (key in body) (body as Record<string, unknown>)[key] = Number(body[key]);
+  }
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/runtime-sessions/find`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!response.ok) throw new Error('Failed to find sessions');
+  return response.json();
+}
+
 export interface SessionSearchParams {
   query: string;
   mode?: SessionSearchMode;
@@ -3031,12 +3059,34 @@ export async function getAgentControlCommandStatus(
   runtime_session_id?: string | null;
   terminal: boolean;
   delivery_state: string;
+  prompt_delivery?: 'queued' | 'sent';
   last_error?: string | null;
 }> {
   const response = await fetchWithAuth(
     `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/commands/${encodeURIComponent(commandId)}`
   );
   if (!response.ok) throw new Error('Could not confirm command delivery');
+  return response.json();
+}
+
+export interface TalkStartOptions {
+  capabilities: Record<string, boolean | string>;
+  version?: string;
+  default_directory?: string;
+  projects: { project_id?: string; name: string; path: string }[];
+  recent_directories: string[];
+}
+
+export async function getTalkStartOptions(
+  agentId: string
+): Promise<TalkStartOptions> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/start-options`
+  );
+  if (!response.ok)
+    throw new Error(
+      'Could not check sidecar capabilities. Retry before sending.'
+    );
   return response.json();
 }
 
@@ -6612,6 +6662,11 @@ export function stopRunnerSession(
 
 /** How a line typed on a runtime session is delivered (GET .../control). */
 export interface RuntimeSessionControl {
+  /** Server-owned wording. Selection UI must not infer delivery from activity. */
+  delivery_preview?: {
+    state: 'delivered_now' | 'next_step' | 'resumes_session' | 'unavailable';
+    description: string;
+  };
   runtime_session_id: string;
   mode: 'command' | 'note';
   reason_code:
@@ -6627,6 +6682,7 @@ export interface RuntimeSessionControl {
     | 'herdr_unavailable'
     | 'session_owner_unknown'
     | 'session_directory_unknown'
+    | 'sidecar_update_required'
     | 'session_unavailable'
     | 'runner_away'
     | null;

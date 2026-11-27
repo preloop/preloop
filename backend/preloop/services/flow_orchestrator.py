@@ -4385,6 +4385,7 @@ class FlowExecutionOrchestrator:
                     account_id=self.flow.account_id,
                     runner_pool=self.flow.runner_pool,
                     profile=profile or "",
+                    agent_type=effective_agent_type,
                 )
             ):
                 from preloop.services.host_exec import PULL_REQUEST_UNAVAILABLE
@@ -4421,6 +4422,7 @@ class FlowExecutionOrchestrator:
                     flow=self.flow,
                     resume=resume,
                     profile=profile or "",
+                    agent_type=effective_agent_type,
                     model_identifier=lease_model,
                 )
             elif workspace_files or resume:
@@ -7591,18 +7593,34 @@ class FlowExecutionOrchestrator:
                     configured.get("pull_request_description"), trigger
                 ),
                 commit_title=str(self.flow.name or ""),
+                # The runner reads the repository's PR template from its
+                # checkout with the hosted discovery rules.
+                commit_body=str(receipt.get("pr_template") or ""),
             )
+            base_branch = await self._host_publication_base(
+                clients[0],
+                checkout["repositories"][0].get("branch"),
+                branch=branch,
+                configured=configured,
+                is_continuation=is_continuation,
+            )
+            approval_error = self._host_publication_approval_error(
+                configured,
+                repository_url=str(checkout["repositories"][0].get("url") or ""),
+                branch=branch,
+                base_branch=base_branch,
+                head_sha=str(receipt.get("head_sha") or ""),
+                creates=receipt.get("status") == "pushed",
+            )
+            if approval_error:
+                return f"{failed}: {approval_error}"
             found = await open_and_bind_host_pull_request(
                 self.db,
                 execution_id=self.execution_log.id,
                 client=clients[0],
                 allow_create=receipt.get("status") == "pushed",
                 branch=branch,
-                base_branch=str(
-                    checkout["repositories"][0].get("branch")
-                    or _first_repository_default_branch(configured)
-                    or "main"
-                ),
+                base_branch=base_branch,
                 title=title,
                 description=body,
             )
@@ -7615,6 +7633,108 @@ class FlowExecutionOrchestrator:
         self._opened_pr = {"url": found["url"], "branch": branch}
         self._opened_pr_bound = True
         self.execution_logger.log_milestone("pull_request_opened", dict(found))
+        return None
+
+    @staticmethod
+    async def _host_publication_base(
+        client: Any,
+        checkout_branch: Any,
+        *,
+        branch: str,
+        configured: Mapping[str, Any],
+        is_continuation: bool,
+    ) -> str:
+        """The branch a host-published pull request merges into.
+
+        A first run clones the base, so the checkout branch is the base. A
+        feedback continuation clones the existing pull request head, so the
+        base comes from that open pull request, then the repository default.
+
+        Args:
+            client: Code-host tracker client of the bound repository.
+            checkout_branch: Branch the runner checked out.
+            branch: Managed branch the runner pushed.
+            configured: The flow's ``git_clone_config``.
+            is_continuation: True for a feedback continuation.
+
+        Returns:
+            The base branch name.
+        """
+        default = _first_repository_default_branch(configured) or "main"
+        checked_out = str(checkout_branch or "")
+        if checked_out and checked_out != branch and not is_continuation:
+            return checked_out
+        lookup = getattr(client, "list_open_pull_requests_by_source_branch", None)
+        if lookup is not None:
+            try:
+                found = BaseTracker._first_listed_for_branch(
+                    await lookup(branch), branch
+                )
+            except Exception as error:
+                logger.warning("Host PR base lookup failed: %s", type(error).__name__)
+                found = None
+            target = str((found or {}).get("target_branch") or "")
+            if target and target != branch:
+                return target
+        return default
+
+    def _host_publication_approval_error(
+        self,
+        configured: Mapping[str, Any],
+        *,
+        repository_url: str,
+        branch: str,
+        base_branch: str,
+        head_sha: str,
+        creates: bool,
+    ) -> Optional[str]:
+        """Apply the saved ``publication_approval`` gate to a host-pushed head.
+
+        The same human approval hosted publication requires: an approved,
+        unexpired, human-decided ``request_approval`` whose candidates name
+        this repository, branch, base and head SHA. Binding an existing pull
+        request after a continuation that pushed nothing opens nothing, so it
+        is not gated.
+
+        Args:
+            configured: The flow's ``git_clone_config``.
+            repository_url: Checkout repository URL (no credentials).
+            branch: Managed branch the runner pushed.
+            base_branch: Branch the pull request merges into.
+            head_sha: Commit the runner pushed.
+            creates: True when this call may open a new pull request.
+
+        Returns:
+            An actionable refusal, or None when publication may proceed.
+        """
+        from preloop.services.product_provenance import (
+            ProductProvenanceError,
+            enforce_saved_publication_approval,
+            publication_approval_required,
+        )
+
+        if not creates or not publication_approval_required(configured):
+            return None
+        try:
+            enforce_saved_publication_approval(
+                self.db,
+                flow=self.flow,
+                account_id=str(getattr(self.flow, "account_id", "") or ""),
+                execution_id=str(self.execution_log.id),
+                candidates=[
+                    {
+                        "repository_url": repository_url,
+                        "branch": branch,
+                        "base": base_branch,
+                        "head_sha": head_sha,
+                    }
+                ],
+            )
+        except ProductProvenanceError:
+            return (
+                "publication_approval requires a human approval for "
+                f"{branch} at {head_sha or 'the pushed head'} onto {base_branch}"
+            )
         return None
 
     @staticmethod

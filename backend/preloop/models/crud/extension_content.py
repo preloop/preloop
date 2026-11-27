@@ -185,8 +185,9 @@ class CRUDExtensionContent:
         collector_version: str | None,
         redaction_rules: str | None,
         now: datetime | None = None,
-    ) -> bool:
-        """Encrypt and store one verified item. The caller owns the commit.
+        available_bytes: int | None = None,
+    ) -> tuple[bool, int]:
+        """Store one item under the caller's account lock and transaction.
 
         The first upload of a hash wins. A later upload replaces it only when
         it is strictly better evidence and loses nothing:
@@ -200,8 +201,11 @@ class CRUDExtensionContent:
         replace a fuller row with one that lists files as unreadable.
 
         Returns:
-            True when the row was inserted or replaced, False when the
-            existing row was kept.
+            Whether content was inserted or replaced, and the signed change
+            in stored text bytes. A kept hook can still change matcher bytes.
+
+        Raises:
+            policy.ContentRejectedError: When the change exceeds available_bytes.
         """
         moment = now or datetime.now(UTC)
         for entry in item.document.get("matcher_sets") or []:
@@ -224,21 +228,6 @@ class CRUDExtensionContent:
             "last_reported_at": moment,
         }
         model = models.ExtensionContent
-        inserted = db.execute(
-            insert(model)
-            .values(
-                id=model.generate_id(),
-                account_id=account_id,
-                extension_kind=extension_kind,
-                content_hash=content_hash,
-                created_at=moment,
-                **values,
-            )
-            .on_conflict_do_nothing(constraint="uq_extension_content_account_hash")
-            .returning(model.id)
-        ).first()
-        if inserted is not None:
-            return True
         existing = db.execute(
             select(model)
             .where(
@@ -247,7 +236,24 @@ class CRUDExtensionContent:
                 model.content_hash == content_hash,
             )
             .with_for_update()
-        ).scalar_one()
+        ).scalar_one_or_none()
+        if existing is None:
+            if available_bytes is not None and item.stored_bytes > max(
+                0, available_bytes
+            ):
+                raise policy.ContentRejectedError(policy.REJECT_BUDGET)
+            # The account lock serializes inserts as well as budget decisions.
+            db.execute(
+                insert(model).values(
+                    id=model.generate_id(),
+                    account_id=account_id,
+                    extension_kind=extension_kind,
+                    content_hash=content_hash,
+                    created_at=moment,
+                    **values,
+                )
+            )
+            return True, item.stored_bytes
         old_rank = _VERIFICATION_RANK.get(existing.verification, 0)
         new_rank = _VERIFICATION_RANK.get(item.verification, 0)
         gains_text = existing.stored_count == 0 and item.stored_count > 0
@@ -261,24 +267,35 @@ class CRUDExtensionContent:
         )
         replace = gains_text or gains_proof or gains_entries
         merged = self._merge_matcher_sets(existing, item, replace)
+        next_document = merged[0] if merged is not None else item.document
+        next_bytes = (
+            policy.stored_text_bytes(next_document)
+            if replace or merged is not None
+            else existing.stored_bytes
+        )
+        byte_delta = next_bytes - existing.stored_bytes
+        if available_bytes is not None and byte_delta > max(0, available_bytes):
+            raise policy.ContentRejectedError(policy.REJECT_BUDGET)
         if not replace:
-            # A matcher-only update keeps the row: no bytes are added, so it
-            # counts as kept. The row-level redaction totals follow the
+            # A matcher-only update keeps the commands. Its byte delta still
+            # spends or releases budget. Row-level redaction totals follow the
             # matchers now shown beside the stored commands.
             existing.last_reported_at = moment
             if merged is not None:
                 document, delta = merged
                 existing.ciphertext = self._encrypt(document)
+                existing.stored_bytes = next_bytes
                 existing.redaction_count = max(0, existing.redaction_count + delta)
                 existing.redacted = existing.redaction_count > 0
                 db.flush()
-            return False
+            return False, byte_delta
         if merged is not None:
             values["ciphertext"] = self._encrypt(merged[0])
+        values["stored_bytes"] = next_bytes
         for key, value in values.items():
             setattr(existing, key, value)
         db.flush()
-        return True
+        return True, byte_delta
 
     def _encrypt(self, document: dict[str, Any]) -> bytes:
         text = json.dumps(document, separators=(",", ":"), sort_keys=True)

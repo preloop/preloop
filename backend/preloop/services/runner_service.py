@@ -1188,6 +1188,16 @@ def lease_job(
                 # looking for usable capacity instead of inventing a refusal.
                 continue
             from preloop.services.owner_consent import check_owner_consent
+            from preloop.services.runner_flow_consent_context import (
+                runner_flow_request,
+            )
+
+            def describe(
+                candidate: Any = candidate,
+            ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+                return runner_flow_request(
+                    db, runner=candidate, execution_id=execution_id, payload=payload
+                )
 
             try:
                 consent = check_owner_consent(
@@ -1202,6 +1212,7 @@ def lease_job(
                         "runner_id": str(candidate.id),
                     },
                     execution_id=str(execution_id),
+                    describe=describe,
                 )
             except ValueError:
                 # An unavailable or changed owner is not an owner decline.

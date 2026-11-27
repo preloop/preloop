@@ -918,6 +918,51 @@ describe('PreloopSessionObserver', () => {
     }
   });
 
+  it('shows parent, siblings and children as direct related-session links', async () => {
+    const el = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        .sessions=${[
+          { ...session, id: 'parent', title: 'Parent task' },
+          {
+            ...session,
+            id: 'selected',
+            title: 'Selected task',
+            parent_session_id: 'parent',
+          },
+          {
+            ...session,
+            id: 'sibling',
+            title: 'Sibling task',
+            parent_session_id: 'parent',
+          },
+          {
+            ...session,
+            id: 'child',
+            title: 'Child task',
+            parent_session_id: 'selected',
+          },
+        ]}
+        .selectedSessionId=${'selected'}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() =>
+      Boolean(el.shadowRoot!.querySelector('[data-session-family]'))
+    );
+    const nav = el.shadowRoot!.querySelector('[data-session-family]')!;
+    expect(nav.textContent).to.contain('Parent:');
+    expect(nav.textContent).to.contain('Sibling:');
+    expect(nav.textContent).to.contain('Subagent:');
+    expect(
+      Array.from(nav.querySelectorAll('a')).map((link) =>
+        link.getAttribute('href')
+      )
+    ).to.have.members([
+      '/console/runtime-sessions?sessionId=parent',
+      '/console/runtime-sessions?sessionId=sibling',
+      '/console/runtime-sessions?sessionId=child',
+    ]);
+  });
+
   it('shows subagent lineage and finished turns, including an off-page parent', async () => {
     const child = {
       ...session,

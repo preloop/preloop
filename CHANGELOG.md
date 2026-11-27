@@ -55,6 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The "Allow this flow to run on your runner?" approval now says what it
+  allows: the runner and its device (hostname, OS), the harness and model, the
+  flow (linked), what triggered the run, the repositories and directory it
+  uses, whether it can push or open a pull request, its time limit, and that
+  approving covers this run only. The console page, the approvals list, push
+  and email notifications and `preloop approvals pending` all show it; the
+  runner and execution ids move to a collapsed "Request ids" section.
+
 - A failed or cancelled onboarding removes the agent key, the models and the
   agent that it created in Preloop and restores the local files it changed,
   reporting server and local cleanup separately. Nothing half-made is left.

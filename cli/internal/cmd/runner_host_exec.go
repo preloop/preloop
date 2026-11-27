@@ -75,7 +75,7 @@ type hostExecProfile struct {
 	// untrusted input to the CLI, so a profile never clones by default.
 	AllowCheckout bool `json:"allow_checkout,omitempty"`
 	// AllowPublish is the operator's opt-in to managed legacy publication
-	// (Copilot only): after a successful run the runner commits and pushes
+	// (every native harness): after a successful run the runner commits and pushes
 	// the checkout to a preloop/ branch and the control plane opens the pull
 	// request. Requires allow_checkout. Off by default.
 	AllowPublish bool `json:"allow_publish,omitempty"`
@@ -281,7 +281,10 @@ func hostExecAdvertisements() []hostExecAdvertisement {
 			caps = append(caps, harness)
 		}
 		if hostExecProfileMayPublish(profile, harness) {
-			caps = append(caps, hostExecCapabilityPublication, hostExecCapabilityContinuation)
+			caps = append(caps, hostExecCapabilityPublication)
+		}
+		if hostExecProfileMayContinue(profile, harness) {
+			caps = append(caps, hostExecCapabilityContinuation)
 		}
 		if harness == hostExecHarnessCodex && profile.AllowCheckout {
 			caps = append(caps, hostExecCapabilityReadOnly)
@@ -742,7 +745,7 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 	}
 	if publication != nil && !hostExecProfileMayPublish(profile, wantHarness) {
 		return nil, fmt.Errorf(
-			"%s: the flow opens a pull request but host profile %q does not set allow_publish; set \"allow_publish\": true and \"allow_checkout\": true on a Copilot profile in %s",
+			"%s: the flow opens a pull request but host profile %q does not set allow_publish; set \"allow_publish\": true and \"allow_checkout\": true on the profile in %s",
 			hostExecPublishNotAllowed, profile.Name, hostExecProfilesFileName,
 		)
 	}

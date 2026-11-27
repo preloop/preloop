@@ -594,7 +594,9 @@ _FLOW_CONFIG_RE = re.compile(
     r"|Private publication requires a trusted policy snapshot"
     r"|Isolated recovery has no publication policy"
     r"|host_exec_profile|harness routing cannot run on hosted compute"
-    r"|host execution (?:does not|cannot)|isolated publication is unavailable",
+    r"|host execution (?:does not|cannot)|isolated publication is unavailable"
+    r"|host execution opens a pull request only through"
+    r"|a read_only review flow cannot open a pull request",
     re.IGNORECASE,
 )
 _AGENT_REPORTED_FAILURE_RE = re.compile(

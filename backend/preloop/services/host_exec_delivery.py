@@ -192,6 +192,33 @@ def host_exec_target_branch(context: Dict[str, Any]) -> str:
     return str(agent._resolve_git_branch_plan(dict(context), git_config)[1] or "")
 
 
+def host_exec_template_provider(context: Dict[str, Any]) -> Optional[str]:
+    """The code host whose PR template conventions a publishing run uses.
+
+    Same source as hosted runs: the bound tracker of the first repository,
+    never the repository directory layout.
+
+    Args:
+        context: Output of
+            ``FlowExecutionOrchestrator.prepare_host_exec_checkout_context``.
+
+    Returns:
+        The tracker type, or None when it cannot be resolved.
+    """
+    from preloop.agents.codex import CodexAgent
+
+    repositories = (context.get("git_clone_config") or {}).get("repositories")
+    first = repositories[0] if isinstance(repositories, list) and repositories else {}
+    try:
+        _, provider, _ = CodexAgent(config={})._resolve_repository_token(
+            first if isinstance(first, dict) else {}, context
+        )
+    except Exception:
+        logger.debug("Could not resolve the template provider", exc_info=True)
+        return None
+    return provider
+
+
 def build_host_exec_publication(
     checkout: Optional[Dict[str, Any]],
     *,
@@ -199,6 +226,8 @@ def build_host_exec_publication(
     flow_name: str,
     execution_id: str,
     continuation: bool = False,
+    pull_request_template: Optional[str] = None,
+    template_provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The runner publication plan for a single-repository checkout.
 
@@ -209,6 +238,10 @@ def build_host_exec_publication(
         execution_id: Execution id for the commit message.
         continuation: Feedback continuation; the branch is the existing
             pull request branch, which is also the checked out branch.
+        pull_request_template: The flow's configured repository-relative
+            pull request template, when set.
+        template_provider: Code host of the bound tracker. Selects the
+            GitHub or GitLab template conventions, as hosted runs do.
 
     Returns:
         ``{"path", "branch", "commit_message"}``.
@@ -248,11 +281,21 @@ def build_host_exec_publication(
             "Host publication pushes only managed preloop/ branches; clear "
             "the flow's target_branch"
         )
-    return {
+    plan: Dict[str, Any] = {
         "path": repo["path"],
         "branch": branch,
         "commit_message": f"Preloop: {flow_name} ({execution_id[:8]})"[:200],
     }
+    if pull_request_template:
+        # The runner reads this repository-relative file from the pushed
+        # commit and reports it, so the control plane fills the PR body the
+        # way hosted runs do.
+        plan["pull_request_template"] = str(pull_request_template)[:512]
+    # Hosted runs fall back to GitHub conventions for any other host.
+    plan["pull_request_provider"] = (
+        "gitlab" if template_provider == "gitlab" else "github"
+    )
+    return plan
 
 
 async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, Any]:
@@ -392,6 +435,8 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
                 flow_name=str(getattr(flow, "name", None) or "flow"),
                 execution_id=str(execution.id),
                 continuation=continuation,
+                pull_request_template=clone.get("pull_request_template"),
+                template_provider=host_exec_template_provider(context or {}),
             )
         if checkout:
             hydrated["host_exec_checkout"] = checkout
