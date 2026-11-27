@@ -58,6 +58,7 @@ from preloop.schemas.webhook_endpoint import (
 from preloop.services.event_webhooks import outbox
 from preloop.services.event_webhooks.events import (
     ENVELOPE_VERSION,
+    EVENT_FLEET_FINDING,
     EVENT_TEST,
     EVENT_TYPE_DESCRIPTIONS,
     EVENT_TYPES_V1,
@@ -201,8 +202,14 @@ def get_webhook_catalogue(
     account: Annotated[models.Account, Depends(get_account_for_user)],
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
-):
+) -> WebhookCatalogue:
     """Return the subscribable events and the delivery contract."""
+    from preloop.plugins.base import get_plugin_manager
+
+    fleet_enabled = (
+        get_plugin_manager().get_enabled_features()["features"].get("fleet_coverage")
+        is True
+    )
     return WebhookCatalogue(
         version=ENVELOPE_VERSION,
         event_types=[
@@ -210,6 +217,7 @@ def get_webhook_catalogue(
                 name=name, description=EVENT_TYPE_DESCRIPTIONS.get(name, "")
             )
             for name in EVENT_TYPES_V1
+            if name != EVENT_FLEET_FINDING or fleet_enabled
         ],
         signature_header=SIGNATURE_HEADER,
         tolerance_seconds=DEFAULT_TOLERANCE_SECONDS,

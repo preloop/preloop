@@ -1448,10 +1448,14 @@ export class ConsoleHeader extends LitElement {
     return html`
       <div class="empty-state">
         <sl-icon name="bell-slash"></sl-icon>
-        <div>No new notifications</div>
+        <div>No new notifications this session</div>
         ${
           attention
-            ? html`<div class="empty-state-detail">${attention}</div>`
+            ? html`<div class="empty-state-detail">${attention}</div>
+                <div class="empty-state-detail">
+                  Open findings remain in Needs attention until resolved or
+                  dismissed.
+                </div>`
             : ''
         }
       </div>

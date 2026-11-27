@@ -178,6 +178,11 @@ const RULE_COPY: Record<FleetRuleName, { title: string; limitation: string }> =
       limitation:
         'Stale means no recent inventory report arrived. It does not describe the device’s current state.',
     },
+    unapproved_extension: {
+      title: 'Extension needs approval',
+      limitation:
+        'Opens a finding when reported inventory needs approval, changes approved content, or cannot satisfy a version constraint.',
+    },
   };
 
 @customElement('device-fleet-view')
@@ -1723,8 +1728,8 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
     return html`<sl-card>
       <form @submit=${this.save}>
         <p class="meta">
-          Rules are off until you turn them on. Alerts go to eligible owners and
-          admins, honoring their notification preferences.
+          Choose which rules are enabled and where alerts go. Alerts go to
+          eligible owners and admins, honoring their notification preferences.
         </p>
         ${this.rules.map((rule, index) => this.renderRule(rule, index))}
         ${

@@ -281,6 +281,34 @@ describe('console-header bell empty state', () => {
     );
   });
 
+  it('explains why durable extension findings can coexist with an empty session feed', async () => {
+    publishAttentionSummary([
+      {
+        id: 'extension:finding-1',
+        kind: 'extension',
+        severity: 'warning',
+        title: 'review-helper (skill): Unapproved',
+        detail: 'Reported inventory',
+        href: '/console/settings/device-fleet',
+        at: null,
+        fingerprint: 'finding-1',
+        dismissable: true,
+      },
+    ]);
+    const el = await fixture<ConsoleHeader>(
+      html`<console-header></console-header>`
+    );
+    await el.updateComplete;
+    const text = dropdownText(el);
+    expect(text).to.contain('No new notifications this session');
+    expect(text).to.contain(
+      'Open findings remain in Needs attention until resolved or dismissed.'
+    );
+    expect(text).to.contain('1 item needs attention: 1 extension');
+    expect(el.shadowRoot!.querySelector('a[href="/console/attention"]')).to
+      .exist;
+  });
+
   it('follows a summary published while the header is on screen', async () => {
     const el = await fixture<ConsoleHeader>(
       html`<console-header></console-header>`

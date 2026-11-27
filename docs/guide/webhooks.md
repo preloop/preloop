@@ -45,6 +45,15 @@ with one-line descriptions, plus the signature header name, the verification
 tolerance and the retry schedule this deployment is running. Read the contract
 from there rather than hard-coding it.
 
+Servers exposing the `fleet_coverage` capability also list `fleet.finding` in the
+catalogue and the console's event selector. Its production and delivery remain
+the fleet provider's responsibility. The workflow compatibility delivery path
+uses the configured default approval workflow's webhook; selecting the event on
+an account endpoint does not replace that provider's delivery configuration.
+Configure the extension rule's enabled state and attention, email, push and
+webhook channels in **Settings → Device fleet → Alert settings**. Saving this
+form preserves the server's channel defaults unless you change the controls.
+
 ## The envelope
 
 Every request body is one JSON object with exactly these keys:

@@ -5,12 +5,74 @@ import sinon from 'sinon';
 import './audit-view';
 import type { AuditView } from './audit-view';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
+import { fleetExtensionFindings } from '../../test-helpers/fleet-extension-findings';
 
 describe('AuditView', () => {
   let fetchStub: sinon.SinonStub;
   let wsSubscribeStub: sinon.SinonStub;
   let wsConnectStub: sinon.SinonStub;
   let wsCallback: ((message: any) => void) | null = null;
+
+  it('names extension findings and their lifecycle from the audit snapshot', async () => {
+    const findings = [
+      ...fleetExtensionFindings,
+      { ...fleetExtensionFindings[0], evidence: {} },
+    ];
+    const states = ['open', 'resolved', 'open', 'resolved'];
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      if (String(input).startsWith('/api/v1/audit-logs/grouped?')) {
+        return new Response(
+          JSON.stringify({
+            groups: findings.map((finding, index) => ({
+              correlation_id: null,
+              outcome: 'success',
+              primary_event: {
+                id: `audit-extension-${index}`,
+                account_id: 'account-1',
+                user_id: null,
+                action: 'configuration_change',
+                resource_type: 'fleet_finding',
+                resource_id: finding.id,
+                status: 'success',
+                timestamp: finding.opened_at,
+                details: {
+                  rule: finding.rule,
+                  evidence: finding.evidence,
+                  state: states[index],
+                },
+              },
+              sub_events: [],
+            })),
+            total: findings.length,
+            skip: 0,
+            limit: 50,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('[]', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    try {
+      await waitUntil(() => !(element as any)._loading);
+      await element.updateComplete;
+      const labels = [
+        ...element.shadowRoot!.querySelectorAll('.primary-label'),
+      ].map((node) => node.textContent!.trim());
+      expect(labels).to.deep.equal([
+        'review-helper (skill): Unapproved · Finding open',
+        'release-check (hook): Content changed · Finding resolved',
+        'build-tools (plugin): Version outside constraint · Finding open',
+        'Extension finding · Finding resolved',
+      ]);
+    } finally {
+      element.remove();
+    }
+  });
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
