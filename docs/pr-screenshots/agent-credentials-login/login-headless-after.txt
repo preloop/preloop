@@ -1,0 +1,16 @@
+Complete login in your browser:
+  1. Open this URL, sign in, and choose Authorize CLI:
+
+     http://127.0.0.1:8000/oauth/authorize?client_id=cli&redirect_uri=urn%3Aietf%3Awg%3Aoauth%3A2.0%3Aoob&response_type=code&state=SYNTHETIC-STATE
+
+  2. Copy the browser's ONE-TIME CODE and paste it below.
+Waiting for your code (no terminal timeout; the code expires 5 minutes after approval).
+Closed the browser tab? Reopen the URL above and approve again for a new code.
+Login is complete when this terminal says: Successfully authenticated!
+
+Authorization code: [pasted one-time code]
+Exchanging code for tokens...
+
+Successfully authenticated!
+Logged in as: Jane Doe (jane@example.com)
+API URL: http://127.0.0.1:8000

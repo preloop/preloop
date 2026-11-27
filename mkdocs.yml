@@ -140,6 +140,7 @@ nav:
           - Testing your workflow: guide/getting-started/test-workflow.md
 
   - Onboarding agents:
+      - Agent credentials: guide/agent-credentials.md
       - Claude Code: guide/clients/claude-code.md
       - Sandboxed and containerised agents: guide/clients/sandboxed-agents.md
       - Claude Desktop: guide/clients/claude-desktop.md

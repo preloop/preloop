@@ -41,6 +41,8 @@ describe('AgentDetailView', () => {
     defaultFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
 
+      if (url.endsWith('/credentials')) return new Response('[]');
+
       if (
         url.startsWith('/api/v1/agents/agent-1') &&
         !url.includes('/governance')
@@ -3605,6 +3607,25 @@ describe('AgentDetailView', () => {
         element.remove();
       }
     });
+  });
+  it('exposes the shared credential create action and hides keys for shared agents', async () => {
+    const el = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(
+      () => !!el.shadowRoot?.querySelector('agent-credentials-card')
+    );
+    const card = el.shadowRoot!.querySelector('agent-credentials-card') as any;
+    const open = sinon.stub(card, 'openCreate').resolves(null);
+    expect(card.agentId).to.equal('agent-1');
+    await el.openCreateCredential();
+    expect(open.calledOnce).to.equal(true);
+    (el as any).agent = { ...(el as any).agent, is_shared: true };
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('agent-credentials-card')).to.equal(
+      null
+    );
+    expect(await el.openCreateCredential()).to.equal(null);
   });
 });
 
