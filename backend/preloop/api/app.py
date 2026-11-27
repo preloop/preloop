@@ -1046,6 +1046,7 @@ def _register_control_plane_routes(
         public_approval,
         pull_requests,
         retention,
+        runner_flow_grants,
         runner_sessions,
         runners,
         runtime_session_artifacts,
@@ -1422,6 +1423,11 @@ def _register_control_plane_routes(
     )
     app.include_router(
         runners.router,
+        prefix="/api/v1",
+        tags=["Runners"],
+    )
+    app.include_router(
+        runner_flow_grants.router,
         prefix="/api/v1",
         tags=["Runners"],
     )

@@ -6419,6 +6419,68 @@ export async function updateRunnerConsent(
   return response.json();
 }
 
+/** A runner owner's standing "always allow this flow on this runner" grant. */
+export interface RunnerFlowGrant {
+  id: string;
+  runner_id: string;
+  runner_name?: string | null;
+  flow_id: string;
+  flow_name?: string | null;
+  approval_request_id?: string | null;
+  created_at: string;
+}
+
+async function grantRequest<T>(
+  path: string,
+  init: RequestInit,
+  fallback: string
+): Promise<T> {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}${path}`, init);
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(errorData, fallback));
+  }
+  return response.json();
+}
+
+/** Always allow a flow on a runner, from an owner consent approval or by id. */
+export function createRunnerFlowGrant(
+  runnerId: string,
+  body: { approval_request_id?: string; flow_id?: string }
+): Promise<RunnerFlowGrant> {
+  return grantRequest(
+    `/runners/${runnerId}/flow-grants`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    'Could not save the always-allow grant'
+  );
+}
+
+/** Active grants: one runner's when given, else every runner the user owns. */
+export function listRunnerFlowGrants(
+  runnerId?: string
+): Promise<RunnerFlowGrant[]> {
+  return grantRequest(
+    runnerId ? `/runners/${runnerId}/flow-grants` : '/runner-flow-grants',
+    {},
+    'Could not load always-allowed flows'
+  );
+}
+
+/** Revoke a grant; the next run of the flow asks the owner again. */
+export function revokeRunnerFlowGrant(
+  grantId: string
+): Promise<RunnerFlowGrant> {
+  return grantRequest(
+    `/runner-flow-grants/${grantId}`,
+    { method: 'DELETE' },
+    'Could not revoke the grant'
+  );
+}
+
 /** Raise or lower how many executions a runner may hold at once. */
 export async function updateRunnerConcurrency(
   runnerId: string,

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Runner owners can always allow one flow on one runner until they revoke it.
+  Tick "Always allow <flow> on <runner> until revoked" when approving a runner
+  flow request; later runs of that flow on that runner start without a new
+  owner request. Grants are listed and revocable on the Runners page and the
+  Approvals list, and creating, using and revoking one is audited.
+
 - `preloop agents onboard` tests whether it can write every file it needs
   before it changes anything in Preloop, so read-only bind mounts, files owned
   by another user, immutable files and a read-only root filesystem are
@@ -43,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks agent files.
 
 ### Fixed
+
+- Mobile push for runner flow approvals failed with APNs `PayloadTooLarge`
+  because the full runner flow snapshot was copied twice into the payload.
+  Push now carries only the flow, runner, harness and model, and every
+  approval push is trimmed to fit the APNs size limit.
 
 - The "Allow this flow to run on your runner?" approval now says what it
   allows: the runner and its device (hostname, OS), the harness and model, the

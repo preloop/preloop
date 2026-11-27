@@ -428,6 +428,16 @@ describe('ApprovalView', () => {
           });
         }
 
+        if (/\/runners\/[^/]+\/flow-grants$/.test(url) && method === 'POST') {
+          return json({
+            id: 'grant-1',
+            runner_id: 'runner-1',
+            flow_id: 'flow-1',
+            flow_name: 'Nightly review',
+            created_at: '2026-06-01T10:30:00Z',
+          });
+        }
+
         if (url.includes('/approve') && method === 'POST') {
           return json(
             pendingRequest({
@@ -1157,6 +1167,53 @@ describe('ApprovalView', () => {
     expect(
       Array.from(root.querySelectorAll('h2')).map((h) => h.textContent)
     ).to.not.include('Arguments');
+  });
+
+  it('offers to always allow the flow on the runner and saves the grant', async () => {
+    fetchStub = createFetchStub({
+      request: pendingRequest({
+        tool_name: 'owner_consent',
+        tool_args: { execution_id: 'exec-1', runner_id: 'runner-1' },
+        rule_context: {
+          runner_flow: {
+            runner: { name: 'Work laptop' },
+            flow: { id: 'flow-1', name: 'Nightly review' },
+          },
+        },
+      }),
+    });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+    const checkbox = element.shadowRoot!.querySelector(
+      '.always-allow-flow'
+    ) as any;
+    expect(checkbox, 'expected the flow grant checkbox').to.exist;
+    expect(checkbox.textContent).to.contain('Nightly review');
+    expect(checkbox.textContent).to.contain('Work laptop');
+    checkbox.checked = true;
+    checkbox.dispatchEvent(
+      new CustomEvent('sl-change', { bubbles: true, composed: true })
+    );
+    await element.updateComplete;
+    (
+      element.shadowRoot!.querySelector('.decision-bar .approve') as any
+    ).click();
+    const grantCall = () =>
+      fetchStub
+        .getCalls()
+        .find((c) =>
+          String(c.args[0]).includes('/runners/runner-1/flow-grants')
+        );
+    await waitUntil(() => !!grantCall(), 'no grant written');
+    expect(decisionCall('approve'), 'no approve call').to.exist;
+    expect(
+      JSON.parse(String((grantCall()!.args[1] as RequestInit).body))
+    ).to.deep.equal({
+      approval_request_id: 'req-1',
+    });
   });
 
   it('does not ask to decide a resolved runner consent', async () => {

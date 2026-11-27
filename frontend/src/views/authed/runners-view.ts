@@ -24,6 +24,8 @@ import {
   getRunner,
   getRunners,
   getUserProfile,
+  listRunnerFlowGrants,
+  revokeRunnerFlowGrant,
   rotateRunnerToken,
   RunnerHasLeasesError,
   updateAccountOrganization,
@@ -31,6 +33,7 @@ import {
   updateRunnerConsent,
   updateRunnerScheduling,
   type HarnessInventoryEntry,
+  type RunnerFlowGrant,
   type RunnerRecord,
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -89,6 +92,8 @@ export class RunnersView extends LitElement {
   @state() private currentUserId: string | null = null;
   @state() private permissions: UserPermissions = undefined;
 
+  /** Flows the signed-in owner always allows, across their runners. */
+  @state() private flowGrants: RunnerFlowGrant[] = [];
   @state() private consentError: { runnerId: string; message: string } | null =
     null;
 
@@ -169,6 +174,17 @@ export class RunnersView extends LitElement {
     [
       unsafeCSS(consoleStyles),
       css`
+        .flow-grants {
+          list-style: none;
+          margin: var(--sl-spacing-2x-small) 0 0;
+          padding: 0;
+          font-size: var(--sl-font-size-small);
+        }
+        .flow-grant {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-2x-small);
+        }
         .runner-identity {
           display: flex;
           flex-direction: column;
@@ -778,17 +794,55 @@ export class RunnersView extends LitElement {
       this.currentUserId != null &&
       row.registered_by_user_id === this.currentUserId;
     return html`<owner-consent-control
-      compact
-      label=${FLOW_CONSENT_LABEL}
-      value=${row.flow_execution_consent ?? 'ask_me'}
-      .options=${FLOW_CONSENT_OPTIONS}
-      ?editable=${owner}
-      ?saving=${this.isBusy(row.id)}
-      ownerOnly=${owner ? '' : FLOW_CONSENT_OWNER_ONLY}
-      error=${this.consentError?.runnerId === row.id ? this.consentError.message : ''}
-      @consent-change=${(event: CustomEvent<{ value: FlowExecutionConsent }>) =>
-        void this.setConsent(row, event.detail.value)}
-    ></owner-consent-control>`;
+        compact
+        label=${FLOW_CONSENT_LABEL}
+        value=${row.flow_execution_consent ?? 'ask_me'}
+        .options=${FLOW_CONSENT_OPTIONS}
+        ?editable=${owner}
+        ?saving=${this.isBusy(row.id)}
+        ownerOnly=${owner ? '' : FLOW_CONSENT_OWNER_ONLY}
+        error=${this.consentError?.runnerId === row.id ? this.consentError.message : ''}
+        @consent-change=${(
+          event: CustomEvent<{ value: FlowExecutionConsent }>
+        ) => void this.setConsent(row, event.detail.value)}
+      ></owner-consent-control
+      >${owner ? this.renderFlowGrants(row) : nothing}`;
+  }
+
+  private async revokeFlowGrant(grant: RunnerFlowGrant): Promise<void> {
+    this.consentError = null;
+    try {
+      await revokeRunnerFlowGrant(grant.id);
+      this.flowGrants = this.flowGrants.filter((row) => row.id !== grant.id);
+    } catch (error) {
+      this.consentError = {
+        runnerId: grant.runner_id,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /** "Always allowed" flows on this runner, each revocable by its owner. */
+  private renderFlowGrants(row: RunnerRecord) {
+    const grants = this.flowGrants.filter(
+      (grant) => grant.runner_id === row.id
+    );
+    if (!grants.length) return nothing;
+    return html`<ul class="flow-grants" aria-label="Always allowed flows">
+      ${grants.map(
+        (grant) =>
+          html`<li class="flow-grant">
+            <span>Always allowed: ${grant.flow_name || 'a flow'}</span>
+            <sl-button
+              class="revoke-flow-grant"
+              size="small"
+              variant="text"
+              @click=${() => void this.revokeFlowGrant(grant)}
+              >Revoke</sl-button
+            >
+          </li>`
+      )}
+    </ul>`;
   }
 
   private renderActions(row: RunnerRecord) {
@@ -875,12 +929,14 @@ export class RunnersView extends LitElement {
     this.loading = true;
     this.error = null;
     try {
-      const [runners, account, profile] = await Promise.all([
+      const [runners, account, profile, grants] = await Promise.all([
         getRunners(),
         getAccountOrganization().catch(() => null),
         getUserProfile().catch(() => null),
+        listRunnerFlowGrants().catch(() => [] as RunnerFlowGrant[]),
       ]);
       this.runners = runners;
+      this.flowGrants = grants;
       this.currentUserId = profile?.id ?? null;
       this.permissions = profile?.permissions;
       this.defaultRunnerPool = account?.default_runner_pool ?? null;

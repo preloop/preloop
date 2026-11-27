@@ -109,6 +109,7 @@ from .discovered_agent_candidate import (
     DiscoveredAgentCandidate,
 )
 from .owner_consent import OwnerConsent
+from .runner_flow_grant import RunnerFlowGrant
 from .managed_agent import ManagedAgent
 from .managed_agent_ai_model_binding import ManagedAgentAIModelBinding
 from .managed_agent_credential import ManagedAgentCredential
@@ -241,6 +242,7 @@ __all__ = [
     "SupportQuota",
     "ServiceCursor",
     "OwnerConsent",
+    "RunnerFlowGrant",
     "MCPInventoryFinding",
     "MCPInventoryReview",
     "RegisteredBundleRevision",
