@@ -3096,19 +3096,21 @@ export class FlowExecutionView extends LitElement {
   }
 
   private renderGatewayEvent(event: FlowGatewayEvent, hideBilling = false) {
+    // A live call has no row id yet; its usage id survives the read-back.
+    const key = this.getGatewayEventKey(event);
     return html`
       <preloop-gateway-event
         .event=${{ ...event }}
-        .expanded=${this.expandedGatewayEvents.has(event.id)}
+        .expanded=${this.expandedGatewayEvents.has(key)}
         hide-timestamp
         ?hide-billing=${hideBilling}
         @gateway-event-expand=${(e: CustomEvent) => {
           this.setEntryExpanded(
             this.expandedGatewayEvents,
-            event.id,
+            key,
             e.detail.expanded
           );
-          if (e.detail.expanded) {
+          if (e.detail.expanded && event.id) {
             this.handleGatewayEventExpand(event.id);
           }
         }}
@@ -3368,7 +3370,7 @@ export class FlowExecutionView extends LitElement {
       }
       items.push({
         kind: 'gateway',
-        key: `gateway-${event.id || this.getGatewayEventKey(event)}`,
+        key: `gateway-${this.getGatewayEventKey(event)}`,
         timestamp: event.timestamp || execution?.start_time || '',
         gatewayEvent: event,
       });
