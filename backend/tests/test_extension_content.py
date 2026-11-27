@@ -912,8 +912,9 @@ def test_hook_matchers_are_tracked_beside_the_hash(client: TestClient) -> None:
     assert upload(client, [narrow]).json() == {"stored": 0, "kept": 1, "rejected": []}
     assert len(read(client, narrow).json()["matcher_sets"]) == 1
 
-    # The matcher is widened to every tool call; the hash does not move.
-    assert upload(client, [broad]).json()["stored"] == 1
+    # The matcher is widened to every tool call; the hash does not move. The
+    # row is kept (no bytes are added), only its matcher sets change.
+    assert upload(client, [broad]).json() == {"stored": 0, "kept": 1, "rejected": []}
     data = read(client, narrow).json()
     assert [s["matchers"][0]["matcher"] for s in data["matcher_sets"]] == ["Bash", None]
     # The matcher shown beside the stored command follows the latest report.
@@ -939,3 +940,46 @@ def test_matcher_redactions_are_counted(client: TestClient) -> None:
     assert data["redaction_count"] == 1 and data["redacted"] is True
     # The command itself was not redacted, so it is still verified.
     assert data["hooks"][0]["verified"] is True
+
+
+def test_matcher_only_update_does_not_spend_the_account_budget(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """protects=the account byte budget; fails_when=a matcher-only update is
+    counted as a new store, so its bytes are added again and a later item in
+    the same batch is refused although the account is under the cap."""
+    narrow = hook_item([("Bash", "preloop hook pre-tool")])
+    broad = hook_item([(None, "preloop hook pre-tool")])
+    skill = default_skill()
+    inventory(client, [narrow, skill])
+    assert upload(client, [narrow]).json()["stored"] == 1
+    hook_bytes = client.get(SETTINGS).json()["stored_bytes"]
+    skill_bytes = policy.verify_item(skill).stored_bytes
+    # Room for exactly what is stored plus the skill, nothing more.
+    monkeypatch.setattr(policy, "MAX_ACCOUNT_BYTES", hook_bytes + skill_bytes)
+    result = upload(client, [broad, skill]).json()
+    assert result == {"stored": 1, "kept": 1, "rejected": []}
+
+
+def test_matcher_update_refreshes_the_row_redaction_totals(
+    client: TestClient,
+) -> None:
+    """protects=the overall redaction badge; fails_when=a later matcher that
+    was redacted leaves the row reported as not redacted."""
+    plain = hook_item([("Bash", "bash lint")])
+    secret = hook_item([("[REDACTED:url-credentials]", "bash lint")])
+    secret["hooks"][0]["matcher_redactions"] = {"url-credentials": 1}
+    inventory(client, [plain])
+    assert upload(client, [plain]).json()["stored"] == 1
+    data = read(client, plain).json()
+    assert data["redaction_count"] == 0 and data["redacted"] is False
+
+    assert upload(client, [secret]).json()["kept"] == 1
+    data = read(client, plain).json()
+    assert data["hooks"][0]["matcher_redactions"] == {"url-credentials": 1}
+    assert data["redaction_count"] == 1 and data["redacted"] is True
+
+    # The matcher goes back to plain text; the badge follows it.
+    assert upload(client, [plain]).json()["kept"] == 1
+    data = read(client, plain).json()
+    assert data["redaction_count"] == 0 and data["redacted"] is False

@@ -110,7 +110,7 @@ is the rotation guide for the second one.
 
 Pairs with `.gitleaksignore` section: `false positive on an unmerged feature branch` (4 fingerprints).
 
-These three fingerprints exist only in `.gitleaksignore` (they are not among
+These four fingerprints exist only in `.gitleaksignore` (they are not among
 the audit's 11 classified findings) and involve no credential at all:
 
 | Commit | Path | Disposition |

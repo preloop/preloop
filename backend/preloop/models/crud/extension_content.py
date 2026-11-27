@@ -260,15 +260,21 @@ class CRUDExtensionContent:
             new_rank >= old_rank
         )
         replace = gains_text or gains_proof or gains_entries
-        merged, new_set = self._merge_matcher_sets(existing, item, replace)
+        merged = self._merge_matcher_sets(existing, item, replace)
         if not replace:
+            # A matcher-only update keeps the row: no bytes are added, so it
+            # counts as kept. The row-level redaction totals follow the
+            # matchers now shown beside the stored commands.
             existing.last_reported_at = moment
             if merged is not None:
-                existing.ciphertext = self._encrypt(merged)
+                document, delta = merged
+                existing.ciphertext = self._encrypt(document)
+                existing.redaction_count = max(0, existing.redaction_count + delta)
+                existing.redacted = existing.redaction_count > 0
                 db.flush()
-            return new_set
+            return False
         if merged is not None:
-            values["ciphertext"] = self._encrypt(merged)
+            values["ciphertext"] = self._encrypt(merged[0])
         for key, value in values.items():
             setattr(existing, key, value)
         db.flush()
@@ -283,7 +289,7 @@ class CRUDExtensionContent:
         existing: models.ExtensionContent,
         item: policy.VerifiedItem,
         replace: bool,
-    ) -> tuple[dict[str, Any] | None, bool]:
+    ) -> tuple[dict[str, Any], int] | None:
         """Fold an upload's matcher set into a stored hook's sets.
 
         The same commands can run under different matchers on two devices, or
@@ -292,16 +298,18 @@ class CRUDExtensionContent:
         a reader sees that the matchers differ or changed.
 
         Returns:
-            The document to store, or None when nothing about matchers
-            changed, and whether the upload brought a set not seen before.
+            None when nothing about matchers changed, else the document to
+            store and the change in matcher redactions shown beside the
+            stored commands (always 0 when ``replace`` is set, because the
+            replacing upload's own counts are stored).
         """
         incoming = item.document.get("matcher_sets") or []
         if existing.extension_kind != "hook" or not incoming:
-            return None, False
+            return None
         try:
             stored = self.document(existing)
         except ValueError:
-            return None, False
+            return None
         sets = list(stored.get("matcher_sets") or [])
         if not sets and stored.get("hooks"):
             derived = policy.matcher_set(stored["hooks"])
@@ -319,6 +327,7 @@ class CRUDExtensionContent:
         sets = sets[-MAX_MATCHER_SETS:]
         document = dict(item.document if replace else stored)
         document["matcher_sets"] = sets
+        delta = 0
         if not replace:
             # The stored commands keep their text; the matcher shown beside
             # each one follows the latest report.
@@ -329,9 +338,12 @@ class CRUDExtensionContent:
                 queue = latest.get(hook.get("command_hash")) or []
                 if queue:
                     source = queue.pop(0)
+                    before = hook.get("matcher_redactions") or {}
+                    after = source.get("matcher_redactions") or {}
+                    delta += sum(after.values()) - sum(before.values())
                     hook["matcher"] = source.get("matcher")
-                    hook["matcher_redactions"] = source.get("matcher_redactions") or {}
-        return document, known is None
+                    hook["matcher_redactions"] = after
+        return document, delta
 
     def get(
         self, db: Session, *, account_id: UUID, extension_kind: str, content_hash: str
