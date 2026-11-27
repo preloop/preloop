@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import shlex
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
+from preloop.models.schemas.terminal_location import TerminalLocation
 from preloop.schemas.resource_share import SharedResourceRead
 
 from preloop.services.cache_accounting import compute_cache_hit_ratio
@@ -368,6 +370,7 @@ class RuntimeSessionSummary(BaseModel):
     id: str
     session_source_type: str
     session_source_id: str
+    terminal_location: Optional[TerminalLocation] = None
     session_reference: Optional[str] = None
     #: The session that spawned this one, when the harness reported it.
     #: ``None`` means the lineage is unknown, which is the normal case: most
@@ -400,7 +403,9 @@ class RuntimeSessionSummary(BaseModel):
     turn_started_at: Optional[datetime] = None
     turn_ended_at: Optional[datetime] = None
     turn_interrupted: Optional[bool] = None
-    total_requests: int = 0
+    total_requests: Optional[int] = 0
+    usage_source: str = "gateway"
+    cost_is_known: bool = True
     successful_requests: int = 0
     failed_requests: int = 0
     token_usage: GatewayTokenUsage
@@ -441,6 +446,33 @@ class RuntimeSessionSummary(BaseModel):
             "or null when the session has no managed agent"
         ),
     )
+    start_directory: Optional[str] = None
+
+    @computed_field
+    @property
+    def harness_session_id(self) -> Optional[str]:
+        """Native identity suitable for the harness's resume command."""
+        if self.session_source_type not in {"claude_code", "codex"}:
+            return None
+        if self.session_reference == "Agent Control new session":
+            return None
+        if ":" not in self.session_source_id:
+            return None
+        return self.session_source_id.split(":", 1)[1]
+
+    @computed_field
+    @property
+    def resume_command(self) -> Optional[str]:
+        """Shell-quoted command that reopens the conversation's project."""
+        if not self.start_directory or not self.harness_session_id:
+            return None
+        harness = (
+            "claude --resume"
+            if self.session_source_type == "claude_code"
+            else "codex resume"
+        )
+        return f"cd {shlex.quote(self.start_directory)} && {harness} {shlex.quote(self.harness_session_id)}"
+
     cwd: Optional[str] = Field(
         None,
         description=(
@@ -793,6 +825,88 @@ class ManagedAgentEnrollmentSummary(BaseModel):
     last_restored_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    # Set only while the enrollment waits in ``pending_local_config``:
+    # ``created_at`` plus PRELOOP_PENDING_ENROLLMENT_TTL_HOURS.
+    expires_at: Optional[datetime] = None
+
+
+class OnboardingCreatedResources(BaseModel):
+    """What one onboarding run created, as opposed to reused.
+
+    Recorded under ``backup_metadata.created_resources`` of a pending
+    enrollment and sent to the rollback endpoint, so a cancelled, failed or
+    expired onboarding removes only its own resources.
+    """
+
+    agent_created: bool = False
+    # The onboarding reactivated a decommissioned agent instead of creating it.
+    agent_revived: bool = False
+    credential_ids: List[str] = Field(default_factory=list, max_length=200)
+    ai_model_ids: List[str] = Field(default_factory=list, max_length=200)
+    # Accepted and ignored: the account's MCP servers are never removed.
+    mcp_server_ids: List[str] = Field(default_factory=list, max_length=200)
+
+
+class OnboardingCleanupRemoved(BaseModel):
+    """Counts of what an onboarding cleanup removed."""
+
+    credentials: int = 0
+    ai_models: int = 0
+    agent: Literal["deleted", "decommissioned", "kept"] = "kept"
+
+
+class ManagedAgentOnboardingRollbackRequest(BaseModel):
+    """Request to undo a failed or cancelled onboarding."""
+
+    created_resources: OnboardingCreatedResources = Field(
+        default_factory=OnboardingCreatedResources
+    )
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class ManagedAgentOnboardingRollbackResponse(BaseModel):
+    """Result of an onboarding rollback."""
+
+    removed: OnboardingCleanupRemoved
+
+
+class ManagedAgentEnrollmentCancelRequest(BaseModel):
+    """Optional body of a pending-enrollment cancel."""
+
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class ManagedAgentEnrollmentCancelResponse(BaseModel):
+    """A cancelled pending enrollment and what its cleanup removed."""
+
+    enrollment: ManagedAgentEnrollmentSummary
+    removed: OnboardingCleanupRemoved
+
+
+class ManagedAgentManualSetupPending(BaseModel):
+    """The pending enrollment a manual setup guide belongs to."""
+
+    enrollment_id: str
+    status: str
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+
+
+class ManagedAgentManualSetupResponse(BaseModel):
+    """Config changes a user applies by hand to route an agent via Preloop.
+
+    ``instructions`` has the ``manual_apply`` shape: ``files`` (each with
+    ``path``, ``format``, ``exists``, ``merge``, ``remove``, ``host_source``),
+    ``env``, ``settings_flag`` and ``limitations``. Every secret is the
+    literal placeholder ``<AGENT_KEY>``.
+    """
+
+    agent_id: str
+    agent_kind: Optional[str] = None
+    display_name: str
+    pending: Optional[ManagedAgentManualSetupPending] = None
+    instructions: Optional[dict] = None
+    resume_command: str
 
 
 class ManagedAgentDeviceLinkFields(BaseModel):
@@ -993,6 +1107,11 @@ class RuntimeSessionActivityItem(BaseModel):
 class RuntimeSessionActivityListResponse(BaseModel):
     """List of activity items for a runtime session."""
 
+    has_more: bool = False
+    next_before: Optional[str] = None
+    has_newer: bool = False
+    next_after: Optional[str] = None
+    partial_turn: bool = False
     items: List[RuntimeSessionActivityItem] = Field(default_factory=list)
 
 

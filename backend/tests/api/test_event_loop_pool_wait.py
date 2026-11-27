@@ -72,6 +72,7 @@ CONSOLE_HOT_PATHS: tuple[tuple[str, str], ...] = (
     ("GET", "/api/v1/teams"),
     ("GET", "/api/v1/invitations"),
     ("GET", "/api/v1/runtime-sessions"),
+    ("POST", "/api/v1/runtime-sessions"),
     ("GET", "/api/v1/runtime-sessions/{runtime_session_id}"),
     ("GET", "/api/v1/runtime-sessions/{runtime_session_id}/activity"),
     ("GET", "/api/v1/runtime-sessions/{runtime_session_id}/gateway-events"),

@@ -7,9 +7,12 @@ from typing import Any, Optional
 
 from sqlalchemy.orm import Session
 
-from ..models.api_key import ApiKey
-from ..models.managed_agent_credential import ManagedAgentCredential
+from preloop.models import models
+
 from .base import CRUDBase
+
+ApiKey = models.ApiKey
+ManagedAgentCredential = models.ManagedAgentCredential
 
 
 def _utc_now() -> datetime:
@@ -18,6 +21,48 @@ def _utc_now() -> datetime:
 
 class CRUDManagedAgentCredential(CRUDBase[ManagedAgentCredential]):
     """CRUD helpers for durable managed-agent credentials."""
+
+    def revoke_all_for_agent(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_id: str,
+        reason: str,
+        revoked_at: datetime,
+    ) -> int:
+        """Revoke credential metadata and keys in the caller's transaction.
+
+        Args:
+            db: Active database session.
+            account_id: Owning account.
+            agent_id: Agent being offboarded.
+            reason: Operator-visible revocation explanation.
+            revoked_at: Timestamp shared with the lifecycle transition.
+
+        Returns:
+            Number of newly revoked credential records.
+        """
+        rows = (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.managed_agent_id == agent_id,
+                self.model.status != "revoked",
+            )
+            .with_for_update()
+            .all()
+        )
+        for row in rows:
+            row.status = "revoked"
+            row.revoked_at = revoked_at
+            row.revoked_reason = reason
+            if row.api_key is not None:
+                row.api_key.is_active = False
+                db.add(row.api_key)
+            db.add(row)
+        db.flush()
+        return len(rows)
 
     def list_for_agent(
         self, db: Session, *, account_id: str, agent_id: str
@@ -33,6 +78,29 @@ class CRUDManagedAgentCredential(CRUDBase[ManagedAgentCredential]):
             .all()
         )
         return [self._row_to_summary(row[0], row[1]) for row in rows]
+
+    def count_active_for_agent(
+        self, db: Session, *, account_id: str, agent_id: str
+    ) -> int:
+        """Count the agent's credentials that have not been revoked.
+
+        Args:
+            db: Database session.
+            account_id: Account the agent belongs to.
+            agent_id: Managed agent id.
+
+        Returns:
+            Number of credentials in the ``active`` status.
+        """
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.managed_agent_id == agent_id,
+                self.model.status == "active",
+            )
+            .count()
+        )
 
     def get_for_agent(
         self, db: Session, *, account_id: str, agent_id: str, credential_id: str

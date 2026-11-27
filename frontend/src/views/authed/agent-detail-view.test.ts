@@ -483,6 +483,208 @@ describe('AgentDetailView', () => {
     expect((element as any).selectedSessionId).to.equal(null);
   });
 
+  describe('manual setup', () => {
+    const manualSetup = (pending: boolean) => ({
+      agent_id: 'agent-1',
+      agent_kind: 'claude_code',
+      display_name: 'Claude Code Workspace',
+      pending: pending
+        ? {
+            enrollment_id: 'enrollment-1',
+            status: 'pending_local_config',
+            created_at: '2026-03-10T10:00:00Z',
+            expires_at: '2026-03-17T10:00:00Z',
+          }
+        : null,
+      instructions: {
+        files: [
+          {
+            path: '~/.claude/settings.json',
+            format: 'json',
+            exists: false,
+            merge: { env: { ANTHROPIC_API_KEY: '<AGENT_KEY>' } },
+            remove: [],
+            host_source: null,
+          },
+        ],
+        env: {},
+        settings_flag: null,
+        limitations: [],
+      },
+      resume_command: 'preloop agents onboard --resume "Claude Code Workspace"',
+    });
+
+    /** Serve agent-1 in the given onboarding state, plus its manual setup. */
+    function serveAgent(state: { onboarding: string; pending: boolean }) {
+      fetchStub.callsFake(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          if (url.endsWith('/api/v1/agents/agent-1/manual-setup')) {
+            return new Response(JSON.stringify(manualSetup(state.pending)), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          if (url.endsWith('/enrollments/enrollment-1/cancel')) {
+            state.onboarding = 'incomplete';
+            state.pending = false;
+            return new Response(
+              JSON.stringify({
+                enrollment: { id: 'enrollment-1', status: 'cancelled' },
+                removed: { credentials: 1, ai_models: 0, agent: 'kept' },
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          const response = await defaultFetch(input, init);
+          if (
+            url.startsWith('/api/v1/agents/agent-1') &&
+            !url.includes('/governance')
+          ) {
+            const body = await response.json();
+            body.agent.onboarding_state = state.onboarding;
+            return new Response(JSON.stringify(body), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return response;
+        }
+      );
+    }
+
+    it('shows a pending setup above the tabs, and as the status chip', async () => {
+      const state = { onboarding: 'waiting_for_local_config', pending: true };
+      serveAgent(state);
+      const el = await fixture<AgentDetailView>(
+        html`<agent-detail-view .agentId=${'agent-1'}></agent-detail-view>`
+      );
+      await waitUntil(() => !(el as any).loading && !!(el as any).agent);
+      await el.updateComplete;
+
+      const banner = el.shadowRoot!.querySelector(
+        '[data-manual-setup-banner]'
+      )!;
+      expect(banner, 'pending banner').to.exist;
+      const tabs = el.shadowRoot!.querySelector('sl-tab-group')!;
+      expect(
+        banner.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING,
+        'banner comes before the tabs'
+      ).to.be.greaterThan(0);
+      const panel = banner.querySelector('agent-manual-setup')!;
+      await waitUntil(
+        () => panel.shadowRoot?.querySelector('[data-manual-setup-pending]'),
+        'pending notice'
+      );
+      expect(getDeepText(panel)).to.include('Waiting for local configuration');
+      expect(
+        el.shadowRoot!.querySelector('.status-chip')!.textContent!.trim()
+      ).to.equal('Waiting for local configuration');
+      // The collapsed entry point is not offered next to the open panel.
+      expect(el.shadowRoot!.querySelector('[data-manual-setup-entry]')).to.not
+        .exist;
+
+      // Cancelling reloads the agent and keeps the panel's report on screen.
+      (
+        panel.shadowRoot!.querySelector(
+          '[data-manual-setup-cancel]'
+        ) as HTMLElement
+      ).click();
+      await panel.updateComplete;
+      (
+        panel.shadowRoot!.querySelector(
+          '[data-manual-setup-cancel-confirm]'
+        ) as HTMLElement
+      ).click();
+      await waitUntil(
+        () => (el as any).agent?.onboarding_state === 'incomplete',
+        'agent reloaded after cancel'
+      );
+      await el.updateComplete;
+      const report = el
+        .shadowRoot!.querySelector(
+          '[data-manual-setup-banner] agent-manual-setup'
+        )!
+        .shadowRoot!.querySelector('[data-manual-setup-cancelled]');
+      expect(report, 'cancel report').to.exist;
+      expect(report!.textContent).to.include('The agent was kept.');
+    });
+
+    it('offers manual setup behind a disclosure and loads it only when opened', async () => {
+      const state = { onboarding: 'fully_onboarded', pending: false };
+      serveAgent(state);
+      const el = await fixture<AgentDetailView>(
+        html`<agent-detail-view .agentId=${'agent-1'}></agent-detail-view>`
+      );
+      await waitUntil(() => !(el as any).loading && !!(el as any).agent);
+      await el.updateComplete;
+
+      expect(el.shadowRoot!.querySelector('[data-manual-setup-banner]')).to.not
+        .exist;
+      const entry = el.shadowRoot!.querySelector<HTMLDetailsElement>(
+        '[data-manual-setup-entry]'
+      )!;
+      expect(entry.querySelector('summary')!.textContent!.trim()).to.equal(
+        'Set up manually'
+      );
+      const lookups = () =>
+        fetchStub
+          .getCalls()
+          .filter((call) => String(call.args[0]).includes('/manual-setup'));
+      expect(entry.querySelector('agent-manual-setup')).to.not.exist;
+      expect(lookups()).to.have.length(0);
+
+      entry.open = true;
+      await waitUntil(
+        () => entry.querySelector('agent-manual-setup'),
+        'panel after opening'
+      );
+      await waitUntil(() => lookups().length === 1, 'manual setup lookup');
+    });
+  });
+
+  it('shows extensions reported for this agent kind with the stated scope', async () => {
+    const element = document.createElement(
+      'agent-detail-view'
+    ) as AgentDetailView;
+    element.onBeforeEnter({ params: { agentId: 'agent-1' } });
+    await fixture(element);
+    await waitUntil(
+      () =>
+        !!element.shadowRoot?.querySelector('[data-testid="agent-extensions"]')
+    );
+    const section = element.shadowRoot!.querySelector(
+      '[data-testid="agent-extensions"]'
+    )!;
+    expect(
+      section.querySelector('[data-testid="agent-extensions-caption"]')!
+        .textContent
+    ).to.contain('Extensions reported for claude_code agents in this account');
+    expect(section.querySelector('extension-inventory')).to.equal(null);
+    (section as HTMLDetailsElement).open = true;
+    section.dispatchEvent(new Event('toggle'));
+    await element.updateComplete;
+    const inventory = section.querySelector('extension-inventory') as any;
+    (section as HTMLDetailsElement).open = false;
+    section.dispatchEvent(new Event('toggle'));
+    await element.updateComplete;
+    expect(section.querySelector('extension-inventory')).to.equal(inventory);
+    expect(inventory.agentKind).to.equal('claude_code');
+    inventory.dispatchEvent(
+      new CustomEvent('extensions-loaded', {
+        detail: { count: 63, more: false },
+      })
+    );
+    await element.updateComplete;
+    expect(section.querySelector('summary')!.textContent).to.contain(
+      'Extensions (63)'
+    );
+    window.history.replaceState(null, '', '/console/agents/agent-2');
+    element.onBeforeEnter({ params: { agentId: 'agent-2' } });
+    expect((element as any).extensionCount).to.equal(null);
+    expect((element as any).extensionsOpened).to.equal(false);
+  });
+
   it('distinguishes never-run, failed and unsupported checks without claiming they are disabled', async () => {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
@@ -594,6 +796,24 @@ describe('AgentDetailView', () => {
         );
         await el.updateComplete;
         return el;
+      }
+
+      for (const allowed of [false, true]) {
+        it(`renders approval readiness only with policy permission (${allowed})`, async () => {
+          withDesktopEnable({
+            permissions: allowed ? ['view_policies'] : ['view_agents'],
+          });
+          const el = await loadedView();
+          for (const tab of ['sessions', 'tools']) {
+            (el as any).activeTab = tab;
+            if (tab === 'tools')
+              await waitUntil(() => (el as any).editorContextReady);
+            await el.updateComplete;
+            expect(
+              !!el.shadowRoot!.querySelector('approval-readiness')
+            ).to.equal(allowed, tab);
+          }
+        });
       }
 
       for (const { name, config, visible } of [

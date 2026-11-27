@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/config"
@@ -633,11 +634,7 @@ func conversionEventName() string {
 var stdinIsTerminal = defaultStdinIsTerminal
 
 func defaultStdinIsTerminal() bool {
-	stat, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return (stat.Mode() & os.ModeCharDevice) != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // runAuthLogout revokes this login on the server and clears stored

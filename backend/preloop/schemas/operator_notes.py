@@ -122,6 +122,7 @@ class OperatorNoteResponse(BaseModel):
     """One note and everything the sender needs to know about its fate."""
 
     note_id: str
+    command_id: Optional[str] = None
     state: OperatorNoteState
     text: str
     managed_agent_id: Optional[UUID] = None

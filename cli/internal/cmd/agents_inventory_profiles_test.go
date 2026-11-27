@@ -52,7 +52,7 @@ func TestAllUsersInventoryPlatformFixtures(t *testing.T) {
 				return os.OpenRoot(home)
 			}}
 			result := collectAllUsersInventory(deps, pd, "salt-a", "workstation-a")
-			if result.Schema != "preloop.inventory.v3" || result.Completeness != "partial" || len(result.Profiles) != 3 {
+			if result.Schema != "preloop.inventory.v4" || result.Completeness != "partial" || len(result.Profiles) != 3 {
 				t.Fatalf("bad result %+v", result)
 			}
 			if result.Profiles[2].ErrorCode != "profile_unreadable" {
@@ -261,7 +261,7 @@ func TestAllUsersInventoryCommandOfflineAndReport(t *testing.T) {
 				if err := json.Unmarshal(rec.report, &payload); err != nil {
 					t.Fatal(err)
 				}
-				if payload.Evidence == nil || payload.Evidence.SchemaVersion != 3 || len(payload.Candidates) != 1 {
+				if payload.Evidence == nil || payload.Evidence.SchemaVersion != 4 || len(payload.Candidates) != 1 {
 					t.Fatalf("bad report %+v", payload)
 				}
 			}

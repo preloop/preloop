@@ -31,6 +31,7 @@ from preloop.api.flow_preconditions import (
 )
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.api.traffic_attribution import set_reason_code
+from preloop.models.schemas.flow import CiFlowPreflightRead
 from preloop.models.schemas.flow_revision import FlowRevisionMismatchError
 from preloop.cra.evidence_pack import (
     EvidenceMemberError,
@@ -59,6 +60,7 @@ from preloop.models.schemas.flow import (
     flow_schedule_state,
 )
 from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable, get_authorizer
+from preloop.schemas.execution_refinalize import RefinalizeRequest
 from preloop.schemas.ci_execution import (
     CiExecutionResponse,
     CiExecutionResultResponse,
@@ -644,8 +646,12 @@ def _with_config_warnings(db: Session, flow: Any, *, account_id: Any) -> Any:
         The same flow with ``config_warnings`` set.
     """
     from preloop.services.flow_config_warnings import flow_config_warnings
+    from preloop.services.model_executor_eligibility import flow_executor_eligibility
 
-    flow.config_warnings = flow_config_warnings(db, flow, account_id=account_id)
+    flow.executor_eligibility = flow_executor_eligibility(db, flow)
+    flow.config_warnings = flow_config_warnings(
+        db, flow, account_id=account_id, executor_eligibility=flow.executor_eligibility
+    )
     return flow
 
 
@@ -1686,6 +1692,9 @@ def read_flow_execution(
         db, account_id=current_user.account_id, execution=execution
     )
     execution.platform_review = _platform_review_with_links(db, execution)
+    from preloop.services.execution_refinalize import refinalization_mark
+
+    execution.refinalization = refinalization_mark(execution)
     # One usage query feeds both projections of the same request facts.
     request_facts = _execution_request_facts(
         db, execution, account_id=current_user.account_id
@@ -2045,6 +2054,60 @@ def get_execution_result_export(
         raise _halted_response() from None
     except (LookupError, PermissionError, ValueError, CiReviewUnavailableError) as exc:
         _result_export_error(exc)
+
+
+@router.post(
+    "/flows/executions/{execution_id}/refinalize",
+    responses={
+        403: {"description": "A human account owner or administrator is required."},
+        404: {"description": "Execution not found in this account."},
+        409: {"description": "Stored finalization gate failed; detail.gates names it."},
+        412: {"description": "Missing or stale preview digest; preview again."},
+    },
+)
+def refinalize_flow_execution(
+    execution_id: uuid.UUID,
+    body: RefinalizeRequest = Body(default=RefinalizeRequest()),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Preview or re-finalize a saved review as a human owner or administrator.
+
+    Runs no inference. Apply requires expected_digest from a qualifying preview.
+    Gates and publication authorization are recomputed; the original usage is
+    preserved. A repeated apply returns already_refinalized without writing.
+    """
+    from preloop.services.execution_refinalize import (
+        RefinalizePreconditionFailedError,
+        RefinalizeRefusedError,
+        refinalize_execution,
+    )
+    from preloop.tools.utils import run_async
+
+    try:
+        return run_async(
+            refinalize_execution(
+                db,
+                actor=current_user,
+                execution_id=execution_id,
+                dry_run=body.dry_run,
+                expected_digest=body.expected_digest,
+            )
+        )
+    except PermissionError:
+        raise HTTPException(
+            403, "Re-finalization requires a human owner or administrator"
+        ) from None
+    except LookupError:
+        raise HTTPException(404, "Flow execution not found") from None
+    except RefinalizePreconditionFailedError as error:
+        raise HTTPException(
+            412, {"code": "refinalize_precondition_failed", "message": str(error)}
+        ) from None
+    except RefinalizeRefusedError as error:
+        raise HTTPException(
+            409, {"code": "refinalize_refused", "gates": str(error)}
+        ) from None
 
 
 @router.post(
@@ -4136,20 +4199,46 @@ async def retry_flow_execution(
     return result
 
 
-@router.get("/flows/{flow_id}", response_model=schemas.FlowResponse)
-@require_permission("view_flows")
+@router.get(
+    "/flows/{flow_id}", response_model=schemas.FlowResponse | CiFlowPreflightRead
+)
+@require_permission("view_flows", ci_action=CiAction.TRIGGER)
 def read_flow(
     *,
     db: Session = Depends(get_db),
     flow_id: uuid.UUID,
-    current_user: User = Depends(get_current_active_user),
+    current_user: models.User | CiAuthorizationContext = Depends(get_current_actor),
     response: Response = None,  # type: ignore[assignment]
-):
+) -> models.Flow | CiFlowPreflightRead:
     """Get flow by ID.
 
     The ``ETag`` header carries the flow's configuration revision; send it
     back as ``If-Match`` to make a later write or trigger conditional.
+    A restricted CI identity with ``flow:trigger`` receives only the id and
+    executor eligibility of its bound flow; all human configuration is omitted.
     """
+    if isinstance(current_user, CiAuthorizationContext):
+        from preloop.models.crud import crud_ci_principal
+        from preloop.services.ci_execution import _review_flow
+        from preloop.services.model_executor_eligibility import (
+            flow_executor_eligibility,
+        )
+
+        if flow_id != current_user.flow_id:
+            raise HTTPException(403, "Restricted CI flow denied")
+        try:
+            crud_ci_principal.authorize(
+                db, context=current_user, action=CiAction.TRIGGER
+            )
+            flow = _review_flow(db, current_user)
+        except PermissionError:
+            raise HTTPException(403, "Restricted CI flow denied") from None
+        except FlowHaltActiveError:
+            raise _halted_response() from None
+        set_flow_etag(response, getattr(flow, "config_revision", None))
+        return CiFlowPreflightRead(
+            id=flow.id, executor_eligibility=flow_executor_eligibility(db, flow)
+        )
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow or not filter_viewable(db, current_user, VISIBLE_FLOW, [flow]):
         raise HTTPException(status_code=404, detail="Flow not found")

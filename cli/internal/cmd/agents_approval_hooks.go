@@ -88,6 +88,14 @@ func promptForApprovalsOptIn(
 	if !isApprovalHookSupportedAgent(agent) {
 		return false, nil
 	}
+	if isClaudeCodeAgent(agent) {
+		source := permissionSourceForAgent(agent)
+		budget := existingApprovalHookWaitBudget(agent)
+		fmt.Fprintln(writer, "Native tool approvals inherit the account mode (default: Enforce). Calls that need approval wait for a person in the Preloop Console's Approvals page; allowed calls run and denied calls stay blocked.")                                                                                                                                                                                                                                              //nolint:errcheck
+		fmt.Fprintln(writer, "This includes shell commands, file edits, Skill, ToolSearch and Agent/subagent calls when policy asks for approval; frequent skills or subagents can repeatedly pause the run.")                                                                                                                                                                                                                                                                       //nolint:errcheck
+		fmt.Fprintf(writer, "The selected approval workflow sets the timeout; the approval expiry budget is %d seconds. The hook deadline is %d seconds including HTTP headroom (host timeout: %d seconds). An earlier workflow timeout wins; expiry denies the call.\n", approvalHookWaitBudgetSeconds(source, budget), int(permissionCheckTimeoutFor(permissionHookCredential{Source: source, TimeoutSeconds: budget}).Seconds()), approvalHookHostTimeoutSeconds(source, budget)) //nolint:errcheck
+		fmt.Fprintln(writer, "For unattended recording, choose 'Off: auto-approve (recorded)' under the agent's Native tool approvals in the Console. This removes the human wait for escalated calls; deny rules still apply.")                                                                                                                                                                                                                                                     //nolint:errcheck
+	}
 	return confirmActionDefaultYes(
 		reader,
 		writer,
@@ -114,9 +122,17 @@ func permissionHookCredentialPath(agent AgentConfig) (string, error) {
 	return filepath.Join(dir, runtimePrincipalIDForAgent(agent), permissionHookCredentialFileName), nil
 }
 
+// approvalHookConfigPathOverrides redirects a source's hook configuration to
+// a staged copy. Manual setup uses it to compute the hooks block for a file
+// it cannot write; it is empty otherwise.
+var approvalHookConfigPathOverrides = map[string]string{}
+
 // approvalHookConfigPath returns the agent-specific hook configuration file for
 // the given source.
 func approvalHookConfigPath(source string) (string, error) {
+	if override := approvalHookConfigPathOverrides[source]; override != "" {
+		return override, nil
+	}
 	if source == permissionSourceCopilotCLI {
 		return copilotPreloopHooksPath()
 	}
@@ -128,9 +144,9 @@ func approvalHookConfigPath(source string) (string, error) {
 	case permissionSourceDevinCLI:
 		return devinConfigPath("config.json")
 	case permissionSourceClaudeCode:
-		return filepath.Join(home, ".claude", "settings.json"), nil
+		return filepath.Join(claudeConfigHome(), "settings.json"), nil
 	case permissionSourceCodexCLI:
-		return filepath.Join(home, ".codex", "hooks.json"), nil
+		return filepath.Join(codexConfigHome(), "hooks.json"), nil
 	case permissionSourceCursor:
 		return filepath.Join(home, ".cursor", "hooks.json"), nil
 	case permissionSourceOpenCode:

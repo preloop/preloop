@@ -15,6 +15,49 @@ from preloop.models.crud.runtime_session import (
 )
 
 
+@pytest.mark.parametrize("field", ["title", "alias", "runtime_principal_name"])
+def test_search_finds_unindexed_session_identity(
+    db_session: Session, session_listing_data: dict[str, Any], field: str
+) -> None:
+    """Title, alias and agent matches do not depend on indexed content (#2424)."""
+    data = session_listing_data
+    session = data["sessions"]["empty"]
+    setattr(session, field, "Example identity needle")
+    setattr(data["sessions"]["other"], field, "Example identity needle")
+    db_session.flush()
+    result = crud_runtime_session.list_account_sessions(
+        db_session, account_id=str(data["account"].id), query="IDENTITY needle"
+    )
+    assert [item["id"] for item in result["items"]] == [str(session.id)]
+
+
+def test_imported_session_usage_is_not_reported_as_zero_gateway_requests(
+    db_session: Session, session_listing_data: dict[str, Any]
+) -> None:
+    """Imported tokens and cost reach list/detail without inventing requests (#2425)."""
+    data = session_listing_data
+    session = data["sessions"]["empty"]
+    usage = data["usage"]("empty")
+    usage.action_type = "imported_usage"
+    usage.usage_source = "imported"
+    usage.cost_basis = "estimated"
+    db_session.flush()
+    listing = crud_runtime_session.list_account_sessions(
+        db_session, account_id=str(data["account"].id)
+    )
+    summary = crud_runtime_session.get_account_session_summary(
+        db_session,
+        account_id=str(data["account"].id),
+        runtime_session_id=str(session.id),
+    )
+    listed = next(item for item in listing["items"] if item["id"] == str(session.id))
+    for item in (listed, summary):
+        assert item["total_tokens"] == 15
+        assert item["estimated_cost"] == pytest.approx(0.01)
+        assert item["usage_source"] == "imported"
+        assert item["total_requests"] is None
+
+
 @pytest.fixture
 def session_listing_data(db_session: Session, create_account: Any) -> dict[str, Any]:
     account = create_account()
@@ -708,6 +751,50 @@ def test_candidate_growth_falls_back_without_truncating_sessions(
     ]
     assert rankings
     assert all("api_usage.runtime_session_id IN (" not in sql for sql in rankings)
+
+
+def test_mixed_imported_usage_omits_partial_measurements(
+    db_session: Session, session_listing_data: dict[str, Any]
+) -> None:
+    """A partial imported ledger cannot look like a complete gateway total."""
+    data = session_listing_data
+    for cost in (0.02, None):
+        row = data["usage"]("direct")
+        row.action_type = "imported_usage"
+        row.estimated_cost = cost
+    db_session.flush()
+    summary = crud_runtime_session.get_account_session_summary(
+        db_session,
+        account_id=str(data["account"].id),
+        runtime_session_id=str(data["sessions"]["direct"].id),
+    )
+    assert summary["usage_source"] == "mixed"
+    assert summary["total_requests"] is None
+    assert summary["cost_is_known"] is False
+
+
+def test_identity_search_without_summary_columns(
+    db_session: Session,
+    session_listing_data: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Identity predicates honor the rolling-upgrade column guard."""
+    data = session_listing_data
+    data["sessions"]["empty"].runtime_principal_name = "Example legacy needle"
+    db_session.flush()
+    columns = crud_runtime_session._runtime_session_columns(db_session) - {
+        "title",
+        "alias",
+    }
+    monkeypatch.setattr(
+        crud_runtime_session, "_runtime_session_columns", lambda db: columns
+    )
+    result = crud_runtime_session.list_account_sessions(
+        db_session, account_id=str(data["account"].id), query="legacy needle"
+    )
+    assert [item["id"] for item in result["items"]] == [
+        str(data["sessions"]["empty"].id)
+    ]
 
 
 @pytest.mark.parametrize(

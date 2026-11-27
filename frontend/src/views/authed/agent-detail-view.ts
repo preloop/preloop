@@ -1,3 +1,4 @@
+import '../../components/approval-readiness';
 import { REST_API_PREFIX } from '../../api-path';
 import { formatRelativeTime } from '../../utils/date';
 import { formatCount, formatCountExact } from '../../utils/count-format';
@@ -45,6 +46,8 @@ import { NOTES_FIRST_PAGE } from '../../components/agent-notes-tab';
 import '../../components/talk-button.ts';
 import '../../components/time-range-select.ts';
 import '../../components/confirm-dialog.ts';
+import '../../components/agent-manual-setup.ts';
+import type { ManualSetupCancelledDetail } from '../../components/agent-manual-setup';
 import { confirmDialog } from '../../components/confirm-dialog';
 import type { ResourceAction } from '../../components/resource-actions.ts';
 import { actionsFor } from '../../actions';
@@ -121,11 +124,14 @@ import {
   getAgentStatusChip,
   getSystemAgentTags,
   getVisibleAgentTags,
+  WAITING_FOR_LOCAL_CONFIG,
+  WAITING_FOR_LOCAL_CONFIG_LABEL,
 } from '../../utils/agent-display';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import '../../components/capability-extension';
 import '../../components/desktop-view';
 import '../../components/desktop-enable';
+import '../../components/extension-inventory';
 import { hasPermission } from '../../permissions';
 import {
   type DesktopEndpoint,
@@ -182,6 +188,12 @@ export class AgentDetailView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
   @property({ type: String })
   agentId = '';
+
+  @state()
+  private extensionsOpened = false;
+
+  @state()
+  private extensionCount: { count: number; more: boolean } | null = null;
 
   @state()
   private agent: ManagedAgentSummary | null = null;
@@ -259,6 +271,7 @@ export class AgentDetailView extends LitElement {
   @state() private canControlDesktop = false;
   /** `manage_agents`: may enable a desktop on the agent's host (#1566). */
   @state() private canEnableDesktop = false;
+  @state() private canViewApprovalReadiness = false;
 
   @state()
   private associatedFlows: any[] = [];
@@ -304,6 +317,18 @@ export class AgentDetailView extends LitElement {
 
   @state()
   private actionLoading = false;
+
+  /**
+   * The agent whose manual setup panel stays at the top of the page. Set when
+   * a pending setup ends while the page is open, so the panel's own report of
+   * what happened is not lost when the agent reloads without the pending state.
+   */
+  @state()
+  private manualSetupPinnedFor: string | null = null;
+
+  /** The "Set up manually" disclosure was opened, so its panel is loaded. */
+  @state()
+  private manualSetupOpened = false;
 
   @state()
   private liveActivity = {
@@ -759,6 +784,13 @@ export class AgentDetailView extends LitElement {
       .agent-settings {
         margin: 8px 0;
       }
+      .manual-setup-pending {
+        margin: var(--sl-spacing-small) 0 var(--sl-spacing-medium);
+      }
+      .agent-settings agent-manual-setup {
+        margin: 8px 0 var(--sl-spacing-medium);
+        max-width: 60rem;
+      }
       .agent-settings p {
         margin: 8px 0;
       }
@@ -825,6 +857,8 @@ export class AgentDetailView extends LitElement {
       this.associatedFlowsLoaded = false;
       this.associatedFlowsError = null;
       this.associatedFlows = [];
+      this.extensionCount = null;
+      this.extensionsOpened = false;
       this.loading = true;
       void this.loadData();
     }
@@ -1509,7 +1543,8 @@ export class AgentDetailView extends LitElement {
     if (this.agent.onboarding_state === 'fully_onboarded') return 'success';
     if (
       this.agent.onboarding_state === 'mcp_proxy_only' ||
-      this.agent.onboarding_state === 'gateway_only'
+      this.agent.onboarding_state === 'gateway_only' ||
+      this.agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG
     ) {
       return 'warning';
     }
@@ -1522,6 +1557,9 @@ export class AgentDetailView extends LitElement {
       return 'Fully onboarded';
     if (this.agent.onboarding_state === 'mcp_proxy_only') return 'MCP only';
     if (this.agent.onboarding_state === 'gateway_only') return 'Gateway only';
+    if (this.agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG) {
+      return WAITING_FOR_LOCAL_CONFIG_LABEL;
+    }
     return 'Incomplete';
   }
 
@@ -1535,6 +1573,9 @@ export class AgentDetailView extends LitElement {
     }
     if (this.agent.onboarding_state === 'gateway_only') {
       return 'Model traffic flows through Preloop, but MCP tool traffic is still direct.';
+    }
+    if (this.agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG) {
+      return 'Onboarding is waiting for a config change to be applied where the agent runs.';
     }
     return 'This agent is not fully managed by Preloop yet.';
   }
@@ -1935,6 +1976,75 @@ export class AgentDetailView extends LitElement {
   }
 
   /**
+   * The change a user applies by hand when the CLI cannot write the agent's
+   * config. A setup that is waiting for it is shown open, above the tabs, so
+   * it cannot be missed; otherwise the panel sits behind a disclosure and is
+   * only loaded when opened.
+   */
+  private renderManualSetup(
+    slot: 'banner' | 'entry'
+  ): TemplateResult | typeof nothing {
+    const agent = this.agent;
+    if (!agent) return nothing;
+    const readOnly = !!(agent.read_only || agent.is_shared);
+    const panel = html`<agent-manual-setup
+      .agentId=${agent.id}
+      .displayName=${agent.display_name}
+      ?read-only=${readOnly}
+      @manual-setup-cancelled=${this.handleManualSetupCancelled}
+      @manual-setup-changed=${this.handleManualSetupChanged}
+    ></agent-manual-setup>`;
+    const pinned =
+      agent.onboarding_state === WAITING_FOR_LOCAL_CONFIG ||
+      this.manualSetupPinnedFor === agent.id;
+    if (slot === 'banner') {
+      if (!pinned) return nothing;
+      return html`<div class="manual-setup-pending" data-manual-setup-banner>
+        ${panel}
+      </div>`;
+    }
+    if (pinned) return nothing;
+    if (agent.lifecycle_state === 'decommissioned') return nothing;
+    return html`<details
+      class="agent-settings"
+      data-manual-setup-entry
+      @toggle=${(event: Event) => {
+        if ((event.currentTarget as HTMLDetailsElement).open) {
+          this.manualSetupOpened = true;
+        }
+      }}
+    >
+      <summary>Set up manually</summary>
+      <p>
+        For an agent whose config file is read-only or managed for you, for
+        example in a container: the change to apply by hand.
+      </p>
+      ${this.manualSetupOpened ? panel : nothing}
+    </details>`;
+  }
+
+  private handleManualSetupCancelled = (
+    event: CustomEvent<ManualSetupCancelledDetail>
+  ): void => {
+    if (event.detail?.agentId !== this.agentId) return;
+    if (event.detail.removed?.agent === 'deleted') {
+      // The agent is gone: there is no page left to show.
+      window.location.href = '/console/agents';
+      return;
+    }
+    this.manualSetupPinnedFor = this.agentId;
+    void this.loadData(true);
+  };
+
+  private handleManualSetupChanged = (
+    event: CustomEvent<{ agentId: string }>
+  ): void => {
+    if (event.detail?.agentId !== this.agentId) return;
+    this.manualSetupPinnedFor = this.agentId;
+    void this.loadData(true);
+  };
+
+  /**
    * Loopback desktop the runtime advertised. Hidden when the agent has none.
    * With an online desktop endpoint (#870) the Desktop tab views it live.
    */
@@ -1966,6 +2076,8 @@ export class AgentDetailView extends LitElement {
     this.canControlDesktop = canTakeDesktopControl(profile);
     this.canEnableDesktop =
       !!profile && hasPermission(profile.permissions, 'manage_agents');
+    this.canViewApprovalReadiness =
+      !!profile && hasPermission(profile.permissions, 'view_policies');
     this.currentUserId = profile?.id ?? null;
     if (this.activeTab === 'desktop' && endpoints.length === 0) {
       this.activeTab = 'sessions';
@@ -3887,6 +3999,53 @@ export class AgentDetailView extends LitElement {
     `;
   }
 
+  /**
+   * Render extensions reported for this agent's kind.
+   *
+   * The managed agent is not linked to a reporting device, so rows are
+   * scoped to the agent kind across the account, and the caption says so.
+   *
+   * Returns:
+   *   TemplateResult | typeof nothing: The section, or nothing without a kind.
+   */
+  private renderExtensions(): TemplateResult | typeof nothing {
+    const kind =
+      this.agent?.agent_kind || this.agent?.session_source_type || '';
+    if (!kind) return nothing;
+    const count = this.extensionCount;
+    return html`<details
+      class="agent-settings"
+      data-testid="agent-extensions"
+      @toggle=${(event: Event) => {
+        if ((event.currentTarget as HTMLDetailsElement).open)
+          this.extensionsOpened = true;
+      }}
+    >
+      <summary>
+        Extensions${count ? ` (${count.count}${count.more ? '+' : ''})` : ''}
+      </summary>
+      <p data-testid="agent-extensions-caption">
+        Extensions reported for ${kind} agents in this account.
+        <a href="/console/agents?section=extensions"
+          >Open the account inventory</a
+        >.
+      </p>
+      ${
+        this.extensionsOpened
+          ? html`<extension-inventory
+              .agentKind=${kind}
+              emptyText=${`No device has reported extensions for ${kind} agents.`}
+              @extensions-loaded=${(
+                event: CustomEvent<{ count: number; more: boolean }>
+              ) => {
+                this.extensionCount = event.detail;
+              }}
+            ></extension-inventory>`
+          : nothing
+      }
+    </details>`;
+  }
+
   render() {
     if (this.loading) {
       return html`
@@ -3968,6 +4127,17 @@ export class AgentDetailView extends LitElement {
       <div class="page" style="padding-top: 0;">
         ${this.renderSummaryStrip(aggregate)} ${this.renderDesktopEnable()}
         ${
+          this.canViewApprovalReadiness &&
+          this.activeTab !== 'tools' &&
+          this.agent.lifecycle_state === 'active'
+            ? html`
+                <approval-readiness
+                  .agentId=${this.agentId}
+                ></approval-readiness>
+              `
+            : nothing
+        }
+        ${
           this.agent.agent_kind === 'cursor'
             ? html`
                 <p data-cursor-runner-route>
@@ -3983,6 +4153,7 @@ export class AgentDetailView extends LitElement {
               `
             : nothing
         }
+        ${this.renderManualSetup('banner')}
         <details class="agent-settings">
           <summary>
             ${this.agent.is_shared ? nothing : html`Session permissions: ${SESSION_CONSENT_OPTIONS.find((option) => option.value === (this.agent?.others_may_start_sessions ?? 'ask_me'))?.label} ·`}
@@ -3993,6 +4164,7 @@ export class AgentDetailView extends LitElement {
           </p>
           ${this.renderSessionConsent()} ${this.renderIdentityHistory()}
         </details>
+        ${this.renderManualSetup('entry')} ${this.renderExtensions()}
 
         <!-- Sub-view Tab Navigation -->
         ${(() => {
@@ -4249,6 +4421,15 @@ export class AgentDetailView extends LitElement {
                               </sl-select>
                             </div>
                           </div>
+                          ${
+                            this.canViewApprovalReadiness
+                              ? html`<approval-readiness
+                                  .agentId=${this.agentId}
+                                  .workflowId=${this.governance.approval_workflow_id || ''}
+                                  .enforced=${this.effectiveNativeToolApprovals() !== 'off'}
+                                ></approval-readiness>`
+                              : nothing
+                          }
                           ${
                             this.effectiveNativeToolApprovals() === 'off'
                               ? html`

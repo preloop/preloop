@@ -46,7 +46,7 @@ preloop login --url http://localhost:3000    # your self-hosted instance
 preloop agents discover
 ```
 
-`preloop agents discover` finds local agent configs and reports what each adapter supports. `preloop agents onboard` configures them: calls routed through the managed MCP entry reach the **MCP Firewall**, supported model routes use the **Gateway**. To talk to a running agent, install the runtime plugin with `preloop agents install-plugin` (or `preloop claude` for Claude Code). Full walkthrough: [onboard local agents](https://docs.preloop.ai/quickstart-cli/). For a rejected Claude subscription login, see [subscription recovery](docs/guide/clients/subscription-recovery.md).
+`preloop agents discover` finds local agent configs and reports what each adapter supports. `preloop agents onboard` configures them: calls routed through the managed MCP entry reach the **MCP Firewall**, supported model routes use the **Gateway**. To talk to a running agent, install the runtime plugin with `preloop agents install-plugin` (or `preloop claude` for Claude Code). Full walkthrough: [onboard local agents](https://docs.preloop.ai/quickstart-cli/). When an agent's configuration is read-only (a container or sandbox), onboarding prints the exact change to apply and verifies it afterwards: see [sandboxed and containerised agents](docs/guide/clients/sandboxed-agents.md). For a rejected Claude subscription login, see [subscription recovery](docs/guide/clients/subscription-recovery.md).
 
 <p align="center">
   <img alt="Preloop onboarding local agents into the control plane" src="frontend/public/assets/screenshots/quickstart/dark/agents-onboarding.webp" style="width: 100%; max-width: 1135px; border-radius: 12px;" />
@@ -74,12 +74,17 @@ Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
 | **AI Model Gateway** | OpenAI-, Anthropic- and Gemini-compatible. Budgets, allowed-model lists, token accounting, attribution. | Portkey, Helicone, LiteLLM, Kong AI |
 | **Flows** | Start an agent when a tracker, webhook, or CI job fires, with the same firewall, approvals, and cost. `preloop flow trigger`. | Custom CI glue, AgentCore Runtime |
 | **Private runners** | Run flow agents on your own machines over an outbound WebSocket, no inbound ports. | Self-managed CI runners |
-| **Agent Control** | Talk to long-running agents from the console, phone, or watch. Steer runs with [operator notes](docs/guide/operator-notes.md). | Terminal access |
+| **Agent Control** | Talk to long-running agents from the console, phone, or watch. Steer runs with [operator notes](docs/guide/operator-notes.md), and follow or prompt sessions in [herdr workspaces](docs/guide/herdr.md). | Terminal access |
 | **Cost & Budgets** | Spend by model, agent, session, API key, flow, and user, including [imported Copilot usage](docs/guide/copilot-usage-import.md). | FinOps dashboards, vendor billing exports |
 | **Human Approvals** | Mobile, watch, Slack, Mattermost, Teams Workflows, email, webhook, or `preloop approvals`. Native `Bash`/`Edit`. Agents can `ask_user`. Opt-in [external consent hand-off](docs/guide/webhooks.md#external-approval-hand-off) after upstream scope refusals. | Custom Slack bots, Peta Desk |
 | **Runtime Observability** | One session timeline: tool calls, model calls, policy, approvals, spend, outcomes, and [synchronized recordings](docs/guide/artifacts.md#recordings-synchronized-to-the-timeline). | AgentOps, Langfuse, LangSmith |
 | **Fleet Map** | People, devices, agents, models and observed work in one [map](docs/guide/fleet-map.md). | Spreadsheets |
 | **Evidence packs** | Apache flow presets write `result.json` plus an evidence directory for CRA / AI Act-style work. Not a certification. | Custom GRC folders |
+
+Talk starts Claude Code and Codex conversations in a selected working directory.
+Session headers include the native session id and a copyable terminal resume
+command; `preloop sessions list --wide` and `--json` expose the same fields.
+
 
 ```text
 AI Agent → Preloop → [Policy]  → Allow / Deny / Require Approval → Execute

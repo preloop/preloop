@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { promisify } from "node:util";
 
 import type { ControlConfig } from "./config.js";
@@ -468,4 +469,92 @@ export class WorkspaceManager {
       return true;
     }
   }
+}
+
+
+/** Credential directories below the home directory (mirrors the runner). */
+const TALK_SECRET_HOME_DIRS = [
+  ".ssh",
+  ".gnupg",
+  ".aws",
+  ".azure",
+  ".kube",
+  ".docker",
+  ".terraform.d",
+  ".preloop",
+  ".claude",
+  ".codex",
+  ".copilot",
+  ".cursor",
+  path.join(".config", "gcloud"),
+  path.join(".config", "rclone"),
+  path.join(".config", "gh"),
+  path.join(".config", "github-copilot"),
+  path.join(".local", "share", "keyrings"),
+  path.join("Library", "Keychains"),
+];
+
+function talkWithin(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/**
+ * Refuse the filesystem root, the home directory (or anything containing it)
+ * and credential directories, matching the flow workspace policy.
+ */
+async function refuseUnsafeTalkDirectory(dir: string): Promise<void> {
+  if (path.dirname(dir) === dir) throw new WorkspaceError("The filesystem root cannot be a working directory");
+  const homeDir = os.homedir();
+  const home = await fs.realpath(homeDir).catch(() => path.resolve(homeDir));
+  if (talkWithin(dir, home)) {
+    throw new WorkspaceError("The home directory, or a directory that contains it, cannot be a working directory");
+  }
+  for (const rel of TALK_SECRET_HOME_DIRS) {
+    const secretPath = path.join(home, rel);
+    const secret = await fs.realpath(secretPath).catch(() => secretPath);
+    if (talkWithin(dir, secret) || talkWithin(secret, dir)) {
+      throw new WorkspaceError(`~/${rel} holds credentials and cannot be a working directory or contain one`);
+    }
+  }
+}
+
+/** Resolve a Talk directory inside the host owner's configured workspace. */
+export async function resolveWorkingDirectory(config: ControlConfig, directory?: string): Promise<string | undefined> {
+  if (!directory) return undefined;
+  if (!path.isAbsolute(directory)) throw new WorkspaceError("Working directory must be absolute");
+  let resolved: string;
+  try {
+    resolved = await fs.realpath(directory);
+  } catch {
+    throw new WorkspaceError("Working directory does not exist");
+  }
+  await refuseUnsafeTalkDirectory(resolved);
+  const configPath = config.runner_config_path ?? path.join(os.homedir(), ".preloop", "runner.json");
+  let runner: { authorized_directories?: { path?: string; mode?: string; harnesses?: string[] | string }[] } | undefined;
+  try {
+    runner = JSON.parse(await fs.readFile(configPath, "utf8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new WorkspaceError("Cannot read authorized directories");
+    if (config.runner_config_path) throw new WorkspaceError("Authorized directory configuration is missing");
+  }
+  if (runner) {
+    const entry = runner.authorized_directories?.find(item => item.path === resolved);
+    if (!entry || entry.mode !== "write") throw new WorkspaceError("Working directory is not authorized and writable; use preloop runner dirs add <path>");
+    if (Array.isArray(entry.harnesses) && entry.harnesses.length && !entry.harnesses.includes("claude_code")) throw new WorkspaceError("Working directory is not authorized for this harness");
+    if (!(await fs.stat(resolved)).isDirectory()) throw new WorkspaceError("Working directory is not a directory");
+    return resolved;
+  }
+  let root: string;
+  try {
+    root = await fs.realpath(config.workspace_root ?? os.homedir());
+  } catch {
+    throw new WorkspaceError("The configured workspace_root does not exist");
+  }
+  const relative = path.relative(root, resolved);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new WorkspaceError("Working directory is outside the authorized workspace_root");
+  }
+  if (!(await fs.stat(resolved)).isDirectory()) throw new WorkspaceError("Working directory is not a directory");
+  return resolved;
 }

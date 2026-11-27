@@ -657,8 +657,7 @@ func writeAgentControlSidecarSystemd(spec agentControlSidecarSpec, bin string, o
 }
 
 func codexControlConfigPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".codex", "preloop-control.json")
+	return filepath.Join(codexConfigHome(), "preloop-control.json")
 }
 
 // removeCodexAgentControlArtifacts drops the Codex control file and sidecar

@@ -398,6 +398,7 @@ def register_session_start(
     first_prompt: Optional[str] = None,
     alias: Optional[str] = None,
     actor_user_id: Any = None,
+    control_owned: Optional[bool] = None,
 ) -> Optional[SessionStartResult]:
     """Create or find the run's session and record what the hook knows.
 
@@ -489,8 +490,9 @@ def register_session_start(
         db.rollback()
         crud_runtime_session.lock_alias_account(db, account_id=account_id)
         session = crud_runtime_session.upsert_by_source(db, **upsert_kwargs)
-    if cwd and not session.cwd:
-        session.cwd = cwd[:1024]
+    crud_runtime_session.record_start_directory(
+        db, session=session, cwd=cwd, control_owned=control_owned
+    )
     label = principal_label(agent_kind or principal_type, cwd or session.cwd)
     if not session.runtime_principal_name:
         session.runtime_principal_name = label or principal_name

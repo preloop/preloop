@@ -64,7 +64,7 @@ migrated disposable PostgreSQL database (UTC), then run that file with pytest.
 *   **Scaffolded Today:** `account_realtime` defines normalized topics such as `runtime_sessions`, `managed_agents`, `gateway_activity`, `budget_health`, and `audit`; the WebSocket manager can filter broadcasts by account and topic; frontend runtime-session and managed-agent views subscribe to those topics. Mobile/watch clients have native voice UI scaffolds that can create operator text turns, but the end-to-end user experience still depends on runtime adapters and production hardening.
 *   **Runtime Plugins (shipping):** Standalone open-source runtime plugins live in `runtime-plugins/` (`@preloop-ai/openclaw-plugin` on npm, TypeScript, and `preloop-hermes-plugin` on PyPI, Python) and implement the `preloop.agent_control.v1` protocol: they read `preloop.control.control_ws_url`, connect with the durable runtime bearer token, own reconnect/backoff behavior, keep the WebSocket open, send heartbeat/status events, advertise capabilities, receive `send_message` command envelopes, acknowledge delivery, map operator messages into their own interactive runtime, and gate native tool calls through Preloop approvals (fail-closed by default). `preloop agents install-plugin <agent>` delegates installation to the runtime marketplace; `PUBLISHING.md` covers lockstep versioning. Existing enrollment can rewrite MCP and model traffic even when the runtime plugin is absent, but Agent Control is not enabled until that plugin is running inside the agent process.
 *   **Desktop capability:** Hermes and OpenClaw read `$PRELOOP_DESKTOP_FILE` or `~/.preloop/desktop.json` and add two keys to the presence `capabilities` object. A parsed file whose `vnc.host` is exactly `127.0.0.1` sends `desktop: "vnc"` and `desktop_display` (the manifest `display`, typically `:99`); every other case, including a missing file or a missing key from another plugin, sends `desktop: "none"`. The VNC password file and the rest of the manifest (host, port, auth, browser) stay on the machine. The backend stores that envelope with the agent's presence and exposes `desktop` (`"vnc"`, `"rdp"`, or `"none"`) and `desktop_display` on the managed-agent API. Brokered viewing and RDP detection are not part of this signal.
-*   **Claude Code Sidecar (prototype):** Claude Code has no in-process plugin API for message injection, so `@preloop-ai/claude-plugin` (`runtime-plugins/claude-preloop`) runs as a standalone sidecar daemon implementing the same `preloop.agent_control.v1` protocol. It reads `~/.claude/preloop-control.json` (its own file; `settings.json` stays reserved for Claude Code), drives sidecar-owned sessions through the Claude Agent SDK (streaming input for `send_message`, `resume` for persisted sessions, `interrupt()`), and reports presence/telemetry for interactive terminal sessions by tailing `~/.claude/projects/**/*.jsonl` (summaries only, no transcript upload). Interactive TUI sessions are observe-and-approve, not steerable mid-turn; targeting one resumes it headlessly. Tool approvals remain on the PreToolUse permission hook installed by `preloop agents onboard --approvals`; owned sessions load filesystem setting sources so the same hook fires there, and stopping the sidecar never ungoverns anything.
+*   **Claude Code Sidecar (prototype):** Claude Code has no in-process plugin API for message injection, so `@preloop-ai/claude-plugin` (`runtime-plugins/claude-preloop`) runs as a standalone sidecar daemon implementing the same `preloop.agent_control.v1` protocol. It reads `~/.claude/preloop-control.json` (its own file; `settings.json` stays reserved for Claude Code), drives sidecar-owned sessions through the Claude Agent SDK (streaming input for `send_message`, `resume` for persisted sessions, `interrupt()`), and reports presence/telemetry for interactive terminal sessions by tailing `~/.claude/projects/**/*.jsonl` (summaries only, no transcript upload). Open interactive TUI sessions receive boundary notes; Talk does not resume them in a second process. Tool approvals remain on the PreToolUse permission hook installed by `preloop agents onboard --approvals`; owned sessions load filesystem setting sources so the same hook fires there, and stopping the sidecar never ungoverns anything.
 *   **Codex CLI Sidecar (prototype):** Codex CLI likewise has no in-process plugin API for message injection, so `@preloop-ai/codex-plugin` (`runtime-plugins/codex-preloop`, bin `preloop-codex-plugin`) runs as a standalone sidecar implementing `preloop.agent_control.v1` with `runtime: "codex"`. It reads `~/.codex/preloop-control.json` (its own file; `config.toml` and `auth.json` stay reserved for Codex). Owned threads are driven through `@openai/codex-sdk`: `start_new_session` calls `startThread` in `<workspace_root>/<repository_slug>` when `metadata.workspace.mode` is `persistent_checkout`, otherwise in `cwd` or `workspace_root`, a follow-up turn on an owned thread calls `thread.run`, an unknown `target_session_id` calls `resumeThread`, and `interrupt` aborts the in-flight run with an `AbortController` and answers `command_result` with a stopped marker (`status: "stopped"`). Presence for interactive sessions comes from tailing `~/.codex/sessions/**/*.jsonl` (summaries only). Advertised capabilities match the Claude sidecar except `worktree`. Tool approvals stay on the hook installed at `~/.codex/hooks.json` by `preloop agents onboard "Codex CLI" --approvals`. The sidecar does not set `approvalPolicy` to `never`, does not rewrite `config.toml` or `auth.json`, and stopping it never ungoverns anything (fail-closed). `codex_sandbox_mode` defaults to `workspace-write`; `danger-full-access` is refused unless `codex_allow_full_access` is also set.
 
 ### Desktop install (`desktop.install`)
@@ -464,6 +464,61 @@ as scanner errors even when issue synchronization succeeds. Managed repository
 URL lookup permits an empty stored key; credentials still arrive through the
 orchestrator's managed resolver.
 
+## herdr terminal adapter
+
+The optional Go adapter observes herdr, a supported terminal workspace manager,
+inside the resident runner. Local `observe` and `prompt` permissions are separate
+and default to false. The server cannot grant either permission. No additional
+daemon or credential is required. The runner's authenticated inventory channel
+carries changes from protocol 22 snapshots on its normal heartbeat. Snapshot
+polls are spaced at least five seconds apart. Unknown protocol versions fail
+closed and report `herdr_protocol_unsupported` once; an absent executable is
+silent. Failed snapshots do not mean that every pane closed.
+
+A terminal location belongs to an existing runtime session and contains device,
+workspace, tab, and pane identity, display labels, observed state, and closure
+time. Matching requires account, device, normalized harness kind, and native
+session identity. A foreign or ambiguous match cannot attach a pane to a session.
+Unmatched panes remain unmanaged inventory entries without session content.
+Closing or replacing a pane retires its old location on reconciliation. Active
+Preloop turns and pending approvals take precedence over terminal observations.
+Display labels are untrusted, length-limited text, and location data follows the
+session's retention.
+
+Pane prompting is a Talk transport with these required device-side guards:
+
+- Read the local `prompt` permission at delivery time. Server metadata is not
+  authority to enable it.
+- Immediately before submission, obtain a fresh supported snapshot and verify
+  the exact pane, harness, and native session identity. Refuse a shell, a missing
+  pane, or a different session.
+- Only idle or done agents may receive prompts. Working agents use operator
+  notes. Blocked panes cannot receive prompts, including answers to approval,
+  permission, or question dialogs. Never use `send-keys`.
+- Bound prompt size, strip control characters, and pass text as one process
+  argument without a shell. Use `herdr agent prompt` with `--wait`.
+- Apply the same operator authorization and session-start consent as sidecar
+  Talk, and persist the same audit record with delivery route `herdr_pane`.
+- Treat blocked, stalled, timed-out, and missing-pane outcomes as explicit
+  terminal command states with actionable reasons. A timeout or stalled result
+  does not prove no input was submitted, so it must not trigger a blind retry.
+
+The transport follows sidecar resume in the shared Talk routing decision.
+Observation alone never enables it. Commands retain the existing
+`AgentControlCommand` audit identity and bind one authenticated runner, device,
+pane, harness, and native session. Sidecar replay and result handlers exclude
+these runner-bound commands. The device journals command IDs, payload hashes,
+expiry, and outcomes before injection; prompt text is not stored in that journal.
+An accepted command without a saved result returns an uncertain outcome after a
+restart and is never injected again. Commands expire even if the runner stays
+offline, and terminal outcomes retain actionable reasons.
+
+Replies come through
+the existing governed session record; terminal output is never scraped and
+`herdr agent read` is never used. Ungoverned agents have no visible reply record.
+Remote herdr targets and creating workspaces from the console are outside this
+adapter's scope. See the [user guide](../guide/herdr.md).
+
 ## Nanobot managed runtime
 
 The optional `runtime-plugins/nanobot-preloop` process embeds a pinned Nanobot
@@ -472,3 +527,33 @@ MCP firewall. It owns persisted session references and bounds turns, duration an
 token/context consumption. Native and MCP tool execution require explicit
 Preloop permission decisions; background subagents and outbound channel tools
 are disabled. See its README for supported limits and installation.
+
+### Native Talk conversations
+
+For Claude Code and Codex, a new Talk command starts without a runtime session
+binding. The sidecar reports `command_session` with the command id, native
+harness id and launch directory before progress. The server resolves the same
+principal/native source key as the session-start hook and gateway, then records
+that command, its progress and its result on that one runtime session. Replayed
+results also carry the identity so a reconnect can recover a missed start frame.
+
+Session-targeted prompts and operator notes use the same server decision: an
+active turn receives a note at its next boundary; an idle sidecar-owned or ended
+session resumes its native id in its original directory. Open terminal sessions
+receive notes without starting a second harness process. An unavailable idle
+sidecar session refuses the send and offers its local resume command. A resume
+prompt cancels pending notes on that session as superseded; notes already
+delivered remain in history and are not injected again.
+
+`start_directory` is recorded once and is separate from the latest hook `cwd`.
+Talk offers recent directories, with selection checked by the sidecar against
+its configured workspace and any existing runner directory authorization. The
+session header and `preloop sessions list --wide` / `--json` expose the native
+harness id, original directory and shell-quoted resume command. Existing rows
+with no recorded launch directory do not invent one from a later cwd.
+
+An older native session with no recorded launch directory is not automatically
+resumed from its last-seen cwd. An unowned legacy session without recent activity
+is refused with a local recovery instruction instead of accepting a note that
+may never arrive. A fresh session-start hook records process ownership so a
+local terminal resume supersedes stale sidecar ownership.

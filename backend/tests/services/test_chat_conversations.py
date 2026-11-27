@@ -110,6 +110,17 @@ def watch(f: Any) -> models.ChatWork:
     return row
 
 
+def park(f: Any) -> models.ChatWork:
+    """Keep the persistent observer out of the next drain."""
+    row = watch(f)
+    crud_chat.work.update(
+        f.db,
+        db_obj=row,
+        obj_in={"next_attempt_at": datetime.utcnow() + timedelta(hours=1)},
+    )
+    return row
+
+
 async def drain(f: Any, app: Any) -> None:
     """Drain only eligible jobs; future polls remain durable and pending."""
     for _ in range(20):
@@ -434,6 +445,11 @@ async def test_shared_rate_limits(
                 "run_reserved_at": datetime.utcnow(),
             },
         )
+    # The observer from start() becomes due five seconds later. A slow runner
+    # reaches that inside the reservation loop, and the observer then delivers
+    # the "Ready" answer after the refusal. Keep it parked: only the inbound
+    # turn is under test here.
+    park(f)
     receive(f, text="One more turn")
     await drain(f, real_app)
     assert (

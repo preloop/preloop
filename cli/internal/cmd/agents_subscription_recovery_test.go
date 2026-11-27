@@ -72,7 +72,7 @@ func assertClaudeNodePreflightBeforeMutation(t *testing.T, oldNode bool) {
 	printed := captureStdout(t, func() error {
 		enrollErr = executeManagedEnrollment(agent, managedEnrollmentOptions{
 			Client:         api.NewClientWithToken(server.URL, "synthetic-session"),
-			PreferredModel: "anthropic/claude-haiku-4-5", Input: strings.NewReader("y\n"), Output: &out, Approvals: true,
+			PreferredModel: "anthropic/claude-haiku-4-5", Input: strings.NewReader("\ny\n"), Output: &out, Approvals: true,
 		})
 		return nil
 	})

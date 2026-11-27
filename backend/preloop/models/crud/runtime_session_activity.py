@@ -13,6 +13,7 @@ from sqlalchemy import (
     case,
     cast,
     func,
+    or_,
     select,
     text,
     true,
@@ -123,6 +124,15 @@ def _mask_activity(db: Session, activity: models.RuntimeSessionActivity) -> None
     )
     for field in ("summary", "metadata_", "server_name", "tool_name"):
         setattr(activity, field, masker.mask(getattr(activity, field)))
+
+
+def _utc_timestamp(value: datetime) -> datetime:
+    """Normalize database and supplied timestamps for history comparisons."""
+    return (
+        value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None
+        else value.astimezone(timezone.utc)
+    )
 
 
 class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
@@ -1077,8 +1087,8 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         and session, so older note links do not need an unbounded history read.
         """
         slim = self.model.metadata_
-        for key in self.GATEWAY_HISTORY_KEYS:
-            slim = slim.op("-")(key)
+        for history_key in self.GATEWAY_HISTORY_KEYS:
+            slim = slim.op("-")(history_key)
         metadata_column = case(
             (self.model.activity_type == "model_gateway_call", slim),
             else_=self.model.metadata_,
@@ -1128,6 +1138,370 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             if focused is not None:
                 rows.append(focused)
         return rows
+
+    def add_transcript_messages(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        source: str,
+        record: Any,
+        timestamp: datetime,
+        summary_limit: int,
+    ) -> list[tuple[models.RuntimeSessionActivity, str]]:
+        """Store a pushed transcript in source order without changing record times."""
+        indexed = []
+        for index, message in enumerate(record.transcript or []):
+            activity = models.RuntimeSessionActivity(
+                account_id=account_id,
+                runtime_session_id=runtime_session_id,
+                activity_type="transcript_message",
+                status=message.role,
+                summary=message.text[:summary_limit],
+                metadata_={
+                    "role": message.role,
+                    "source": f"usage_ingest:{source}",
+                    "external_id": record.external_id,
+                    "conversation_id": record.conversation_id,
+                    "message_index": index,
+                },
+                timestamp=message.timestamp or timestamp,
+            )
+            db.add(activity)
+            indexed.append((activity, message.text))
+        db.flush()
+        return indexed
+
+    def _timeline_order(self) -> tuple[Any, ...]:
+        """Stable record order, including equal-time messages in pushed batches."""
+        transcript = self.model.activity_type == "transcript_message"
+        return (
+            self.model.timestamp,
+            case(
+                (
+                    transcript,
+                    func.coalesce(self.model.metadata_["external_id"].astext, ""),
+                ),
+                else_="",
+            ),
+            case(
+                (
+                    transcript,
+                    func.coalesce(
+                        cast(self.model.metadata_["message_index"].astext, Integer), 0
+                    ),
+                ),
+                else_=0,
+            ),
+            self.model.id,
+        )
+
+    def get_timeline_focus(
+        self, db: Session, *, account_id: Any, runtime_session_id: Any, target: str
+    ) -> Any:
+        """Resolve a row, usage id or delivered note within the authorized session."""
+        order = self._timeline_order()
+        query = db.query(
+            self.model.id,
+            self.model.timestamp,
+            order[1].label("external_id"),
+            order[2].label("message_index"),
+        ).filter(
+            self.model.account_id == account_id,
+            self.model.runtime_session_id == runtime_session_id,
+        )
+        try:
+            activity_id = UUID(target)
+        except ValueError:
+            activity_id = None
+        if activity_id is not None:
+            row = query.filter(self.model.id == activity_id).first()
+            if row is not None:
+                return row
+        return (
+            query.filter(
+                or_(
+                    and_(
+                        self.model.activity_type == "model_gateway_call",
+                        self.model.metadata_["api_usage_id"].astext == target,
+                    ),
+                    and_(
+                        self.model.activity_type == "agent_control_message",
+                        or_(
+                            self.model.metadata_["note_id"].astext == target,
+                            self.model.metadata_["operator_note_id"].astext == target,
+                        ),
+                    ),
+                )
+            )
+            .order_by(*order)
+            .first()
+        )
+
+    def gateway_offset_around(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        target: str,
+        limit: int,
+        start_date: Optional[datetime] = None,
+    ) -> int:
+        """Locate the gateway page at a search target without walking older pages."""
+        focus = self.get_timeline_focus(
+            db,
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            target=target,
+        )
+        if focus is None:
+            raise ValueError("Activity target not found in this session")
+        if start_date is not None and _utc_timestamp(focus.timestamp) < _utc_timestamp(
+            start_date
+        ):
+            raise ValueError("Activity target not found in this session")
+        newer = (
+            db.query(self.model.id)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.runtime_session_id == runtime_session_id,
+                self.model.activity_type == "model_gateway_call",
+                tuple_(self.model.timestamp, self.model.id)
+                > tuple_(focus.timestamp, focus.id),
+            )
+            .count()
+        )
+        return max(0, newer - limit // 2)
+
+    def list_timeline_turn_page(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        limit: int,
+        before: Optional[str] = None,
+        after: Optional[str] = None,
+        around: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+    ) -> dict[str, Any]:
+        """Read complete prompt turns, with a bounded continuation for huge turns.
+
+        Hook prompts and pushed user messages mark turns. Sessions without either
+        use model calls, then individual activity rows, as their boundaries. Only
+        the selected rows have their metadata projected. Cursors are row ids in
+        this account and session; inserts at the head cannot shift older pages.
+        """
+        order = self._timeline_order()
+        order_key = tuple_(*order)
+
+        def key(row: Any) -> tuple[Any, ...]:
+            return (row.timestamp, row.external_id, row.message_index, row.id)
+
+        base = db.query(self.model).filter(
+            self.model.account_id == account_id,
+            self.model.runtime_session_id == runtime_session_id,
+        )
+        if start_date is not None:
+            base = base.filter(self.model.timestamp >= start_date)
+        boundary = or_(
+            self.model.activity_type == "user_prompt",
+            and_(
+                self.model.activity_type == "transcript_message",
+                self.model.metadata_["role"].astext == "user",
+            ),
+        )
+        if base.filter(boundary).with_entities(self.model.id).first() is None:
+            boundary = self.model.activity_type == "model_gateway_call"
+            if base.filter(boundary).with_entities(self.model.id).first() is None:
+                boundary = self.model.activity_type.notin_(HOOK_ACTIVITY_TYPES)
+        turns = base.filter(boundary).with_entities(
+            self.model.timestamp,
+            order[1].label("external_id"),
+            order[2].label("message_index"),
+            self.model.id,
+        )
+        focus = None
+        upper = None
+        if before or after or around:
+            focus = self.get_timeline_focus(
+                db,
+                account_id=account_id,
+                runtime_session_id=runtime_session_id,
+                target=before or after or around,
+            )
+            if focus is None or (
+                start_date is not None
+                and _utc_timestamp(focus.timestamp) < _utc_timestamp(start_date)
+            ):
+                raise ValueError("Activity target not found in this session")
+        if before:
+            upper = key(focus)
+        elif after:
+            # Start at the first remaining row. When it begins a new turn,
+            # counting the cursor's completed turn would yield an empty page
+            # for limit=1. Hook-only boundaries cannot supply visible rows.
+            first_remaining = (
+                base.filter(
+                    self.model.activity_type.notin_(HOOK_ACTIVITY_TYPES),
+                    order_key > tuple_(*key(focus)),
+                )
+                .with_entities(
+                    self.model.id,
+                    self.model.timestamp,
+                    order[1].label("external_id"),
+                    order[2].label("message_index"),
+                )
+                .order_by(*order)
+                .first()
+            )
+            if first_remaining is not None:
+                later = (
+                    turns.filter(order_key > tuple_(*key(first_remaining)))
+                    .order_by(*order)
+                    .limit(limit)
+                    .all()
+                )
+                if len(later) == limit:
+                    upper = key(later[-1])
+        elif around:
+            # Half the page follows the match; the other half precedes it.
+            later = (
+                turns.filter(order_key > tuple_(*key(focus)))
+                .order_by(*order)
+                .limit(max(limit // 2, 1))
+                .all()
+            )
+            if len(later) == max(limit // 2, 1):
+                upper = key(later[-1])
+        candidates = turns
+        if upper is not None:
+            candidates = candidates.filter(order_key < tuple_(*upper))
+        selected = (
+            candidates.order_by(*(column.desc() for column in order))
+            .limit(limit + 1)
+            .all()
+        )
+        more_turns = len(selected) > limit
+        selected = selected[:limit]
+        lower = key(selected[-1]) if selected and more_turns else None
+        timeline = base.filter(self.model.activity_type.notin_(HOOK_ACTIVITY_TYPES))
+        rows_query = timeline
+        if after:
+            lower = key(focus)
+            rows_query = rows_query.filter(order_key > tuple_(*lower))
+        elif lower is not None:
+            rows_query = rows_query.filter(order_key >= tuple_(*lower))
+        if upper is not None:
+            rows_query = rows_query.filter(order_key < tuple_(*upper))
+        # An unusually long single turn still has a recoverable continuation.
+        row_limit = 2000
+        read_order = order if after else tuple(column.desc() for column in order)
+        rebound = False
+        ids = (
+            rows_query.with_entities(self.model.id)
+            .order_by(*read_order)
+            .limit(row_limit + 1)
+            .all()
+        )
+        truncated = len(ids) > row_limit
+        if (
+            around
+            and not before
+            and not after
+            and truncated
+            and focus.id not in {row.id for row in ids[:row_limit]}
+        ):
+            # A very long turn may push the target outside the tail cap. Bound
+            # this exceptional page around the target itself instead.
+            later = (
+                rows_query.filter(order_key > tuple_(*key(focus)))
+                .with_entities(
+                    self.model.timestamp,
+                    order[1].label("external_id"),
+                    order[2].label("message_index"),
+                    self.model.id,
+                )
+                .order_by(*order)
+                .offset(row_limit // 2)
+                .first()
+            )
+            if later is not None:
+                rebound = True
+                upper = key(later)
+                rows_query = rows_query.filter(order_key < tuple_(*upper))
+                ids = (
+                    rows_query.with_entities(self.model.id)
+                    .order_by(*(column.desc() for column in order))
+                    .limit(row_limit + 1)
+                    .all()
+                )
+        truncated = len(ids) > row_limit
+        ids = ids[:row_limit]
+        slim = self.model.metadata_
+        for history_key in self.GATEWAY_HISTORY_KEYS:
+            slim = slim.op("-")(history_key)
+        rows = (
+            db.query(
+                self.model.id,
+                self.model.activity_type,
+                self.model.timestamp,
+                self.model.tool_name,
+                self.model.server_name,
+                self.model.summary,
+                self.model.status,
+                self.model.api_key_id,
+                case(
+                    (self.model.activity_type == "model_gateway_call", slim),
+                    else_=self.model.metadata_,
+                ).label("metadata_"),
+            )
+            .filter(self.model.id.in_([row.id for row in ids]))
+            .order_by(*(column.desc() for column in order))
+            .all()
+        )
+        has_more = False
+        has_newer = False
+        if rows:
+            edges = (
+                timeline.with_entities(
+                    self.model.id,
+                    self.model.timestamp,
+                    order[1].label("external_id"),
+                    order[2].label("message_index"),
+                )
+                .filter(self.model.id.in_([rows[0].id, rows[-1].id]))
+                .all()
+            )
+            edge_keys = {row.id: key(row) for row in edges}
+            has_more = (
+                timeline.filter(order_key < tuple_(*edge_keys[rows[-1].id]))
+                .with_entities(self.model.id)
+                .first()
+                is not None
+            )
+            has_newer = (
+                timeline.filter(order_key > tuple_(*edge_keys[rows[0].id]))
+                .with_entities(self.model.id)
+                .first()
+                is not None
+            )
+        return {
+            "rows": rows,
+            "has_more": has_more,
+            "next_before": str(rows[-1].id) if has_more else None,
+            "has_newer": has_newer,
+            "next_after": str(rows[0].id) if has_newer else None,
+            "window_start": rows[-1].timestamp
+            if truncated and rows
+            else (lower[0] if lower else None),
+            "window_end": rows[0].timestamp
+            if after and truncated and rows
+            else (upper[0] if upper else None),
+            "partial_turn": truncated or rebound,
+        }
 
     def list_tool_calls_page(
         self,

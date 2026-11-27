@@ -29,6 +29,8 @@ const SESSION_OPTIONS = {
   limits: { max_concurrent: 2, active: 0, idle_timeout_seconds: 1800 },
 };
 
+type FetchInput = RequestInfo | URL;
+
 describe('RuntimeSessionsView', () => {
   let fetchStub: sinon.SinonStub;
   let wsStub: sinon.SinonStub;
@@ -184,6 +186,101 @@ describe('RuntimeSessionsView', () => {
     return text;
   }
 
+  // The finder answers identity and content in one read: identity-only
+  // rows first, then the sessions that only matched captured content.
+  function finderWithIdentity(overrides: Record<string, unknown> = {}) {
+    const content = searchResponse();
+    return {
+      items: [
+        { id: 'identity-1', title: 'Rollout plan review' },
+        { id: 'identity-2', title: 'Rollout plan follow-up' },
+        ...content.items,
+      ],
+      related_sessions: [],
+      has_more: false,
+      content_search: content.content_search,
+      ...overrides,
+    };
+  }
+
+  function stubFinder(body: Record<string, unknown>): void {
+    fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(
+      async () =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+  }
+
+  it('keeps unindexed identity matches above content matches (#2424)', async () => {
+    stubFinder(finderWithIdentity());
+    const element = await renderedSearch();
+    expect(searchCalls()).to.have.length(1);
+    const headings = [
+      ...element.shadowRoot!.querySelectorAll('[data-search-kind]'),
+    ];
+    expect(
+      headings.map((row) => row.getAttribute('data-search-kind'))
+    ).to.deep.equal(['identity', 'identity', 'content']);
+  });
+
+  it('opens an identity-only search hit in the phone detail pane', async () => {
+    await setViewport({ width: 390, height: 844 });
+    stubFinder(finderWithIdentity());
+    const element = await renderedSearch();
+    const row = element.shadowRoot!.querySelector(
+      '[data-search-kind="identity"]'
+    )!;
+    const link = row.closest('sl-card')!.querySelector('a')!;
+    (link as HTMLElement).click();
+    await element.updateComplete;
+    await waitUntil(() =>
+      Boolean(element.shadowRoot!.querySelector('preloop-session-observer'))
+    );
+    const searchList =
+      element.shadowRoot!.querySelector<HTMLElement>('.search-list')!;
+    expect(getComputedStyle(searchList).display).to.equal('none');
+    const observer = element.shadowRoot!.querySelector(
+      'preloop-session-observer'
+    )!;
+    await waitUntil(() =>
+      ['session-title', 'session-detail'].includes(
+        observer.shadowRoot!.activeElement?.id || ''
+      )
+    );
+    expect(
+      element
+        .shadowRoot!.querySelector('.sessions-page')!
+        .classList.contains('has-detail')
+    ).to.equal(true);
+    observer.dispatchEvent(
+      new CustomEvent('session-list-back', { bubbles: true, composed: true })
+    );
+    await element.updateComplete;
+    expect(getComputedStyle(searchList).display).not.to.equal('none');
+  });
+
+  it('keeps identity matches when content search is unavailable (#2424)', async () => {
+    stubFinder(
+      finderWithIdentity({
+        items: [
+          { id: 'identity-1', title: 'Rollout plan review' },
+          { id: 'identity-2', title: 'Rollout plan follow-up' },
+        ],
+        content_search: null,
+        search_warning: 'Content search is unavailable right now.',
+      })
+    );
+    const element = await renderedSearch();
+    expect(
+      element.shadowRoot!.querySelectorAll('[data-search-kind="identity"]')
+    ).to.have.length(2);
+    expect(element.shadowRoot!.textContent).to.contain(
+      'Content search is unavailable right now.'
+    );
+  });
+
   beforeEach(async () => {
     await setViewport({ width: 1440, height: 1000 });
     wsStub = sinon.stub(unifiedWebSocketManager, 'send').returns(true);
@@ -191,7 +288,7 @@ describe('RuntimeSessionsView', () => {
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
     fetchStub = sinon.stub(window, 'fetch');
-    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+    fetchStub.callsFake(async (input: FetchInput, init?: RequestInit) => {
       const url = typeof input === 'string' ? input : input.toString();
 
       if (url === SEARCH_URL) {
@@ -287,6 +384,10 @@ describe('RuntimeSessionsView', () => {
             },
           ],
         };
+        if (init?.method === 'POST') {
+          page.items = [];
+          page.total = 0;
+        }
         if (hasArtifacts) {
           // The server filter, mirrored: only rows holding that kind.
           page.items = page.items.filter((item: any) => {
@@ -663,6 +764,34 @@ describe('RuntimeSessionsView', () => {
     fetchStub.restore();
     localStorage.clear();
     window.history.replaceState({}, '', '/console/runtime-sessions');
+  });
+
+  it('restores and clears the terminal workspace filter through the paged API', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/console/runtime-sessions?workspace_id=workspace-1'
+    );
+    const element = await fixture<RuntimeSessionsView>(
+      html`<runtime-sessions-view></runtime-sessions-view>`
+    );
+    await waitUntil(() => !(element as any).loading);
+    const filter = element.shadowRoot!.querySelector(
+      'sl-select[label="Workspace"]'
+    ) as HTMLSelectElement;
+    expect(filter.value).to.equal('workspace-1');
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) =>
+          String(call.args[0]).includes('workspace_id=workspace-1')
+        )
+    ).to.equal(true);
+    await (element as any).clearFilters();
+    expect(
+      new URLSearchParams(window.location.search).has('workspace_id')
+    ).to.equal(false);
+    expect((element as any).buildListParams().workspaceId).to.equal(undefined);
   });
 
   it('opens the new session dialog over non-ephemeral runners', async () => {
@@ -1063,11 +1192,12 @@ describe('RuntimeSessionsView', () => {
       toolbar.shadowRoot!.querySelector('sl-input.search-input'),
       ...Array.from(toolbar.querySelectorAll('sl-select')),
     ] as HTMLElement[];
-    expect(controls).to.have.length(6);
+    expect(controls).to.have.length(7);
     expect(
       controls.slice(1).map((control) => control.getAttribute('label'))
     ).to.deep.equal([
       'Source type',
+      'Workspace',
       'Status',
       'Date range',
       'Has artifacts',
@@ -1344,7 +1474,7 @@ describe('RuntimeSessionsView', () => {
       expect(
         (searchBody.filters as Record<string, unknown> | undefined) || {}
       ).to.not.have.property('source_kind');
-      // The list endpoint never sees the query.
+      // The finder answers identity and content, so no list call is added.
       expect(listCalls().length).to.equal(listsBefore);
       expect(
         listCalls().filter((url) => url.includes('query='))

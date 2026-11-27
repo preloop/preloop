@@ -468,6 +468,10 @@ class ExecutionEffectiveRequest(BaseModel):
 
 
 class FlowExecutionResponse(FlowExecutionBase, ExecutionModelProjection):
+    refinalization: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Controller audit mark: when and by whom this stored review was re-finalized.",
+    )
     pull_request: Optional[ExecutionPullRequest] = None
     runtime_session_id: Optional[str] = Field(
         None, description="Runtime tracking session for persistent Agent Control runs."

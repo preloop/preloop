@@ -35,6 +35,20 @@ from preloop.utils.permissions import ensure_permission_in_oss, require_permissi
 router = APIRouter()
 
 
+@router.get("/agents/discovery-extensions/count")
+@require_permission("view_agents")
+def count_extensions(
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> dict[str, int]:
+    """Return the account inventory count for the Agents page entry point."""
+    ensure_permission_in_oss(db, current_user, "view_agents")
+    return {
+        "count": crud_discovered_extension.count_for_account(db, account_id=account.id)
+    }
+
+
 @router.get("/agents/discovery-extensions", response_model=DiscoveredExtensionList)
 @require_permission("view_agents")
 def list_extensions(
@@ -44,8 +58,11 @@ def list_extensions(
     state: EffectiveState | None = None,
     source_kind: SourceKind | None = None,
     group: Literal["extension"] | None = None,
+    q: str | None = Query(default=None, max_length=300),
+    extension_kind: ExtensionKind | None = None,
+    extension_id: str | None = Query(default=None, pattern=IDENTIFIER_PATTERN),
     limit: int = Query(default=50, ge=1, le=500),
-    cursor: str | None = Query(default=None, max_length=1024),
+    cursor: str | None = Query(default=None, max_length=8192),
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> DiscoveredExtensionList:
@@ -60,6 +77,9 @@ def list_extensions(
             state=state,
             source_kind=source_kind,
             group=group,
+            q=q,
+            extension_kind=extension_kind,
+            extension_id=extension_id,
             limit=limit,
             cursor=cursor,
         )

@@ -13,7 +13,70 @@ Preloop governs Claude Code on two planes:
 - **Tool calls**: a managed `preloop` MCP server entry routes governed tools through the **Preloop MCP Firewall**, where access rules (allow / deny / require_approval) and approval workflows apply.
 - **Model traffic**: onboarding can rewrite Claude Code's environment so model calls go through the **Preloop Gateway** using a managed model alias, giving you cost analytics and budget controls.
 
-Optionally, Preloop can also install a **native tool-approval hook** so Claude Code's own tool calls (shell commands, file edits) that would normally prompt you in the terminal are routed to Preloop mobile/watch/web approvals instead.
+Onboarding offers a **native tool-approval hook**, with Yes selected by default,
+so calls that need approval wait for a person in Preloop.
+
+## Before confirming gateway enrollment
+
+Verified with Claude Code **2.1.332** using an isolated home and synthetic
+credentials pointed at a local endpoint:
+
+- The banner displays **API Usage Billing**. With a local claude.ai login still
+  present, it warns that both claude.ai and `ANTHROPIC_API_KEY` are set.
+  `/status` identifies the claude.ai token as not in use. The key written by
+  Preloop authenticates to the gateway.
+- `/status` reports that **remote managed settings and organization policy are
+  not fetched** with a custom `ANTHROPIC_BASE_URL`.
+- claude.ai connectors are disabled while custom API-key authentication is
+  active. This does not describe MCP servers configured directly in Claude Code.
+
+**Your subscription usage still pays for model calls through a
+subscription-backed gateway route.** The banner describes the client's
+authentication method; it does not identify the gateway's upstream credential.
+Selecting an Anthropic API key upstream instead uses that key's billing.
+
+Team and Enterprise administrators should review the missing cloud-delivered
+controls and connectors before enrollment. Check `/status` on the version you
+deploy. Anthropic documents [authentication precedence](https://code.claude.com/docs/en/authentication#authentication-precedence),
+[custom URL restrictions on server-managed settings](https://code.claude.com/docs/en/server-managed-settings#platform-availability),
+[organization-policy diagnostics](https://code.claude.com/docs/en/managed-settings),
+and [connector authentication requirements](https://code.claude.com/docs/en/mcp#use-mcp-servers-from-claudeai).
+
+## Native approval waits
+
+The hook inherits the account's **Native tool approvals** mode, whose default
+is **Enforce**. Shell commands, file edits, **Skill**, **ToolSearch**, and
+**Agent** subagent calls can wait for a human when policy asks for approval.
+Allow and deny rules still apply. Approve pending calls on the Preloop Console's
+**Approvals** page. Frequent skill or subagent calls can repeatedly stop an
+otherwise unattended session.
+
+The selected approval workflow controls expiry. A newly installed Claude hook
+has a **570-second approval expiry budget** and a **585-second hook deadline**,
+including 15 seconds of HTTP headroom, within the **600-second host timeout**.
+An earlier workflow timeout wins. A previously configured shorter hook cap is
+preserved. Expiry denies the call.
+
+For recording without human waits, set **Off: auto-approve (recorded)** under
+the agent's **Native tool approvals** in the Console. Escalated calls are
+recorded as auto-approved; deny rules still apply. Choosing No at onboarding
+omits the native approval hook and its recording.
+
+## Gateway evidence and offboarding
+
+The Console reconciles the route with successful server-recorded gateway
+requests authenticated by this agent's key since the current enrollment.
+Client telemetry and validation claims cannot supply that evidence. The
+original probe result remains available for diagnosis.
+
+Offboard restores the original Claude control file and its permissions, or
+removes it if this enrollment created it. Re-onboarding preserves the first
+backup. If another process replaced the file, cleanup preserves it and reports
+the conflict. Older enrollments without an ownership record cannot prove that
+they created the file, so it is preserved. Claude enrollment does not install
+a sidecar service; manually installed services remain operator-owned.
+Offboard marks managed credentials revoked, records the revocation time and
+reason, and includes the count in the lifecycle audit transaction.
 
 ---
 
@@ -202,6 +265,9 @@ After onboarding, `~/.claude/settings.json` contains a managed entry like:
 !!! note "Configuration file location"
     Preloop treats `~/.claude/settings.json` as Claude Code's primary configuration file. `~/.claude/mcp-servers.json` is only read as a legacy fallback when `settings.json` is absent. When the `claude` binary is on `PATH`, the CLI registers the managed server through `claude mcp add --scope user` instead of editing files directly.
 
+!!! tip "Read-only settings file (containers, sandboxes)"
+    Onboarding tests whether it can write these files before it changes anything, and honours `CLAUDE_CONFIG_DIR`. When a file is read-only, nothing is written: the CLI prints the exact merge for you to apply, the agent shows as **Waiting for local configuration**, and `preloop agents onboard --resume "Claude Code"` checks the change and makes one real request before it reports the agent as onboarded. See [Sandboxed and containerised agents](sandboxed-agents.md).
+
 ### Step 3: Check configuration and gateway evidence
 
 ```bash
@@ -261,6 +327,8 @@ preloop agents offboard "claude code"   # restore config and remove managed enro
 
 `offboard` also removes the approvals hook and its credential if they were installed, and can optionally clean up the managed model and MCP servers in your account (`--remove-model`, `--remove-mcp-servers`).
 
+When the settings file is read-only, `offboard` prints the exact removal, changes nothing in Preloop until the block is gone, and reports `Offboarded` only for a file that no longer points at Preloop. See [offboarding a sandboxed agent](sandboxed-agents.md#offboarding).
+
 Before cleanup, offboard restores the live subscription credential held by
 Preloop. The ordinary four Claude model families share one credential and need
 one recovery. If export or local write-back fails, offboard stops with the
@@ -278,6 +346,7 @@ seconds for approval and 30 seconds for the hook to finish.
 ## Related
 
 - [CLI quickstart](../quickstart-cli.md): the 60-second install-and-onboard flow
+- [Sandboxed and containerised agents](sandboxed-agents.md): read-only configuration, Docker Compose, how the Claude login reaches a container
 - [Safety Layer & Access Rules](../concepts/safety-layer.md): how rules are evaluated
 - [AI Model Gateway](../concepts/model-gateway.md): what gateway routing gives you
 - [Mobile Apps](mobile-apps.md): approve on the go

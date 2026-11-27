@@ -50,6 +50,7 @@ def public_built_in_model(
         model_kind=model.model_kind,
         is_default=bool(model.is_default) and not account_has_default,
         is_built_in=True,
+        executor_eligibility=getattr(model, "executor_eligibility", {}),
         unpriced=getattr(model, "unpriced", False),
         has_api_key=model.has_api_key,
         supports_server_side_generation=model.supports_server_side_generation,

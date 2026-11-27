@@ -181,7 +181,7 @@ func TestInventoryMixedProbesAndSafeErrors(t *testing.T) {
 		return os.ReadFile(path)
 	}
 	result := collectAgentInventory(deps)
-	if result.Schema != "preloop.inventory.v3" || result.Completeness != "partial" || result.ObservedAt.Location() != time.UTC {
+	if result.Schema != "preloop.inventory.v4" || result.Completeness != "partial" || result.ObservedAt.Location() != time.UTC {
 		t.Fatalf("invalid envelope %+v", result)
 	}
 	var malformed, denied bool
@@ -391,7 +391,7 @@ func TestInventoryCommandIsOfflineWithAuthenticatedTelemetryEnabledFixture(t *te
 	if err := json.Unmarshal(output.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
-	if envelope.Schema != "preloop.inventory.v3" {
+	if envelope.Schema != "preloop.inventory.v4" {
 		t.Fatalf("bad inventory %s", output.String())
 	}
 }

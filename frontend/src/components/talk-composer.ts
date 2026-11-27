@@ -35,6 +35,8 @@ import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import {
   getRuntimeSessionControl,
   sendOperatorNote,
+  getAgentControlCommandStatus,
+  getAgentWorkingDirectories,
   sendAgentControlCommand,
   sendAgentControlRelease,
   sendAgentControlTakeover,
@@ -136,6 +138,110 @@ export interface TalkSessionAlternative {
 
 @customElement('talk-composer')
 export class TalkComposer extends LitElement {
+  @property({ attribute: false }) workingDirectory = '';
+  @state() private recentDirectories: string[] = [];
+  private commandTimers = new Map<string, number>();
+
+  private async loadDirectories(): Promise<void> {
+    const agentId = this.agent?.id;
+    if (!agentId) return;
+    const directories = await getAgentWorkingDirectories(agentId).catch(
+      () => []
+    );
+    if (this.agent?.id !== agentId) return;
+    this.recentDirectories = directories;
+    if (!this.workingDirectory) this.workingDirectory = directories[0] ?? '';
+  }
+
+  private followCommand(
+    pendingId: string,
+    commandId: string,
+    failures = 0
+  ): void {
+    const agentId = this.agent?.id;
+    if (!agentId) return;
+    const previous = this.commandTimers.get(commandId);
+    if (previous !== undefined) window.clearTimeout(previous);
+    this.commandTimers.set(
+      commandId,
+      window.setTimeout(async () => {
+        this.commandTimers.delete(commandId);
+        if (!this.isConnected || this.agent?.id !== agentId) return;
+        try {
+          const status = await getAgentControlCommandStatus(agentId, commandId);
+          const pending = this.pending.find((item) => item.id === pendingId);
+          if (!pending) return;
+          if (status.runtime_session_id && !pending.targetSessionId) {
+            this.setPending(
+              this.pending.map((item) =>
+                item.id === pendingId
+                  ? { ...item, targetSessionId: status.runtime_session_id }
+                  : item
+              )
+            );
+            this.dispatchEvent(
+              new CustomEvent(TALK_MESSAGE_SENT_EVENT, {
+                detail: {
+                  response: {
+                    command_id: commandId,
+                    target_session_id: status.runtime_session_id,
+                  },
+                  pendingId,
+                },
+                bubbles: true,
+                composed: true,
+              })
+            );
+          }
+          // A finished new-session command that never bound a session would
+          // otherwise leave the composer stuck in "Starting".
+          const unbound =
+            pending.startNewSession &&
+            !pending.targetSessionId &&
+            !status.runtime_session_id;
+          if (
+            status.terminal &&
+            (status.delivery_state !== 'finished' || unbound)
+          ) {
+            this.setPending(
+              this.pending.map((item) =>
+                item.id === pendingId
+                  ? {
+                      ...item,
+                      state: 'failed',
+                      error:
+                        status.delivery_state === 'finished'
+                          ? status.last_error ||
+                            'The session finished without reporting its id'
+                          : status.last_error ||
+                            `Command ${status.delivery_state}`,
+                    }
+                  : item
+              )
+            );
+          }
+          if (!status.terminal) this.followCommand(pendingId, commandId);
+        } catch {
+          if (failures < 4)
+            this.followCommand(pendingId, commandId, failures + 1);
+          else
+            this.setPending(
+              this.pending.map((item) =>
+                item.id === pendingId
+                  ? {
+                      ...item,
+                      state: 'failed',
+                      error:
+                        'Could not confirm delivery. Check the session before retrying.',
+                    }
+                  : item
+              )
+            );
+        }
+      }, 2000)
+    );
+  }
+
   /** Hosted conversations share the composer without Agent Control takeover. */
   @property({ attribute: false }) sendMessage:
     ((text: string) => Promise<void>) | null = null;
@@ -341,6 +447,23 @@ export class TalkComposer extends LitElement {
       color: var(--console-link-color, var(--sl-color-primary-600));
     }
 
+    .directory-field {
+      display: flex;
+      gap: var(--sl-spacing-small);
+      align-items: center;
+      color: var(--console-meta-color);
+      font-size: var(--console-text-meta);
+    }
+    .directory-field input {
+      min-width: 0;
+      flex: 1;
+      color: var(--sl-input-color);
+      background: var(--sl-input-background-color);
+      border: 1px solid var(--sl-input-border-color);
+      border-radius: var(--sl-border-radius-small);
+      padding: var(--sl-spacing-x-small);
+    }
+
     .ended-guard {
       align-items: center;
       color: var(--console-meta-color, var(--sl-color-neutral-600));
@@ -361,6 +484,8 @@ export class TalkComposer extends LitElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     this.stopListening();
+    for (const timer of this.commandTimers.values()) window.clearTimeout(timer);
+    this.commandTimers.clear();
     this.stopFallbackRecording();
     if (this.copyResetTimer !== null) window.clearTimeout(this.copyResetTimer);
     if (this.controlRefreshTimer !== null)
@@ -528,6 +653,12 @@ export class TalkComposer extends LitElement {
   }
 
   updated(changed: PropertyValues<this>): void {
+    if (
+      (changed.has('agent') || changed.has('sessionId')) &&
+      this.startsNewSession &&
+      ['claude_code', 'codex'].includes(this.agent?.agent_kind ?? '')
+    )
+      void this.loadDirectories();
     if (changed.has('sessionIdle')) this.checkStaleNotes();
     if (!changed.has('sessionId')) return;
     void this.loadSessionControl();
@@ -1019,6 +1150,18 @@ export class TalkComposer extends LitElement {
     });
   }
 
+  private get startingSession(): boolean {
+    return (
+      this.startsNewSession &&
+      this.pending.some(
+        (item) =>
+          item.startNewSession &&
+          !item.targetSessionId &&
+          (item.state === 'sending' || item.state === 'sent')
+      )
+    );
+  }
+
   private async send(): Promise<void> {
     const text = this.message.trim();
     if (this.sendMessage) {
@@ -1040,11 +1183,15 @@ export class TalkComposer extends LitElement {
       }
       return;
     }
-    if (!text || !this.agent) return;
+    if (!text || !this.agent || this.startingSession) return;
     if (!getAgentControlState(this.agent).enabled) return;
     // A turn typed into an ended session would go nowhere the operator can
     // see. Keep the text and ask where it should go instead.
-    if (this.sessionId && this.sessionEnded) {
+    if (
+      this.sessionId &&
+      this.sessionEnded &&
+      !['claude_code', 'codex'].includes(this.agent?.agent_kind ?? '')
+    ) {
       this.endedGuardVisible = true;
       return;
     }
@@ -1120,11 +1267,17 @@ export class TalkComposer extends LitElement {
       this.setPending(
         this.pending.map((item) =>
           item.id === id
-            ? { ...item, state: 'waiting', noteId: note.note_id }
+            ? {
+                ...item,
+                state: note.command_id ? 'sent' : 'waiting',
+                noteId: note.command_id ? undefined : note.note_id,
+                commandId: note.command_id ?? undefined,
+              }
             : item
         )
       );
       this.statusMessage = null;
+      if (note.command_id) this.followCommand(id, note.command_id);
       this.watchStaleNotes();
       this.dispatchEvent(
         new CustomEvent(TALK_MESSAGE_SENT_EVENT, {
@@ -1170,13 +1323,14 @@ export class TalkComposer extends LitElement {
     try {
       // A session still driven by its local TUI ignores injected turns, so
       // claim it first. Already-remote sessions skip the extra round trip.
-      if (this.controlMode === 'local') {
+      if (this.controlMode === 'local' && !startNewSession) {
         await this.takeOverSession(targetSessionId, startNewSession);
       }
       const response =
         inputMode === 'voice_transcript'
           ? await sendAgentControlVoiceTranscript(this.agent.id, {
               transcript: text,
+              working_directory: this.workingDirectory || undefined,
               target_session_id: targetSessionId,
               start_new_session: startNewSession,
               metadata: {
@@ -1193,6 +1347,7 @@ export class TalkComposer extends LitElement {
             })
           : await sendAgentControlCommand(this.agent.id, {
               message: text,
+              working_directory: this.workingDirectory || undefined,
               target_session_id: targetSessionId,
               session_mode: targetSessionId
                 ? 'existing'
@@ -1203,9 +1358,11 @@ export class TalkComposer extends LitElement {
               metadata,
             });
       this.statusMessage =
-        response.status === 'queued' || response.published
-          ? 'Queued for delivery'
-          : 'Delivered';
+        startNewSession && !response.target_session_id
+          ? 'Starting session…'
+          : response.status === 'queued' || response.published
+            ? 'Queued for delivery'
+            : 'Delivered';
       this.recognitionStartedAt = null;
       const commandId =
         typeof response.command_id === 'string'
@@ -1225,7 +1382,11 @@ export class TalkComposer extends LitElement {
           item.id === id
             ? {
                 ...item,
-                state: 'sent',
+                state: response.note_id ? 'waiting' : 'sent',
+                noteId:
+                  typeof response.note_id === 'string'
+                    ? response.note_id
+                    : undefined,
                 commandId,
                 ...(createdSessionId
                   ? { targetSessionId: createdSessionId }
@@ -1234,6 +1395,7 @@ export class TalkComposer extends LitElement {
             : item
         )
       );
+      if (commandId && !response.note_id) this.followCommand(id, commandId);
       this.dispatchEvent(
         new CustomEvent(TALK_MESSAGE_SENT_EVENT, {
           detail: { response, pendingId: id },
@@ -1421,6 +1583,30 @@ export class TalkComposer extends LitElement {
           : nothing
       }
       ${
+        !this.sendMessage && this.startsNewSession
+          ? html`
+              <label class="directory-field"
+                >Working directory
+                <input
+                  aria-label="Working directory"
+                  list="talk-directories"
+                  .value=${this.workingDirectory}
+                  placeholder="Sidecar configured directory"
+                  @focus=${() => void this.loadDirectories()}
+                  @input=${(event: Event) => {
+                    this.workingDirectory = (
+                      event.target as HTMLInputElement
+                    ).value;
+                  }}
+                />
+              </label>
+              <datalist id="talk-directories">
+                ${this.recentDirectories.map((directory) => html`<option value=${directory}></option>`)}
+              </datalist>
+            `
+          : nothing
+      }
+      ${
         showControlRow && this.noteMode
           ? html`
               <div class="control-row">
@@ -1525,7 +1711,7 @@ export class TalkComposer extends LitElement {
           variant="primary"
           data-testid="composer-send"
           ?loading=${this.sending}
-          ?disabled=${!enabled || !this.message.trim()}
+          ?disabled=${!enabled || this.startingSession || !this.message.trim()}
           @click=${() => void this.send()}
         >
           Send

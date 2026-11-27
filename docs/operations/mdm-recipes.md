@@ -284,7 +284,7 @@ and check collector flags against the compiled command. They never install a
 managed file, use a real credential store or contact a tenant. PowerShell and
 native OS scheduling still require their own Windows/macOS acceptance records.
 
-Extension inventory uses the larger `preloop.inventory.v3` envelope (one record
+Extension inventory uses the larger `preloop.inventory.v4` envelope (one record
 per extension, up to 200 per app context). Allow for the larger report when
 sizing MDM output capture. Existing v1/v2 reports remain accepted; a v3 collector
 retries without extensions only when the server rejects the schema version.

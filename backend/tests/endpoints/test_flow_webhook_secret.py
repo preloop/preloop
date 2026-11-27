@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from pytest_mock import MockerFixture
 
 from preloop.api.auth import get_current_active_user
+from preloop.api.auth.ci import get_current_actor
 from preloop.api.endpoints import flows
 from preloop.models import schemas
 
@@ -84,6 +85,7 @@ def hook(mocker: MockerFixture) -> Iterator[SimpleNamespace]:
     app.include_router(flows.router, prefix="/api/v1")
     app.dependency_overrides[flows.get_db] = lambda: MagicMock()
     app.dependency_overrides[get_current_active_user] = lambda: user
+    app.dependency_overrides[get_current_actor] = lambda: user
     with TestClient(app) as client:
         yield SimpleNamespace(
             client=client,
@@ -141,6 +143,7 @@ def test_rotate_invalidates_old_secret_and_audits_without_values(
             assert hook.row.webhook_config[key] == value
     for path in (f"{BASE}/{hook.row.id}", BASE):
         read = hook.client.get(path)
+        assert read.status_code == 200, read.text
         assert new_secret not in read.text and SECRET not in read.text
     hook.audit.assert_called_once()
     audit = hook.audit.call_args.kwargs

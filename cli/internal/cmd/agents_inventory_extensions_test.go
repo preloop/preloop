@@ -24,7 +24,7 @@ func TestExtensionInventoryPrivacyAndClaudeLayouts(t *testing.T) {
 	secret := "planted-secret-must-stay-on-device"
 	writeClaudePluginRecord(t, home, "reviewer", `{"name":"reviewer","marketplace":"claude-plugins-official","version":"1.0.0","installPath":".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer","token":"`+secret+`"}`)
 	writeInventoryFixture(t, home, ".claude/plugins/known_marketplaces.json", `{"claude-plugins-official":{"source":{"source":"git","url":"https://example.com/private-repository?token=`+secret+`"}}}`)
-	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer/.claude-plugin/plugin.json", `{"version":"1.4.0","description":"`+secret+`","env":{"TOKEN":"`+secret+`"}}`)
+	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer/.claude-plugin/plugin.json", `{"version":"1.4.0","description":"Review installed extensions","env":{"TOKEN":"`+secret+`"}}`)
 	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/claude-plugins-official/plugins/reviewer/skills/bundled/SKILL.md", secret)
 	writeInventoryFixture(t, home, ".claude/skills/fixture-person-notes/SKILL.md", secret)
 	writeInventoryFixture(t, home, ".claude/commands/summarize.md", secret)
@@ -38,12 +38,14 @@ func TestExtensionInventoryPrivacyAndClaudeLayouts(t *testing.T) {
 			app = item
 		}
 	}
-	if len(app.Extensions) != 4 || app.Completeness != "complete" {
+	if len(app.Extensions) != 5 || app.Completeness != "complete" {
 		t.Fatalf("extensions=%+v completeness=%s", app.Extensions, app.Completeness)
 	}
 	found := map[string]inventoryExtension{}
 	for _, ext := range app.Extensions {
-		found[ext.Kind] = ext
+		if ext.Kind != "skill" || ext.IDHashed {
+			found[ext.Kind] = ext
+		}
 	}
 	if found["plugin"].Version != "1.4.0" || found["plugin"].SourceKind != "official_marketplace" || found["plugin"].Enabled != "true" || found["plugin"].IDHashed {
 		t.Fatalf("plugin %+v", found["plugin"])
@@ -62,7 +64,7 @@ func TestExtensionInventoryPrivacyAndClaudeLayouts(t *testing.T) {
 		Inventory inventoryEnvelope
 		Report    discoveryReportRequest
 	}{scan, report})
-	for _, needle := range []string{secret, home, "fixture-person", "https://example.com", "echo ", "exit 0", "bundled"} {
+	for _, needle := range []string{secret, home, "fixture-person", "https://example.com", "echo ", "exit 0"} {
 		if bytes.Contains(raw, []byte(needle)) {
 			t.Errorf("private value escaped: %q", needle)
 		}
@@ -256,9 +258,16 @@ func TestExtensionReportToLocalStack(t *testing.T) {
 	t.Setenv("PRELOOP_DISABLE_TELEMETRY", "true")
 	home := t.TempDir()
 	writeInventoryFixture(t, home, ".claude/settings.json", `{}`)
-	writeClaudePluginRecord(t, home, "reviewer", `{"name":"reviewer","marketplace":"community","version":"1.4.0","description":"synthetic-extension-secret"}`)
+	writeClaudePlugin(t, home, "reviewer", "community", "1.4.0")
+	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/community/plugins/reviewer/.claude-plugin/plugin.json", `{"name":"reviewer","version":"1.4.0","description":"Review helpers for consistent code checks.","author":{"name":"Jane Doe"}}`)
+	writeInventoryFixture(t, home, ".claude/plugins/marketplaces/community/plugins/reviewer/skills/review/SKILL.md", "---\nname: review\ndescription: Review a proposed change.\n---\nsynthetic-extension-secret")
+	writeInventoryFixture(t, home, ".claude/skills/careful/SKILL.md", "---\nname: careful\ndescription: Review changes before acting, with a checklist for tests and permissions.\n---\nsynthetic-extension-secret")
+	writeInventoryFixture(t, home, ".claude/skills/careful/scripts/check.py", "synthetic-extension-secret")
+	writeInventoryFixture(t, home, ".claude/settings.json", `{"hooks":{"PreToolUse":[{"matcher":"Bash|Edit","hooks":[{"type":"command","command":"preloop agents permission-hook --source claude_code"},{"type":"command","command":"python3 /private/check.py --token synthetic-extension-secret"}]}]}}`)
+
 	oldProbes, oldProfiles := inventoryProbes, inventoryProfiles
 	inventoryProbes = inventoryTestDependencies(t, home)
+	inventoryProbes.Now = time.Now
 	inventoryProfiles = inventoryProfileDependencies{Elevated: func() bool { return true }, Profiles: func() ([]inventoryProfile, bool, error) { return []inventoryProfile{{Home: home}}, false, nil }, OpenRoot: os.OpenRoot}
 	oldURL, oldToken := FlagURL, FlagToken
 	FlagURL, FlagToken = endpoint, "synthetic-extension-identity"
@@ -329,7 +338,7 @@ func TestExtensionReportReasonsAndOlderServer(t *testing.T) {
 			fmt.Fprint(w, `{"detail":[{"loc":["body","evidence","extension_errors"],"type":"extra_forbidden"}]}`)
 			return
 		}
-		if len(received.Evidence.ExtensionErrors) != 0 || received.Evidence.SchemaVersion != 3 {
+		if len(received.Evidence.ExtensionErrors) != 0 || received.Evidence.SchemaVersion != 4 {
 			t.Error("fallback lost inventory or retained unsupported reasons")
 		}
 		fmt.Fprint(w, `{"received":1}`)

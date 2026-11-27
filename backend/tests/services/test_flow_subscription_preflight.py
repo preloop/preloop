@@ -326,7 +326,7 @@ async def test_legacy_execution_fails_before_runtime_launch(
     launch.assert_not_awaited()
 
 
-OPT_IN = "preloop.services.subscription_flow_use.flow_may_use_subscription"
+OPT_IN = "preloop.services.model_executor_eligibility.subscription_flow_denial_reason"
 
 
 @pytest.mark.parametrize("path", ["default", "matrix", "rule", "retry", "continuation"])
@@ -368,7 +368,7 @@ def test_owner_opt_in_admits_subscription_at_every_routing_site(
         )
     with (
         patch("preloop.services.model_routing.crud_ai_model.get", return_value=model),
-        patch(OPT_IN, return_value=True) as opt_in,
+        patch(OPT_IN, return_value=None) as opt_in,
     ):
         details = prepare_execution_routing(
             MagicMock(), flow, {"payload": {"labels": ["review"]}}, **kwargs
@@ -392,7 +392,7 @@ def test_owner_opt_in_admits_no_progress_escalation(
     flow, model = selection
     with (
         patch("preloop.services.model_routing.crud_ai_model.get", return_value=model),
-        patch(OPT_IN, return_value=True),
+        patch(OPT_IN, return_value=None),
     ):
         details = apply_no_progress_escalation(
             MagicMock(),
@@ -415,7 +415,7 @@ def test_owner_opt_in_admits_restricted_ci_preparation(
         patch("preloop.services.ci_execution._review_flow", return_value=flow),
         patch("preloop.services.ci_execution.ci_review_event", return_value={}),
         patch("preloop.services.model_routing.crud_ai_model.get", return_value=model),
-        patch(OPT_IN, return_value=True),
+        patch(OPT_IN, return_value=None),
         patch("preloop.services.ci_execution.crud.crud_ci_execution.create") as create,
         patch("preloop.services.ci_execution.crud.crud_flow.get", return_value=flow),
         patch("preloop.services.ci_execution.execution_projection", return_value={}),

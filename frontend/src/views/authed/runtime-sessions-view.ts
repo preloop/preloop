@@ -185,6 +185,7 @@ const TURN_JUMP_KINDS = new Set([
   'gateway_interaction',
   'tool_call',
   'transcript_message',
+  'operator_note',
 ]);
 
 @customElement('runtime-sessions-view')
@@ -270,6 +271,7 @@ export class RuntimeSessionsView extends LitElement {
   private searchResults: SessionSearchResponse | null = null;
 
   @state()
+  @state()
   private searchLoading = false;
 
   @state()
@@ -292,6 +294,11 @@ export class RuntimeSessionsView extends LitElement {
 
   @state()
   private status = 'all';
+
+  @state()
+  private workspaceId = '';
+
+  private seenWorkspaces = new Map<string, string>();
 
   /** "Has artifacts" list filter: `all`, `any`, or one artifact kind. */
   @state()
@@ -331,6 +338,7 @@ export class RuntimeSessionsView extends LitElement {
   private searchDebounce: number | null = null;
   private loadSequence = 0;
   private searchSequence = 0;
+  private appliedLocationSearch = '';
   private onPopState = () => this.applyLocation();
 
   static styles = [
@@ -903,6 +911,11 @@ export class RuntimeSessionsView extends LitElement {
     window.removeEventListener('keydown', this.handleSearchShortcut);
   }
 
+  /** Reused routes do not reconnect or emit popstate on in-page links. */
+  onAfterEnter(): void {
+    this.applyLocation();
+  }
+
   /** Whether the page is answering a content query rather than listing. */
   private get isSearching(): boolean {
     return this.searchQuery.trim() !== '';
@@ -910,6 +923,7 @@ export class RuntimeSessionsView extends LitElement {
 
   /** Pull the deep linkable state out of the current location. */
   private readLocation(): void {
+    this.appliedLocationSearch = window.location.search;
     const params = new URLSearchParams(window.location.search);
     this.selectedSessionId = params.get('sessionId');
     this.linkedSessionId = this.selectedSessionId;
@@ -934,6 +948,7 @@ export class RuntimeSessionsView extends LitElement {
     }
     this.sessionSourceType = params.get('source_type') ?? 'all';
     this.status = params.get('status') ?? 'all';
+    this.workspaceId = params.get('workspace_id') ?? '';
     this.hasArtifacts = params.get('has_artifacts') ?? 'all';
     const sort = params.get('sort');
     this.sort = ['started', 'cost', 'requests'].includes(sort ?? '')
@@ -942,13 +957,15 @@ export class RuntimeSessionsView extends LitElement {
   }
 
   /**
-   * Restore the view the location describes, for the back button.
+   * Restore the view for a routed link or browser history navigation.
    *
    * A snippet click pushes a location, so going back has to put the page in
    * the state that location names rather than leaving a url that no longer
    * matches what is on screen.
    */
   private applyLocation(): void {
+    // Back/Forward can reach both the router hook and the popstate listener.
+    if (window.location.search === this.appliedLocationSearch) return;
     const previousQuery = this.searchQuery;
     this.readLocation();
     this.cancelSearchDebounce();
@@ -1125,6 +1142,7 @@ export class RuntimeSessionsView extends LitElement {
 
   private buildListParams(): RuntimeSessionListParams {
     const params: RuntimeSessionListParams = {
+      workspaceId: this.workspaceId || undefined,
       limit: SESSION_PAGE_SIZE,
       includeRelated: true,
       status: this.status as 'all' | 'active' | 'ended',
@@ -1139,9 +1157,6 @@ export class RuntimeSessionsView extends LitElement {
     if (endDate) {
       params.endDate = endDate;
     }
-    // The query no longer reaches the list endpoint at all: a typed query is
-    // a question about content, and the list filter only ever matched four
-    // identifier columns.
     // A product option is an agent kind, not a source type: a live Cursor
     // or Copilot CLI session is recorded as `desktop_agent` with that kind,
     // so the kind filter is the one that finds it.
@@ -1165,7 +1180,7 @@ export class RuntimeSessionsView extends LitElement {
   }
 
   /**
-   * Run one ranked content search for the current query and filters.
+   * Merge identity matches with ranked content for the current query.
    *
    * Sequenced like the list load: a slow earlier search must never overwrite
    * the answer to what the operator is typing now.
@@ -1571,6 +1586,7 @@ export class RuntimeSessionsView extends LitElement {
       source_type:
         this.sessionSourceType === 'all' ? '' : this.sessionSourceType,
       status: this.status === 'all' ? '' : this.status,
+      workspace_id: this.workspaceId,
       has_artifacts: this.hasArtifacts === 'all' ? '' : this.hasArtifacts,
       from: this.selectedRange === 'custom' ? this.startDate : '',
       to: this.selectedRange === 'custom' ? this.endDate : '',
@@ -1585,6 +1601,7 @@ export class RuntimeSessionsView extends LitElement {
     } else {
       window.history.replaceState(window.history.state, '', target);
     }
+    this.appliedLocationSearch = url.search;
   }
 
   private handleRangeChange(event: Event) {
@@ -1716,6 +1733,7 @@ export class RuntimeSessionsView extends LitElement {
     this.searchQuery = '';
     this.sessionSourceType = 'all';
     this.status = 'all';
+    this.workspaceId = '';
     this.hasArtifacts = 'all';
     this.interactionQuery = '';
     this.clearSearchResults();
@@ -1991,6 +2009,12 @@ export class RuntimeSessionsView extends LitElement {
 
   private sourceTypeOptions(): string[] {
     for (const row of this.sessions?.items ?? []) {
+      const location = row.terminal_location;
+      if (location)
+        this.seenWorkspaces.set(
+          location.workspace_id,
+          location.workspace_label || location.workspace_id
+        );
       if (row.session_source_type) {
         this.seenSourceTypes.add(row.session_source_type);
       }
@@ -2122,6 +2146,7 @@ export class RuntimeSessionsView extends LitElement {
       this.searchQuery !== '' ||
       this.sessionSourceType !== 'all' ||
       this.status !== 'all' ||
+      this.workspaceId !== '' ||
       this.hasArtifacts !== 'all'
     );
   }
@@ -2501,6 +2526,7 @@ export class RuntimeSessionsView extends LitElement {
           </div>
         </div>
         <div class="snippet-list">
+          ${result.snippets.length ? html`<span class="muted" data-search-kind="content">Content</span>` : html`<span class="muted" data-search-kind="identity">Name or ID</span>`}
           ${result.snippets.map(
             (snippet) => html`
               <a
@@ -2633,23 +2659,23 @@ export class RuntimeSessionsView extends LitElement {
       `;
     }
 
-    if (this.searchError) {
-      return html`
-        <sl-alert variant="danger" open data-testid="search-error">
-          <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-          <span title=${this.searchError}
-            >Search is unavailable right now. Try again in a moment.</span
-          >
-          <sl-button
-            size="small"
-            variant="text"
-            data-testid="search-retry"
-            @click=${() => void this.loadSearchResults()}
-            >Retry</sl-button
-          >
-        </sl-alert>
-      `;
-    }
+    const error = this.searchError
+      ? html`
+          <sl-alert variant="danger" open data-testid="search-error">
+            <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+            <span title=${this.searchError}
+              >Search is unavailable right now. Try again in a moment.</span
+            >
+            <sl-button
+              size="small"
+              variant="text"
+              data-testid="search-retry"
+              @click=${() => void this.loadSearchResults()}
+              >Retry</sl-button
+            >
+          </sl-alert>
+        `
+      : nothing;
 
     if (this.foundSessions?.items.length) {
       const found = this.foundSessions;
@@ -2725,6 +2751,7 @@ export class RuntimeSessionsView extends LitElement {
       </div>`;
     }
     const results = this.searchResults?.results ?? [];
+    if (this.searchError && !results.length) return error;
     if (results.length === 0) {
       return html`
         <sl-card>
@@ -2742,6 +2769,7 @@ export class RuntimeSessionsView extends LitElement {
     }
 
     return html`
+      ${error}
       <div class="search-results">
         ${results.map((result) => this.renderSearchResult(result))}
       </div>
@@ -3439,6 +3467,22 @@ export class RuntimeSessionsView extends LitElement {
                         >${this.sourceTypeLabel(kind)}</sl-option
                       >`
                   )}
+                </sl-select>
+                <sl-select
+                  size="small"
+                  label="Workspace"
+                  value=${this.workspaceId}
+                  ?disabled=${this.isSearching}
+                  title="Filter sessions by terminal workspace"
+                  @sl-change=${(event: Event) => {
+                    this.workspaceId = (
+                      event.target as HTMLSelectElement
+                    ).value;
+                    void this.applyFilters();
+                  }}
+                >
+                  <sl-option value="">All workspaces</sl-option>
+                  ${Array.from(new Map([...this.seenWorkspaces, ...(this.workspaceId && !this.seenWorkspaces.has(this.workspaceId) ? [[this.workspaceId, this.workspaceId] as [string, string]] : [])])).map(([id, label]) => html`<sl-option value=${id}>${label}</sl-option>`)}
                 </sl-select>
                 <sl-select
                   size="small"

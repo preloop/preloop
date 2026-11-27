@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20261231_subagent_role"
-down_revision = "20261229_chat_conversations"
+down_revision = "20261230_terminal_location"
 branch_labels = None
 depends_on = None
 

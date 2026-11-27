@@ -5,7 +5,8 @@ import sinon from 'sinon';
 import { mockApi, type MockApi } from '../../test-helpers/capability-api';
 import { invalidateApiCaches } from '../../api';
 import { capabilityRoutesFor } from '../../lazy-routes';
-import { hasFleetPermission } from '../../device-fleet-api';
+import { hasFleetPermission, type FleetFinding } from '../../device-fleet-api';
+import { fleetExtensionFindings } from '../../test-helpers/fleet-extension-findings';
 import { sampleFleetMap } from '../../test-helpers/fleet-map-graph';
 import './device-fleet-view';
 
@@ -112,7 +113,8 @@ describe('Device fleet', () => {
   });
   function setup(
     enabled = true,
-    permissions: string[] = ['view_device_fleet', 'manage_device_fleet']
+    permissions: string[] = ['view_device_fleet', 'manage_device_fleet'],
+    findings: FleetFinding[] = device.findings
   ) {
     api = mockApi({
       capabilities: enabled ? ['fleet_coverage'] : [],
@@ -122,7 +124,7 @@ describe('Device fleet', () => {
           path: '/api/v1/fleet/device-fleet',
           body: {
             schema_version: 1,
-            items: [device],
+            items: [{ ...device, findings }],
             total: 1,
             truncated: false,
             summary: {
@@ -137,7 +139,11 @@ describe('Device fleet', () => {
         },
         {
           path: '/api/v1/fleet/device-fleet/detail',
-          body: { schema_version: 1, device, observations: [] },
+          body: {
+            schema_version: 1,
+            device: { ...device, findings },
+            observations: [],
+          },
         },
         { path: '/api/v1/fleet/settings', body: settings },
         {
@@ -165,6 +171,90 @@ describe('Device fleet', () => {
     await view.updateComplete;
     return view;
   }
+  it('renders extension findings from the fleet API producer contract', async () => {
+    history.replaceState(
+      {},
+      '',
+      '?device=' + encodeURIComponent(device.device_key)
+    );
+    setup(true, ['view_device_fleet'], fleetExtensionFindings);
+    const view = await mount();
+    expect(api.callsTo('/api/v1/fleet/device-fleet/detail')).to.have.length(1);
+    const titles = Array.from(
+      view.shadowRoot.querySelectorAll(
+        '[data-testid="device-findings"] .row-main > span:first-child'
+      )
+    ).map((row) => (row as HTMLElement).textContent!.trim());
+    expect(titles).to.deep.equal([
+      'review-helper (skill): Unapproved',
+      'release-check (hook): Content changed',
+      'build-tools (plugin): Version outside constraint',
+    ]);
+  });
+  it('names each extension finding and its effective reason before expanding evidence', async () => {
+    history.replaceState(
+      {},
+      '',
+      '?device=' + encodeURIComponent(device.device_key)
+    );
+    setup();
+    const view = await mount();
+    const generic = 'An installed agent extension needs approval.';
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [
+        { extension_id: 'review-helper', kind: 'skill', reason: 'unapproved' },
+        'review-helper (skill): Unapproved',
+      ],
+      [
+        {
+          extension_id: 'release-check',
+          kind: 'hook',
+          reason: 'content_changed',
+          approval_state: 'approved',
+        },
+        'release-check (hook): Content changed',
+      ],
+      [
+        {
+          extension_id: 'build-tools',
+          kind: 'plugin',
+          reason: 'version_outside_constraint',
+          effective_state: 'approved',
+        },
+        'build-tools (plugin): Version outside constraint',
+      ],
+      [
+        { extension_id: 'review-helper', kind: 'skill' },
+        'review-helper (skill)',
+      ],
+      [{ extension_id: 'review-helper' }, 'review-helper'],
+      [{ kind: 'command', reason: 'unapproved' }, 'command: Unapproved'],
+      [{}, generic],
+      [{ extension_id: null, kind: [], reason: {} }, generic],
+      [{ extension_id: ' ', kind: '', reason: ' ' }, generic],
+    ];
+    view.device = {
+      ...view.device,
+      findings: cases.map(([evidence], index) => ({
+        ...device.findings[0],
+        id: `extension-finding-${index}`,
+        rule: 'unapproved_extension',
+        title: generic,
+        evidence,
+      })),
+    };
+    await view.updateComplete;
+    const rows = view.shadowRoot.querySelectorAll(
+      '[data-testid="device-findings"] li'
+    );
+    expect(rows).to.have.length(cases.length);
+    cases.forEach(([, title], index) => {
+      expect(
+        rows[index].querySelector('.row-main > span').textContent.trim()
+      ).to.equal(title);
+      expect(rows[index].querySelector('details').open).to.equal(false);
+    });
+  });
   async function chooseRoster(
     view: any,
     file = new File(
@@ -550,7 +640,7 @@ describe('Device fleet', () => {
         'td[data-label="People"] a[href="/console/settings/users/user-1"]'
       )
     ).to.exist;
-    expect(text).to.include('1 governed');
+    expect(text).to.include('1 reported onboarded');
     expect(text).to.include('1 not onboarded');
     expect(text).to.include('1 open');
     expect(view.shadowRoot.querySelector('[data-testid="stat-missing"]')).not.to
@@ -657,6 +747,71 @@ describe('Device fleet', () => {
     const alert = view.shadowRoot.querySelector('sl-alert[role="alert"]');
     expect(alert.textContent).to.include('Retry to refresh it');
     expect(alert.querySelector('sl-button')).to.exist;
+  });
+
+  it('shows current decommissioning beside the last onboarded report and names evidence', async () => {
+    history.replaceState(
+      {},
+      '',
+      '?device=' + encodeURIComponent(device.device_key)
+    );
+    api = mockApi({
+      capabilities: ['fleet_coverage'],
+      profile: { permissions: ['view_device_fleet'] },
+      routes: [
+        {
+          path: '/api/v1/fleet/device-fleet/detail',
+          body: {
+            device,
+            observations: [
+              { source_ref: 'observer-1', received_at: '2026-10-16T12:00:00Z' },
+            ],
+          },
+        },
+        {
+          path: '/api/v1/fleet/identities',
+          method: 'POST',
+          body: {
+            agents: [
+              {
+                id: 'agent-1',
+                name: 'Example agent',
+                lifecycle_state: 'decommissioned',
+              },
+            ],
+            observers: { 'observer-1': 'Workstation reporter' },
+          },
+        },
+      ],
+    });
+    const view = await mount();
+    const rows = view.shadowRoot.querySelector(
+      '[data-testid="device-governed"]'
+    );
+    expect(rows.textContent).to.include('Decommissioned');
+    expect(rows.textContent).to.include('Last reported: onboarded');
+    expect(rows.textContent).not.to.include('Governed');
+    const evidence = view.shadowRoot.querySelector(
+      'section[aria-label="Device evidence"]'
+    );
+    expect(evidence.textContent).to.include('Workstation reporter');
+    expect(evidence.querySelector('details code').textContent).to.equal(
+      'observer-1'
+    );
+  });
+
+  it('does not claim enrollment when the current registry cannot be read', async () => {
+    history.replaceState(
+      {},
+      '',
+      '?device=' + encodeURIComponent(device.device_key)
+    );
+    setup();
+    const view = await mount();
+    expect(
+      view.shadowRoot.querySelector('[data-testid="device-governed"]')
+        .textContent
+    ).to.include('Current enrollment unknown');
   });
 
   it('links people, runners and governed agents on the device page', async () => {

@@ -63,8 +63,10 @@ jobs:
   # Light-job runners
   # ==========================================================================
   # One inventory snapshot for the first two stages. Idle preloop-ci-local
-  # slots take Detect changed paths, Lint & Format and CLI Fast; everything
-  # else, every failure, untrusted sources and reruns use ubuntu-24.04.
+  # slots take Detect changed paths, Lint & Format and CLI Fast, then idle
+  # preloop-ci-aws runners when CI_AWS_RUNNERS=true (one job per aws VM);
+  # everything else, every failure, untrusted sources and reruns use
+  # ubuntu-24.04.
   # Consumers fall back to hosted when this job produced no output.
   pick-light:
     permissions:
@@ -87,6 +89,7 @@ jobs:
         env:
           RUNNER_READ_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
           LOCAL_RUNNERS: ${{ vars.CI_LOCAL_RUNNERS }}
+          AWS_RUNNERS: ${{ vars.CI_AWS_RUNNERS }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           REPO: ${{ github.repository }}
           TRUSTED_SOURCE: ${{ github.event_name == 'push' || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
@@ -163,8 +166,9 @@ jobs:
   # not gate the picker that decides whether self-hosted capacity is available.
   # Every backend shard runs on one runner class: all shards go to idle
   # general CI runners when there is one per shard, else to idle
-  # preloop-ci-local slots when there is one per shard, otherwise all run
-  # hosted. Local slots left over go to the browser-fixture and fuzz
+  # preloop-ci-local slots when there is one per shard, else to idle
+  # preloop-ci-aws runners when there is one per shard and CI_AWS_RUNNERS=true,
+  # otherwise all run hosted. Local slots left over go to the browser-fixture and fuzz
   # leaves; .github/scripts/pick-runners.sh holds the rules. Mixing the slower self-hosted VMs with hosted shards made one
   # straggler set the wall clock. Missing inventory, absent credentials,
   # forks and disabled routing select hosted.
@@ -173,7 +177,8 @@ jobs:
   # .github/self-hosted-runners.md for automatic hosted recovery and its limits.
   # CI_RUNNER_READ_TOKEN needs repository administration:read.
   # CI_SELF_HOSTED_TESTS=true opts into general-pool routing;
-  # CI_LOCAL_RUNNERS=false turns the local pool off.
+  # CI_LOCAL_RUNNERS=false turns the local pool off; CI_AWS_RUNNERS=true turns
+  # the ephemeral preloop-ci-aws pool on (off by default).
   # preloop-ci-general is an explicit readiness label; never apply it to the
   # gce-tests-only execution pool.
   #
@@ -215,6 +220,7 @@ jobs:
           BACKEND_REQUIRED: ${{ needs.changes.outputs.backend }}
           BACKEND_SHARDS: ${{ needs.changes.outputs.backend_jobs }}
           LOCAL_RUNNERS: ${{ vars.CI_LOCAL_RUNNERS }}
+          AWS_RUNNERS: ${{ vars.CI_AWS_RUNNERS }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           LEAF_FUZZ: ${{ needs.changes.outputs.fuzz }}
           LEAF_BROWSER_FIXTURE: ${{ needs.changes.outputs.browser_fixture }}

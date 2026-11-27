@@ -615,11 +615,40 @@ export class RunnersView extends LitElement {
         >Inventory unknown</span
       >`;
     }
-    if (inventory.entries.length === 0) {
+    const unmanaged = (inventory.herdr?.agents ?? []).filter(
+      (agent) => !agent.managed && !agent.runtime_session_id
+    );
+    if (inventory.entries.length === 0 && !unmanaged.length) {
       return html`<span class="muted">No harnesses found</span>`;
     }
     const updated = row.harness_inventory_updated_at || inventory.generated_at;
     return html`<div class="harnesses">
+      ${unmanaged.map(
+        (agent) =>
+          html`<details class="harness" data-unmanaged-pane=${agent.pane_id}>
+            <summary>
+              ${agent.harness_kind}<sl-badge class="chip" pill variant="neutral"
+                >Unmanaged agent</sl-badge
+              >
+            </summary>
+            <dl>
+              <dt>Directory</dt>
+              <dd>${agent.cwd || 'Unknown'}</dd>
+              <dt>Place</dt>
+              <dd>
+                ${agent.workspace_label || agent.workspace_id} /
+                ${agent.tab_label || agent.tab_id}
+              </dd>
+              <dt>Pane</dt>
+              <dd>
+                ${agent.pane_label || agent.terminal_title || agent.pane_id}
+              </dd>
+            </dl>
+            <p class="muted">
+              Replies are not visible because no governed session is linked.
+            </p>
+          </details>`
+      )}
       ${inventory.entries.map(
         (entry) =>
           html`<details class="harness" data-harness=${entry.harness}>

@@ -103,7 +103,9 @@ def redact_harness_inventory(
             entries.append(
                 {k: v for k, v in entry.items() if k not in OWNER_ONLY_ENTRY_FIELDS}
             )
-    return {**inventory, "entries": entries}
+    redacted = {**inventory, "entries": entries}
+    redacted.pop("herdr", None)
+    return redacted
 
 
 def viewer_is_account_admin(db: Session, viewer: Optional[models.User]) -> bool:
@@ -179,6 +181,10 @@ def record_harness_inventory(
     inventory = normalize_harness_inventory(raw)
     if inventory is None:
         return False
+    previous = runner.harness_inventory or {}
+    inventory.pop("herdr", None)
+    if previous.get("herdr") is not None:
+        inventory["herdr"] = previous["herdr"]
     previous_hash = crud_flow_runner.set_harness_inventory(
         db, runner=runner, inventory=inventory, commit=commit
     )

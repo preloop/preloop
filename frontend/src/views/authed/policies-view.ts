@@ -335,6 +335,8 @@ export class PoliciesView extends LitElement {
     tool_name: string;
     mcp_server_id: string | null;
     server_label: string | null;
+    server_name?: string | null;
+    first_seen_agent_name?: string | null;
     state: 'pending' | 'approved' | 'denied';
     first_seen_at: string;
     first_seen_agent_id: string | null;
@@ -1822,7 +1824,7 @@ export class PoliciesView extends LitElement {
     if (state === 'denied') {
       const entry = this._registryEntries.find((row) => row.id === id);
       if (!entry) return;
-      const route = `${entry.server_label || entry.mcp_server_id || 'MCP server'} / ${entry.tool_name}`;
+      const route = `${entry.server_name || entry.server_label || 'Unknown server'} / ${entry.tool_name}`;
       const confirmed = await confirmDialog({
         title:
           entry.state === 'approved'
@@ -1911,11 +1913,29 @@ export class PoliciesView extends LitElement {
               (entry) =>
                 html`<tr>
                   <td>
-                    ${entry.server_label || entry.mcp_server_id || 'Unknown'}
+                    ${entry.server_name || entry.server_label || 'Unknown server'}
+                    ${
+                      entry.mcp_server_id
+                        ? html`<details>
+                            <summary>Server ID</summary>
+                            <code>${entry.mcp_server_id}</code>
+                          </details>`
+                        : nothing
+                    }
                   </td>
                   <td>${entry.tool_name}</td>
                   <td>${new Date(entry.first_seen_at).toLocaleString()}</td>
-                  <td>${entry.first_seen_agent_id || 'Unknown'}</td>
+                  <td>
+                    ${entry.first_seen_agent_name || 'Unknown observer'}
+                    ${
+                      entry.first_seen_agent_id
+                        ? html`<details>
+                            <summary>Observer ID</summary>
+                            <code>${entry.first_seen_agent_id}</code>
+                          </details>`
+                        : nothing
+                    }
+                  </td>
                   <td>${entry.state}</td>
                   <td>
                     ${

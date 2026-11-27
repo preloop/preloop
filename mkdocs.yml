@@ -141,6 +141,7 @@ nav:
 
   - Onboarding agents:
       - Claude Code: guide/clients/claude-code.md
+      - Sandboxed and containerised agents: guide/clients/sandboxed-agents.md
       - Claude Desktop: guide/clients/claude-desktop.md
       - Claude telemetry ingest: guide/clients/claude-telemetry-ingest.md
       - Codex CLI: guide/codex-cli.md
@@ -158,6 +159,7 @@ nav:
       - OpenClaw policy examples: guide/examples/policies/openclaw/README.md
       - trigger.dev: guide/integrations/trigger-dev.md
       - Agent Control runtime adapters: guide/integrations/agent-control-runtime-adapters.md
+      - herdr terminal workspaces: guide/herdr.md
       - Browser agents: guide/browser-agents.md
       - Cursor, Claude Desktop and other MCP clients: guide/clients/other-mcp-clients.md
       - Mobile apps (iOS, Android): guide/clients/mobile-apps.md

@@ -1,6 +1,11 @@
 import { expect } from '@open-wc/testing';
 import sinon from 'sinon';
-import { getExtensions, setExtensionApproval } from './extension-inventory-api';
+import { invalidateApiCaches } from './api';
+import {
+  getExtensions,
+  invalidateVersionConstraints,
+  setExtensionApproval,
+} from './extension-inventory-api';
 import type { ExtensionKey } from './extension-inventory-api';
 
 const key: ExtensionKey = {
@@ -14,36 +19,83 @@ describe('extension inventory API', () => {
   beforeEach(() => localStorage.setItem('accessToken', 'synthetic-token'));
   afterEach(() => localStorage.removeItem('accessToken'));
   afterEach(() => sinon.restore());
-  for (const status of [200, 404, 500]) {
-    it(`reads each visible constraint once and preserves inventory when the decision returns ${status}`, async () => {
+  beforeEach(() => invalidateVersionConstraints());
+  for (const status of [200, 500]) {
+    it(`reads constraints in one paginated list, not per row (${status})`, async () => {
+      const other = { ...key, extension_id: 'other-skill' };
       const fetch = sinon.stub(window, 'fetch').callsFake(async (input) => {
-        if (String(input).includes('/discovery-extensions?')) {
+        const url = String(input);
+        if (url.includes('/discovery-extensions?'))
           return new Response(
             JSON.stringify({
-              items: [key, key],
+              items: [key, key, other],
               next_cursor: null,
               completeness: 'complete',
             })
           );
-        }
+        if (url.includes('cursor=next'))
+          return new Response(
+            JSON.stringify({
+              items: [{ ...key, version_constraint: '2.*' }],
+              next_cursor: null,
+            }),
+            { status }
+          );
         return new Response(
-          JSON.stringify({ ...key, version_constraint: '2.*' }),
+          JSON.stringify({ items: [], next_cursor: 'next' }),
           { status }
         );
       });
       const page = await getExtensions();
-      expect(page.items).to.have.length(2);
-      expect(fetch.callCount).to.equal(2);
-      expect(String(fetch.lastCall.args[0])).to.contain(
-        '/extension-approvals/claude_code/plugin/reviewer%40community'
+      const urls = fetch.getCalls().map((call) => String(call.args[0]));
+      expect(
+        urls.some((url) => url.includes('/extension-approvals/'))
+      ).to.equal(false);
+      expect(fetch.callCount).to.equal(status === 200 ? 3 : 2);
+      expect(page.items.map((row) => row.version_constraint)).to.deep.equal(
+        status === 200
+          ? ['2.*', '2.*', null]
+          : [undefined, undefined, undefined]
       );
-      for (const row of page.items) {
-        expect(row.version_constraint).to.equal(
-          status === 200 ? '2.*' : status === 404 ? null : undefined
-        );
-      }
     });
   }
+  // protects=one constraint scan per view; fails_when=Load more or a filter
+  // change rescans every approval; no_claim=fetch stub, fixed clock window.
+  it('reuses one constraint scan across pages and filters until a write', async () => {
+    const fetch = sinon.stub(window, 'fetch').callsFake(async (input) =>
+      String(input).includes('/discovery-extensions?')
+        ? new Response(
+            JSON.stringify({
+              items: [key],
+              next_cursor: null,
+              completeness: 'complete',
+            })
+          )
+        : new Response(JSON.stringify({ items: [], next_cursor: null }))
+    );
+    const scans = (): number =>
+      fetch
+        .getCalls()
+        .filter((call) =>
+          String(call.args[0]).includes('/extension-approvals?')
+        ).length;
+    await getExtensions();
+    await getExtensions({ cursor: 'next' });
+    await getExtensions({ state: 'unknown' });
+    expect(scans()).to.equal(1);
+    invalidateVersionConstraints();
+    await getExtensions();
+    expect(scans()).to.equal(2);
+    // Sign-out and account switches run the shared cache broom.
+    invalidateApiCaches();
+    await getExtensions();
+    expect(scans()).to.equal(3);
+    // An approval write drops the scan too.
+    await setExtensionApproval(key, 'approved').catch(() => undefined);
+    await getExtensions();
+    expect(scans()).to.equal(4);
+  });
+
   // protects=REST context and filters; fails_when=device reads become account
   // aggregates; no_claim=fetch stub, backend tested separately.
   it('encodes device filters and requests account aggregates', async () => {
@@ -66,8 +118,9 @@ describe('extension inventory API', () => {
     expect(device.pathname).to.equal('/api/v1/agents/discovery-extensions');
     expect(device.searchParams.get('fingerprint')).to.equal('a'.repeat(64));
     expect(device.searchParams.has('group')).to.equal(false);
+    fetch.resetHistory();
     await getExtensions();
-    expect(String(fetch.lastCall.args[0])).to.contain('group=extension');
+    expect(String(fetch.firstCall.args[0])).to.contain('group=extension');
   });
   // protects=existing version constraints and notes; fails_when=state change
   // clears another decision field or scans unrelated approvals;

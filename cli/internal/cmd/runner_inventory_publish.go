@@ -53,6 +53,9 @@ func (p *runnerInventoryPublisher) current(force bool) harnessInventory {
 	marker := p.markerAt()
 	if force || p.inv == nil || p.now().Sub(p.builtAt) >= harnessInventoryRefreshEvery || marker.After(p.marker) {
 		built := p.build()
+		if p.inv != nil {
+			built.Herdr = p.inv.Herdr
+		}
 		p.inv = &built
 		p.builtAt = p.now()
 		p.marker = marker

@@ -23,6 +23,7 @@ class SessionFindRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     sort: Literal["last_activity", "started", "cost", "requests"] = "last_activity"
     has_artifacts: str | None = None
+    workspace_id: str | None = Field(default=None, max_length=256)
 
     @field_validator("start_date", "end_date")
     @classmethod

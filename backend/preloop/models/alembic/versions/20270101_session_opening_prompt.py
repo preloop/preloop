@@ -1,14 +1,14 @@
 """Index the opening user request used to recognize sessions.
 
 Revision ID: 20270101_session_prompt
-Revises: 20261231_subagent_role
+Revises: 20270101_extension_details
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 revision: str = "20270101_session_prompt"
-down_revision: str = "20261231_subagent_role"
+down_revision: str = "20270101_extension_details"
 branch_labels: None = None
 depends_on: None = None
 

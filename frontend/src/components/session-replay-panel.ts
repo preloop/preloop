@@ -1,3 +1,4 @@
+import { paneClosesActivity } from '../utils/terminal-location';
 import type { RecordingSync } from '../types';
 import {
   recordingCue,
@@ -84,7 +85,11 @@ import {
   isSessionContextMessage,
   stripWrapperTags,
 } from '../utils/session-turns';
-import { hasTruncationMarker, matchInjectedSegment } from '../utils/transcript';
+import {
+  compareTranscriptActivity,
+  hasTruncationMarker,
+  matchInjectedSegment,
+} from '../utils/transcript';
 
 // The bundled example has no runtime session behind it and nothing can be
 // applied from it, so `session` and `applyingSuggestionId` are left at their
@@ -194,6 +199,7 @@ type ChatTurn = {
   isActivity: boolean;
   // Set for a delivered operator note, so a link to the note can land on it.
   noteId?: string | null;
+  activityId?: string | null;
   // Set for a `browser_step` activity turn: rendered as a browser-step row
   // with its screenshot thumbnail instead of chat bubbles.
   browserStep?: RuntimeSessionActivityItem | null;
@@ -263,7 +269,7 @@ export class SessionReplayPanel extends LitElement {
       this.session?.id || '',
       this.events,
       this.activity,
-      Boolean(this.session?.endedAt),
+      Boolean(this.session?.endedAt) || paneClosesActivity(this.session),
       this.approvalState,
       (state) => {
         this.approvalState = state;
@@ -1270,7 +1276,11 @@ export class SessionReplayPanel extends LitElement {
        box-shadow) so it composes with the inset failed/most-expensive
        accents — those are exactly the turns being jumped to. The fade-out is
        animated only for users who have not asked for reduced motion. */
-    .chat-turn.jump-highlight {
+    [data-activity-id],
+    [data-recording-activity] {
+      scroll-margin-top: 80px;
+    }
+    .jump-highlight {
       outline: 3px solid var(--sl-color-primary-300);
       outline-offset: 1px;
     }
@@ -2219,7 +2229,7 @@ export class SessionReplayPanel extends LitElement {
         event: null,
         eventMessageIndex: null,
         timestamp: message.timestamp || null,
-        title: 'Developer message',
+        title: this.getActivityTurnLabel(message),
       }));
     const messages: ReplayMessage[] = [
       ...eventMessages,
@@ -3599,18 +3609,17 @@ export class SessionReplayPanel extends LitElement {
     FlowGatewayConversationPreviewMessage & {
       timestamp?: string | null;
       noteId?: string | null;
+      activityId?: string | null;
     }
   > {
     return this.activity
       .filter(
         (item) =>
-          item.activity_type === 'agent_control_message' && item.summary?.trim()
+          ['agent_control_message', 'transcript_message'].includes(
+            item.activity_type
+          ) && item.summary?.trim()
       )
-      .sort(
-        (left, right) =>
-          parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
-          parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
-      )
+      .sort(compareTranscriptActivity)
       .map((item) => {
         const metadata = item.metadata ?? {};
         const role =
@@ -3619,7 +3628,11 @@ export class SessionReplayPanel extends LitElement {
             : 'user';
         return {
           role,
-          source: 'agent_control',
+          source:
+            item.activity_type === 'transcript_message'
+              ? 'transcript'
+              : 'agent_control',
+          activityId: item.activity_id,
           text: item.summary,
           timestamp: item.timestamp,
           noteId: activityNoteId(item),
@@ -3638,7 +3651,11 @@ export class SessionReplayPanel extends LitElement {
     }
     if (role.includes('system')) return 'System message';
     if (role.includes('developer')) return 'Developer message';
-    // agent_control messages default to operator/talk input.
+    if (message.source === 'transcript') {
+      if (role === 'tool') return 'Tool result';
+      if (role === 'tool_use') return 'Tool call';
+      return 'User message';
+    }
     return 'Operator message';
   }
 
@@ -4752,6 +4769,7 @@ export class SessionReplayPanel extends LitElement {
         // Suppress the meaningless 0 tok / $0 / 0 tools stats for activity turns.
         isActivity: true,
         noteId: message.noteId || null,
+        activityId: message.activityId || null,
         idleExpiry: null,
       }));
 
@@ -5073,6 +5091,37 @@ export class SessionReplayPanel extends LitElement {
       return;
     }
     if (this.jumpedFocusEventId === focusId) return;
+    const activity = this.activity.find((item) => item.activity_id === focusId);
+    if (activity) {
+      this.revealChatRow(
+        (row) =>
+          row.turn?.activityId === focusId ||
+          Boolean(
+            row.tool &&
+            recordingToolActivity(
+              row.tool.id,
+              row.tool.callId ?? null,
+              this.activity
+            ) === focusId
+          )
+      );
+      void this.updateComplete.then(() => {
+        const target = this.renderRoot.querySelector(
+          `[data-activity-id="${CSS.escape(focusId)}"], [data-recording-activity="${CSS.escape(focusId)}"]`
+        );
+        if (!target) return;
+        this.jumpedFocusEventId = focusId;
+        target.scrollIntoView({ block: 'start', behavior: 'instant' });
+        target.classList.add('jump-highlight');
+        if (this.jumpHighlightTimer !== null)
+          window.clearTimeout(this.jumpHighlightTimer);
+        this.jumpHighlightTimer = window.setTimeout(
+          () => target.classList.remove('jump-highlight'),
+          2000
+        );
+      });
+      return;
+    }
     const events = this.events || [];
     const match = events.find((event) =>
       this.eventMatchesFocus(event, focusId)
@@ -5734,6 +5783,7 @@ export class SessionReplayPanel extends LitElement {
         }"
         data-event-id=${event ? event.id : nothing}
         data-note-id=${turn.noteId || nothing}
+        data-activity-id=${turn.activityId || nothing}
         data-recording-activity=${recordingId ?? nothing}
         tabindex="0"
       >

@@ -499,6 +499,27 @@ def _result_artifact_confirmation(artifact: Optional[Dict[str, Any]]) -> Optiona
     return None
 
 
+def _result_completion_confirmation(
+    artifact: Any, *, native_valid: bool
+) -> Optional[str]:
+    """Apply explicit confirmation and the schema-valid native fallback.
+
+    Native schemas define the verdict shape. A completed request-changes
+    review needs no additional status field or printed success marker.
+    Explicit failures and incomplete statuses never receive this fallback.
+    """
+    confirmation = _result_artifact_confirmation(artifact)
+    if (
+        confirmation is None
+        and native_valid
+        and isinstance(artifact, dict)
+        and str(artifact.get("status", "")).strip().lower()
+        not in RESULT_ARTIFACT_INCOMPLETE_STATUSES
+    ):
+        return "success"
+    return confirmation
+
+
 def _artifact_failure_signal(artifact: Optional[Dict[str, Any]]) -> tuple[str, Any]:
     """Name the field that classified an artifact as an explicit failure.
 
@@ -5531,16 +5552,16 @@ class FlowExecutionOrchestrator:
             self.db.rollback()
             logger.warning("Could not verify native review candidate inspection")
             return False
-        return (
-            review_integrity.evaluate(
-                self.flow,
-                result=document,
-                binding=execution.ci_review_binding,
-                diff=diff,
-                inspection=inspection,
-            )["status"]
-            == review_integrity.STATUS_VERIFIED
+        from preloop.services.review_finalization import evaluate_review_document
+
+        outcome = evaluate_review_document(
+            self.flow,
+            document,
+            binding=execution.ci_review_binding,
+            diff=diff,
+            inspection=inspection,
         )
+        return outcome["integrity"]["status"] == review_integrity.STATUS_VERIFIED
 
     def _usable_native_review(self, document: Any) -> bool:
         """Allow a completed native review to survive a subsequent tool loop."""
@@ -5562,68 +5583,64 @@ class FlowExecutionOrchestrator:
         candidate validates, retain the native answer (or file when absent)
         for ordinary schema/integrity diagnostics. Arrival order is irrelevant.
         """
-        from preloop.services.native_answer import MARKDOWN_FENCE
         from preloop.services.native_result import NATIVE_CANDIDATES_KEY
+        from preloop.services.review_finalization import select_native_candidate
         from preloop.services.flow_result_schema import (
             flow_result_schema,
             validate_result_document,
         )
 
-        # Each capture states its own reason; none carries over from an earlier one.
-        self._native_answer_error = None
-        self._native_answer_unwrapped = None
-        if not isinstance(document, dict):
-            return document
-        candidates = document.get(NATIVE_CANDIDATES_KEY)
-        if NATIVE_CANDIDATES_KEY in document and (
-            getattr(self, "_native_result_effective", None) is None
-        ):
-            # A process that did not start this run has not decided yet.
-            self._restore_native_result()
-        if getattr(self, "_native_result_effective", False) is not True:
-            if NATIVE_CANDIDATES_KEY in document:
-                # The capture transport is never a result: without the
-                # native decision there is nothing to select it with.
-                self._native_answer_error = "selection_unavailable"
-                logger_ = getattr(self, "execution_logger", None)
-                if logger_ is not None:
-                    logger_.log_milestone("native_result_selection_unavailable", {})
-                return None
-            return document
-        if not isinstance(candidates, dict):
-            if NATIVE_CANDIDATES_KEY in document:
-                self._native_answer_error = "selection_unavailable"
-                return None
-            return document
-        native, file_result = candidates.get("native"), candidates.get("file")
-        # Why there is no usable native answer, for the failure wording.
-        self._native_answer_error = (
-            "not_object"
-            if native is not None and not isinstance(native, dict)
-            else candidates.get("native_error")
-        )
-        if native is not None and candidates.get("native_unwrapped") == (
-            MARKDOWN_FENCE
-        ):
-            # The capture removed one Markdown fence around the answer; the
-            # document below is still checked in full.
-            self._native_answer_unwrapped = MARKDOWN_FENCE
-            logger_ = getattr(self, "execution_logger", None)
-            if logger_ is not None:
-                logger_.log_milestone(
-                    "native_answer_unwrapped", {"wrapper": MARKDOWN_FENCE}
-                )
-        schema = flow_result_schema(getattr(self, "flow", None))
         if (
-            schema
+            isinstance(document, dict)
+            and NATIVE_CANDIDATES_KEY in document
+            and (getattr(self, "_native_result_effective", None) is None)
+        ):
+            self._restore_native_result()
+        candidates = (
+            document.get(NATIVE_CANDIDATES_KEY) if isinstance(document, dict) else None
+        )
+        candidates = candidates if isinstance(candidates, dict) else {}
+        native, file_result = candidates.get("native"), candidates.get("file")
+        enabled = getattr(self, "_native_result_effective", False) is True
+        schema = flow_result_schema(getattr(self, "flow", None))
+        native_failure_valid = bool(
+            enabled
+            and schema
             and isinstance(native, dict)
             and validate_result_document(native, schema)["valid"]
             and _result_artifact_confirmation(native) == "failure"
-        ) or self._native_candidate_valid(native):
-            return native
-        if self._native_candidate_valid(file_result):
-            return file_result
-        return native if native is not None else file_result
+        )
+        native_valid = bool(
+            enabled
+            and candidates
+            and not native_failure_valid
+            and self._native_candidate_valid(native)
+        )
+        file_valid = bool(
+            enabled
+            and candidates
+            and not native_failure_valid
+            and not native_valid
+            and self._native_candidate_valid(file_result)
+        )
+        selected = select_native_candidate(
+            document,
+            enabled=enabled,
+            native_valid=native_valid,
+            file_valid=file_valid,
+            native_failure_valid=native_failure_valid,
+        )
+        self._native_answer_error = selected.error
+        self._native_answer_unwrapped = selected.unwrapped
+        logger_ = getattr(self, "execution_logger", None)
+        if logger_ is not None:
+            if selected.error == "selection_unavailable":
+                logger_.log_milestone("native_result_selection_unavailable", {})
+            elif selected.unwrapped:
+                logger_.log_milestone(
+                    "native_answer_unwrapped", {"wrapper": selected.unwrapped}
+                )
+        return selected.document
 
     async def _capture_result_artifact(
         self,
@@ -6050,13 +6067,16 @@ class FlowExecutionOrchestrator:
             or (inspection or {}).get("diff_commands")
         ):
             return final_status, agent_result, merged_result
-        outcome = review_integrity.evaluate(
+        from preloop.services.review_finalization import evaluate_review_document
+
+        checked = evaluate_review_document(
             flow,
-            result=None if early_native_answer else merged_result,
+            None if early_native_answer else merged_result,
             binding=execution.ci_review_binding,
             diff=diff,
             inspection=inspection,
         )
+        outcome = checked["integrity"]
         self._review_integrity = outcome
         self._record_completion(review_integrity=outcome)
         if outcome["status"] != review_integrity.STATUS_REJECTED:
@@ -9640,9 +9660,6 @@ class FlowExecutionOrchestrator:
                     result_artifact = await self._capture_result_artifact(
                         agent_executor, session_reference
                     )
-                    artifact_confirmation = _result_artifact_confirmation(
-                        result_artifact
-                    )
                     validation = getattr(self, "_result_schema_validation", None)
                     native_valid = (
                         getattr(self, "_native_result_effective", False) is True
@@ -9650,17 +9667,9 @@ class FlowExecutionOrchestrator:
                         and isinstance(validation, dict)
                         and validation.get("valid") is True
                     )
-                    if (
-                        artifact_confirmation is None
-                        and native_valid
-                        and isinstance(result_artifact, dict)
-                        and str(result_artifact.get("status", "")).strip().lower()
-                        not in RESULT_ARTIFACT_INCOMPLETE_STATUSES
-                    ):
-                        # Native schemas define the verdict shape. Requiring
-                        # an additional status field or printed marker defeats
-                        # that contract; request-changes is also a completed review.
-                        artifact_confirmation = "success"
+                    artifact_confirmation = _result_completion_confirmation(
+                        result_artifact, native_valid=native_valid
+                    )
 
                     # Positive-confirmation contract (fail-closed):
                     # Exit code 0 is NEVER sufficient for success — agent CLIs
