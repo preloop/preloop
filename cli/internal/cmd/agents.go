@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -528,6 +529,9 @@ const (
 	agentOnboardingStatusOnboarded = "onboarded"
 	agentOnboardingStatusPartial   = "partial"
 	agentOnboardingStatusFailed    = "failed"
+	// "waiting" is a manual setup that needs the user's local change; the
+	// agent exists and is not a failure, but it is not onboarded either.
+	agentOnboardingStatusWaiting = "waiting"
 )
 
 // agentOnboardingOutcome records how a single agent fared during a batch
@@ -554,6 +558,14 @@ func classifyAgentOnboardingOutcome(agent AgentConfig, err error) agentOnboardin
 			// login or an mcp-only support level in the Reason column so
 			// the summary is honest about what "onboarded" covers.
 			Reason: successSummaryReason(agent),
+		}
+	}
+	var pendingErr *manualApplyPendingError
+	if errors.As(err, &pendingErr) {
+		return agentOnboardingOutcome{
+			Agent:  agent,
+			Status: agentOnboardingStatusWaiting,
+			Reason: "waiting for local configuration; finish with: " + pendingErr.ResumeCommand,
 		}
 	}
 	var skipErr *managedLauncherSkippedError
@@ -632,7 +644,7 @@ func agentOnboardingSummaryError(outcomes []agentOnboardingOutcome) error {
 	failed := 0
 	for _, outcome := range outcomes {
 		switch outcome.Status {
-		case agentOnboardingStatusOnboarded, agentOnboardingStatusPartial:
+		case agentOnboardingStatusOnboarded, agentOnboardingStatusPartial, agentOnboardingStatusWaiting:
 			return nil
 		case agentOnboardingStatusFailed:
 			failed++
@@ -722,11 +734,13 @@ type managedAgentEnrollmentSummary struct {
 	BackupMetadata   map[string]interface{} `json:"backup_metadata,omitempty"`
 	ValidationResult map[string]interface{} `json:"validation_result,omitempty"`
 	RestoreAvailable bool                   `json:"restore_available"`
-	CreatedAt        string                 `json:"created_at"`
-	UpdatedAt        string                 `json:"updated_at"`
-	LastAppliedAt    string                 `json:"last_applied_at,omitempty"`
-	LastValidatedAt  string                 `json:"last_validated_at,omitempty"`
-	LastRestoredAt   string                 `json:"last_restored_at,omitempty"`
+	// ExpiresAt is set while the enrollment waits for a manual local change.
+	ExpiresAt       string `json:"expires_at,omitempty"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+	LastAppliedAt   string `json:"last_applied_at,omitempty"`
+	LastValidatedAt string `json:"last_validated_at,omitempty"`
+	LastRestoredAt  string `json:"last_restored_at,omitempty"`
 }
 
 type managedAgentEnrollmentCreateRequest struct {
@@ -790,7 +804,11 @@ type managedMCPEnrollmentPlan struct {
 	// installed Claude Code ships its own fable default. See
 	// claudeFableFollowsBuiltinDefault for when it is set.
 	ClaudeFableBuiltinDefault bool
-	Notes                     []string
+	// ControlFileDeferred keeps applyManagedAgentControlConfig from writing
+	// the separate Agent Control file: its location is not writable, so the
+	// manual setup hands the content to the user instead.
+	ControlFileDeferred bool
+	Notes               []string
 }
 
 type remoteServerSyncResult struct {
@@ -930,6 +948,7 @@ func init() {
 	agentsDiscoverCmd.Flags().BoolP("force", "f", false, "alias for --yes")
 	agentsDiscoverCmd.Flags().Bool("skip-live-validate", false, "do not run a direct gateway route/accounting probe after onboarding")
 	agentsDiscoverCmd.Flags().String("device-ref", "", "opaque administrative device reference to hash for opt-in discovery reporting")
+	agentsDiscoverCmd.Flags().BoolVar(&inventoryNoExtensionDetails, "no-extension-details", false, "omit authored extension descriptions and descriptive metadata from inventory")
 	agentsDiscoverCmd.Flags().Bool("report", false, "opt in: send salted hashes of what was found to Preloop (also PRELOOP_DISCOVERY_REPORT=1); see docs/guide/agent-discovery-reporting.md")
 	_ = agentsDiscoverCmd.Flags().MarkDeprecated("add", "use 'preloop agents onboard [agent]'")
 	agentsEnrollCmd.Flags().Bool("unattended", false, "enroll explicitly selected apps using single-use provisioning authority")
@@ -949,6 +968,13 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("no-usage-hooks", false, "Cursor only: do not install the usage hooks that store conversations as runtime sessions with a token estimate (installed by default)")
 	agentsEnrollCmd.Flags().Bool("no-sidecar", false, "Codex CLI only: do not install and start the Agent Control sidecar service (run preloop codex sidecar enable later)")
 	agentsEnrollCmd.Flags().Bool("store-transcript", false, "Cursor only: have the usage hooks also ship transcript text as session activities (default: counts, title and a short summary only)")
+	agentsEnrollCmd.Flags().Bool("manual", false, "print the configuration change for you to apply instead of writing it (automatic when the agent's configuration is read-only)")
+	agentsEnrollCmd.Flags().String("manual-output", "", "directory to save the manual setup instructions in (mode 0700; they contain the agent key)")
+	agentsEnrollCmd.Flags().Bool("resume", false, "finish a manual setup: check the change is in place, make one real request, then report the agent as onboarded")
+	agentsEnrollCmd.Flags().String("resume-token", "", "resume token printed by a manual setup (needed when ~/.preloop is not writable)")
+	agentsEnrollCmd.Flags().String("settings-file", "", "with --resume: check this `claude --settings` file instead of the agent's own settings file")
+	agentsEnrollCmd.Flags().Bool("from-env", false, "with --resume: check the environment-variable form in this shell instead of the settings file")
+	agentsEnrollCmd.Flags().Bool("cancel", false, "cancel a manual setup that is waiting for the local change and remove what it created in Preloop")
 	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
 	registerClaudeDesktopRouteFlags(agentsEnrollCmd)
 	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the opus/sonnet/haiku family pins and the Fable pair, also on Claude Code 2.1.321+ (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
@@ -961,6 +987,8 @@ func init() {
 	agentsOffboardCmd.Flags().BoolP("yes", "y", false, "skip offboarding and cleanup confirmations")
 	agentsOffboardCmd.Flags().BoolP("force", "f", false, "alias for --yes")
 	agentsOffboardCmd.Flags().Bool("all", false, "offboard all enrolled agents")
+	agentsOffboardCmd.Flags().BoolVar(&offboardServerOnly, "server-only", false, "remove the Preloop side even when the local configuration is read-only and still holds the Preloop block (reported as not offboarded locally)")
+	agentsOffboardCmd.Flags().BoolVar(&offboardNoLoginRestore, "no-login-restore", false, "do not write the live subscription login back to this machine (for read-only or shared credential files; sign in again afterwards)")
 	agentsOffboardCmd.Flags().String("remove-model", offboardCleanupAsk, "whether to remove an eligible AI model from Preloop as part of offboarding: ask, yes, or no")
 	agentsOffboardCmd.Flags().String("remove-mcp-servers", offboardCleanupAsk, "whether to remove eligible MCP servers from Preloop as part of offboarding: ask, yes, or no")
 	agentsRemoveCmd.Flags().BoolP("yes", "y", false, "skip the permanent-delete confirmation prompt")
@@ -1244,31 +1272,8 @@ func promptToOnboardCandidates(
 		if err != nil {
 			return outcomes, err
 		}
-		// Offer the native tool-approvals hook for supported agents when the
-		// caller's enrollment flow skips its own interactive prompts (the
-		// discover-driven path); callers whose enrollment prompts interactively
-		// pass askApprovals=false so the user is only asked once.
+		// Discovery never opts into native gates. Only onboard --approvals does.
 		approvals := false
-		if askApprovals {
-			if autoApprove || nonInteractiveAutoConfirm() {
-				// --yes / non-interactive accepts the prompt's default answer
-				// (Yes) for supported agents — previously it silently skipped
-				// the hook, so `onboard --all -y` onboarded without approvals.
-				approvals = isApprovalHookSupportedAgent(agent)
-				if approvals {
-					fmt.Fprintf(
-						writer,
-						"Routing %s's native tool calls through Preloop approvals (accepted default; offboard and re-onboard to remove the hook).\n",
-						resolveAgentDisplayName(agent),
-					)
-				}
-			} else {
-				approvals, err = promptForApprovalsOptIn(bufferedReader, writer, agent)
-				if err != nil {
-					return outcomes, fmt.Errorf("failed to read approvals confirmation: %w", err)
-				}
-			}
-		}
 		outcome := classifyAgentOnboardingOutcome(agent, enroll(agent, approvals))
 		if outcome.Status == agentOnboardingStatusFailed {
 			// Keep the batch going: one broken agent environment must not
@@ -1442,6 +1447,11 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	if isUnattendedEnrollmentCommand(cmd) {
 		return runUnattendedEnrollment(cmd, args)
 	}
+	// Resuming or cancelling a manual setup asks nothing, so it also runs
+	// without a terminal (a container exec, a script).
+	if handled, err := runManualSetupSubcommand(cmd, args); handled {
+		return err
+	}
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	// The model-route path does not implement --dry-run.
 	if (!dryRun || modelRouteRequested(cmd)) && !stdinIsTerminal() && !nonInteractiveAutoConfirm() {
@@ -1458,6 +1468,8 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	if modelRouteRequested(cmd) {
 		return runClaudeDesktopModelRouteCmd(cmd, args)
 	}
+	forceManual, _ := cmd.Flags().GetBool("manual")
+	manualOutputDir, _ := cmd.Flags().GetString("manual-output")
 	noCredentialImport, _ := cmd.Flags().GetBool("no-credential-import")
 	autoApprove := isAutoApprove(cmd) || dryRun
 	input := bufio.NewReader(os.Stdin)
@@ -1501,6 +1513,8 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		PreferredModel:      strings.TrimSpace(preferredModel),
 		PinModelFamilies:    pinModelFamilies,
 		PinModelFamiliesSet: pinModelFamiliesSet,
+		ForceManual:         forceManual,
+		ManualOutputDir:     strings.TrimSpace(manualOutputDir),
 		Tags:                tags,
 		SkipConfirmation:    false,
 		Input:               input,
@@ -1603,17 +1617,18 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 				return err
 			}
 			printAgentOnboardingSummary(os.Stdout, appendServerOnlyDeviceAgents(client, discovered, completeDiscoveryOutcomes(discovered, outcomes)))
+			// An agent waiting for a manual change is not a failure.
+			failures, waiting := splitWaitingForManualSetup(failures)
 			if len(failures) > 0 {
 				printAgentOnboardingFailures(os.Stdout, failures)
-				if len(enrolled) == 0 {
+				if len(enrolled) == 0 && waiting == 0 {
 					return fmt.Errorf("failed to onboard all discovered agents")
 				}
 			}
 			return nil
 		}
 
-		// askApprovals=false: executeManagedEnrollment prompts for the
-		// approvals hook itself when this path runs interactively.
+		// The explicit --approvals choice is carried in opts.
 		outcomes, err := promptToOnboardCandidatesTiered(input, os.Stdout, client, candidates, autoApprove, false, func(a AgentConfig, _ bool) error {
 			agentOpts := opts
 			agentOpts.SkipConfirmation = autoApprove
@@ -1655,8 +1670,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	// A skipped managed launcher (missing agent binary) is a partial success:
 	// the warning has been printed and the command exits 0.
 	if err := ignoreLauncherSkipped(executeManagedEnrollment(agent, opts)); err != nil {
-		printTroubleshootingFooter(os.Stdout)
-		return err
+		return manualAwareOnboardError(os.Stdout, err)
 	}
 	return nil
 }
@@ -2652,20 +2666,60 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 	}
 
 	if state != nil && state.OffboardArchived && detail == nil {
-		return fmt.Errorf("offboard partially completed; cannot resolve managed record for remaining cleanup; enrollment retry state retained")
+		// A console removal must not strand a partially completed local restore.
+		state.OffboardArchived = false
 	}
 	recovery := subscriptionRestoreNotApplicable
 	partial := func(err error) error {
 		return fmt.Errorf("offboard partially completed; enrollment retry state retained: %w", err)
 	}
-	if state == nil || !state.OffboardArchived {
-		if err := preflightClaudeOffboardStore(client, agent, detail); err != nil {
-			return err
+	// Work out what the local configuration needs before anything changes.
+	// A file that cannot be written is handed to the user first: the agent
+	// keeps working until they have removed the Preloop block, and
+	// "Offboarded" is never printed for a file that still points at Preloop.
+	baseURL := strings.TrimRight(client.BaseURL(), "/")
+	localPlan := planLocalOffboard(agent, state, baseURL)
+	configReadOnly := !localPlan.Probe.Writable
+	local := localOffboardOutcome{Clean: true, Line: fmt.Sprintf("Restored config: %s", agent.ConfigPath)}
+	var localLeftovers []string
+	// Also on a retry after --server-only: the Preloop side is gone by then,
+	// but the file is offboarded only once it no longer points at Preloop.
+	if localPlan.needsManualRemoval() {
+		if offboardServerOnly {
+			fmt.Print(renderManualRemoval(resolveAgentDisplayName(agent), agent, localPlan, ""))
+			local = localOffboardOutcome{Line: fmt.Sprintf(
+				"This machine: NOT changed. %s still holds the Preloop block (%s). Remove it as printed above; its key no longer works.",
+				agent.ConfigPath, firstNonEmptyString(localPlan.Probe.Reason, localPlan.ReadProblem),
+			)}
+		} else {
+			if err := runManualOffboardRemoval(agent, state, baseURL, localPlan, autoApprove, os.Stdin, os.Stdout); err != nil {
+				var pending *manualOffboardPendingError
+				if errors.As(err, &pending) {
+					return &exitCodeError{code: manualApplyExitCode, message: pending.Error()}
+				}
+				return err
+			}
+			local.Line = fmt.Sprintf("This machine: you removed the Preloop block from %s (checked).", agent.ConfigPath)
 		}
-		var recoveryErr error
-		recovery, recoveryErr = restoreSubscriptionLoginOnOffboard(client, agent, detail, os.Stdout)
-		if recoveryErr != nil {
-			return recoveryErr
+	} else if configReadOnly {
+		local.Line = fmt.Sprintf("This machine: %s holds no Preloop configuration; nothing to change.", agent.ConfigPath)
+	}
+	archivedByEarlierRun := state != nil && state.OffboardArchived
+	if state == nil || !state.OffboardArchived {
+		switch {
+		case claudeLoginIsEnvSourced(agent):
+			fmt.Printf("  Subscription login: imported from %s and never rotated by Preloop; nothing to write back.\n", claudeOAuthTokenEnvName)
+		case offboardNoLoginRestore:
+			fmt.Println("  Subscription login: not written back (--no-login-restore). The login Preloop holds is discarded; sign in again with `claude auth login --claudeai` if this agent needs its own login.")
+		default:
+			if err := preflightClaudeOffboardStore(client, agent, detail); err != nil {
+				return fmt.Errorf("%w. If this machine cannot hold the login (a read-only or shared credentials file), rerun with --no-login-restore and sign in again afterwards", err)
+			}
+			var recoveryErr error
+			recovery, recoveryErr = restoreSubscriptionLoginOnOffboard(client, agent, detail, os.Stdout)
+			if recoveryErr != nil {
+				return recoveryErr
+			}
 		}
 		// Strip the gateway key's pre-approval from ~/.claude.json while the
 		// managed settings (and therefore the key) are still readable. A
@@ -2684,12 +2738,26 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 			}
 			removeClaudeDesktopModelRoute(os.Stdin, os.Stdout, strings.TrimRight(client.BaseURL(), "/"), recordedPath, autoApprove)
 		}
-		if state != nil {
+		switch {
+		case configReadOnly:
+			// The file was handled above (removed by the user, or reported
+			// as still present). Side registrations are removed best effort.
+			_ = removeClaudeCodeManagedMCPServer(agent)
+		case state != nil:
 			if _, err := restoreAgentFromBackupWithRuntimeCleanup(agent, state, !isClaudeCodeAgent(agent)); err != nil {
 				return partial(err)
 			}
-		} else {
-			fmt.Printf("Skipped restoring config: no local backup found.\n")
+		default:
+			if localPlan.Readable && localPlan.StillManaged && localPlan.Desired != nil {
+				// No backup, but the file still routes through Preloop:
+				// take out exactly what Preloop added.
+				if err := writeAgentConfigDocument(agent, localPlan.Desired); err != nil {
+					return partial(err)
+				}
+				local.Line = fmt.Sprintf("This machine: removed the Preloop block from %s (no backup was found).", agent.ConfigPath)
+			} else {
+				fmt.Printf("Skipped restoring config: no local backup found.\n")
+			}
 			if err := removeClaudeCodeManagedMCPServer(agent); err != nil {
 				return partial(err)
 			}
@@ -2702,20 +2770,50 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 			if err := archiveManagedAgentRecord(client, detail.Agent.ID); err != nil {
 				return partial(err)
 			}
+			hadState := state != nil
 			if state == nil {
 				state = &localEnrollmentState{AgentName: agent.Name, ConfigPath: agent.ConfigPath, RuntimePrincipalID: runtimePrincipalIDForAgent(agent)}
 			}
 			state.OffboardArchived = true
 			if err := saveLocalEnrollmentState(state); err != nil {
+				if hadState {
+					return partial(err)
+				}
+				// No state existed and none can be written (~/.preloop is
+				// not writable): there is nothing to retain for a retry.
+				state = nil
+			}
+		}
+	}
+	// A retry after --server-only: the Preloop side is already archived, so
+	// the block above was skipped, but a file that has become writable since
+	// still holds the Preloop block and must be cleaned now.
+	if archivedByEarlierRun && !configReadOnly && localPlan.Readable && localPlan.StillManaged {
+		if strings.TrimSpace(state.BackupPath) != "" {
+			if _, err := restoreAgentFromBackupWithRuntimeCleanup(agent, state, !isClaudeCodeAgent(agent)); err != nil {
 				return partial(err)
 			}
+		} else if localPlan.Desired != nil {
+			if err := writeAgentConfigDocument(agent, localPlan.Desired); err != nil {
+				return partial(err)
+			}
+			_ = removeClaudeCodeManagedMCPServer(agent)
+			_ = removeApprovalHooks(agent, nil)
+			local.Line = fmt.Sprintf("This machine: removed the Preloop block from %s.", agent.ConfigPath)
 		}
 	}
 	// Revoke Claude's remote access before reporting local ownership conflicts.
 	// This also runs without a config backup and on archived cleanup retries.
 	if isClaudeCodeAgent(agent) {
 		if err := removeManagedAgentRuntimeArtifacts(agent); err != nil {
-			return partial(err)
+			controlProbe := probeWriteTarget(configWriteTarget{Path: claudeControlConfigPath(), Role: writeRoleControl})
+			if controlProbe.Writable {
+				return partial(err)
+			}
+			localLeftovers = append(localLeftovers, fmt.Sprintf(
+				"%s could not be removed (%s); delete it by hand. The key in it is revoked.",
+				claudeControlConfigPath(), controlProbe.Reason,
+			))
 		}
 	}
 	if detail != nil {
@@ -2741,13 +2839,44 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		}
 	}
 
-	if state != nil {
+	// Whatever path led here, the file decides: "Offboarded" is printed only
+	// when it no longer points at Preloop.
+	if final := planLocalOffboard(agent, nil, baseURL); final.Readable && final.StillManaged && local.Clean {
+		local = localOffboardOutcome{Line: fmt.Sprintf(
+			"This machine: NOT changed. %s still holds the Preloop block; its key no longer works. Run this command again to remove it.",
+			agent.ConfigPath,
+		)}
+	}
+	// The local state carries the backup. It is kept until the file is
+	// clean, so a later run can still restore the user's own values.
+	if state != nil && local.Clean {
 		if err := removeLocalEnrollmentState(agent); err != nil {
 			return partial(err)
 		}
 	}
-	fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
-	fmt.Printf("  Restored config: %s\n", agent.ConfigPath)
+	if local.Clean {
+		fmt.Printf("✓ Offboarded %s\n", resolveAgentDisplayName(agent))
+	} else {
+		fmt.Printf("✗ %s is NOT offboarded on this machine; the Preloop side was removed.\n", resolveAgentDisplayName(agent))
+	}
+	if detail != nil {
+		fmt.Printf("  Preloop: agent %s archived and its key revoked.\n", detail.Agent.ID)
+	} else {
+		fmt.Println("  Preloop: no managed record matched this install; nothing was removed there.")
+	}
+	fmt.Printf("  %s\n", local.Line)
+	if isClaudeCodeAgent(agent) && urlPointsAtPreloop(os.Getenv("ANTHROPIC_BASE_URL"), baseURL) {
+		// The environment-variable form lives wherever the user set it (a
+		// Compose file, a shell profile); the CLI cannot remove it.
+		localLeftovers = append(localLeftovers,
+			"this shell's environment still sets ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY for Preloop. Remove them where you set them (Compose file, env_file or shell profile); the key no longer works.")
+	}
+	for _, leftover := range localLeftovers {
+		fmt.Printf("  This machine: %s\n", leftover)
+	}
+	if !local.Clean {
+		return fmt.Errorf("%s still points at Preloop; remove the block printed above", agent.ConfigPath)
+	}
 	restartHermesGatewayAfterReconfig(agent, os.Stdout)
 	if strings.EqualFold(agent.Name, "Windsurf") {
 		fmt.Println("Windsurf is retired. Run preloop agents onboard Devin to onboard the replacement app.")
@@ -2985,6 +3114,13 @@ func collectOffboardCleanupCandidates(client *api.Client, current managedAgentSu
 	if strings.TrimSpace(current.LatestModelAlias) != "" {
 		for _, model := range modelIndex {
 			if gatewayAliasForAIModel(model) != current.LatestModelAlias {
+				continue
+			}
+			// Only a model onboarding created for this agent is ours to
+			// remove. The agent's last used alias can name a model the
+			// account already owned (a request routed to another model),
+			// and deleting that would destroy someone else's credential.
+			if owner, _ := model.MetaData["managed_agent_id"].(string); strings.TrimSpace(owner) != current.ID {
 				continue
 			}
 			referencedBy := []string{}
@@ -6399,9 +6535,29 @@ func writeJSONDocument(path string, doc map[string]interface{}) error {
 		target = resolved
 	}
 	if err := writeFileAtomic(target, data, 0600); err != nil {
+		// A single bind-mounted file, or a file in a directory that refuses
+		// new entries, cannot be replaced by rename but can still be
+		// rewritten. Only an existing file is rewritten in place.
+		if inPlaceErr := writeExistingFileInPlace(target, data); inPlaceErr == nil {
+			return nil
+		}
 		return fmt.Errorf("failed to write managed config: %w", err)
 	}
 	return nil
+}
+
+// writeExistingFileInPlace overwrites an existing file without replacing its
+// inode. It never creates the file.
+func writeExistingFileInPlace(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func writeTOMLDocument(path string, doc map[string]interface{}) error {
@@ -7210,22 +7366,63 @@ func sanitizeConfigSnapshot(value interface{}) {
 				typed[key] = "<redacted>"
 				continue
 			}
+			if text, ok := child.(string); ok {
+				typed[key] = redactSecretLookingValue(text)
+				continue
+			}
 			sanitizeConfigSnapshot(child)
 		}
 	case []interface{}:
-		for _, child := range typed {
+		for index, child := range typed {
+			if text, ok := child.(string); ok {
+				typed[index] = redactSecretLookingValue(text)
+				continue
+			}
 			sanitizeConfigSnapshot(child)
 		}
 	}
 }
 
+// sensitiveKeyFragments mark a key as secret wherever they appear in its
+// name, so env-style names (ANTHROPIC_API_KEY, AWS_SESSION_TOKEN,
+// experimental_bearer_token) are covered as well as plain ones.
+var sensitiveKeyFragments = []string{
+	"api_key", "apikey", "api-key", "auth_token", "oauth_token", "access_token",
+	"refresh_token", "bearer_token", "session_token", "secret", "password",
+	"passwd", "authorization", "private_key", "credential",
+}
+
 func isSensitiveKey(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "authorization", "token", "bearer_token", "api_key", "apikey", "password", "secret":
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	switch normalized {
+	case "token", "apikey":
 		return true
-	default:
-		return false
 	}
+	for _, fragment := range sensitiveKeyFragments {
+		if strings.Contains(normalized, fragment) {
+			return true
+		}
+	}
+	return strings.HasSuffix(normalized, "_token")
+}
+
+// secretValuePattern matches values that are credentials whatever key holds
+// them: Preloop agent keys, provider keys, and bearer tokens passed inline
+// (for example in an MCP server's argument list).
+var secretValuePattern = regexp.MustCompile(`(agt_[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9_-]{16,}|(?i:bearer)\s+[A-Za-z0-9._~+/=-]{8,})`)
+
+// urlPasswordPattern matches the password of a URL that carries credentials
+// (postgres://user:pass@host). Only the password is replaced.
+var urlPasswordPattern = regexp.MustCompile(`(://[^/\s:@]*):[^/\s@]+@`)
+
+func redactSecretLookingValue(value string) string {
+	if secretValuePattern.MatchString(value) {
+		value = secretValuePattern.ReplaceAllString(value, "<redacted>")
+	}
+	if urlPasswordPattern.MatchString(value) {
+		value = urlPasswordPattern.ReplaceAllString(value, "${1}:<redacted>@")
+	}
+	return value
 }
 
 // publicPlanNote returns an onboarding note safe for stdout.

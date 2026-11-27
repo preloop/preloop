@@ -371,21 +371,32 @@ def test_lease_payload_host_exec_does_not_bypass_environment_validation(
         )
 
 
-def test_lease_payload_host_exec_rejects_pull_request() -> None:
+def test_lease_payload_host_exec_publishes_pull_request_in_legacy_mode() -> None:
+    """Every native profile, Cursor included, leases legacy publication."""
     executor = RemoteRunnerExecutor(
         "cursor", {}, db=MagicMock(), pool="local", account_id=uuid4()
     )
-    with pytest.raises(ValueError, match="pull requests"):
-        executor._lease_payload(
-            execution_id=uuid4(),
-            flow_id=uuid4(),
-            prompt="open a pr",
-            execution_context={
-                "agent_type": "cursor",
-                "agent_config": {"host_exec_profile": "cursor-ask"},
-                "git_clone_config": {"create_pull_request": True},
-            },
-        )
+    payload = executor._lease_payload(
+        execution_id=uuid4(),
+        flow_id=uuid4(),
+        prompt="open a pr",
+        execution_context={
+            "agent_type": "cursor",
+            "agent_config": {"host_exec_profile": "cursor-ask"},
+            "git_clone_config": {"create_pull_request": True},
+        },
+    )
+    assert payload["host_exec_publication"] == {"mode": "legacy"}
+
+
+def test_lease_payload_host_exec_rejects_pull_request_without_agent() -> None:
+    """A clone config that opens a PR on an unknown agent stays refused."""
+    from preloop.services.host_exec import host_exec_unavailable_reason
+
+    reason = host_exec_unavailable_reason(
+        git_clone_config={"create_pull_request": True}
+    )
+    assert reason and "allow_publish" in reason
 
 
 def test_lease_payload_host_exec_rejects_isolated_publication_with_snapshot(

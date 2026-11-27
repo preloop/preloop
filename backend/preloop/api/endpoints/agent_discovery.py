@@ -144,7 +144,7 @@ def create_discovery_report(
                 status_code=503, detail="Discovery evidence service unavailable"
             )
         try:
-            if payload.evidence.schema_version == 3:
+            if payload.evidence.schema_version >= 3:
                 observation = crud_discovery_observation.record(
                     db,
                     account_id=account.id,

@@ -1075,6 +1075,45 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         )
         return {row.owner_user_id for row in rows if row.owner_user_id is not None}
 
+    def has_recorded_usage(self, db: Session, *, agent: ManagedAgent) -> bool:
+        """Tell whether any request was ever recorded for the agent.
+
+        Usage counts when it was authenticated by a key bound to the agent or
+        attributed to the agent's durable runtime principal. Sibling registry
+        entries can share a principal; that errs towards "has usage".
+
+        Args:
+            db: Database session.
+            agent: The managed agent.
+
+        Returns:
+            True when at least one usage row exists.
+        """
+        account_id = str(agent.account_id)
+        by_principal = (
+            db.query(ApiUsage.id)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.runtime_principal_type == agent.session_source_type,
+                ApiUsage.runtime_principal_id == agent.session_source_id,
+            )
+            .first()
+        )
+        if by_principal is not None:
+            return True
+        key = models.ApiKey
+        by_key = (
+            db.query(ApiUsage.id)
+            .join(key, key.id == ApiUsage.api_key_id)
+            .filter(
+                ApiUsage.account_id == account_id,
+                key.account_id == account_id,
+                key.context_data.op("->>")("managed_agent_id") == str(agent.id),
+            )
+            .first()
+        )
+        return by_key is not None
+
     def remove_registry_entry(
         self, db: Session, *, agent: ManagedAgent, commit: bool = True
     ) -> None:

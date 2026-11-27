@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import String, func, select, tuple_
+from sqlalchemy import String, and_, func, or_, select, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -69,7 +69,6 @@ class CRUDDiscoveredExtension:
                     observation.workstation_fingerprint == workstation_fingerprint,
                     observation.evidence.contains(
                         {
-                            "schema_version": 3,
                             "applications": [
                                 {
                                     "agent_kind": agent_kind,
@@ -138,6 +137,11 @@ class CRUDDiscoveredExtension:
                         "id_hashed",
                     ):
                         setattr(row, field, getattr(extension, field))
+                    row.details = (
+                        extension.details.model_dump(mode="json")
+                        if extension.details is not None
+                        else None
+                    )
                     row.hook_count = extension.count
                     row.present = True
                     row.last_seen_at = received
@@ -192,10 +196,13 @@ class CRUDDiscoveredExtension:
                 model.evidence["scan_scope"].contains(["user_config"]),
                 model.evidence["extension_errors"],
                 model.evidence["errors"],
+                model.ended_at,
             ).join(latest, latest.c.id == model.id)
         )
         result = []
-        for device, collector, version, state, user_scope, errors, generic in rows:
+        for row in rows:
+            device, collector, version, state, user_scope, errors, generic = row[:7]
+            reported_at = row[7]
             completeness = (
                 "unknown"
                 if (version or 1) < 3 or not user_scope
@@ -209,6 +216,7 @@ class CRUDDiscoveredExtension:
                     "collector_version": collector,
                     "completeness": completeness,
                     "reasons": errors or generic or [],
+                    "reported_at": reported_at,
                 }
             )
         return result
@@ -233,6 +241,17 @@ class CRUDDiscoveredExtension:
             else "partial"
         )
 
+    def count_for_account(self, db: Session, *, account_id: UUID) -> int:
+        """Count distinct present extension identities without loading inventory."""
+        model = models.DiscoveredExtension
+        identities = (
+            select(model.agent_kind, model.extension_kind, model.extension_id)
+            .where(model.account_id == account_id, model.present.is_(True))
+            .distinct()
+            .subquery()
+        )
+        return int(db.scalar(select(func.count()).select_from(identities)) or 0)
+
     def list_for_device(
         self, db: Session, *, account_id: UUID, fingerprint: str, **filters: Any
     ) -> tuple[list[dict[str, Any]], str | None]:
@@ -254,6 +273,9 @@ class CRUDDiscoveredExtension:
         limit: int = 50,
         cursor: str | None = None,
         group: str | None = None,
+        q: str | None = None,
+        extension_kind: str | None = None,
+        extension_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
         """Return presence, raw approvals and content-pinned effective state.
 
@@ -270,12 +292,52 @@ class CRUDDiscoveredExtension:
             (model.agent_kind, agent_kind),
             (effective_state_sql(), state),
             (model.source_kind, source_kind),
+            (model.extension_kind, extension_kind),
+            (model.extension_id, extension_id),
         ):
             if value is not None:
                 filters.append(column == value)
-        key = decode_cursor(cursor, 3 if group else 1)
+        if q and q.strip():
+            term = q.strip()
+            matches = or_(
+                model.extension_id.icontains(term, autoescape=True),
+                model.details["name"].as_string().icontains(term, autoescape=True),
+                model.details["description"]
+                .as_string()
+                .icontains(term, autoescape=True),
+            )
+            if group:
+                # Search selects extension keys. Every observation for those
+                # keys still contributes to counts and the worst effective state.
+                columns = (model.agent_kind, model.extension_kind, model.extension_id)
+                matching_keys = select(*columns).where(
+                    model.account_id == account_id, model.present == present, matches
+                )
+                filters.append(tuple_(*columns).in_(matching_keys))
+            else:
+                filters.append(matches)
+        display_name = func.coalesce(
+            func.nullif(model.details["name"].as_string(), ""), model.extension_id
+        )
+        key = decode_cursor(cursor, 4 if group else 3, max_value_length=300)
         if group:
             columns = (model.agent_kind, model.extension_kind, model.extension_id)
+            # Pick the same latest matching observation for both display and
+            # sorting, before paginating the grouped inventory.
+            latest_details = (
+                select(*columns, model.details, display_name.label("display_name"))
+                .outerjoin(approval, approval_join())
+                .where(*filters)
+                .distinct(*columns)
+                .order_by(*columns, model.last_seen_at.desc(), model.id.desc())
+                .subquery()
+            )
+            ordering = (
+                model.extension_kind,
+                latest_details.c.display_name,
+                model.extension_id,
+                model.agent_kind,
+            )
             query = (
                 select(
                     *columns,
@@ -286,14 +348,29 @@ class CRUDDiscoveredExtension:
                     func.max(approval.id.cast(String)),
                     func.bool_or(effective_state_sql() == "content_changed"),
                     func.bool_or(effective_state_sql() == "content_unverified"),
+                    latest_details.c.details,
+                    latest_details.c.display_name,
                 )
                 .outerjoin(approval, approval_join())
                 .where(*filters)
-                .group_by(*columns, approval_state)
-                .order_by(*columns)
+                .join(
+                    latest_details,
+                    and_(
+                        model.agent_kind == latest_details.c.agent_kind,
+                        model.extension_kind == latest_details.c.extension_kind,
+                        model.extension_id == latest_details.c.extension_id,
+                    ),
+                )
+                .group_by(
+                    *columns,
+                    approval_state,
+                    latest_details.c.details,
+                    latest_details.c.display_name,
+                )
+                .order_by(*ordering)
             )
             if key:
-                query = query.where(tuple_(*columns) > tuple(key))
+                query = query.where(tuple_(*ordering) > tuple(key))
             rows = list(db.execute(query.limit(limit + 1)))
             page = rows[:limit]
             pins = crud_extension_approval.pins_for(
@@ -311,6 +388,7 @@ class CRUDDiscoveredExtension:
                 )
                 items.append(
                     dict(
+                        details=r[10],
                         agent_kind=r[0],
                         extension_kind=r[1],
                         extension_id=r[2],
@@ -336,17 +414,29 @@ class CRUDDiscoveredExtension:
                     )
                 )
             next_cursor = (
-                encode_cursor(list(rows[limit - 1][:3])) if len(rows) > limit else None
+                encode_cursor(
+                    [
+                        rows[limit - 1][1],
+                        rows[limit - 1][11],
+                        rows[limit - 1][2],
+                        rows[limit - 1][0],
+                    ]
+                )
+                if len(rows) > limit
+                else None
             )
         else:
+            device_ordering = (model.extension_kind, display_name, model.id)
             device_query = (
                 select(model, approval)
                 .outerjoin(approval, approval_join())
                 .where(*filters)
-                .order_by(model.id)
+                .order_by(*device_ordering)
             )
             if key:
-                device_query = device_query.where(model.id > UUID(key[0]))
+                device_query = device_query.where(
+                    tuple_(*device_ordering) > (key[0], key[1], UUID(key[2]))
+                )
             rows = list(db.execute(device_query.limit(limit + 1)))
             pins = crud_extension_approval.pins_for(
                 db, approval_ids={d.id for _, d in rows[:limit] if d is not None}
@@ -370,7 +460,14 @@ class CRUDDiscoveredExtension:
                 )
                 items.append(item)
             next_cursor = (
-                encode_cursor([str(rows[limit - 1][0].id)])
+                encode_cursor(
+                    [
+                        rows[limit - 1][0].extension_kind,
+                        (rows[limit - 1][0].details or {}).get("name")
+                        or rows[limit - 1][0].extension_id,
+                        str(rows[limit - 1][0].id),
+                    ]
+                )
                 if len(rows) > limit
                 else None
             )

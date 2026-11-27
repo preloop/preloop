@@ -504,6 +504,11 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
                 func.avg(
                     func.extract("epoch", model.resolved_at - model.requested_at)
                 ).filter(decided, model.resolved_at.isnot(None)),
+                func.count(model.id).filter(
+                    model.tool_args["_preloop_native_delivery_warning"].astext.isnot(
+                        None
+                    )
+                ),
             )
             .filter(model.account_id == account_id)
             .one()
@@ -527,6 +532,7 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
             "human_approved": row[6],
             "human_declined": row[7],
             "auto_approved_by_bypass": row[8],
+            "has_native_delivery_warning": bool(row[10]),
             "avg_response_minutes": (
                 round(float(avg_seconds) / 60) if avg_seconds is not None else None
             ),

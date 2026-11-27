@@ -117,6 +117,21 @@ def store(
     )
 
 
+def test_count_distinct_present_account_extensions(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Count identities once across devices, excluding foreign and absent rows."""
+    db, account = db_session, test_user.account_id
+    store(db, account, report([extension(), extension(id="second")]))
+    other_device = report()
+    other_device["workstation_fingerprint"] = "c" * 64
+    store(db, account, other_device)
+    assert crud_discovered_extension.count_for_account(db, account_id=account) == 2
+    assert crud_discovered_extension.count_for_account(db, account_id=uuid4()) == 0
+    store(db, account, report([], at=NOW + timedelta(minutes=1)))
+    assert crud_discovered_extension.count_for_account(db, account_id=account) == 1
+
+
 def test_upsert_reconciliation_and_profile_isolation(
     db_session: Session, test_user: models.User
 ) -> None:
@@ -226,6 +241,7 @@ def test_http_ingest_approval_and_aggregate(client: TestClient) -> None:
     response = client.post(REPORTS, json=payload)
     assert response.status_code == 202, response.text
     assert client.post(REPORTS, json=payload).json()["created"] == 0
+    assert client.get(EXTENSIONS + "/count").json() == {"count": 1}
     page = client.get(EXTENSIONS).json()
     assert page["items"][0]["approval_state"] == "unknown"
     response = client.put(
@@ -276,6 +292,12 @@ def test_http_permissions(
     )
     client.app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
     assert client.get(EXTENSIONS).status_code == 200
+    assert client.get(EXTENSIONS + "/count").status_code == 200
+    monkeypatch.setattr(
+        "preloop.utils.permissions.user_holds_permission",
+        lambda db, user, permission: False,
+    )
+    assert client.get(EXTENSIONS + "/count").status_code == 403
     assert client.put(APPROVAL, json={"approval_state": "approved"}).status_code == 403
 
 
@@ -829,11 +851,15 @@ def test_coverage_uses_latest_device_reasons_and_is_account_scoped(
             "reasons": ["extension_project_unscanned"],
         }
     ]
-    assert (
-        crud_discovered_extension.coverage(db_session, account_id=test_user.account_id)
-        == expected
+    stored = crud_discovered_extension.coverage(
+        db_session, account_id=test_user.account_id
     )
-    assert client.get(EXTENSIONS).json()["coverage"] == expected
+    # The report time lets the inventory tell a fresh report from a stale one.
+    assert [row.pop("reported_at") for row in stored] == [NOW]
+    assert stored == expected
+    api = client.get(EXTENSIONS).json()["coverage"]
+    assert all(row.pop("reported_at") for row in api)
+    assert api == expected
     assert crud_discovered_extension.coverage(db_session, account_id=uuid4()) == []
     assert (
         crud_discovered_extension.coverage(
@@ -849,6 +875,10 @@ def test_coverage_uses_latest_device_reasons_and_is_account_scoped(
     )
     assert coverage[0]["completeness"] == "complete"
     assert coverage[0]["reasons"] == []
+    # The stale-report guidance reads the latest report's end time.
+    assert coverage[0]["reported_at"] == NOW + timedelta(minutes=1)
+    reported = client.get(EXTENSIONS).json()["coverage"][0]["reported_at"]
+    assert datetime.fromisoformat(reported) == NOW + timedelta(minutes=1)
 
 
 def test_extension_reason_codes_preserve_legacy_bytes_and_reject_paths() -> None:
@@ -867,3 +897,244 @@ def test_extension_reason_codes_preserve_legacy_bytes_and_reject_paths() -> None
                 "extension_errors": ["extension_project_unscanned"],
             }
         )
+
+
+def test_extension_details_v4_round_trip(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Store v4 metadata and expose it on both list shapes, preserving v3."""
+    details = {
+        "description": "Review changes",
+        "author": "Jane Doe",
+        "bundles": {
+            "skills": 1,
+            "commands": 0,
+            "hooks": 0,
+            "mcp_servers": 0,
+            "agents": 0,
+        },
+    }
+    payload = report([extension(details=details)])
+    payload["evidence"]["schema_version"] = 4
+    store(db_session, test_user.account_id, payload)
+    for group in (None, "extension"):
+        rows, _ = crud_discovered_extension.list_for_account(
+            db_session, account_id=test_user.account_id, group=group
+        )
+        assert rows[0]["details"]["description"] == "Review changes"
+    old = report(at=NOW - timedelta(minutes=1))
+    store(db_session, test_user.account_id, old)
+    rows, _ = crud_discovered_extension.list_for_account(
+        db_session, account_id=test_user.account_id
+    )
+    assert rows[0]["details"]["description"] == "Review changes"
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"description": "x" * 301},
+        {"description": "line\nbreak"},
+        {"description": "https://example.com"},
+        {"body": "private"},
+        {
+            "hook_matchers": [
+                {
+                    "matcher": "Bash",
+                    "count": 1,
+                    "commands": [{"executable": "/bin/bash", "preloop_managed": False}],
+                }
+            ]
+        },
+    ],
+)
+def test_extension_details_reject_unsafe_fields(details: dict[str, Any]) -> None:
+    """Reject content, paths, URLs and unnormalized text at ingestion."""
+    payload = report([extension(details=details)])
+    payload["evidence"]["schema_version"] = 4
+    with pytest.raises(ValidationError):
+        DiscoveryReportRequest.model_validate(payload)
+
+
+def test_extension_details_http_search(client: TestClient) -> None:
+    """Search descriptive metadata through real ingest and both read endpoints."""
+    payload = report(
+        [
+            extension(id="zeta", details={"description": "Review database migrations"}),
+            extension(
+                kind="skill",
+                id="careful",
+                source_kind="local",
+                details={
+                    "name": "careful",
+                    "description": "Check a change",
+                    "invocation": "/careful",
+                },
+            ),
+        ]
+    )
+    payload["evidence"]["schema_version"] = 4
+    response = client.post(REPORTS, json=payload)
+    assert response.status_code == 202, response.text
+    for group in ("extension", None):
+        params = {"q": "MIGRATIONS"}
+        if group:
+            params["group"] = group
+        result = client.get(EXTENSIONS, params=params)
+        assert result.status_code == 200, result.text
+        assert [row["extension_id"] for row in result.json()["items"]] == ["zeta"]
+        assert (
+            result.json()["items"][0]["details"]["description"]
+            == "Review database migrations"
+        )
+    result = client.get(
+        EXTENSIONS, params={"extension_kind": "skill", "extension_id": "careful"}
+    )
+    assert [row["extension_id"] for row in result.json()["items"]] == ["careful"]
+
+
+def test_v3_extension_serialization_omits_new_defaults() -> None:
+    """Adding optional v4 fields must not change immutable v3 replay hashes."""
+    dumped = DiscoveryEvidence.model_validate(report()["evidence"]).model_dump(
+        mode="json"
+    )
+    assert "details" not in dumped["applications"][0]["extensions"][0]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"details": {"script_count": 1}},
+        {
+            "kind": "hook",
+            "event": "PreToolUse",
+            "count": 2,
+            "details": {
+                "hook_matchers": [
+                    {
+                        "matcher": "Bash",
+                        "count": 1,
+                        "commands": [{"executable": "bash", "preloop_managed": False}],
+                    }
+                ]
+            },
+        },
+    ],
+)
+def test_extension_details_match_kind_and_hook_count(changes: dict[str, Any]) -> None:
+    """Do not accept inconsistent kind-specific metadata."""
+    payload = report([extension(**changes)])
+    payload["evidence"]["schema_version"] = 4
+    with pytest.raises(ValidationError):
+        DiscoveryReportRequest.model_validate(payload)
+
+
+def test_extension_sort_uses_display_name_across_pages(client: TestClient) -> None:
+    """Kind and display name determine order before pagination, with stable ties."""
+    payload = report(
+        [
+            extension(
+                kind="skill",
+                id="a-directory",
+                source_kind="local",
+                details={"name": "zebra"},
+            ),
+            extension(
+                kind="skill",
+                id="z-directory",
+                source_kind="local",
+                details={"name": "alpha"},
+            ),
+            extension(id="plugin"),
+        ]
+    )
+    payload["evidence"]["schema_version"] = 4
+    assert client.post(REPORTS, json=payload).status_code == 202
+    for group in (None, "extension"):
+        seen = []
+        params = {"limit": 1}
+        if group:
+            params["group"] = group
+        while True:
+            response = client.get(EXTENSIONS, params=params)
+            assert response.status_code == 200, response.text
+            page = response.json()
+            seen.extend(item["extension_id"] for item in page["items"])
+            if not page["next_cursor"]:
+                break
+            params["cursor"] = page["next_cursor"]
+        assert seen == ["plugin", "z-directory", "a-directory"]
+
+
+@pytest.mark.parametrize("name", ["a" * 129, "\U0001f600" * 300])
+@pytest.mark.parametrize("group", [None, "extension"])
+def test_extension_cursor_accepts_full_display_name(
+    client: TestClient, name: str, group: str | None
+) -> None:
+    """A maximum-length Unicode name must remain pageable in either shape."""
+    payload = report(
+        [
+            extension(kind="skill", id="first", details={"name": name}),
+            extension(kind="skill", id="second", details={"name": name}),
+        ]
+    )
+    payload["evidence"]["schema_version"] = 4
+    assert client.post(REPORTS, json=payload).status_code == 202
+    params: dict[str, Any] = {"limit": 1}
+    if group:
+        params["group"] = group
+    first = client.get(EXTENSIONS, params=params)
+    assert first.status_code == 200, first.text
+    params["cursor"] = first.json()["next_cursor"]
+    assert params["cursor"]
+    second = client.get(EXTENSIONS, params=params)
+    assert second.status_code == 200, second.text
+    assert second.json()["next_cursor"] is None
+    assert (
+        first.json()["items"][0]["extension_id"]
+        != second.json()["items"][0]["extension_id"]
+    )
+
+
+def test_extension_search_preserves_group_approval_state(
+    client: TestClient, db_session: Session, test_user: models.User
+) -> None:
+    """A matching description selects a key without hiding changed devices."""
+    pinned = "sha256:" + "ab" * 32
+    changed = "sha256:" + "cd" * 32
+    for fingerprint, description, content_hash, version, source in [
+        ("a", "Review migrations", pinned, "1.0.0", "local"),
+        ("c", "Check a change", changed, "2.0.0", "git"),
+    ]:
+        payload = report(
+            [
+                extension(
+                    details={"description": description},
+                    content_hash=content_hash,
+                    version=version,
+                    source_kind=source,
+                )
+            ]
+        )
+        payload["evidence"]["schema_version"] = 4
+        payload["workstation_fingerprint"] = fingerprint * 64
+        store(db_session, test_user.account_id, payload)
+    crud_extension_approval.set_state(
+        db_session,
+        account_id=test_user.account_id,
+        agent_kind="claude_code",
+        extension_kind="plugin",
+        extension_id="reviewer@community",
+        decided_by_user_id=test_user.id,
+        payload=ExtensionApprovalUpdate(
+            approval_state="approved", pin=ExtensionPinCreate(content_hash=pinned)
+        ),
+    )
+    response = client.get(EXTENSIONS, params={"group": "extension", "q": "migrations"})
+    assert response.status_code == 200, response.text
+    row = response.json()["items"][0]
+    assert row["device_count"] == 2
+    assert row["versions"] == ["1.0.0", "2.0.0"]
+    assert row["source_kinds"] == ["git", "local"]
+    assert row["effective_state"] == "content_changed"
+    assert {item["content_hash"] for item in row["content_hashes"]} == {pinned, changed}

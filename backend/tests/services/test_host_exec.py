@@ -108,8 +108,9 @@ def test_flow_errors_for_hosted_and_harness_mismatch() -> None:
 
 
 _PULL_REQUEST_UNAVAILABLE = (
-    "host execution cannot publish pull requests; isolated "
-    "publication is unavailable on this path"
+    "host execution opens a pull request only through a registered runner "
+    "whose host profile sets allow_checkout and allow_publish; update the "
+    "preloop CLI on the runner and enable both on the profile"
 )
 
 
@@ -160,7 +161,7 @@ def test_unavailable_reason_rejects_isolated_publication_mode() -> None:
 
 
 def test_unavailable_reason_create_pull_request_unchanged() -> None:
-    """create_pull_request keeps its existing host-exec reason."""
+    """Without a native agent type, create_pull_request stays refused."""
     assert (
         host_exec_unavailable_reason(git_clone_config={"create_pull_request": True})
         == _PULL_REQUEST_UNAVAILABLE

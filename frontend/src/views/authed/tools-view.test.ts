@@ -219,6 +219,34 @@ describe('ToolsView (approvals + conditions)', () => {
     invalidateApiCaches();
   });
 
+  it('opens the workflow editor from an approval readiness fix link', async () => {
+    const previous = location.href;
+    history.replaceState({}, '', '/console/tools?tab=mcp&edit_workflow=new');
+    try {
+      const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+      await waitUntil(() => (el as any).showPolicyDialog === true);
+      expect((el as any).editingPolicy).to.equal(null);
+      expect(new URL(location.href).searchParams.has('edit_workflow')).to.equal(
+        false
+      );
+    } finally {
+      history.replaceState({}, '', previous);
+    }
+  });
+
+  it('opens a workflow link when the router reuses the mounted tools view', async () => {
+    history.replaceState({}, '', '/console/tools?tab=mcp');
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(() => !(el as any).toolsContextLoading);
+    expect((el as any).showPolicyDialog).to.equal(false);
+    // Same-path routing updates location and calls onAfterEnter, without popstate.
+    history.pushState({}, '', '/console/tools?tab=mcp&edit_workflow=new');
+    el.onAfterEnter();
+    await el.updateComplete;
+    expect((el as any).showPolicyDialog).to.equal(true);
+    expect(location.search).not.to.contain('edit_workflow');
+  });
+
   it('refreshes unhealthy server state and shows a failed scan diagnostic', async () => {
     const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
     await waitUntil(() => !(el as any).loading);

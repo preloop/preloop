@@ -42,6 +42,10 @@ from preloop.services.question_schema import (
 )
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
+from preloop.schemas.approval_readiness import ApprovalReadiness
+from preloop.services.approval_readiness import describe_readiness
+from preloop.models.crud import crud_account, crud_approval_workflow
+
 router = APIRouter(
     prefix="/approval-requests",
     tags=["approval_requests"],
@@ -415,6 +419,9 @@ class ApprovalRequestStats(BaseModel):
     auto_approved_by_bypass: int
     avg_response_minutes: Optional[int] = Field(
         None, description="Mean request-to-decision time of decided requests."
+    )
+    has_native_delivery_warning: bool = Field(
+        False, description="A native approval lacked a mobile or chat destination."
     )
     tools: list[str] = Field(
         default_factory=list, description="Tool names seen, for the filter."
@@ -1225,3 +1232,29 @@ async def decide_requests_batch(
             await _advance_security_maintenance(sync_db, updated)
 
     return ApprovalBatchResponse(results=results)
+
+
+@router.get("/{request_id}/readiness", response_model=ApprovalReadiness)
+@require_permission("view_approvals")
+def get_pending_approval_route(
+    request_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ApprovalReadiness:
+    """Read the request's current workflow, including a completed escalation."""
+    row = crud_approval_request.get(
+        db, id=str(request_id), account_id=current_user.account_id
+    )
+    if row is None:
+        raise HTTPException(404, "Approval request not found")
+    account = crud_account.get(db, id=current_user.account_id)
+    workflow = crud_approval_workflow.get(
+        db, id=row.approval_workflow_id, account_id=str(current_user.account_id)
+    )
+    return describe_readiness(
+        db,
+        account=account,
+        workflow=workflow,
+        agent_id=row.managed_agent_id,
+        pending=True,
+    )

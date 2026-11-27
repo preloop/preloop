@@ -38,6 +38,9 @@ export interface ObservedSession {
   id: string;
   sourceId: string | null;
   parentSessionId?: string | null;
+  firstPrompt?: string | null;
+  cwd?: string | null;
+  agentId?: string | null;
   subagentRole?: string | null;
   spawnLabel?: string | null;
   sourceType: string | null;
@@ -264,6 +267,7 @@ function buildTitle(row: Record<string, unknown>): string {
   return (
     asSubject(row.alias) ||
     asSubject(row.title) ||
+    asSubject(row.first_prompt) ||
     asSubject(row.summary) ||
     asSubject(row.session_summary) ||
     asSubject(row.session_alias) ||
@@ -301,6 +305,9 @@ export function normalizeObservedSession(
     id,
     sourceId,
     parentSessionId: asString(row.parent_session_id),
+    firstPrompt: asString(row.first_prompt),
+    cwd: asString(row.cwd),
+    agentId: asString(row.agent_id) || asString(row.managed_agent_id),
     subagentRole: asString(row.subagent_role),
     spawnLabel: asString(row.alias),
     sourceType,

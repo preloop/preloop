@@ -1380,6 +1380,8 @@ export interface GatewayUsageSearchParams extends GatewayUsageSummaryParams {
 }
 
 export interface RuntimeSessionListParams extends GatewayUsageSummaryParams {
+  includeRelated?: boolean;
+  sessionIds?: string[];
   workspaceId?: string;
   sort?: 'last_activity' | 'started' | 'cost' | 'requests';
   query?: string;
@@ -1523,6 +1525,7 @@ function buildRuntimeSessionListQuery(
     queryParams.set('offset', String(params.offset));
   }
 
+  if (params.includeRelated) queryParams.set('include_related', 'true');
   const queryString = queryParams.toString();
   return queryString ? `?${queryString}` : '';
 }
@@ -2637,6 +2640,31 @@ export async function getAccountRuntimeSessions(
   return response.json();
 }
 
+/** Find by identity and captured content, returning family context in one read. */
+export async function findRuntimeSessions(
+  params: RuntimeSessionListParams = {}
+): Promise<AccountRuntimeSessionListResponse> {
+  const body = Object.fromEntries(
+    new URLSearchParams(buildRuntimeSessionListQuery(params))
+  );
+  delete body.include_related;
+  if (params.sessionIds)
+    (body as Record<string, unknown>).session_ids = params.sessionIds;
+  for (const key of ['limit', 'offset']) {
+    if (key in body) (body as Record<string, unknown>)[key] = Number(body[key]);
+  }
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/runtime-sessions/find`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!response.ok) throw new Error('Failed to find sessions');
+  return response.json();
+}
+
 export interface SessionSearchParams {
   query: string;
   mode?: SessionSearchMode;
@@ -2746,6 +2774,108 @@ export async function getAccountAgent(
   );
   if (!response.ok) {
     throw new Error('Failed to fetch managed agent');
+  }
+  return response.json();
+}
+
+/** One config file a user edits by hand to route an agent through Preloop. */
+export interface AgentManualSetupFile {
+  path: string;
+  format: 'json' | 'toml' | string;
+  /** False when the file has to be created rather than merged into. */
+  exists: boolean;
+  merge: Record<string, unknown>;
+  remove?: string[] | null;
+  /** Where a container's file probably lives on its host, when known. */
+  host_source?: string | null;
+  label?: string | null;
+  reason?: string | null;
+}
+
+/**
+ * The config change for one agent. Every secret is the literal placeholder
+ * `<AGENT_KEY>` (`<AGENT_KEY_LAST_20>` for the key's last 20 characters).
+ */
+export interface AgentManualSetupInstructions {
+  files?: AgentManualSetupFile[] | null;
+  env?: Record<string, string> | null;
+  settings_flag?: string | null;
+  limitations?: string[] | null;
+}
+
+export interface AgentManualSetupPending {
+  enrollment_id: string;
+  status: string;
+  created_at: string;
+  expires_at: string | null;
+}
+
+export interface AgentManualSetupResponse {
+  agent_id: string;
+  agent_kind: string | null;
+  display_name: string;
+  /** The setup that is waiting for local configuration, if there is one. */
+  pending: AgentManualSetupPending | null;
+  /** Null when the agent type has no manual setup yet. */
+  instructions: AgentManualSetupInstructions | null;
+  resume_command: string;
+}
+
+/** What cancelling a pending setup removed. */
+export interface AgentOnboardingCleanupRemoved {
+  credentials: number;
+  ai_models: number;
+  agent: 'deleted' | 'decommissioned' | 'kept' | string;
+}
+
+export interface AgentPendingEnrollmentCancelResponse {
+  enrollment: { id: string; status: string; [key: string]: unknown };
+  removed: AgentOnboardingCleanupRemoved;
+}
+
+/**
+ * The config change a user applies by hand for one agent, and the pending
+ * setup it belongs to when there is one.
+ * GET /api/v1/agents/{agentId}/manual-setup
+ */
+export async function getAgentManualSetup(
+  agentId: string
+): Promise<AgentManualSetupResponse> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/manual-setup`
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(
+      extractErrorMessage(errorData, 'Failed to load manual setup'),
+      response.status
+    );
+  }
+  return response.json();
+}
+
+/**
+ * Cancel a setup that is waiting for local configuration and remove what its
+ * onboarding created. Rejects with an `ApiError` of status 409 when the setup
+ * is no longer pending.
+ * POST /api/v1/agents/{agentId}/enrollments/{enrollmentId}/cancel
+ */
+export async function cancelAgentPendingEnrollment(
+  agentId: string,
+  enrollmentId: string
+): Promise<AgentPendingEnrollmentCancelResponse> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(
+      agentId
+    )}/enrollments/${encodeURIComponent(enrollmentId)}/cancel`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(
+      extractErrorMessage(errorData, 'Failed to cancel the pending setup'),
+      response.status
+    );
   }
   return response.json();
 }
@@ -2968,12 +3098,34 @@ export async function getAgentControlCommandStatus(
   runtime_session_id?: string | null;
   terminal: boolean;
   delivery_state: string;
+  prompt_delivery?: 'queued' | 'sent';
   last_error?: string | null;
 }> {
   const response = await fetchWithAuth(
     `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/commands/${encodeURIComponent(commandId)}`
   );
   if (!response.ok) throw new Error('Could not confirm command delivery');
+  return response.json();
+}
+
+export interface TalkStartOptions {
+  capabilities: Record<string, boolean | string>;
+  version?: string;
+  default_directory?: string;
+  projects: { project_id?: string; name: string; path: string }[];
+  recent_directories: string[];
+}
+
+export async function getTalkStartOptions(
+  agentId: string
+): Promise<TalkStartOptions> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/control/start-options`
+  );
+  if (!response.ok)
+    throw new Error(
+      'Could not check sidecar capabilities. Retry before sending.'
+    );
   return response.json();
 }
 
@@ -6549,6 +6701,11 @@ export function stopRunnerSession(
 
 /** How a line typed on a runtime session is delivered (GET .../control). */
 export interface RuntimeSessionControl {
+  /** Server-owned wording. Selection UI must not infer delivery from activity. */
+  delivery_preview?: {
+    state: 'delivered_now' | 'next_step' | 'resumes_session' | 'unavailable';
+    description: string;
+  };
   runtime_session_id: string;
   mode: 'command' | 'note';
   reason_code:
@@ -6564,6 +6721,7 @@ export interface RuntimeSessionControl {
     | 'herdr_unavailable'
     | 'session_owner_unknown'
     | 'session_directory_unknown'
+    | 'sidecar_update_required'
     | 'session_unavailable'
     | 'runner_away'
     | null;

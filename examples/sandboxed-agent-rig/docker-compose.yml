@@ -1,0 +1,175 @@
+# Sandboxed agent rig: a local Preloop stack, a mocked model provider, and
+# agent containers whose configuration is read-only in the ways real sandboxes
+# make it read-only. Nothing here reaches a real provider or a hosted Preloop.
+#
+# Run it with ./run.sh (see README.md). Build context is the repository root.
+name: preloop-sandbox-rig
+
+x-agent: &agent
+  build:
+    context: ../..
+    dockerfile: examples/sandboxed-agent-rig/agent/Dockerfile
+  image: preloop-sandbox-rig-agent:local
+  depends_on:
+    preloop:
+      condition: service_healthy
+    mock-anthropic:
+      condition: service_healthy
+  networks: [rig]
+
+x-agent-env: &agent-env
+  PRELOOP_URL: http://preloop:8000
+  PRELOOP_DISABLE_TELEMETRY: "true"
+
+x-preloop-env: &preloop-env
+  DATABASE_URL: postgresql+psycopg://postgres:rig-only-password@postgres/preloop
+  NATS_URL: nats://nats:4222
+  SECRET_KEY: rig-only-secret-key-not-for-any-deployment-0001
+  PRELOOP_DISABLE_TELEMETRY: "true"
+  PRELOOP_URL: http://preloop:8000
+  # The mocked provider lives on the rig's private network.
+  MODEL_ENDPOINT_ALLOWED_CIDRS: 172.31.250.0/24
+  LOG_LEVEL: WARNING
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: rig-only-password
+      POSTGRES_DB: preloop
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [rig]
+
+  nats:
+    image: nats:alpine
+    command: ["-js", "-m", "8222"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8222/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [rig]
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: preloop-sandbox-rig-server:local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *preloop-env
+    command: python scripts/init_db.py --force
+    restart: "no"
+    networks: [rig]
+
+  preloop:
+    image: preloop-sandbox-rig-server:local
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+    environment:
+      <<: *preloop-env
+      HOST: 0.0.0.0
+      PORT: "8000"
+      PRELOOP_SERVICE_ROLE: all
+    command: python -m preloop.server
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3).status == 200 else 1)"
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    networks: [rig]
+
+  mock-anthropic:
+    image: python:3.11-slim
+    volumes:
+      - ./mock/mock_anthropic.py:/mock/mock_anthropic.py:ro
+    command: python /mock/mock_anthropic.py --port 8080
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).status == 200 else 1)"
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [rig]
+
+  # Variant 1, the common sandbox: settings.json is a single file bind-mounted
+  # read-only from the host. ~/.preloop is a writable named volume and the
+  # Claude login was done inside the container.
+  agent-ro-settings:
+    <<: *agent
+    environment: *agent-env
+    volumes:
+      - ./state/ro-settings/claude/settings.json:/home/agent/.claude/settings.json:ro
+      - ro-settings-preloop:/home/agent/.preloop
+
+  # Variant 2, a locked-down sandbox: read-only root filesystem, read-only
+  # settings, nothing writable but /tmp. ~/.preloop cannot be written, so the
+  # resume token is printed. The login arrives as a long-lived token in the
+  # environment.
+  agent-ro-everything:
+    <<: *agent
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    environment:
+      <<: *agent-env
+      CLAUDE_CODE_OAUTH_TOKEN: sk-ant-oat01-rig-synthetic-long-lived-token-0001
+    volumes:
+      - ./state/ro-everything/claude/settings.json:/home/agent/.claude/settings.json:ro
+
+  # Variant 3: the mount is writable, but the file belongs to another uid
+  # (root) with mode 0644, so the write is still refused.
+  agent-wrong-owner:
+    <<: *agent
+    environment: *agent-env
+    volumes:
+      - wrong-owner-claude:/home/agent/.claude
+      - wrong-owner-preloop:/home/agent/.preloop
+
+  # Variant 4: read-only settings and no Claude login anywhere.
+  agent-no-login:
+    <<: *agent
+    environment: *agent-env
+    volumes:
+      - ./state/no-login/claude/settings.json:/home/agent/.claude/settings.json:ro
+      - no-login-preloop:/home/agent/.preloop
+
+  # Variant 5: read-only settings and a login the provider rejects (the mock
+  # refuses any credential containing "stale").
+  agent-stale-login:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      CLAUDE_CODE_OAUTH_TOKEN: sk-ant-oat01-rig-synthetic-stale-token-0001
+    volumes:
+      - ./state/stale-login/claude/settings.json:/home/agent/.claude/settings.json:ro
+      - stale-login-preloop:/home/agent/.preloop
+
+networks:
+  rig:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+
+volumes:
+  ro-settings-preloop:
+  wrong-owner-claude:
+  wrong-owner-preloop:
+  no-login-preloop:
+  stale-login-preloop:

@@ -134,6 +134,7 @@ class AgentControlCommandStatusResponse(BaseModel):
     status: str
     delivery_state: AgentControlDeliveryState
     terminal: bool
+    prompt_delivery: Optional[Literal["queued", "sent"]] = None
     result_status: Optional[str] = None
     last_error: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -169,6 +170,7 @@ class RuntimeSessionControlResponse(BaseModel):
             "herdr_unavailable",
             "session_owner_unknown",
             "session_directory_unknown",
+            "sidecar_update_required",
             "session_unavailable",
             # Command mode (#1509): the runner hosting a remote session is
             # asleep or offline; a turn is held until it reconnects.

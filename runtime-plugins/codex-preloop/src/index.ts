@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { knownCheckouts } from "./checkouts.js";
 
 // Ported from runtime-plugins/claude-preloop/src/index.ts.
 // WebSocket client, reconnect/backoff, close code 4000, heartbeat, and
@@ -362,9 +363,15 @@ export class PreloopCodexSidecar {
           status: "online",
           protocol: PROTOCOL,
           runtime: this.runtime,
+          version: "0.1.1",
+          default_directory: config.workspace_root,
           capabilities: {
             // Same names the Claude sidecar advertises, minus `worktree`
             // (this sidecar does not create git worktrees).
+            start_directory: true,
+            command_session: true,
+            followup_prompts: true,
+            prompt_delivery: "queued",
             new_session: true,
             existing_session: true,
             text: true,
@@ -383,6 +390,10 @@ export class PreloopCodexSidecar {
         },
       });
       this.startHeartbeat(config);
+      void knownCheckouts(config, this.observer?.recentDirectories()).then(checkouts => {
+        if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+        this.sendEnvelope({ type: "presence", name: "checkout_inventory", payload: { checkouts } });
+      });
     });
 
     socket.on("message", (data) => {
@@ -647,6 +658,7 @@ export class PreloopCodexSidecar {
     try {
       return await this.sessions.sendMessage({
         text,
+        onDelivery: state => this.sendEnvelope({ type: "event", name: "prompt_delivery", payload: { command_id: command.message_id, state } }),
         commandId: command.message_id,
         onSessionStarted: (id, directory) => this.sendEnvelope({ type: "event", name: "command_session", payload: { command_id: command.message_id, native_session_id: id, working_directory: directory } }),
         targetSessionId,
@@ -835,7 +847,15 @@ export class PreloopCodexSidecar {
     this.saveLedger(ledgerFile);
   }
 
+  private observedDirectories = new Set<string>();
+
   private sendSessionActivity(activity: SessionActivity): void {
+    if (activity.cwd && !this.observedDirectories.has(activity.cwd)) {
+      this.observedDirectories.add(activity.cwd);
+      void knownCheckouts(this.verify(), [...this.observedDirectories]).then(checkouts => {
+        this.sendEnvelope({ type: "presence", name: "checkout_inventory", payload: { checkouts } });
+      });
+    }
     this.sendEnvelope({
       type: "event",
       name: "session_activity",

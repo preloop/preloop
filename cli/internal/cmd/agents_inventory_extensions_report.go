@@ -21,7 +21,7 @@ func addDiscoveryExtensions(report *discoveryReportRequest, salt, home string, d
 	deps.ExtensionSalt = salt
 	scan := collectAgentInventory(deps)
 	ref := inventoryProfileRef(salt, report.WorkstationFingerprint, home)
-	evidence := &inventoryReportEvidence{SchemaVersion: 3, ObservationID: fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]), CollectorVersion: report.CLIVersion, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: deps.Now().UTC(), ScanScope: []string{"user_config"}, Completeness: "complete", Errors: []string{}, Profiles: []inventoryProfileResult{{ProfileRef: ref, Completeness: "complete"}}, Applications: []inventoryReportApplication{}}
+	evidence := &inventoryReportEvidence{SchemaVersion: 4, ObservationID: fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]), CollectorVersion: report.CLIVersion, OSFamily: report.OS, DetectorVersion: inventoryDetectorVersion, SourceEnvironment: "unknown", StartedAt: scan.ObservedAt, EndedAt: deps.Now().UTC(), ScanScope: []string{"user_config"}, Completeness: "complete", Errors: []string{}, Profiles: []inventoryProfileResult{{ProfileRef: ref, Completeness: "complete"}}, Applications: []inventoryReportApplication{}}
 	// Extension coverage follows the supported collectors, independently of
 	// unrelated application/runtime probes and missing discovery candidates.
 	evidence.ExtensionErrors = inventoryExtensionErrors(scan)
@@ -78,7 +78,7 @@ func addDiscoveryExtensions(report *discoveryReportRequest, salt, home string, d
 
 func postInventoryReport(client *api.Client, report discoveryReportRequest, response *discoveryReportResponse) error {
 	err := client.Post(discoveryReportPath, report, response)
-	if err == nil || report.Evidence == nil || report.Evidence.SchemaVersion != 3 {
+	if err == nil || report.Evidence == nil || report.Evidence.SchemaVersion < 3 {
 		return inventoryReportError(err)
 	}
 	var apiErr *api.APIError
@@ -112,6 +112,12 @@ func postInventoryReport(client *api.Client, report discoveryReportRequest, resp
 	}
 	if !rejectedSchema {
 		return err
+	}
+	if report.Evidence.SchemaVersion == 4 {
+		report = withoutExtensionDetails(report)
+		report.Evidence.SchemaVersion = 3
+		response.DetailsOmitted = true
+		return postInventoryReport(client, report, response)
 	}
 	// Rollback compatibility is one retry, only for a version rejection. Remove
 	// every v3 field without changing the caller's evidence or offline output.
@@ -189,4 +195,29 @@ func inventoryExtensionErrors(scan inventoryEnvelope) []string {
 		}
 	}
 	return codes
+}
+
+// withoutExtensionDetails copies both matched lists, retaining v3 metadata.
+func withoutExtensionDetails(report discoveryReportRequest) discoveryReportRequest {
+	evidence := *report.Evidence
+	evidence.Applications = append([]inventoryReportApplication{}, evidence.Applications...)
+	report.Candidates = append([]discoveryReportCandidate{}, report.Candidates...)
+	strip := func(exts *[]inventoryExtension) *[]inventoryExtension {
+		if exts == nil {
+			return nil
+		}
+		result := append([]inventoryExtension{}, (*exts)...)
+		for i := range result {
+			result[i].Details = nil
+		}
+		return &result
+	}
+	for i := range evidence.Applications {
+		evidence.Applications[i].Extensions = strip(evidence.Applications[i].Extensions)
+	}
+	for i := range report.Candidates {
+		report.Candidates[i].Extensions = strip(report.Candidates[i].Extensions)
+	}
+	report.Evidence = &evidence
+	return report
 }

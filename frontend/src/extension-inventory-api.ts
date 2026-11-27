@@ -1,4 +1,4 @@
-import { fetchWithAuth, getUserProfile } from './api';
+import { fetchWithAuth, getUserProfile, onApiCachesInvalidated } from './api';
 import { REST_API_PREFIX } from './api-path';
 import { hasFleetPermission } from './device-fleet-api';
 
@@ -29,7 +29,30 @@ export type ExtensionSource =
   | 'local'
   | 'builtin'
   | 'unknown';
+export interface ExtensionDetails {
+  name?: string;
+  description?: string;
+  description_withheld?: boolean;
+  invocation?: string;
+  script_count?: number | null;
+  plugin?: string;
+  author?: string;
+  bundles?: {
+    skills: number;
+    commands: number;
+    hooks: number;
+    mcp_servers: number;
+    agents: number;
+  } | null;
+  hook_matchers?: Array<{
+    matcher?: string;
+    matcher_withheld?: boolean;
+    count: number;
+    commands: Array<{ executable: string; preloop_managed: boolean }>;
+  }>;
+}
 export interface ExtensionKey {
+  details?: ExtensionDetails | null;
   agent_kind: string;
   extension_kind: 'plugin' | 'skill' | 'hook' | 'command';
   extension_id: string;
@@ -68,6 +91,8 @@ export interface ExtensionCoverage {
   collector_version: string | null;
   completeness: 'complete' | 'partial' | 'unknown';
   reasons: string[];
+  /** When the device's latest report ended; absent on older servers. */
+  reported_at?: string | null;
 }
 export interface ExtensionPage {
   coverage?: ExtensionCoverage[];
@@ -76,6 +101,9 @@ export interface ExtensionPage {
   completeness: 'complete' | 'partial' | 'unknown';
 }
 export interface ExtensionFilters {
+  q?: string;
+  extension_kind?: ExtensionKey['extension_kind'];
+  extension_id?: string;
   fingerprint?: string;
   agent_kind?: string;
   state?: ExtensionEffectiveState;
@@ -133,40 +161,87 @@ export async function fetchExtensionPolicyText(): Promise<string> {
   return `${JSON.stringify(policy, null, 2)}\n`;
 }
 
+/** Count account-wide identities without reading rows or approval decisions. */
+export async function getExtensionCount(): Promise<number> {
+  return (await request<{ count: number }>('/discovery-extensions/count'))
+    .count;
+}
+
 export async function getExtensions(
   filters: ExtensionFilters = {}
 ): Promise<ExtensionPage> {
-  const params = new URLSearchParams({ limit: '50' });
+  const params = new URLSearchParams({ limit: '200' });
   if (!filters.fingerprint) params.set('group', 'extension');
   for (const [key, value] of Object.entries(filters))
     if (value) params.set(key, value);
-  const page = await request<ExtensionPage>(`/discovery-extensions?${params}`);
-  // The inventory DTO omits constraints. Read only decisions on this page,
-  // once per identity, with bounded concurrency rather than an account scan.
-  const identities = new Map<string, ExtensionKey>();
-  for (const row of page.items) identities.set(approvalPath(row), row);
-  const pending = [...identities.entries()];
-  const constraints = new Map<string, string | null | undefined>();
-  await Promise.all(
-    Array.from({ length: Math.min(4, pending.length) }, async () => {
-      for (let item = pending.pop(); item; item = pending.pop()) {
-        const [key, row] = item;
-        try {
-          const decision = await getExtensionDecision(row);
-          constraints.set(key, decision?.version_constraint ?? null);
-        } catch {
-          constraints.set(key, undefined);
-        }
-      }
-    })
-  );
+  // The inventory DTO omits constraints. Read the account's decisions in
+  // parallel with the page, through the paginated list, not once per row.
+  const [page, constraints] = await Promise.all([
+    request<ExtensionPage>(`/discovery-extensions?${params}`),
+    cachedVersionConstraints().catch(() => null),
+  ]);
   return {
     ...page,
     items: page.items.map((row) => ({
       ...row,
-      version_constraint: constraints.get(approvalPath(row)),
+      // Undefined means the constraint could not be read; null means none.
+      version_constraint: constraints
+        ? (constraints.get(approvalPath(row)) ?? null)
+        : undefined,
     })),
   };
+}
+
+/** How long one constraint scan serves later pages and filter changes. */
+export const CONSTRAINT_CACHE_MS = 60_000;
+let constraintCache: {
+  at: number;
+  value: Promise<Map<string, string | null>>;
+} | null = null;
+
+/** Drop the constraint scan so the next read sees a decision just written. */
+export function invalidateVersionConstraints(): void {
+  constraintCache = null;
+}
+
+// Constraints are account data: sign-out and account switches drop them.
+onApiCachesInvalidated(invalidateVersionConstraints);
+
+/**
+ * One account scan serves the first page, Load more and filter changes.
+ * The console never edits constraints, so a short reuse window is safe; a
+ * failed scan is not kept.
+ */
+function cachedVersionConstraints(): Promise<Map<string, string | null>> {
+  const now = Date.now();
+  if (!constraintCache || now - constraintCache.at > CONSTRAINT_CACHE_MS) {
+    const value = getVersionConstraints();
+    constraintCache = { at: now, value };
+    value.catch(() => {
+      if (constraintCache?.value === value) constraintCache = null;
+    });
+  }
+  return constraintCache.value;
+}
+
+/** Every stored version constraint, keyed by approval path. */
+async function getVersionConstraints(): Promise<Map<string, string | null>> {
+  const constraints = new Map<string, string | null>();
+  let cursor: string | null = null;
+  // Bounded: 20 pages of 500 decisions.
+  for (let page = 0; page < 20; page++) {
+    const params = new URLSearchParams({ limit: '500' });
+    if (cursor) params.set('cursor', cursor);
+    const list = await request<{
+      items: (ExtensionKey & { version_constraint: string | null })[];
+      next_cursor: string | null;
+    }>(`/extension-approvals?${params}`);
+    for (const row of list.items)
+      constraints.set(approvalPath(row), row.version_constraint);
+    cursor = list.next_cursor;
+    if (!cursor) return constraints;
+  }
+  throw new Error('Too many extension decisions to read constraints');
 }
 
 const approvalPath = (extension: ExtensionKey): string =>
@@ -229,6 +304,7 @@ export async function setExtensionApproval(
   contentHash?: string
 ): Promise<void> {
   const path = approvalPath(extension);
+  invalidateVersionConstraints();
   const response = await fetchWithAuth(
     `${REST_API_PREFIX}/agents/extension-approvals/${path}`
   );
@@ -249,4 +325,19 @@ export async function setExtensionApproval(
         : {}),
     }),
   });
+}
+
+/** Read device observations for exactly one extension, without aggregation. */
+export async function getExtensionDevices(
+  row: ExtensionKey,
+  cursor?: string
+): Promise<ExtensionPage> {
+  const params = new URLSearchParams({
+    limit: '200',
+    agent_kind: row.agent_kind,
+    extension_kind: row.extension_kind,
+    extension_id: row.extension_id,
+  });
+  if (cursor) params.set('cursor', cursor);
+  return request<ExtensionPage>(`/discovery-extensions?${params}`);
 }

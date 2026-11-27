@@ -136,14 +136,14 @@ func detectClaudeCodeAuthState() (agentAuthState, string) {
 			return agentAuthStateReady, envKey + " is set"
 		}
 	}
-	home, err := os.UserHomeDir()
+	_, err := os.UserHomeDir()
 	if err != nil {
 		return agentAuthStateUnknown, "could not resolve home directory"
 	}
 	if resolveClaudePrimaryAPIKey() != "" {
 		return agentAuthStateReady, "API key configured in ~/.claude.json"
 	}
-	credentialsPath := filepath.Join(home, ".claude", ".credentials.json")
+	credentialsPath := filepath.Join(claudeConfigHome(), ".credentials.json")
 	if data, readErr := os.ReadFile(credentialsPath); readErr == nil {
 		if credential := parseClaudeOAuthCredentialBlob(string(data), 0); credential != nil {
 			if credential.ExpiresAtMS > 0 && oauthPayloadEpochMillis(credential.ExpiresAtMS) <= time.Now().UnixMilli() {

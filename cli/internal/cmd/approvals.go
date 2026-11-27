@@ -59,6 +59,7 @@ type ApprovalRequest struct {
 	ID               string                 `json:"id" yaml:"id"`
 	ToolName         string                 `json:"tool_name" yaml:"tool_name"`
 	ToolInput        string                 `json:"tool_input,omitempty" yaml:"tool_input,omitempty"`
+	Summary          string                 `json:"summary,omitempty" yaml:"summary,omitempty"`
 	Status           string                 `json:"status" yaml:"status"`
 	RequestedBy      string                 `json:"requested_by,omitempty" yaml:"requested_by,omitempty"`
 	RequestedAt      api.Time               `json:"requested_at" yaml:"requested_at"`
@@ -241,10 +242,7 @@ func runApprovalsPending(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(w, "ID\tTOOL\tREQUESTED BY\tSESSION\tMODEL\tAGE\tINPUT") //nolint:errcheck
 		for _, r := range requests {
 			age := formatDuration(time.Since(r.RequestedAt.Time))
-			input := r.ToolInput
-			if len(input) > 40 {
-				input = input[:37] + "..."
-			}
+			input := pendingInputLabel(r)
 			// Truncate ID for display
 			id := r.ID
 			if len(id) > 12 {
@@ -256,6 +254,22 @@ func runApprovalsPending(cmd *cobra.Command, args []string) error {
 		}
 		return w.Flush()
 	}
+}
+
+// pendingInputLabel is the INPUT column: the server's plain-language
+// summary when it has one (a runner owner consent names the flow, harness
+// and device there), else the raw tool input.
+func pendingInputLabel(r ApprovalRequest) string {
+	input := strings.TrimSpace(r.Summary)
+	limit := 120
+	if input == "" {
+		input = r.ToolInput
+		limit = 40
+	}
+	if runes := []rune(input); len(runes) > limit {
+		input = string(runes[:limit-3]) + "..."
+	}
+	return input
 }
 
 // runApprovalsApprove approves a request.

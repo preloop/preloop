@@ -34,14 +34,13 @@ type FetchInput = RequestInfo | URL;
 describe('RuntimeSessionsView', () => {
   let fetchStub: sinon.SinonStub;
   let wsStub: sinon.SinonStub;
-  let includeTitleMatches = false;
 
-  const SEARCH_URL = '/api/v1/runtime-sessions/search';
+  const SEARCH_URL = '/api/v1/runtime-sessions/find';
 
   // One matching session with two snippets, one of each kind the corpus
   // publishes, so the tags and the deep link both have something to work with.
   function searchResponse(overrides: Record<string, unknown> = {}) {
-    return {
+    const response = {
       query: 'rollout plan',
       mode: 'keyword',
       effective_mode: 'keyword',
@@ -98,6 +97,29 @@ describe('RuntimeSessionsView', () => {
       ],
       ...overrides,
     };
+    const keys = Object.keys(response);
+    return Object.defineProperties(response, {
+      items: {
+        enumerable: true,
+        get: () =>
+          response.results.map((result) => ({
+            id: result.runtime_session_id,
+            title: result.title,
+            session_source_type: result.session_source_type,
+            session_source_id: result.session_source_id,
+            session_reference: result.session_reference,
+            started_at: result.started_at,
+            last_activity_at: result.last_activity_at,
+          })),
+      },
+      content_search: {
+        enumerable: true,
+        get: () =>
+          Object.fromEntries(
+            keys.map((key) => [key, (response as Record<string, unknown>)[key]])
+          ),
+      },
+    });
   }
 
   function searchCalls(): sinon.SinonSpyCall[] {
@@ -164,33 +186,51 @@ describe('RuntimeSessionsView', () => {
     return text;
   }
 
+  // The finder answers identity and content in one read: identity-only
+  // rows first, then the sessions that only matched captured content.
+  function finderWithIdentity(overrides: Record<string, unknown> = {}) {
+    const content = searchResponse();
+    return {
+      items: [
+        { id: 'identity-1', title: 'Rollout plan review' },
+        { id: 'identity-2', title: 'Rollout plan follow-up' },
+        ...content.items,
+      ],
+      related_sessions: [],
+      has_more: false,
+      content_search: content.content_search,
+      ...overrides,
+    };
+  }
+
+  function stubFinder(body: Record<string, unknown>): void {
+    fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(
+      async () =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+  }
+
   it('keeps unindexed identity matches above content matches (#2424)', async () => {
-    includeTitleMatches = true;
+    stubFinder(finderWithIdentity());
     const element = await renderedSearch();
-    const queryCall = fetchStub.getCalls().find((call) => {
-      const url = new URL(String(call.args[0]), location.origin);
-      return (
-        url.pathname === '/api/v1/runtime-sessions' &&
-        call.args[1]?.method === 'POST' &&
-        JSON.parse(String(call.args[1]?.body)).query === 'rollout plan'
-      );
-    });
-    expect(queryCall).not.to.equal(undefined);
-    expect(String(queryCall!.args[0])).not.to.contain('query=');
+    expect(searchCalls()).to.have.length(1);
     const headings = [
       ...element.shadowRoot!.querySelectorAll('[data-search-kind]'),
     ];
     expect(
       headings.map((row) => row.getAttribute('data-search-kind'))
-    ).to.deep.equal(['title', 'title', 'content']);
+    ).to.deep.equal(['identity', 'identity', 'content']);
   });
 
   it('opens an identity-only search hit in the phone detail pane', async () => {
     await setViewport({ width: 390, height: 844 });
-    includeTitleMatches = true;
+    stubFinder(finderWithIdentity());
     const element = await renderedSearch();
     const row = element.shadowRoot!.querySelector(
-      '[data-search-kind="title"]'
+      '[data-search-kind="identity"]'
     )!;
     const link = row.closest('sl-card')!.querySelector('a')!;
     (link as HTMLElement).click();
@@ -221,25 +261,54 @@ describe('RuntimeSessionsView', () => {
     expect(getComputedStyle(searchList).display).not.to.equal('none');
   });
 
+  it('replaces earlier matches with the error when a later search fails', async () => {
+    const element = await renderedSearch();
+    expect(
+      element.shadowRoot!.querySelectorAll('[data-search-kind]').length
+    ).to.be.greaterThan(0);
+    fetchStub
+      .withArgs(SEARCH_URL, sinon.match.any)
+      .rejects(new Error('Failed to find sessions'));
+    await typeQuery(element, 'another query');
+    await waitUntil(
+      () => searchCalls().length === 2,
+      'Second search not sent',
+      {
+        timeout: 3000,
+      }
+    );
+    await waitUntil(() => !(element as any).searchLoading);
+    await element.updateComplete;
+    expect(
+      element.shadowRoot!.querySelector('[data-testid="search-error"]')
+    ).to.not.equal(null);
+    expect(
+      element.shadowRoot!.querySelectorAll('[data-search-kind]')
+    ).to.have.length(0);
+  });
+
   it('keeps identity matches when content search is unavailable (#2424)', async () => {
-    includeTitleMatches = true;
-    fetchStub.withArgs(SEARCH_URL).resolves(
-      new Response(JSON.stringify({ detail: 'Content search unavailable' }), {
-        status: 503,
+    stubFinder(
+      finderWithIdentity({
+        items: [
+          { id: 'identity-1', title: 'Rollout plan review' },
+          { id: 'identity-2', title: 'Rollout plan follow-up' },
+        ],
+        content_search: null,
+        search_warning: 'Content search is unavailable right now.',
       })
     );
     const element = await renderedSearch();
     expect(
-      element.shadowRoot!.querySelectorAll('[data-search-kind="title"]')
+      element.shadowRoot!.querySelectorAll('[data-search-kind="identity"]')
     ).to.have.length(2);
     expect(element.shadowRoot!.textContent).to.contain(
-      'Search is unavailable right now'
+      'Content search is unavailable right now.'
     );
   });
 
   beforeEach(async () => {
     await setViewport({ width: 1440, height: 1000 });
-    includeTitleMatches = false;
     wsStub = sinon.stub(unifiedWebSocketManager, 'send').returns(true);
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
@@ -341,7 +410,7 @@ describe('RuntimeSessionsView', () => {
             },
           ],
         };
-        if (Boolean(init?.method === 'POST') && !includeTitleMatches) {
+        if (init?.method === 'POST') {
           page.items = [];
           page.total = 0;
         }
@@ -1420,7 +1489,7 @@ describe('RuntimeSessionsView', () => {
       expect(String((request.args[1] as RequestInit).method)).to.equal('POST');
       expect(
         JSON.parse(String((request.args[1] as RequestInit).body))
-      ).to.deep.include({ query: 'rollout plan', mode: 'keyword' });
+      ).to.deep.include({ query: 'rollout plan' });
       const searchBody = JSON.parse(
         String((request.args[1] as RequestInit).body)
       ) as Record<string, unknown>;
@@ -1431,8 +1500,8 @@ describe('RuntimeSessionsView', () => {
       expect(
         (searchBody.filters as Record<string, unknown> | undefined) || {}
       ).to.not.have.property('source_kind');
-      // Identity search uses the same query alongside the content corpus.
-      expect(listCalls().length).to.equal(listsBefore + 1);
+      // The finder answers identity and content, so no list call is added.
+      expect(listCalls().length).to.equal(listsBefore);
       expect(
         listCalls().filter((url) => url.includes('query='))
       ).to.have.length(0);
@@ -2544,6 +2613,76 @@ describe('RuntimeSessionsView', () => {
       );
       expect(empty).to.not.equal(null);
       expect(empty!.textContent).to.contain('No sessions matched');
+    });
+
+    it('offers the next page when scope filtering leaves an empty content page', async () => {
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(
+        async () =>
+          new Response(
+            JSON.stringify(
+              searchResponse({
+                total: null,
+                results: [],
+                has_more: true,
+                next_offset: 25,
+              })
+            ),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+      );
+      const element = await renderedSearch();
+      const empty = element.shadowRoot!.querySelector(
+        '[data-testid="search-empty"]'
+      )!;
+      expect(empty.textContent).to.contain('No matches on this page');
+      (empty.querySelector('sl-button') as HTMLElement).click();
+      await waitUntil(() => searchCalls().length === 2);
+      expect(
+        JSON.parse(String(searchCalls()[1].args[1]?.body)).offset
+      ).to.equal(25);
+    });
+
+    it('counts identity matches and opens their session without a content snippet', async () => {
+      fetchStub.withArgs(SEARCH_URL, sinon.match.any).callsFake(
+        async () =>
+          new Response(
+            JSON.stringify({
+              items: [
+                {
+                  id: 'runtime-session-2',
+                  title: 'Directory-only session',
+                  activity_status: 'idle',
+                },
+              ],
+              related_sessions: [],
+              has_more: false,
+              content_search: {
+                ...searchResponse({ total: 0, results: [] }),
+                items: undefined,
+                content_search: undefined,
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          )
+      );
+      const element = await renderedSearch('/workspace/catalog');
+      expect(
+        element.shadowRoot!.querySelector('.session-count')!.textContent
+      ).to.contain('1 matching session');
+      const title = element.shadowRoot!.querySelector(
+        '.session-item-title a'
+      ) as HTMLAnchorElement;
+      expect(title.href).to.contain('sessionId=runtime-session-2');
+      title.click();
+      await element.updateComplete;
+      expect(
+        element
+          .shadowRoot!.querySelector('.sessions-page')!
+          .classList.contains('has-detail')
+      ).to.equal(true);
+      expect(
+        !!element.shadowRoot!.querySelector('preloop-session-observer')
+      ).to.equal(true);
     });
 
     it('renders an error state when the search fails', async () => {

@@ -100,6 +100,13 @@ preloop agents onboard --all -y          # everything discovered, no prompts
 preloop agents onboard <agent> --dry-run # preview account + config changes
 preloop agents onboard <agent> --approvals  # + native action gates (Claude Code, Codex CLI, Cursor, Copilot CLI, OpenCode, Pi, DeepSeek Harness)
 preloop agents onboard <agent> --tags env=prod,team=infra
+preloop agents onboard <agent> --manual     # print the config change instead of writing it
+preloop agents onboard <agent> --manual-output <dir>  # where to save the manual instructions
+preloop agents onboard --resume <agent>     # finish a manual setup: check the change, one real request
+preloop agents onboard --resume <agent> --from-env             # check the environment-variable form
+preloop agents onboard --resume <agent> --settings-file <path> # check a `claude --settings` file
+preloop agents onboard --resume --resume-token <token>         # when ~/.preloop is not writable
+preloop agents onboard --cancel <agent>     # cancel a pending manual setup
 preloop agents status <agent>            # local + remote enrollment state
 preloop agents status <agent> --json     # allowlisted status, no credentials
 preloop agents pause [agent]             # pause CLI approval hooks on this machine
@@ -119,6 +126,8 @@ preloop desktop serve                    # the tunnel itself (run by preloop-des
 preloop agents restore <agent>           # restore the most recent local config backup
 preloop agents offboard <agent>          # restore config + remove managed enrollment
 preloop agents offboard --all -y --remove-model yes --remove-mcp-servers yes
+preloop agents offboard <agent> --server-only       # remove the Preloop side; the read-only local config stays
+preloop agents offboard <agent> --no-login-restore  # do not write the subscription login back
 preloop agents starter-policy <mcp-server> [-o file] [--apply]
 preloop agents extensions                 # list installed plugins, skills, hooks, and commands
 preloop agents extensions --json          # preloop.extensions.v1, identifiers in clear
@@ -131,6 +140,64 @@ preloop agents onboard --unattended \
   --apps claude_code,codex \
   --url https://preloop.example.com
 ```
+
+### Native approvals are opt-in
+
+`preloop agents onboard Cursor` connects MCP and session reporting without
+installing native permission gates. The same explicit opt-in applies to
+Claude Code, Codex CLI and Copilot CLI, including discovery and `--yes`:
+use `--approvals` to install native gates. Re-onboarding without that flag
+removes earlier native gates while retaining session reporting and unrelated
+hooks.
+
+With `--approvals`, recognized read-only native tools (Read, Grep, Glob, LS
+and the harness's dedicated read/list/search equivalents) do not require a
+human unless an explicit rule says otherwise. Rules and the host's own deny
+still win, including on first use. Arbitrary shell commands and MCP tools
+are not classified as native reads by their names. Mutating and unknown
+native calls still escalate when the host has not allowed them. An outage
+still denies: reachable-service defaults do not change fail-closed availability.
+
+If a human approval has only email notifications, or no notification channel,
+the native hook returns immediately with a denial explaining how to find the
+request in **Console > Approvals** or pause the local gate. The tool has not
+run. The request remains available in the console until decided or expired;
+retrying the tool is a new permission check. The Approvals page shows a warning
+with the affected request, including after expiry. Configure mobile or chat
+notifications before depending on interactive approvals.
+
+### Console lifecycle and local recovery
+
+**Pause** in the console blocks remote Preloop access and releases the local
+native-tool gate to the editor's own permissions. **Resume** restores that gate.
+**Decommission** and **Remove** revoke remote access and also release the local
+gate, with instructions to run `preloop agents offboard <agent>`. They cannot
+edit files on your machine. Offboarding restores those files and removes the
+hooks; `restore` and `offboard` work from local enrollment state even if the
+server-side agent was removed.
+
+For an explicit administrative kill switch, send
+`PATCH /api/v1/agents/<id>` with `{"lifecycle_action":"suspend_block"}` using
+an account credential with `manage_agents`. That suspension blocks native
+calls as well as remote access until resumed. This is a cooperative local
+hook, not an OS security boundary: a machine owner can still explicitly pause
+or offboard it. Flow execution credentials never inherit lifecycle release.
+Unknown or independently revoked credentials and unreachable servers still
+deny; only a server-recorded lifecycle instruction releases a hook.
+
+To recover a Cursor installation that still has its local enrollment backup,
+run these in a normal terminal (also supported by CLI v1.0.2):
+
+```bash
+preloop agents pause Cursor
+preloop agents restore Cursor --yes
+preloop agents offboard Cursor --yes --remove-model=no --remove-mcp-servers=no
+```
+
+The first command stops the local wait immediately. The second restores the
+backup and removes Preloop hooks. The third clears enrollment state and
+archives the remote entry if it still exists, keeping account models and MCP
+servers. Reload Cursor after restoring its files.
 
 ### If approvals cannot reach Preloop
 
@@ -152,6 +219,29 @@ The hooks stay installed. The agent's own configuration is not edited. While the
 `preloop agents resume` ends the pause early. With no agent name it ends every pause. With an agent name it ends that agent's pause. A pause of every hook stays active until you run `preloop agents resume` with no name, and the command says so. `preloop agents status <agent>` prints `Approvals: paused until ...` when a pause applies to that agent.
 
 Only those CLI approval hooks read the pause. Session hooks from the same onboarding still call Preloop. MCP tool calls still go through the MCP firewall. Gateway model calls still go through the gateway. Runtime-plugin harnesses (OpenCode, Pi, and others) do not read the pause; they call Preloop themselves. A flow whose approval hook was started with `--require-flow-credential` ignores the pause and stays governed. A paused Claude Code or Codex CLI hook can still sync its subscription login with Preloop. That sync is separate from the tool call.
+
+### Manual setup for read-only configuration
+
+Before it changes anything in Preloop, `preloop agents onboard` tests whether it can write every file it needs. When a file is read-only (a bind mount in a container, another owner, a read-only root filesystem), onboarding continues in manual mode for Claude Code, and for the main configuration file of Codex CLI and Cursor: it creates or reuses the agent and its key, prints the exact change for you to make, and waits. Other agents stop before any change with a message. The full flow is in [Sandboxed and containerised agents](clients/sandboxed-agents.md).
+
+| `agents onboard` flag | Effect |
+|------|--------|
+| `--manual` | Print the configuration change for you to apply instead of writing it. Automatic when the agent's configuration is read-only |
+| `--manual-output <dir>` | Directory to save the manual setup instructions in (mode 0700; they contain the agent key). Default: `~/.preloop/manual-setup/<agent>/` when `~/.preloop` is writable |
+| `--resume` | Finish a manual setup: check the change is in place, make one real request, then report the agent as onboarded. Re-running `agents onboard <agent>` on a pending setup does the same |
+| `--resume-token <token>` | The resume token printed by a manual setup. Needed when `~/.preloop` is not writable. It is not a secret |
+| `--settings-file <path>` | With `--resume`: check this `claude --settings` file instead of the agent's own settings file |
+| `--from-env` | With `--resume`: check the environment-variable form in this shell instead of the settings file |
+| `--cancel` | Cancel a manual setup that is waiting for the local change and remove what it created in Preloop |
+
+`--resume` and `--cancel` cannot be combined, and neither can `--settings-file` and `--from-env`.
+
+| `agents offboard` flag | Effect |
+|------|--------|
+| `--server-only` | Remove the Preloop side even when the local configuration is read-only and still holds the Preloop block. The machine is reported as not offboarded and the command exits non-zero |
+| `--no-login-restore` | Do not write the live subscription login back to this machine (for read-only or shared credential files). Sign in again afterwards |
+
+With a read-only configuration and neither flag, `agents offboard` prints the exact removal, changes nothing in Preloop until the block is gone, and prints `Offboarded` only for a file that no longer points at Preloop.
 
 ### Unattended enrollment
 
@@ -242,6 +332,7 @@ The Reason column also carries live-validation outcomes. `live validation thrott
 
 - **0**: at least one attempted agent onboarded, fully or partially (and trivially when nothing was attempted). A single-agent `partial` also exits 0.
 - **1**: every attempted agent failed, or another error occurred.
+- **3**: a single-agent `agents onboard` or `agents offboard` is waiting for a manual step: the configuration is read-only and the printed change has not been applied (or removed) yet. See [Manual setup for read-only configuration](#manual-setup-for-read-only-configuration).
 
 Script against the summary, not just the exit code, when you care about specific agents.
 

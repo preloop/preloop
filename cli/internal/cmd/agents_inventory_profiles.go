@@ -58,7 +58,9 @@ func runAllUsersInventory(cmdOut io.Writer, report bool, deviceRefs ...string) e
 		return errors.New("could not generate inventory privacy salt")
 	}
 	salt = hex.EncodeToString(randomSalt)
-	result := collectAllUsersInventory(inventoryProbes, inventoryProfiles, salt, context)
+	deps := inventoryProbes
+	deps.NoExtensionDetails = inventoryNoExtensionDetails
+	result := collectAllUsersInventory(deps, inventoryProfiles, salt, context)
 	enc := json.NewEncoder(cmdOut)
 	enc.SetIndent("", "  ")
 	return enc.Encode(result)
@@ -116,7 +118,7 @@ func inventoryDirectoryProfiles(root string, entries []os.DirEntry, readErr erro
 }
 
 func collectAllUsersInventory(deps inventoryProbeDependencies, profileDeps inventoryProfileDependencies, salt, context string) inventoryEnvelope {
-	result := inventoryEnvelope{Schema: "preloop.inventory.v3", ObservedAt: deps.Now().UTC(), Completeness: "complete", ProbeResults: []inventoryProbeResult{}, Apps: []inventoryApp{}, Profiles: []inventoryProfileResult{}}
+	result := inventoryEnvelope{Schema: "preloop.inventory.v4", ObservedAt: deps.Now().UTC(), Completeness: "complete", ProbeResults: []inventoryProbeResult{}, Apps: []inventoryApp{}, Profiles: []inventoryProfileResult{}}
 	result.Collector.Version = version.Version
 	result.Collector.DetectorVersion = inventoryDetectorVersion
 	result.Scope.User, result.Scope.Coverage = "all-local-profiles", "known-registry"

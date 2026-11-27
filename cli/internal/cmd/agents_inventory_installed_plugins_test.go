@@ -43,7 +43,7 @@ func TestInstalledPluginLayouts(t *testing.T) {
 			want := 1
 			if agent == "claude-code" {
 				installClaudeLayoutFixture(t, home)
-				want = 2
+				want = 4
 			} else {
 				writeInventoryFixture(t, home, ".codex/config.toml", installedPluginFixture(t, "codex", "config.toml", home))
 				writeInventoryFixture(t, home, ".codex/plugins/cache/superpowers-marketplace/superpowers/7.0.2/.codex-plugin/plugin.json", installedPluginFixture(t, "codex", "plugin.json", home))
@@ -53,6 +53,19 @@ func TestInstalledPluginLayouts(t *testing.T) {
 				t.Fatalf("extensions=%+v codes=%v", extensions, codes)
 			}
 			for _, ext := range extensions {
+				if ext.Kind == "skill" {
+					parent := "superpowers@superpowers-marketplace"
+					if strings.HasPrefix(ext.ID, "code-review:") {
+						parent = "code-review@claude-plugins-official"
+					}
+					// The inherited privacy filter can withhold a parent when a
+					// Windows drive letter or short temp-path segment matches it.
+					want, _ := (&extensionScan{home: home}).detailText(parent)
+					if ext.Details.Plugin != want {
+						t.Fatalf("plugin parent = %q, want %q", ext.Details.Plugin, want)
+					}
+					continue
+				}
 				kind, version := "third_party_marketplace", "7.0.2"
 				if ext.ID == "code-review@claude-plugins-official" {
 					kind, version = "official_marketplace", "1.0.1"
@@ -195,7 +208,7 @@ func TestInstalledPluginStateAndContent(t *testing.T) {
 	writeInventoryFixture(t, home, ".claude/plugins/cache/claude-plugins-official/unused/99.0.0/.claude-plugin/plugin.json", `{"name":"unused","version":"99.0.0"}`)
 	writeInventoryFixture(t, home, ".claude/plugins/store/legacy.json", `{"name":"legacy","marketplace":"example"}`)
 	first, codes := collectInventoryExtensions(home, "claude-code", "", false)
-	if len(codes) != 0 || len(first) != 2 || first[0].Enabled != "false" {
+	if len(codes) != 0 || len(first) != 4 || first[0].Enabled != "false" {
 		t.Fatalf("extensions=%+v codes=%v", first, codes)
 	}
 	writeInventoryFixture(t, home, ".claude/plugins/cache/claude-plugins-official/code-review/1.0.1/skills/example/SKILL.md", "changed content")

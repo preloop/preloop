@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Query, Session
 
 from preloop.models import models
@@ -590,6 +590,47 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         else:
             db.flush()
         return deactivated
+
+    def set_native_hook_lifecycle(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        managed_agent_id: str,
+        action: str | None,
+    ) -> None:
+        """Record an operator's local-hook intent on this agent's own keys.
+
+        Retain the instruction after registry removal. Independently revoked
+        keys never acquire a release instruction. Flow keys never inherit it.
+        The caller commits this together with the lifecycle change.
+        """
+        keys = db.scalars(
+            select(ApiKey).where(
+                ApiKey.account_id == account_id,
+                ApiKey.context_data.op("->>")("managed_agent_id")
+                == str(managed_agent_id),
+            )
+        ).all()
+        for key in keys:
+            context = dict(key.context_data or {})
+            if context.get("flow_execution_id") or context.get(
+                "shared_agent_owner_account_id"
+            ):
+                continue
+            if not key.is_active and context.get("native_hook_lifecycle") not in (
+                "suspended",
+                "decommissioned",
+                "removed",
+                "block",
+            ):
+                continue
+            if action is None:
+                context.pop("native_hook_lifecycle", None)
+            else:
+                context["native_hook_lifecycle"] = action
+            key.context_data = context
+        db.flush()
 
     def deactivate_runtime_keys_for_managed_agent(
         self,

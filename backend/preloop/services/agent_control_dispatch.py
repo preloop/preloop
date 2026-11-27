@@ -898,6 +898,7 @@ def resolve_session_control_mode(
     if (
         session.session_source_type in {"claude_code", "codex"}
         and session.ended_at is None
+        and getattr(session, "control_owned", None) is not True
         and getattr(session, "turn_state", None) in {"working", "waiting_for_approval"}
     ):
         return SessionControlMode(
@@ -961,8 +962,27 @@ def resolve_session_control_mode(
         )
     else:
         if (
+            session.session_source_type in {"claude_code", "codex"}
+            and getattr(session, "control_owned", None) is True
+            and getattr(session, "turn_state", None)
+            in {"working", "waiting_for_approval"}
+        ):
+            from preloop.services.talk_capabilities import (
+                require_features,
+                sidecar_features,
+                TalkCapabilityError,
+            )
+
+            try:
+                require_features(sidecar_features(db, agent), ["followup_prompts"])
+            except TalkCapabilityError as exc:
+                return SessionControlMode(
+                    "note", "sidecar_update_required", str(exc), agent
+                )
+        if (
             getattr(session, "turn_state", None) in {"working", "waiting_for_approval"}
             and session.ended_at is None
+            and getattr(session, "control_owned", None) is not True
         ):
             return SessionControlMode(
                 "note", "turn_in_progress", "Delivers at the agent's next step", agent

@@ -15,6 +15,29 @@ its exact session rollout using bounded reads, never transcript content or a
 shared model configuration. MCP approvals retain authenticated runtime session
 links and show an unknown turn model when no authoritative model is reported.
 
+## Native approval readiness
+
+The Tools native-mode control and agent page read `/account/approval-readiness`
+before a run. This read follows the native workflow resolver's agent pin,
+account pin, default and first-existing fallback without creating a workflow.
+CRUD reads expand team recipients, current active membership, role permissions,
+notification preferences and configured delivery channels. Missing destinations
+are separate from the ability to decide in the console. Readiness does not
+confirm delivery or operator presence and never changes enforcement.
+
+Pending native requests read their stored workflow, including any AI escalation,
+and display the request's `expires_at`. The preview window uses the same
+account-capped resolver as request creation; a client or specific rule can choose
+a different window. The AI evaluator applies approve/deny decisions when
+`confidence >= threshold`; lower confidence and uncertain decisions use the
+configured fallback. Zero is a valid threshold.
+
+Tool registry names are resolved in batches within the account while route IDs
+remain unchanged. Device views separately read current agent lifecycle and
+reporter names through `/fleet/identities`; last-reported onboarded counts stay
+labelled as observations. A failed or missing identity read says current enrollment
+is unknown. Decommissioned agents retain their report history.
+
 ## Tool Configuration and Approval Workflow
 
 Preloop includes comprehensive infrastructure for managing tool configurations and implementing human-in-the-loop approval workflows for sensitive tool operations.
@@ -191,6 +214,19 @@ the read-only sandbox, whose shell is disabled, excepted).
 **Structured answers (`input_schema` / `items`).** A question that needs more than a word gets a shape instead of a text box. Both `ask_user` and `request_approval` accept an `input_schema` (a documented JSON Schema subset: `string`, `number`, `boolean`, `enum`, `array` of enums or of objects, `object` with named properties) and `items` (the rows the question is about: `id`, `title` (or its alias `label`; `title` wins), `description`, optional `severity`, `badges` and `href`). Both are normalized and validated when the tool is called, so a malformed schema fails at the source rather than in the browser. Extra string-valued keys on a row (`linkedin`, `lead_file`) are kept under `fields` (at most 12 keys, keys up to 64 characters, values up to 1000) and shown under the row before it is picked; other extra keys are dropped (and recorded in `tool_args.dropped_item_keys`). Neither refuses the question. The console renders a row's title, description and fields as escaped text with every http(s) URL linked (`target=_blank`, `rel=noopener noreferrer`, via `frontend/src/utils/linkify.ts`); no other scheme becomes a link. Item `id` values longer than 200 characters are refused by name. `severity` is display metadata: known values are lowercased, unknown values pass through. An enum is cross-checked against item ids only when at least one value overlaps; a plain multi-select next to a separate item table is allowed. The console renders the schema as a form (`frontend/src/components/answer-form.ts`): an item array becomes a table with a checkbox and per-row fields, booleans become switches, enums become radios or a select, scalars become typed inputs. The filled-in form is submitted as `ApprovalDecision.answer`, validated again server-side (422 with per-field `{path, message}` errors), stored in the new `approval_requests.structured_answer` JSONB column, and returned to the agent as JSON (`{"status", "answer", "answer_text", "approval_id", "answered_by", "answered_at"}`). Fields marked `x-autofill: author | date` are never typed by a human: the client drops them and the server stamps them from the decision record, so attribution stays a platform fact. Requests carrying a form are excluded from batch approval on both the client and the `POST /approval-requests/batch-approve` endpoint, because one shared comment cannot fill several forms. The legacy `options` / `allow_free_text` path is unchanged for callers that do not pass a schema; the mobile apps read the same `question_schema` / `question_items` / `has_answer_form` fields and can post `answer` when they add form rendering. A parked resume carries the same validated JSON in the `_answers_prompt` block, because there is no in-process tool result to return it on.
 
 **Desktop control (`desktop_control`).** Taking control of a live desktop view (`POST /api/v1/desktop/views/{view_id}/control`) raises an approval with `tool_name="desktop_control"` when the account has another active user holding `decide_approvals`. `tool_args` carries the view, endpoint, agent, reason and `requested_by`. It is created with `create_approval_request` plus `send_notifications`, not `create_and_notify`, so no AI or bypass decision can stand in for a person, and `approve_request` (and the auto-approve paths) refuse it without a named user or from the requester. `update_approval_request` hands every settled request to `apply_control_decision` in `api/endpoints/desktop.py`: approved grants control for `min(view expiry, now + 600 s)` and publishes the relay's `mode` message; declined, cancelled or expired writes `desktop.control.denied`. Approvals expire lazily, so the requester's `GET /desktop/views/{view_id}` poll expires an overdue one. A single-admin account keeps the self-confirm with a reason.
+
+**Local native defaults and lifecycle:** CLI onboarding installs permission hooks only with
+`--approvals`. With no matching rule, recognized native reads return allow before
+creating an approval; subject rules are evaluated even without a tool configuration.
+The auto-created native workflow is not a first-use policy or a starter rule.
+Email-only or absent interactive notification destinations produce immediate denial
+with console/pause guidance and a stored warning for the Approvals page. Explicit
+operator lifecycle changes stamp `native_hook_lifecycle` on the agent's bound API
+keys in the same transaction: suspend releases reversibly, decommission/remove
+release after revocation, and `suspend_block` keeps the gate blocking. Authentication
+failures consult only this narrowly scoped instruction; they grant no MCP or gateway
+access. Unknown keys and outages continue to fail closed. See
+[local recovery](../guide/cli.md#console-lifecycle-and-local-recovery).
 
 **Managed-agent linkage:** `ApprovalRequest` carries optional `managed_agent_id`, `runtime_session_id`, and `managed_agent_name` fields, populated from the runtime token context so approval surfaces can show which agent is asking. The endpoint and these identity columns are part of the open-source core. The per-agent native-tool interception adapters (Claude Code, Codex CLI, Cursor, OpenCode, OpenClaw, Hermes) and any future central per-agent/global policy UI live in Preloop Enterprise / the CLI.
 

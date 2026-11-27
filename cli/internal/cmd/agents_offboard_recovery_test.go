@@ -122,7 +122,7 @@ func newOffboardRecoveryFixture(t *testing.T, kinds ...string) *offboardRecovery
 		case r.URL.Path == "/api/v1/ai-models":
 			models := []aiModelResponse{}
 			if !f.modelDeleted {
-				models = append(models, aiModelResponse{ID: "model-1", CredentialType: f.credentialType, MetaData: map[string]any{"gateway": map[string]any{"model_alias": "managed-model"}}})
+				models = append(models, aiModelResponse{ID: "model-1", CredentialType: f.credentialType, MetaData: map[string]any{"managed_agent_id": "agent-1", "gateway": map[string]any{"model_alias": "managed-model"}}})
 				if f.models != nil {
 					models = f.models
 				}
@@ -609,5 +609,41 @@ func TestExecuteOffboardClaudeUsesEnrolledFileWithLockedKeychain(t *testing.T) {
 	}
 	if f.exports != 1 || f.archives != 1 || !strings.Contains(out, "✓ Offboarded") {
 		t.Fatal("file-based offboard did not complete")
+	}
+}
+
+func TestCursorOffboardAfterConsoleRemovalRestoresArchivedLocalState(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	agent := AgentConfig{Name: "Cursor", ConfigPath: filepath.Join(home, ".cursor", "mcp.json")}
+	original := `{"mcpServers":{"example":{"command":"example-tool"}}}`
+	backup := filepath.Join(home, "original.json")
+	mustWriteRecoveryFile(t, backup, original)
+	mustWriteRecoveryFile(t, agent.ConfigPath, `{"mcpServers":{"preloop":{"url":"http://127.0.0.1/mcp"}}}`)
+	mustWriteRecoveryFile(t, filepath.Join(home, ".cursor", "hooks.json"), `{"version":1,"hooks":{"preToolUse":[{"command":"preloop agents permission-hook --source cursor"}],"stop":[{"command":"example-observer"}]}}`)
+	state := &localEnrollmentState{AgentName: agent.Name, ConfigPath: agent.ConfigPath, BackupPath: backup, ConfigExisted: true, RuntimePrincipalID: runtimePrincipalIDForAgent(agent), OffboardArchived: true}
+	if err := saveLocalEnrollmentState(state); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected remote mutation: %s", r.Method)
+		}
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	}))
+	defer server.Close()
+	oldURL, oldToken := FlagURL, FlagToken
+	FlagURL, FlagToken = server.URL, "synthetic-session"
+	t.Cleanup(func() { FlagURL, FlagToken = oldURL, oldToken })
+	if err := executeOffboard(agent, true, offboardCleanupNo, offboardCleanupNo); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(agent.ConfigPath)
+	if err != nil || string(data) != original {
+		t.Fatal("original MCP configuration was not restored")
+	}
+	hooks, err := os.ReadFile(filepath.Join(home, ".cursor", "hooks.json"))
+	if err != nil || strings.Contains(string(hooks), "permission-hook") || !strings.Contains(string(hooks), "example-observer") {
+		t.Fatal("offboard must remove only Preloop hooks")
 	}
 }

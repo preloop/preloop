@@ -642,13 +642,24 @@ the profile opts in:
 {"name": "copilot-review", "executable": "copilot", "allow_checkout": true}
 ```
 
-A Copilot profile that may also push one repository for a flow that opens a
-pull request adds `allow_publish` (see
-[Copilot CLI publication](../copilot-cli.md#review-and-implementation-flows)):
+A profile that may also push one repository for a flow that opens a pull
+request adds `allow_publish`. This works for every native harness (Codex,
+Claude Code, Cursor, Devin, OpenCode, Copilot, DeepSeek):
 
 ```json
-{"name": "copilot-publish", "executable": "copilot", "allow_checkout": true, "allow_publish": true}
+{"name": "codex-publish", "executable": "codex", "allow_checkout": true, "allow_publish": true}
 ```
+
+The flow sets `create_pull_request: true` with `publication_mode: legacy`
+(the default) and clones exactly one repository. After the CLI exits
+successfully the runner commits the work and pushes a managed `preloop/`
+branch with the short-lived repository token Preloop issued for the job;
+your own git credentials are never used and the token is never printed.
+Preloop then opens the pull request through the account's GitHub, GitLab or
+Bitbucket Cloud connection, with the same title, description, template and
+`publication_approval` handling as hosted flows. `publication_mode:
+isolated` stays unavailable on host profiles, and `read_only` review flows
+never publish.
 
 Without `allow_checkout` the run fails with `host_checkout_not_allowed`.
 With it, the runner:
@@ -676,10 +687,8 @@ user in that directory, so repository instructions and tool configuration
 reach it. Enable `allow_checkout` only on a profile whose runner user and
 tool rules suit the repositories the flow clones, and use a dedicated OS
 user or VM when stronger isolation is needed. Host runs do not push
-branches or open pull requests unless a Copilot profile also sets
-`"allow_publish": true`; see
-[Copilot CLI publication](../copilot-cli.md#review-and-implementation-flows).
-Otherwise use the Docker harness for flows that publish.
+branches or open pull requests unless the profile also sets
+`"allow_publish": true` (see above).
 
 ### Running a host flow in an authorized directory
 

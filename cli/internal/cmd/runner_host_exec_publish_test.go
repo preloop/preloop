@@ -323,7 +323,7 @@ func TestHostPublicationPlanRejectsUnsafeInput(t *testing.T) {
 	}
 }
 
-func TestHostPublicationCapabilityRequiresCopilotOptIn(t *testing.T) {
+func TestHostPublicationCapabilityRequiresProfileOptIn(t *testing.T) {
 	setupCopilotHost(t, "exit 0")
 	writeHostExecProfiles(t, []hostExecProfile{
 		{Name: "copilot-publish", Executable: "copilot", AllowCheckout: true, AllowPublish: true},
@@ -343,10 +343,6 @@ func TestHostPublicationCapabilityRequiresCopilotOptIn(t *testing.T) {
 	}
 	if !got["copilot-publish"] || !got["copilot-publish/continuation"] || got["copilot-review"] || got["copilot-review/continuation"] || got["copilot-nocheckout"] {
 		t.Fatalf("host_publication advertised for %v", got)
-	}
-	if !hostExecProfileMayPublish(hostExecProfile{AllowCheckout: true, AllowPublish: true}, hostExecHarnessCopilot) ||
-		hostExecProfileMayPublish(hostExecProfile{AllowCheckout: true, AllowPublish: true}, hostExecHarnessCursor) {
-		t.Fatal("publication must be Copilot only")
 	}
 }
 

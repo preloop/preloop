@@ -142,6 +142,7 @@ nav:
   - Onboarding agents:
       - Agent credentials: guide/agent-credentials.md
       - Claude Code: guide/clients/claude-code.md
+      - Sandboxed and containerised agents: guide/clients/sandboxed-agents.md
       - Claude Desktop: guide/clients/claude-desktop.md
       - Claude telemetry ingest: guide/clients/claude-telemetry-ingest.md
       - Codex CLI: guide/codex-cli.md

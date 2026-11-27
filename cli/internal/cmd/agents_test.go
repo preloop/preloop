@@ -1683,94 +1683,30 @@ func TestPromptToOnboardCandidates_DeclineContinuesToNextAgent(t *testing.T) {
 	}
 }
 
-func TestPromptToOnboardCandidates_AsksApprovalsForSupportedAgents(t *testing.T) {
-	// OpenClaw: confirm + name (no approvals question — its hook ships via the
-	// runtime plugin, not the local adapter). Codex CLI: confirm + name +
-	// approvals yes.
-	input := strings.NewReader("y\n\ny\n\ny\n")
-	output := &bytes.Buffer{}
-	candidates := []AgentConfig{
-		{Name: "OpenClaw", ConfigPath: "/tmp/openclaw.json"},
-		{Name: "Codex CLI", ConfigPath: "/tmp/codex.toml"},
+func TestDiscoveryNeverEnablesNativeApprovals(t *testing.T) {
+	for _, auto := range []bool{false, true} {
+		for _, name := range []string{"Cursor", "Claude Code", "Codex CLI", "Copilot CLI"} {
+			t.Run(fmt.Sprintf("%s/auto=%t", name, auto), func(t *testing.T) {
+				var output bytes.Buffer
+				called := false
+				_, err := promptToOnboardCandidates(strings.NewReader("y\n\n"), &output,
+					[]AgentConfig{{Name: name, ConfigPath: "/tmp/synthetic-config"}}, auto, true,
+					func(agent AgentConfig, approvals bool) error {
+						called = true
+						if approvals {
+							t.Fatal("discovery opted into native approvals without --approvals")
+						}
+						return nil
+					})
+				if err != nil || !called {
+					t.Fatalf("called=%t err=%v", called, err)
+				}
+				if strings.Contains(output.String(), "through Preloop approvals?") {
+					t.Fatal("unexpected approval opt-in prompt")
+				}
+			})
+		}
 	}
-
-	approvalsByAgent := map[string]bool{}
-	_, err := promptToOnboardCandidates(
-		input,
-		output,
-		candidates,
-		false,
-		true,
-		func(agent AgentConfig, approvals bool) error {
-			approvalsByAgent[agent.Name] = approvals
-			return nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if approvalsByAgent["OpenClaw"] {
-		t.Fatal("expected no approvals opt-in for unsupported agent")
-	}
-	if !approvalsByAgent["Codex CLI"] {
-		t.Fatal("expected approvals opt-in for Codex CLI")
-	}
-	rendered := output.String()
-	if strings.Count(rendered, "through Preloop approvals?") != 1 {
-		t.Fatalf("expected exactly one approvals question, got %q", rendered)
-	}
-}
-
-func TestPromptForApprovalsOptIn(t *testing.T) {
-	t.Run("default yes for supported agent", func(t *testing.T) {
-		output := &bytes.Buffer{}
-		optIn, err := promptForApprovalsOptIn(
-			strings.NewReader("\n"),
-			output,
-			AgentConfig{Name: "Claude Code", ConfigPath: "/tmp/settings.json"},
-		)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !optIn {
-			t.Fatal("expected empty answer to default to yes")
-		}
-		if !strings.Contains(output.String(), "Route Claude Code's native tool calls") {
-			t.Fatalf("expected approvals prompt in output, got %q", output.String())
-		}
-	})
-
-	t.Run("explicit no is honored", func(t *testing.T) {
-		optIn, err := promptForApprovalsOptIn(
-			strings.NewReader("n\n"),
-			&bytes.Buffer{},
-			AgentConfig{Name: "Cursor", ConfigPath: "/tmp/mcp.json"},
-		)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if optIn {
-			t.Fatal("expected explicit no to decline the hook")
-		}
-	})
-
-	t.Run("unsupported agent never prompts", func(t *testing.T) {
-		output := &bytes.Buffer{}
-		optIn, err := promptForApprovalsOptIn(
-			strings.NewReader(""),
-			output,
-			AgentConfig{Name: "Gemini CLI", ConfigPath: "/tmp/settings.json"},
-		)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if optIn {
-			t.Fatal("expected unsupported agent to skip the hook")
-		}
-		if output.Len() != 0 {
-			t.Fatalf("expected no prompt output, got %q", output.String())
-		}
-	})
 }
 
 func TestShouldPromptForEnrollmentName(t *testing.T) {
@@ -4131,6 +4067,7 @@ func TestCollectOffboardCleanupCandidatesHonorsRecentUsage(t *testing.T) {
 					ID:   "model-1",
 					Name: "OpenClaw google/gemini-3.1-pro-preview",
 					MetaData: map[string]interface{}{
+						"managed_agent_id": "agent-current",
 						"gateway": map[string]interface{}{
 							"model_alias": "google/gemini-3.1-pro-preview",
 						},
@@ -4202,6 +4139,7 @@ func TestCollectOffboardCleanupCandidatesProtectsModelsUsedByFlows(t *testing.T)
 					ID:   "model-1",
 					Name: "OpenClaw google/gemini-3.1-pro-preview",
 					MetaData: map[string]interface{}{
+						"managed_agent_id": "agent-current",
 						"gateway": map[string]interface{}{
 							"model_alias": "google/gemini-3.1-pro-preview",
 						},
