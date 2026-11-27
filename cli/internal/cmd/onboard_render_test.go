@@ -101,6 +101,25 @@ func TestPlanRenderingGoldens(t *testing.T) {
 	}
 }
 
+// protects=the credential source can be found in the output as one string;
+// fails_when=a long source ("subscription login from <variable>") is split
+// across two rows by wrapping; no_claim=does not cover a source longer than
+// the row itself.
+func TestPlanRenderingKeepsTheCredentialSourceWhole(t *testing.T) {
+	plan := samplePlan("Claude Code")
+	plan.Agents[0].ModelAlias = "anthropic/claude-sonnet-4-5"
+	plan.Agents[0].ModelSource = "subscription login from " + claudeOAuthTokenEnvName
+	for _, width := range []int{60, 80, 100} {
+		text := renderPlan(termCaps{Width: width}, plan)
+		if !strings.Contains(text, "subscription login from "+claudeOAuthTokenEnvName) {
+			t.Errorf("width %d split the credential source:\n%s", width, text)
+		}
+		if longest, line := longestLine(text); longest > width {
+			t.Errorf("width %d: line of %d columns: %q", width, longest, line)
+		}
+	}
+}
+
 // protects=the size of the review; fails_when=one agent needs more than 18
 // rows or three agents more than 24 at 80 columns, or any line is longer
 // than the terminal; no_claim=hand-made plans; the row count of a real run

@@ -263,31 +263,49 @@ func agentPlanSummary(agent agentPlan) string {
 	return strings.Join(on, ", ")
 }
 
+// planDetailLine is one line under an agent's summary. A whole line is never
+// split by wrapping: when it does not fit in the row's column it is moved
+// left instead.
+type planDetailLine struct {
+	text  string
+	whole bool
+}
+
 // agentPlanDetails are the lines under the summary: the model and anything
-// that is not what a person would assume.
-func agentPlanDetails(agent agentPlan) []string {
-	var lines []string
+// that is not what a person would assume. width is the room a line has.
+func agentPlanDetails(agent agentPlan, width int) []planDetailLine {
+	var lines []planDetailLine
+	add := func(text string) { lines = append(lines, planDetailLine{text: text}) }
 	if agent.ModelAlias != "" {
 		line := "model: " + agent.ModelAlias
-		if agent.ModelSource != "" {
-			line += "  (" + agent.ModelSource + ")"
+		switch {
+		case agent.ModelSource == "":
+			add(line)
+		case utf8.RuneCountInString(line)+utf8.RuneCountInString(agent.ModelSource)+3 <= width:
+			add(line + " (" + agent.ModelSource + ")")
+		default:
+			// Kept whole on its own line: where the credential comes from
+			// is something people search the output for.
+			add(line)
+			lines = append(lines, planDetailLine{text: "credential: " + agent.ModelSource, whole: true})
 		}
-		lines = append(lines, line)
 	}
 	for _, item := range agent.Capabilities {
 		if item.State == capabilityStateUnavailable && item.Reason != "" {
-			lines = append(lines, "no "+capabilityLabel(item.ID)+": "+item.Reason)
+			add("no " + capabilityLabel(item.ID) + ": " + item.Reason)
 		}
 	}
 	if agent.Reonboard {
-		lines = append(lines, "already onboarded: refreshes the configuration")
+		add("already onboarded: refreshes the configuration")
 	}
-	lines = append(lines, agent.PlanLines...)
+	for _, line := range agent.PlanLines {
+		add(line)
+	}
 	if agent.Manual && agent.ManualReason != "" {
-		lines = append(lines, "manual step: "+agent.ManualReason)
+		add("manual step: " + agent.ManualReason)
 	}
 	if agent.Blocked != "" {
-		lines = append(lines, "cannot be applied: "+agent.Blocked)
+		add("cannot be applied: " + agent.Blocked)
 	}
 	return lines
 }
@@ -314,8 +332,15 @@ func (r *plainRenderer) Plan(w io.Writer, plan onboardPlan, sel onboardSelection
 		lead := fmt.Sprintf("  %*d  %s   ", numberWidth, index+1, padRight(truncateColumns(agent.DisplayName, nameWidth), nameWidth))
 		hang := strings.Repeat(" ", utf8.RuneCountInString(lead))
 		writeWrapped(w, lead, hang, agentPlanSummary(agent), width)
-		for _, line := range agentPlanDetails(agent) {
-			writeWrapped(w, hang, hang, line, width)
+		for _, line := range agentPlanDetails(agent, width-utf8.RuneCountInString(hang)) {
+			indent := hang
+			if room := width - utf8.RuneCountInString(line.text); line.whole && room < len(hang) {
+				if room < 0 {
+					room = 0
+				}
+				indent = strings.Repeat(" ", room)
+			}
+			writeWrapped(w, indent, indent, line.text, width)
 		}
 	}
 	for _, skipped := range plan.Skipped {

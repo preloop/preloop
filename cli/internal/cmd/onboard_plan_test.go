@@ -133,6 +133,28 @@ func TestPlanForClaudeSubscriptionLogin(t *testing.T) {
 	}
 }
 
+// protects=a login supplied as a token in the environment is planned as
+// that login; fails_when=the row does not name the variable, or tells the
+// person they are not logged in while their token is about to be imported;
+// no_claim=the token is synthetic and is never sent to a provider.
+func TestPlanForSubscriptionTokenInTheEnvironment(t *testing.T) {
+	f := newClaudeSubscriptionFixture(t)
+	setStdinTerminal(t, true)
+	if err := os.Remove(filepath.Join(f.home.home, ".claude", ".credentials.json")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(claudeOAuthTokenEnvName, "sk-ant-oat01-synthetic-environment-token-0001")
+	agent := planFixture(t, f, managedEnrollmentOptions{}).Agents[0]
+	if agent.ModelSource != "subscription login from "+claudeOAuthTokenEnvName {
+		t.Errorf("model source %q", agent.ModelSource)
+	}
+	for _, line := range agent.PlanLines {
+		if strings.Contains(line, "not logged in") {
+			t.Errorf("a token is being imported, yet the row says: %q", line)
+		}
+	}
+}
+
 // protects=moving a subscription login is refused without a person, and the
 // refusal is known at plan time; fails_when=the plan for --yes is not
 // blocked, or the reason is not the established error text; no_claim=does

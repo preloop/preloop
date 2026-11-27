@@ -551,10 +551,12 @@ func describeEnrollmentPlan(state *enrollmentPlanState) agentPlan {
 		}
 	}
 
-	if !(isClaudeCodeAgent(agent) && state.gatewayHints.SelectedAIModel != nil) &&
+	credentialInHand := state.upstream != nil && state.upstream.CanRouteThroughGateway()
+	if !credentialInHand && !(isClaudeCodeAgent(agent) && state.gatewayHints.SelectedAIModel != nil) &&
 		resolvedAgentAuthState(agent) == agentAuthStateNotLoggedIn {
 		// The configuration is written either way; the probe cannot pass
-		// until the agent itself is signed in.
+		// until the agent itself is signed in. Not said when a credential
+		// was found (a token in the environment is a login too).
 		line := "not logged in to the agent yet"
 		if login := agentLoginCommand(agent); login != "" {
 			line += ": run " + login + " before using it"
