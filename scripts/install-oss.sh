@@ -665,8 +665,8 @@ gateway_proxy_locations() {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_connect_timeout 10s;
-        proxy_send_timeout 3600s;
-        proxy_read_timeout 3600s;
+        proxy_send_timeout 3615s;
+        proxy_read_timeout 3615s;
         proxy_buffering off;
         proxy_cache off;
         client_max_body_size 32m;
@@ -680,8 +680,8 @@ gateway_proxy_locations() {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_connect_timeout 10s;
-        proxy_send_timeout 3600s;
-        proxy_read_timeout 3600s;
+        proxy_send_timeout 3615s;
+        proxy_read_timeout 3615s;
         proxy_buffering off;
         proxy_cache off;
         client_max_body_size 32m;
@@ -695,8 +695,8 @@ gateway_proxy_locations() {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_connect_timeout 10s;
-        proxy_send_timeout 3600s;
-        proxy_read_timeout 3600s;
+        proxy_send_timeout 3615s;
+        proxy_read_timeout 3615s;
         proxy_buffering off;
         proxy_cache off;
         client_max_body_size 32m;

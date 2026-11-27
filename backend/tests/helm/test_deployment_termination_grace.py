@@ -96,11 +96,11 @@ def test_helm_render_sets_the_grace_period(template: str, component: str) -> Non
 def test_helm_render_grace_period_stays_overridable(
     template: str, component: str
 ) -> None:
-    """An operator's own value must win over the chart default."""
+    """Operators can extend the drain window beyond the request minimum."""
     pod_spec = _rendered_pod_spec(
-        template, [f"{component}.terminationGracePeriodSeconds=1234"]
+        template, [f"{component}.terminationGracePeriodSeconds=9000"]
     )
-    assert pod_spec.get("terminationGracePeriodSeconds") == 1234
+    assert pod_spec.get("terminationGracePeriodSeconds") == 9000
 
 
 @pytest.mark.parametrize("template,component", STREAMING_DEPLOYMENTS)
@@ -140,7 +140,10 @@ def test_api_liveness_recovery_grace_is_overridable() -> None:
         kube_version="1.28.0",
     )
     assert spec["containers"][0]["livenessProbe"]["terminationGracePeriodSeconds"] == 45
-    assert spec["terminationGracePeriodSeconds"] == 900
+    assert (
+        spec["terminationGracePeriodSeconds"]
+        == load_values()["api"]["terminationGracePeriodSeconds"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -156,7 +159,10 @@ def test_api_probe_grace_respects_supported_kubernetes_versions(
     spec = rendered["spec"]["template"]["spec"]
     probe = spec["containers"][0]["livenessProbe"]
     assert ("terminationGracePeriodSeconds" in probe) is supported
-    assert spec["terminationGracePeriodSeconds"] == 900
+    assert (
+        spec["terminationGracePeriodSeconds"]
+        == load_values()["api"]["terminationGracePeriodSeconds"]
+    )
 
 
 def test_api_liveness_grace_defaults_when_old_release_has_no_value() -> None:
@@ -167,4 +173,22 @@ def test_api_liveness_grace_defaults_when_old_release_has_no_value() -> None:
         kube_version="1.28.0",
     )
     assert spec["containers"][0]["livenessProbe"]["terminationGracePeriodSeconds"] == 60
-    assert spec["terminationGracePeriodSeconds"] == 900
+    assert (
+        spec["terminationGracePeriodSeconds"]
+        == load_values()["api"]["terminationGracePeriodSeconds"]
+    )
+
+
+@pytest.mark.parametrize("template,component", STREAMING_DEPLOYMENTS)
+def test_helm_render_short_grace_is_raised_to_request_minimum(
+    template: str, component: str
+) -> None:
+    """An old or short override must not truncate configured model requests."""
+    pod_spec = _rendered_pod_spec(
+        template,
+        [
+            f"{component}.terminationGracePeriodSeconds=900",
+            "runnerModels.totalSeconds=7200",
+        ],
+    )
+    assert pod_spec["terminationGracePeriodSeconds"] == 7230

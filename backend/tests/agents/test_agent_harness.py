@@ -25,8 +25,10 @@ async def test_gateway_launch_and_identity(kind: str, cls: type) -> None:
         "model_gateway_token": "test-gateway-token",
         "account_api_token": "test-mcp-token",
         "allowed_mcp_servers": ["preloop-mcp"],
+        "flow_timeout_seconds": 7200,
     }
     env = await agent._prepare_environment(context)
+    assert json.loads(env["PRELOOP_HARNESS_MODEL"])["timeoutMs"] == 7215000
     assert json.loads(env["PRELOOP_HARNESS_MODEL"])["models"] == [
         {"id": "provider/test-model"}
     ]
@@ -37,6 +39,8 @@ async def test_gateway_launch_and_identity(kind: str, cls: type) -> None:
         == "Bearer test-mcp-token"
     )
     script = agent._build_harness_script(context)
+    assert "node /tmp/preloop-model-timeouts.mjs" in script
+    assert "export PRELOOP_HARNESS_BIN=" in script
     assert "$(touch" not in script
     assert "test-gateway-token" not in script
     assert f"< {PROMPT_FILE_PATH}" in script

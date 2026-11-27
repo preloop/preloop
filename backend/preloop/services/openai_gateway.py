@@ -9211,7 +9211,10 @@ class OpenAIGatewayService:
         # are logged so attribution holes stay visible.
         self._capture_tools_meta(original_tools)
         if getattr(ai_model, "endpoint_type", "direct") == "runner":
-            from preloop.services.runner_model_proxy import runner_completion
+            from preloop.services.runner_model_proxy import (
+                runner_completion,
+                runner_model_flow_budget,
+            )
 
             if provider != "openai":
                 raise ModelGatewayAPIError(
@@ -9253,8 +9256,17 @@ class OpenAIGatewayService:
                 body["stream_options"] = {"include_usage": True}
             self._upstream_is_openrouter = False
             self._record_effective_request_parameters(body)
+            # Post-execution summaries have their own bounded request; they
+            # are allowed after the attributed flow has already completed.
+            total_seconds = (
+                runner_model_flow_budget(self.db, self.auth_context)
+                if purpose == "gateway"
+                else None
+            )
             self.release_db_for_wait(ai_model)
-            return runner_completion(ai_model, body, stream=stream)
+            return runner_completion(
+                ai_model, body, stream=stream, total_seconds=total_seconds
+            )
         kwargs = self._build_completion_kwargs(
             ai_model,
             messages=messages,

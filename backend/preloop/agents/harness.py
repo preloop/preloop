@@ -108,11 +108,24 @@ class ExtensionHarnessAgent(ContainerAgentExecutor):
             server["headers"] = {
                 "Authorization": "Bearer " + (context.get("account_api_token") or "")
             }
+        model_config: dict[str, Any] = {
+            "api": api,
+            "baseUrl": endpoint,
+            "models": [model_entry],
+        }
+        if gateway:
+            from preloop.config import settings
+
+            # The gateway owns per-model limits. Neither the SDK's response
+            # timeout nor the harness's HTTP idle timer may shorten a flow.
+            budget = (
+                context.get("flow_timeout_seconds")
+                or settings.flow_execution_max_wait_seconds
+            )
+            model_config["timeoutMs"] = (max(60, min(86400, int(budget))) + 15) * 1000
         return {
             "PRELOOP_HARNESS": self.harness,
-            "PRELOOP_HARNESS_MODEL": json.dumps(
-                {"api": api, "baseUrl": endpoint, "models": [model_entry]}
-            ),
+            "PRELOOP_HARNESS_MODEL": json.dumps(model_config),
             "PRELOOP_MODEL_TOKEN": str(token),
             "PRELOOP_API_TOKEN": context.get("account_api_token") or "",
             "PRELOOP_API_URL": api_url,
@@ -152,6 +165,16 @@ class ExtensionHarnessAgent(ContainerAgentExecutor):
         )
         post = self._prepare_git_post_execution_commands(context)
         command = command.replace("/opt/preloop-harness/", '"$PRELOOP_PLUGIN_DIR"/')
+        timeout_setup = ""
+        if context.get("model_gateway_enabled"):
+            encoded_timeouts = base64.b64encode(
+                Path(__file__).with_name("harness_model_timeouts.mjs").read_bytes()
+            ).decode()
+            timeout_setup = (
+                f"printf '%s' '{encoded_timeouts}' | base64 -d > /tmp/preloop-model-timeouts.mjs\n"
+                f'export PRELOOP_HARNESS_BIN="$(command -v {executable})"\n'
+                "node /tmp/preloop-model-timeouts.mjs\n"
+            )
         conversation_setup = native_restore = native_pack = ""
         if (context.get("trigger_event_data") or {}).get("_conversation_id"):
             if self.harness != "deepseek":
@@ -231,6 +254,7 @@ if ! command -v {executable} >/dev/null || [ "$({executable} --version)" != {shl
 fi
 {build_prompt_materialization_shell(context["prompt"])}
 node "$PRELOOP_PLUGIN_DIR/bootstrap.mjs"
+{timeout_setup}
 {conversation_setup}
 {native_restore}
 {init}

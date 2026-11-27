@@ -43,8 +43,8 @@ this release, with redirects and environment proxies disabled.
 
 If a model reports `runner_offline`, start or reconnect its registered runner and
 retry. A runner can handle four local generations concurrently. Requests over
-1 MiB, SSE lines or nonstream completions over 64 KiB, responses over 16 MiB,
-60 seconds without progress, or ten minutes total fail with a bounded error.
+1 MiB, SSE lines or nonstream completions over 64 KiB, and responses over 16 MiB
+fail with a bounded error. Request time limits are described below.
 Canceling a gateway stream cancels its local request. Partial generations do not
 resume after a disconnect.
 
@@ -99,3 +99,96 @@ omitted, allowing runtime environment settings to select the internal service
 address. The initializer does not copy the public `PRELOOP_URL` into model routes. Legacy
 duplicate aliases do not block upgrades; normal model edits still enforce alias
 uniqueness.
+
+
+## Long model requests
+
+A flow's execution timeout and a single model request's timeout are separate.
+The server sends the effective request limits to the runner; the CLI needs no
+additional configuration. Configure these environment variables on the API,
+gateway and workers, then restart those services:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `RUNNER_MODEL_IDLE_SECONDS` | `60` | Runner liveness: no request frames or keepalives. Minimum `30`. |
+| `RUNNER_MODEL_SILENT_SECONDS` | `600` | Local model silence, before response headers and between response bytes. |
+| `RUNNER_MODEL_TOTAL_SECONDS` | `3600` | Total time for one model request, including time waiting for its consumer. |
+
+The runner sends a small keepalive every 10 seconds while a request is active.
+Keepalives reset runner liveness; they do not reset the model silence or total
+limits. Byte progress reported with a keepalive can reset model silence, including
+partial SSE lines and nonstreaming responses. The gateway never exposes these
+transport frames as model output. The total is also capped by the calling flow's
+remaining execution budget, including startup and work before a park/resume.
+Raising the model limits cannot give a request more time than its flow has left.
+
+For example, allow 20 minutes of model silence and two hours per request,
+within a three-hour flow budget:
+
+```sh
+RUNNER_MODEL_SILENT_SECONDS=1200
+RUNNER_MODEL_TOTAL_SECONDS=7200
+FLOW_EXECUTION_MAX_WAIT_SECONDS=10800
+```
+
+In the OSS Helm chart, use:
+
+```yaml
+runnerModels:
+  idleSeconds: 60
+  silentSeconds: 1200
+  totalSeconds: 7200
+flowExecution:
+  maxWaitSeconds: 10800
+```
+
+The default flow budget is 3600 seconds. `FLOW_EXECUTION_MAX_WAIT_SECONDS`
+(Helm: `flowExecution.maxWaitSeconds`) raises that default; an explicit per-flow
+`timeout_seconds` overrides it. Leave enough flow time for startup, earlier model
+requests and tool calls, since each request is capped by the remaining budget.
+
+Helm supplies the same settings to API, gateway and workers and automatically
+raises the ingress and console gateway read/send timeouts to at least the total
+plus 15 seconds. Explicit ingress annotations still override these defaults;
+remove a shorter override or increase it. For Docker/installer or custom reverse
+proxies, increase every gateway route's `proxy_read_timeout` and
+`proxy_send_timeout` to at least the total plus 15 seconds (defaults: `3615s`).
+Helm also raises API and gateway `terminationGracePeriodSeconds` to at least
+the total plus 30 seconds (default `3630`), including the preStop sleep. Longer
+explicit grace periods are preserved.
+Apply equivalent settings to any additional load balancer or client in the path.
+A nonstreaming completion can produce no HTTP response until the full request
+finishes, even when the local model is making progress.
+
+Hosted Pi and DeepSeek Harness flows use the flow budget plus 15 seconds for
+SDK and HTTP client waits. This setup travels in the server-generated launch
+payload, including with existing harness images/plugins. Other clients must allow
+at least the effective request budget; a client
+with its own shorter timeout can still cancel the request.
+
+Timeouts retain the `runner_proxy_timeout` error code and identify the limit:
+
+- `runner sent no frames for 60 s (RUNNER_MODEL_IDLE_SECONDS=60)`: the request's
+  runner stopped responding. Check the runner process and connection.
+- `local model sent no data for 600 s (RUNNER_MODEL_SILENT_SECONDS=600)`: the
+  runner is alive but the local model stopped producing data. Increase the
+  silence limit if loading or evaluating the prompt needs more time.
+- `model request exceeded 3600 s`: the request used its total budget. The
+  effective value can be lower when the flow has less time remaining.
+
+Cancellation, timeout and disconnect stop local HTTP work and release its slot.
+The four-request concurrency limit remains unchanged. Even an abandoned request
+that receives no further pulls expires at its own total deadline.
+
+Upgrade both server and CLI to use keepalives and longer local waits. An old CLI
+ignores the new fields and retains its 60-second silence and 600-second total
+limits. A new CLI with an old server uses those same legacy defaults and sends
+no new keepalive frames. A server-only upgrade improves server limits, deadline
+accounting, proxy settings and timeout messages; it cannot remove an old CLI's
+local limits.
+
+For Ollama, loading a model counts against the first-response silence limit.
+Keep it resident with `OLLAMA_KEEP_ALIVE` on the Ollama server (for example,
+`OLLAMA_KEEP_ALIVE=24h`), or the native Ollama API's `keep_alive` option, and
+preload it before starting the flow. Size the silence budget for prompt evaluation
+as well as loading; keeping the model resident only removes the loading delay.

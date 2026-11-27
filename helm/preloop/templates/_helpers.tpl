@@ -226,6 +226,12 @@ Shared OTLP env for API and gateway (one values schema).
 
 {{/* Execution-only settings; never change control-plane Kubernetes credentials. */}}
 {{- define "preloop.executionEnv" -}}
+- name: RUNNER_MODEL_IDLE_SECONDS
+  value: {{ .Values.runnerModels.idleSeconds | quote }}
+- name: RUNNER_MODEL_SILENT_SECONDS
+  value: {{ .Values.runnerModels.silentSeconds | quote }}
+- name: RUNNER_MODEL_TOTAL_SECONDS
+  value: {{ .Values.runnerModels.totalSeconds | quote }}
 {{- if .Values.agentExecution.kubeconfigSecret }}
 - name: PRELOOP_EXECUTION_KUBECONFIG
   value: /var/run/preloop/execution/kubeconfig
@@ -499,3 +505,11 @@ map "$http_x_forwarded_proto:$scheme" $preloop_hsts {
 - name: HSTS_PRELOAD
   value: {{ .Values.securityHeaders.hsts.preload | toString | quote }}
 {{- end }}
+
+{{/* Nonstream completions can remain silent for the whole model request. */}}
+{{- define "preloop.gatewayReadTimeout" -}}
+{{- max .Values.gateway.proxy.readTimeout (add .Values.runnerModels.totalSeconds 15) -}}
+{{- end -}}
+{{- define "preloop.gatewaySendTimeout" -}}
+{{- max .Values.gateway.proxy.sendTimeout (add .Values.runnerModels.totalSeconds 15) -}}
+{{- end -}}
