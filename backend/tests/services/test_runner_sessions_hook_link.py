@@ -1,7 +1,7 @@
 """Copilot hook sessions resolve to the runner session hosting them (#1482)."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -627,3 +627,115 @@ def test_sweeper_end_folds_a_late_sibling(db_session, runner, test_user):
     # A started session whose runner stayed away past the window (#1509).
     assert row.end_reason == "runner_away_timeout"
     _only_session_ended(db_session, row)
+
+
+@pytest.mark.asyncio
+async def test_local_claude_hook_approval_is_pending_on_its_session(
+    endpoint_db, test_user, monkeypatch
+):
+    """A local (not runner-hosted) Claude Code hook files its approval on the
+    recorded harness session, so the session filter and ``sessions attach``
+    (which lists ``status=pending`` and keeps rows whose
+    ``runtime_session_id`` is the attached session) see it while it waits
+    (#2560).
+    """
+    from fastapi import Response
+
+    from preloop.api.endpoints import agent_permission
+    from preloop.api.endpoints.approval_requests import list_approval_requests
+    from preloop.models.crud import crud_runtime_session
+
+    db_session = endpoint_db
+    identity = _identity(db_session, test_user)
+    native_id = f"claude-{uuid.uuid4().hex[:8]}"
+    session = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id=native_id,
+        runtime_principal_type=PRINCIPAL_TYPE,
+        runtime_principal_id="agent-1",
+        started_at=datetime.now(timezone.utc),
+    )
+    db_session.flush()
+
+    monkeypatch.setattr(
+        agent_permission,
+        "_resolve_permission_identity",
+        lambda _token, *, allow_read_only_review=False: identity,
+    )
+
+    def list_for(runtime_session_id: Any, status: str | None) -> list:
+        return list_approval_requests(
+            Response(),
+            status=status,
+            execution_id=None,
+            runtime_session_id=runtime_session_id,
+            tool_name=None,
+            q=None,
+            limit=50,
+            skip=0,
+            current_user=test_user,
+            db=db_session,
+        )
+
+    pending_while_waiting: dict = {}
+
+    async def decide(**kwargs: Any) -> tuple:
+        # Stands in for the policy engine: file a pending request on the
+        # session it was given, then observe it the way a watcher would
+        # before the decision lands.
+        workflow = models.ApprovalWorkflow(
+            account_id=test_user.account_id, name=f"wf-{uuid.uuid4().hex[:6]}"
+        )
+        tool = models.ToolConfiguration(
+            account_id=test_user.account_id, tool_name="Bash", tool_source="agent"
+        )
+        db_session.add_all([workflow, tool])
+        db_session.flush()
+        approval = models.ApprovalRequest(
+            account_id=test_user.account_id,
+            tool_configuration_id=tool.id,
+            approval_workflow_id=workflow.id,
+            tool_name="Bash",
+            tool_args=kwargs["tool_input"],
+            status="pending",
+            runtime_session_id=kwargs["runtime_session_id"],
+            # Real requests always carry a workflow deadline.
+            expires_at=datetime.utcnow() + timedelta(minutes=10),
+        )
+        db_session.add(approval)
+        db_session.flush()
+        pending_while_waiting["filtered"] = [
+            str(a.id) for a in list_for(session.id, None)
+        ]
+        # The attach replay: the account's pending page, kept by session.
+        pending_while_waiting["attach"] = [
+            str(a.id)
+            for a in list_for(None, "pending")
+            if str(a.runtime_session_id) == str(session.id)
+        ]
+        pending_while_waiting["id"] = str(approval.id)
+        approval.status = "approved"
+        db_session.flush()
+        return ("allow", "approved", str(approval.id), False)
+
+    monkeypatch.setattr(agent_permission, "request_agent_permission", decide)
+
+    result = await agent_permission.agent_permission_check(
+        agent_permission.AgentPermissionCheckRequest(
+            source="claude_code",
+            hook_event_name="PreToolUse",
+            tool_name="Bash",
+            tool_input={"command": "ls"},
+            session_id=native_id,
+        ),
+        authorization="Bearer token",
+    )
+
+    request_id = pending_while_waiting["id"]
+    assert result.request_id == request_id
+    assert pending_while_waiting["filtered"] == [request_id]
+    assert pending_while_waiting["attach"] == [request_id]
+    stored = db_session.get(models.ApprovalRequest, uuid.UUID(request_id))
+    assert stored.runtime_session_id == session.id

@@ -18,6 +18,15 @@ type gatewayModelChoice struct {
 	Model    *aiModelResponse
 }
 
+// managedModelSelection is the outcome of picking the managed model: the
+// alias, the account model behind it when there is one, and every choice
+// that was on offer.
+type managedModelSelection struct {
+	Alias   string
+	Model   *aiModelResponse
+	Choices []gatewayModelChoice
+}
+
 // resolveManagedModelSelection picks the managed model alias used for gateway
 // onboarding. Preference order:
 //  1. Explicit --model / PreferredModel (non-interactive passthrough)
@@ -35,28 +44,54 @@ func resolveManagedModelSelection(
 	if output == nil {
 		output = io.Discard
 	}
-	choices := listGatewayModelChoices(client, inferred, output)
+	selection, err := planManagedModelSelection(client, agent, inferred, opts, opts.Input, output, output)
+	return selection.Alias, selection.Model, err
+}
+
+// planManagedModelSelection is resolveManagedModelSelection with its streams
+// separated: the picker is drawn on output, and the lines that only report
+// what was chosen go to notices, which the compact review does not print.
+func planManagedModelSelection(
+	client *api.Client,
+	agent AgentConfig,
+	inferred *managedGatewayUpstream,
+	opts managedEnrollmentOptions,
+	input io.Reader,
+	output io.Writer,
+	notices io.Writer,
+) (managedModelSelection, error) {
+	interactive := shouldPromptForManagedModel(opts)
+	listNotes := notices
+	if interactive && strings.TrimSpace(opts.PreferredModel) == "" {
+		// The picker may be incomplete: say so where the picker is drawn.
+		listNotes = output
+	}
+	choices := listGatewayModelChoices(client, inferred, listNotes)
+	selection := managedModelSelection{Choices: choices}
 	preferred := strings.TrimSpace(opts.PreferredModel)
 	if preferred != "" {
 		choice := findGatewayModelChoice(choices, preferred)
 		if choice != nil && choice.Model != nil {
-			return choice.Alias, choice.Model, nil
+			selection.Alias, selection.Model = choice.Alias, choice.Model
+			return selection, nil
 		}
 		// A new canonical model can use local credentials only for the same
 		// provider. Cross-provider picks need a configured account model.
 		alias := strings.TrimPrefix(preferred, "preloop/")
 		if provider, _, ok := strings.Cut(alias, "/"); ok && isCanonicalGatewayProvider(provider) &&
 			(inferred == nil || !gatewaySelectionMatchesProvider(provider, inferred)) {
-			return "", nil, fmt.Errorf("model %q requires a configured account model for that provider", alias)
+			return selection, fmt.Errorf("model %q requires a configured account model for that provider", alias)
 		}
 		if choice != nil {
-			return choice.Alias, nil, nil
+			selection.Alias = choice.Alias
+			return selection, nil
 		}
-		return alias, nil, nil
+		selection.Alias = alias
+		return selection, nil
 	}
 
 	if len(choices) == 0 {
-		return "", nil, nil
+		return selection, nil
 	}
 
 	defaultAlias := choices[0].Alias
@@ -67,32 +102,35 @@ func resolveManagedModelSelection(
 		}
 	}
 
-	interactive := shouldPromptForManagedModel(opts)
 	if !interactive {
 		fmt.Fprintf(
-			output,
+			notices,
 			"Using inferred model %s (non-interactive; pass --model to override).\n",
 			defaultAlias,
 		) //nolint:errcheck
 		choice := findGatewayModelChoice(choices, defaultAlias)
 		if choice != nil {
-			return choice.Alias, choice.Model, nil
+			selection.Alias, selection.Model = choice.Alias, choice.Model
+			return selection, nil
 		}
-		return defaultAlias, nil, nil
+		selection.Alias = defaultAlias
+		return selection, nil
 	}
 
-	selected, err := promptForManagedModel(agent, choices, defaultAlias, opts.Input, output)
+	selected, err := promptForManagedModel(agent, choices, defaultAlias, input, output)
 	if err != nil {
-		return "", nil, err
+		return selection, err
 	}
 	if selected == "" {
 		selected = defaultAlias
 	}
 	choice := findGatewayModelChoice(choices, selected)
 	if choice != nil {
-		return choice.Alias, choice.Model, nil
+		selection.Alias, selection.Model = choice.Alias, choice.Model
+		return selection, nil
 	}
-	return selected, nil, nil
+	selection.Alias = selected
+	return selection, nil
 }
 
 func shouldPromptForManagedModel(opts managedEnrollmentOptions) bool {
@@ -247,6 +285,7 @@ func promptForManagedModel(
 	if input == nil {
 		input = io.NopCloser(strings.NewReader("\n"))
 	}
+	menuWidth := detectTermCaps(output, false).Width
 	fmt.Fprintf(
 		output,
 		"Select the managed model for %s before onboarding:\n",
@@ -257,7 +296,9 @@ func promptForManagedModel(
 		if strings.EqualFold(choice.Alias, defaultAlias) {
 			marker = " (default)"
 		}
-		fmt.Fprintf(output, "  %d) %s%s\n", index+1, choice.Label, marker) //nolint:errcheck
+		// Wrapped, so a long alias does not run past the terminal's edge.
+		number := fmt.Sprintf("  %d) ", index+1)
+		writeWrapped(output, number, strings.Repeat(" ", len(number)), choice.Label+marker, menuWidth)
 	}
 	answer, err := promptForTextInput(
 		bufio.NewReader(input),

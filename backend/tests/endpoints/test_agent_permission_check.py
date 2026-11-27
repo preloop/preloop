@@ -910,3 +910,45 @@ def test_explicit_credential_revocation_cancels_prior_lifecycle_release(
         client, token, {"source": "cursor", "tool_name": "Read"}
     )
     assert response.status_code == 401
+
+
+def test_permission_check_files_approval_on_local_origin_session(
+    client: TestClient, db_session: Session
+) -> None:
+    """A local harness's verified origin session owns its approval (#2560).
+
+    The native tool activity was already recorded on the origin session, but
+    the approval request only used it for runner-hosted harnesses, so a
+    local Claude Code hook stored the request with no runtime session and the
+    session filter and ``sessions attach`` never saw it pending.
+    """
+    from datetime import datetime, timezone
+    from uuid import UUID
+
+    from preloop.models.crud import crud_api_key, crud_runtime_session
+
+    token = _issue_opencode_runtime_token(client)
+    key = crud_api_key.get_by_key(db_session, key=token)
+    principal = key.context_data["runtime_principal"]
+    session_id = "native-session-local"
+    recorded = crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=key.account_id,
+        session_source_type=principal["type"],
+        session_source_id=f"{principal['id']}:{session_id}",
+        runtime_principal_type=principal["type"],
+        runtime_principal_id=f"{principal['id']}:{session_id}",
+        started_at=datetime.now(timezone.utc),
+    )
+    db_session.flush()
+    decide = AsyncMock(return_value=("allow", "Approved", "req-local", False))
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission", decide
+    ):
+        response = _post_permission_check(
+            client,
+            token,
+            {"source": "opencode", "session_id": session_id, "tool_name": "Bash"},
+        )
+    assert response.status_code == 200, response.text
+    assert decide.await_args.kwargs["runtime_session_id"] == UUID(str(recorded.id))

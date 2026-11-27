@@ -282,7 +282,7 @@ variant_ro_everything() {
   run_tty "$svc" '\n\ny\nn\nlater\n' "preloop agents onboard 'Claude Code' --manual-output /tmp/preloop-setup"
   expect_status 3
   expect "Preloop state (backup, resume and hook credentials)"
-  expect "Importing the Claude subscription token from CLAUDE_CODE_OAUTH_TOKEN"
+  expect "subscription login from CLAUDE_CODE_OAUTH_TOKEN"
   expect "Resume token (not a secret; keep it, ~/.preloop is not writable)"
   expect "--resume-token"
 

@@ -230,9 +230,13 @@ func TestOpenClawDryRunHonorsSelectedAccountModelOnFreshHost(t *testing.T) {
 	}))
 	defer server.Close()
 	t.Setenv("PRELOOP_URL", server.URL)
-	output := captureStdout(t, func() error {
-		return executeManagedEnrollment(AgentConfig{Name: "OpenClaw", ConfigPath: filepath.Join(home, ".openclaw", "openclaw.json")}, managedEnrollmentOptions{Client: api.NewClientWithToken(server.URL, "token"), PreferredModel: "team/chosen-model", DryRun: true, AutoApprove: true, Output: io.Discard})
-	})
+	// The plan preview is written to the writer in the options, like the
+	// rest of the dry run (it used to go to the process stdout).
+	var preview bytes.Buffer
+	if err := executeManagedEnrollment(AgentConfig{Name: "OpenClaw", ConfigPath: filepath.Join(home, ".openclaw", "openclaw.json")}, managedEnrollmentOptions{Client: api.NewClientWithToken(server.URL, "token"), PreferredModel: "team/chosen-model", DryRun: true, AutoApprove: true, Output: &preview}); err != nil {
+		t.Fatal(err)
+	}
+	output := preview.String()
 	if !strings.Contains(output, "Managed model: preloop/team/chosen-model") {
 		t.Fatalf("selected model lost: %s", output)
 	}

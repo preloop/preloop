@@ -319,7 +319,9 @@ func TestAttendedDiscoverReviewsOAuthCustodyBeforeApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attended discover was misclassified: %v", err)
 	}
-	summary := strings.Index(out.String(), "Credential custody")
+	// The compact review states the custody decision in one disclosure; the
+	// full custody block is behind --explain.
+	summary := strings.Index(out.String(), "Preloop will hold and rotate the Claude Code subscription login")
 	confirmation := strings.Index(out.String(), "Apply managed Preloop onboarding")
 	if summary < 0 || confirmation <= summary || mutations != 0 {
 		t.Fatalf("custody approval ordering failed: mutations=%d output=%s", mutations, out.String())

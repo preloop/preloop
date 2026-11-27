@@ -914,7 +914,10 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
     # {"behavior": "deny", "message": "..."}. Decision logic (including the
     # 30s-MCP-wait vs long-approval-timeout bridge) lives in
     # preloop.services.permission_prompt.
-    @mcp.tool(description=PERMISSION_PROMPT_TOOL["description"])
+    # output_schema=None: FastMCP otherwise adds structuredContent to a str
+    # result, and Claude Code rejects a permission prompt result that carries
+    # it ("Expected a single text block param with type="text"...", #2559).
+    @mcp.tool(description=PERMISSION_PROMPT_TOOL["description"], output_schema=None)
     async def permission_prompt(
         tool_name: str,
         input: dict,  # noqa: A002 - name fixed by Claude Code's contract
