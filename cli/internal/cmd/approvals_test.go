@@ -95,3 +95,17 @@ func TestApprovalsApproveDenySendCommentNotReason(t *testing.T) {
 		})
 	}
 }
+
+// A runner owner consent carries only ids as tool input; the summary names
+// the flow, harness and device, so the pending table shows that instead.
+func TestPendingInputLabelPrefersSummary(t *testing.T) {
+	summary := `Allow flow "Nightly review" to run Codex CLI (example-model) on Work laptop (laptop.example.com, macOS)? Scheduled run.`
+	got := pendingInputLabel(ApprovalRequest{ToolInput: `{"runner_id":"r"}`, Summary: summary})
+	if got != summary {
+		t.Fatalf("pendingInputLabel = %q, want the summary", got)
+	}
+	long := pendingInputLabel(ApprovalRequest{ToolInput: "0123456789012345678901234567890123456789extra"})
+	if len(long) != 40 || long[37:] != "..." {
+		t.Fatalf("tool input not truncated to 40: %q", long)
+	}
+}

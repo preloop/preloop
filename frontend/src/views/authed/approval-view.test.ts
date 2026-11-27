@@ -1101,6 +1101,84 @@ describe('ApprovalView', () => {
     );
   });
 
+  it('describes a runner owner consent request and collapses its ids', async () => {
+    fetchStub = createFetchStub({
+      request: pendingRequest({
+        tool_name: 'owner_consent',
+        tool_args: { execution_id: 'exec-1', runner_id: 'runner-1' },
+        agent_reasoning: null,
+        summary:
+          'Allow flow "Nightly review" to run Codex CLI (example-model) on Work laptop (laptop.example.com, macOS)? Scheduled run.',
+        rule_context: {
+          runner_flow: {
+            runner: {
+              name: 'Work laptop',
+              device: { hostname: 'laptop.example.com', os: 'macOS' },
+            },
+            harness: 'Codex CLI',
+            model: 'example-model',
+            flow: {
+              id: 'flow-1',
+              name: 'Nightly review',
+              href: '/console/flows/flow-1',
+            },
+            trigger: { kind: 'schedule', label: 'Scheduled run' },
+            scope: 'this_run',
+            scope_label: 'Approving allows this run only.',
+          },
+        },
+      }),
+    });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+
+    const root = element.shadowRoot!;
+    expect(root.textContent).to.contain('What will run');
+    expect(root.querySelector('h1')!.textContent).to.contain('Runner approval');
+    expect(root.textContent).to.not.contain('before the tool can be executed');
+    expect(root.textContent).to.contain(
+      'Decide whether this flow may run on your runner'
+    );
+    const block = root.querySelector('runner-flow-approval-context') as any;
+    expect(block).to.exist;
+    await block.updateComplete;
+    expect(block.shadowRoot.textContent).to.contain('laptop.example.com');
+    expect(block.shadowRoot.textContent).to.contain('Codex CLI');
+    const ids = root.querySelector(
+      'details.runner-flow-ids'
+    ) as HTMLDetailsElement;
+    expect(ids).to.exist;
+    expect(ids.open).to.equal(false);
+    expect(ids.querySelector('args-diff')).to.exist;
+    // The ids are no longer the headline "Arguments" section.
+    expect(
+      Array.from(root.querySelectorAll('h2')).map((h) => h.textContent)
+    ).to.not.include('Arguments');
+  });
+
+  it('does not ask to decide a resolved runner consent', async () => {
+    fetchStub = createFetchStub({
+      request: pendingRequest({
+        tool_name: 'owner_consent',
+        tool_args: { execution_id: 'exec-1', runner_id: 'runner-1' },
+        status: 'approved',
+        resolved_at: '2026-06-01T10:30:00Z',
+        rule_context: { runner_flow: { runner: { name: 'Work laptop' } } },
+      }),
+    });
+    const element = (await fixture(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    )) as ApprovalView;
+    await waitUntil(() => !(element as any).loading, 'still loading');
+    await element.updateComplete;
+    const text = element.shadowRoot!.textContent!;
+    expect(text).to.contain('Runner approval for this flow run');
+    expect(text).to.not.contain('Decide whether this flow may run');
+  });
+
   it('renders the resolved state for an approved request', async () => {
     fetchStub = createFetchStub({
       request: pendingRequest({
@@ -1701,6 +1779,37 @@ describe('ApprovalView', () => {
 
     afterEach(() => {
       window.history.replaceState({}, '', '/');
+    });
+
+    it('renders the runner flow context from the public token payload', async () => {
+      const element = await mountWithToken({
+        getStatus: 401,
+        publicData: {
+          id: 'req-1',
+          tool_name: 'owner_consent',
+          tool_args: { execution_id: 'exec-1', runner_id: 'runner-1' },
+          agent_reasoning: null,
+          summary: 'Allow this flow to run on Work laptop?',
+          rule_context: {
+            runner_flow: {
+              runner: { name: 'Work laptop' },
+              harness: 'Codex CLI',
+              scope: 'this_run',
+            },
+          },
+          status: 'pending',
+          requested_at: new Date(Date.now() - 60_000).toISOString(),
+          expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
+          history: [],
+        },
+      });
+      const root = element.shadowRoot!;
+      expect((element as any).publicOnly).to.equal(true);
+      expect(root.querySelector('h1')!.textContent).to.contain(
+        'Runner approval'
+      );
+      expect(root.querySelector('runner-flow-approval-context')).to.exist;
+      expect(root.querySelector('details.runner-flow-ids')).to.exist;
     });
 
     // Issue #335: an escalation recipient holding a valid link sees the

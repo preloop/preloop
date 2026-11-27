@@ -91,6 +91,17 @@ class ApprovalRequestPublic(BaseModel):
     allow_free_text: bool = True
     question_items: List[dict] = Field(default_factory=list)
     question_schema: Optional[dict] = None
+    # Runner owner consent only: the display snapshot of what the owner is
+    # asked to allow (``{"runner_flow": {...}}``). No other rule context
+    # (policy expressions, internal bindings) leaves through the token page.
+    rule_context: Optional[dict] = None
+
+
+def _public_rule_context(approval_request: ApprovalRequest) -> Optional[dict]:
+    """Return only the runner flow snapshot of an approval's rule context."""
+    context = getattr(approval_request, "rule_context", None)
+    runner_flow = context.get("runner_flow") if isinstance(context, dict) else None
+    return {"runner_flow": runner_flow} if isinstance(runner_flow, dict) else None
 
 
 def _text_or_none(value: object) -> Optional[str]:
@@ -126,6 +137,7 @@ def _to_public_request(
         tool_args=redact_dict(tool_args),
         agent_reasoning=approval_request.agent_reasoning,
         summary=_text_or_none(getattr(approval_request, "summary", None)),
+        rule_context=_public_rule_context(approval_request),
         is_question=bool(isinstance(tool_args, dict) and tool_args.get("is_question")),
         question=_text_or_none(
             tool_args.get("question") if isinstance(tool_args, dict) else None
