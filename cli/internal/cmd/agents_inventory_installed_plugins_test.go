@@ -54,6 +54,9 @@ func TestInstalledPluginLayouts(t *testing.T) {
 			}
 			for _, ext := range extensions {
 				if ext.Kind == "skill" {
+					if ext.Details == nil || ext.Details.ScriptCount == nil {
+						t.Fatal("missing bundled skill metadata")
+					}
 					parent := "superpowers@superpowers-marketplace"
 					if strings.HasPrefix(ext.ID, "code-review:") {
 						parent = "code-review@claude-plugins-official"

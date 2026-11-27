@@ -159,9 +159,10 @@ func localSpans(text string, opts Options) []span {
 		}
 	}
 	spans = append(spans, assignmentSpans(text)...)
+	homes := homeSpans(text, opts.Home)
 	for _, loc := range entropyPattern.FindAllStringIndex(text, -1) {
 		token := text[loc[0]:loc[1]]
-		if strings.Count(token, "/") > 2 {
+		if strings.Count(token, "/") > 2 || insideAny(loc[0], loc[1], homes) {
 			continue
 		}
 		if hexPattern.MatchString(token) {
@@ -175,21 +176,51 @@ func localSpans(text string, opts Options) []span {
 			spans = append(spans, span{start: loc[0], end: loc[1], kind: TypeHighEntropy, priority: 4})
 		}
 	}
-	if home := strings.TrimRight(opts.Home, `/\`); len(home) > 1 {
-		for offset := 0; ; {
-			index := strings.Index(text[offset:], home)
-			if index < 0 {
-				break
-			}
-			start := offset + index
-			spans = append(spans, span{start: start, end: start + len(home), kind: TypeHomePath, priority: 3})
-			offset = start + len(home)
-		}
-	}
+	spans = append(spans, homes...)
 	for _, loc := range homePattern.FindAllStringSubmatchIndex(text, -1) {
 		spans = append(spans, span{start: loc[0], end: loc[3], kind: TypeHomePath, priority: 3})
 	}
 	return spans
+}
+
+// homeSpans finds every occurrence of the profile home directory in text.
+//
+// Args:
+//   - text: the text being redacted.
+//   - home: the profile home directory; trailing separators are ignored.
+//
+// Returns:
+//   - one home-path span per occurrence, or none for an empty home.
+func homeSpans(text, home string) []span {
+	home = strings.TrimRight(home, `/\`)
+	if len(home) <= 1 {
+		return nil
+	}
+	var spans []span
+	for offset := 0; ; {
+		index := strings.Index(text[offset:], home)
+		if index < 0 {
+			return spans
+		}
+		start := offset + index
+		spans = append(spans, span{start: start, end: start + len(home), kind: TypeHomePath, priority: 3})
+		offset = start + len(home)
+	}
+}
+
+// insideAny reports whether [start, end) lies within one of spans.
+//
+// A token inside the known home directory is a path segment, such as a
+// random temporary directory name in a Windows path, whose backslashes the
+// entropy pattern does not span. The home span already redacts it, so it
+// keeps the home-path type instead of being reported as a high-entropy secret.
+func insideAny(start, end int, spans []span) bool {
+	for _, s := range spans {
+		if start >= s.start && end <= s.end {
+			return true
+		}
+	}
+	return false
 }
 
 // HasPrivateKey reports whether text holds a private key block header.
