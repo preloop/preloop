@@ -119,6 +119,7 @@ interface ApprovalStatsResponse {
   auto_approved_by_bypass: number;
   avg_response_minutes: number | null;
   tools: string[];
+  has_native_delivery_warning?: boolean;
 }
 
 function isStatsResponse(value: unknown): value is ApprovalStatsResponse {
@@ -1721,6 +1722,7 @@ export class ApprovalsView extends AuthedElement {
       <div class="column-layout wide">
         <div class="main-column">
           ${
+            this.serverStats?.has_native_delivery_warning ||
             this.approvalRequests.some(
               (request) =>
                 typeof request.tool_args?._preloop_native_delivery_warning ===

@@ -31630,6 +31630,15 @@ components:
           type: string
           title: Tool Name
           description: Native tool name, e.g. 'Bash'
+        tool_origin:
+          anyOf:
+          - type: string
+            enum:
+            - native
+            - mcp
+          - type: 'null'
+          title: Tool Origin
+          description: Tool origin observed by the harness hook.
         tool_input:
           additionalProperties: true
           type: object
@@ -33440,6 +33449,11 @@ components:
           - type: 'null'
           title: Avg Response Minutes
           description: Mean request-to-decision time of decided requests.
+        has_native_delivery_warning:
+          type: boolean
+          title: Has Native Delivery Warning
+          description: A native approval lacked a mobile or chat destination.
+          default: false
         tools:
           items:
             type: string

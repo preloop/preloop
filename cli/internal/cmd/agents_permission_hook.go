@@ -98,6 +98,7 @@ const permissionCheckPath = api.RESTPrefix + "/agents/permission-check"
 // permissionCheckRequest is the request body for permissionCheckPath. Only
 // tool_name is required by the backend; everything else is optional context.
 type permissionCheckRequest struct {
+	ToolOrigin      string                 `json:"tool_origin,omitempty"`
 	HookEventName   string                 `json:"hook_event_name,omitempty"`
 	Source          string                 `json:"source"`
 	ToolName        string                 `json:"tool_name"`
@@ -820,6 +821,9 @@ func buildPermissionRequest(
 		} else if command := firstStringField(event, "command"); command != "" {
 			req.ToolName = "Shell"
 			req.ToolInput = map[string]interface{}{"command": command}
+		}
+		if req.HookEventName == "beforeMCPExecution" || cursorDedicatedBeforeHookEvent(event, req.ToolName) == "beforeMCPExecution" {
+			req.ToolOrigin = "mcp"
 		}
 		// Cursor before* hooks fire on every shell/MCP call; evaluate the
 		// agent's native permissions.json (+ sandbox) so only would-prompt

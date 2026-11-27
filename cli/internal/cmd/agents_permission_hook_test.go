@@ -1699,3 +1699,56 @@ func TestRemoveNativeGatesPreservesSessionReporting(t *testing.T) {
 		})
 	}
 }
+
+func TestCursorMCPFallbackCarriesOrigin(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	writeCursorPreloopHookEvents(t, home, "preToolUse")
+	for _, raw := range []string{
+		`{"hook_event_name":"preToolUse","tool_name":"read_file","mcp_server_name":"example"}`,
+		`{"hook_event_name":"preToolUse","tool_name":"list_dir","server_name":"example"}`,
+		`{"hook_event_name":"preToolUse","tool_name":"MCP:read_file"}`,
+	} {
+		if _, duplicate := cursorPreToolUseDuplicateDecision([]byte(raw)); duplicate {
+			t.Fatal("missing beforeMCPExecution must use the server gate")
+		}
+		req, err := buildPermissionRequest(permissionSourceCursor, []byte(raw), permissionHookCredential{})
+		if err != nil || req.ToolOrigin != "mcp" {
+			t.Fatalf("MCP origin lost: %#v, %v", req, err)
+		}
+	}
+}
+
+func TestRemoveNativeGatesDisablesPluginApprovalSettings(t *testing.T) {
+	for _, name := range []string{"OpenCode", "Pi", "DeepSeek Harness"} {
+		t.Run(name, func(t *testing.T) {
+			home := testenv.SetTempHome(t)
+			agent := AgentConfig{Name: name, ConfigPath: filepath.Join(home, "preloop.json")}
+			doc := map[string]interface{}{"preloop": map[string]interface{}{"control": map[string]interface{}{
+				"native_tool_approvals": "on", "remote_control_enabled": true,
+			}}}
+			if name == "OpenCode" {
+				if err := writeOpenCodeUserConfig(doc); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := writeAgentConfigDocument(agent, doc); err != nil {
+				t.Fatal(err)
+			}
+			if err := removeNativeApprovalGates(agent); err != nil {
+				t.Fatal(err)
+			}
+			var control map[string]interface{}
+			if name == "OpenCode" {
+				control, _ = readOpenCodePreloopControl()
+			} else {
+				saved, err := loadAgentConfigDocument(agent)
+				if err != nil {
+					t.Fatal(err)
+				}
+				control, _ = agentControlConfigFromDocument(agent, saved)
+			}
+			if control["native_tool_approvals"] != "off" || control["remote_control_enabled"] != true {
+				t.Fatalf("gate must be off while control survives: %#v", control)
+			}
+		})
+	}
+}

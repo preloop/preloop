@@ -1126,7 +1126,8 @@ export interface ManagedAgentUpdateRequest {
   owner_user_id?: string | null;
   display_name?: string | null;
   tags?: Record<string, string> | null;
-  lifecycle_action?: 'suspend' | 'resume' | 'decommission' | 'reenroll';
+  lifecycle_action?:
+    'suspend' | 'suspend_block' | 'resume' | 'decommission' | 'reenroll';
   reason?: string | null;
   /** Owner only: whether other members need approval to start a session. */
   others_may_start_sessions?: 'ask_me' | 'allow' | 'deny';

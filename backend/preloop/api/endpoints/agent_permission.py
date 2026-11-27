@@ -688,6 +688,9 @@ class AgentPermissionCheckRequest(BaseModel):
     """A native tool-call permission check from an onboarded agent."""
 
     tool_name: str = Field(..., description="Native tool name, e.g. 'Bash'")
+    tool_origin: Optional[Literal["native", "mcp"]] = Field(
+        None, description="Tool origin observed by the harness hook."
+    )
     tool_input: Dict[str, Any] = Field(
         default_factory=dict, description="Tool arguments (stored as tool_args)"
     )
@@ -1084,6 +1087,7 @@ async def _agent_permission_check(
         client_decision=payload.client_decision,
         evaluation_phase=payload.evaluation_phase,
         hook_event_name=payload.hook_event_name,
+        tool_origin=payload.tool_origin,
         flow_id=identity.flow_id,
         flow_policy_label=flow_policy_label,
         approval_request_id=payload.approval_request_id,

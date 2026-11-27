@@ -2199,6 +2199,8 @@ def test_native_read_classification_does_not_trust_shell_or_mcp_names() -> None:
         assert not is_read_only_native_tool("cursor", tool)
     assert not is_read_only_native_tool("unknown", "Read")
     assert not is_read_only_native_tool("cursor", "Read", "beforeMCPExecution")
+    for tool in ("read_file", "list_dir", "Read"):
+        assert not is_read_only_native_tool("cursor", tool, "preToolUse", "mcp")
 
 
 @pytest.mark.asyncio
@@ -2305,3 +2307,41 @@ async def test_claude_explicit_local_ask_for_read_is_not_auto_allowed() -> None:
                     source="claude_code", tool_name="Read", client_decision="ask"
                 )
             )
+
+
+@pytest.mark.asyncio
+async def test_cursor_mcp_read_fallback_still_requires_approval() -> None:
+    """A preToolUse MCP event cannot borrow the native read allow default."""
+    with (
+        patch(
+            "preloop.services.agent_permission_service.get_async_db_session"
+        ) as session,
+        patch(
+            "preloop.models.crud.tool_configuration.get_tool_config_by_name_and_source_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.apply_native_access_rules",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.native_tool_approvals_disabled",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "preloop.services.agent_permission_service.resolve_workflow",
+            new=AsyncMock(side_effect=RuntimeError("approval required")),
+        ) as workflow,
+    ):
+        session.return_value.__aenter__.return_value = AsyncMock()
+        with pytest.raises(RuntimeError, match="approval required"):
+            await request_agent_permission(
+                **_permission_kwargs(
+                    source="cursor",
+                    tool_name="read_file",
+                    client_decision="ask",
+                    hook_event_name="preToolUse",
+                    tool_origin="mcp",
+                )
+            )
+        workflow.assert_awaited_once()

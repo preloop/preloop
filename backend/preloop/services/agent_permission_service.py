@@ -80,11 +80,15 @@ READ_ONLY_NATIVE_TOOLS = {
 
 
 def is_read_only_native_tool(
-    source: str | None, tool_name: str, hook_event_name: str | None = None
+    source: str | None,
+    tool_name: str,
+    hook_event_name: str | None = None,
+    tool_origin: str | None = None,
 ) -> bool:
     """Recognize native reads without treating arbitrary shell or MCP calls as safe."""
     return (
-        hook_event_name != "beforeMCPExecution"
+        tool_origin != "mcp"
+        and hook_event_name != "beforeMCPExecution"
         and tool_name in READ_ONLY_NATIVE_TOOLS.get(source or "", ())
     )
 
@@ -610,6 +614,7 @@ async def request_agent_permission(
     client_decision: Optional[str],
     evaluation_phase: str = "permission_request",
     hook_event_name: str | None = None,
+    tool_origin: str | None = None,
     flow_id: Optional[uuid.UUID] = None,
     flow_policy_label: Optional[str] = None,
     approval_request_id: Optional[uuid.UUID] = None,
@@ -668,6 +673,7 @@ async def request_agent_permission(
             :mod:`preloop.services.native_flow_park`), and the decision is
             returned as ``"park"``, which callers must send as a deny.
         hook_event_name: Harness event; Cursor MCP calls never get native read defaults.
+        tool_origin: Harness-observed MCP origin excludes native read defaults.
         evaluation_phase: ``pre_tool_use`` checks central native rules before
             the host permission decision, skipping no-rule automatic escalation.
             The default ``permission_request`` preserves remote host prompts.
@@ -685,7 +691,7 @@ async def request_agent_permission(
     # Claude already marks its ordinary reads allow. An ask for a read means
     # an explicit local Ask rule matched; preserve that operator decision.
     native_read_default = is_read_only_native_tool(
-        source, tool_name, hook_event_name
+        source, tool_name, hook_event_name, tool_origin
     ) and not (source == "claude_code" and decision == "ask")
     # A client deny is never widened by a Preloop allow rule.
     if decision == "deny":

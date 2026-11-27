@@ -536,6 +536,30 @@ func printAgentPolicySummary(out io.Writer, source string, policyPaths []string,
 // removeNativeApprovalGates makes re-onboarding without --approvals explicit,
 // while retaining session reporting, notes and unrelated user hooks.
 func removeNativeApprovalGates(agent AgentConfig) error {
+	if isExtensionHarness(agent) {
+		doc, err := loadAgentConfigDocument(agent)
+		if err != nil {
+			return err
+		}
+		control, ok := agentControlConfigFromDocument(agent, doc)
+		if !ok {
+			return nil
+		}
+		control["native_tool_approvals"] = "off"
+		return writeAgentConfigDocument(agent, doc)
+	}
+	if isOpenCodeAgent(agent) {
+		doc, existed, err := loadOpenCodeUserConfig()
+		if err != nil || !existed {
+			return err
+		}
+		control, ok := openCodeControlBlock(doc)
+		if !ok {
+			return nil
+		}
+		control["native_tool_approvals"] = openCodeNativeToolApprovalsOff
+		return writeOpenCodeUserConfig(doc)
+	}
 	source := permissionSourceForAgent(agent)
 	switch source {
 	case permissionSourceClaudeCode, permissionSourceCodexCLI, permissionSourceCursor, permissionSourceCopilotCLI, permissionSourceDevinCLI:
