@@ -25,7 +25,7 @@ The endpoint receives a form POST containing `token`. An active response can loo
 
 ## Policy example
 
-The example uses CEL conditions, which require the enterprise CEL evaluator. Simple conditions such as `grant.active == true` are available with the open-source evaluator.
+The example uses CEL conditions, which every edition evaluates. Simple conditions such as `grant.active == true` work too.
 
 `preloop policy apply` resolves `${NAME}` references from your local environment
 before upload, including with `--dry-run`. Unset variables stop the command.

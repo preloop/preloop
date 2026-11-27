@@ -139,7 +139,7 @@ The MCP call blocks until the workflow decides, up to the workflow's `timeout_se
 | Pre-upgrade DB dumps | `~/.preloop-oss/backups/preloop-<version>-<timestamp>.sql` |
 | CLI config | `~/.preloop/config.yaml` |
 | Per-agent approval-hook credentials | `~/.preloop/agents/` |
-| Onboarding config backups | next to each agent's own config file |
+| Onboarding config backups | `~/.preloop/agents/backups/<runtime-principal-id>/<timestamp>-<config file name>` (not next to the agent's config file) |
 
 ## Still stuck?
 

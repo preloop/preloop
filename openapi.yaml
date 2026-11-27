@@ -38247,15 +38247,15 @@ components:
       - simple
       - cel
       title: ConditionType
-      description: "Type of condition expression.\n\nThis enum supports the open core\
-        \ licensing model:\n\n- SIMPLE (open source): Basic comparisons using Python-like\
-        \ syntax.\n  Supports operators: ==, !=, >, <, >=, <=\n  Examples:\n    -\
-        \ \"args.amount > 500\"\n    - \"args.recipient == 'bob'\"\n    - \"args.priority\
-        \ != 'low'\"\n\n- CEL (enterprise): Full CEL (Common Expression Language)\
-        \ expressions\n  with advanced functions and capabilities.\n  Examples:\n\
-        \    - \"args.command.contains('rm -rf')\"\n    - \"args.path.startsWith('/etc/')\"\
-        \n    - \"args.tags.exists(t, t == 'production')\"\n    - \"args.amount >\
-        \ 1000 && args.approved == false\""
+      description: "Type of condition expression.\n\nEvery edition evaluates both\
+        \ types. Cloud and Enterprise additionally\nreject invalid CEL syntax when\
+        \ a policy is uploaded.\n\n- SIMPLE: Basic comparisons using Python-like syntax.\n\
+        \  Supports operators: ==, !=, >, <, >=, <=\n  Examples:\n    - \"args.amount\
+        \ > 500\"\n    - \"args.recipient == 'bob'\"\n    - \"args.priority != 'low'\"\
+        \n\n- CEL: Full CEL (Common Expression Language) expressions\n  with advanced\
+        \ functions and capabilities.\n  Examples:\n    - \"args.command.contains('rm\
+        \ -rf')\"\n    - \"args.path.startsWith('/etc/')\"\n    - \"args.tags.exists(t,\
+        \ t == 'production')\"\n    - \"args.amount > 1000 && args.approved == false\""
     ConfirmedEnrollment:
       properties:
         recovery_codes:
@@ -54085,6 +54085,13 @@ components:
           title: Sensitive Data Applied
           description: Whether the sensitive_data block was applied
           default: false
+        policy_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Policy Version
+          description: Version number recorded for this apply; null for a dry run
+            or when no version could be recorded
         warnings:
           items:
             type: string
@@ -63225,7 +63232,7 @@ components:
           default: require_approval
         condition_type:
           $ref: '#/components/schemas/ConditionType'
-          description: 'Expression type: ''simple'' (open source) or ''cel'' (enterprise)'
+          description: 'Expression type: ''simple'' or ''cel'''
           default: simple
         description:
           anyOf:
@@ -63238,20 +63245,20 @@ components:
       - expression
       title: ToolCondition
       description: "Condition for when to apply actions to tool invocations.\n\nSupports\
-        \ two types of conditions for the open core model:\n\nSimple conditions (open\
-        \ source):\n    Basic comparisons using Python-like syntax. These are evaluated\n\
-        \    using a lightweight parser that supports basic operators.\n\n    Supported\
+        \ two types of conditions, both evaluated in every edition:\n\nSimple conditions:\n\
+        \    Basic comparisons using Python-like syntax. These are evaluated\n   \
+        \ using a lightweight parser that supports basic operators.\n\n    Supported\
         \ operators: ==, !=, >, <, >=, <=\n\n    Examples:\n        - \"args.amount\
         \ > 500\"\n        - \"args.recipient == 'bob'\"\n        - \"args.count <=\
-        \ 10\"\n\nCEL conditions (enterprise):\n    Full CEL (Common Expression Language)\
-        \ expressions with advanced\n    functions like contains(), startsWith(),\
-        \ endsWith(), exists(), etc.\n\n    Examples:\n        - \"args.command.contains('rm\
-        \ -rf')\"\n        - \"args.path.startsWith('/etc/')\"\n        - \"args.environment\
+        \ 10\"\n\nCEL conditions:\n    Full CEL (Common Expression Language) expressions\
+        \ with advanced\n    functions like contains(), startsWith(), endsWith(),\
+        \ exists(), etc.\n\n    Examples:\n        - \"args.command.contains('rm -rf')\"\
+        \n        - \"args.path.startsWith('/etc/')\"\n        - \"args.environment\
         \ == 'production' && args.force == true\"\n        - \"args.tags.exists(t,\
         \ t == 'sensitive')\"\n\nAttributes:\n    expression: Expression to evaluate\
         \ against tool arguments.\n    action: Action to take when condition matches.\n\
-        \    condition_type: Type of expression - 'simple' (open source) or 'cel'\
-        \ (enterprise).\n    description: Optional human-readable description."
+        \    condition_type: Type of expression, 'simple' or 'cel'.\n    description:\
+        \ Optional human-readable description."
     ToolConfigurationCreate:
       properties:
         tool_name:

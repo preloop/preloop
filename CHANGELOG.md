@@ -55,6 +55,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `preloop policy apply` now records a policy version for every successful
+  apply, prints its number, and `preloop policy list` and rollback can use it.
+  Previously only an explicit `POST /api/v1/policies/versions` created one
+  (#2557).
+- `preloop policy diff` and `apply` list every approval workflow or condition
+  a file would remove from a tool (`! REMOVES ...`), since a tool entry
+  replaces the whole tool. `apply` asks for confirmation on a terminal and
+  stops without a terminal unless `--yes` or `PRELOOP_CONFIRM=1` is given.
+  `validate` warns about a missing workflow only when a `require_approval`
+  condition needs one (#2558).
+- `preloop agents onboard "Claude Code"` checks for Node.js before the first
+  prompt and in `--dry-run`. When a supported Node.js is installed in a
+  known location (Homebrew, common version managers) but is not on PATH, the
+  message says so and prints only the PATH fix (#2562).
+
 - Expanded execution log entries keep their state through streamed updates,
   refreshes, status changes and scrolling. Session history and raw transcript
   events also retain explicit expand/collapse choices.

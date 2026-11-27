@@ -1218,6 +1218,9 @@ func promptToOnboardDiscoveredAgentsWithIO(
 			Input:             input,
 			Output:            output,
 		})
+	}, func(agent AgentConfig) error {
+		// Discovery enrolls with default options (no --manual, no approvals).
+		return preflightLocalAgentPrerequisites(agent, managedEnrollmentOptions{})
 	})
 	if err != nil {
 		return err
@@ -1242,6 +1245,10 @@ func promptToOnboardDiscoveredAgentsWithIO(
 // one agent's enrollment is recorded as a failed/partial outcome and the loop
 // continues with the remaining agents; only prompt I/O failures abort the
 // loop. Outcomes include explicitly declined agents as skipped.
+//
+// preflight, when given, checks each agent's local prerequisites with the
+// caller's enrollment options before any prompt for that agent; a failure
+// is recorded as that agent's failed outcome.
 func promptToOnboardCandidates(
 	reader io.Reader,
 	writer io.Writer,
@@ -1249,11 +1256,19 @@ func promptToOnboardCandidates(
 	autoApprove bool,
 	askApprovals bool,
 	enroll func(agent AgentConfig, approvals bool) error,
+	preflight ...func(agent AgentConfig) error,
 ) ([]agentOnboardingOutcome, error) {
 	bufferedReader := bufio.NewReader(reader)
 	var outcomes []agentOnboardingOutcome
 
 	for _, agent := range candidates {
+		// A missing local prerequisite (Claude Code needs Node.js) fails
+		// this agent before any of its prompts; the batch continues.
+		if err := runOnboardPreflight(preflight, agent); err != nil {
+			fmt.Fprintf(writer, "  Cannot onboard %s: %s\n", resolveAgentDisplayName(agent), err) //nolint:errcheck
+			outcomes = append(outcomes, classifyAgentOnboardingOutcome(agent, err))
+			continue
+		}
 		if !autoApprove {
 			prompt := fmt.Sprintf("Onboard %s (%s) into managed Preloop access now? (Y/n): ", agent.Name, resolveAgentDisplayName(agent))
 			if agent.IsOnboarded {
@@ -1296,6 +1311,19 @@ func promptToOnboardCandidates(
 	}
 
 	return outcomes, nil
+}
+
+// runOnboardPreflight runs each optional preflight check for agent.
+func runOnboardPreflight(preflight []func(agent AgentConfig) error, agent AgentConfig) error {
+	for _, check := range preflight {
+		if check == nil {
+			continue
+		}
+		if err := check(agent); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func onboardCandidatesBestEffort(
@@ -1643,6 +1671,10 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			// for the agent name a second time.
 			agentOpts.AgentPrepared = true
 			return executeManagedEnrollment(a, agentOpts)
+		}, func(a AgentConfig) error {
+			// The same options as the enrollment, so --manual skips the
+			// Node check and --approvals targets join the writability probe.
+			return preflightLocalAgentPrerequisites(a, opts)
 		})
 		if err != nil {
 			return err

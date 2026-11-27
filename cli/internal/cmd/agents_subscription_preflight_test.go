@@ -16,6 +16,8 @@ import (
 )
 
 func TestExpiredClaudeSubscriptionStopsBeforeEnrollment(t *testing.T) {
+	// The Node prerequisite runs first; satisfy it to reach the checks below.
+	stubSupportedAgentControlNode(t)
 	home := setPreflightTestEnv(t)
 	path := filepath.Join(home, ".claude", "settings.json")
 	writePreflightFixture(t, path, `{}`)
@@ -235,6 +237,8 @@ func TestClaudeOffboardRejectsBadKeychainBeforeExport(t *testing.T) {
 }
 
 func TestClaudeFreshInstallWithoutSettingsCanPlanOnboarding(t *testing.T) {
+	// The Node prerequisite runs first; satisfy it to reach the checks below.
+	stubSupportedAgentControlNode(t)
 	home := setPreflightTestEnv(t)
 	path := filepath.Join(home, ".claude", "settings.json")
 	writePreflightFixture(t, filepath.Join(home, ".claude.json"), `{"primaryApiKey":"synthetic-api-key"}`)

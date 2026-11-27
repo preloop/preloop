@@ -109,6 +109,7 @@ func promptToOnboardCandidatesTiered(
 	autoApprove bool,
 	askApprovals bool,
 	enroll func(agent AgentConfig, approvals bool) error,
+	preflight ...func(agent AgentConfig) error,
 ) ([]agentOnboardingOutcome, error) {
 	verified, unverified, reasons := partitionCandidatesByModelRouting(client, candidates)
 	bufferedReader := bufio.NewReader(reader)
@@ -120,7 +121,7 @@ func promptToOnboardCandidatesTiered(
 			len(verified),
 		)
 	}
-	outcomes, err := promptToOnboardCandidates(bufferedReader, writer, verified, autoApprove, askApprovals, enroll)
+	outcomes, err := promptToOnboardCandidates(bufferedReader, writer, verified, autoApprove, askApprovals, enroll, preflight...)
 	if err != nil {
 		return outcomes, err
 	}
@@ -128,7 +129,7 @@ func promptToOnboardCandidatesTiered(
 		return outcomes, nil
 	}
 	printModelRoutingTierExplanation(writer, unverified, reasons, autoApprove)
-	secondTier, err := promptToOnboardCandidates(bufferedReader, writer, unverified, autoApprove, askApprovals, enroll)
+	secondTier, err := promptToOnboardCandidates(bufferedReader, writer, unverified, autoApprove, askApprovals, enroll, preflight...)
 	outcomes = append(outcomes, secondTier...)
 	return outcomes, err
 }

@@ -589,6 +589,45 @@ async def validate_policy(
     return result
 
 
+def _record_applied_version(
+    db: Session,
+    account_id: str,
+    user_id: UUID,
+    policy_name: str,
+    result: PolicyImportResult,
+) -> Optional[int]:
+    """Snapshot the configuration an apply just committed as a new version.
+
+    The apply is already committed, so a snapshot failure is logged and
+    reported as a warning instead of failing the request.
+
+    Args:
+        db: Database session.
+        account_id: Account the policy was applied to.
+        user_id: User who applied it.
+        policy_name: Name from the applied policy's metadata.
+        result: The apply result; a warning is added on failure.
+
+    Returns:
+        The new version number, or None when no version was recorded.
+    """
+    try:
+        snapshot = PolicyVersionService(db, account_id).create_snapshot(
+            description=f"Applied policy '{policy_name}'",
+            user_id=user_id,
+            set_active=True,
+        )
+        db.commit()
+        return snapshot.version_number
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Failed to record policy version: %s", type(exc).__name__)
+        result.warnings.append(
+            "The policy was applied, but no policy version was recorded."
+        )
+        return None
+
+
 @router.post(
     "/policies/upload",
     response_model=PolicyImportResult,
@@ -729,6 +768,14 @@ async def upload_policy(
         )
 
     if not dry_run:
+        result.policy_version = await run_in_threadpool(
+            _record_applied_version,
+            db,
+            str(account.id),
+            current_user.id,
+            policy.metadata.name,
+            result,
+        )
 
         def _applied_payload() -> Dict[str, Any]:
             active_snapshot = PolicyVersionService(

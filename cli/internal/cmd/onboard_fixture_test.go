@@ -26,6 +26,8 @@ const syntheticClaudeSubscriptionLogin = `{"claudeAiOauth":{"accessToken":"sk-an
 // login and a writable settings file that holds no API key.
 func newClaudeSubscriptionFixture(t *testing.T) onboardFixture {
 	t.Helper()
+	// The fixture models a working Claude Code setup, including Node.js.
+	stubSupportedAgentControlNode(t)
 	rig := newManualRigServer(t)
 	home := newManualRigHome(t)
 	// A --url or --token left behind by another test would win over the
