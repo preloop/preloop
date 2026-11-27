@@ -424,12 +424,30 @@ func TestNormalizeAgentKindMatchesTheServerFold(t *testing.T) {
 	}
 }
 
+func TestSessionOpeningPromptAndFinishedTurn(t *testing.T) {
+	row := runtimeSessionRow{FirstPrompt: "Please fix\n the parser", TurnState: "your_turn"}
+	if got := fallbackSessionTitle(row); got != "Please fix the parser" {
+		t.Fatalf("title = %q", got)
+	}
+	if got := sessionState(row, time.Now()); got != "idle" {
+		t.Fatalf("state = %q", got)
+	}
+	row.TurnState = "ended"
+	if got := sessionState(row, time.Now()); got != "ended" {
+		t.Fatalf("state = %q", got)
+	}
+}
+
 func TestSessionsWideIncludesLocalResumeIdentity(t *testing.T) {
 	var out bytes.Buffer
 	row := runtimeSessionRow{ID: "runtime-example", HarnessSessionID: "native-example", StartDirectory: "/tmp/example project", ResumeCommand: "cd '/tmp/example project' && claude --resume native-example"}
-	if err := writeSessionsTable(&out, []runtimeSessionRow{row}, []string{"Example"}, time.Now(), true); err != nil { t.Fatal(err) }
+	if err := writeSessionsTable(&out, []runtimeSessionRow{row}, []string{"Example"}, time.Now(), true); err != nil {
+		t.Fatal(err)
+	}
 	for _, value := range []string{row.HarnessSessionID, row.StartDirectory, row.ResumeCommand} {
-		if !strings.Contains(out.String(), value) { t.Fatalf("wide output omitted %q", value) }
+		if !strings.Contains(out.String(), value) {
+			t.Fatalf("wide output omitted %q", value)
+		}
 	}
 }
 

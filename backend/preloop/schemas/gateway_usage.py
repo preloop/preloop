@@ -382,6 +382,7 @@ class RuntimeSessionSummary(BaseModel):
     runtime_principal_id: Optional[str] = None
     runtime_principal_name: Optional[str] = None
     title: Optional[str] = None
+    first_prompt: Optional[str] = None
     summary: Optional[str] = None
     summary_updated_at: Optional[datetime] = None
     started_at: datetime
@@ -520,6 +521,13 @@ class AccountRuntimeSessionListResponse(BaseModel):
     limit: int = 20
     offset: int = 0
     items: List[RuntimeSessionSummary] = Field(default_factory=list)
+    related_sessions: List[RuntimeSessionSummary] = Field(default_factory=list)
+    related_truncated: bool = False
+    matching_snippets: dict[str, str] = Field(default_factory=dict)
+    matching_turns: dict[str, str] = Field(default_factory=dict)
+    content_search: dict | None = None
+    search_warning: str | None = None
+    next_offset: int | None = None
 
 
 class SubscriptionUsageSummary(BaseModel):
@@ -1391,6 +1399,8 @@ class AccountRuntimeSessionDetailResponse(BaseModel):
     period_start: Optional[datetime] = None
     period_end: Optional[datetime] = None
     session: RuntimeSessionSummary
+    related_sessions: List[RuntimeSessionSummary] = Field(default_factory=list)
+    related_truncated: bool = False
     usage_by_model: List[GatewayUsageByModel] = Field(default_factory=list)
 
 

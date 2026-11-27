@@ -1,149 +1,248 @@
-/**
- * The talk window's session switcher: the agent's recent sessions and a way
- * to start a new one, the web form of `/resume` and `/clear` in the CLIs.
- *
- * A talk window shows one session and never moves on its own; this is the
- * only way it changes session, and it is the operator who presses it. Light
- * DOM, so the session names stay in the page's own text and styles.
- */
+/** Search and select the agent's sessions without changing message routing. */
 import { LitElement, html, nothing } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
-
+import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
-import '@shoelace-style/shoelace/dist/components/icon/icon.js';
-import '@shoelace-style/shoelace/dist/components/menu/menu.js';
-import '@shoelace-style/shoelace/dist/components/divider/divider.js';
-import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
-
-import type { RuntimeSessionSummary } from '../types';
-import { formatRelativeTime } from '../utils/date';
+import '@shoelace-style/shoelace/dist/components/input/input.js';
+import { findRuntimeSessions } from '../api';
+import type {
+  AccountRuntimeSessionListResponse,
+  RuntimeSessionSummary,
+} from '../types';
 import { normalizeObservedSession } from '../utils/session-observer';
+import { sessionTree } from '../utils/session-tree';
 
-/** Bubbled when the operator picks a session: `{ sessionId }`. */
 export const TALK_SESSION_SELECT_EVENT = 'talk-session-select';
-
-/** Bubbled when the operator asks for a new session. */
 export const TALK_SESSION_NEW_EVENT = 'talk-session-new';
-
-/** Enough to tell concurrent sessions apart; older ones live in the console. */
-const MAX_LISTED_SESSIONS = 20;
 
 @customElement('talk-session-picker')
 export class TalkSessionPicker extends LitElement {
-  @property({ attribute: false })
-  sessions: RuntimeSessionSummary[] = [];
-
-  /** The session on screen, or null while a new session is being started. */
-  @property({ attribute: false })
-  currentSessionId: string | null = null;
-
-  /** Hidden for runtimes that cannot start a session on request. */
-  @property({ type: Boolean })
-  canStartNew = true;
+  @property({ attribute: false }) sessions: RuntimeSessionSummary[] = [];
+  @property({ attribute: false }) currentSessionId: string | null = null;
+  @property({ type: String }) agentId = '';
+  @property({ type: Boolean }) canStartNew = true;
+  @state() private query = '';
+  @state() private result: AccountRuntimeSessionListResponse | null = null;
+  @state() private loading = false;
+  @state() private error = '';
+  @state() private expanded = new Set<string>();
+  private sequence = 0;
+  private debounce?: ReturnType<typeof setTimeout>;
 
   protected createRenderRoot(): HTMLElement {
     return this;
   }
 
-  /** Open the list, as `/resume` does. */
-  public async show(): Promise<void> {
-    await this.updateComplete;
-    const dropdown = this.querySelector('sl-dropdown') as
-      (HTMLElement & { show?: () => Promise<void> }) | null;
-    await dropdown?.show?.();
-    // Keyboard lands in the list: arrows pick, Esc closes it.
-    const first = this.querySelector<HTMLElement>(
-      'sl-menu-item[aria-checked="true"], sl-menu-item:not([disabled])'
-    );
-    first?.focus();
+  disconnectedCallback(): void {
+    super.disconnectedCallback();
+    clearTimeout(this.debounce);
+    this.sequence++;
   }
 
-  private select(sessionId: string): void {
+  public async show(): Promise<void> {
+    await this.updateComplete;
+    const dropdown = this.querySelector('sl-dropdown') as HTMLElement & {
+      show(): Promise<void>;
+    };
+    await dropdown?.show();
+    this.querySelector('sl-input')?.focus();
+  }
+
+  private async search(more = false): Promise<void> {
+    if (!this.agentId) return;
+    const sequence = ++this.sequence;
+    this.loading = true;
+    this.error = '';
+    try {
+      const result = await findRuntimeSessions({
+        agent: this.agentId,
+        startDate: new Date(0).toISOString(),
+        query: this.query,
+        limit: 30,
+        offset: more ? (this.result?.next_offset ?? 0) : 0,
+      });
+      if (sequence !== this.sequence) return;
+      if (more && this.result) {
+        result.items = [
+          ...new Map(
+            [...this.result.items, ...result.items].map((row) => [row.id, row])
+          ).values(),
+        ];
+        result.related_sessions = [
+          ...new Map(
+            [
+              ...(this.result.related_sessions ?? []),
+              ...(result.related_sessions ?? []),
+            ].map((row) => [row.id, row])
+          ).values(),
+        ];
+        result.matching_snippets = {
+          ...this.result.matching_snippets,
+          ...result.matching_snippets,
+        };
+      }
+      this.result = result;
+      this.error = result.search_warning ?? '';
+    } catch (error) {
+      if (sequence === this.sequence)
+        this.error = error instanceof Error ? error.message : 'Search failed';
+    } finally {
+      if (sequence === this.sequence) this.loading = false;
+    }
+  }
+
+  private onInput(event: Event): void {
+    this.query = (event.target as HTMLInputElement).value;
+    this.sequence++;
+    this.result = null;
+    this.loading = true;
+    clearTimeout(this.debounce);
+    this.debounce = setTimeout(() => void this.search(), 250);
+  }
+
+  private select(session: RuntimeSessionSummary): void {
+    if (this.agentId && session.agent_id && session.agent_id !== this.agentId)
+      return;
     this.dispatchEvent(
       new CustomEvent(TALK_SESSION_SELECT_EVENT, {
-        detail: { sessionId },
+        detail: { sessionId: session.id, session },
         bubbles: true,
         composed: true,
       })
     );
+    void (
+      this.querySelector('sl-dropdown') as HTMLElement & {
+        hide(): Promise<void>;
+      }
+    )?.hide();
   }
 
   private startNew(): void {
     this.dispatchEvent(
-      new CustomEvent(TALK_SESSION_NEW_EVENT, { bubbles: true, composed: true })
-    );
-  }
-
-  private get ranked(): RuntimeSessionSummary[] {
-    return [...this.sessions]
-      .sort((left, right) => {
-        const leftAt = left.last_activity_at || left.started_at || '';
-        const rightAt = right.last_activity_at || right.started_at || '';
-        return rightAt.localeCompare(leftAt);
+      new CustomEvent(TALK_SESSION_NEW_EVENT, {
+        bubbles: true,
+        composed: true,
       })
-      .slice(0, MAX_LISTED_SESSIONS);
-  }
-
-  private renderSession(session: RuntimeSessionSummary) {
-    const observed = normalizeObservedSession(session);
-    const live = session.is_active_now && !session.ended_at;
-    const where = session.session_reference || observed.subtitle;
-    const lastAt = session.last_activity_at || session.started_at;
-    const current = session.id === this.currentSessionId;
-    return html`
-      <sl-menu-item
-        class="talk-session-option"
-        type="checkbox"
-        ?checked=${current}
-        value=${session.id}
-        data-session-id=${session.id}
-        @click=${() => this.select(session.id)}
-      >
-        <span class="talk-session-option-title">${observed.title}</span>
-        <span class="talk-session-option-meta">
-          ${live ? html`<span class="talk-session-live">Live</span>` : nothing}
-          ${where ? html`<span>${where}</span>` : nothing}
-          ${lastAt ? html`<span>${formatRelativeTime(lastAt)}</span>` : nothing}
-        </span>
-      </sl-menu-item>
-    `;
+    );
+    void (
+      this.querySelector('sl-dropdown') as HTMLElement & {
+        hide(): Promise<void>;
+      }
+    )?.hide();
   }
 
   render() {
-    const sessions = this.ranked;
-    return html`
-      <sl-dropdown placement="bottom-end" hoist>
-        <sl-button
-          slot="trigger"
-          size="small"
-          caret
-          data-testid="talk-session-picker-trigger"
-        >
-          Sessions
-        </sl-button>
-        <sl-menu aria-label="Sessions">
-          ${
-            this.canStartNew
-              ? html`<sl-menu-item
-                    data-testid="talk-new-session"
-                    @click=${() => this.startNew()}
-                  >
-                    <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-                    New session
-                  </sl-menu-item>
-                  ${sessions.length ? html`<sl-divider></sl-divider>` : nothing}`
-              : nothing
-          }
-          ${sessions.map((session) => this.renderSession(session))}
-          ${
-            !sessions.length && !this.canStartNew
-              ? html`<sl-menu-item disabled>No sessions yet</sl-menu-item>`
-              : nothing
-          }
-        </sl-menu>
-      </sl-dropdown>
-    `;
+    const items = this.result?.items ?? (this.query ? [] : this.sessions);
+    const raw = new Map(
+      [...items, ...(this.result?.related_sessions ?? [])].map((row) => [
+        row.id,
+        row,
+      ])
+    );
+    const normalized = [...raw.values()].map(normalizeObservedSession);
+    const rows = sessionTree(
+      normalized,
+      this.expanded,
+      new Set([
+        ...(this.query ? items.map((row) => row.id) : []),
+        ...(this.currentSessionId ? [this.currentSessionId] : []),
+      ])
+    );
+    const group = (status: string): string =>
+      status === 'ended'
+        ? 'Ended'
+        : status === 'active_now'
+          ? 'Running'
+          : 'Idle';
+    let rootGroup = 'Idle';
+    const groups = new Map(
+      ['Running', 'Idle', 'Ended'].map((label) => [label, [] as typeof rows])
+    );
+    for (const row of rows) {
+      if (row.depth === 0) rootGroup = group(row.session.status);
+      groups.get(rootGroup)!.push(row);
+    }
+    return html` <sl-dropdown
+      placement="bottom-end"
+      hoist
+      @sl-show=${() => void this.search()}
+    >
+      <sl-button
+        slot="trigger"
+        size="small"
+        caret
+        data-testid="talk-session-picker-trigger"
+        >Sessions</sl-button
+      >
+      <div
+        class="talk-session-menu"
+        style="box-sizing:border-box;width:min(440px, 90vw);max-height:65vh;overflow:auto;padding:var(--sl-spacing-small);background:var(--console-surface, var(--sl-color-neutral-0));border:1px solid var(--console-hairline, var(--sl-color-neutral-200));border-radius:var(--sl-border-radius-medium)"
+      >
+        <sl-input
+          label="Find a session"
+          placeholder="Title, prompt, directory or ID"
+          .value=${this.query}
+          @sl-input=${this.onInput}
+        ></sl-input>
+        ${this.canStartNew ? html`<sl-button data-testid="talk-new-session" size="small" @click=${this.startNew}>New session</sl-button>` : nothing}
+        <div role="status">${this.loading ? 'Searching...' : this.error}</div>
+        ${[...groups].map(([label, groupRows]) =>
+          groupRows.length
+            ? html`
+                <div class="meta">${label}</div>
+                ${groupRows.map(
+                  ({ session, depth, children, runningChildren, expanded }) =>
+                    html` <div
+                      style=${`margin-inline-start:${Math.min(depth, 6) * 16}px`}
+                    >
+                      <button
+                        type="button"
+                        class="talk-session-option"
+                        ?disabled=${!!this.agentId && !!session.agentId && session.agentId !== this.agentId}
+                        data-session-id=${session.id}
+                        aria-current=${session.id === this.currentSessionId ? 'true' : 'false'}
+                        style="display:block;width:100%;text-align:start;background:transparent;color:inherit;border:0;padding:8px;cursor:pointer"
+                        @click=${() => this.select(raw.get(session.id)!)}
+                      >
+                        <span class="talk-session-option-title"
+                          >${session.title}</span
+                        >
+                        <span class="talk-session-option-meta"
+                          >${session.cwd || session.sessionReference || session.id.slice(0, 8)}</span
+                        >
+                        ${this.agentId && session.agentId && session.agentId !== this.agentId ? html`<span class="talk-session-option-meta">Related session on another agent</span>` : nothing}
+                        ${session.firstPrompt ? html`<span class="talk-session-option-meta" title=${session.firstPrompt}>${session.firstPrompt.slice(0, 120)}</span>` : nothing}
+                        ${session.parentSessionId ? html`<span class="talk-session-option-meta">Subagent of ${normalized.find((row) => row.id === session.parentSessionId)?.title || session.parentSessionId.slice(0, 8)} · ${group(session.status)}</span>` : nothing}
+                        ${this.result?.matching_snippets?.[session.id] ? html`<span class="talk-session-option-meta">${this.result.matching_snippets[session.id].replace(/<\/?mark>/g, '')}</span>` : nothing}
+                      </button>
+                      ${
+                        children
+                          ? html`<sl-button
+                              size="small"
+                              variant="text"
+                              aria-expanded=${expanded}
+                              @click=${() => {
+                                const next = new Set(this.expanded);
+                                if (next.has(session.id))
+                                  next.delete(session.id);
+                                else next.add(session.id);
+                                this.expanded = next;
+                              }}
+                              >${expanded ? 'Hide' : 'Show'} ${children}
+                              subagents${runningChildren ? ` · ${runningChildren} running` : ''}</sl-button
+                            >`
+                          : nothing
+                      }
+                    </div>`
+                )}
+              `
+            : nothing
+        )}
+        ${!this.loading && !this.error && !items.length ? html`<p>No sessions matched. Searched titles, first prompts, directories, agents, IDs and captured content.</p>` : nothing}
+        ${this.result?.has_more ? html`<sl-button size="small" ?loading=${this.loading} @click=${() => void this.search(true)}>Load more sessions</sl-button>` : nothing}
+        ${this.result?.related_truncated ? html`<p>Some related sessions are omitted. Search by title or ID to find them.</p>` : nothing}
+      </div>
+    </sl-dropdown>`;
   }
 }
 

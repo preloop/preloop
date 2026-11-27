@@ -1189,6 +1189,44 @@ describe('Hosted composer IME', () => {
   });
 });
 
+describe('composer target identity and server delivery wording', () => {
+  afterEach(() => sinon.restore());
+  for (const [state, description] of [
+    ['delivered_now', 'Delivered now'],
+    ['next_step', "Delivered at the agent's next step"],
+    ['resumes_session', 'Resumes this session'],
+    ['unavailable', 'Cannot deliver: this process is unavailable'],
+  ]) {
+    it(`shows the selected session and ${state} exactly as returned`, async () => {
+      localStorage.setItem('accessToken', 'synthetic-token');
+      sinon.stub(window, 'fetch').callsFake(
+        async () =>
+          new Response(
+            JSON.stringify({
+              runtime_session_id: 'sess-1',
+              mode: 'note',
+              reason: null,
+              delivery_preview: { state, description },
+            }),
+            { status: 200 }
+          )
+      );
+      const el = await mount(agent());
+      el.sessionSubject = 'Review the catalog';
+      await waitUntil(() =>
+        el
+          .shadowRoot!.querySelector('[data-testid="talk-delivery-target"]')!
+          .textContent!.includes(description)
+      );
+      const text = el.shadowRoot!.querySelector(
+        '[data-testid="talk-delivery-target"]'
+      )!.textContent;
+      expect(text).to.contain('To: Review the catalog');
+      expect(text).to.contain(description);
+    });
+  }
+});
+
 describe('Talk native startup recovery', () => {
   afterEach(() => sinon.restore());
 

@@ -4996,6 +4996,13 @@ paths:
           minimum: 0
           default: 0
           title: Offset
+      - name: include_related
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Related
       - name: sort
         in: query
         required: false
@@ -26309,6 +26316,45 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/runtime-sessions/find:
+    post:
+      tags:
+      - Runtime Sessions
+      summary: Find sessions by identity and captured content with family context
+      description: 'Use the same relevance search as the CLI, retaining identity-only
+        hits.
+
+
+        A plain handler so FastAPI runs it, and its session, on the threadpool.'
+      operationId: find_runtime_sessions_api_v1_runtime_sessions_find_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionFindRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountRuntimeSessionListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/{runtime_session_id}/browser-steps:
     post:
       tags:
@@ -30741,6 +30787,15 @@ components:
           title: Period End
         session:
           $ref: '#/components/schemas/RuntimeSessionSummary'
+        related_sessions:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionSummary'
+          type: array
+          title: Related Sessions
+        related_truncated:
+          type: boolean
+          title: Related Truncated
+          default: false
         usage_by_model:
           items:
             $ref: '#/components/schemas/GatewayUsageByModel'
@@ -30801,6 +30856,41 @@ components:
             $ref: '#/components/schemas/RuntimeSessionSummary'
           type: array
           title: Items
+        related_sessions:
+          items:
+            $ref: '#/components/schemas/RuntimeSessionSummary'
+          type: array
+          title: Related Sessions
+        related_truncated:
+          type: boolean
+          title: Related Truncated
+          default: false
+        matching_snippets:
+          additionalProperties:
+            type: string
+          type: object
+          title: Matching Snippets
+        matching_turns:
+          additionalProperties:
+            type: string
+          type: object
+          title: Matching Turns
+        content_search:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Content Search
+        search_warning:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Search Warning
+        next_offset:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Next Offset
       type: object
       required:
       - period_start
@@ -57612,6 +57702,11 @@ components:
           - type: string
           - type: 'null'
           title: Title
+        first_prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: First Prompt
         summary:
           anyOf:
           - type: string
@@ -58805,6 +58900,92 @@ components:
         cap. A client that round trips nullable values must not turn embedding
 
         off, or be refused for naming a provider, by sending ``null``.'
+    SessionFindRequest:
+      properties:
+        session_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+            maxItems: 500
+          - type: 'null'
+          title: Session Ids
+        query:
+          type: string
+          maxLength: 512
+          title: Query
+          default: ''
+        agent:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent
+        agent_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Kind
+        session_source_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Source Type
+        status:
+          type: string
+          enum:
+          - all
+          - active
+          - ended
+          title: Status
+          default: all
+        start_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+        end_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+        limit:
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
+          title: Limit
+          default: 20
+        offset:
+          type: integer
+          minimum: 0.0
+          title: Offset
+          default: 0
+        sort:
+          type: string
+          enum:
+          - last_activity
+          - started
+          - cost
+          - requests
+          title: Sort
+          default: last_activity
+        has_artifacts:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Has Artifacts
+        workspace_id:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+          title: Workspace Id
+      additionalProperties: false
+      type: object
+      title: SessionFindRequest
+      description: Search identity and captured content within the same list filters.
     SessionOptionCheckoutSource:
       properties:
         tracker_id:
@@ -59429,17 +59610,70 @@ components:
           description: Artifact label filters as key:value, for example site:nord.
             Repeatable; every one must match (AND). tags:x matches an artifact whose
             tags include x. Restricts the search to artifact chunks.
+        session_ids:
+          anyOf:
+          - items:
+              type: string
+              format: uuid
+            type: array
+            maxItems: 500
+          - type: 'null'
+          title: Session Ids
+        session_principals:
+          anyOf:
+          - items:
+              prefixItems:
+              - type: string
+              - type: string
+              type: array
+              maxItems: 2
+              minItems: 2
+            type: array
+            maxItems: 500
+          - type: 'null'
+          title: Session Principals
+        session_source_types:
+          anyOf:
+          - items:
+              type: string
+            type: array
+            maxItems: 100
+          - type: 'null'
+          title: Session Source Types
+        session_source_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Source Type
+        session_status:
+          anyOf:
+          - type: string
+            enum:
+            - all
+            - active
+            - ended
+          - type: 'null'
+          title: Session Status
+        session_has_artifacts:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Session Has Artifacts
+        session_workspace_id:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+          title: Session Workspace Id
       additionalProperties: false
       type: object
       title: SessionSearchFilters
       description: 'Filters over the denormalised columns the corpus carries.
 
 
-        Everything here is a column on the corpus row itself, snapshotted by the
+        Chunk filters use denormalised corpus columns. Optional session filters
 
-        writer, so filtering never joins a source table and never reaches outside
-
-        the account bound applied by the query.'
+        narrow the corpus through an account-bounded subquery before ranking.'
     SessionSearchRequest:
       properties:
         query:

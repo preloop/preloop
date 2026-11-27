@@ -33,6 +33,16 @@ class RuntimeSessionActivity(Base):
 
     __tablename__ = "runtime_session_activity"
     __table_args__ = (
+        Index(
+            "ix_rsa_session_opening_prompt",
+            "account_id",
+            "runtime_session_id",
+            "timestamp",
+            "id",
+            postgresql_where=text(
+                "activity_type = 'transcript_message' AND metadata ->> 'role' = 'user'"
+            ),
+        ),
         # Command/result deduplication must not scan unrelated activity payloads.
         Index(
             "ix_rsa_account_command_lookup",

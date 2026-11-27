@@ -263,6 +263,8 @@ export class TalkComposer extends LitElement {
   @property({ type: String })
   sessionId: string | null = null;
 
+  @property({ type: String }) sessionSubject = '';
+
   @property({ type: String })
   sourceContext = 'talk-window';
 
@@ -357,12 +359,24 @@ export class TalkComposer extends LitElement {
         calc(var(--sl-spacing-small) + env(safe-area-inset-bottom, 0px));
     }
 
-    .control-row {
+    .control-row,
+    .delivery-target {
       align-items: center;
       display: flex;
       flex-wrap: wrap;
       gap: var(--sl-spacing-x-small);
       margin-bottom: var(--sl-spacing-x-small);
+    }
+
+    .delivery-target {
+      align-items: flex-start;
+      flex-direction: column;
+      overflow-wrap: anywhere;
+    }
+
+    .delivery-target span:last-child {
+      color: var(--console-meta-color, var(--sl-color-neutral-600));
+      font-size: var(--console-text-meta, 13px);
     }
 
     .mode {
@@ -1544,6 +1558,30 @@ export class TalkComposer extends LitElement {
     const showControlRow = !this.sendMessage && this.controlRowVisible;
     const menu = this.sendMessage ? [] : this.menuCommands;
     return html`
+      ${
+        !this.sendMessage
+          ? html`<div
+              class="delivery-target"
+              data-testid="talk-delivery-target"
+              role="status"
+            >
+              <span
+                >${this.sessionId ? `To: ${this.sessionSubject || this.sessionId.slice(0, 8)}` : 'New session'}</span
+              >
+              <span
+                >${
+                  this.sessionId
+                    ? this.sessionControl?.delivery_preview?.description ||
+                      this.sessionControl?.reason ||
+                      'Checking delivery details'
+                    : this.startsNewSession
+                      ? 'Next message starts a new session'
+                      : 'Starting a session is unavailable'
+                }</span
+              >
+            </div>`
+          : nothing
+      }
       ${
         !this.sendMessage && this.startsNewSession
           ? html`

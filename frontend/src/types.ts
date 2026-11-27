@@ -641,6 +641,7 @@ export interface TerminalLocation {
 }
 
 export interface RuntimeSessionSummary {
+  first_prompt?: string | null;
   parent_session_id?: string | null;
   subagent_role?: string | null;
   terminal_location?: TerminalLocation | null;
@@ -720,12 +721,21 @@ export interface AccountRuntimeSessionListResponse {
   limit: number;
   offset: number;
   items: RuntimeSessionSummary[];
+  related_sessions?: RuntimeSessionSummary[];
+  related_truncated?: boolean;
+  matching_snippets?: Record<string, string>;
+  matching_turns?: Record<string, string>;
+  content_search?: SessionSearchResponse | null;
+  search_warning?: string | null;
+  next_offset?: number | null;
 }
 
 export interface AccountRuntimeSessionDetailResponse {
   period_start: string;
   period_end: string;
   session: RuntimeSessionSummary;
+  related_sessions?: RuntimeSessionSummary[];
+  related_truncated?: boolean;
   usage_by_model: GatewayUsageByModel[];
   interactions: AccountGatewayUsageSearchResponse;
   activity_timeline: RuntimeSessionActivityItem[];

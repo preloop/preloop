@@ -238,9 +238,8 @@ def normalize_query(query: Optional[str]) -> Optional[str]:
 class SessionSearchFilters:
     """Filters over the denormalised columns the corpus carries.
 
-    Every field here is a snapshot the writer took from the source row, so a
-    filtered search never joins the source table and never widens past the
-    account bound.
+    Chunk filters use writer snapshots. Optional session selection filters
+    apply an account-bounded subquery before ranking, never after paging.
     """
 
     start_date: Optional[datetime] = None
@@ -257,6 +256,14 @@ class SessionSearchFilters:
     #: JSONB containment terms over the artifact labels, ANDed: each one is
     #: ``{key: value}`` or ``{"tags": [value]}``.
     artifact_labels: Optional[List[Dict[str, Any]]] = None
+
+    session_ids: Optional[List[Any]] = None
+    session_principals: Optional[List[tuple[str, str]]] = None
+    session_source_types: Optional[List[str]] = None
+    session_source_type: Optional[str] = None
+    session_status: Optional[str] = None
+    session_has_artifacts: Optional[str] = None
+    session_workspace_id: Optional[str] = None
 
 
 @dataclass
@@ -939,6 +946,35 @@ class CRUDSessionSearchDocument(CRUDBase[SessionSearchDocument]):
             *search_document_conditions(db, account_id),
         ]
         active = filters or SessionSearchFilters()
+        if any(
+            value is not None
+            for value in (
+                active.session_ids,
+                active.session_principals,
+                active.session_source_types,
+                active.session_source_type,
+                active.session_status,
+                active.session_has_artifacts,
+                active.session_workspace_id,
+            )
+        ):
+            from preloop.models.crud.session_discovery import selection_ids
+
+            conditions.append(
+                SessionSearchDocument.runtime_session_id.in_(
+                    selection_ids(
+                        db,
+                        account_id=account_id,
+                        session_ids=active.session_ids,
+                        principals=active.session_principals,
+                        source_types=active.session_source_types,
+                        source_type=active.session_source_type,
+                        status=active.session_status,
+                        has_artifacts=active.session_has_artifacts,
+                        workspace_id=active.session_workspace_id,
+                    )
+                )
+            )
         if active.start_date is not None:
             conditions.append(SessionSearchDocument.occurred_at >= active.start_date)
         if active.end_date is not None:

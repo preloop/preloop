@@ -61,6 +61,9 @@ from preloop.schemas.session_similarity import (
     MAX_SIMILAR_WINDOW_DAYS,
     SimilarSessionsResponse,
 )
+from preloop.schemas.gateway_usage import AccountRuntimeSessionListResponse
+from preloop.schemas.session_find import SessionFindRequest
+from preloop.services.session_find import find_sessions
 from preloop.services import session_search_audit, session_similarity
 from preloop.utils.permissions import require_permission
 
@@ -188,3 +191,28 @@ async def similar_runtime_sessions(
             include_match_text=include_match_text,
         )
     )
+
+
+@router.post(
+    "/runtime-sessions/find",
+    response_model=AccountRuntimeSessionListResponse,
+    summary="Find sessions by identity and captured content with family context",
+)
+@require_permission("view_runtime_sessions")
+def find_runtime_sessions(
+    payload: SessionFindRequest,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> AccountRuntimeSessionListResponse:
+    """Use the same relevance search as the CLI, retaining identity-only hits.
+
+    A plain handler so FastAPI runs it, and its session, on the threadpool.
+    """
+    actor = session_search_audit.user_actor(
+        current_user,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    return find_sessions(db, account=account, payload=payload, actor=actor)

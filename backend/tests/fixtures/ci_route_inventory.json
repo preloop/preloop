@@ -534,6 +534,7 @@
   "POST /api/v1/runners/{runner_id}/sessions": "deny",
   "POST /api/v1/runners/{runner_id}/token": "deny",
   "POST /api/v1/runtime-sessions": "deny",
+  "POST /api/v1/runtime-sessions/find": "deny",
   "POST /api/v1/runtime-sessions/search": "deny",
   "POST /api/v1/runtime-sessions/search/saved": "deny",
   "POST /api/v1/runtime-sessions/search/saved/{saved_search_id}/run": "deny",

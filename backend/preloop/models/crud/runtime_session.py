@@ -1097,6 +1097,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         flow_execution_id: Optional[str] = None,
         active_within: Optional[timedelta] = None,
         has_artifacts: Optional[str] = None,
+        session_ids: Optional[list[str]] = None,
+        prompt_since: Optional[datetime] = None,
+        usage_start_date: Optional[datetime] = None,
+        usage_end_date: Optional[datetime] = None,
         workspace_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """List runtime sessions with aggregated gateway usage.
@@ -1115,11 +1119,16 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         ``has_artifacts`` keeps sessions holding at least one available
         artifact: ``any`` for any kind, otherwise that artifact kind.
 
+        ``usage_start_date`` and ``usage_end_date`` bound context-row metrics
+        independently of which family identities are visible.
+
         ``sort`` orders all matches descending before paging, with session id
         breaking ties. Cost and requests use the same period and attribution
         as the returned usage figures.
         """
         session_query = db.query(self.model).filter(self.model.account_id == account_id)
+        if session_ids is not None:
+            session_query = session_query.filter(self.model.id.in_(session_ids))
 
         if workspace_id is not None:
             session_query = session_query.filter(
@@ -1177,24 +1186,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             )
 
         if query:
-            normalized_query = f"%{' '.join(query.strip().split())}%"
+            from preloop.models.crud.session_discovery import identity_match
+
             session_query = session_query.filter(
-                or_(
-                    *(
-                        [self.model.title.ilike(normalized_query)]
-                        if "title" in self._runtime_session_columns(db)
-                        else []
-                    ),
-                    *(
-                        [self.model.alias.ilike(normalized_query)]
-                        if "alias" in self._runtime_session_columns(db)
-                        else []
-                    ),
-                    self.model.session_source_type.ilike(normalized_query),
-                    self.model.session_source_id.ilike(normalized_query),
-                    self.model.session_reference.ilike(normalized_query),
-                    self.model.runtime_principal_name.ilike(normalized_query),
-                )
+                identity_match(query, since=prompt_since)
             )
         use_model_page = (
             workspace_id is None
@@ -1343,10 +1338,12 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             if total == 0:
                 return {"total": 0, "has_more": False, "items": []}
             page_ids = None
+        usage_start_date = usage_start_date or start_date
+        usage_end_date = usage_end_date or end_date
         link_filters = {
             "account_id": account_id,
-            "start_date": start_date,
-            "end_date": end_date,
+            "start_date": usage_start_date,
+            "end_date": usage_end_date,
             "ai_model_id": ai_model_id,
         }
         if sort == "started":
@@ -1478,14 +1475,23 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             db,
             account_id=account_id,
             runtime_session_ids=session_ids,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=usage_start_date,
+            end_date=usage_end_date,
             ai_model_id=ai_model_id,
         )
 
+        from preloop.models.crud.session_discovery import opening_prompts
+
+        prompts = opening_prompts(
+            db,
+            account_id=account_id,
+            session_ids=session_ids,
+            since=prompt_since,
+        )
         items = []
         for row in rows:
             summary = self._row_to_summary(row)
+            summary["first_prompt"] = prompts.get(str(row.id))
             latest_usage = latest_usage_by_session.get(str(row.id))
             if latest_usage is not None:
                 summary["latest_model_alias"] = latest_usage.model_alias
@@ -2659,11 +2665,12 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
     @staticmethod
     def _row_to_summary(row) -> dict[str, Any]:
         now = datetime.now(UTC)
-        last_observed_at = row.last_request_at or row.last_activity_at or row.started_at
-        if last_observed_at is not None and last_observed_at.tzinfo is None:
-            last_observed_at = last_observed_at.replace(tzinfo=UTC)
-        elif last_observed_at is not None:
-            last_observed_at = last_observed_at.astimezone(UTC)
+        observations = [
+            value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+            for value in (row.last_request_at, row.last_activity_at, row.started_at)
+            if value is not None
+        ]
+        last_observed_at = max(observations) if observations else None
 
         terminal = getattr(row, "terminal_location", None) or {}
         pane_closed = terminal.get("pane_closed_at") and getattr(
@@ -2672,10 +2679,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         if row.ended_at is not None or pane_closed:
             activity_status = "ended"
             is_active_now = False
-        elif (
-            row.parent_session_id is not None
-            and getattr(row, "turn_state", None) == "your_turn"
-        ):
+        elif getattr(row, "turn_state", None) in {"your_turn", "ended"}:
             activity_status = "idle"
             is_active_now = False
         elif (
