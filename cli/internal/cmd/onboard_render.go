@@ -472,11 +472,17 @@ func closingLine(label, text string) string {
 }
 
 // writeClosingLine prints a receipt line: the label padded so the texts
-// line up under each other, and long text wrapped under its own start.
+// line up under each other, and long text wrapped under its own start. A
+// command is printed on one line whatever its length: broken across lines
+// it could not be pasted into a shell.
 func writeClosingLine(w io.Writer, line string, width int) {
 	label, text, labelled := strings.Cut(line, "\t")
 	if !labelled {
 		label, text = "", line
+	}
+	if strings.HasPrefix(text, "preloop ") {
+		fmt.Fprintln(w, "  "+padRight(label, 8)+text) //nolint:errcheck
+		return
 	}
 	writeWrapped(w, "  "+padRight(label, 8), strings.Repeat(" ", 10), text, width)
 }

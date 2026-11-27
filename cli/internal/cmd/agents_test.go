@@ -49,8 +49,8 @@ func TestFailureFootersPointAtTroubleshootingDocs(t *testing.T) {
 
 	t.Run("a run with a failed agent links the docs once", func(t *testing.T) {
 		fake := newFakeOnboardRun(t, []AgentConfig{
-			{Name: "Codex CLI", ConfigPath: "/tmp/synthetic/codex.toml"},
-			{Name: "Gemini CLI", ConfigPath: "/tmp/synthetic/gemini.json"},
+			{Name: "Codex CLI", ConfigPath: "/tmp/synthetic/codex.toml", RuntimeState: string(agentRuntimeStatePresent), AuthState: string(agentAuthStateReady)},
+			{Name: "Gemini CLI", ConfigPath: "/tmp/synthetic/gemini.json", RuntimeState: string(agentRuntimeStatePresent), AuthState: string(agentAuthStateReady)},
 		}, defaultOnboardSelection(), "", true)
 		fake.applyErrors = map[string]error{"Gemini CLI": fmt.Errorf("boom")}
 		if err := fake.run.execute(); err != nil {
