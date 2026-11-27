@@ -231,7 +231,9 @@ func assertOnboardGolden(t *testing.T, name, got string) {
 	for _, line := range strings.Split(got, "\n") {
 		trimmed = append(trimmed, strings.TrimRight(line, " "))
 	}
-	got = strings.Join(trimmed, "\n")
+	// One newline at the end, whatever the output ended with: the
+	// repository's end-of-file hook allows exactly one.
+	got = strings.TrimRight(strings.Join(trimmed, "\n"), "\n") + "\n"
 	if os.Getenv("UPDATE_ONBOARDING_GOLDEN") == "1" {
 		if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
 			t.Fatal(err)

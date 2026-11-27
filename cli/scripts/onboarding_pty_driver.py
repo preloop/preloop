@@ -224,8 +224,14 @@ def main() -> int:
     manual_rows = None
     manual = re.search(r"^Manual step (for|\d+ of)", screen, re.MULTILINE)
     if manual:
-        end = re.search(r"^Press Enter when the change", screen[manual.start() :], re.MULTILINE)
-        block = screen[manual.start() : manual.start() + end.start()] if end else screen[manual.start() :]
+        end = re.search(
+            r"^Press Enter when the change", screen[manual.start() :], re.MULTILINE
+        )
+        block = (
+            screen[manual.start() : manual.start() + end.start()]
+            if end
+            else screen[manual.start() :]
+        )
         manual_rows = rows_at(block.rstrip("\n"), args.columns)
     key_blocks = sum(1 for block in re.split(r"\n\s*\n", screen) if "agt_" in block)
     lines = text.split("\n")
