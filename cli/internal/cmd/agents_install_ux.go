@@ -144,10 +144,19 @@ const (
 )
 
 func formatCLIError(message string) string {
-	if !stdoutIsTerminal() {
+	if !stdoutColourEnabled() {
 		return message
 	}
 	return ansiRed + message + ansiReset
+}
+
+// stdoutColourEnabled reports whether colour may be written to stdout: only
+// to a terminal, and never when NO_COLOR is set or TERM is dumb.
+func stdoutColourEnabled() bool {
+	if os.Getenv("NO_COLOR") != "" || strings.EqualFold(strings.TrimSpace(os.Getenv("TERM")), "dumb") {
+		return false
+	}
+	return stdoutIsTerminal()
 }
 
 func stdoutIsTerminal() bool {

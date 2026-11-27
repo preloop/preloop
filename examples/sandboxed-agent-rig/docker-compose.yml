@@ -108,6 +108,21 @@ services:
       retries: 20
     networks: [rig]
 
+  # The ordinary case, for comparison and for cli/scripts/measure-onboarding.sh:
+  # everything the agent owns is writable and the Claude login was done
+  # inside the container.
+  agent-writable:
+    <<: *agent
+    environment:
+      <<: *agent-env
+      # An npm prefix the container user owns, so the Agent Control plugin
+      # can be installed (it comes from the npm registry).
+      NPM_CONFIG_PREFIX: /home/agent/.npm-global
+      PATH: /home/agent/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    volumes:
+      - writable-claude:/home/agent/.claude
+      - writable-preloop:/home/agent/.preloop
+
   # Variant 1, the common sandbox: settings.json is a single file bind-mounted
   # read-only from the host. ~/.preloop is a writable named volume and the
   # Claude login was done inside the container.
@@ -168,6 +183,8 @@ networks:
         - subnet: 172.31.250.0/24
 
 volumes:
+  writable-claude:
+  writable-preloop:
   ro-settings-preloop:
   wrong-owner-claude:
   wrong-owner-preloop:
