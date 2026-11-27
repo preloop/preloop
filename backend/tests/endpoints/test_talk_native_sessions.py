@@ -605,3 +605,29 @@ def test_one_result_does_not_end_another_queued_prompt(
             completed=True,
         )
         assert session.turn_state == ("working" if index == 0 else "your_turn")
+
+
+@pytest.mark.parametrize("targeted", [True, False])
+def test_old_sidecar_interrupt_does_not_require_prompt_features(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    targeted: bool,
+) -> None:
+    """An explicit interrupt keeps working before a prompt-capable update."""
+    agent, session = native_session(client, db_session, test_user)
+    agent.control_connection_id = uuid4()
+    db_session.commit()
+    payload: dict[str, Any] = {"message": "Interrupt", "interrupt": True}
+    if targeted:
+        payload["target_session_id"] = str(session.id)
+    with patch(
+        "preloop.api.endpoints.agent_control.agent_control_manager.send_to_agent",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as send:
+        response = client.post(
+            f"/api/v1/agents/{agent.id}/control/prompts", json=payload
+        )
+    assert response.status_code == 202, response.text
+    assert send.call_args.kwargs["envelope"].payload["interrupt"] is True

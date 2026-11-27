@@ -2400,7 +2400,11 @@ async def _route_managed_agent_prompt(
         identity["working_directory"] = request.working_directory or (
             directories[0] if directories else None
         )
-    if agent.session_source_type in {"claude_code", "codex"} and herdr_target is None:
+    if (
+        agent.session_source_type in {"claude_code", "codex"}
+        and herdr_target is None
+        and not request.interrupt
+    ):
         from preloop.services.talk_capabilities import (
             TalkCapabilityError,
             require_features,
