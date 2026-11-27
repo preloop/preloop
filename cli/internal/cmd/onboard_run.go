@@ -801,7 +801,8 @@ func (r *onboardRun) report() []string {
 		fmt.Fprint(r.output, detail.String()) //nolint:errcheck
 	}
 	if err != nil {
-		r.emit(stepEvent{Agent: machineStepName, Step: "report", Status: stepStatusSkipped, Detail: "extension report not sent: " + firstErrorLine(err)})
+		// One line: a server's refusal can carry a long body.
+		r.emit(stepEvent{Agent: machineStepName, Step: "report", Status: stepStatusSkipped, Detail: "extension report not sent: " + truncateColumns(firstErrorLine(err), 110)})
 		return nil
 	}
 	sent := fmt.Sprintf("extension report sent: %s, %d extensions", agentCountLabel(summary.Agents), summary.Extensions)

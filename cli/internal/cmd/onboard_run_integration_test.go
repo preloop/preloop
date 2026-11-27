@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -371,5 +372,46 @@ func TestExtensionReportDisclosureMatchesThePayload(t *testing.T) {
 		if !strings.Contains(full, want) {
 			t.Errorf("the full text misses %q", want)
 		}
+	}
+}
+
+// protects=a report from a scan that could not finish is still accepted;
+// fails_when=the profile entry of a current-user report is partial or
+// failed without an error code (the server answers that with a 422 and the
+// report is lost), or a complete scan carries one; no_claim=the server's
+// rule is restated here, not exercised; the sandbox rig sends a real report
+// from a container, where the scan is partial.
+func TestCurrentProfileResultAgreesWithItsCompleteness(t *testing.T) {
+	for completeness, wantCode := range map[string]string{"complete": "", "partial": "probe_incomplete", "failed": "probe_incomplete"} {
+		got := currentProfileResult("synthetic-ref", completeness)
+		if got.ErrorCode != wantCode || got.Completeness != completeness || got.ProfileRef != "synthetic-ref" {
+			t.Errorf("%s: %+v", completeness, got)
+		}
+	}
+}
+
+// protects=a refused report is one line of the step list; fails_when=the
+// server's response body spills over several rows; no_claim=stand-in
+// report sender.
+func TestRefusedReportIsOneShortLine(t *testing.T) {
+	fake := newFakeOnboardRun(t, threeAgents()[:1], defaultOnboardSelection(), "", true)
+	fake.reportErr = errors.New("failed to send discovery report: API error (status 422): " + strings.Repeat(`{"detail":"synthetic"} `, 40))
+	if err := fake.run.execute(); err != nil {
+		t.Fatal(err)
+	}
+	rows := 0
+	inReport := false
+	for _, line := range strings.Split(fake.out.String(), "\n") {
+		if strings.Contains(line, "extension report not sent") {
+			inReport = true
+		} else if inReport && !strings.HasPrefix(line, "                    ") {
+			inReport = false
+		}
+		if inReport {
+			rows++
+		}
+	}
+	if rows == 0 || rows > 3 {
+		t.Fatalf("the refusal takes %d rows:\n%s", rows, fake.out.String())
 	}
 }
