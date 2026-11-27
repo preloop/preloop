@@ -54,7 +54,7 @@ export interface ExtensionDetails {
 export interface ExtensionKey {
   details?: ExtensionDetails | null;
   agent_kind: string;
-  extension_kind: 'plugin' | 'skill' | 'hook' | 'command';
+  extension_kind: 'plugin' | 'skill' | 'hook' | 'command' | 'mcp_server';
   extension_id: string;
   approval_state: ExtensionApprovalState;
   /** Undefined means the decision could not be read; null means no constraint. */

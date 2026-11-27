@@ -350,7 +350,17 @@ Claude local MCP entries use project scope, matching local plugin reporting.
 A local entry overrides a same-name project entry. User entries retain their
 own rows. Claude MCP enabled state remains unknown unless explicitly disabled;
 configured presence does not prove approval or execution. MCP hashes cover the
-canonical server definition, including private values without exposing them.
+canonical server definition, including private values without sending them in clear.
+
+MCP content hashes use the same unkeyed SHA-256 comparison scheme as hook
+commands and skill files, so offline policy checks and pins agree across
+devices without fetching an account key. They do not send cleartext definitions,
+but they are not encryption: someone with the rest of a definition and its hash
+can test guesses for a low-entropy password or token. Treat exported hashes as
+sensitive metadata. Rotating a credential in `env`, an argument, a header or a
+URL changes the hash and makes an existing content pin report `content_changed`.
+Account-keyed hashes would require a different offline-policy contract; the
+current contract intentionally retains portable content hashes.
 
 The plugin layouts were verified with Claude Code 2.1.332 and Codex CLI 0.172.0
 using their plugin managers. Claude's install registry is authoritative: unused

@@ -9,6 +9,8 @@ import (
 
 // mcpServers reports configuration identities, never command arguments,
 // environment values, headers or URLs. A hash covers the complete definition.
+// Like hook and skill hashes, this is a portable comparison digest, not
+// encryption: secret rotation changes pins and low-entropy values are guessable.
 // Configured presence does not establish approval or observed execution.
 func (r *extensionRoot) mcpServers(raw json.RawMessage, scope, project, file string) {
 	if raw == nil {

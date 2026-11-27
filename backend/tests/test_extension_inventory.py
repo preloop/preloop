@@ -305,6 +305,39 @@ def test_http_ingest_approval_and_aggregate(client: TestClient) -> None:
     assert len(client.get("/api/v1/agents/extension-approvals").json()["items"]) == 1
 
 
+def test_http_mcp_inventory_approval_and_pin_round_trip(client: TestClient) -> None:
+    """Persist standalone MCP rows and decisions through migrated constraints."""
+    metadata = extension(
+        kind="mcp_server",
+        id="example-server",
+        source_kind="local",
+        content_hash="sha256:" + "c" * 64,
+    )
+    response = client.post(REPORTS, json=report([metadata]))
+    assert response.status_code == 202, response.text
+    approval = (
+        "/api/v1/agents/extension-approvals/claude_code/mcp_server/example-server"
+    )
+    response = client.put(
+        approval,
+        json={
+            "approval_state": "approved",
+            "pin": {"content_hash": metadata["content_hash"]},
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["extension_kind"] == "mcp_server"
+    response = client.get(EXTENSIONS, params={"extension_kind": "mcp_server"})
+    assert response.status_code == 200, response.text
+    row = response.json()["items"][0]
+    assert row["extension_id"] == "example-server"
+    assert row["effective_state"] == "approved"
+    exported = client.get("/api/v1/agents/extension-approvals/export")
+    assert exported.status_code == 200, exported.text
+    assert exported.json()["entries"][0]["extension_kind"] == "mcp_server"
+    assert exported.json()["entries"][0]["content_hashes"] == [metadata["content_hash"]]
+
+
 def test_http_permissions(
     client: TestClient, test_viewer_user: models.User, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -20,6 +20,23 @@ describe('extension inventory API', () => {
   afterEach(() => localStorage.removeItem('accessToken'));
   afterEach(() => sinon.restore());
   beforeEach(() => invalidateVersionConstraints());
+  it('uses the MCP server kind for approval reads and writes', async () => {
+    const server: ExtensionKey = {
+      ...key,
+      extension_kind: 'mcp_server',
+      extension_id: 'example-server',
+    };
+    const fetch = sinon.stub(window, 'fetch');
+    fetch.onFirstCall().resolves(new Response(null, { status: 404 }));
+    fetch.onSecondCall().resolves(new Response(JSON.stringify({})));
+    await setExtensionApproval(server, 'approved');
+    for (const call of fetch.getCalls()) {
+      expect(String(call.args[0])).to.contain(
+        '/extension-approvals/claude_code/mcp_server/example-server'
+      );
+    }
+    expect(fetch.secondCall.args[1]?.method).to.equal('PUT');
+  });
   for (const status of [200, 500]) {
     it(`reads constraints in one paginated list, not per row (${status})`, async () => {
       const other = { ...key, extension_id: 'other-skill' };
