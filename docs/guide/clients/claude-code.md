@@ -265,6 +265,9 @@ After onboarding, `~/.claude/settings.json` contains a managed entry like:
 !!! note "Configuration file location"
     Preloop treats `~/.claude/settings.json` as Claude Code's primary configuration file. `~/.claude/mcp-servers.json` is only read as a legacy fallback when `settings.json` is absent. When the `claude` binary is on `PATH`, the CLI registers the managed server through `claude mcp add --scope user` instead of editing files directly.
 
+!!! tip "Read-only settings file (containers, sandboxes)"
+    Onboarding tests whether it can write these files before it changes anything, and honours `CLAUDE_CONFIG_DIR`. When a file is read-only, nothing is written: the CLI prints the exact merge for you to apply, the agent shows as **Waiting for local configuration**, and `preloop agents onboard --resume "Claude Code"` checks the change and makes one real request before it reports the agent as onboarded. See [Sandboxed and containerised agents](sandboxed-agents.md).
+
 ### Step 3: Check configuration and gateway evidence
 
 ```bash
@@ -324,6 +327,8 @@ preloop agents offboard "claude code"   # restore config and remove managed enro
 
 `offboard` also removes the approvals hook and its credential if they were installed, and can optionally clean up the managed model and MCP servers in your account (`--remove-model`, `--remove-mcp-servers`).
 
+When the settings file is read-only, `offboard` prints the exact removal, changes nothing in Preloop until the block is gone, and reports `Offboarded` only for a file that no longer points at Preloop. See [offboarding a sandboxed agent](sandboxed-agents.md#offboarding).
+
 Before cleanup, offboard restores the live subscription credential held by
 Preloop. The ordinary four Claude model families share one credential and need
 one recovery. If export or local write-back fails, offboard stops with the
@@ -341,6 +346,7 @@ seconds for approval and 30 seconds for the hook to finish.
 ## Related
 
 - [CLI quickstart](../quickstart-cli.md): the 60-second install-and-onboard flow
+- [Sandboxed and containerised agents](sandboxed-agents.md): read-only configuration, Docker Compose, how the Claude login reaches a container
 - [Safety Layer & Access Rules](../concepts/safety-layer.md): how rules are evaluated
 - [AI Model Gateway](../concepts/model-gateway.md): what gateway routing gives you
 - [Mobile Apps](mobile-apps.md): approve on the go

@@ -43,6 +43,9 @@ The installer:
     PRELOOP_CONFIRM=1 curl -fsSL https://preloop.ai/install/cli | sh
     ```
 
+!!! tip "Agent in a container, or a read-only configuration file?"
+    Onboarding tests whether it can write the agent's configuration before it changes anything. When it cannot (a read-only bind mount, another owner, a read-only root filesystem), it prints the exact change for you to make and waits until `preloop agents onboard --resume "<agent>"` has checked it. See [Sandboxed and containerised agents](clients/sandboxed-agents.md).
+
 ---
 
 ## Step 2: Sign in or sign up

@@ -20,6 +20,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gitleaks 8.30.1 rule set and additional rules; redaction reduces the chance
   that a secret is stored and is not a guarantee. This changes the discovery
   reporting privacy contract: see `docs/guide/agent-discovery-reporting.md`.
+- `preloop agents onboard` tests whether it can write every file it needs
+  before it changes anything in Preloop, so read-only bind mounts, files owned
+  by another user, immutable files and a read-only root filesystem are
+  detected. For Claude Code, and for the main configuration file of Codex CLI
+  and Cursor, onboarding then continues in manual mode: it prints the exact
+  merge to apply, names the host path a mounted file probably comes from, and
+  saves the same instructions in a private directory. `--manual` forces this
+  mode and `--manual-output` chooses the directory. Other agents stop before
+  any change. See
+  [Sandboxed and containerised agents](docs/guide/clients/sandboxed-agents.md).
+- `preloop agents onboard --resume` finishes a manual setup. It reads the
+  configuration back, lists exactly what is missing or the line and reason of
+  a JSON syntax error, makes one real request through the gateway, and only
+  then reports the agent as onboarded. `--from-env` checks the
+  environment-variable form, `--settings-file` checks a `claude --settings`
+  file, and `--resume-token` covers a read-only `~/.preloop`. Exit status 3
+  means the command is waiting for a manual step.
+- A manual setup waits as "Waiting for local configuration" in the CLI and on
+  the agent's page in the console, which gains a "Set up manually" panel with
+  the instructions, a key that can be issued and is shown once, and a cancel
+  button. A pending setup expires after 72 hours
+  (`PRELOOP_PENDING_ENROLLMENT_TTL_HOURS`); Preloop then removes the key, the
+  models that onboarding created and, if onboarding created it, the agent.
+  `preloop agents onboard --cancel` does the same immediately.
+- `preloop agents offboard` handles a read-only configuration: it prints the
+  exact removal without printing your own credentials, changes nothing in
+  Preloop until the block is gone, and reports Preloop and the machine on
+  separate lines. `--server-only` removes the Preloop side anyway and reports
+  the machine as not offboarded. `--no-login-restore` skips writing the
+  subscription login back to a read-only or shared credentials file.
+- Onboarding honours `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when it locates and
+  checks agent files.
+
+### Fixed
+
+- A failed or cancelled onboarding removes the agent key, the models and the
+  agent that it created in Preloop and restores the local files it changed,
+  reporting server and local cleanup separately. Nothing half-made is left.
+- Offboarding prints "Offboarded" only for a configuration that no longer
+  points at Preloop. A file it could not change is reported as not offboarded.
+- A Claude subscription token in `CLAUDE_CODE_OAUTH_TOKEN` (from
+  `claude setup-token`) takes precedence over a stored login at import, as it
+  does in Claude Code. Offboarding has nothing to write back for it.
+- A rejected imported Claude subscription login is not reported as onboarded.
+  The output names the store the login was read from, says that it looks
+  stale, and gives the command that imports the live one. With
+  `--skip-live-validate` and a subscription login, onboarding reports
+  "Configured" with the login not verified instead of "Onboarded".
+
+### Security
+
+- Enrollment configuration snapshots no longer store or return env-style
+  secrets such as `ANTHROPIC_API_KEY`. They are redacted on write and on read.
 
 ## [1.1.0-rc.3] - 2026-11-26
 

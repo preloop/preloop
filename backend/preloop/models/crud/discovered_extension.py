@@ -241,6 +241,17 @@ class CRUDDiscoveredExtension:
             else "partial"
         )
 
+    def count_for_account(self, db: Session, *, account_id: UUID) -> int:
+        """Count distinct present extension identities without loading inventory."""
+        model = models.DiscoveredExtension
+        identities = (
+            select(model.agent_kind, model.extension_kind, model.extension_id)
+            .where(model.account_id == account_id, model.present.is_(True))
+            .distinct()
+            .subquery()
+        )
+        return int(db.scalar(select(func.count()).select_from(identities)) or 0)
+
     def list_for_device(
         self, db: Session, *, account_id: UUID, fingerprint: str, **filters: Any
     ) -> tuple[list[dict[str, Any]], str | None]:

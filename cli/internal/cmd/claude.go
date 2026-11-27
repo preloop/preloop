@@ -97,8 +97,7 @@ func claudeControlSocketPath() string {
 }
 
 func claudeControlConfigPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "preloop-control.json")
+	return filepath.Join(claudeConfigHome(), "preloop-control.json")
 }
 
 func runClaudeLauncher(cmd *cobra.Command, args []string) error {

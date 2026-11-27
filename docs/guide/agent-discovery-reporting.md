@@ -718,11 +718,11 @@ is not `approved` returns 422, a missing approval or a pin of another approval
 404, and a duplicate or a 51st pin 409. Approval reads include `pins: [{id,
 content_hash, version, note, pinned_by_user_id, pinned_by, pinned_at}]`.
 
-In the console, the Agents page's **Extensions** tab lists distinct extensions
+In the console, the Agents toolbar's **Extensions** entry lists distinct extensions
 with device counts and versions seen. A managed agent's detail page has an
 **Extensions** section with the same list filtered to that agent's kind (for
 example `claude_code`) across the account, not to one device, and the count in
-its heading. Device detail shows per-profile inventory,
+its heading after first opening. Device detail shows per-profile inventory,
 source/project hash prefixes, scope and enabled state. Both views filter by
 effective state (including **Content changed** and **Content unverified**) and
 source. A pinned approval shows **Pinned (n)**; **Content hashes** expands the
@@ -959,3 +959,8 @@ as Markdown through an allowlist: headings, paragraphs, lists, code, tables and
 links to `http`, `https` and `mailto` only. Images, raw HTML, scripts, styles,
 forms and frames are removed, so opening a document cannot run code, load a
 remote resource or draw over the console.
+
+The Agents toolbar offers **Extensions** with the account-wide count in list,
+cards and canvas views. It opens the same inventory without changing view mode;
+closing and reopening keeps the loaded rows. The agent detail section loads on
+first expansion and links directly to this account inventory.

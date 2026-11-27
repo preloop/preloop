@@ -210,6 +210,7 @@ def test_route_inventory_includes_lazy_hidden_and_new_routes(app: Any) -> None:
         assert actual[f"{method} /api/v1{path}"] == "deny"
     # New inventory routes remain outside the restricted CI capability set.
     assert actual["GET /api/v1/agents/discovery-extensions"] == "deny"
+    assert actual["GET /api/v1/agents/discovery-extensions/count"] == "deny"
     assert actual["GET /api/v1/agents/extension-approvals"] == "deny"
     assert actual["GET /api/v1/agents/extension-approvals/export"] == "deny"
     assert (

@@ -2750,6 +2750,108 @@ export async function getAccountAgent(
   return response.json();
 }
 
+/** One config file a user edits by hand to route an agent through Preloop. */
+export interface AgentManualSetupFile {
+  path: string;
+  format: 'json' | 'toml' | string;
+  /** False when the file has to be created rather than merged into. */
+  exists: boolean;
+  merge: Record<string, unknown>;
+  remove?: string[] | null;
+  /** Where a container's file probably lives on its host, when known. */
+  host_source?: string | null;
+  label?: string | null;
+  reason?: string | null;
+}
+
+/**
+ * The config change for one agent. Every secret is the literal placeholder
+ * `<AGENT_KEY>` (`<AGENT_KEY_LAST_20>` for the key's last 20 characters).
+ */
+export interface AgentManualSetupInstructions {
+  files?: AgentManualSetupFile[] | null;
+  env?: Record<string, string> | null;
+  settings_flag?: string | null;
+  limitations?: string[] | null;
+}
+
+export interface AgentManualSetupPending {
+  enrollment_id: string;
+  status: string;
+  created_at: string;
+  expires_at: string | null;
+}
+
+export interface AgentManualSetupResponse {
+  agent_id: string;
+  agent_kind: string | null;
+  display_name: string;
+  /** The setup that is waiting for local configuration, if there is one. */
+  pending: AgentManualSetupPending | null;
+  /** Null when the agent type has no manual setup yet. */
+  instructions: AgentManualSetupInstructions | null;
+  resume_command: string;
+}
+
+/** What cancelling a pending setup removed. */
+export interface AgentOnboardingCleanupRemoved {
+  credentials: number;
+  ai_models: number;
+  agent: 'deleted' | 'decommissioned' | 'kept' | string;
+}
+
+export interface AgentPendingEnrollmentCancelResponse {
+  enrollment: { id: string; status: string; [key: string]: unknown };
+  removed: AgentOnboardingCleanupRemoved;
+}
+
+/**
+ * The config change a user applies by hand for one agent, and the pending
+ * setup it belongs to when there is one.
+ * GET /api/v1/agents/{agentId}/manual-setup
+ */
+export async function getAgentManualSetup(
+  agentId: string
+): Promise<AgentManualSetupResponse> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(agentId)}/manual-setup`
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(
+      extractErrorMessage(errorData, 'Failed to load manual setup'),
+      response.status
+    );
+  }
+  return response.json();
+}
+
+/**
+ * Cancel a setup that is waiting for local configuration and remove what its
+ * onboarding created. Rejects with an `ApiError` of status 409 when the setup
+ * is no longer pending.
+ * POST /api/v1/agents/{agentId}/enrollments/{enrollmentId}/cancel
+ */
+export async function cancelAgentPendingEnrollment(
+  agentId: string,
+  enrollmentId: string
+): Promise<AgentPendingEnrollmentCancelResponse> {
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${encodeURIComponent(
+      agentId
+    )}/enrollments/${encodeURIComponent(enrollmentId)}/cancel`,
+    { method: 'POST' }
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new ApiError(
+      extractErrorMessage(errorData, 'Failed to cancel the pending setup'),
+      response.status
+    );
+  }
+  return response.json();
+}
+
 export async function updateAccountAgent(
   agentId: string,
   payload: ManagedAgentUpdateRequest

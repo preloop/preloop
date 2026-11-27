@@ -122,7 +122,7 @@ func newOffboardRecoveryFixture(t *testing.T, kinds ...string) *offboardRecovery
 		case r.URL.Path == "/api/v1/ai-models":
 			models := []aiModelResponse{}
 			if !f.modelDeleted {
-				models = append(models, aiModelResponse{ID: "model-1", CredentialType: f.credentialType, MetaData: map[string]any{"gateway": map[string]any{"model_alias": "managed-model"}}})
+				models = append(models, aiModelResponse{ID: "model-1", CredentialType: f.credentialType, MetaData: map[string]any{"managed_agent_id": "agent-1", "gateway": map[string]any{"model_alias": "managed-model"}}})
 				if f.models != nil {
 					models = f.models
 				}

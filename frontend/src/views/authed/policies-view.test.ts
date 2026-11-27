@@ -2081,6 +2081,36 @@ describe('PoliciesView', () => {
     first_seen_agent_id: null,
   });
 
+  it('names servers and observers while keeping their IDs in disclosures', async () => {
+    fetchStub = createFetchStub({
+      registry: [
+        {
+          ...seenEntry(),
+          mcp_server_id: 'server-1',
+          server_name: 'Documentation',
+          first_seen_agent_id: 'agent-1',
+          first_seen_agent_name: 'Example agent',
+        },
+      ],
+    });
+    const element = await fixture<PoliciesView>(
+      html`<policies-view></policies-view>`
+    );
+    await waitUntil(() => !(element as any)._loading);
+    (element as any)._activeTab = 'tools-seen';
+    await (element as any)._loadRegistry();
+    await element.updateComplete;
+    const table = element.shadowRoot!.querySelector(
+      'table[aria-label="Tools seen"]'
+    )!;
+    expect(table.textContent).to.include('Documentation');
+    expect(table.textContent).to.include('Example agent');
+    expect(table.querySelectorAll('details')).to.have.length(2);
+    expect(table.querySelector('details code')!.textContent).to.equal(
+      'server-1'
+    );
+  });
+
   it('protects=tools seen list and state filter; fails_when=wrong route or stale rows; no_claim=HTTP mocked', async () => {
     fetchStub = createFetchStub({ registry: [seenEntry()] });
     const element = await fixture<PoliciesView>(

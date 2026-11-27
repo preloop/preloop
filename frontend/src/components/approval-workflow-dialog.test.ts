@@ -18,6 +18,32 @@ describe('ApprovalWorkflowDialog', () => {
     localStorage.clear();
   });
 
+  it('explains the inclusive threshold and preserves the zero endpoint', async () => {
+    fetchStub.resolves(new Response('{}'));
+    const el = await fixture<ApprovalWorkflowDialog>(
+      html`<approval-workflow-dialog
+        .open=${true}
+        .features=${{ advanced_approvals: true }}
+      ></approval-workflow-dialog>`
+    );
+    (el as any)._approvalType = 'ai_driven';
+    (el as any)._aiConfidenceThreshold = 0.8;
+    await el.updateComplete;
+    const slider = el.shadowRoot!.querySelector('sl-range') as any;
+    expect(slider).to.exist;
+    expect(el.shadowRoot!.textContent).to.include('At or above 80%');
+    expect(el.shadowRoot!.textContent).not.to.include('always escalate');
+    slider.value = 0;
+    slider.dispatchEvent(new Event('sl-input', { bubbles: true }));
+    await el.updateComplete;
+    expect((el as any)._aiConfidenceThreshold).to.equal(0);
+    expect(el.shadowRoot!.textContent).to.include('At or above 0%');
+    slider.value = 100;
+    slider.dispatchEvent(new Event('sl-input', { bubbles: true }));
+    await el.updateComplete;
+    expect(el.shadowRoot!.textContent).to.include('At or above 100%');
+  });
+
   it('shows Slack, Mattermost, and Webhook in OSS mode', async () => {
     const el = (await fixture(
       html`<approval-workflow-dialog

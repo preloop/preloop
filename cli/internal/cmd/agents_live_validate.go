@@ -160,6 +160,26 @@ func runGatewayLiveValidation(
 	endpointKey string,
 	builder gatewayLiveValidationBuilder,
 ) (*managedLiveValidationOutcome, error) {
+	return runGatewayLiveValidationFrom(client, agent, validationResult, endpointKey, builder, nil)
+}
+
+// liveValidationSource overrides where the probe reads the agent's effective
+// configuration and managed record. Resuming a manual setup uses it: the
+// configuration may live in a `claude --settings` file or in the process
+// environment, and the agent is known by id rather than by local state.
+type liveValidationSource struct {
+	Document func() (map[string]interface{}, error)
+	Detail   *managedAgentDetailResponse
+}
+
+func runGatewayLiveValidationFrom(
+	client *api.Client,
+	agent AgentConfig,
+	validationResult map[string]interface{},
+	endpointKey string,
+	builder gatewayLiveValidationBuilder,
+	source *liveValidationSource,
+) (*managedLiveValidationOutcome, error) {
 	failedOutcome := func(err error) (*managedLiveValidationOutcome, error) {
 		status := "failed"
 		if isLiveValidationTimeout(err) {
@@ -200,12 +220,22 @@ func runGatewayLiveValidation(
 		return failedOutcome(err)
 	}
 
-	detail, err := getManagedAgentDetailForDiscovered(client, agent)
-	if err != nil {
-		return failedOutcome(err)
+	var detail *managedAgentDetailResponse
+	if source != nil && source.Detail != nil {
+		detail = source.Detail
+	} else {
+		detail, err = getManagedAgentDetailForDiscovered(client, agent)
+		if err != nil {
+			return failedOutcome(err)
+		}
 	}
 
-	document, err := loadAgentConfigDocument(agent)
+	var document map[string]interface{}
+	if source != nil && source.Document != nil {
+		document, err = source.Document()
+	} else {
+		document, err = loadAgentConfigDocument(agent)
+	}
 	if err != nil {
 		return failedOutcome(err)
 	}

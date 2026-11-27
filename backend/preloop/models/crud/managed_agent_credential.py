@@ -79,6 +79,29 @@ class CRUDManagedAgentCredential(CRUDBase[ManagedAgentCredential]):
         )
         return [self._row_to_summary(row[0], row[1]) for row in rows]
 
+    def count_active_for_agent(
+        self, db: Session, *, account_id: str, agent_id: str
+    ) -> int:
+        """Count the agent's credentials that have not been revoked.
+
+        Args:
+            db: Database session.
+            account_id: Account the agent belongs to.
+            agent_id: Managed agent id.
+
+        Returns:
+            Number of credentials in the ``active`` status.
+        """
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.managed_agent_id == agent_id,
+                self.model.status == "active",
+            )
+            .count()
+        )
+
     def get_for_agent(
         self, db: Session, *, account_id: str, agent_id: str, credential_id: str
     ) -> Optional[ManagedAgentCredential]:
