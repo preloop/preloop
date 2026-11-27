@@ -442,7 +442,7 @@ func (r *plainRenderer) Receipt(w io.Writer, plan onboardPlan, outcomes []agentR
 			writeWrapped(w, "", "  ", line, width)
 		}
 		if receipt.GatewayValidation != "" {
-			fmt.Fprintf(w, "  Gateway validation: %s\n", receipt.GatewayValidation) //nolint:errcheck
+			writeWrapped(w, "  ", "    ", "Gateway validation: "+receipt.GatewayValidation, width)
 		}
 		for _, warning := range receipt.Warnings {
 			writeWrapped(w, "  ! ", "    ", warning, width)
@@ -451,8 +451,8 @@ func (r *plainRenderer) Receipt(w io.Writer, plan onboardPlan, outcomes []agentR
 			writeWrapped(w, "  ", "  ", fmt.Sprintf(`%s shows "API Usage Billing"; calls still use your subscription.`, agentTypeLabelForBilling), width)
 		}
 		quoted := shellQuoteAgentName(receipt.DisplayName)
-		fmt.Fprintf(w, "  Status: preloop agents status %s\n", quoted)   //nolint:errcheck
-		fmt.Fprintf(w, "  Undo:   preloop agents offboard %s\n", quoted) //nolint:errcheck
+		writeWrapped(w, "  Status: ", "          ", "preloop agents status "+quoted, width)
+		writeWrapped(w, "  Undo:   ", "          ", "preloop agents offboard "+quoted, width)
 	}
 	for _, line := range plan.ReceiptLines {
 		writeClosingLine(w, line, width)
@@ -504,9 +504,31 @@ func newNoticeWriter(out io.Writer, width int) *noticeWriter {
 	return &noticeWriter{out: out, width: width}
 }
 
+// noticeActionablePrefixes start a line a person has to act on.
+var noticeActionablePrefixes = []string{"Warning:", "Error", "✗", "Repair:", "Fix the failure"}
+
+// noticeProblemWords mark a line that reports something that did not
+// happen. The apply helpers were written to print to a terminal and do not
+// share a prefix for failures ("... sidecar service not installed: ...",
+// "... registration failed: ...", "... installation skipped: ..."), so a
+// line that says one of these is kept. Showing a routine line that happens
+// to contain such a word costs a row; dropping a failure hides it.
+var noticeProblemWords = []string{
+	"warning", "error", "fail", "not installed", "incomplete", "skipped",
+	"could not", "cannot", "can't", "unable", "denied", "refused", "missing",
+	"not found", "not writable", "not available", "unavailable", "not ready",
+	"not verified", "timed out", "timeout",
+}
+
 func noticeLineIsActionable(trimmed string) bool {
-	for _, prefix := range []string{"Warning:", "Error", "✗", "Repair:", "Fix the failure"} {
+	for _, prefix := range noticeActionablePrefixes {
 		if strings.HasPrefix(trimmed, prefix) {
+			return true
+		}
+	}
+	lower := strings.ToLower(trimmed)
+	for _, word := range noticeProblemWords {
+		if strings.Contains(lower, word) {
 			return true
 		}
 	}
