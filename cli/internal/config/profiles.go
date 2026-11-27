@@ -68,6 +68,7 @@ type Profile struct {
 }
 
 type fileConfig struct {
+	Discovery              DiscoveryConfig `mapstructure:"discovery"`
 	Profile                `mapstructure:",squash"`
 	CurrentProfile         string             `mapstructure:"current_profile"`
 	Profiles               map[string]Profile `mapstructure:"profiles"`
@@ -173,9 +174,10 @@ func (f *fileConfig) profile(name string) (Profile, bool) {
 func (f *fileConfig) resolve(sel selection) *Config {
 	profile, _ := f.profile(sel.profile)
 	cfg := &Config{
-		APIURL:  normalizeAPIURL(profile.APIURL),
-		Runner:  f.Runner,
-		Profile: sel.profile,
+		APIURL:    normalizeAPIURL(profile.APIURL),
+		Runner:    f.Runner,
+		Discovery: f.Discovery,
+		Profile:   sel.profile,
 	}
 	if cfg.APIURL == "" {
 		cfg.APIURL = DefaultAPIURL

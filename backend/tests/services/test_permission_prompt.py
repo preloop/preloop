@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 import uuid
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -673,3 +674,104 @@ class TestMcpRegistration:
         assert kwargs["managed_agent_id"] is None
         assert kwargs["managed_agent_name"] is None
         assert str(kwargs["api_key_id"]) == user_context.api_key_id
+
+
+def _prompt_user_context() -> MagicMock:
+    user_context = MagicMock()
+    user_context.account_id = str(uuid.uuid4())
+    user_context.user_id = str(uuid.uuid4())
+    user_context.managed_agent_id = str(uuid.uuid4())
+    user_context.runtime_session_id = None
+    user_context.runtime_principal_name = "Claude Code"
+    return user_context
+
+
+@pytest.mark.asyncio
+class TestPermissionPromptWireShape:
+    """Pin the MCP result Claude Code accepts from a permission prompt tool.
+
+    Claude Code rejects anything other than one text block holding the
+    behavior JSON, and rejects a result that also carries
+    ``structuredContent`` ("Permission prompt tool returned an invalid
+    result. Expected a single text block param with type="text" and a string
+    text value."). FastMCP adds ``structuredContent`` to a ``-> str`` tool on
+    its own unless the tool is registered without an output schema.
+    """
+
+    async def _run(self, behavior: dict) -> Any:
+        from preloop.services.initialize_mcp import initialize_mcp_with_tools
+
+        mcp = initialize_mcp_with_tools()
+        tool = await mcp.get_tool("permission_prompt")
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=_prompt_user_context(),
+            ),
+            patch(
+                "preloop.services.permission_prompt.evaluate_permission_prompt",
+                new=AsyncMock(return_value=behavior),
+            ),
+        ):
+            return await tool.run({"tool_name": "Bash", "input": {"command": "ls"}})
+
+    def _single_text(self, result: Any) -> dict:
+        assert result.structured_content is None
+        assert len(result.content) == 1
+        block = result.content[0]
+        assert block.type == "text"
+        assert isinstance(block.text, str)
+        return json.loads(block.text)
+
+    async def test_tool_declares_no_output_schema(self) -> None:
+        from preloop.services.initialize_mcp import initialize_mcp_with_tools
+
+        mcp = initialize_mcp_with_tools()
+        tool = await mcp.get_tool("permission_prompt")
+        assert tool.output_schema is None
+
+    async def test_allow_is_one_text_block_without_structured_content(
+        self,
+    ) -> None:
+        from preloop.services.permission_prompt import _map_terminal
+
+        result = await self._run(
+            _map_terminal("approved", None, {"command": "ls"}, "req-1")
+        )
+        assert self._single_text(result) == {
+            "behavior": "allow",
+            "updatedInput": {"command": "ls"},
+        }
+
+    async def test_deny_is_one_text_block_with_reason(self) -> None:
+        from preloop.services.permission_prompt import _map_terminal
+
+        result = await self._run(
+            _map_terminal("declined", "not today", {"command": "ls"}, "req-1")
+        )
+        assert self._single_text(result) == {
+            "behavior": "deny",
+            "message": "Denied by approver in Preloop: not today",
+        }
+
+    async def test_timeout_is_one_text_block_deny(self) -> None:
+        from preloop.services.permission_prompt import _map_terminal
+
+        result = await self._run(
+            _map_terminal("expired", None, {"command": "ls"}, "req-1")
+        )
+        behavior = self._single_text(result)
+        assert set(behavior) == {"behavior", "message"}
+        assert behavior["behavior"] == "deny"
+        assert "expired" in behavior["message"]
+
+    async def test_pending_is_one_text_block_retryable_deny(self) -> None:
+        from preloop.services.permission_prompt import (
+            PENDING_MARKER,
+            _pending_deny,
+        )
+
+        result = await self._run(_pending_deny("req-1", 25))
+        behavior = self._single_text(result)
+        assert behavior["behavior"] == "deny"
+        assert behavior["message"].startswith(PENDING_MARKER)

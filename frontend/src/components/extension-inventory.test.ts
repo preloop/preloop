@@ -2,6 +2,7 @@ import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import './extension-inventory';
 import {
   EXTENSION_REASONS,
+  reportStale,
   type ExtensionInventory,
 } from './extension-inventory';
 import type {
@@ -590,9 +591,8 @@ describe('extension inventory notices', () => {
   for (const [name, over] of [
     [
       'stale',
-      { reported_at: new Date(Date.now() - 3 * 86400000).toISOString() },
+      { reported_at: new Date(Date.now() - 9 * 86400000).toISOString() },
     ],
-    ['never timed', { reported_at: null }],
   ] as const) {
     it(`tells a ${name} device to sign in and report, one command per line`, async () => {
       const element = await mount({
@@ -607,6 +607,27 @@ describe('extension inventory notices', () => {
       ]);
     });
   }
+
+  it('allows daily jitter and multi-day schedules and treats missing time as unknown', () => {
+    const now = Date.now();
+    for (const days of [1.1, 3, 7]) {
+      expect(
+        reportStale(
+          device({
+            reported_at: new Date(now - days * 86400000).toISOString(),
+          }),
+          now
+        )
+      ).to.equal(false);
+    }
+    expect(reportStale(device({ reported_at: null }), now)).to.equal(false);
+    expect(
+      reportStale(
+        device({ reported_at: new Date(now - 9 * 86400000).toISOString() }),
+        now
+      )
+    ).to.equal(true);
+  });
 
   it('keeps the caveats visible at every width when there are no rows', async () => {
     const element = await mount({

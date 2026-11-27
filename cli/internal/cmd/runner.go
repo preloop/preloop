@@ -137,6 +137,8 @@ func init() {
 		"force", false,
 		"with --delete, halt executions the runner still holds instead of refusing",
 	)
+	runnerFgCmd.Flags().BoolVar(&discoveryNoExtensionContent, "no-extension-content", false, "omit redacted extension content from discovery reports")
+	runnerFgCmd.Flags().BoolVar(&inventoryNoExtensionDetails, "no-extension-details", false, "omit extension descriptions from discovery reports")
 	runnerFgCmd.Flags().StringSlice("labels", nil, "labels used to match runner pools")
 	runnerFgCmd.Flags().String("name", "", "runner display name (default: hostname)")
 	runnerFgCmd.Flags().String("device-ref", "", "stable device reference shared with discovery (hashed before reporting)")
@@ -305,6 +307,8 @@ func runRunnerFg(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	stopDiscovery := startRunnerDiscovery(state)
+	defer stopDiscovery()
 	stopFingerprintRefresh := startRunnerFingerprintRefresh(client, state.DeviceRef)
 	defer stopFingerprintRefresh()
 	// Checkouts of sessions that did not survive the restart are garbage;
@@ -1790,6 +1794,7 @@ func rotateRunnerToken(client *api.Client, out io.Writer) error {
 
 func runRunnerStatus(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "install: %s\n", runnerServiceState())
+	printRunnerDiscoveryStatus(cmd.OutOrStdout())
 	if state, err := readRunnerState(); err == nil {
 		fmt.Fprintf(cmd.OutOrStdout(), "runner_id: %s\n", state.ID)
 		fmt.Fprintf(cmd.OutOrStdout(), "name: %s\n", state.Name)

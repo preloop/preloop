@@ -446,7 +446,11 @@ func (s *extensionScan) captureHooks() {
 		}
 		for i, source := range sources {
 			entry := contentHook{CommandHash: hashes[i]}
-			entry.Matcher, entry.MatcherRedactions = capture.redactMatcher(source.Matcher)
+			if redact.HasPrivateKey(source.Matcher) {
+				entry.Status = contentPrivateKey
+			} else {
+				entry.Matcher, entry.MatcherRedactions = capture.redactMatcher(source.Matcher)
+			}
 			item.bytes += len(entry.Matcher)
 			item.Hooks = append(item.Hooks, entry)
 		}
@@ -454,6 +458,10 @@ func (s *extensionScan) captureHooks() {
 		// The same UTF-8 total then governs extension, report and batch limits.
 		for i, source := range sources {
 			entry := &item.Hooks[i]
+			if entry.Status == contentPrivateKey {
+				item.withheld++
+				continue
+			}
 			if len(source.Command) > contentFileLimit {
 				entry.Status = contentTooLarge
 			} else {
@@ -562,14 +570,37 @@ func reportedContentPairs(report discoveryReportRequest) []contentPair {
 	return pairs
 }
 
+// queryMissingContent asks which reported hashes the server lacks, in
+// requests of at most contentQueryLimit pairs, so a report with more hashes
+// than one request carries still negotiates every one of them. It stops at
+// the first answer that says the account does not collect content.
+func queryMissingContent(client inventoryReportClient, fingerprint string, pairs []contentPair) (contentQueryResponse, error) {
+	var combined contentQueryResponse
+	for start := 0; start < len(pairs); start += contentQueryLimit {
+		end := min(start+contentQueryLimit, len(pairs))
+		var query contentQueryResponse
+		if err := client.Post(contentMissingPath, contentQueryRequest{WorkstationFingerprint: fingerprint, Items: pairs[start:end]}, &query); err != nil {
+			return contentQueryResponse{}, err
+		}
+		if !query.Collect {
+			return query, nil
+		}
+		missing := combined.Missing
+		combined = query
+		combined.Missing = append(missing, query.Missing...)
+	}
+	return combined, nil
+}
+
 type contentOutcome struct {
 	// Uploaded is how many extensions had content stored by this report.
 	Uploaded int
+	Failed   bool
 }
 
 // sendExtensionContent runs after a discovery report was accepted. It never
 // fails the report: every problem becomes one line on w.
-func sendExtensionContent(client *api.Client, w io.Writer, report discoveryReportRequest, salt, home string, projects []string) contentOutcome {
+func sendExtensionContent(client inventoryReportClient, w io.Writer, report discoveryReportRequest, salt, home string, projects []string, allProfiles ...bool) contentOutcome {
 	outcome := contentOutcome{}
 	pairs := reportedContentPairs(report)
 	if len(pairs) == 0 {
@@ -579,17 +610,15 @@ func sendExtensionContent(client *api.Client, w io.Writer, report discoveryRepor
 		fmt.Fprintf(w, "Extension content was not sent: turned off on this device (%s).\n", source) //nolint:errcheck
 		return outcome
 	}
-	if len(pairs) > contentQueryLimit {
-		pairs = pairs[:contentQueryLimit]
-	}
-	var query contentQueryResponse
-	if err := client.Post(contentMissingPath, contentQueryRequest{WorkstationFingerprint: report.WorkstationFingerprint, Items: pairs}, &query); err != nil {
+	query, err := queryMissingContent(client, report.WorkstationFingerprint, pairs)
+	if err != nil {
 		var apiErr *api.APIError
 		if errors.As(err, &apiErr) && (apiErr.StatusCode == 404 || apiErr.StatusCode == 405) {
 			// A server from before this feature: there is nowhere to send
 			// content, and nothing about it to say.
 			return outcome
 		}
+		outcome.Failed = true
 		fmt.Fprintln(w, "Extension content was not sent: the server did not answer the content query.") //nolint:errcheck
 		return outcome
 	}
@@ -600,11 +629,9 @@ func sendExtensionContent(client *api.Client, w io.Writer, report discoveryRepor
 	if len(query.Missing) == 0 {
 		return outcome
 	}
-	capture := newContentCapture(home, query.Missing, config.ExtensionContentExclude())
-	for _, agent := range []string{"claude-code", "codex-cli"} {
-		collectExtensionsWith(capture, home, agent, salt, false, false, projects...)
-	}
+	capture := captureReportedExtensionContent(report, salt, home, projects, query.Missing, len(allProfiles) > 0 && allProfiles[0])
 	if capture.err != nil {
+		outcome.Failed = true
 		fmt.Fprintln(w, "Extension content was not sent: the redaction rules could not be loaded.") //nolint:errcheck
 		return outcome
 	}
@@ -637,10 +664,14 @@ func sendExtensionContent(client *api.Client, w io.Writer, report discoveryRepor
 		// Best effort: a device that cannot record the notice sees it again.
 		_ = config.SetExtensionContentNoticeShown()
 	}
-	redactions, withheld, excluded, rejected := 0, 0, 0, 0
+	redactions, withheld, excluded, rejected, markersStored := 0, 0, 0, 0, 0
 	for start := 0; start < len(sendable); {
+		// Excluded markers travel in their own batches: the server answers
+		// with one stored count per batch, and only this way can the summary
+		// tell stored text from stored markers.
+		marker := sendable[start].Withheld == contentExcluded
 		end, size := start, 0
-		for end < len(sendable) && end-start < contentBatchItems && (end == start || size+sendable[end].bytes <= contentBatchLimit) {
+		for end < len(sendable) && end-start < contentBatchItems && (end == start || size+sendable[end].bytes <= contentBatchLimit) && (sendable[end].Withheld == contentExcluded) == marker {
 			size += sendable[end].bytes
 			end++
 		}
@@ -680,11 +711,15 @@ func sendExtensionContent(client *api.Client, w io.Writer, report discoveryRepor
 			if errors.As(err, &apiErr) && apiErr.StatusCode == 409 {
 				fmt.Fprintln(w, "Extension content was not sent: this account has turned off \"Collect extension content for review\".") //nolint:errcheck
 			} else {
+				outcome.Failed = true
 				fmt.Fprintln(w, "Extension content upload did not complete; the next report sends what is still missing.") //nolint:errcheck
 			}
 			break
 		}
 		outcome.Uploaded += response.Stored
+		if marker {
+			markersStored += response.Stored
+		}
 		rejected += len(response.Rejected)
 		for _, item := range sendable[start:end] {
 			redactions += item.redactions
@@ -696,7 +731,7 @@ func sendExtensionContent(client *api.Client, w io.Writer, report discoveryRepor
 		start = end
 	}
 	if outcome.Uploaded > 0 || excluded > 0 {
-		fmt.Fprintf(w, "Extension content: uploaded for %d extension(s) after redaction (%d value(s) redacted, %d file(s) or command(s) withheld, %d extension(s) excluded on this device).\n", outcome.Uploaded-excluded, redactions, withheld, excluded) //nolint:errcheck
+		fmt.Fprintf(w, "Extension content: uploaded for %d extension(s) after redaction (%d value(s) redacted, %d file(s) or command(s) withheld, %d extension(s) excluded on this device).\n", outcome.Uploaded-markersStored, redactions, withheld, excluded) //nolint:errcheck
 	}
 	if rejected > 0 {
 		fmt.Fprintf(w, "Extension content: the server did not store %d extension(s).\n", rejected) //nolint:errcheck
@@ -705,4 +740,63 @@ func sendExtensionContent(client *api.Client, w io.Writer, report discoveryRepor
 		fmt.Fprintf(w, "Extension content: %d extension(s) left for the next report (per report cap of %d MiB).\n", deferred, contentReportLimit>>20) //nolint:errcheck
 	}
 	return outcome
+}
+
+// captureReportedExtensionContent reuses the content collector for the same
+// profiles as the accepted inventory. Profile paths stay local, and elevated
+// scans do not infer projects or read another profile through a symlink.
+func captureReportedExtensionContent(report discoveryReportRequest, salt, home string, projects []string, wanted []contentPair, allUsers bool) *contentCapture {
+	capture := newContentCapture(home, wanted, config.ExtensionContentExclude())
+	homes := []string{home}
+	if allUsers {
+		homes = nil
+		profiles, _, _ := inventoryProfiles.Profiles()
+		accepted := map[string]bool{}
+		if report.Evidence != nil {
+			for _, profile := range report.Evidence.Profiles {
+				if profile.Completeness != "failed" {
+					accepted[profile.ProfileRef] = true
+				}
+			}
+		}
+		for _, profile := range profiles[:min(len(profiles), inventoryProfileLimit)] {
+			ref := inventoryProfileRef(salt, report.WorkstationFingerprint, profile.Home)
+			if profile.ErrorCode == "" && accepted[ref] {
+				homes = append(homes, profile.Home)
+			}
+		}
+	}
+	for _, profileHome := range homes {
+		info, err := os.Lstat(profileHome)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		capture.home = profileHome
+		for _, agent := range []string{"claude-code", "codex-cli"} {
+			collectExtensionsWith(capture, profileHome, agent, salt, allUsers, false, projects...)
+		}
+		if capture.err != nil {
+			break
+		}
+	}
+	return capture
+}
+
+// sendInventoryReportWithContent is the reporting entry point for both manual
+// discovery and the resident runner. Every content opt-out and the one-time
+// notice are enforced by the shared content pass after inventory is accepted.
+func sendInventoryReportWithContent(client inventoryReportClient, w io.Writer, report discoveryReportRequest, salt string, allUsers bool, projects []string) (discoveryReportResponse, contentOutcome, error) {
+	var response discoveryReportResponse
+	if err := postInventoryReport(client, report, &response); err != nil {
+		return response, contentOutcome{}, err
+	}
+	if response.LegacyEvidence {
+		return response, contentOutcome{}, nil
+	}
+	home, err := inventoryProbes.Home()
+	if err != nil && !allUsers {
+		return response, contentOutcome{Failed: true}, nil
+	}
+	outcome := sendExtensionContent(client, w, report, salt, home, projects, allUsers)
+	return response, outcome, nil
 }

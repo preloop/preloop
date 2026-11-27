@@ -58,8 +58,10 @@ func runAllUsersInventory(cmdOut io.Writer, report bool, deviceRefs ...string) e
 		return errors.New("could not generate inventory privacy salt")
 	}
 	salt = hex.EncodeToString(randomSalt)
-	deps := inventoryProbes
-	deps.NoExtensionDetails = inventoryNoExtensionDetails
+	deps, err := discoveryInventoryProbes(nil)
+	if err != nil {
+		return err
+	}
 	result := collectAllUsersInventory(deps, inventoryProfiles, salt, context)
 	enc := json.NewEncoder(cmdOut)
 	enc.SetIndent("", "  ")

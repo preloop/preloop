@@ -77,6 +77,28 @@ describe('discovered-agents-panel', () => {
     expect(rows[0].querySelector('sl-button.mark-ignored')).to.exist;
   });
 
+  it('badges only candidates first seen in the last seven days and not onboarded', async () => {
+    const el = await mount([
+      candidate(),
+      candidate({
+        id: 'old',
+        first_seen_at: new Date(Date.now() - 8 * 86_400_000).toISOString(),
+      }),
+      candidate({ id: 'enrolled', enrolled: true }),
+      candidate({ id: 'linked', managed_agent_id: 'managed-1' }),
+      candidate({
+        id: 'future',
+        first_seen_at: new Date(Date.now() + 86_400_000).toISOString(),
+      }),
+    ]);
+    const badges = el.shadowRoot!.querySelectorAll('.new-discovery');
+    expect(badges.length).to.equal(1);
+    expect(badges[0].textContent).to.contain('New this week');
+    expect(badges[0].getAttribute('variant')).to.equal('warning');
+    expect(badges[0].hasAttribute('pill')).to.equal(true);
+    expect(el.shadowRoot!.textContent).to.contain('First seen');
+  });
+
   it('shows the full total when the list is capped', async () => {
     const el = await mount([candidate()], undefined, {
       total: 501,
