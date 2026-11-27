@@ -27,8 +27,7 @@ Rows are surfaces. Columns are:
 Those are separate answers, and a surface can have one without the
 others. The private-runner host flow below governs MCP and records hook
 sessions while it meters no model traffic and prices no ticket. It
-publishes only through the opt-in managed path for one Bitbucket Cloud
-repository.
+publishes only through the opt-in managed path for one repository.
 
 Session replay is the console timeline of gateway `ApiUsage` rows
 (`docs/architecture/gateway.md`, Current Explorer Surface). A session
@@ -48,7 +47,7 @@ ticket, and it is not a transcript.
 | VS Code Copilot Chat, GitHub-hosted models | Yes, for MCP servers Preloop writes | Not possible: no proxy for GitHub-hosted models | Not wired: VS Code hooks are GitHub preview; Preloop writes no such file | Premium-request import | No. Per user and day only | Not this surface: a person drives the chat | MCP shipped. Metering not possible; hooks not wired |
 | VS Code Copilot Chat, BYOK (custom endpoint) | Same MCP path as the row above | Gateway rows for the Custom Endpoint Chat Completions shape (`tools`, `stream: true`) and the Responses shape, attributed to the agent credential. Chat Completions and an Agent built-in tool roundtrip verified; other protocols remain unverified ([guide](clients/vscode-copilot.md)) | Not wired: VS Code hooks are GitHub preview; Preloop writes no such file | Gateway for calls that reach Preloop. Import stays GitHub-reported ([#788](https://github.com/preloop/preloop/issues/788)) | No. Gateway rows are per request, not per ticket | Not this surface | Manual BYOK verified on 2026-10-16. New-harness MCP authentication remains unverified ([guide](clients/vscode-copilot.md#interactive-verification-2026-10-16)) |
 | Copilot CLI, GitHub-hosted, interactive on a laptop | Yes, after onboard. Native tools need `--approvals` | Not possible: no proxy for GitHub-hosted models | Yes, lifecycle only | Premium-request import | No. Per user and day only | Not this surface: a person drives the session | Shipped |
-| Copilot CLI, GitHub-hosted, flow on a private-runner host profile | Yes, from two separate sources: the runner user's own MCP file, and the flow's `preloop-flow` server, which the runner supplies per job with a short-lived, execution-scoped token | Not possible: no proxy for GitHub-hosted models | Yes. The runner installs usage hooks before the run | Execution: not gateway metered, plus a premium-request count. Dollars: import | No. The count is not tokens and not a price, and the import is per user and day. Unknown stays unknown | Opt-in managed publication for one Bitbucket Cloud repository (profile `allow_publish`, runner capabilities `host_publication` and `host_continuation`), and feedback continuation that resumes the same Copilot session on the originating runner. Other publication and native resume are rejected before the run | Shipped ([#956](https://github.com/preloop/preloop/issues/956)), with the flow MCP server. Publication and continuation: [#1069](https://github.com/preloop/preloop/issues/1069); publication retry from retained work is planned |
+| Copilot CLI, GitHub-hosted, flow on a private-runner host profile | Yes, from two separate sources: the runner user's own MCP file, and the flow's `preloop-flow` server, which the runner supplies per job with a short-lived, execution-scoped token | Not possible: no proxy for GitHub-hosted models | Yes. The runner installs usage hooks before the run | Execution: not gateway metered, plus a premium-request count. Dollars: import | No. The count is not tokens and not a price, and the import is per user and day. Unknown stays unknown | Opt-in managed publication for one GitHub, GitLab or Bitbucket Cloud repository (profile `allow_publish`, runner capabilities `host_publication` and `host_continuation`), and feedback continuation that resumes the same Copilot session on the originating runner. Other publication and native resume are rejected before the run | Shipped ([#956](https://github.com/preloop/preloop/issues/956)), with the flow MCP server. Publication and continuation: [#1069](https://github.com/preloop/preloop/issues/1069); publication retry from retained work is planned |
 | Copilot CLI BYOK through the gateway (`preloop copilot`) | Same CLI MCP and approval hooks | Yes: tokens, cost, and session replay | Yes, when the CLI hooks are installed | Gateway. Not the premium-request import | Yes for a gateway flow: gateway rows carry the session and the execution. The local launcher attributes to the session, not to a ticket | Not this launcher. Publication belongs to the flow's harness; the local launcher pushes nothing | Shipped |
 | Copilot cloud coding agent on GitHub.com | Yes. Preloop policy on `/mcp/v1` | Not possible: no proxy for GitHub-hosted models | Not installed. Preloop does not write `.github/hooks` | Import is daily, not a session. Usage metrics exclude Copilot Chat on GitHub.com | No. The import is per user and day, and the job is not matched to a row | Native on GitHub, outside Preloop. The agent's comments and pull requests are GitHub activity, not a Preloop publication record | MCP shipped. Hooks not installed |
 | Copilot inline completions | Not applicable. A completion is not an MCP tool call | Not possible: no proxy for GitHub-hosted models | Not possible: no hook surface for completions | Premium-request import, as daily aggregates only | No | Not applicable | Not possible for live governance or metering |
@@ -239,14 +238,14 @@ limit; this page does not restate the terms.
 #### What this path does not do today
 
 - **Publication is opt-in and narrow.** A flow whose `git_clone_config`
-  sets `create_pull_request` runs only on a Copilot profile that sets
+  sets `create_pull_request` runs only on a host profile that sets
   `allow_checkout` and `allow_publish` (the runner advertises
   `host_publication`), for exactly one repository in legacy mode. The
   runner commits and pushes the managed branch; the control plane opens
-  and binds the Bitbucket Cloud pull request. See
+  and binds the GitHub, GitLab or Bitbucket Cloud pull request. See
   [Copilot CLI host profiles](copilot-cli.md#review-and-implementation-flows).
 - **Other publication and feedback are refused, not queued silently.**
-  Cursor publication, more than one repository, a flow in
+  More than one repository, a flow in
   isolated publication mode, a flow with remote custom commands or clone
   `setup_commands`, and a flow asking for native CLI session resume
   outside the managed Copilot feedback continuation (see
@@ -371,7 +370,7 @@ zero. A completion has nothing to publish and nothing to continue.
    own MCP tools are governed there through a per-job server. This setup
    does not meter model calls live, does not attribute dollars to a
    ticket, and publishes from a host run only through the opt-in managed
-   Bitbucket Cloud path.
+   publication path.
 
 2. **BYOK overflow through the gateway.** When the team has provider
    keys and wants tokens, cost, and session replay, start Copilot CLI

@@ -6,9 +6,10 @@ Personal and shared private runners: capability reporting, owner consent, native
 
 Private-runner log batches use stable delivery identities and acknowledgments so a reconnect can replay unconfirmed output without duplicating stored rows. Socket writes have deadlines, live log broadcasts have a bounded budget, and runner lease release shares the terminal result transaction. Publication and native-session markers are saved while output arrives. The execution console refreshes runner assignment and failure details at lifecycle transitions; an execution without an observed runtime is shown as unassigned.
 
-## Native Copilot host publication and continuation
+## Native host publication and Copilot continuation
 
-Native Copilot host profiles can publish through managed legacy publication
+Every native host profile (Codex, Claude Code, Cursor, Devin, OpenCode,
+Copilot, DeepSeek) can publish through managed legacy publication
 (`backend/preloop/services/host_exec_publication.py`, runner
 `cli/internal/cmd/runner_host_exec_publish.go`). The flow must clone exactly one
 repository with `create_pull_request` in legacy mode, and the runner profile must
@@ -17,17 +18,31 @@ set `allow_checkout` and `allow_publish`, which makes the runner advertise
 pool advertises it, and lease assignment skips runners that do not. Delivery adds
 a transient `host_exec_publication` plan (checkout path, managed
 `preloop/issue-<KEY>-<exec8>` branch from the shared branch-plan resolver, commit
-message); the push reuses the checkout's URL-scoped header credential and nothing
-is persisted. After the CLI succeeds the runner commits with hooks disabled,
+message, and the flow's configured `pull_request_template` path); the push
+reuses the checkout's URL-scoped header credential, which is the short-lived
+repository token the control plane issued for the job (a GitHub App
+installation token or the tracker's GitLab/Bitbucket token), never the host's own
+git credentials, and nothing is persisted. After the CLI succeeds the runner commits with hooks disabled,
 copies the head into a fresh runner-owned bare repository and pushes from there
 without force, with no repository, global or system git config, to the planned
 URL, and reports a `host_publication` receipt
-on the completion envelope. The completion path keeps only that runner receipt
+on the completion envelope. A pushed receipt also carries the repository pull
+request template, read from the pushed commit as a regular blob (never the
+working tree) with the hosted discovery order. The completion path keeps only that runner receipt
 (agent JSON cannot author it) and fails a publishing run without a pushed branch.
 The orchestrator verifies the branch against its own plan, looks up an open pull
-request for it before creating one through the bound Bitbucket tracker, and
-binds it with `record_opened_pr`, so a lost create response never yields a second
-pull request.
+request for it before creating one through the bound GitHub, GitLab or Bitbucket
+Cloud tracker (Bitbucket Data Center is not supported here), and binds it with `record_opened_pr`, so a lost create response never
+yields a second pull request. Title and body follow the hosted precedence (agent
+result, configured `pull_request_title`/`pull_request_description`, the
+repository template, then a default). When `git_clone_config.publication_approval`
+is set, the pull request opens only after a human approval bound to the
+repository, branch, base and pushed head SHA; otherwise the run fails
+`publication_failed` and the branch is kept. Isolated publication and
+multi-repository publication stay refused on host profiles, and a `read_only`
+review flow never publishes.
+Session continuation on review feedback is Copilot only: only a publishing
+Copilot profile advertises `host_continuation`.
 A succeeded publishing run stores its validated Copilot session (with profile
 and model alias) on `cli_session`. Feedback on that pull request reaches the host
 flow through the existing feedback thread `_resume`; the orchestrator validates it

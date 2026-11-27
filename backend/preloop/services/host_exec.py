@@ -711,11 +711,14 @@ def _clone_enabled(git_clone_config: Any) -> bool:
 
 
 PULL_REQUEST_UNAVAILABLE = (
-    "host execution cannot publish pull requests; isolated "
-    "publication is unavailable on this path"
+    "host execution opens a pull request only through a registered runner "
+    "whose host profile sets allow_checkout and allow_publish; update the "
+    "preloop CLI on the runner and enable both on the profile"
 )
 ISOLATED_PUBLICATION_UNAVAILABLE = (
-    "isolated publication is unavailable on native host profiles"
+    "isolated publication is unavailable on native host profiles; use "
+    "publication_mode legacy, where the runner pushes the branch and Preloop "
+    "opens the pull request"
 )
 
 
@@ -736,8 +739,9 @@ def host_exec_unavailable_reason(
     Args:
         git_clone_config: Flow checkout config. ``create_pull_request`` and
             ``publication_mode`` are read from a mapping or model.
-            ``create_pull_request`` is accepted only for the managed legacy
-            Copilot shape (see ``host_exec_publication``); the runner
+            ``create_pull_request`` is accepted for the managed legacy
+            shape on every native profile (see ``host_exec_publication``);
+            the runner
             capability is checked separately before a lease starts.
         resume_from: Prior execution id for native CLI resume.
         session_id: Server-supplied session id, which host execution rejects.
