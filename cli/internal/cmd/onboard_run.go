@@ -911,8 +911,11 @@ func (r *onboardRun) report() []string {
 	}
 	sent := fmt.Sprintf("extension report sent: %s, %s", agentCountLabel(summary.Agents), extensions)
 	switch {
-	case summary.ContentFailed:
+	case summary.ContentFailed && summary.ContentUploaded == 0:
 		sent += "; their text was not uploaded"
+	case summary.ContentFailed:
+		// Earlier batches were stored before the upload stopped.
+		sent += fmt.Sprintf("; text of %d uploaded, the rest was not", summary.ContentUploaded)
 	case summary.ContentUploaded > 0:
 		sent += fmt.Sprintf("; text of %d uploaded", summary.ContentUploaded)
 	}
