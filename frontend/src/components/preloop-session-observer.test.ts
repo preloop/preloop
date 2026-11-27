@@ -167,7 +167,16 @@ describe('PreloopSessionObserver', () => {
     await waitUntil(() =>
       Boolean(element.shadowRoot!.querySelector('[data-load-newer-activity]'))
     );
+    // The replay panel may already be paging older activity on its own; this
+    // call is then a no-op, so wait for the older page to land and for no
+    // load to be in flight. Clicking earlier is ignored by loadNewerActivity.
     await (element as any).loadMoreEvents(session.id);
+    await waitUntil(
+      () =>
+        !(element as any).loadedActivityPages[session.id].hasMore &&
+        !(element as any).loadingMoreEventsForSessionId
+    );
+    await element.updateComplete;
     expect((element as any).loadedActivityPages[session.id].nextAfter).to.equal(
       'newer-cursor'
     );
